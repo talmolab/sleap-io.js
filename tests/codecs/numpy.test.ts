@@ -6,29 +6,31 @@ import { Labels } from "../../src/model/labels.js";
 import { PredictedInstance } from "../../src/model/instance.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 import { Video } from "../../src/model/video.js";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
-const fixtureRoot = "/Users/talmo/sleap-io.js/tests/data";
+const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 
-async function loadFixture(path: string) {
-  return loadSlp(path, { openVideos: false });
+async function loadFixture(filename: string) {
+  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false });
 }
 
 describe("numpy codec", () => {
   it("converts labels to array", async () => {
-    const labels = await loadFixture(`${fixtureRoot}/slp/typical.slp`);
+    const labels = await loadFixture("typical.slp");
     const arr = toNumpy(labels);
     expect(arr.length).toBeGreaterThan(0);
     expect(arr[0][0][0]).toHaveLength(2);
   });
 
   it("supports confidence channel", async () => {
-    const labels = await loadFixture(`${fixtureRoot}/slp/typical.slp`);
+    const labels = await loadFixture("typical.slp");
     const arr = toNumpy(labels, { returnConfidence: true });
     expect(arr[0][0][0]).toHaveLength(3);
   });
 
   it("matches Labels.numpy", async () => {
-    const labels = await loadFixture(`${fixtureRoot}/slp/typical.slp`);
+    const labels = await loadFixture("typical.slp");
     const arr1 = toNumpy(labels);
     const arr2 = labels.numpy();
     expect(arr1).toEqual(arr2);
@@ -72,7 +74,8 @@ describe("numpy codec", () => {
 
     const labels = fromNumpy(arr, { video, skeleton, returnConfidence: true });
     const inst = labels.labeledFrames[0].instances[0] as PredictedInstance;
-    expect(inst.points[0].score).toBeCloseTo(0.95, 6);
+    const scoredPoint = inst.points[0] as unknown as { score: number };
+    expect(scoredPoint.score).toBeCloseTo(0.95, 6);
   });
 
   it("matches Labels.fromNumpy", () => {

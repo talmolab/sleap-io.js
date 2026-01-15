@@ -8,16 +8,18 @@ import { Labels } from "../../src/model/labels.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 import { SuggestionFrame } from "../../src/model/suggestions.js";
 import { Video } from "../../src/model/video.js";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
-const fixtureRoot = "/Users/talmo/sleap-io.js/tests/data";
+const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 
-async function loadFixture(path: string) {
-  return loadSlp(path, { openVideos: false });
+async function loadFixture(filename: string) {
+  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false });
 }
 
 describe("dictionary codec", () => {
   it("serializes basic structure", async () => {
-    const labels = await loadFixture(`${fixtureRoot}/slp/typical.slp`);
+    const labels = await loadFixture("typical.slp");
     const data = toDict(labels);
 
     expect(data.version).toBe("1.0.0");
@@ -39,7 +41,7 @@ describe("dictionary codec", () => {
   });
 
   it("is JSON serializable", async () => {
-    const labels = await loadFixture(`${fixtureRoot}/slp/typical.slp`);
+    const labels = await loadFixture("typical.slp");
     const data = toDict(labels);
     const json = JSON.stringify(data);
     expect(json.length).toBeGreaterThan(0);
@@ -48,7 +50,7 @@ describe("dictionary codec", () => {
   });
 
   it("filters by video and skips empty frames", async () => {
-    const labels = await loadFixture(`${fixtureRoot}/slp/typical.slp`);
+    const labels = await loadFixture("typical.slp");
     const video = labels.videos[0];
     const filtered = toDict(labels, { video });
     filtered.labeled_frames.forEach((frame) => expect(frame.video_idx).toBe(0));
@@ -116,7 +118,7 @@ describe("dictionary codec", () => {
   });
 
   it("round-trips through dict", async () => {
-    const labels = await loadFixture(`${fixtureRoot}/slp/typical.slp`);
+    const labels = await loadFixture("typical.slp");
     const dict = toDict(labels);
     const restored = fromDict(dict);
 
@@ -189,7 +191,7 @@ describe("dictionary codec", () => {
   });
 
   it("labels.toDict wrapper matches codec", async () => {
-    const labels = await loadFixture(`${fixtureRoot}/slp/typical.slp`);
+    const labels = await loadFixture("typical.slp");
     const data = labels.toDict();
     expect(data.version).toBe("1.0.0");
     const filtered = labels.toDict({ video: 0 });
