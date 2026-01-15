@@ -1,0 +1,22 @@
+# Local scratch folder (synced via scratch-sync)
+scratch/
+
+node_modules/
+dist/
+site/
+.cache/
+coverage/
+.pytest_cache/
+.mypy_cache/
+.venv/
+.env
+.DS_Store
+*.log
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.vscode/
+.idea/
+
+.claude/
+.mcp.json

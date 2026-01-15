@@ -1,0 +1,90 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SLEAP SLP Demo</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0c0f0d;
+        --panel: rgba(247, 242, 232, 0.08);
+        --ink: #f9f2e5;
+        --muted: #c7bbaa;
+        --accent: #f3c56c;
+        --line: rgba(243, 197, 108, 0.3);
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        padding: 32px;
+        font-family: "Baskerville", "Bodoni 72", "Didot", "Garamond", serif;
+        color: var(--ink);
+        background: var(--bg);
+      }
+
+      .panel {
+        border: 1px solid var(--line);
+        border-radius: 16px;
+        padding: 20px;
+        background: var(--panel);
+      }
+
+      label {
+        font-size: 0.8rem;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        color: var(--muted);
+      }
+
+      input[type="url"],
+      input[type="file"] {
+        width: 100%;
+        margin-top: 6px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid transparent;
+        background: rgba(255, 255, 255, 0.08);
+        color: var(--ink);
+      }
+
+      button {
+        margin-top: 12px;
+        padding: 10px 18px;
+        border-radius: 999px;
+        border: 1px solid var(--accent);
+        background: transparent;
+        color: var(--ink);
+        cursor: pointer;
+      }
+
+      pre {
+        margin-top: 16px;
+        padding: 12px;
+        border-radius: 12px;
+        background: rgba(0, 0, 0, 0.4);
+        color: var(--ink);
+        font-family: "IBM Plex Mono", monospace;
+        white-space: pre-wrap;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="panel">
+      <label for="slp-url">SLP URL</label>
+      <input id="slp-url" type="url" placeholder="https://example.com/session.slp" />
+
+      <label for="slp-file" style="display:block; margin-top:16px;">Local SLP File</label>
+      <input id="slp-file" type="file" accept=".slp" />
+
+      <button id="load-btn" type="button">Load</button>
+      <pre id="summary">No data loaded yet.</pre>
+    </div>
+
+    <script type="module" src="./demo.js"></script>
+  </body>
+</html>
