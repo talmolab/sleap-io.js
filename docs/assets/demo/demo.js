@@ -15,8 +15,8 @@ const ctx = canvas.getContext("2d");
 const colors = ["#f3c56c", "#7dd3fc", "#a7f3d0", "#fda4af", "#c4b5fd"];
 
 const baseUrl = new URL("./", import.meta.url);
-const defaultSlp = new URL("assets/demo-flies13-preds.slp", baseUrl).toString();
-const defaultVideo = new URL("assets/demo-flies13-preds.mp4", baseUrl).toString();
+const defaultSlp = new URL("demo-flies13-preds.slp", baseUrl).toString();
+const defaultVideo = new URL("demo-flies13-preds.mp4", baseUrl).toString();
 
 slpInput.value = defaultSlp;
 videoInput.value = defaultVideo;
