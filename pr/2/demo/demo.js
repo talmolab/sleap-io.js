@@ -13,6 +13,7 @@ const frameLabel = document.querySelector("#frame-label");
 
 const ctx = canvas.getContext("2d");
 const colors = ["#f3c56c", "#7dd3fc", "#a7f3d0", "#fda4af", "#c4b5fd"];
+const trackColors = new Map();
 
 const baseUrl = new URL("./", import.meta.url);
 const defaultSlp = new URL("../assets/demo/demo-flies13-preds.slp", baseUrl).toString();
@@ -26,6 +27,8 @@ let framesByIndex = new Map();
 let skeleton = null;
 let fps = 30;
 let maxFrame = 0;
+let lastFrameDrawn = -1;
+let playbackLoopHandle = null;
 
 const setStatus = (message) => {
   statusEl.textContent = message;
@@ -56,16 +59,23 @@ const buildFrameIndex = () => {
   maxFrame = Math.max(...framesByIndex.keys());
   seek.max = String(maxFrame);
   setMeta({ frames: framesByIndex.size, instances: instanceCount, nodes: skeleton?.nodes.length ?? 0 });
+
+  trackColors.clear();
+  labels.tracks.forEach((track, index) => {
+    trackColors.set(track, colors[index % colors.length]);
+  });
 };
 
 const drawFrame = (frameIdx) => {
   if (!ctx || !skeleton) return;
+  if (frameIdx === lastFrameDrawn) return;
+  lastFrameDrawn = frameIdx;
   ctx.clearRect(0, 0, canvas.width, canvas.height);
   const frame = framesByIndex.get(frameIdx);
   if (!frame) return;
 
   frame.instances.forEach((instance, idx) => {
-    const color = colors[idx % colors.length];
+    const color = instance.track ? trackColors.get(instance.track) ?? colors[idx % colors.length] : colors[idx % colors.length];
     ctx.lineWidth = 2;
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
@@ -100,6 +110,39 @@ const updateFrameFromVideo = () => {
   drawFrame(frameIdx);
 };
 
+const scheduleFrameUpdates = () => {
+  if (playbackLoopHandle) return;
+  if ("requestVideoFrameCallback" in videoEl) {
+    const loop = () => {
+      videoEl.requestVideoFrameCallback(() => {
+        updateFrameFromVideo();
+        if (!videoEl.paused) loop();
+        else playbackLoopHandle = null;
+      });
+    };
+    playbackLoopHandle = loop;
+    loop();
+    return;
+  }
+
+  const rafLoop = () => {
+    if (videoEl.paused) {
+      playbackLoopHandle = null;
+      return;
+    }
+    updateFrameFromVideo();
+    playbackLoopHandle = requestAnimationFrame(rafLoop);
+  };
+  playbackLoopHandle = requestAnimationFrame(rafLoop);
+};
+
+const stopFrameUpdates = () => {
+  if (typeof playbackLoopHandle === "number") {
+    cancelAnimationFrame(playbackLoopHandle);
+  }
+  playbackLoopHandle = null;
+};
+
 const handleLoad = async () => {
   const slpUrl = slpInput.value.trim();
   const videoUrl = videoInput.value.trim();
@@ -130,6 +173,7 @@ const handleLoad = async () => {
     });
 
     configureCanvas();
+    lastFrameDrawn = -1;
     updateFrameFromVideo();
     setStatus("Ready.");
   } catch (error) {
@@ -147,17 +191,22 @@ seek.addEventListener("input", () => {
   drawFrame(frameIdx);
 });
 
-videoEl.addEventListener("timeupdate", updateFrameFromVideo);
+videoEl.addEventListener("seeked", updateFrameFromVideo);
 
 playBtn.addEventListener("click", async () => {
   if (videoEl.paused) {
     await videoEl.play();
     playBtn.textContent = "Pause";
+    scheduleFrameUpdates();
   } else {
     videoEl.pause();
     playBtn.textContent = "Play";
+    stopFrameUpdates();
   }
 });
+
+videoEl.addEventListener("pause", stopFrameUpdates);
+videoEl.addEventListener("ended", stopFrameUpdates);
 
 loadBtn.addEventListener("click", handleLoad);
 
