@@ -217,6 +217,8 @@
           
             
               
+                
+              
               <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
                 <div class="md-sidebar__scrollwrap">
                   <div class="md-sidebar__inner">
@@ -326,7 +328,9 @@
             
             
               
-              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" hidden>
                 <div class="md-sidebar__scrollwrap">
                   <div class="md-sidebar__inner">
                     
@@ -357,7 +361,13 @@
 <div class="md-source-file"><a href="../demo.md" title="View markdown source" class="md-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6m4 18H6V4h7v5h5v11M13 9V3.5L18.5 9H13Z"/></svg></a></div>
 <h1 id="demo">Demo<a class="headerlink" href="#demo" title="Permanent link">&para;</a></h1>
 <p>The embedded viewer below loads <code>.slp</code> files entirely in the browser. It streams the demo SLP and MP4 using range requests when available.</p>
-<iframe src="../assets/demo/index.html?v=2" title="SLEAP SLP Demo" style="width:100%; height:640px; border:1px solid #ddd; border-radius:12px;"></iframe>
+<p><iframe
+  class="demo-frame"
+  src="../assets/demo/index.html?v=4"
+  title="SLEAP SLP Demo"
+  loading="lazy"
+></iframe>
+</p>
 
 
 
@@ -365,8 +375,13 @@
 
 
 
+  
+  
 
 
+
+
+  
 
 
 

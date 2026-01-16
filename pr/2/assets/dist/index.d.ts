@@ -130,6 +130,7 @@ interface VideoBackend {
     fps?: number;
     dataset?: string | null;
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    getFrameTimes?(): Promise<number[] | null>;
     close(): void;
 }
 
@@ -150,6 +151,7 @@ declare class Video {
     get shape(): [number, number, number, number] | null;
     get fps(): number | null;
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    getFrameTimes(): Promise<number[] | null>;
     close(): void;
     matchesPath(other: Video, strict?: boolean): boolean;
 }
@@ -322,6 +324,45 @@ declare class LabelsSet {
     [Symbol.iterator](): IterableIterator<[string, Labels]>;
 }
 
+declare class Mp4BoxVideoBackend implements VideoBackend {
+    filename: string;
+    shape?: [number, number, number, number];
+    fps?: number;
+    dataset?: string | null;
+    private ready;
+    private mp4box;
+    private mp4boxFile;
+    private videoTrack;
+    private samples;
+    private keyframeIndices;
+    private cache;
+    private cacheSize;
+    private lookahead;
+    private decoder;
+    private config;
+    private fileSize;
+    private supportsRangeRequests;
+    private fileBlob;
+    private isDecoding;
+    private pendingFrame;
+    constructor(filename: string, options?: {
+        cacheSize?: number;
+        lookahead?: number;
+    });
+    getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    getFrameTimes(): Promise<number[] | null>;
+    close(): void;
+    private init;
+    private openSource;
+    private readChunk;
+    private extractSamples;
+    private findKeyframeBefore;
+    private getCodecDescription;
+    private readSampleDataByDecodeOrder;
+    private decodeRange;
+    private addToCache;
+}
+
 type SlpSource = string | ArrayBuffer | Uint8Array | File | FileSystemFileHandle;
 type StreamMode = "auto" | "range" | "download";
 type OpenH5Options = {
@@ -392,4 +433,4 @@ declare function labelsFromNumpy(data: number[][][][], options: {
     returnConfidence?: boolean;
 }): Labels;
 
-export { Camera, CameraGroup, Edge, FrameGroup, Instance, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, Node, type NodeOrIndex, type Point, type PointsArray, PredictedInstance, type PredictedPoint, type PredictedPointsArray, RecordingSession, Skeleton, SuggestionFrame, Symmetry, Track, Video, type VideoBackend, type VideoFrame, fromDict, fromNumpy, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, pointsEmpty, pointsFromArray, pointsFromDict, predictedPointsEmpty, predictedPointsFromArray, predictedPointsFromDict, rodriguesTransformation, saveSlp, toDict, toNumpy };
+export { Camera, CameraGroup, Edge, FrameGroup, Instance, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, Mp4BoxVideoBackend, Node, type NodeOrIndex, type Point, type PointsArray, PredictedInstance, type PredictedPoint, type PredictedPointsArray, RecordingSession, Skeleton, SuggestionFrame, Symmetry, Track, Video, type VideoBackend, type VideoFrame, fromDict, fromNumpy, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, pointsEmpty, pointsFromArray, pointsFromDict, predictedPointsEmpty, predictedPointsFromArray, predictedPointsFromDict, rodriguesTransformation, saveSlp, toDict, toNumpy };
