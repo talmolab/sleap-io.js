@@ -12,6 +12,7 @@ on:
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/pr-preview.yml"
+      - ".github/workflows/release.yml"
 
 concurrency:
   group: pr-preview-${{ github.event.number }}
