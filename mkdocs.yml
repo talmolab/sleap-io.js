@@ -9,6 +9,7 @@ hooks:
 theme:
   name: material
   logo: assets/sleap-logo.png
+  favicon: assets/sleap-logo.png
   icon:
     repo: fontawesome/brands/github
   palette:
