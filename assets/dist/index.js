@@ -2578,6 +2578,81 @@ async function loadVideo(filename, options) {
   const backend = await createVideoBackend(filename, { dataset: options?.dataset });
   return new Video({ filename, backend, openBackend: options?.openBackend ?? true });
 }
+
+// src/codecs/skeleton-yaml.ts
+import YAML from "yaml";
+function getNodeName(entry) {
+  if (typeof entry === "string") return entry;
+  if (entry && typeof entry.name === "string") return entry.name;
+  throw new Error("Invalid node entry in skeleton YAML.");
+}
+function resolveName(value) {
+  if (typeof value === "string") return value;
+  if (value && typeof value.name === "string") return value.name;
+  throw new Error("Invalid name reference in skeleton YAML.");
+}
+function decodeSkeleton(data, fallbackName) {
+  if (!data?.nodes) throw new Error("Skeleton YAML missing nodes.");
+  const nodes = data.nodes.map((entry) => new Node(getNodeName(entry)));
+  const edges = (data.edges ?? []).map((edge) => {
+    if (Array.isArray(edge)) {
+      const [source2, destination] = edge;
+      return new Edge(nodes[Number(source2)], nodes[Number(destination)]);
+    }
+    const sourceName = resolveName(edge.source);
+    const destName = resolveName(edge.destination);
+    const source = nodes.find((node) => node.name === sourceName);
+    const dest = nodes.find((node) => node.name === destName);
+    if (!source || !dest) throw new Error("Edge references unknown node.");
+    return new Edge(source, dest);
+  });
+  const symmetries = (data.symmetries ?? []).map((symmetry) => {
+    if (!Array.isArray(symmetry) || symmetry.length !== 2) {
+      throw new Error("Symmetry must contain exactly 2 nodes.");
+    }
+    const [left, right] = symmetry;
+    const leftName = resolveName(left);
+    const rightName = resolveName(right);
+    const leftNode = nodes.find((node) => node.name === leftName);
+    const rightNode = nodes.find((node) => node.name === rightName);
+    if (!leftNode || !rightNode) throw new Error("Symmetry references unknown node.");
+    return new Symmetry([leftNode, rightNode]);
+  });
+  return new Skeleton({
+    name: data.name ?? fallbackName,
+    nodes,
+    edges,
+    symmetries
+  });
+}
+function decodeYamlSkeleton(yamlData) {
+  const parsed = YAML.parse(yamlData);
+  if (!parsed) throw new Error("Empty skeleton YAML.");
+  if (Object.prototype.hasOwnProperty.call(parsed, "nodes")) {
+    return decodeSkeleton(parsed);
+  }
+  return Object.entries(parsed).map(
+    ([name, skeletonData]) => decodeSkeleton(skeletonData, name)
+  );
+}
+function encodeYamlSkeleton(skeletons) {
+  const list = Array.isArray(skeletons) ? skeletons : [skeletons];
+  const payload = {};
+  list.forEach((skeleton, index) => {
+    const name = skeleton.name ?? `Skeleton-${index}`;
+    const nodes = skeleton.nodes.map((node) => ({ name: node.name }));
+    const edges = skeleton.edges.map((edge) => ({
+      source: { name: edge.source.name },
+      destination: { name: edge.destination.name }
+    }));
+    const symmetries = skeleton.symmetries.map((symmetry) => {
+      const pair = Array.from(symmetry.nodes);
+      return [{ name: pair[0].name }, { name: pair[1].name }];
+    });
+    payload[name] = { nodes, edges, symmetries };
+  });
+  return YAML.stringify(payload);
+}
 export {
   Camera,
   CameraGroup,
@@ -2597,6 +2672,8 @@ export {
   Symmetry,
   Track,
   Video,
+  decodeYamlSkeleton,
+  encodeYamlSkeleton,
   fromDict,
   fromNumpy,
   labelsFromNumpy,

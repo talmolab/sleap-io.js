@@ -433,4 +433,7 @@ declare function labelsFromNumpy(data: number[][][][], options: {
     returnConfidence?: boolean;
 }): Labels;
 
-export { Camera, CameraGroup, Edge, FrameGroup, Instance, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, Mp4BoxVideoBackend, Node, type NodeOrIndex, type Point, type PointsArray, PredictedInstance, type PredictedPoint, type PredictedPointsArray, RecordingSession, Skeleton, SuggestionFrame, Symmetry, Track, Video, type VideoBackend, type VideoFrame, fromDict, fromNumpy, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, pointsEmpty, pointsFromArray, pointsFromDict, predictedPointsEmpty, predictedPointsFromArray, predictedPointsFromDict, rodriguesTransformation, saveSlp, toDict, toNumpy };
+declare function decodeYamlSkeleton(yamlData: string): Skeleton | Skeleton[];
+declare function encodeYamlSkeleton(skeletons: Skeleton | Skeleton[]): string;
+
+export { Camera, CameraGroup, Edge, FrameGroup, Instance, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, Mp4BoxVideoBackend, Node, type NodeOrIndex, type Point, type PointsArray, PredictedInstance, type PredictedPoint, type PredictedPointsArray, RecordingSession, Skeleton, SuggestionFrame, Symmetry, Track, Video, type VideoBackend, type VideoFrame, decodeYamlSkeleton, encodeYamlSkeleton, fromDict, fromNumpy, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, pointsEmpty, pointsFromArray, pointsFromDict, predictedPointsEmpty, predictedPointsFromArray, predictedPointsFromDict, rodriguesTransformation, saveSlp, toDict, toNumpy };
