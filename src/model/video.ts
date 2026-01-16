@@ -43,6 +43,11 @@ export class Video {
     return this.backend.getFrame(frameIndex);
   }
 
+  async getFrameTimes(): Promise<number[] | null> {
+    if (!this.backend?.getFrameTimes) return null;
+    return this.backend.getFrameTimes();
+  }
+
   close(): void {
     this.backend?.close();
   }

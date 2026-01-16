@@ -7,6 +7,7 @@ export * from "./model/suggestions.js";
 export * from "./model/labels-set.js";
 export * from "./model/camera.js";
 export * from "./video/backend.js";
+export * from "./video/mp4box-video.js";
 export * from "./io/main.js";
 export * from "./codecs/dictionary.js";
 export * from "./codecs/numpy.js";

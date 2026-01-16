@@ -1,4 +1,4 @@
-import { loadSlp } from "../dist/index.js";
+import { loadSlp, loadVideo } from "../dist/index.js";
 
 const slpInput = document.querySelector("#slp-url");
 const videoInput = document.querySelector("#video-url");
@@ -66,17 +66,19 @@ slpInput.value = defaultSlp;
 videoInput.value = defaultVideo;
 
 let labels = null;
+let videoModel = null;
+let frameTimes = null;
 let framesByIndex = new Map();
 let skeleton = null;
 let fps = 30;
 let maxFrame = 0;
 let frameCount = 0;
-let lastFrameDrawn = -1;
-let playbackLoopHandle = null;
-let playbackLoopMode = null;
-let estimatedFps = null;
-let lastPresentedFrames = null;
-let lastMediaTime = null;
+let currentFrame = 0;
+let isPlaying = false;
+let playHandle = null;
+let playbackStartTime = 0;
+let playbackStartFrame = 0;
+let renderToken = 0;
 
 const setStatus = (message) => {
   statusEl.textContent = message;
@@ -91,8 +93,9 @@ const setMeta = (data) => {
 };
 
 const configureCanvas = () => {
-  const width = videoEl.videoWidth || 1280;
-  const height = videoEl.videoHeight || 720;
+  const shape = videoModel?.shape;
+  const width = (shape?.[2] ?? videoEl.videoWidth) || 1280;
+  const height = (shape?.[1] ?? videoEl.videoHeight) || 720;
   canvas.width = width;
   canvas.height = height;
 };
@@ -118,13 +121,21 @@ const buildFrameIndex = () => {
   });
 };
 
-const drawFrame = (frameIdx) => {
+const renderFrame = async (frameIdx) => {
   if (!ctx || !skeleton) return;
-  if (frameIdx === lastFrameDrawn) return;
-  lastFrameDrawn = frameIdx;
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
   const frame = framesByIndex.get(frameIdx);
   if (!frame) return;
+  const token = ++renderToken;
+  const videoFrame = await videoModel?.getFrame(frameIdx);
+  if (token !== renderToken) return;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (videoFrame instanceof ImageBitmap) {
+    ctx.drawImage(videoFrame, 0, 0, canvas.width, canvas.height);
+  } else if (videoFrame instanceof ImageData) {
+    ctx.putImageData(videoFrame, 0, 0);
+  }
 
   frame.instances.forEach((instance, idx) => {
     const color = getInstanceColor(instance, idx);
@@ -157,99 +168,74 @@ const drawFrame = (frameIdx) => {
   formatFrameCoords(frame);
 };
 
-const updateTimingFromMetadata = (metadata) => {
-  if (!metadata) return;
-  const presentedFrames = Number(metadata.presentedFrames);
-  const mediaTime = Number(metadata.mediaTime);
-  if (!Number.isFinite(presentedFrames) || presentedFrames <= 0) return;
-  if (Number.isFinite(mediaTime) && mediaTime > 0) {
-    if (Number.isFinite(lastPresentedFrames) && Number.isFinite(lastMediaTime) && mediaTime > lastMediaTime) {
-      const deltaFrames = presentedFrames - lastPresentedFrames;
-      const deltaTime = mediaTime - lastMediaTime;
-      if (deltaFrames > 0 && deltaTime > 0) {
-        estimatedFps = deltaFrames / deltaTime;
-      }
-    }
-  }
-  lastPresentedFrames = presentedFrames;
-  lastMediaTime = mediaTime;
+const updateFpsFromVideo = () => {
+  if (frameTimes?.length) return;
+  if (!Number.isFinite(videoEl.duration) || videoEl.duration <= 0) return;
+  if (!frameCount) return;
+  fps = frameCount / videoEl.duration;
 };
 
 const getFrameIndexForTime = (time) => {
   if (!Number.isFinite(time)) return 0;
-  const effectiveFps = Number.isFinite(estimatedFps) && estimatedFps > 0 ? estimatedFps : fps;
-  return Math.min(maxFrame, Math.floor(time * effectiveFps));
+  if (frameTimes?.length) {
+    let low = 0;
+    let high = frameTimes.length - 1;
+    while (low <= high) {
+      const mid = Math.floor((low + high) / 2);
+      const value = frameTimes[mid];
+      if (value === time) return mid;
+      if (value < time) low = mid + 1;
+      else high = mid - 1;
+    }
+    const idx = Math.min(frameTimes.length - 1, Math.max(0, low));
+    const prev = Math.max(0, idx - 1);
+    return Math.abs(frameTimes[idx] - time) < Math.abs(frameTimes[prev] - time) ? idx : prev;
+  }
+  return Math.min(maxFrame, Math.max(0, Math.round(time * fps)));
 };
 
 const getTimeForFrameIndex = (frameIdx) => {
-  const effectiveFps = Number.isFinite(estimatedFps) && estimatedFps > 0 ? estimatedFps : fps;
-  return frameIdx / effectiveFps;
+  if (frameTimes?.length && frameTimes[frameIdx] != null) return frameTimes[frameIdx];
+  return frameIdx / fps;
 };
 
-const updateFrameFromVideo = (time = videoEl.currentTime, metadata) => {
-  if (metadata?.presentedFrames != null) {
-    updateTimingFromMetadata(metadata);
-    const presented = Number(metadata.presentedFrames);
-    if (Number.isFinite(presented)) {
-      const frameIdx = Math.min(maxFrame, Math.max(0, presented - 1));
-      seek.value = String(frameIdx);
-      frameLabel.textContent = `Frame ${frameIdx}`;
-      drawFrame(frameIdx);
-      return;
-    }
-  }
+const updateFrameFromVideo = (time = 0) => {
   const frameIdx = getFrameIndexForTime(time);
   if (!Number.isFinite(frameIdx)) return;
+  currentFrame = frameIdx;
   seek.value = String(frameIdx);
   frameLabel.textContent = `Frame ${frameIdx}`;
-  drawFrame(frameIdx);
+  renderFrame(frameIdx);
 };
 
-const scheduleFrameUpdates = () => {
-  if (playbackLoopHandle) return;
-  if ("requestVideoFrameCallback" in videoEl) {
-    const loop = () => {
-      playbackLoopHandle = videoEl.requestVideoFrameCallback((_, metadata) => {
-        const mediaTime = metadata?.mediaTime ?? videoEl.currentTime;
-        updateFrameFromVideo(mediaTime, metadata);
-        if (!videoEl.paused) loop();
-        else {
-          playbackLoopHandle = null;
-          playbackLoopMode = null;
-        }
-      });
-      playbackLoopMode = "video";
-    };
-    loop();
+const playLoop = (timestamp) => {
+  if (!isPlaying) return;
+  if (!playbackStartTime) playbackStartTime = timestamp;
+  const elapsed = (timestamp - playbackStartTime) / 1000;
+  const startTime = getTimeForFrameIndex(playbackStartFrame);
+  const nextFrame = getFrameIndexForTime(startTime + elapsed);
+  if (nextFrame !== currentFrame) {
+    updateFrameFromVideo(startTime + elapsed);
+  }
+  if (currentFrame >= maxFrame) {
+    stopPlayback();
     return;
   }
-
-  const rafLoop = () => {
-    if (videoEl.paused) {
-      playbackLoopHandle = null;
-      playbackLoopMode = null;
-      return;
-    }
-    updateFrameFromVideo();
-    playbackLoopHandle = requestAnimationFrame(rafLoop);
-  };
-  playbackLoopMode = "raf";
-  playbackLoopHandle = requestAnimationFrame(rafLoop);
+  playHandle = requestAnimationFrame(playLoop);
 };
 
-const stopFrameUpdates = () => {
-  if (playbackLoopMode === "raf" && typeof playbackLoopHandle === "number") {
-    cancelAnimationFrame(playbackLoopHandle);
-  }
-  if (
-    playbackLoopMode === "video" &&
-    playbackLoopHandle != null &&
-    typeof videoEl.cancelVideoFrameCallback === "function"
-  ) {
-    videoEl.cancelVideoFrameCallback(playbackLoopHandle);
-  }
-  playbackLoopHandle = null;
-  playbackLoopMode = null;
+const startPlayback = () => {
+  if (isPlaying) return;
+  isPlaying = true;
+  playbackStartTime = 0;
+  playbackStartFrame = currentFrame;
+  playHandle = requestAnimationFrame(playLoop);
+};
+
+const stopPlayback = () => {
+  isPlaying = false;
+  if (playHandle) cancelAnimationFrame(playHandle);
+  playHandle = null;
 };
 
 const handleLoad = async () => {
@@ -269,8 +255,12 @@ const handleLoad = async () => {
       h5: { stream: "range", filenameHint: "demo-flies13-preds.slp" },
     });
     skeleton = labels.skeletons[0];
-    fps = labels.video?.fps ?? 30;
     buildFrameIndex();
+
+    setStatus("Loading video metadata...");
+    videoModel = await loadVideo(videoUrl);
+    frameTimes = await videoModel.getFrameTimes();
+    fps = videoModel.fps ?? labels.video?.fps ?? 30;
 
     setStatus("Loading video...");
     videoEl.src = videoUrl;
@@ -282,8 +272,10 @@ const handleLoad = async () => {
     });
 
     configureCanvas();
-    lastFrameDrawn = -1;
-    updateFrameFromVideo();
+    updateFpsFromVideo();
+    currentFrame = 0;
+    renderToken = 0;
+    updateFrameFromVideo(0);
     setStatus("Ready.");
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
@@ -295,26 +287,20 @@ const handleLoad = async () => {
 
 seek.addEventListener("input", () => {
   const frameIdx = Number(seek.value);
-  videoEl.currentTime = getTimeForFrameIndex(frameIdx);
+  currentFrame = frameIdx;
   frameLabel.textContent = `Frame ${frameIdx}`;
-  drawFrame(frameIdx);
+  renderFrame(frameIdx);
 });
 
-
-playBtn.addEventListener("click", async () => {
-  if (videoEl.paused) {
-    await videoEl.play();
-    playBtn.textContent = "Pause";
-    scheduleFrameUpdates();
-  } else {
-    videoEl.pause();
+playBtn.addEventListener("click", () => {
+  if (isPlaying) {
+    stopPlayback();
     playBtn.textContent = "Play";
-    stopFrameUpdates();
+  } else {
+    startPlayback();
+    playBtn.textContent = "Pause";
   }
 });
-
-videoEl.addEventListener("pause", stopFrameUpdates);
-videoEl.addEventListener("ended", stopFrameUpdates);
 
 loadBtn.addEventListener("click", handleLoad);
 
