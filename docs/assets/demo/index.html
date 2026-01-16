@@ -45,6 +45,22 @@
       .controls input[type="range"] { flex: 1; }
       .meta { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.4; }
       .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); margin-right: 6px; }
+      .coords { margin-top: 12px; padding: 12px; }
+      .coords__label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 6px; }
+      .coords__body {
+        margin: 0;
+        max-height: 140px;
+        overflow: auto;
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--ink);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px;
+        white-space: pre;
+      }
       @media (max-width: 900px) {
         .layout { grid-template-columns: 1fr; }
       }
@@ -75,9 +91,13 @@
           <input id="seek" type="range" min="0" max="0" value="0" step="1" />
           <span id="frame-label" class="pill">Frame 0</span>
         </div>
+        <div class="panel coords">
+          <div class="coords__label">Coordinates</div>
+          <pre id="coords" class="coords__body">—</pre>
+        </div>
       </div>
     </div>
 
-    <script type="module" src="/demo/demo.js"></script>
+    <script type="module" src="./demo.js"></script>
   </body>
 </html>

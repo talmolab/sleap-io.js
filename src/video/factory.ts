@@ -1,6 +1,7 @@
 import { VideoBackend } from "./backend.js";
 import { Hdf5VideoBackend } from "./hdf5-video.js";
 import { MediaVideoBackend } from "./media-video.js";
+import { Mp4BoxVideoBackend } from "./mp4box-video.js";
 import { openH5File } from "../codecs/slp/h5.js";
 
 export async function createVideoBackend(
@@ -20,6 +21,15 @@ export async function createVideoBackend(
       shape: options?.shape,
       fps: options?.fps,
     });
+  }
+
+  const supportsWebCodecs =
+    typeof window !== "undefined" &&
+    typeof window.VideoDecoder !== "undefined" &&
+    typeof window.EncodedVideoChunk !== "undefined";
+  const normalized = filename.split("?")[0]?.toLowerCase();
+  if (supportsWebCodecs && normalized.endsWith(".mp4")) {
+    return new Mp4BoxVideoBackend(filename);
   }
 
   return new MediaVideoBackend(filename);

@@ -6,5 +6,6 @@ export interface VideoBackend {
   fps?: number;
   dataset?: string | null;
   getFrame(frameIndex: number): Promise<VideoFrame | null>;
+  getFrameTimes?(): Promise<number[] | null>;
   close(): void;
 }

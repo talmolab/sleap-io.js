@@ -5,11 +5,13 @@ node_modules/
 dist/
 site/
 .cache/
+docs/assets/dist/
 coverage/
 .pytest_cache/
 .mypy_cache/
 .venv/
 .env
+__pycache__/
 .DS_Store
 *.log
 npm-debug.log*

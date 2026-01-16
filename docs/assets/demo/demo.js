@@ -59,8 +59,8 @@ const formatFrameCoords = (frame) => {
 };
 
 const baseUrl = new URL("./", import.meta.url);
-const defaultSlp = new URL("assets/demo-flies13-preds.slp", baseUrl).toString();
-const defaultVideo = new URL("assets/demo-flies13-preds.mp4", baseUrl).toString();
+const defaultSlp = new URL("demo-flies13-preds.slp", baseUrl).toString();
+const defaultVideo = new URL("demo-flies13-preds.mp4", baseUrl).toString();
 
 slpInput.value = defaultSlp;
 videoInput.value = defaultVideo;

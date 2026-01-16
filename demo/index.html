@@ -3,270 +3,101 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>SLEAP SLP Loader Demo</title>
+    <title>sleap-io.js demo</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "h5wasm": "https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js"
+        }
+      }
+    </script>
     <style>
       :root {
         color-scheme: dark;
         --bg: #0c0f0d;
-        --panel: rgba(247, 242, 232, 0.07);
-        --panel-strong: rgba(247, 242, 232, 0.12);
+        --panel: rgba(247, 242, 232, 0.06);
         --ink: #f9f2e5;
         --muted: #c7bbaa;
         --accent: #f3c56c;
-        --accent-strong: #ffb444;
-        --line: rgba(243, 197, 108, 0.3);
-        --shadow: rgba(5, 5, 8, 0.55);
+        --line: rgba(243, 197, 108, 0.2);
       }
 
-      * {
-        box-sizing: border-box;
-      }
-
+      * { box-sizing: border-box; }
       body {
         margin: 0;
-        min-height: 100vh;
-        font-family: "Baskerville", "Bodoni 72", "Didot", "Garamond", serif;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: var(--bg);
         color: var(--ink);
-        background: radial-gradient(circle at 12% 12%, rgba(243, 197, 108, 0.12), transparent 40%),
-          radial-gradient(circle at 80% 10%, rgba(72, 116, 110, 0.22), transparent 46%), var(--bg);
+        padding: 24px;
       }
-
-      body::before {
-        content: "";
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-        background-image: repeating-linear-gradient(120deg, rgba(255, 255, 255, 0.03), rgba(255, 255, 255, 0.03) 1px, transparent 1px, transparent 3px);
-        mix-blend-mode: screen;
-        opacity: 0.35;
-      }
-
-      main {
-        position: relative;
-        max-width: 880px;
-        margin: 0 auto;
-        padding: 72px 24px 96px;
-        display: grid;
-        gap: 32px;
-      }
-
-      header {
-        display: grid;
-        gap: 12px;
-      }
-
-      .eyebrow {
-        text-transform: uppercase;
-        letter-spacing: 0.36em;
-        font-size: 0.7rem;
-        color: var(--accent);
-      }
-
-      h1 {
+      h1 { margin: 0 0 12px; font-size: 20px; }
+      .layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
+      .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+      label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 6px; }
+      input[type="text"] { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid transparent; background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+      button { margin-top: 12px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--accent); background: transparent; color: var(--ink); cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .status { margin-top: 12px; font-size: 13px; color: var(--muted); }
+      .player { position: relative; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: #000; }
+      video { width: 100%; display: block; }
+      canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+      .controls { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+      .controls input[type="range"] { flex: 1; }
+      .meta { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.4; }
+      .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); margin-right: 6px; }
+      .coords { margin-top: 12px; padding: 12px; }
+      .coords__label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 6px; }
+      .coords__body {
         margin: 0;
-        font-size: clamp(2.4rem, 3vw + 1.5rem, 3.6rem);
-        font-weight: 600;
-      }
-
-      .subtitle {
-        margin: 0;
-        color: var(--muted);
-        max-width: 560px;
-        font-size: 1.05rem;
-        line-height: 1.6;
-      }
-
-      .panel,
-      .summary {
-        border: 1px solid var(--line);
-        border-radius: 20px;
-        padding: 28px;
-        background: linear-gradient(140deg, rgba(247, 242, 232, 0.12), rgba(15, 20, 18, 0.6));
-        box-shadow: 0 30px 60px var(--shadow);
-        backdrop-filter: blur(12px);
-        animation: rise 0.7s ease both;
-      }
-
-      .summary {
-        animation-delay: 0.1s;
-      }
-
-      @keyframes rise {
-        from {
-          opacity: 0;
-          transform: translateY(18px);
-        }
-        to {
-          opacity: 1;
-          transform: translateY(0);
-        }
-      }
-
-      .field {
-        display: grid;
-        gap: 8px;
-        margin-bottom: 18px;
-      }
-
-      label {
-        font-size: 0.85rem;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--muted);
-      }
-
-      input[type="url"],
-      input[type="file"] {
-        width: 100%;
-        padding: 12px 14px;
-        border-radius: 12px;
-        border: 1px solid transparent;
+        max-height: 140px;
+        overflow: auto;
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--ink);
         background: var(--panel);
-        color: var(--ink);
-        font-family: "Palatino Linotype", "Book Antiqua", "Georgia", serif;
-        font-size: 1rem;
-        transition: border-color 0.2s ease, box-shadow 0.2s ease, background 0.2s ease;
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px;
+        white-space: pre;
       }
-
-      input[type="url"]:focus,
-      input[type="file"]:focus {
-        outline: none;
-        border-color: var(--accent-strong);
-        box-shadow: 0 0 0 3px rgba(243, 197, 108, 0.25);
-        background: var(--panel-strong);
-      }
-
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 16px;
-        align-items: center;
-      }
-
-      button {
-        padding: 12px 24px;
-        border-radius: 999px;
-        border: 1px solid var(--accent);
-        background: linear-gradient(120deg, rgba(243, 197, 108, 0.25), rgba(243, 197, 108, 0.05));
-        color: var(--ink);
-        font-size: 1rem;
-        font-weight: 600;
-        letter-spacing: 0.04em;
-        cursor: pointer;
-        transition: transform 0.2s ease, box-shadow 0.2s ease, border-color 0.2s ease;
-      }
-
-      button:hover {
-        transform: translateY(-1px);
-        border-color: var(--accent-strong);
-        box-shadow: 0 12px 24px rgba(243, 197, 108, 0.2);
-      }
-
-      button:disabled {
-        opacity: 0.6;
-        cursor: not-allowed;
-        transform: none;
-        box-shadow: none;
-      }
-
-      .status {
-        font-size: 0.95rem;
-        color: var(--muted);
-        padding: 8px 14px;
-        border-radius: 999px;
-        border: 1px solid transparent;
-      }
-
-      .status[data-state="ready"] {
-        color: var(--accent);
-        border-color: rgba(243, 197, 108, 0.35);
-        background: rgba(243, 197, 108, 0.08);
-      }
-
-      .status[data-state="error"] {
-        color: #ff9b7a;
-        border-color: rgba(255, 155, 122, 0.4);
-        background: rgba(255, 155, 122, 0.08);
-      }
-
-      h2 {
-        margin: 0 0 12px;
-        font-size: 1.2rem;
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        color: var(--accent);
-      }
-
-      pre {
-        margin: 0;
-        padding: 16px;
-        border-radius: 16px;
-        background: rgba(9, 12, 10, 0.65);
-        border: 1px solid rgba(255, 255, 255, 0.08);
-        font-family: "IBM Plex Mono", "SFMono-Regular", "Menlo", monospace;
-        font-size: 0.95rem;
-        line-height: 1.6;
-        color: var(--ink);
-        white-space: pre-wrap;
-        word-break: break-word;
-      }
-
-      @media (max-width: 640px) {
-        main {
-          padding: 48px 18px 72px;
-        }
-
-        .panel,
-        .summary {
-          padding: 22px;
-        }
-
-        .actions {
-          flex-direction: column;
-          align-items: stretch;
-        }
-
-        button {
-          width: 100%;
-        }
-      }
-
-      @media (prefers-reduced-motion: reduce) {
-        * {
-          animation: none !important;
-          transition: none !important;
-        }
+      @media (max-width: 900px) {
+        .layout { grid-template-columns: 1fr; }
       }
     </style>
   </head>
   <body>
-    <main>
-      <header>
-        <div class="eyebrow">SLEAP IO Demo</div>
-        <h1>SLP Loader</h1>
-        <p class="subtitle">Drop in a URL or local file to inspect SLP metadata. The loader stays lightweight while giving you immediate counts to validate what you just opened.</p>
-      </header>
+    <h1>sleap-io.js demo</h1>
+    <div class="layout">
+      <div class="panel">
+        <label for="slp-url">SLP URL</label>
+        <input id="slp-url" type="text" />
 
-      <section class="panel" aria-label="Load an SLP file">
-        <div class="field">
-          <label for="slp-url">SLP URL</label>
-          <input id="slp-url" type="url" placeholder="https://example.com/session.slp" autocomplete="off" />
-        </div>
-        <div class="field">
-          <label for="slp-file">Local SLP File</label>
-          <input id="slp-file" type="file" accept=".slp" />
-        </div>
-        <div class="actions">
-          <button id="load-btn" type="button">Load SLP</button>
-          <div id="status" class="status" role="status" aria-live="polite" data-state="idle">Waiting for a source.</div>
-        </div>
-      </section>
+        <label for="video-url" style="margin-top: 14px;">Video URL</label>
+        <input id="video-url" type="text" />
 
-      <section class="summary" aria-live="polite">
-        <h2>Summary</h2>
-        <pre id="summary">No data loaded yet.</pre>
-      </section>
-    </main>
-    <script type="module" src="./demo.js"></script>
+        <button id="load-btn">Load</button>
+        <div class="status" id="status">Idle.</div>
+        <div class="meta" id="meta"></div>
+      </div>
+
+      <div>
+        <div class="player">
+          <video id="video" playsinline muted></video>
+          <canvas id="overlay"></canvas>
+        </div>
+        <div class="controls">
+          <button id="play-btn">Play</button>
+          <input id="seek" type="range" min="0" max="0" value="0" step="1" />
+          <span id="frame-label" class="pill">Frame 0</span>
+        </div>
+        <div class="panel coords">
+          <div class="coords__label">Coordinates</div>
+          <pre id="coords" class="coords__body">—</pre>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="/demo/demo.js"></script>
   </body>
 </html>

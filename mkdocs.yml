@@ -8,6 +8,7 @@ hooks:
 
 theme:
   name: material
+  logo: assets/sleap-logo.png
   icon:
     repo: fontawesome/brands/github
   palette:
@@ -32,6 +33,9 @@ theme:
 
 plugins:
   - search
+
+extra_css:
+  - assets/extra.css
 
 markdown_extensions:
   - abbr
