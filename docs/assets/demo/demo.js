@@ -70,9 +70,13 @@ let framesByIndex = new Map();
 let skeleton = null;
 let fps = 30;
 let maxFrame = 0;
+let frameCount = 0;
 let lastFrameDrawn = -1;
 let playbackLoopHandle = null;
 let playbackLoopMode = null;
+let estimatedFps = null;
+let lastPresentedFrames = null;
+let lastMediaTime = null;
 
 const setStatus = (message) => {
   statusEl.textContent = message;
@@ -97,12 +101,15 @@ const buildFrameIndex = () => {
   framesByIndex = new Map();
   let instanceCount = 0;
   for (const frame of labels.labeledFrames) {
+    if (!Number.isFinite(frame.frameIdx)) continue;
     framesByIndex.set(frame.frameIdx, frame);
     instanceCount += frame.instances.length;
   }
-  maxFrame = Math.max(...framesByIndex.keys());
+  const frameIndices = Array.from(framesByIndex.keys()).filter((value) => Number.isFinite(value));
+  maxFrame = frameIndices.length ? Math.max(...frameIndices) : 0;
+  frameCount = frameIndices.length;
   seek.max = String(maxFrame);
-  setMeta({ frames: framesByIndex.size, instances: instanceCount, nodes: skeleton?.nodes.length ?? 0 });
+  setMeta({ frames: frameCount, instances: instanceCount, nodes: skeleton?.nodes.length ?? 0 });
 
   trackColors.clear();
   labels.tracks.forEach((track, index) => {
@@ -150,8 +157,49 @@ const drawFrame = (frameIdx) => {
   formatFrameCoords(frame);
 };
 
-const updateFrameFromVideo = () => {
-  const frameIdx = Math.min(maxFrame, Math.floor(videoEl.currentTime * fps));
+const updateTimingFromMetadata = (metadata) => {
+  if (!metadata) return;
+  const presentedFrames = Number(metadata.presentedFrames);
+  const mediaTime = Number(metadata.mediaTime);
+  if (!Number.isFinite(presentedFrames) || presentedFrames <= 0) return;
+  if (Number.isFinite(mediaTime) && mediaTime > 0) {
+    if (Number.isFinite(lastPresentedFrames) && Number.isFinite(lastMediaTime) && mediaTime > lastMediaTime) {
+      const deltaFrames = presentedFrames - lastPresentedFrames;
+      const deltaTime = mediaTime - lastMediaTime;
+      if (deltaFrames > 0 && deltaTime > 0) {
+        estimatedFps = deltaFrames / deltaTime;
+      }
+    }
+  }
+  lastPresentedFrames = presentedFrames;
+  lastMediaTime = mediaTime;
+};
+
+const getFrameIndexForTime = (time) => {
+  if (!Number.isFinite(time)) return 0;
+  const effectiveFps = Number.isFinite(estimatedFps) && estimatedFps > 0 ? estimatedFps : fps;
+  return Math.min(maxFrame, Math.floor(time * effectiveFps));
+};
+
+const getTimeForFrameIndex = (frameIdx) => {
+  const effectiveFps = Number.isFinite(estimatedFps) && estimatedFps > 0 ? estimatedFps : fps;
+  return frameIdx / effectiveFps;
+};
+
+const updateFrameFromVideo = (time = videoEl.currentTime, metadata) => {
+  if (metadata?.presentedFrames != null) {
+    updateTimingFromMetadata(metadata);
+    const presented = Number(metadata.presentedFrames);
+    if (Number.isFinite(presented)) {
+      const frameIdx = Math.min(maxFrame, Math.max(0, presented - 1));
+      seek.value = String(frameIdx);
+      frameLabel.textContent = `Frame ${frameIdx}`;
+      drawFrame(frameIdx);
+      return;
+    }
+  }
+  const frameIdx = getFrameIndexForTime(time);
+  if (!Number.isFinite(frameIdx)) return;
   seek.value = String(frameIdx);
   frameLabel.textContent = `Frame ${frameIdx}`;
   drawFrame(frameIdx);
@@ -161,8 +209,9 @@ const scheduleFrameUpdates = () => {
   if (playbackLoopHandle) return;
   if ("requestVideoFrameCallback" in videoEl) {
     const loop = () => {
-      playbackLoopHandle = videoEl.requestVideoFrameCallback(() => {
-        updateFrameFromVideo();
+      playbackLoopHandle = videoEl.requestVideoFrameCallback((_, metadata) => {
+        const mediaTime = metadata?.mediaTime ?? videoEl.currentTime;
+        updateFrameFromVideo(mediaTime, metadata);
         if (!videoEl.paused) loop();
         else {
           playbackLoopHandle = null;
@@ -246,12 +295,11 @@ const handleLoad = async () => {
 
 seek.addEventListener("input", () => {
   const frameIdx = Number(seek.value);
-  videoEl.currentTime = frameIdx / fps;
+  videoEl.currentTime = getTimeForFrameIndex(frameIdx);
   frameLabel.textContent = `Frame ${frameIdx}`;
   drawFrame(frameIdx);
 });
 
-videoEl.addEventListener("seeked", updateFrameFromVideo);
 
 playBtn.addEventListener("click", async () => {
   if (videoEl.paused) {
