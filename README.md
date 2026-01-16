@@ -69,6 +69,21 @@ The demo in `demo/` loads the built package from `dist/`. Build first, then serv
 npm run build
 ```
 
+## Release & Publishing
+
+This package uses npm Trusted Publishing. The first publish must be done manually to unlock the npm package settings:
+
+1. First-time publish (one-time):
+
+```bash
+npm login
+npm publish --access public
+```
+
+2. Enable Trusted Publisher at `https://www.npmjs.com/package/@talmolab/sleap-io.js/access`.
+
+After that, GitHub Releases trigger the publish workflow automatically.
+
 ## Links
 
 - Python sleap-io: https://github.com/talmolab/sleap-io
