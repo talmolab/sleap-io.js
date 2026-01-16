@@ -46,6 +46,8 @@
       
     
     
+      <link rel="stylesheet" href="../assets/extra.css">
+    
     <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
     
       
@@ -90,8 +92,7 @@
   <nav class="md-header__inner md-grid" aria-label="Header">
     <a href=".." title="sleap-io.js documentation" class="md-header__button md-logo" aria-label="sleap-io.js documentation" data-md-component="logo">
       
-  
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+  <img src="../assets/sleap-logo.png" alt="logo">
 
     </a>
     <label class="md-header__button md-icon" for="__drawer">
@@ -225,8 +226,7 @@
   <label class="md-nav__title" for="__drawer">
     <a href=".." title="sleap-io.js documentation" class="md-nav__button md-logo" aria-label="sleap-io.js documentation" data-md-component="logo">
       
-  
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a3 3 0 0 0 3-3 3 3 0 0 0-3-3 3 3 0 0 0-3 3 3 3 0 0 0 3 3m0 3.54C9.64 9.35 6.5 8 3 8v11c3.5 0 6.64 1.35 9 3.54 2.36-2.19 5.5-3.54 9-3.54V8c-3.5 0-6.64 1.35-9 3.54"/></svg>
+  <img src="../assets/sleap-logo.png" alt="logo">
 
     </a>
     sleap-io.js documentation
@@ -348,18 +348,27 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#data-model" class="md-nav__link">
+  <a href="#video-backends" class="md-nav__link">
     <span class="md-ellipsis">
-      Data Model
+      Video Backends
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#codecs" class="md-nav__link">
+  <a href="#labels-model-classes" class="md-nav__link">
     <span class="md-ellipsis">
-      Codecs
+      Labels &amp; Model Classes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#codecs-numpy-helpers" class="md-nav__link">
+    <span class="md-ellipsis">
+      Codecs &amp; Numpy Helpers
     </span>
   </a>
   
@@ -369,6 +378,15 @@
   <a href="#streaming-options" class="md-nav__link">
     <span class="md-ellipsis">
       Streaming Options
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#error-handling-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Error Handling Notes
     </span>
   </a>
   
@@ -418,18 +436,27 @@
 </li>
       
         <li class="md-nav__item">
-  <a href="#data-model" class="md-nav__link">
+  <a href="#video-backends" class="md-nav__link">
     <span class="md-ellipsis">
-      Data Model
+      Video Backends
     </span>
   </a>
   
 </li>
       
         <li class="md-nav__item">
-  <a href="#codecs" class="md-nav__link">
+  <a href="#labels-model-classes" class="md-nav__link">
     <span class="md-ellipsis">
-      Codecs
+      Labels &amp; Model Classes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#codecs-numpy-helpers" class="md-nav__link">
+    <span class="md-ellipsis">
+      Codecs &amp; Numpy Helpers
     </span>
   </a>
   
@@ -439,6 +466,15 @@
   <a href="#streaming-options" class="md-nav__link">
     <span class="md-ellipsis">
       Streaming Options
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#error-handling-notes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Error Handling Notes
     </span>
   </a>
   
@@ -464,43 +500,156 @@
 
 <div class="md-source-file"><a href="../api.md" title="View markdown source" class="md-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6m4 18H6V4h7v5h5v11M13 9V3.5L18.5 9H13Z"/></svg></a></div>
 <h1 id="api-reference">API Reference<a class="headerlink" href="#api-reference" title="Permanent link">&para;</a></h1>
-<h2 id="core-io">Core I/O<a class="headerlink" href="#core-io" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">loadVideo</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
-</code></pre></div>
-<ul>
-<li><code>loadSlp(source, options)</code> — read <code>.slp</code> from path, URL, <code>File</code>, or <code>FileSystemFileHandle</code>.</li>
-<li><code>saveSlp(labels, filename, options)</code> — write <code>.slp</code> in Node environments.</li>
-<li><code>loadVideo(path, options)</code> — open a video backend for media files.</li>
-</ul>
-<h2 id="data-model">Data Model<a class="headerlink" href="#data-model" title="Permanent link">&para;</a></h2>
+<p>This document covers the public API exported from <code>src/index.ts</code>. All examples assume:
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">loadSlp</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">saveSlp</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">loadVideo</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">Video</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">Mp4BoxVideoBackend</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Labels</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">LabeledFrame</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Instance</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">PredictedInstance</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Skeleton</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">Video</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">SuggestionFrame</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">LabelsSet</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Track</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">LabelsSet</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">SuggestionFrame</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">toDict</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">fromDict</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">toNumpy</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">fromNumpy</span><span class="p">,</span>
 <span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
-</code></pre></div>
-<h2 id="codecs">Codecs<a class="headerlink" href="#codecs" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">toDict</span><span class="p">,</span><span class="w"> </span><span class="nx">fromDict</span><span class="p">,</span><span class="w"> </span><span class="nx">toNumpy</span><span class="p">,</span><span class="w"> </span><span class="nx">fromNumpy</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
-</code></pre></div>
-<ul>
-<li><code>toDict(labels, options)</code> / <code>fromDict(data)</code></li>
-<li><code>toNumpy(labels, options)</code> / <code>fromNumpy(array, options)</code></li>
-</ul>
-<h2 id="streaming-options">Streaming Options<a class="headerlink" href="#streaming-options" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="nx">url</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+</code></pre></div></p>
+<h2 id="core-io">Core I/O<a class="headerlink" href="#core-io" title="Permanent link">&para;</a></h2>
+<h3 id="loadslpsource-options"><code>loadSlp(source, options)</code><a class="headerlink" href="#loadslpsource-options" title="Permanent link">&para;</a></h3>
+<p>Read <code>.slp</code> from a path, URL, <code>File</code>, <code>FileSystemFileHandle</code>, or byte buffer.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;/data/session.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">openVideos</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">h5</span><span class="o">:</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="nx">stream</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="nx">filenameHint</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;session.slp&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="p">},</span>
+<span class="w">  </span><span class="nx">h5</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">stream</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">filenameHint</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;session.slp&quot;</span><span class="w"> </span><span class="p">},</span>
 <span class="p">});</span>
 </code></pre></div>
+<ul>
+<li><code>source</code>: string path/URL, <code>File</code>, <code>FileSystemFileHandle</code>, <code>Uint8Array</code>, or <code>ArrayBuffer</code>.</li>
+<li><code>options.openVideos</code> (default <code>true</code>): set <code>false</code> to skip opening video backends.</li>
+<li><code>options.h5.stream</code>: <code>"auto" | "range" | "download"</code> (browser URL streaming).</li>
+<li><code>options.h5.filenameHint</code>: helps name temporary files.</li>
+</ul>
+<h3 id="saveslplabels-filename-options"><code>saveSlp(labels, filename, options)</code><a class="headerlink" href="#saveslplabels-filename-options" title="Permanent link">&para;</a></h3>
+<p>Write <code>.slp</code> (Node/Electron).</p>
+<div class="highlight"><pre><span></span><code><span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;/tmp/roundtrip.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">embed</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">restoreOriginalVideos</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span>
+<span class="p">});</span>
+</code></pre></div>
+<ul>
+<li><code>options.embed</code>: embed frames (<code>true</code>, <code>false</code>, or dataset name).</li>
+<li><code>options.restoreOriginalVideos</code> (default <code>true</code>): keep original video paths.</li>
+</ul>
+<h3 id="loadvideofilename-options"><code>loadVideo(filename, options)</code><a class="headerlink" href="#loadvideofilename-options" title="Permanent link">&para;</a></h3>
+<p>Open a <code>Video</code> with an appropriate backend.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadVideo</span><span class="p">(</span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">openBackend</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">frame0</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">video</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="mf">0</span><span class="p">);</span>
+<span class="nx">video</span><span class="p">.</span><span class="nx">close</span><span class="p">();</span>
+</code></pre></div>
+<ul>
+<li><code>options.dataset</code>: dataset path for embedded HDF5 sources.</li>
+<li><code>options.openBackend</code> (default <code>true</code>): set <code>false</code> for deferred open.</li>
+</ul>
+<h2 id="video-backends">Video Backends<a class="headerlink" href="#video-backends" title="Permanent link">&para;</a></h2>
+<h3 id="video"><code>Video</code><a class="headerlink" href="#video" title="Permanent link">&para;</a></h3>
+<p><code>Video</code> wraps a backend and exposes <code>shape</code>, <code>fps</code>, <code>getFrame</code>, <code>getFrameTimes</code>, and <code>close</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadVideo</span><span class="p">(</span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">timestamps</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">video</span><span class="p">.</span><span class="nx">getFrameTimes</span><span class="p">();</span><span class="w"> </span><span class="c1">// number[] | null</span>
+</code></pre></div>
+<ul>
+<li><code>getFrameTimes()</code> returns <code>null</code> if the backend does not implement it.</li>
+</ul>
+<h3 id="mp4boxvideobackend"><code>Mp4BoxVideoBackend</code><a class="headerlink" href="#mp4boxvideobackend" title="Permanent link">&para;</a></h3>
+<p>Browser-only backend for <code>.mp4</code> with WebCodecs + mp4box. Supports range requests when the server honors <code>Range</code> and falls back to full download.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">backend</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Mp4BoxVideoBackend</span><span class="p">(</span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Video</span><span class="p">({</span><span class="w"> </span><span class="nx">filename</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">backend</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">t</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">video</span><span class="p">.</span><span class="nx">getFrameTimes</span><span class="p">();</span>
+</code></pre></div>
+<p>Notes:
+- Requires WebCodecs (<code>VideoDecoder</code>, <code>EncodedVideoChunk</code>).
+- Uses HEAD + <code>Range: bytes=0-0</code> probe to detect range support.
+- Provides precise frame timestamps via <code>getFrameTimes()</code>.</p>
+<h3 id="hdf5videobackend"><code>Hdf5VideoBackend</code><a class="headerlink" href="#hdf5videobackend" title="Permanent link">&para;</a></h3>
+<p>Used for <code>.slp</code>, <code>.h5</code>, or <code>.hdf5</code> sources (embedded frames).</p>
+<ul>
+<li>Selected automatically by <code>loadVideo()</code> for HDF5 inputs.</li>
+<li>Decodes embedded PNG/JPEG frames in browsers; raw frames require <code>shape</code> + <code>channelOrder</code>.</li>
+</ul>
+<h3 id="mediavideobackend"><code>MediaVideoBackend</code><a class="headerlink" href="#mediavideobackend" title="Permanent link">&para;</a></h3>
+<p>Browser fallback when WebCodecs/mp4box is unavailable.</p>
+<ul>
+<li>Uses <code>HTMLVideoElement</code> + canvas.</li>
+<li>No <code>getFrameTimes()</code> support.</li>
+</ul>
+<h2 id="labels-model-classes">Labels &amp; Model Classes<a class="headerlink" href="#labels-model-classes" title="Permanent link">&para;</a></h2>
+<p>Key types:</p>
+<ul>
+<li><code>Labels</code>, <code>LabeledFrame</code>, <code>Instance</code>, <code>PredictedInstance</code></li>
+<li><code>Skeleton</code>, <code>Track</code></li>
+<li><code>Video</code>, <code>SuggestionFrame</code>, <code>LabelsSet</code></li>
+<li><code>Camera</code>, <code>CameraGroup</code>, <code>RecordingSession</code> (camera utilities)</li>
+</ul>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">skeleton</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Skeleton</span><span class="p">([</span><span class="s2">&quot;nose&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;tail&quot;</span><span class="p">]);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">inst</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">Instance</span><span class="p">.</span><span class="nx">fromArray</span><span class="p">([[</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">30</span><span class="p">,</span><span class="w"> </span><span class="mf">40</span><span class="p">]],</span><span class="w"> </span><span class="nx">skeleton</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Video</span><span class="p">({</span><span class="w"> </span><span class="nx">filename</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">frame</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">instances</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">inst</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Labels</span><span class="p">({</span><span class="w"> </span><span class="nx">labeledFrames</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">frame</span><span class="p">],</span><span class="w"> </span><span class="nx">skeletons</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">skeleton</span><span class="p">],</span><span class="w"> </span><span class="nx">videos</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">video</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h2 id="codecs-numpy-helpers">Codecs &amp; Numpy Helpers<a class="headerlink" href="#codecs-numpy-helpers" title="Permanent link">&para;</a></h2>
+<h3 id="dictionary-codec">Dictionary codec<a class="headerlink" href="#dictionary-codec" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">dict</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">toDict</span><span class="p">(</span><span class="nx">labels</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">restored</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">fromDict</span><span class="p">(</span><span class="nx">dict</span><span class="p">);</span>
+</code></pre></div>
+<h3 id="numpy-codec">Numpy codec<a class="headerlink" href="#numpy-codec" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">array</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">toNumpy</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">returnConfidence</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">rebuilt</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">fromNumpy</span><span class="p">(</span><span class="nx">array</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">skeleton</span><span class="p">,</span><span class="w"> </span><span class="nx">returnConfidence</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<p>Also available:
+- <code>Labels.numpy({ video, returnConfidence })</code>
+- <code>Labels.fromNumpy(data, { video, skeleton, trackNames, firstFrame })</code></p>
+<h2 id="streaming-options">Streaming Options<a class="headerlink" href="#streaming-options" title="Permanent link">&para;</a></h2>
+<p>SLP streaming is handled by HDF5 open helpers:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;https://example.com/session.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">openVideos</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">h5</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">stream</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;range&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">filenameHint</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;session.slp&quot;</span><span class="w"> </span><span class="p">},</span>
+<span class="p">});</span>
+</code></pre></div>
+<ul>
+<li><code>stream: "auto"</code> uses range streaming when available.</li>
+<li><code>stream: "download"</code> forces full file download.</li>
+<li>Node only supports string paths or byte buffers for SLP inputs.</li>
+<li>Browser supports URL, <code>File</code>, <code>FileSystemFileHandle</code>, or byte buffers.</li>
+</ul>
+<h2 id="error-handling-notes">Error Handling Notes<a class="headerlink" href="#error-handling-notes" title="Permanent link">&para;</a></h2>
+<p>Common runtime errors to anticipate:</p>
+<ul>
+<li>SLP parsing:</li>
+<li>Missing <code>/metadata</code> group in invalid <code>.slp</code>.</li>
+<li>Unsupported source type in browser or Node.</li>
+<li>Failed fetch for remote SLP (bad URL/status).</li>
+<li>
+<p><code>h5wasm</code> FS unavailable in unsupported environments.</p>
+</li>
+<li>
+<p>MP4/WebCodecs:</p>
+</li>
+<li>WebCodecs not supported or non-browser environment.</li>
+<li>No video tracks or unsupported codec.</li>
+<li>
+<p>Failed fetch or no video source available.</p>
+</li>
+<li>
+<p>Media backend:</p>
+</li>
+<li>Browser-only usage.</li>
+<li>Video load or seek failures.</li>
+</ul>
 
 
 

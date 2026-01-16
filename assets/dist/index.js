@@ -445,6 +445,10 @@ var Video = class {
     if (!this.backend) return null;
     return this.backend.getFrame(frameIndex);
   }
+  async getFrameTimes() {
+    if (!this.backend?.getFrameTimes) return null;
+    return this.backend.getFrameTimes();
+  }
   close() {
     this.backend?.close();
   }
@@ -1154,6 +1158,389 @@ function makeCameraFromDict(data) {
   });
 }
 
+// src/video/mp4box-video.ts
+var isBrowser2 = typeof window !== "undefined" && typeof document !== "undefined";
+var hasWebCodecs = isBrowser2 && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
+var MP4BOX_CDN = "https://unpkg.com/mp4box@0.5.4/dist/mp4box.all.min.js";
+async function loadMp4box() {
+  const globalMp4box = globalThis.MP4Box;
+  if (globalMp4box) return globalMp4box;
+  try {
+    const module = await import("mp4box");
+    return module.default ?? module;
+  } catch {
+    if (!isBrowser2 || typeof document === "undefined") {
+      throw new Error("Failed to load mp4box");
+    }
+    await new Promise((resolve, reject) => {
+      const script = document.createElement("script");
+      script.src = MP4BOX_CDN;
+      script.async = true;
+      script.onload = () => resolve();
+      script.onerror = () => reject(new Error("Failed to load mp4box"));
+      document.head.appendChild(script);
+    });
+    const afterLoad = globalThis.MP4Box;
+    if (afterLoad) return afterLoad;
+    throw new Error("Failed to load mp4box");
+  }
+}
+var DEFAULT_CACHE_SIZE = 120;
+var DEFAULT_LOOKAHEAD = 60;
+var PARSE_CHUNK_SIZE = 1024 * 1024;
+var Mp4BoxVideoBackend = class {
+  filename;
+  shape;
+  fps;
+  dataset;
+  ready;
+  mp4box;
+  mp4boxFile;
+  videoTrack;
+  samples;
+  keyframeIndices;
+  cache;
+  cacheSize;
+  lookahead;
+  decoder;
+  config;
+  fileSize;
+  supportsRangeRequests;
+  fileBlob;
+  isDecoding;
+  pendingFrame;
+  constructor(filename, options) {
+    if (!hasWebCodecs) {
+      throw new Error("Mp4BoxVideoBackend requires WebCodecs support.");
+    }
+    if (!isBrowser2) {
+      throw new Error("Mp4BoxVideoBackend requires a browser environment.");
+    }
+    this.filename = filename;
+    this.dataset = null;
+    this.samples = [];
+    this.keyframeIndices = [];
+    this.cache = /* @__PURE__ */ new Map();
+    this.cacheSize = options?.cacheSize ?? DEFAULT_CACHE_SIZE;
+    this.lookahead = options?.lookahead ?? DEFAULT_LOOKAHEAD;
+    this.decoder = null;
+    this.config = null;
+    this.fileSize = 0;
+    this.supportsRangeRequests = false;
+    this.fileBlob = null;
+    this.isDecoding = false;
+    this.pendingFrame = null;
+    this.ready = this.init();
+  }
+  async getFrame(frameIndex) {
+    await this.ready;
+    if (frameIndex < 0 || frameIndex >= this.samples.length) return null;
+    if (this.cache.has(frameIndex)) {
+      const bitmap = this.cache.get(frameIndex) ?? null;
+      if (bitmap) {
+        this.cache.delete(frameIndex);
+        this.cache.set(frameIndex, bitmap);
+      }
+      return bitmap;
+    }
+    if (this.isDecoding) {
+      this.pendingFrame = frameIndex;
+      await new Promise((resolve) => {
+        const check = () => this.isDecoding ? setTimeout(check, 10) : resolve(null);
+        check();
+      });
+      if (this.cache.has(frameIndex)) {
+        return this.cache.get(frameIndex) ?? null;
+      }
+      if (this.pendingFrame !== null && this.pendingFrame !== frameIndex) {
+        return null;
+      }
+    }
+    const keyframe = this.findKeyframeBefore(frameIndex);
+    const end = Math.min(frameIndex + this.lookahead, this.samples.length - 1);
+    await this.decodeRange(keyframe, end, frameIndex);
+    return this.cache.get(frameIndex) ?? null;
+  }
+  async getFrameTimes() {
+    await this.ready;
+    return this.samples.map((sample) => sample.timestamp / 1e6);
+  }
+  close() {
+    if (this.decoder) {
+      try {
+        this.decoder.close();
+      } catch {
+      }
+    }
+    this.decoder = null;
+    this.cache.forEach((bitmap) => bitmap.close());
+    this.cache.clear();
+    this.fileBlob = null;
+  }
+  async init() {
+    await this.openSource();
+    this.mp4box = await loadMp4box();
+    this.mp4boxFile = this.mp4box.createFile();
+    const ready = new Promise((resolve, reject) => {
+      this.mp4boxFile.onError = reject;
+      this.mp4boxFile.onReady = resolve;
+    });
+    let offset = 0;
+    let resolved = false;
+    ready.then(() => {
+      resolved = true;
+    });
+    while (offset < this.fileSize && !resolved) {
+      const buffer = await this.readChunk(offset, PARSE_CHUNK_SIZE);
+      buffer.fileStart = offset;
+      const next = this.mp4boxFile.appendBuffer(buffer);
+      offset = next === void 0 ? offset + buffer.byteLength : next;
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+    const info = await ready;
+    if (!info.videoTracks.length) throw new Error("No video tracks found");
+    this.videoTrack = info.videoTracks[0];
+    const trak = this.mp4boxFile.getTrackById(this.videoTrack.id);
+    const description = this.getCodecDescription(trak);
+    const codec = this.videoTrack.codec.startsWith("vp08") ? "vp8" : this.videoTrack.codec;
+    this.config = {
+      codec,
+      codedWidth: this.videoTrack.video.width,
+      codedHeight: this.videoTrack.video.height,
+      description
+    };
+    const support = await VideoDecoder.isConfigSupported(this.config);
+    if (!support.supported) {
+      throw new Error(`Codec ${codec} not supported`);
+    }
+    this.extractSamples();
+    const duration = this.videoTrack.duration / this.videoTrack.timescale;
+    this.fps = duration ? this.samples.length / duration : void 0;
+    const frameCount = this.samples.length;
+    const height = this.videoTrack.video.height;
+    const width = this.videoTrack.video.width;
+    this.shape = [frameCount, height, width, 3];
+  }
+  async openSource() {
+    if (typeof this.filename !== "string") {
+      throw new Error("Mp4BoxVideoBackend requires a single filename string.");
+    }
+    const response = await fetch(this.filename, { method: "HEAD" });
+    if (!response.ok) throw new Error(`Failed to fetch video: ${response.status}`);
+    const size = response.headers.get("Content-Length");
+    this.fileSize = size ? Number.parseInt(size, 10) : 0;
+    if (this.fileSize > 0) {
+      try {
+        const rangeTest = await fetch(this.filename, { method: "GET", headers: { Range: "bytes=0-0" } });
+        this.supportsRangeRequests = rangeTest.status === 206;
+      } catch {
+        this.supportsRangeRequests = false;
+      }
+    }
+    if (!this.supportsRangeRequests || !this.fileSize) {
+      const full = await fetch(this.filename);
+      const blob = await full.blob();
+      this.fileBlob = blob;
+      this.fileSize = blob.size;
+    }
+  }
+  async readChunk(offset, size) {
+    const end = Math.min(offset + size, this.fileSize);
+    if (this.supportsRangeRequests) {
+      const response = await fetch(this.filename, { headers: { Range: `bytes=${offset}-${end - 1}` } });
+      return await response.arrayBuffer();
+    }
+    if (this.fileBlob) {
+      return await this.fileBlob.slice(offset, end).arrayBuffer();
+    }
+    throw new Error("No video source available");
+  }
+  extractSamples() {
+    const info = this.mp4boxFile.getTrackSamplesInfo(this.videoTrack.id);
+    if (!info?.length) throw new Error("No samples");
+    const ts = this.videoTrack.timescale;
+    const samples = info.map((sample, index) => ({
+      offset: sample.offset,
+      size: sample.size,
+      timestamp: sample.cts * 1e6 / ts,
+      duration: sample.duration * 1e6 / ts,
+      isKeyframe: sample.is_sync,
+      cts: sample.cts,
+      decodeIndex: index
+    }));
+    this.samples = samples.sort((a, b) => {
+      if (a.cts === b.cts) return a.decodeIndex - b.decodeIndex;
+      return a.cts - b.cts;
+    });
+    this.keyframeIndices = [];
+    this.samples.forEach((sample, index) => {
+      if (sample.isKeyframe) this.keyframeIndices.push(index);
+    });
+  }
+  findKeyframeBefore(frameIndex) {
+    let result = 0;
+    for (const keyframe of this.keyframeIndices) {
+      if (keyframe <= frameIndex) result = keyframe;
+      else break;
+    }
+    return result;
+  }
+  getCodecDescription(trak) {
+    const entries = trak?.mdia?.minf?.stbl?.stsd?.entries ?? [];
+    const dataStream = globalThis.DataStream ?? this.mp4box?.DataStream;
+    if (!dataStream) return void 0;
+    for (const entry of entries) {
+      const box = entry.avcC || entry.hvcC || entry.vpcC || entry.av1C;
+      if (!box) continue;
+      const stream = new dataStream(void 0, 0, dataStream.BIG_ENDIAN);
+      box.write(stream);
+      return new Uint8Array(stream.buffer, 8);
+    }
+    return void 0;
+  }
+  async readSampleDataByDecodeOrder(samplesToFeed) {
+    const results = /* @__PURE__ */ new Map();
+    let i = 0;
+    while (i < samplesToFeed.length) {
+      const first = samplesToFeed[i];
+      let regionEnd = i;
+      let regionBytes = first.sample.size;
+      while (regionEnd < samplesToFeed.length - 1) {
+        const current = samplesToFeed[regionEnd];
+        const next = samplesToFeed[regionEnd + 1];
+        if (next.sample.offset === current.sample.offset + current.sample.size) {
+          regionEnd += 1;
+          regionBytes += next.sample.size;
+        } else {
+          break;
+        }
+      }
+      const buffer = await this.readChunk(first.sample.offset, regionBytes);
+      const bufferView = new Uint8Array(buffer);
+      let bufferOffset = 0;
+      for (let j = i; j <= regionEnd; j += 1) {
+        const { sample } = samplesToFeed[j];
+        results.set(sample.decodeIndex, bufferView.slice(bufferOffset, bufferOffset + sample.size));
+        bufferOffset += sample.size;
+      }
+      i = regionEnd + 1;
+    }
+    return results;
+  }
+  async decodeRange(start, end, target) {
+    if (!this.config) throw new Error("Decoder not configured");
+    this.isDecoding = true;
+    try {
+      if (this.decoder) {
+        try {
+          this.decoder.close();
+        } catch {
+        }
+      }
+      let minDecodeIndex = Infinity;
+      let maxDecodeIndex = -Infinity;
+      for (let i = start; i <= end; i += 1) {
+        minDecodeIndex = Math.min(minDecodeIndex, this.samples[i].decodeIndex);
+        maxDecodeIndex = Math.max(maxDecodeIndex, this.samples[i].decodeIndex);
+      }
+      const toFeed = [];
+      for (let i = 0; i < this.samples.length; i += 1) {
+        const sample = this.samples[i];
+        if (sample.decodeIndex >= minDecodeIndex && sample.decodeIndex <= maxDecodeIndex) {
+          toFeed.push({ pi: i, sample });
+        }
+      }
+      toFeed.sort((a, b) => a.sample.decodeIndex - b.sample.decodeIndex);
+      const dataMap = await this.readSampleDataByDecodeOrder(toFeed);
+      const timestampMap = /* @__PURE__ */ new Map();
+      for (const { pi, sample } of toFeed) {
+        timestampMap.set(Math.round(sample.timestamp), pi);
+      }
+      const halfCache = Math.floor(this.cacheSize / 2);
+      const cacheStart = Math.max(start, target - halfCache);
+      const cacheEnd = Math.min(end, target + halfCache);
+      let decodedCount = 0;
+      let resolveComplete;
+      let rejectComplete;
+      const completionPromise = new Promise((resolve, reject) => {
+        resolveComplete = resolve;
+        rejectComplete = reject;
+      });
+      this.decoder = new VideoDecoder({
+        output: (frame) => {
+          const roundedTimestamp = Math.round(frame.timestamp);
+          let frameIndex = timestampMap.get(roundedTimestamp);
+          if (frameIndex === void 0) {
+            let bestDiff = Infinity;
+            for (const [ts, idx] of timestampMap) {
+              const diff = Math.abs(ts - frame.timestamp);
+              if (diff < bestDiff) {
+                bestDiff = diff;
+                frameIndex = idx;
+              }
+            }
+          }
+          const handleClose = () => {
+            frame.close();
+            decodedCount += 1;
+            if (decodedCount >= toFeed.length) resolveComplete();
+          };
+          if (frameIndex !== void 0 && frameIndex >= cacheStart && frameIndex <= cacheEnd) {
+            createImageBitmap(frame).then((bitmap) => {
+              this.addToCache(frameIndex, bitmap);
+              handleClose();
+            }).catch(handleClose);
+          } else {
+            handleClose();
+          }
+        },
+        error: (error) => {
+          if (error.name === "AbortError") {
+            resolveComplete();
+          } else {
+            rejectComplete(error);
+          }
+        }
+      });
+      this.decoder.configure(this.config);
+      const BATCH_SIZE = 15;
+      for (let i = 0; i < toFeed.length; i += BATCH_SIZE) {
+        const batch = toFeed.slice(i, i + BATCH_SIZE);
+        for (const { sample } of batch) {
+          const data = dataMap.get(sample.decodeIndex);
+          if (!data) continue;
+          this.decoder.decode(
+            new EncodedVideoChunk({
+              type: sample.isKeyframe ? "key" : "delta",
+              timestamp: sample.timestamp,
+              duration: sample.duration,
+              data
+            })
+          );
+        }
+        if (i + BATCH_SIZE < toFeed.length) {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+      await this.decoder.flush();
+      await completionPromise;
+    } finally {
+      this.isDecoding = false;
+    }
+  }
+  addToCache(frameIndex, bitmap) {
+    if (this.cache.size >= this.cacheSize) {
+      const first = this.cache.keys().next();
+      if (!first.done) {
+        const evicted = this.cache.get(first.value);
+        if (evicted) evicted.close();
+        this.cache.delete(first.value);
+      }
+    }
+    this.cache.set(frameIndex, bitmap);
+  }
+};
+
 // src/codecs/slp/h5.ts
 var isNode = typeof process !== "undefined" && !!process.versions?.node;
 var modulePromise = null;
@@ -1290,7 +1677,7 @@ function getH5FileSystem(module) {
 }
 
 // src/video/hdf5-video.ts
-var isBrowser2 = typeof window !== "undefined" && typeof document !== "undefined";
+var isBrowser3 = typeof window !== "undefined" && typeof document !== "undefined";
 var Hdf5VideoBackend = class {
   filename;
   dataset;
@@ -1350,14 +1737,14 @@ function isEncodedFormat(format) {
   return normalized === "png" || normalized === "jpg" || normalized === "jpeg";
 }
 async function decodeImageBytes(bytes, format) {
-  if (!isBrowser2 || typeof createImageBitmap === "undefined") return null;
+  if (!isBrowser3 || typeof createImageBitmap === "undefined") return null;
   const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
   const safeBytes = new Uint8Array(bytes);
   const blob = new Blob([safeBytes.buffer], { type: mime });
   return createImageBitmap(blob);
 }
 function decodeRawFrame(bytes, shape, channelOrder) {
-  if (!isBrowser2 || !shape) return null;
+  if (!isBrowser3 || !shape) return null;
   const [, height, width, channels] = shape;
   if (!height || !width || !channels) return null;
   const expectedLength = height * width * channels;
@@ -1394,6 +1781,11 @@ async function createVideoBackend(filename, options) {
       shape: options?.shape,
       fps: options?.fps
     });
+  }
+  const supportsWebCodecs = typeof window !== "undefined" && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
+  const normalized = filename.split("?")[0]?.toLowerCase();
+  if (supportsWebCodecs && normalized.endsWith(".mp4")) {
+    return new Mp4BoxVideoBackend(filename);
   }
   return new MediaVideoBackend(filename);
 }
@@ -1453,47 +1845,72 @@ function parseJsonAttr(attr) {
 }
 function readSkeletons(metadataJson) {
   if (!metadataJson) return [];
-  const nodes = (metadataJson.nodes ?? []).map((node) => new Node(node.name ?? node));
+  const nodeNames = (metadataJson.nodes ?? []).map((node) => node.name ?? node);
   const skeletonEntries = metadataJson.skeletons ?? [];
   const skeletons = [];
   for (const entry of skeletonEntries) {
     const edges = [];
     const symmetries = [];
     const typeCache = /* @__PURE__ */ new Map();
+    const typeState = { nextId: 1 };
+    const skeletonNodeIds = (entry.nodes ?? []).map((node) => Number(node.id ?? node));
+    const nodeOrder = skeletonNodeIds.length ? skeletonNodeIds : nodeNames.map((_, index) => index);
+    const nodes = nodeOrder.map((nodeId) => nodeNames[nodeId]).filter((name) => name !== void 0).map((name) => new Node(name));
+    const nodeIndexById = /* @__PURE__ */ new Map();
+    nodeOrder.forEach((nodeId, index) => {
+      nodeIndexById.set(Number(nodeId), index);
+    });
     for (const link of entry.links ?? []) {
-      const source = link.source;
-      const target = link.target;
-      const edgeType = resolveEdgeType(link.type, typeCache);
+      const source = Number(link.source);
+      const target = Number(link.target);
+      const edgeType = resolveEdgeType(link.type, typeCache, typeState);
       if (edgeType === 2) {
         symmetries.push([source, target]);
       } else {
         edges.push([source, target]);
       }
     }
+    const remapPair = (pair) => {
+      const sourceIndex = nodeIndexById.get(pair[0]);
+      const targetIndex = nodeIndexById.get(pair[1]);
+      if (sourceIndex === void 0 || targetIndex === void 0) return null;
+      return [sourceIndex, targetIndex];
+    };
+    const mappedEdges = edges.map(remapPair).filter((pair) => pair !== null);
+    const seenSymmetries = /* @__PURE__ */ new Set();
+    const mappedSymmetries = symmetries.map(remapPair).filter((pair) => pair !== null).filter(([a, b]) => {
+      const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+      if (seenSymmetries.has(key)) return false;
+      seenSymmetries.add(key);
+      return true;
+    });
     const skeleton = new Skeleton({
       nodes,
-      edges: edges.map(([src, dst]) => [src, dst]),
-      symmetries: symmetries.map(([a, b]) => [a, b]),
+      edges: mappedEdges,
+      symmetries: mappedSymmetries,
       name: entry.graph?.name ?? entry.name
     });
     skeletons.push(skeleton);
   }
   return skeletons;
 }
-function resolveEdgeType(edgeType, cache) {
+function resolveEdgeType(edgeType, cache, state) {
   if (!edgeType) return 1;
-  if (edgeType["py/tuple"]) {
-    const typeId = edgeType["py/tuple"][0];
-    cache.set(cache.size + 1, typeId);
-    return typeId;
-  }
   if (edgeType["py/reduce"]) {
     const typeId = edgeType["py/reduce"][1]?.["py/tuple"]?.[0] ?? 1;
-    cache.set(cache.size + 1, typeId);
+    cache.set(state.nextId, typeId);
+    state.nextId += 1;
+    return typeId;
+  }
+  if (edgeType["py/tuple"]) {
+    const typeId = edgeType["py/tuple"][0] ?? 1;
+    cache.set(state.nextId, typeId);
+    state.nextId += 1;
     return typeId;
   }
   if (edgeType["py/id"]) {
-    return cache.get(edgeType["py/id"]) ?? 1;
+    const pyId = edgeType["py/id"];
+    return cache.get(pyId) ?? pyId;
   }
   return 1;
 }
@@ -2171,6 +2588,7 @@ export {
   LabeledFrame,
   Labels,
   LabelsSet,
+  Mp4BoxVideoBackend,
   Node,
   PredictedInstance,
   RecordingSession,
