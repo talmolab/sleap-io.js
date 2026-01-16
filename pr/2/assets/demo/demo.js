@@ -10,6 +10,7 @@ const canvas = document.querySelector("#overlay");
 const seek = document.querySelector("#seek");
 const playBtn = document.querySelector("#play-btn");
 const frameLabel = document.querySelector("#frame-label");
+const coordsEl = document.querySelector("#coords");
 
 const ctx = canvas.getContext("2d");
 const colors = ["#f3c56c", "#7dd3fc", "#a7f3d0", "#fda4af", "#c4b5fd"];
@@ -29,6 +30,32 @@ const getInstanceColor = (instance, fallbackIndex) => {
   }
   const stableIndex = instance.id ?? instance.instanceId ?? fallbackIndex;
   return colors[stableIndex % colors.length];
+};
+
+const formatPoint = (point) => {
+  if (!point) return "None";
+  if (!point.visible) return "None";
+  const [x, y] = point.xy;
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return "None";
+  return `${x.toFixed(2)}, ${y.toFixed(2)}`;
+};
+
+const formatFrameCoords = (frame) => {
+  if (!coordsEl) return;
+  if (!frame || !skeleton) {
+    coordsEl.textContent = "—";
+    return;
+  }
+  const lines = [];
+  frame.instances.forEach((instance, idx) => {
+    const trackName = instance.track?.name ?? `instance ${idx}`;
+    lines.push(`Instance ${idx} (${trackName})`);
+    instance.points.forEach((point, nodeIdx) => {
+      const nodeName = skeleton.nodes[nodeIdx]?.name ?? `node ${nodeIdx}`;
+      lines.push(`  ${nodeName}: ${formatPoint(point)}`);
+    });
+  });
+  coordsEl.textContent = lines.length ? lines.join("\n") : "—";
 };
 
 const baseUrl = new URL("./", import.meta.url);
@@ -119,6 +146,8 @@ const drawFrame = (frameIdx) => {
       ctx.fill();
     });
   });
+
+  formatFrameCoords(frame);
 };
 
 const updateFrameFromVideo = () => {

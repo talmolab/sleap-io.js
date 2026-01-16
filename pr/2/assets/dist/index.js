@@ -1453,47 +1453,72 @@ function parseJsonAttr(attr) {
 }
 function readSkeletons(metadataJson) {
   if (!metadataJson) return [];
-  const nodes = (metadataJson.nodes ?? []).map((node) => new Node(node.name ?? node));
+  const nodeNames = (metadataJson.nodes ?? []).map((node) => node.name ?? node);
   const skeletonEntries = metadataJson.skeletons ?? [];
   const skeletons = [];
   for (const entry of skeletonEntries) {
     const edges = [];
     const symmetries = [];
     const typeCache = /* @__PURE__ */ new Map();
+    const typeState = { nextId: 1 };
+    const skeletonNodeIds = (entry.nodes ?? []).map((node) => Number(node.id ?? node));
+    const nodeOrder = skeletonNodeIds.length ? skeletonNodeIds : nodeNames.map((_, index) => index);
+    const nodes = nodeOrder.map((nodeId) => nodeNames[nodeId]).filter((name) => name !== void 0).map((name) => new Node(name));
+    const nodeIndexById = /* @__PURE__ */ new Map();
+    nodeOrder.forEach((nodeId, index) => {
+      nodeIndexById.set(Number(nodeId), index);
+    });
     for (const link of entry.links ?? []) {
-      const source = link.source;
-      const target = link.target;
-      const edgeType = resolveEdgeType(link.type, typeCache);
+      const source = Number(link.source);
+      const target = Number(link.target);
+      const edgeType = resolveEdgeType(link.type, typeCache, typeState);
       if (edgeType === 2) {
         symmetries.push([source, target]);
       } else {
         edges.push([source, target]);
       }
     }
+    const remapPair = (pair) => {
+      const sourceIndex = nodeIndexById.get(pair[0]);
+      const targetIndex = nodeIndexById.get(pair[1]);
+      if (sourceIndex === void 0 || targetIndex === void 0) return null;
+      return [sourceIndex, targetIndex];
+    };
+    const mappedEdges = edges.map(remapPair).filter((pair) => pair !== null);
+    const seenSymmetries = /* @__PURE__ */ new Set();
+    const mappedSymmetries = symmetries.map(remapPair).filter((pair) => pair !== null).filter(([a, b]) => {
+      const key = a < b ? `${a}-${b}` : `${b}-${a}`;
+      if (seenSymmetries.has(key)) return false;
+      seenSymmetries.add(key);
+      return true;
+    });
     const skeleton = new Skeleton({
       nodes,
-      edges: edges.map(([src, dst]) => [src, dst]),
-      symmetries: symmetries.map(([a, b]) => [a, b]),
+      edges: mappedEdges,
+      symmetries: mappedSymmetries,
       name: entry.graph?.name ?? entry.name
     });
     skeletons.push(skeleton);
   }
   return skeletons;
 }
-function resolveEdgeType(edgeType, cache) {
+function resolveEdgeType(edgeType, cache, state) {
   if (!edgeType) return 1;
-  if (edgeType["py/tuple"]) {
-    const typeId = edgeType["py/tuple"][0];
-    cache.set(cache.size + 1, typeId);
-    return typeId;
-  }
   if (edgeType["py/reduce"]) {
     const typeId = edgeType["py/reduce"][1]?.["py/tuple"]?.[0] ?? 1;
-    cache.set(cache.size + 1, typeId);
+    cache.set(state.nextId, typeId);
+    state.nextId += 1;
+    return typeId;
+  }
+  if (edgeType["py/tuple"]) {
+    const typeId = edgeType["py/tuple"][0] ?? 1;
+    cache.set(state.nextId, typeId);
+    state.nextId += 1;
     return typeId;
   }
   if (edgeType["py/id"]) {
-    return cache.get(edgeType["py/id"]) ?? 1;
+    const pyId = edgeType["py/id"];
+    return cache.get(pyId) ?? pyId;
   }
   return 1;
 }
