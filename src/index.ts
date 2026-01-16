@@ -11,3 +11,4 @@ export * from "./video/mp4box-video.js";
 export * from "./io/main.js";
 export * from "./codecs/dictionary.js";
 export * from "./codecs/numpy.js";
+export * from "./codecs/skeleton-yaml.js";
