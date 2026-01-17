@@ -1,0 +1,1166 @@
+
+<!doctype html>
+<html lang="en" class="no-js">
+  <head>
+    
+      <meta charset="utf-8">
+      <meta name="viewport" content="width=device-width,initial-scale=1">
+      
+      
+      
+        <link rel="canonical" href="https://iojs.sleap.ai/rendering/">
+      
+      
+        <link rel="prev" href="../lite/">
+      
+      
+      
+      <link rel="icon" href="../assets/sleap-logo.png">
+      <meta name="generator" content="mkdocs-1.6.1, mkdocs-material-9.5.44">
+    
+    
+      
+        <title>Rendering - sleap-io.js documentation</title>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/stylesheets/main.0253249f.min.css">
+      
+        
+        <link rel="stylesheet" href="../assets/stylesheets/palette.06af60db.min.css">
+      
+      
+
+
+    
+    
+      
+    
+    
+      
+        
+        
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+        <link rel="stylesheet" href="https://fonts.googleapis.com/css?family=Roboto:300,300i,400,400i,700,700i%7CRoboto+Mono:400,400i,700,700i&display=fallback">
+        <style>:root{--md-text-font:"Roboto";--md-code-font:"Roboto Mono"}</style>
+      
+    
+    
+      <link rel="stylesheet" href="../assets/extra.css">
+    
+    <script>__md_scope=new URL("..",location),__md_hash=e=>[...e].reduce(((e,_)=>(e<<5)-e+_.charCodeAt(0)),0),__md_get=(e,_=localStorage,t=__md_scope)=>JSON.parse(_.getItem(t.pathname+"."+e)),__md_set=(e,_,t=localStorage,a=__md_scope)=>{try{t.setItem(a.pathname+"."+e,JSON.stringify(_))}catch(e){}}</script>
+    
+      
+
+    
+    
+    
+  </head>
+  
+  
+    
+    
+      
+    
+    
+    
+    
+    <body dir="ltr" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="indigo">
+  
+    
+    <input class="md-toggle" data-md-toggle="drawer" type="checkbox" id="__drawer" autocomplete="off">
+    <input class="md-toggle" data-md-toggle="search" type="checkbox" id="__search" autocomplete="off">
+    <label class="md-overlay" for="__drawer"></label>
+    <div data-md-component="skip">
+      
+        
+        <a href="#rendering" class="md-skip">
+          Skip to content
+        </a>
+      
+    </div>
+    <div data-md-component="announce">
+      
+    </div>
+    
+    
+      
+
+  
+
+<header class="md-header md-header--shadow" data-md-component="header">
+  <nav class="md-header__inner md-grid" aria-label="Header">
+    <a href=".." title="sleap-io.js documentation" class="md-header__button md-logo" aria-label="sleap-io.js documentation" data-md-component="logo">
+      
+  <img src="../assets/sleap-logo.png" alt="logo">
+
+    </a>
+    <label class="md-header__button md-icon" for="__drawer">
+      
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M3 6h18v2H3zm0 5h18v2H3zm0 5h18v2H3z"/></svg>
+    </label>
+    <div class="md-header__title" data-md-component="header-title">
+      <div class="md-header__ellipsis">
+        <div class="md-header__topic">
+          <span class="md-ellipsis">
+            sleap-io.js documentation
+          </span>
+        </div>
+        <div class="md-header__topic" data-md-component="header-topic">
+          <span class="md-ellipsis">
+            
+              Rendering
+            
+          </span>
+        </div>
+      </div>
+    </div>
+    
+      
+        <form class="md-header__option" data-md-component="palette">
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="slate" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Switch to light mode"  type="radio" name="__palette" id="__palette_0">
+    
+      <label class="md-header__button md-icon" title="Switch to light mode" for="__palette_1" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 18c-.89 0-1.74-.2-2.5-.55C11.56 16.5 13 14.42 13 12s-1.44-4.5-3.5-5.45C10.26 6.2 11.11 6 12 6a6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+    
+    
+    
+    <input class="md-option" data-md-color-media="" data-md-color-scheme="default" data-md-color-primary="deep-orange" data-md-color-accent="indigo"  aria-label="Switch to dark mode"  type="radio" name="__palette" id="__palette_1">
+    
+      <label class="md-header__button md-icon" title="Switch to dark mode" for="__palette_0" hidden>
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M12 8a4 4 0 0 0-4 4 4 4 0 0 0 4 4 4 4 0 0 0 4-4 4 4 0 0 0-4-4m0 10a6 6 0 0 1-6-6 6 6 0 0 1 6-6 6 6 0 0 1 6 6 6 6 0 0 1-6 6m8-9.31V4h-4.69L12 .69 8.69 4H4v4.69L.69 12 4 15.31V20h4.69L12 23.31 15.31 20H20v-4.69L23.31 12z"/></svg>
+      </label>
+    
+  
+</form>
+      
+    
+    
+      <script>var palette=__md_get("__palette");if(palette&&palette.color){if("(prefers-color-scheme)"===palette.color.media){var media=matchMedia("(prefers-color-scheme: light)"),input=document.querySelector(media.matches?"[data-md-color-media='(prefers-color-scheme: light)']":"[data-md-color-media='(prefers-color-scheme: dark)']");palette.color.media=input.getAttribute("data-md-color-media"),palette.color.scheme=input.getAttribute("data-md-color-scheme"),palette.color.primary=input.getAttribute("data-md-color-primary"),palette.color.accent=input.getAttribute("data-md-color-accent")}for(var[key,value]of Object.entries(palette.color))document.body.setAttribute("data-md-color-"+key,value)}</script>
+    
+    
+    
+      <label class="md-header__button md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+      </label>
+      <div class="md-search" data-md-component="search" role="dialog">
+  <label class="md-search__overlay" for="__search"></label>
+  <div class="md-search__inner" role="search">
+    <form class="md-search__form" name="search">
+      <input type="text" class="md-search__input" name="query" aria-label="Search" placeholder="Search" autocapitalize="off" autocorrect="off" autocomplete="off" spellcheck="false" data-md-component="search-query" required>
+      <label class="md-search__icon md-icon" for="__search">
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M9.5 3A6.5 6.5 0 0 1 16 9.5c0 1.61-.59 3.09-1.56 4.23l.27.27h.79l5 5-1.5 1.5-5-5v-.79l-.27-.27A6.52 6.52 0 0 1 9.5 16 6.5 6.5 0 0 1 3 9.5 6.5 6.5 0 0 1 9.5 3m0 2C7 5 5 7 5 9.5S7 14 9.5 14 14 12 14 9.5 12 5 9.5 5"/></svg>
+        
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M20 11v2H8l5.5 5.5-1.42 1.42L4.16 12l7.92-7.92L13.5 5.5 8 11z"/></svg>
+      </label>
+      <nav class="md-search__options" aria-label="Search">
+        
+        <button type="reset" class="md-search__icon md-icon" title="Clear" aria-label="Clear" tabindex="-1">
+          
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M19 6.41 17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z"/></svg>
+        </button>
+      </nav>
+      
+        <div class="md-search__suggest" data-md-component="search-suggest"></div>
+      
+    </form>
+    <div class="md-search__output">
+      <div class="md-search__scrollwrap" tabindex="0" data-md-scrollfix>
+        <div class="md-search-result" data-md-component="search-result">
+          <div class="md-search-result__meta">
+            Initializing search
+          </div>
+          <ol class="md-search-result__list" role="presentation"></ol>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+    
+    
+      <div class="md-header__source">
+        <a href="https://github.com/talmolab/sleap-io.js" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8M97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+      </div>
+    
+  </nav>
+  
+</header>
+    
+    <div class="md-container" data-md-component="container">
+      
+      
+        
+          
+        
+      
+      <main class="md-main" data-md-component="main">
+        <div class="md-main__inner md-grid">
+          
+            
+              
+              <div class="md-sidebar md-sidebar--primary" data-md-component="sidebar" data-md-type="navigation" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+
+
+<nav class="md-nav md-nav--primary" aria-label="Navigation" data-md-level="0">
+  <label class="md-nav__title" for="__drawer">
+    <a href=".." title="sleap-io.js documentation" class="md-nav__button md-logo" aria-label="sleap-io.js documentation" data-md-component="logo">
+      
+  <img src="../assets/sleap-logo.png" alt="logo">
+
+    </a>
+    sleap-io.js documentation
+  </label>
+  
+    <div class="md-nav__source">
+      <a href="https://github.com/talmolab/sleap-io.js" title="Go to repository" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    
+    <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 496 512"><!--! Font Awesome Free 6.6.0 by @fontawesome - https://fontawesome.com License - https://fontawesome.com/license/free (Icons: CC BY 4.0, Fonts: SIL OFL 1.1, Code: MIT License) Copyright 2024 Fonticons, Inc.--><path d="M165.9 397.4c0 2-2.3 3.6-5.2 3.6-3.3.3-5.6-1.3-5.6-3.6 0-2 2.3-3.6 5.2-3.6 3-.3 5.6 1.3 5.6 3.6m-31.1-4.5c-.7 2 1.3 4.3 4.3 4.9 2.6 1 5.6 0 6.2-2s-1.3-4.3-4.3-5.2c-2.6-.7-5.5.3-6.2 2.3m44.2-1.7c-2.9.7-4.9 2.6-4.6 4.9.3 2 2.9 3.3 5.9 2.6 2.9-.7 4.9-2.6 4.6-4.6-.3-1.9-3-3.2-5.9-2.9M244.8 8C106.1 8 0 113.3 0 252c0 110.9 69.8 205.8 169.5 239.2 12.8 2.3 17.3-5.6 17.3-12.1 0-6.2-.3-40.4-.3-61.4 0 0-70 15-84.7-29.8 0 0-11.4-29.1-27.8-36.6 0 0-22.9-15.7 1.6-15.4 0 0 24.9 2 38.6 25.8 21.9 38.6 58.6 27.5 72.9 20.9 2.3-16 8.8-27.1 16-33.7-55.9-6.2-112.3-14.3-112.3-110.5 0-27.5 7.6-41.3 23.6-58.9-2.6-6.5-11.1-33.3 2.6-67.9 20.9-6.5 69 27 69 27 20-5.6 41.5-8.5 62.8-8.5s42.8 2.9 62.8 8.5c0 0 48.1-33.6 69-27 13.7 34.7 5.2 61.4 2.6 67.9 16 17.7 25.8 31.5 25.8 58.9 0 96.5-58.9 104.2-114.8 110.5 9.2 7.9 17 22.9 17 46.4 0 33.7-.3 75.4-.3 83.6 0 6.5 4.6 14.4 17.3 12.1C428.2 457.8 496 362.9 496 252 496 113.3 383.5 8 244.8 8M97.2 352.9c-1.3 1-1 3.3.7 5.2 1.6 1.6 3.9 2.3 5.2 1 1.3-1 1-3.3-.7-5.2-1.6-1.6-3.9-2.3-5.2-1m-10.8-8.1c-.7 1.3.3 2.9 2.3 3.9 1.6 1 3.6.7 4.3-.7.7-1.3-.3-2.9-2.3-3.9-2-.6-3.6-.3-4.3.7m32.4 35.6c-1.6 1.3-1 4.3 1.3 6.2 2.3 2.3 5.2 2.6 6.5 1 1.3-1.3.7-4.3-1.3-6.2-2.2-2.3-5.2-2.6-6.5-1m-11.4-14.7c-1.6 1-1.6 3.6 0 5.9s4.3 3.3 5.6 2.3c1.6-1.3 1.6-3.9 0-6.2-1.4-2.3-4-3.3-5.6-2"/></svg>
+  </div>
+  <div class="md-source__repository">
+    GitHub
+  </div>
+</a>
+    </div>
+  
+  <ul class="md-nav__list" data-md-scrollfix>
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href=".." class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Overview
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../demo/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Demo
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../api/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    API
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../lite/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Lite Mode
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
+      
+      
+  
+  
+    
+  
+  
+  
+    <li class="md-nav__item md-nav__item--active">
+      
+      <input class="md-nav__toggle md-toggle" type="checkbox" id="__toc">
+      
+      
+        
+      
+      
+        <label class="md-nav__link md-nav__link--active" for="__toc">
+          
+  
+  <span class="md-ellipsis">
+    Rendering
+  </span>
+  
+
+          <span class="md-nav__icon md-icon"></span>
+        </label>
+      
+      <a href="./" class="md-nav__link md-nav__link--active">
+        
+  
+  <span class="md-ellipsis">
+    Rendering
+  </span>
+  
+
+      </a>
+      
+        
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      Quick Start
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#color-schemes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Color Schemes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#color-palettes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Color Palettes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#marker-shapes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Marker Shapes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#styling-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      Styling Options
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scaling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Scaling
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#background-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      Background Control
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#custom-rendering-with-callbacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Custom Rendering with Callbacks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#video-rendering" class="md-nav__link">
+    <span class="md-ellipsis">
+      Video Rendering
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#export-utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      Export Utilities
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#api-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      API Reference
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+      
+    </li>
+  
+
+    
+  </ul>
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+            
+              
+              <div class="md-sidebar md-sidebar--secondary" data-md-component="sidebar" data-md-type="toc" >
+                <div class="md-sidebar__scrollwrap">
+                  <div class="md-sidebar__inner">
+                    
+
+<nav class="md-nav md-nav--secondary" aria-label="Table of contents">
+  
+  
+  
+    
+  
+  
+    <label class="md-nav__title" for="__toc">
+      <span class="md-nav__icon md-icon"></span>
+      Table of contents
+    </label>
+    <ul class="md-nav__list" data-md-component="toc" data-md-scrollfix>
+      
+        <li class="md-nav__item">
+  <a href="#quick-start" class="md-nav__link">
+    <span class="md-ellipsis">
+      Quick Start
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#color-schemes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Color Schemes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#color-palettes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Color Palettes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#marker-shapes" class="md-nav__link">
+    <span class="md-ellipsis">
+      Marker Shapes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#styling-options" class="md-nav__link">
+    <span class="md-ellipsis">
+      Styling Options
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#scaling" class="md-nav__link">
+    <span class="md-ellipsis">
+      Scaling
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#background-control" class="md-nav__link">
+    <span class="md-ellipsis">
+      Background Control
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#custom-rendering-with-callbacks" class="md-nav__link">
+    <span class="md-ellipsis">
+      Custom Rendering with Callbacks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#video-rendering" class="md-nav__link">
+    <span class="md-ellipsis">
+      Video Rendering
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#export-utilities" class="md-nav__link">
+    <span class="md-ellipsis">
+      Export Utilities
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#api-reference" class="md-nav__link">
+    <span class="md-ellipsis">
+      API Reference
+    </span>
+  </a>
+  
+</li>
+      
+    </ul>
+  
+</nav>
+                  </div>
+                </div>
+              </div>
+            
+          
+          
+            <div class="md-content" data-md-component="content">
+              <article class="md-content__inner md-typeset">
+                
+                  
+
+  
+  
+
+
+<div class="md-source-file"><a href="../rendering.md" title="View markdown source" class="md-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6m4 18H6V4h7v5h5v11M13 9V3.5L18.5 9H13Z"/></svg></a></div>
+<h1 id="rendering">Rendering<a class="headerlink" href="#rendering" title="Permanent link">&para;</a></h1>
+<p>sleap-io.js provides pose visualization using <a href="https://github.com/nicholasmoles/skia-canvas">skia-canvas</a>, a high-performance 2D graphics library for Node.js.</p>
+<hr />
+<h2 id="quick-start">Quick Start<a class="headerlink" href="#quick-start" title="Permanent link">&para;</a></h2>
+<p>Render a single frame to an image:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">,</span><span class="w"> </span><span class="nx">saveImage</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;predictions.slp&quot;</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="p">,</span>
+<span class="p">});</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveImage</span><span class="p">(</span><span class="nx">imageData</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.png&quot;</span><span class="p">);</span>
+</code></pre></div>
+<p>Render a full video (requires ffmpeg):</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">renderVideo</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;predictions.slp&quot;</span><span class="p">);</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">renderVideo</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.mp4&quot;</span><span class="p">);</span>
+</code></pre></div>
+<hr />
+<h2 id="color-schemes">Color Schemes<a class="headerlink" href="#color-schemes" title="Permanent link">&para;</a></h2>
+<p>Color scheme determines how poses are colored across instances and frames.</p>
+<h3 id="color-by-track">Color by track<a class="headerlink" href="#color-by-track" title="Permanent link">&para;</a></h3>
+<p>Each tracked animal gets a consistent color across all frames:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">colorBy</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;track&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h3 id="color-by-instance">Color by instance<a class="headerlink" href="#color-by-instance" title="Permanent link">&para;</a></h3>
+<p>Each animal within a frame gets a unique color (colors may change between frames):</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">colorBy</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;instance&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h3 id="color-by-node">Color by node<a class="headerlink" href="#color-by-node" title="Permanent link">&para;</a></h3>
+<p>Each body part gets a unique color (same across all animals):</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">colorBy</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;node&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h3 id="auto-detection">Auto detection<a class="headerlink" href="#auto-detection" title="Permanent link">&para;</a></h3>
+<p>By default (<code>colorBy: "auto"</code>), the color scheme is chosen based on context:
+- If tracks are present → <code>"track"</code>
+- If single image with no tracks → <code>"instance"</code>
+- Otherwise → <code>"node"</code> (prevents flicker in videos)</p>
+<hr />
+<h2 id="color-palettes">Color Palettes<a class="headerlink" href="#color-palettes" title="Permanent link">&para;</a></h2>
+<h3 id="built-in-palettes">Built-in palettes<a class="headerlink" href="#built-in-palettes" title="Permanent link">&para;</a></h3>
+<p>9 palettes are included:</p>
+<table>
+<thead>
+<tr>
+<th>Palette</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>standard</code></td>
+<td>MATLAB default colors (default)</td>
+</tr>
+<tr>
+<td><code>distinct</code></td>
+<td>High-contrast colors for many instances</td>
+</tr>
+<tr>
+<td><code>tableau10</code></td>
+<td>Data visualization standard</td>
+</tr>
+<tr>
+<td><code>viridis</code></td>
+<td>Perceptually uniform scientific</td>
+</tr>
+<tr>
+<td><code>rainbow</code></td>
+<td>Spectrum colors for node types</td>
+</tr>
+<tr>
+<td><code>warm</code></td>
+<td>Orange/red tones</td>
+</tr>
+<tr>
+<td><code>cool</code></td>
+<td>Blue/purple tones</td>
+</tr>
+<tr>
+<td><code>pastel</code></td>
+<td>Subtle colors for overlays</td>
+</tr>
+<tr>
+<td><code>seaborn</code></td>
+<td>Professional look for publications</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">colorBy</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;node&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">palette</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;tableau10&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="p">,</span>
+<span class="p">});</span>
+</code></pre></div>
+<h3 id="getting-palette-colors-programmatically">Getting palette colors programmatically<a class="headerlink" href="#getting-palette-colors-programmatically" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">getPalette</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">colors</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">getPalette</span><span class="p">(</span><span class="s2">&quot;tableau10&quot;</span><span class="p">,</span><span class="w"> </span><span class="mf">10</span><span class="p">);</span>
+<span class="c1">// Returns: [[31, 119, 180], [255, 127, 14], ...]</span>
+</code></pre></div>
+<hr />
+<h2 id="marker-shapes">Marker Shapes<a class="headerlink" href="#marker-shapes" title="Permanent link">&para;</a></h2>
+<p>Five marker shapes are available for node visualization:</p>
+<table>
+<thead>
+<tr>
+<th>Shape</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>circle</code></td>
+<td>Filled circle (default)</td>
+</tr>
+<tr>
+<td><code>square</code></td>
+<td>Filled square</td>
+</tr>
+<tr>
+<td><code>diamond</code></td>
+<td>Rotated square</td>
+</tr>
+<tr>
+<td><code>triangle</code></td>
+<td>Upward-pointing triangle</td>
+</tr>
+<tr>
+<td><code>cross</code></td>
+<td>Plus sign</td>
+</tr>
+</tbody>
+</table>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">markerShape</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;diamond&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">markerSize</span><span class="o">:</span><span class="w"> </span><span class="kt">6</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="p">,</span>
+<span class="p">});</span>
+</code></pre></div>
+<hr />
+<h2 id="styling-options">Styling Options<a class="headerlink" href="#styling-options" title="Permanent link">&para;</a></h2>
+<h3 id="marker-and-line-sizes">Marker and line sizes<a class="headerlink" href="#marker-and-line-sizes" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1">// Small markers and thin lines</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">small</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">markerSize</span><span class="o">:</span><span class="w"> </span><span class="kt">3</span><span class="p">,</span><span class="w"> </span><span class="nx">lineWidth</span><span class="o">:</span><span class="w"> </span><span class="kt">1.5</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Medium (default)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">medium</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">markerSize</span><span class="o">:</span><span class="w"> </span><span class="kt">4</span><span class="p">,</span><span class="w"> </span><span class="nx">lineWidth</span><span class="o">:</span><span class="w"> </span><span class="kt">2</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Large markers and thick lines</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">large</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">markerSize</span><span class="o">:</span><span class="w"> </span><span class="kt">10</span><span class="p">,</span><span class="w"> </span><span class="nx">lineWidth</span><span class="o">:</span><span class="w"> </span><span class="kt">5</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h3 id="transparency">Transparency<a class="headerlink" href="#transparency" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1">// Full opacity (default)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">opaque</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">alpha</span><span class="o">:</span><span class="w"> </span><span class="kt">1.0</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Semi-transparent overlay</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">semi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">alpha</span><span class="o">:</span><span class="w"> </span><span class="kt">0.5</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Subtle overlay</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">subtle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">alpha</span><span class="o">:</span><span class="w"> </span><span class="kt">0.25</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h3 id="toggle-elements">Toggle elements<a class="headerlink" href="#toggle-elements" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1">// Both nodes and edges (default)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">both</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">showNodes</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span><span class="w"> </span><span class="nx">showEdges</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Edges only</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">edgesOnly</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">showNodes</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="p">,</span><span class="w"> </span><span class="nx">showEdges</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Nodes only</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">nodesOnly</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">showNodes</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span><span class="w"> </span><span class="nx">showEdges</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<hr />
+<h2 id="scaling">Scaling<a class="headerlink" href="#scaling" title="Permanent link">&para;</a></h2>
+<p>The <code>scale</code> parameter resizes the output. Graphics (markers, lines) scale proportionally:</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Full resolution (default)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">full</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">scale</span><span class="o">:</span><span class="w"> </span><span class="kt">1.0</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Half resolution - faster, smaller files</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">half</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">scale</span><span class="o">:</span><span class="w"> </span><span class="kt">0.5</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Double resolution</span>
+<span class="kd">const</span><span class="w"> </span><span class="kr">double</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">scale</span><span class="o">:</span><span class="w"> </span><span class="kt">2.0</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<hr />
+<h2 id="background-control">Background Control<a class="headerlink" href="#background-control" title="Permanent link">&para;</a></h2>
+<h3 id="transparent-background-default">Transparent background (default)<a class="headerlink" href="#transparent-background-default" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">background</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;transparent&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="p">,</span>
+<span class="p">});</span>
+</code></pre></div>
+<h3 id="solid-color-background">Solid color background<a class="headerlink" href="#solid-color-background" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1">// Named color</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">black</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">background</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;black&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// RGB tuple</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">gray</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">background</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">40</span><span class="p">,</span><span class="w"> </span><span class="mf">40</span><span class="p">,</span><span class="w"> </span><span class="mf">40</span><span class="p">],</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Hex color</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">hex</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">background</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;#1a1a2e&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Grayscale</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">grayscale</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">background</span><span class="o">:</span><span class="w"> </span><span class="kt">128</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h3 id="color-specification-formats">Color specification formats<a class="headerlink" href="#color-specification-formats" title="Permanent link">&para;</a></h3>
+<p>The <code>background</code> parameter accepts many formats:</p>
+<table>
+<thead>
+<tr>
+<th>Format</th>
+<th>Example</th>
+<th>Description</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Named color</td>
+<td><code>"black"</code>, <code>"white"</code>, <code>"gray"</code></td>
+<td>Predefined color names</td>
+</tr>
+<tr>
+<td>Hex (6-digit)</td>
+<td><code>"#ff8000"</code></td>
+<td>Standard hex color</td>
+</tr>
+<tr>
+<td>Hex (3-digit)</td>
+<td><code>"#f80"</code></td>
+<td>Shorthand hex</td>
+</tr>
+<tr>
+<td>RGB tuple</td>
+<td><code>[255, 128, 0]</code></td>
+<td>Values 0-255</td>
+</tr>
+<tr>
+<td>Grayscale</td>
+<td><code>128</code></td>
+<td>Single value 0-255</td>
+</tr>
+<tr>
+<td>Palette index</td>
+<td><code>"tableau10[0]"</code></td>
+<td>Color from palette</td>
+</tr>
+</tbody>
+</table>
+<p>Available named colors: <code>black</code>, <code>white</code>, <code>red</code>, <code>green</code>, <code>blue</code>, <code>yellow</code>, <code>cyan</code>, <code>magenta</code>, <code>gray</code>/<code>grey</code>, <code>orange</code>, <code>purple</code>, <code>pink</code>, <code>brown</code>.</p>
+<hr />
+<h2 id="custom-rendering-with-callbacks">Custom Rendering with Callbacks<a class="headerlink" href="#custom-rendering-with-callbacks" title="Permanent link">&para;</a></h2>
+<p>Callbacks let you add custom graphics with direct access to the canvas context.</p>
+<table>
+<thead>
+<tr>
+<th>Callback</th>
+<th>Context Type</th>
+<th>When Called</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>preRenderCallback</code></td>
+<td><code>RenderContext</code></td>
+<td>Before poses are drawn</td>
+</tr>
+<tr>
+<td><code>postRenderCallback</code></td>
+<td><code>RenderContext</code></td>
+<td>After all poses are drawn</td>
+</tr>
+<tr>
+<td><code>perInstanceCallback</code></td>
+<td><code>InstanceContext</code></td>
+<td>After each instance is drawn</td>
+</tr>
+</tbody>
+</table>
+<h3 id="instance-labels">Instance labels<a class="headerlink" href="#instance-labels" title="Permanent link">&para;</a></h3>
+<p>Draw track names above each instance:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">,</span><span class="w"> </span><span class="nx">InstanceContext</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">function</span><span class="w"> </span><span class="nx">drawLabels</span><span class="p">(</span><span class="nx">ctx</span><span class="o">:</span><span class="w"> </span><span class="kt">InstanceContext</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">centroid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">getCentroid</span><span class="p">();</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">centroid</span><span class="p">)</span><span class="w"> </span><span class="k">return</span><span class="p">;</span>
+
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">cx</span><span class="p">,</span><span class="w"> </span><span class="nx">cy</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">worldToCanvas</span><span class="p">(</span><span class="nx">centroid</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">centroid</span><span class="p">[</span><span class="mf">1</span><span class="p">]);</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">label</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">trackName</span><span class="w"> </span><span class="o">??</span><span class="w"> </span><span class="sb">`Instance </span><span class="si">${</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">instanceIdx</span><span class="si">}</span><span class="sb">`</span><span class="p">;</span>
+
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">font</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;14px Arial&quot;</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">fillStyle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;rgba(0, 0, 0, 0.6)&quot;</span><span class="p">;</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">metrics</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">measureText</span><span class="p">(</span><span class="nx">label</span><span class="p">);</span>
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">fillRect</span><span class="p">(</span><span class="nx">cx</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mf">2</span><span class="p">,</span><span class="w"> </span><span class="nx">cy</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mf">18</span><span class="p">,</span><span class="w"> </span><span class="nx">metrics</span><span class="p">.</span><span class="nx">width</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mf">4</span><span class="p">,</span><span class="w"> </span><span class="mf">16</span><span class="p">);</span>
+
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">fillStyle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;white&quot;</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">fillText</span><span class="p">(</span><span class="nx">label</span><span class="p">,</span><span class="w"> </span><span class="nx">cx</span><span class="p">,</span><span class="w"> </span><span class="nx">cy</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="mf">6</span><span class="p">);</span>
+<span class="p">}</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">perInstanceCallback</span><span class="o">:</span><span class="w"> </span><span class="kt">drawLabels</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="p">,</span>
+<span class="p">});</span>
+</code></pre></div>
+<h3 id="bounding-boxes">Bounding boxes<a class="headerlink" href="#bounding-boxes" title="Permanent link">&para;</a></h3>
+<p>Draw bounding boxes around instances:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">,</span><span class="w"> </span><span class="nx">InstanceContext</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">function</span><span class="w"> </span><span class="nx">drawBbox</span><span class="p">(</span><span class="nx">ctx</span><span class="o">:</span><span class="w"> </span><span class="kt">InstanceContext</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">getBbox</span><span class="p">();</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">bbox</span><span class="p">)</span><span class="w"> </span><span class="k">return</span><span class="p">;</span>
+
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">x1</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">worldToCanvas</span><span class="p">(</span><span class="nx">bbox</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">bbox</span><span class="p">[</span><span class="mf">1</span><span class="p">]);</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">x2</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">worldToCanvas</span><span class="p">(</span><span class="nx">bbox</span><span class="p">[</span><span class="mf">2</span><span class="p">],</span><span class="w"> </span><span class="nx">bbox</span><span class="p">[</span><span class="mf">3</span><span class="p">]);</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">pad</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">8</span><span class="p">;</span>
+
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">strokeStyle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;white&quot;</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">lineWidth</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">2</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">setLineDash</span><span class="p">([</span><span class="mf">6</span><span class="p">,</span><span class="w"> </span><span class="mf">3</span><span class="p">]);</span>
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">strokeRect</span><span class="p">(</span><span class="nx">x1</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nx">pad</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nx">pad</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nx">x1</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mf">2</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="nx">pad</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="w"> </span><span class="o">-</span><span class="w"> </span><span class="nx">y1</span><span class="w"> </span><span class="o">+</span><span class="w"> </span><span class="mf">2</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="nx">pad</span><span class="p">);</span>
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">setLineDash</span><span class="p">([]);</span>
+<span class="p">}</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">perInstanceCallback</span><span class="o">:</span><span class="w"> </span><span class="kt">drawBbox</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="p">,</span>
+<span class="p">});</span>
+</code></pre></div>
+<h3 id="frame-info-overlay">Frame info overlay<a class="headerlink" href="#frame-info-overlay" title="Permanent link">&para;</a></h3>
+<p>Add frame number and instance count:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">,</span><span class="w"> </span><span class="nx">RenderContext</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">function</span><span class="w"> </span><span class="nx">drawFrameInfo</span><span class="p">(</span><span class="nx">ctx</span><span class="o">:</span><span class="w"> </span><span class="kt">RenderContext</span><span class="p">)</span><span class="o">:</span><span class="w"> </span><span class="ow">void</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">text</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="sb">`Frame: </span><span class="si">${</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">frameIdx</span><span class="si">}</span><span class="sb">  Instances: </span><span class="si">${</span><span class="nx">ctx</span><span class="p">.</span><span class="nx">instances</span><span class="p">.</span><span class="nx">length</span><span class="si">}</span><span class="sb">`</span><span class="p">;</span>
+
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">fillStyle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;rgba(0, 0, 0, 0.7)&quot;</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">fillRect</span><span class="p">(</span><span class="mf">4</span><span class="p">,</span><span class="w"> </span><span class="mf">4</span><span class="p">,</span><span class="w"> </span><span class="mf">200</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">);</span>
+
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">font</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;14px Arial&quot;</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">fillStyle</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;white&quot;</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">canvas</span><span class="p">.</span><span class="nx">fillText</span><span class="p">(</span><span class="nx">text</span><span class="p">,</span><span class="w"> </span><span class="mf">8</span><span class="p">,</span><span class="w"> </span><span class="mf">18</span><span class="p">);</span>
+<span class="p">}</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">postRenderCallback</span><span class="o">:</span><span class="w"> </span><span class="kt">drawFrameInfo</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="p">,</span>
+<span class="p">});</span>
+</code></pre></div>
+<hr />
+<h2 id="video-rendering">Video Rendering<a class="headerlink" href="#video-rendering" title="Permanent link">&para;</a></h2>
+<p>Video rendering requires <a href="https://ffmpeg.org/download.html">ffmpeg</a> to be installed and in your PATH.</p>
+<h3 id="basic-video-rendering">Basic video rendering<a class="headerlink" href="#basic-video-rendering" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">renderVideo</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;predictions.slp&quot;</span><span class="p">);</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">renderVideo</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.mp4&quot;</span><span class="p">);</span>
+</code></pre></div>
+<h3 id="render-a-clip">Render a clip<a class="headerlink" href="#render-a-clip" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">await</span><span class="w"> </span><span class="nx">renderVideo</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;clip.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">start</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">end</span><span class="o">:</span><span class="w"> </span><span class="kt">200</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h3 id="specific-frames">Specific frames<a class="headerlink" href="#specific-frames" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">await</span><span class="w"> </span><span class="nx">renderVideo</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;selected.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">frameInds</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">50</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">150</span><span class="p">,</span><span class="w"> </span><span class="mf">200</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h3 id="encoding-options">Encoding options<a class="headerlink" href="#encoding-options" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">await</span><span class="w"> </span><span class="nx">renderVideo</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">fps</span><span class="o">:</span><span class="w"> </span><span class="kt">30</span><span class="p">,</span><span class="w">           </span><span class="c1">// Output frame rate</span>
+<span class="w">  </span><span class="nx">crf</span><span class="o">:</span><span class="w"> </span><span class="kt">18</span><span class="p">,</span><span class="w">           </span><span class="c1">// Quality (lower = better, default: 25)</span>
+<span class="w">  </span><span class="nx">preset</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;slow&quot;</span><span class="p">,</span><span class="w">    </span><span class="c1">// Encoding speed (default: &quot;superfast&quot;)</span>
+<span class="w">  </span><span class="nx">codec</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;libx264&quot;</span><span class="p">,</span><span class="w">  </span><span class="c1">// Video codec (default: &quot;libx264&quot;)</span>
+<span class="p">});</span>
+</code></pre></div>
+<h3 id="progress-tracking">Progress tracking<a class="headerlink" href="#progress-tracking" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">await</span><span class="w"> </span><span class="nx">renderVideo</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">onProgress</span><span class="o">:</span><span class="w"> </span><span class="p">(</span><span class="nx">current</span><span class="p">,</span><span class="w"> </span><span class="nx">total</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="sb">`Rendering frame </span><span class="si">${</span><span class="nx">current</span><span class="si">}</span><span class="sb">/</span><span class="si">${</span><span class="nx">total</span><span class="si">}</span><span class="sb">`</span><span class="p">);</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="p">});</span>
+</code></pre></div>
+<hr />
+<h2 id="export-utilities">Export Utilities<a class="headerlink" href="#export-utilities" title="Permanent link">&para;</a></h2>
+<h3 id="save-to-file">Save to file<a class="headerlink" href="#save-to-file" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">,</span><span class="w"> </span><span class="nx">saveImage</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveImage</span><span class="p">(</span><span class="nx">imageData</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.png&quot;</span><span class="p">);</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveImage</span><span class="p">(</span><span class="nx">imageData</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.jpg&quot;</span><span class="p">);</span>
+</code></pre></div>
+<h3 id="convert-to-buffer">Convert to buffer<a class="headerlink" href="#convert-to-buffer" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">,</span><span class="w"> </span><span class="nx">toPNG</span><span class="p">,</span><span class="w"> </span><span class="nx">toJPEG</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">pngBuffer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">toPNG</span><span class="p">(</span><span class="nx">imageData</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">jpegBuffer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">toJPEG</span><span class="p">(</span><span class="nx">imageData</span><span class="p">,</span><span class="w"> </span><span class="mf">0.9</span><span class="p">);</span><span class="w"> </span><span class="c1">// quality 0-1</span>
+</code></pre></div>
+<h3 id="convert-to-data-url">Convert to data URL<a class="headerlink" href="#convert-to-data-url" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">,</span><span class="w"> </span><span class="nx">toDataURL</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">imageData</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">lf</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">dataUrl</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">toDataURL</span><span class="p">(</span><span class="nx">imageData</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;png&quot;</span><span class="p">);</span>
+<span class="c1">// &quot;data:image/png;base64,...&quot;</span>
+</code></pre></div>
+<hr />
+<h2 id="api-reference">API Reference<a class="headerlink" href="#api-reference" title="Permanent link">&para;</a></h2>
+<h3 id="renderimagesource-options"><code>renderImage(source, options)</code><a class="headerlink" href="#renderimagesource-options" title="Permanent link">&para;</a></h3>
+<p>Render poses from a <code>Labels</code>, <code>LabeledFrame</code>, or array of <code>Instance</code>/<code>PredictedInstance</code>.</p>
+<p><strong>Parameters:</strong>
+- <code>source</code>: <code>Labels | LabeledFrame | Instance[]</code>
+- <code>options.width</code>: Frame width (required if no image provided)
+- <code>options.height</code>: Frame height (required if no image provided)
+- <code>options.colorBy</code>: <code>"track" | "instance" | "node" | "auto"</code> (default: <code>"auto"</code>)
+- <code>options.palette</code>: Palette name (default: <code>"standard"</code>)
+- <code>options.markerShape</code>: <code>"circle" | "square" | "diamond" | "triangle" | "cross"</code> (default: <code>"circle"</code>)
+- <code>options.markerSize</code>: Marker radius in pixels (default: <code>4</code>)
+- <code>options.lineWidth</code>: Edge line width (default: <code>2</code>)
+- <code>options.alpha</code>: Opacity 0-1 (default: <code>1</code>)
+- <code>options.showNodes</code>: Draw nodes (default: <code>true</code>)
+- <code>options.showEdges</code>: Draw edges (default: <code>true</code>)
+- <code>options.scale</code>: Output scale factor (default: <code>1</code>)
+- <code>options.background</code>: <code>"transparent"</code> or color spec
+- <code>options.image</code>: Background <code>ImageData</code>
+- <code>options.preRenderCallback</code>: <code>(ctx: RenderContext) =&gt; void</code>
+- <code>options.postRenderCallback</code>: <code>(ctx: RenderContext) =&gt; void</code>
+- <code>options.perInstanceCallback</code>: <code>(ctx: InstanceContext) =&gt; void</code></p>
+<p><strong>Returns:</strong> <code>Promise&lt;ImageData&gt;</code></p>
+<h3 id="rendervideosource-outputpath-options"><code>renderVideo(source, outputPath, options)</code><a class="headerlink" href="#rendervideosource-outputpath-options" title="Permanent link">&para;</a></h3>
+<p>Render video with pose overlays. Requires ffmpeg.</p>
+<p><strong>Parameters:</strong>
+- <code>source</code>: <code>Labels | LabeledFrame[]</code>
+- <code>outputPath</code>: Output video file path
+- <code>options</code>: All <code>renderImage</code> options plus:
+  - <code>options.frameInds</code>: Specific frame indices to render
+  - <code>options.start</code>: Start frame index
+  - <code>options.end</code>: End frame index (exclusive)
+  - <code>options.fps</code>: Output frame rate (default: <code>30</code>)
+  - <code>options.codec</code>: Video codec (default: <code>"libx264"</code>)
+  - <code>options.crf</code>: Quality factor (default: <code>25</code>)
+  - <code>options.preset</code>: Encoding preset (default: <code>"superfast"</code>)
+  - <code>options.onProgress</code>: <code>(current: number, total: number) =&gt; void</code></p>
+<p><strong>Returns:</strong> <code>Promise&lt;void&gt;</code></p>
+<h3 id="rendercontext"><code>RenderContext</code><a class="headerlink" href="#rendercontext" title="Permanent link">&para;</a></h3>
+<p>Context passed to <code>preRenderCallback</code> and <code>postRenderCallback</code>.</p>
+<p><strong>Properties:</strong>
+- <code>canvas</code>: <code>CanvasRenderingContext2D</code>
+- <code>frameIdx</code>: Frame index
+- <code>frameSize</code>: <code>[width, height]</code>
+- <code>instances</code>: Array of instances
+- <code>skeletonEdges</code>: <code>[srcIdx, dstIdx][]</code>
+- <code>nodeNames</code>: <code>string[]</code>
+- <code>scale</code>: Current scale factor
+- <code>offset</code>: <code>[x, y]</code> offset</p>
+<p><strong>Methods:</strong>
+- <code>worldToCanvas(x, y)</code>: Transform world coordinates to canvas coordinates</p>
+<h3 id="instancecontext"><code>InstanceContext</code><a class="headerlink" href="#instancecontext" title="Permanent link">&para;</a></h3>
+<p>Context passed to <code>perInstanceCallback</code>.</p>
+<p><strong>Properties:</strong>
+- <code>canvas</code>: <code>CanvasRenderingContext2D</code>
+- <code>instanceIdx</code>: Instance index within frame
+- <code>points</code>: <code>[[x, y], ...]</code> coordinates
+- <code>skeletonEdges</code>: <code>[srcIdx, dstIdx][]</code>
+- <code>nodeNames</code>: <code>string[]</code>
+- <code>trackIdx</code>: Track index or <code>null</code>
+- <code>trackName</code>: Track name or <code>null</code>
+- <code>confidence</code>: Instance score or <code>null</code>
+- <code>scale</code>: Current scale factor
+- <code>offset</code>: <code>[x, y]</code> offset</p>
+<p><strong>Methods:</strong>
+- <code>worldToCanvas(x, y)</code>: Transform world coordinates to canvas coordinates
+- <code>getCentroid()</code>: Get centroid of valid points, or <code>null</code>
+- <code>getBbox()</code>: Get <code>[x1, y1, x2, y2]</code> bounding box, or <code>null</code></p>
+
+
+
+
+
+
+
+
+
+
+
+
+                
+              </article>
+            </div>
+          
+          
+<script>var target=document.getElementById(location.hash.slice(1));target&&target.name&&(target.checked=target.name.startsWith("__tabbed_"))</script>
+        </div>
+        
+          <button type="button" class="md-top md-icon" data-md-component="top" hidden>
+  
+  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M13 20h-2V8l-5.5 5.5-1.42-1.42L12 4.16l7.92 7.92-1.42 1.42L13 8z"/></svg>
+  Back to top
+</button>
+        
+      </main>
+      
+        <footer class="md-footer">
+  
+  <div class="md-footer-meta md-typeset">
+    <div class="md-footer-meta__inner md-grid">
+      <div class="md-copyright">
+  
+  
+    Made with
+    <a href="https://squidfunk.github.io/mkdocs-material/" target="_blank" rel="noopener">
+      Material for MkDocs
+    </a>
+  
+</div>
+      
+    </div>
+  </div>
+</footer>
+      
+    </div>
+    <div class="md-dialog" data-md-component="dialog">
+      <div class="md-dialog__inner md-typeset"></div>
+    </div>
+    
+    
+    <script id="__config" type="application/json">{"base": "..", "features": ["navigation.tracking", "navigation.sections", "navigation.top", "toc.follow", "search.suggest", "search.highlight", "content.code.copy"], "search": "../assets/javascripts/workers/search.6ce7567c.min.js", "translations": {"clipboard.copied": "Copied to clipboard", "clipboard.copy": "Copy to clipboard", "search.result.more.one": "1 more on this page", "search.result.more.other": "# more on this page", "search.result.none": "No matching documents", "search.result.one": "1 matching document", "search.result.other": "# matching documents", "search.result.placeholder": "Type to start searching", "search.result.term.missing": "Missing", "select.version": "Select version"}}</script>
+    
+    
+      <script src="../assets/javascripts/bundle.83f73b43.min.js"></script>
+      
+    
+  </body>
+</html>
