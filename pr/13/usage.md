@@ -231,11 +231,13 @@ See [lite.md](./lite.md) for full documentation.
 ### `loadVideo(source)`
 
 Supports:
+
 - File paths (Node.js)
 - URLs (browser, with CORS)
 - `ArrayBuffer` (both)
 
 Returns a video backend with:
+
 - `getFrame(index)` - Get frame as `ImageBitmap`, `ImageData`, or raw bytes
 - `getFrameTimes()` - Get array of frame timestamps
 - `fps` - Frames per second

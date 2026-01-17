@@ -809,15 +809,19 @@
 </tbody>
 </table>
 <h3 id="loadvideosource"><code>loadVideo(source)</code><a class="headerlink" href="#loadvideosource" title="Permanent link">&para;</a></h3>
-<p>Supports:
-- File paths (Node.js)
-- URLs (browser, with CORS)
-- <code>ArrayBuffer</code> (both)</p>
-<p>Returns a video backend with:
-- <code>getFrame(index)</code> - Get frame as <code>ImageBitmap</code>, <code>ImageData</code>, or raw bytes
-- <code>getFrameTimes()</code> - Get array of frame timestamps
-- <code>fps</code> - Frames per second
-- <code>shape</code> - <code>[frames, height, width, channels]</code></p>
+<p>Supports:</p>
+<ul>
+<li>File paths (Node.js)</li>
+<li>URLs (browser, with CORS)</li>
+<li><code>ArrayBuffer</code> (both)</li>
+</ul>
+<p>Returns a video backend with:</p>
+<ul>
+<li><code>getFrame(index)</code> - Get frame as <code>ImageBitmap</code>, <code>ImageData</code>, or raw bytes</li>
+<li><code>getFrameTimes()</code> - Get array of frame timestamps</li>
+<li><code>fps</code> - Frames per second</li>
+<li><code>shape</code> - <code>[frames, height, width, channels]</code></li>
+</ul>
 <h2 id="error-handling">Error Handling<a class="headerlink" href="#error-handling" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><span class="k">try</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="nx">source</span><span class="p">);</span>
