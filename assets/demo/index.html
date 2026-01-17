@@ -73,10 +73,13 @@
     <h1>SLEAP SLP Demo</h1>
     <div class="layout">
       <div class="panel">
-        <label for="slp-url">SLP URL</label>
+        <label for="slp-file">SLP File (for embedded images)</label>
+        <input id="slp-file" type="file" accept=".slp,.h5,.hdf5" style="width: 100%; padding: 8px 0; color: var(--ink);" />
+
+        <label for="slp-url" style="margin-top: 14px;">— or SLP URL —</label>
         <input id="slp-url" type="text" />
 
-        <label for="video-url" style="margin-top: 14px;">Video URL</label>
+        <label for="video-url" style="margin-top: 14px;">Video URL (optional, leave blank for embedded)</label>
         <input id="video-url" type="text" />
 
         <button id="load-btn">Load</button>
