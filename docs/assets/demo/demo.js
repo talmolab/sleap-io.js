@@ -2,11 +2,13 @@ import { loadSlp, loadVideo } from "../dist/index.js";
 
 const slpInput = document.querySelector("#slp-url");
 const videoInput = document.querySelector("#video-url");
+const fileInput = document.querySelector("#slp-file");
 const loadBtn = document.querySelector("#load-btn");
 const statusEl = document.querySelector("#status");
 const metaEl = document.querySelector("#meta");
 const videoEl = document.querySelector("#video");
 const canvas = document.querySelector("#overlay");
+const playerEl = document.querySelector(".player");
 const seek = document.querySelector("#seek");
 const playBtn = document.querySelector("#play-btn");
 const frameLabel = document.querySelector("#frame-label");
@@ -40,7 +42,7 @@ const formatPoint = (point) => {
   return `${x.toFixed(2)}, ${y.toFixed(2)}`;
 };
 
-const formatFrameCoords = (frame) => {
+const formatFrameCoords = (frame, skeleton) => {
   if (!coordsEl) return;
   if (!frame || !skeleton) {
     coordsEl.textContent = "—";
@@ -80,6 +82,11 @@ let playbackStartTime = 0;
 let playbackStartFrame = 0;
 let renderToken = 0;
 
+// Embedded video mode state
+let embeddedMode = false;
+let labeledFramesList = [];
+let currentLabeledFrameIndex = 0;
+
 const setStatus = (message) => {
   statusEl.textContent = message;
 };
@@ -89,15 +96,29 @@ const setMeta = (data) => {
     metaEl.textContent = "";
     return;
   }
-  metaEl.textContent = `Frames: ${data.frames} | Instances: ${data.instances} | Nodes: ${data.nodes}`;
+  let text = `Frames: ${data.frames} | Instances: ${data.instances} | Nodes: ${data.nodes}`;
+  if (data.videos > 1) {
+    text += ` | Videos: ${data.videos}`;
+  }
+  if (data.mode) {
+    text += ` | Mode: ${data.mode}`;
+  }
+  metaEl.textContent = text;
 };
 
-const configureCanvas = () => {
-  const shape = videoModel?.shape;
-  const width = (shape?.[2] ?? videoEl.videoWidth) || 1280;
-  const height = (shape?.[1] ?? videoEl.videoHeight) || 720;
-  canvas.width = width;
-  canvas.height = height;
+const configureCanvas = (width, height, setPlayerHeight = false) => {
+  const w = width || videoEl?.videoWidth || 1280;
+  const h = height || videoEl?.videoHeight || 720;
+  canvas.width = w;
+  canvas.height = h;
+  if (setPlayerHeight) {
+    // In embedded mode, set explicit player height since video is hidden
+    const player = playerEl || document.querySelector(".player");
+    if (player) {
+      const aspectRatio = h / w;
+      player.style.paddingBottom = `${aspectRatio * 100}%`;
+    }
+  }
 };
 
 const buildFrameIndex = () => {
@@ -111,31 +132,18 @@ const buildFrameIndex = () => {
   const frameIndices = Array.from(framesByIndex.keys()).filter((value) => Number.isFinite(value));
   maxFrame = frameIndices.length ? Math.max(...frameIndices) : 0;
   frameCount = frameIndices.length;
-  seek.max = String(maxFrame);
-  setMeta({ frames: frameCount, instances: instanceCount, nodes: skeleton?.nodes.length ?? 0 });
 
   trackColors.clear();
   labels.tracks.forEach((track, index) => {
     const key = getTrackKey(track) ?? track;
     trackColors.set(key, colors[index % colors.length]);
   });
+
+  return instanceCount;
 };
 
-const renderFrame = async (frameIdx) => {
-  if (!ctx || !skeleton) return;
-  const frame = framesByIndex.get(frameIdx);
-  if (!frame) return;
-  const token = ++renderToken;
-  const videoFrame = await videoModel?.getFrame(frameIdx);
-  if (token !== renderToken) return;
-
-  ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-  if (videoFrame instanceof ImageBitmap) {
-    ctx.drawImage(videoFrame, 0, 0, canvas.width, canvas.height);
-  } else if (videoFrame instanceof ImageData) {
-    ctx.putImageData(videoFrame, 0, 0);
-  }
+const drawSkeleton = (frame, skel) => {
+  if (!ctx || !skel || !frame) return;
 
   frame.instances.forEach((instance, idx) => {
     const color = getInstanceColor(instance, idx);
@@ -143,9 +151,9 @@ const renderFrame = async (frameIdx) => {
     ctx.strokeStyle = color;
     ctx.fillStyle = color;
 
-    for (const edge of skeleton.edges) {
-      const sourceIdx = skeleton.index(edge.source.name);
-      const destIdx = skeleton.index(edge.destination.name);
+    for (const edge of skel.edges) {
+      const sourceIdx = skel.index(edge.source.name);
+      const destIdx = skel.index(edge.destination.name);
       const source = instance.points[sourceIdx];
       const dest = instance.points[destIdx];
       if (!source || !dest) continue;
@@ -164,8 +172,80 @@ const renderFrame = async (frameIdx) => {
       ctx.fill();
     });
   });
+};
 
-  formatFrameCoords(frame);
+// Render frame for external video mode
+const renderExternalFrame = async (frameIdx) => {
+  if (!ctx || !skeleton) return;
+  const frame = framesByIndex.get(frameIdx);
+  if (!frame) return;
+  const token = ++renderToken;
+  const videoFrame = await videoModel?.getFrame(frameIdx);
+  if (token !== renderToken) return;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (videoFrame instanceof ImageBitmap) {
+    ctx.drawImage(videoFrame, 0, 0, canvas.width, canvas.height);
+  } else if (videoFrame instanceof ImageData) {
+    ctx.putImageData(videoFrame, 0, 0);
+  }
+
+  drawSkeleton(frame, skeleton);
+  formatFrameCoords(frame, skeleton);
+};
+
+// Render frame for embedded video mode (multi-video)
+const renderEmbeddedFrame = async (labeledFrameIndex) => {
+  if (!ctx || !skeleton || labeledFrameIndex < 0 || labeledFrameIndex >= labeledFramesList.length) return;
+
+  const frame = labeledFramesList[labeledFrameIndex];
+  const video = frame.video;
+  const token = ++renderToken;
+
+  // Try to get embedded frame image
+  let imageData = null;
+  if (video.backend) {
+    try {
+      imageData = await video.backend.getFrame(frame.frameIdx);
+    } catch (err) {
+      console.warn("Error getting embedded frame:", err);
+    }
+  }
+
+  if (token !== renderToken) return;
+
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+  if (imageData) {
+    if (imageData instanceof ImageBitmap) {
+      configureCanvas(imageData.width, imageData.height, true);
+      ctx.drawImage(imageData, 0, 0);
+    } else if (imageData instanceof ImageData) {
+      configureCanvas(imageData.width, imageData.height, true);
+      ctx.putImageData(imageData, 0, 0);
+    } else if (imageData instanceof Uint8Array) {
+      // Raw bytes - try to decode as image
+      const blob = new Blob([imageData], { type: "image/png" });
+      const bitmap = await createImageBitmap(blob);
+      configureCanvas(bitmap.width, bitmap.height, true);
+      ctx.drawImage(bitmap, 0, 0);
+    }
+  } else {
+    // No image - draw placeholder
+    configureCanvas(canvas.width || 640, canvas.height || 480, true);
+    ctx.fillStyle = "#222";
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    ctx.fillStyle = "#888";
+    ctx.font = "16px sans-serif";
+    ctx.textAlign = "center";
+    const videoIdx = labels.videos.indexOf(video);
+    ctx.fillText(`Video ${videoIdx}, Frame ${frame.frameIdx}`, canvas.width / 2, canvas.height / 2);
+    ctx.fillText(`(No embedded image data)`, canvas.width / 2, canvas.height / 2 + 24);
+  }
+
+  drawSkeleton(frame, skeleton);
+  formatFrameCoords(frame, skeleton);
 };
 
 const updateFpsFromVideo = () => {
@@ -205,7 +285,17 @@ const updateFrameFromVideo = (time = 0) => {
   currentFrame = frameIdx;
   seek.value = String(frameIdx);
   frameLabel.textContent = `Frame ${frameIdx}`;
-  renderFrame(frameIdx);
+  renderExternalFrame(frameIdx);
+};
+
+const updateEmbeddedFrame = (labeledFrameIndex) => {
+  if (labeledFrameIndex < 0 || labeledFrameIndex >= labeledFramesList.length) return;
+  currentLabeledFrameIndex = labeledFrameIndex;
+  seek.value = String(labeledFrameIndex);
+  const frame = labeledFramesList[labeledFrameIndex];
+  const videoIdx = labels.videos.indexOf(frame.video);
+  frameLabel.textContent = `Frame ${labeledFrameIndex + 1}/${labeledFramesList.length} (v${videoIdx}:${frame.frameIdx})`;
+  renderEmbeddedFrame(labeledFrameIndex);
 };
 
 const playLoop = (timestamp) => {
@@ -238,11 +328,23 @@ const stopPlayback = () => {
   playHandle = null;
 };
 
+// Check if videos have embedded images
+const hasEmbeddedImages = () => {
+  if (!labels?.videos?.length) return false;
+  return labels.videos.some((v) => v.backend?.dataset || v.backendMetadata?.dataset);
+};
+
 const handleLoad = async () => {
+  const file = fileInput?.files?.[0];
   const slpUrl = slpInput.value.trim();
   const videoUrl = videoInput.value.trim();
-  if (!slpUrl || !videoUrl) {
-    setStatus("Enter both SLP and video URLs.");
+
+  // Determine source
+  const slpSource = file ? await file.arrayBuffer() : slpUrl;
+  const slpFilename = file ? file.name : slpUrl;
+
+  if (!slpSource) {
+    setStatus("Enter an SLP URL or select a file.");
     return;
   }
 
@@ -250,55 +352,146 @@ const handleLoad = async () => {
   setStatus("Loading SLP...");
 
   try {
-    labels = await loadSlp(slpUrl, {
-      openVideos: false,
-      h5: { stream: "range", filenameHint: "demo-flies13-preds.slp" },
+    // Decide whether to open embedded videos based on whether external video URL is provided
+    const useEmbedded = !videoUrl;
+
+    labels = await loadSlp(slpSource, {
+      openVideos: useEmbedded,
+      h5: { stream: file ? undefined : "range", filenameHint: slpFilename },
     });
     skeleton = labels.skeletons[0];
-    buildFrameIndex();
+    const instanceCount = buildFrameIndex();
+    labeledFramesList = labels.labeledFrames;
 
-    setStatus("Loading video metadata...");
-    videoModel = await loadVideo(videoUrl);
-    frameTimes = await videoModel.getFrameTimes();
-    fps = videoModel.fps ?? labels.video?.fps ?? 30;
+    // Determine mode: external video or embedded images
+    embeddedMode = useEmbedded && (hasEmbeddedImages() || labels.videos.length > 1);
 
-    setStatus("Loading video...");
-    videoEl.src = videoUrl;
-    await videoEl.play().catch(() => {});
-    videoEl.pause();
-    await new Promise((resolve) => {
-      if (videoEl.readyState >= 1) return resolve();
-      videoEl.addEventListener("loadedmetadata", resolve, { once: true });
-    });
+    if (embeddedMode) {
+      // Embedded multi-video mode
+      setMeta({
+        frames: labeledFramesList.length,
+        instances: instanceCount,
+        nodes: skeleton?.nodes.length ?? 0,
+        videos: labels.videos.length,
+        mode: "embedded",
+      });
 
-    configureCanvas();
-    updateFpsFromVideo();
-    currentFrame = 0;
-    renderToken = 0;
-    updateFrameFromVideo(0);
-    setStatus("Ready.");
+      seek.max = String(labeledFramesList.length - 1);
+      videoEl.style.display = "none";
+      playBtn.style.display = "none";
+      configureCanvas(1024, 1024, true);
+      currentLabeledFrameIndex = 0;
+      updateEmbeddedFrame(0);
+      setStatus("Ready. Navigate through labeled frames.");
+    } else {
+      // External video mode
+      if (!videoUrl) {
+        setStatus("Enter a video URL for external video mode.");
+        loadBtn.disabled = false;
+        return;
+      }
+
+      setMeta({
+        frames: frameCount,
+        instances: instanceCount,
+        nodes: skeleton?.nodes.length ?? 0,
+        videos: 1,
+        mode: "external",
+      });
+
+      setStatus("Loading video metadata...");
+      videoModel = await loadVideo(videoUrl);
+      frameTimes = await videoModel.getFrameTimes();
+      fps = videoModel.fps ?? labels.video?.fps ?? 30;
+
+      setStatus("Loading video...");
+      videoEl.style.display = "block";
+      playBtn.style.display = "inline-block";
+      videoEl.src = videoUrl;
+      await videoEl.play().catch(() => {});
+      videoEl.pause();
+      await new Promise((resolve) => {
+        if (videoEl.readyState >= 1) return resolve();
+        videoEl.addEventListener("loadedmetadata", resolve, { once: true });
+      });
+
+      const shape = videoModel?.shape;
+      configureCanvas(shape?.[2], shape?.[1]);
+      updateFpsFromVideo();
+      seek.max = String(maxFrame);
+      currentFrame = 0;
+      renderToken = 0;
+      updateFrameFromVideo(0);
+      setStatus("Ready.");
+    }
   } catch (error) {
     const message = error instanceof Error ? error.message : "Unknown error";
     setStatus(`Load failed: ${message}`);
+    console.error(error);
   } finally {
     loadBtn.disabled = false;
   }
 };
 
 seek.addEventListener("input", () => {
-  const frameIdx = Number(seek.value);
-  currentFrame = frameIdx;
-  frameLabel.textContent = `Frame ${frameIdx}`;
-  renderFrame(frameIdx);
+  if (embeddedMode) {
+    updateEmbeddedFrame(Number(seek.value));
+  } else {
+    const frameIdx = Number(seek.value);
+    currentFrame = frameIdx;
+    frameLabel.textContent = `Frame ${frameIdx}`;
+    renderExternalFrame(frameIdx);
+  }
 });
 
-playBtn.addEventListener("click", () => {
+playBtn?.addEventListener("click", () => {
+  if (embeddedMode) return; // No playback in embedded mode
   if (isPlaying) {
     stopPlayback();
     playBtn.textContent = "Play";
   } else {
     startPlayback();
     playBtn.textContent = "Pause";
+  }
+});
+
+// Keyboard navigation (works in both modes)
+document.addEventListener("keydown", (e) => {
+  if (!labels) return;
+  if (e.key === "ArrowLeft" || e.key === "a") {
+    if (embeddedMode) {
+      if (currentLabeledFrameIndex > 0) {
+        updateEmbeddedFrame(currentLabeledFrameIndex - 1);
+      }
+    } else {
+      if (currentFrame > 0) {
+        currentFrame--;
+        seek.value = String(currentFrame);
+        frameLabel.textContent = `Frame ${currentFrame}`;
+        renderExternalFrame(currentFrame);
+      }
+    }
+  } else if (e.key === "ArrowRight" || e.key === "d") {
+    if (embeddedMode) {
+      if (currentLabeledFrameIndex < labeledFramesList.length - 1) {
+        updateEmbeddedFrame(currentLabeledFrameIndex + 1);
+      }
+    } else {
+      if (currentFrame < maxFrame) {
+        currentFrame++;
+        seek.value = String(currentFrame);
+        frameLabel.textContent = `Frame ${currentFrame}`;
+        renderExternalFrame(currentFrame);
+      }
+    }
+  }
+});
+
+// Clear video URL when file is selected
+fileInput?.addEventListener("change", () => {
+  if (fileInput.files?.length) {
+    videoInput.value = "";
+    slpInput.value = fileInput.files[0].name;
   }
 });
 

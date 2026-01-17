@@ -58,6 +58,7 @@ markdown_extensions:
 nav:
   - Overview: index.md
   - Demo: demo.md
+  - Usage: usage.md
   - API: api.md
   - Lite Mode: lite.md
   - Rendering: rendering.md
