@@ -436,4 +436,240 @@ declare function labelsFromNumpy(data: number[][][][], options: {
 declare function decodeYamlSkeleton(yamlData: string): Skeleton | Skeleton[];
 declare function encodeYamlSkeleton(skeletons: Skeleton | Skeleton[]): string;
 
-export { Camera, CameraGroup, Edge, FrameGroup, Instance, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, Mp4BoxVideoBackend, Node, type NodeOrIndex, type Point, type PointsArray, PredictedInstance, type PredictedPoint, type PredictedPointsArray, RecordingSession, Skeleton, SuggestionFrame, Symmetry, Track, Video, type VideoBackend, type VideoFrame, decodeYamlSkeleton, encodeYamlSkeleton, fromDict, fromNumpy, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, pointsEmpty, pointsFromArray, pointsFromDict, predictedPointsEmpty, predictedPointsFromArray, predictedPointsFromDict, rodriguesTransformation, saveSlp, toDict, toNumpy };
+/**
+ * Context passed to pre/post render callbacks.
+ */
+declare class RenderContext {
+    /** The 2D canvas rendering context */
+    readonly canvas: CanvasRenderingContext2D;
+    /** Current frame index (0 for single images) */
+    readonly frameIdx: number;
+    /** Original frame size [width, height] */
+    readonly frameSize: [number, number];
+    /** Instances in this frame */
+    readonly instances: (Instance | PredictedInstance)[];
+    /** Skeleton edge connectivity as [srcIdx, dstIdx] pairs */
+    readonly skeletonEdges: [number, number][];
+    /** Node names from skeleton */
+    readonly nodeNames: string[];
+    /** Current scale factor */
+    readonly scale: number;
+    /** Offset for cropped views [x, y] */
+    readonly offset: [number, number];
+    constructor(
+    /** The 2D canvas rendering context */
+    canvas: CanvasRenderingContext2D, 
+    /** Current frame index (0 for single images) */
+    frameIdx: number, 
+    /** Original frame size [width, height] */
+    frameSize: [number, number], 
+    /** Instances in this frame */
+    instances: (Instance | PredictedInstance)[], 
+    /** Skeleton edge connectivity as [srcIdx, dstIdx] pairs */
+    skeletonEdges: [number, number][], 
+    /** Node names from skeleton */
+    nodeNames: string[], 
+    /** Current scale factor */
+    scale?: number, 
+    /** Offset for cropped views [x, y] */
+    offset?: [number, number]);
+    /**
+     * Transform world coordinates to canvas coordinates.
+     */
+    worldToCanvas(x: number, y: number): [number, number];
+}
+/**
+ * Context passed to per-instance callbacks.
+ */
+declare class InstanceContext {
+    /** The 2D canvas rendering context */
+    readonly canvas: CanvasRenderingContext2D;
+    /** Index of this instance within the frame */
+    readonly instanceIdx: number;
+    /** Keypoint coordinates as [[x0, y0], [x1, y1], ...] */
+    readonly points: number[][];
+    /** Skeleton edge connectivity */
+    readonly skeletonEdges: [number, number][];
+    /** Node names */
+    readonly nodeNames: string[];
+    /** Track ID (index in tracks array) */
+    readonly trackIdx: number | null;
+    /** Track name if available */
+    readonly trackName: string | null;
+    /** Instance confidence score */
+    readonly confidence: number | null;
+    /** Current scale factor */
+    readonly scale: number;
+    /** Offset for cropped views */
+    readonly offset: [number, number];
+    constructor(
+    /** The 2D canvas rendering context */
+    canvas: CanvasRenderingContext2D, 
+    /** Index of this instance within the frame */
+    instanceIdx: number, 
+    /** Keypoint coordinates as [[x0, y0], [x1, y1], ...] */
+    points: number[][], 
+    /** Skeleton edge connectivity */
+    skeletonEdges: [number, number][], 
+    /** Node names */
+    nodeNames: string[], 
+    /** Track ID (index in tracks array) */
+    trackIdx?: number | null, 
+    /** Track name if available */
+    trackName?: string | null, 
+    /** Instance confidence score */
+    confidence?: number | null, 
+    /** Current scale factor */
+    scale?: number, 
+    /** Offset for cropped views */
+    offset?: [number, number]);
+    /**
+     * Transform world coordinates to canvas coordinates.
+     */
+    worldToCanvas(x: number, y: number): [number, number];
+    /**
+     * Get centroid of valid (non-NaN) points.
+     */
+    getCentroid(): [number, number] | null;
+    /**
+     * Get bounding box of valid points.
+     * Returns [x1, y1, x2, y2] or null if no valid points.
+     */
+    getBbox(): [number, number, number, number] | null;
+}
+
+/** RGB color as [r, g, b] with values 0-255 */
+type RGB = [number, number, number];
+/** RGBA color as [r, g, b, a] with values 0-255 */
+type RGBA = [number, number, number, number];
+/** Flexible color specification */
+type ColorSpec = RGB | RGBA | string | number;
+/** Available color schemes */
+type ColorScheme = "track" | "instance" | "node" | "auto";
+/** Built-in palette names */
+type PaletteName = "standard" | "distinct" | "tableau10" | "viridis" | "rainbow" | "warm" | "cool" | "pastel" | "seaborn";
+/** Marker shape types */
+type MarkerShape = "circle" | "square" | "diamond" | "triangle" | "cross";
+/** Render options for renderImage() */
+interface RenderOptions {
+    colorBy?: ColorScheme;
+    palette?: PaletteName | string;
+    markerShape?: MarkerShape;
+    markerSize?: number;
+    lineWidth?: number;
+    alpha?: number;
+    showNodes?: boolean;
+    showEdges?: boolean;
+    scale?: number;
+    background?: "transparent" | ColorSpec;
+    image?: ImageData | null;
+    width?: number;
+    height?: number;
+    preRenderCallback?: (ctx: RenderContext) => void;
+    postRenderCallback?: (ctx: RenderContext) => void;
+    perInstanceCallback?: (ctx: InstanceContext) => void;
+}
+/** Video rendering options (extends RenderOptions) */
+interface VideoOptions extends RenderOptions {
+    frameInds?: number[];
+    start?: number;
+    end?: number;
+    fps?: number;
+    codec?: string;
+    crf?: number;
+    preset?: string;
+    onProgress?: (current: number, total: number) => void;
+}
+
+/** Named CSS colors */
+declare const NAMED_COLORS: Record<string, RGB>;
+/** Built-in color palettes (port from Python sleap_io/rendering/colors.py) */
+declare const PALETTES: Record<PaletteName, RGB[]>;
+/**
+ * Get n colors from a named palette, cycling if needed.
+ */
+declare function getPalette(name: PaletteName | string, n: number): RGB[];
+/**
+ * Resolve flexible color specification to RGB tuple.
+ */
+declare function resolveColor(color: ColorSpec): RGB;
+/**
+ * Convert RGB to CSS color string.
+ */
+declare function rgbToCSS(rgb: RGB, alpha?: number): string;
+/**
+ * Determine color scheme based on context.
+ * - If tracks available: 'track'
+ * - Else if single image: 'instance'
+ * - Else: 'node' (prevents flicker in video)
+ */
+declare function determineColorScheme(scheme: ColorScheme, hasTracks: boolean, isSingleImage: boolean): ColorScheme;
+
+type DrawMarkerFn = (ctx: CanvasRenderingContext2D, x: number, y: number, size: number, fillColor: string, edgeColor?: string, edgeWidth?: number) => void;
+/**
+ * Draw a circle marker.
+ */
+declare function drawCircle(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, fillColor: string, edgeColor?: string, edgeWidth?: number): void;
+/**
+ * Draw a square marker.
+ */
+declare function drawSquare(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, fillColor: string, edgeColor?: string, edgeWidth?: number): void;
+/**
+ * Draw a diamond marker (rotated square).
+ */
+declare function drawDiamond(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, fillColor: string, edgeColor?: string, edgeWidth?: number): void;
+/**
+ * Draw a triangle marker (pointing up).
+ */
+declare function drawTriangle(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, fillColor: string, edgeColor?: string, edgeWidth?: number): void;
+/**
+ * Draw a cross/plus marker.
+ */
+declare function drawCross(ctx: CanvasRenderingContext2D, x: number, y: number, size: number, fillColor: string, _edgeColor?: string, edgeWidth?: number): void;
+/** Map of marker shape names to drawing functions */
+declare const MARKER_FUNCTIONS: Record<MarkerShape, DrawMarkerFn>;
+/**
+ * Get the drawing function for a marker shape.
+ */
+declare function getMarkerFunction(shape: MarkerShape): DrawMarkerFn;
+
+/**
+ * Render poses on a single frame.
+ *
+ * @param source - Labels, LabeledFrame, or array of Instances to render
+ * @param options - Rendering options
+ * @returns ImageData with rendered poses
+ */
+declare function renderImage(source: Labels | LabeledFrame | (Instance | PredictedInstance)[], options?: RenderOptions): Promise<ImageData>;
+/**
+ * Convert ImageData to PNG buffer (Node.js only).
+ */
+declare function toPNG(imageData: ImageData): Promise<Buffer>;
+/**
+ * Convert ImageData to JPEG buffer (Node.js only).
+ */
+declare function toJPEG(imageData: ImageData, quality?: number): Promise<Buffer>;
+/**
+ * Convert ImageData to data URL.
+ */
+declare function toDataURL(imageData: ImageData, format?: "png" | "jpeg"): string;
+/**
+ * Save ImageData to a file.
+ */
+declare function saveImage(imageData: ImageData, path: string): Promise<void>;
+
+/**
+ * Check if ffmpeg is available in PATH.
+ */
+declare function checkFfmpeg(): Promise<boolean>;
+/**
+ * Render video with pose overlays.
+ * Requires ffmpeg to be installed and in PATH.
+ *
+ * @param source - Labels or array of LabeledFrames to render
+ * @param outputPath - Path to save the output video
+ * @param options - Video rendering options
+ */
+declare function renderVideo(source: Labels | LabeledFrame[], outputPath: string, options?: VideoOptions): Promise<void>;
+
+export { Camera, CameraGroup, type ColorScheme, type ColorSpec, Edge, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, Node, type NodeOrIndex, PALETTES, type PaletteName, type Point, type PointsArray, PredictedInstance, type PredictedPoint, type PredictedPointsArray, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, SuggestionFrame, Symmetry, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, pointsEmpty, pointsFromArray, pointsFromDict, predictedPointsEmpty, predictedPointsFromArray, predictedPointsFromDict, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, toDataURL, toDict, toJPEG, toNumpy, toPNG };

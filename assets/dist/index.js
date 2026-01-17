@@ -2653,29 +2653,804 @@ function encodeYamlSkeleton(skeletons) {
   });
   return YAML.stringify(payload);
 }
+
+// src/rendering/colors.ts
+var NAMED_COLORS = {
+  black: [0, 0, 0],
+  white: [255, 255, 255],
+  red: [255, 0, 0],
+  green: [0, 255, 0],
+  blue: [0, 0, 255],
+  yellow: [255, 255, 0],
+  cyan: [0, 255, 255],
+  magenta: [255, 0, 255],
+  gray: [128, 128, 128],
+  grey: [128, 128, 128],
+  orange: [255, 165, 0],
+  purple: [128, 0, 128],
+  pink: [255, 192, 203],
+  brown: [139, 69, 19]
+};
+var PALETTES = {
+  // MATLAB default colors
+  standard: [
+    [0, 114, 189],
+    [217, 83, 25],
+    [237, 177, 32],
+    [126, 47, 142],
+    [119, 172, 48],
+    [77, 190, 238],
+    [162, 20, 47]
+  ],
+  // Tableau 10
+  tableau10: [
+    [31, 119, 180],
+    [255, 127, 14],
+    [44, 160, 44],
+    [214, 39, 40],
+    [148, 103, 189],
+    [140, 86, 75],
+    [227, 119, 194],
+    [127, 127, 127],
+    [188, 189, 34],
+    [23, 190, 207]
+  ],
+  // High-contrast distinct colors (Glasbey-inspired, for many instances)
+  distinct: [
+    [230, 25, 75],
+    [60, 180, 75],
+    [255, 225, 25],
+    [67, 99, 216],
+    [245, 130, 49],
+    [145, 30, 180],
+    [66, 212, 244],
+    [240, 50, 230],
+    [191, 239, 69],
+    [250, 190, 212],
+    [70, 153, 144],
+    [220, 190, 255],
+    [154, 99, 36],
+    [255, 250, 200],
+    [128, 0, 0],
+    [170, 255, 195],
+    [128, 128, 0],
+    [255, 216, 177],
+    [0, 0, 117],
+    [169, 169, 169]
+  ],
+  // Viridis (10 samples)
+  viridis: [
+    [68, 1, 84],
+    [72, 40, 120],
+    [62, 74, 137],
+    [49, 104, 142],
+    [38, 130, 142],
+    [31, 158, 137],
+    [53, 183, 121],
+    [110, 206, 88],
+    [181, 222, 43],
+    [253, 231, 37]
+  ],
+  // Rainbow for node coloring
+  rainbow: [
+    [255, 0, 0],
+    [255, 127, 0],
+    [255, 255, 0],
+    [127, 255, 0],
+    [0, 255, 0],
+    [0, 255, 127],
+    [0, 255, 255],
+    [0, 127, 255],
+    [0, 0, 255],
+    [127, 0, 255],
+    [255, 0, 255],
+    [255, 0, 127]
+  ],
+  // Warm colors
+  warm: [
+    [255, 89, 94],
+    [255, 146, 76],
+    [255, 202, 58],
+    [255, 154, 0],
+    [255, 97, 56],
+    [255, 50, 50]
+  ],
+  // Cool colors
+  cool: [
+    [67, 170, 139],
+    [77, 144, 142],
+    [87, 117, 144],
+    [97, 90, 147],
+    [107, 63, 149],
+    [117, 36, 152]
+  ],
+  // Pastel colors
+  pastel: [
+    [255, 179, 186],
+    [255, 223, 186],
+    [255, 255, 186],
+    [186, 255, 201],
+    [186, 225, 255],
+    [219, 186, 255]
+  ],
+  // Seaborn-inspired
+  seaborn: [
+    [76, 114, 176],
+    [221, 132, 82],
+    [85, 168, 104],
+    [196, 78, 82],
+    [129, 114, 179],
+    [147, 120, 96],
+    [218, 139, 195],
+    [140, 140, 140],
+    [204, 185, 116],
+    [100, 181, 205]
+  ]
+};
+function getPalette(name, n) {
+  const palette = PALETTES[name];
+  if (!palette) {
+    throw new Error(`Unknown palette: ${name}`);
+  }
+  if (n <= palette.length) {
+    return palette.slice(0, n);
+  }
+  return Array.from({ length: n }, (_, i) => palette[i % palette.length]);
+}
+function resolveColor(color) {
+  if (Array.isArray(color)) {
+    if (color.length >= 3) {
+      return [color[0], color[1], color[2]];
+    }
+    throw new Error(`Invalid color array: ${color}`);
+  }
+  if (typeof color === "number") {
+    const v = Math.round(color);
+    return [v, v, v];
+  }
+  if (typeof color === "string") {
+    const s = color.trim().toLowerCase();
+    if (s in NAMED_COLORS) {
+      return NAMED_COLORS[s];
+    }
+    if (s.startsWith("#")) {
+      return hexToRgb(s);
+    }
+    const paletteMatch = s.match(/^(\w+)\[(\d+)\]$/);
+    if (paletteMatch) {
+      const [, paletteName, indexStr] = paletteMatch;
+      const palette = PALETTES[paletteName];
+      if (palette) {
+        const index = parseInt(indexStr, 10) % palette.length;
+        return palette[index];
+      }
+    }
+    const rgbMatch = s.match(/^rgb\s*\(\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\)$/);
+    if (rgbMatch) {
+      return [
+        parseInt(rgbMatch[1], 10),
+        parseInt(rgbMatch[2], 10),
+        parseInt(rgbMatch[3], 10)
+      ];
+    }
+  }
+  throw new Error(`Cannot resolve color: ${color}`);
+}
+function hexToRgb(hex) {
+  const h = hex.replace("#", "");
+  if (h.length === 3) {
+    return [
+      parseInt(h[0] + h[0], 16),
+      parseInt(h[1] + h[1], 16),
+      parseInt(h[2] + h[2], 16)
+    ];
+  }
+  if (h.length === 6) {
+    return [
+      parseInt(h.slice(0, 2), 16),
+      parseInt(h.slice(2, 4), 16),
+      parseInt(h.slice(4, 6), 16)
+    ];
+  }
+  throw new Error(`Invalid hex color: ${hex}`);
+}
+function rgbToCSS(rgb, alpha = 1) {
+  return `rgba(${rgb[0]}, ${rgb[1]}, ${rgb[2]}, ${alpha})`;
+}
+function determineColorScheme(scheme, hasTracks, isSingleImage) {
+  if (scheme !== "auto") {
+    return scheme;
+  }
+  if (hasTracks) {
+    return "track";
+  }
+  if (isSingleImage) {
+    return "instance";
+  }
+  return "node";
+}
+
+// src/rendering/shapes.ts
+function drawCircle(ctx, x, y, size, fillColor, edgeColor, edgeWidth = 1) {
+  ctx.beginPath();
+  ctx.arc(x, y, size, 0, Math.PI * 2);
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+  if (edgeColor) {
+    ctx.strokeStyle = edgeColor;
+    ctx.lineWidth = edgeWidth;
+    ctx.stroke();
+  }
+}
+function drawSquare(ctx, x, y, size, fillColor, edgeColor, edgeWidth = 1) {
+  const half = size;
+  ctx.fillStyle = fillColor;
+  ctx.fillRect(x - half, y - half, half * 2, half * 2);
+  if (edgeColor) {
+    ctx.strokeStyle = edgeColor;
+    ctx.lineWidth = edgeWidth;
+    ctx.strokeRect(x - half, y - half, half * 2, half * 2);
+  }
+}
+function drawDiamond(ctx, x, y, size, fillColor, edgeColor, edgeWidth = 1) {
+  ctx.beginPath();
+  ctx.moveTo(x, y - size);
+  ctx.lineTo(x + size, y);
+  ctx.lineTo(x, y + size);
+  ctx.lineTo(x - size, y);
+  ctx.closePath();
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+  if (edgeColor) {
+    ctx.strokeStyle = edgeColor;
+    ctx.lineWidth = edgeWidth;
+    ctx.stroke();
+  }
+}
+function drawTriangle(ctx, x, y, size, fillColor, edgeColor, edgeWidth = 1) {
+  const h = size * 0.866;
+  ctx.beginPath();
+  ctx.moveTo(x, y - size);
+  ctx.lineTo(x + size, y + h);
+  ctx.lineTo(x - size, y + h);
+  ctx.closePath();
+  ctx.fillStyle = fillColor;
+  ctx.fill();
+  if (edgeColor) {
+    ctx.strokeStyle = edgeColor;
+    ctx.lineWidth = edgeWidth;
+    ctx.stroke();
+  }
+}
+function drawCross(ctx, x, y, size, fillColor, _edgeColor, edgeWidth = 2) {
+  ctx.strokeStyle = fillColor;
+  ctx.lineWidth = edgeWidth;
+  ctx.lineCap = "round";
+  ctx.beginPath();
+  ctx.moveTo(x - size, y);
+  ctx.lineTo(x + size, y);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(x, y - size);
+  ctx.lineTo(x, y + size);
+  ctx.stroke();
+}
+var MARKER_FUNCTIONS = {
+  circle: drawCircle,
+  square: drawSquare,
+  diamond: drawDiamond,
+  triangle: drawTriangle,
+  cross: drawCross
+};
+function getMarkerFunction(shape) {
+  return MARKER_FUNCTIONS[shape];
+}
+
+// src/rendering/context.ts
+var RenderContext = class {
+  constructor(canvas, frameIdx, frameSize, instances, skeletonEdges, nodeNames, scale = 1, offset = [0, 0]) {
+    this.canvas = canvas;
+    this.frameIdx = frameIdx;
+    this.frameSize = frameSize;
+    this.instances = instances;
+    this.skeletonEdges = skeletonEdges;
+    this.nodeNames = nodeNames;
+    this.scale = scale;
+    this.offset = offset;
+  }
+  /**
+   * Transform world coordinates to canvas coordinates.
+   */
+  worldToCanvas(x, y) {
+    return [
+      (x - this.offset[0]) * this.scale,
+      (y - this.offset[1]) * this.scale
+    ];
+  }
+};
+var InstanceContext = class {
+  constructor(canvas, instanceIdx, points, skeletonEdges, nodeNames, trackIdx = null, trackName = null, confidence = null, scale = 1, offset = [0, 0]) {
+    this.canvas = canvas;
+    this.instanceIdx = instanceIdx;
+    this.points = points;
+    this.skeletonEdges = skeletonEdges;
+    this.nodeNames = nodeNames;
+    this.trackIdx = trackIdx;
+    this.trackName = trackName;
+    this.confidence = confidence;
+    this.scale = scale;
+    this.offset = offset;
+  }
+  /**
+   * Transform world coordinates to canvas coordinates.
+   */
+  worldToCanvas(x, y) {
+    return [
+      (x - this.offset[0]) * this.scale,
+      (y - this.offset[1]) * this.scale
+    ];
+  }
+  /**
+   * Get centroid of valid (non-NaN) points.
+   */
+  getCentroid() {
+    let sumX = 0, sumY = 0, count = 0;
+    for (const pt of this.points) {
+      const x = pt[0];
+      const y = pt[1];
+      if (!isNaN(x) && !isNaN(y)) {
+        sumX += x;
+        sumY += y;
+        count++;
+      }
+    }
+    if (count === 0) return null;
+    return [sumX / count, sumY / count];
+  }
+  /**
+   * Get bounding box of valid points.
+   * Returns [x1, y1, x2, y2] or null if no valid points.
+   */
+  getBbox() {
+    let minX = Infinity, minY = Infinity;
+    let maxX = -Infinity, maxY = -Infinity;
+    let hasValid = false;
+    for (const pt of this.points) {
+      const x = pt[0];
+      const y = pt[1];
+      if (!isNaN(x) && !isNaN(y)) {
+        minX = Math.min(minX, x);
+        minY = Math.min(minY, y);
+        maxX = Math.max(maxX, x);
+        maxY = Math.max(maxY, y);
+        hasValid = true;
+      }
+    }
+    if (!hasValid) return null;
+    return [minX, minY, maxX, maxY];
+  }
+};
+
+// src/rendering/render.ts
+import { Canvas } from "skia-canvas";
+var DEFAULT_OPTIONS = {
+  colorBy: "auto",
+  palette: "standard",
+  markerShape: "circle",
+  markerSize: 4,
+  lineWidth: 2,
+  alpha: 1,
+  showNodes: true,
+  showEdges: true,
+  scale: 1,
+  background: "transparent"
+};
+var DEFAULT_COLOR = PALETTES.standard[0];
+async function renderImage(source, options = {}) {
+  const opts = { ...DEFAULT_OPTIONS, ...options };
+  const { instances, skeleton, frameSize, frameIdx, tracks } = extractSourceData(source, opts);
+  if (instances.length === 0 && !opts.image) {
+    throw new Error(
+      "No instances to render and no background image provided"
+    );
+  }
+  const width = opts.image?.width ?? opts.width ?? frameSize[0];
+  const height = opts.image?.height ?? opts.height ?? frameSize[1];
+  if (!width || !height) {
+    throw new Error(
+      "Cannot determine frame size. Provide image, width/height options, or ensure source has frame data."
+    );
+  }
+  const scaledWidth = Math.round(width * opts.scale);
+  const scaledHeight = Math.round(height * opts.scale);
+  const canvas = new Canvas(scaledWidth, scaledHeight);
+  const ctx = canvas.getContext("2d");
+  if (opts.image) {
+    ctx.putImageData(opts.image, 0, 0);
+    if (opts.scale !== 1) {
+      const tempCanvas = new Canvas(opts.image.width, opts.image.height);
+      const tempCtx = tempCanvas.getContext("2d");
+      tempCtx.putImageData(opts.image, 0, 0);
+      ctx.clearRect(0, 0, scaledWidth, scaledHeight);
+      ctx.drawImage(tempCanvas, 0, 0, scaledWidth, scaledHeight);
+    }
+  } else if (opts.background !== "transparent") {
+    const bgColor = resolveColor(opts.background);
+    ctx.fillStyle = rgbToCSS(bgColor);
+    ctx.fillRect(0, 0, scaledWidth, scaledHeight);
+  }
+  const edgeInds = skeleton?.edgeIndices ?? [];
+  const nodeNames = skeleton?.nodeNames ?? [];
+  const hasTracks = instances.some((inst) => inst.track != null);
+  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
+  const colors = buildColorMap(
+    colorScheme,
+    instances,
+    nodeNames.length,
+    opts.palette,
+    tracks
+  );
+  const renderCtx = new RenderContext(
+    ctx,
+    frameIdx,
+    [width, height],
+    instances,
+    edgeInds,
+    nodeNames,
+    opts.scale,
+    [0, 0]
+  );
+  if (opts.preRenderCallback) {
+    opts.preRenderCallback(renderCtx);
+  }
+  const drawMarker = getMarkerFunction(opts.markerShape);
+  const scaledMarkerSize = opts.markerSize * opts.scale;
+  const scaledLineWidth = opts.lineWidth * opts.scale;
+  for (let instIdx = 0; instIdx < instances.length; instIdx++) {
+    const instance = instances[instIdx];
+    const points = getInstancePoints(instance);
+    const instanceColor = colors.instanceColors?.[instIdx] ?? colors.instanceColors?.[0] ?? DEFAULT_COLOR;
+    if (opts.showEdges) {
+      for (const [srcIdx, dstIdx] of edgeInds) {
+        const srcPt = points[srcIdx];
+        const dstPt = points[dstIdx];
+        if (!srcPt || !dstPt) continue;
+        const [x1, y1] = srcPt;
+        const [x2, y2] = dstPt;
+        if (isNaN(x1) || isNaN(y1) || isNaN(x2) || isNaN(y2)) {
+          continue;
+        }
+        const edgeColor = colorScheme === "node" ? colors.nodeColors?.[dstIdx] ?? instanceColor : instanceColor;
+        ctx.strokeStyle = rgbToCSS(edgeColor, opts.alpha);
+        ctx.lineWidth = scaledLineWidth;
+        ctx.lineCap = "round";
+        ctx.beginPath();
+        ctx.moveTo(x1 * opts.scale, y1 * opts.scale);
+        ctx.lineTo(x2 * opts.scale, y2 * opts.scale);
+        ctx.stroke();
+      }
+    }
+    if (opts.showNodes) {
+      for (let nodeIdx = 0; nodeIdx < points.length; nodeIdx++) {
+        const pt = points[nodeIdx];
+        if (!pt) continue;
+        const [x, y] = pt;
+        if (isNaN(x) || isNaN(y)) {
+          continue;
+        }
+        const nodeColor = colorScheme === "node" ? colors.nodeColors?.[nodeIdx] ?? instanceColor : instanceColor;
+        drawMarker(
+          ctx,
+          x * opts.scale,
+          y * opts.scale,
+          scaledMarkerSize,
+          rgbToCSS(nodeColor, opts.alpha)
+        );
+      }
+    }
+    if (opts.perInstanceCallback) {
+      const trackIdx = instance.track ? tracks.indexOf(instance.track) : null;
+      const instCtx = new InstanceContext(
+        ctx,
+        instIdx,
+        points,
+        edgeInds,
+        nodeNames,
+        trackIdx !== -1 ? trackIdx : null,
+        instance.track?.name ?? null,
+        "score" in instance ? instance.score : null,
+        opts.scale,
+        [0, 0]
+      );
+      opts.perInstanceCallback(instCtx);
+    }
+  }
+  if (opts.postRenderCallback) {
+    opts.postRenderCallback(renderCtx);
+  }
+  return ctx.getImageData(0, 0, scaledWidth, scaledHeight);
+}
+function extractSourceData(source, options) {
+  if (Array.isArray(source)) {
+    const instances = source;
+    const skeleton2 = instances.length > 0 ? instances[0].skeleton : null;
+    const trackSet = /* @__PURE__ */ new Set();
+    for (const inst of instances) {
+      if (inst.track) trackSet.add(inst.track);
+    }
+    const tracks = Array.from(trackSet);
+    return {
+      instances,
+      skeleton: skeleton2,
+      frameSize: [options.width ?? 0, options.height ?? 0],
+      frameIdx: 0,
+      tracks
+    };
+  }
+  if ("instances" in source && "frameIdx" in source && !("labeledFrames" in source)) {
+    const frame = source;
+    const skeleton2 = frame.instances.length > 0 ? frame.instances[0].skeleton : null;
+    const trackSet = /* @__PURE__ */ new Set();
+    for (const inst of frame.instances) {
+      if (inst.track) trackSet.add(inst.track);
+    }
+    const tracks = Array.from(trackSet);
+    let frameSize2 = [options.width ?? 0, options.height ?? 0];
+    if (frame.video) {
+      const video = frame.video;
+      if ("width" in video && "height" in video) {
+        const w = video.width;
+        const h = video.height;
+        if (w && h) {
+          frameSize2 = [w, h];
+        }
+      }
+    }
+    return {
+      instances: frame.instances,
+      skeleton: skeleton2,
+      frameSize: frameSize2,
+      frameIdx: frame.frameIdx,
+      tracks
+    };
+  }
+  const labels = source;
+  if (labels.labeledFrames.length === 0) {
+    return {
+      instances: [],
+      skeleton: labels.skeletons?.[0] ?? null,
+      frameSize: [options.width ?? 0, options.height ?? 0],
+      frameIdx: 0,
+      tracks: labels.tracks ?? []
+    };
+  }
+  const firstFrame = labels.labeledFrames[0];
+  const skeleton = labels.skeletons?.[0] ?? (firstFrame.instances.length > 0 ? firstFrame.instances[0].skeleton : null);
+  let frameSize = [options.width ?? 0, options.height ?? 0];
+  if (firstFrame.video) {
+    const video = firstFrame.video;
+    if ("width" in video && "height" in video) {
+      const w = video.width;
+      const h = video.height;
+      if (w && h) {
+        frameSize = [w, h];
+      }
+    }
+  }
+  return {
+    instances: firstFrame.instances,
+    skeleton,
+    frameSize,
+    frameIdx: firstFrame.frameIdx,
+    tracks: labels.tracks ?? []
+  };
+}
+function getInstancePoints(instance) {
+  return instance.points.map((point) => [point.xy[0], point.xy[1]]);
+}
+function buildColorMap(scheme, instances, nNodes, paletteName, tracks) {
+  switch (scheme) {
+    case "instance":
+      return {
+        instanceColors: getPalette(
+          paletteName,
+          Math.max(1, instances.length)
+        )
+      };
+    case "track": {
+      const nTracks = Math.max(1, tracks.length);
+      const trackPalette = getPalette(paletteName, nTracks);
+      const instanceColors = instances.map((inst) => {
+        if (inst.track) {
+          const trackIdx = tracks.indexOf(inst.track);
+          if (trackIdx >= 0) {
+            return trackPalette[trackIdx % trackPalette.length];
+          }
+        }
+        return trackPalette[0];
+      });
+      return { instanceColors };
+    }
+    case "node":
+      return {
+        instanceColors: getPalette(paletteName, 1),
+        nodeColors: getPalette(paletteName, Math.max(1, nNodes))
+      };
+    default:
+      return {
+        instanceColors: getPalette(
+          paletteName,
+          Math.max(1, instances.length)
+        )
+      };
+  }
+}
+async function toPNG(imageData) {
+  const canvas = new Canvas(imageData.width, imageData.height);
+  const ctx = canvas.getContext("2d");
+  ctx.putImageData(imageData, 0, 0);
+  return canvas.toBuffer("png");
+}
+async function toJPEG(imageData, quality = 0.9) {
+  const canvas = new Canvas(imageData.width, imageData.height);
+  const ctx = canvas.getContext("2d");
+  ctx.putImageData(imageData, 0, 0);
+  return canvas.toBuffer("jpeg", { quality });
+}
+function toDataURL(imageData, format = "png") {
+  const canvas = new Canvas(imageData.width, imageData.height);
+  const ctx = canvas.getContext("2d");
+  ctx.putImageData(imageData, 0, 0);
+  return canvas.toDataURL(`image/${format}`);
+}
+async function saveImage(imageData, path) {
+  const canvas = new Canvas(imageData.width, imageData.height);
+  const ctx = canvas.getContext("2d");
+  ctx.putImageData(imageData, 0, 0);
+  await canvas.saveAs(path);
+}
+
+// src/rendering/video.ts
+import { spawn } from "child_process";
+async function checkFfmpeg() {
+  return new Promise((resolve) => {
+    const proc = spawn("ffmpeg", ["-version"]);
+    proc.on("error", () => resolve(false));
+    proc.on("close", (code) => resolve(code === 0));
+  });
+}
+async function renderVideo(source, outputPath, options = {}) {
+  const hasFfmpeg = await checkFfmpeg();
+  if (!hasFfmpeg) {
+    throw new Error(
+      "ffmpeg not found. Please install ffmpeg and ensure it is in your PATH.\nInstallation: https://ffmpeg.org/download.html"
+    );
+  }
+  const frames = Array.isArray(source) ? source : source.labeledFrames;
+  let selectedFrames = frames;
+  if (options.frameInds) {
+    selectedFrames = options.frameInds.map((i) => frames[i]).filter((f) => f !== void 0);
+  } else if (options.start !== void 0 || options.end !== void 0) {
+    const start = options.start ?? 0;
+    const end = options.end ?? frames.length;
+    selectedFrames = frames.slice(start, end);
+  }
+  if (selectedFrames.length === 0) {
+    throw new Error("No frames to render");
+  }
+  const firstImage = await renderImage(selectedFrames[0], options);
+  const width = firstImage.width;
+  const height = firstImage.height;
+  const fps = options.fps ?? 30;
+  const codec = options.codec ?? "libx264";
+  const crf = options.crf ?? 25;
+  const preset = options.preset ?? "superfast";
+  const ffmpegArgs = [
+    "-y",
+    // Overwrite output
+    "-f",
+    "rawvideo",
+    // Input format
+    "-pix_fmt",
+    "rgba",
+    // Input pixel format
+    "-s",
+    `${width}x${height}`,
+    // Frame size
+    "-r",
+    String(fps),
+    // Frame rate
+    "-i",
+    "pipe:0",
+    // Read from stdin
+    "-c:v",
+    codec,
+    // Video codec
+    "-pix_fmt",
+    "yuv420p"
+    // Output pixel format
+  ];
+  if (codec === "libx264") {
+    ffmpegArgs.push("-crf", String(crf), "-preset", preset);
+  }
+  ffmpegArgs.push(outputPath);
+  const ffmpeg = spawn("ffmpeg", ffmpegArgs, {
+    stdio: ["pipe", "pipe", "pipe"]
+  });
+  let ffmpegError = null;
+  ffmpeg.on("error", (err) => {
+    ffmpegError = err;
+  });
+  const total = selectedFrames.length;
+  for (let i = 0; i < selectedFrames.length; i++) {
+    if (ffmpegError) {
+      throw ffmpegError;
+    }
+    const frame = selectedFrames[i];
+    const imageData = await renderImage(frame, options);
+    const buffer = Buffer.from(imageData.data.buffer);
+    if (!ffmpeg.stdin) {
+      throw new Error("ffmpeg stdin not available");
+    }
+    const canWrite = ffmpeg.stdin.write(buffer);
+    if (!canWrite) {
+      await new Promise(
+        (resolve) => ffmpeg.stdin?.once("drain", resolve)
+      );
+    }
+    if (options.onProgress) {
+      options.onProgress(i + 1, total);
+    }
+  }
+  ffmpeg.stdin?.end();
+  return new Promise((resolve, reject) => {
+    ffmpeg.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+      } else {
+        reject(new Error(`ffmpeg exited with code ${code}`));
+      }
+    });
+    ffmpeg.on("error", reject);
+  });
+}
 export {
   Camera,
   CameraGroup,
   Edge,
   FrameGroup,
   Instance,
+  InstanceContext,
   InstanceGroup,
   LabeledFrame,
   Labels,
   LabelsSet,
+  MARKER_FUNCTIONS,
   Mp4BoxVideoBackend,
+  NAMED_COLORS,
   Node,
+  PALETTES,
   PredictedInstance,
   RecordingSession,
+  RenderContext,
   Skeleton,
   SuggestionFrame,
   Symmetry,
   Track,
   Video,
+  checkFfmpeg,
   decodeYamlSkeleton,
+  determineColorScheme,
+  drawCircle,
+  drawCross,
+  drawDiamond,
+  drawSquare,
+  drawTriangle,
   encodeYamlSkeleton,
   fromDict,
   fromNumpy,
+  getMarkerFunction,
+  getPalette,
   labelsFromNumpy,
   loadSlp,
   loadVideo,
@@ -2686,8 +3461,16 @@ export {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict,
+  renderImage,
+  renderVideo,
+  resolveColor,
+  rgbToCSS,
   rodriguesTransformation,
+  saveImage,
   saveSlp,
+  toDataURL,
   toDict,
-  toNumpy
+  toJPEG,
+  toNumpy,
+  toPNG
 };
