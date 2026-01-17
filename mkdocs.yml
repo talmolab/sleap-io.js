@@ -59,3 +59,5 @@ nav:
   - Overview: index.md
   - Demo: demo.md
   - API: api.md
+  - Lite Mode: lite.md
+  - Rendering: rendering.md

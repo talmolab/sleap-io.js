@@ -28,6 +28,7 @@ await saveSlp(labels, "/tmp/session-roundtrip.slp", { embed: false });
 - Streaming inputs (URL, `File`, `FileSystemFileHandle`).
 - Data model types (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`).
 - Dictionary and numpy codecs.
+- **Lite mode** for Workers-compatible metadata extraction (no WASM).
 
 ## Environments
 
