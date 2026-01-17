@@ -111,10 +111,13 @@ const configureCanvas = (width, height, setPlayerHeight = false) => {
   const h = height || videoEl?.videoHeight || 720;
   canvas.width = w;
   canvas.height = h;
-  if (setPlayerHeight && playerEl) {
+  if (setPlayerHeight) {
     // In embedded mode, set explicit player height since video is hidden
-    const aspectRatio = h / w;
-    playerEl.style.paddingBottom = `${aspectRatio * 100}%`;
+    const player = playerEl || document.querySelector(".player");
+    if (player) {
+      const aspectRatio = h / w;
+      player.style.paddingBottom = `${aspectRatio * 100}%`;
+    }
   }
 };
 
