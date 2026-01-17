@@ -8,6 +8,7 @@ const statusEl = document.querySelector("#status");
 const metaEl = document.querySelector("#meta");
 const videoEl = document.querySelector("#video");
 const canvas = document.querySelector("#overlay");
+const playerEl = document.querySelector(".player");
 const seek = document.querySelector("#seek");
 const playBtn = document.querySelector("#play-btn");
 const frameLabel = document.querySelector("#frame-label");
@@ -105,11 +106,16 @@ const setMeta = (data) => {
   metaEl.textContent = text;
 };
 
-const configureCanvas = (width, height) => {
+const configureCanvas = (width, height, setPlayerHeight = false) => {
   const w = width || videoEl?.videoWidth || 1280;
   const h = height || videoEl?.videoHeight || 720;
   canvas.width = w;
   canvas.height = h;
+  if (setPlayerHeight && playerEl) {
+    // In embedded mode, set explicit player height since video is hidden
+    const aspectRatio = h / w;
+    playerEl.style.paddingBottom = `${aspectRatio * 100}%`;
+  }
 };
 
 const buildFrameIndex = () => {
@@ -210,20 +216,21 @@ const renderEmbeddedFrame = async (labeledFrameIndex) => {
 
   if (imageData) {
     if (imageData instanceof ImageBitmap) {
-      configureCanvas(imageData.width, imageData.height);
+      configureCanvas(imageData.width, imageData.height, true);
       ctx.drawImage(imageData, 0, 0);
     } else if (imageData instanceof ImageData) {
-      configureCanvas(imageData.width, imageData.height);
+      configureCanvas(imageData.width, imageData.height, true);
       ctx.putImageData(imageData, 0, 0);
     } else if (imageData instanceof Uint8Array) {
       // Raw bytes - try to decode as image
       const blob = new Blob([imageData], { type: "image/png" });
       const bitmap = await createImageBitmap(blob);
-      configureCanvas(bitmap.width, bitmap.height);
+      configureCanvas(bitmap.width, bitmap.height, true);
       ctx.drawImage(bitmap, 0, 0);
     }
   } else {
     // No image - draw placeholder
+    configureCanvas(canvas.width || 640, canvas.height || 480, true);
     ctx.fillStyle = "#222";
     ctx.fillRect(0, 0, canvas.width, canvas.height);
     ctx.fillStyle = "#888";
@@ -369,7 +376,7 @@ const handleLoad = async () => {
       seek.max = String(labeledFramesList.length - 1);
       videoEl.style.display = "none";
       playBtn.style.display = "none";
-      configureCanvas(1024, 1024);
+      configureCanvas(1024, 1024, true);
       currentLabeledFrameIndex = 0;
       updateEmbeddedFrame(0);
       setStatus("Ready. Navigate through labeled frames.");
