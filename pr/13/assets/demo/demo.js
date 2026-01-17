@@ -9,6 +9,7 @@ const metaEl = document.querySelector("#meta");
 const videoEl = document.querySelector("#video");
 const canvas = document.querySelector("#overlay");
 const playerEl = document.querySelector(".player");
+console.log("[module load] playerEl=", playerEl);
 const seek = document.querySelector("#seek");
 const playBtn = document.querySelector("#play-btn");
 const frameLabel = document.querySelector("#frame-label");
@@ -114,9 +115,11 @@ const configureCanvas = (width, height, setPlayerHeight = false) => {
   if (setPlayerHeight) {
     // In embedded mode, set explicit player height since video is hidden
     const player = playerEl || document.querySelector(".player");
+    console.log("[configureCanvas] setPlayerHeight=true, player=", player, "playerEl=", playerEl);
     if (player) {
       const aspectRatio = h / w;
       player.style.paddingBottom = `${aspectRatio * 100}%`;
+      console.log("[configureCanvas] Set paddingBottom to", player.style.paddingBottom);
     }
   }
 };
