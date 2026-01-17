@@ -12,6 +12,10 @@
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "files": ["dist"],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/talmolab/sleap-io.js.git"
+  },
   "scripts": {
     "build": "tsup src/index.ts --format esm --dts",
     "test": "vitest",
