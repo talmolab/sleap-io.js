@@ -7,6 +7,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./lite": {
+      "types": "./dist/lite.d.ts",
+      "import": "./dist/lite.js"
     }
   },
   "main": "./dist/index.js",
@@ -17,13 +21,14 @@
     "url": "https://github.com/talmolab/sleap-io.js.git"
   },
   "scripts": {
-    "build": "tsup src/index.ts --format esm --dts",
+    "build": "tsup src/index.ts src/lite.ts --format esm --dts",
     "test": "vitest",
     "test:coverage": "vitest --run --coverage",
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
     "h5wasm": "^0.8.8",
+    "jsfive": "^0.3.10",
     "mp4box": "^0.5.4",
     "skia-canvas": "^3.0.8",
     "yaml": "^2.6.1"

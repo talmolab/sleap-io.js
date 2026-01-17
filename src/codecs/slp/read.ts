@@ -1,8 +1,9 @@
 import { openH5File, OpenH5Options, SlpSource } from "./h5.js";
+import { parseJsonAttr, parseSkeletons } from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../../model/instance.js";
-import { Skeleton, Node } from "../../model/skeleton.js";
+import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
 import { createVideoBackend } from "../../video/factory.js";
@@ -23,10 +24,10 @@ export async function readSlp(
 
     const metadataAttrs = (metadataGroup as unknown as { attrs?: Record<string, any> }).attrs ?? {};
     const formatId = Number(metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0);
-    const metadataJson = parseJsonAttr(metadataAttrs["json"]);
+    const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<string, unknown> | null;
 
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
-    const skeletons = readSkeletons(metadataJson);
+    const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
     const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
@@ -56,107 +57,14 @@ export async function readSlp(
       tracks,
       suggestions,
       sessions,
-      provenance: metadataJson?.provenance ?? {},
+      provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
     });
   } finally {
     close();
   }
 }
 
-function parseJsonAttr(attr: any): any {
-  if (!attr) return null;
-  const value = attr.value ?? attr;
-  if (typeof value === "string") return JSON.parse(value);
-  if (value instanceof Uint8Array) return JSON.parse(textDecoder.decode(value));
-  if (value.buffer) return JSON.parse(textDecoder.decode(new Uint8Array(value.buffer)));
-  return JSON.parse(String(value));
-}
-
-function readSkeletons(metadataJson: any): Skeleton[] {
-  if (!metadataJson) return [];
-  const nodeNames = (metadataJson.nodes ?? []).map((node: any) => node.name ?? node);
-  const skeletonEntries = metadataJson.skeletons ?? [];
-  const skeletons: Skeleton[] = [];
-  for (const entry of skeletonEntries) {
-    const edges: Array<[number, number]> = [];
-    const symmetries: Array<[number, number]> = [];
-    const typeCache = new Map<number, number>();
-    const typeState = { nextId: 1 };
-    const skeletonNodeIds = (entry.nodes ?? []).map((node: any) => Number(node.id ?? node));
-    const nodeOrder = skeletonNodeIds.length ? skeletonNodeIds : nodeNames.map((_: unknown, index: number) => index);
-    const nodes = nodeOrder
-      .map((nodeId: number) => nodeNames[nodeId])
-      .filter((name: string | undefined) => name !== undefined)
-      .map((name: string) => new Node(name));
-    const nodeIndexById = new Map<number, number>();
-    nodeOrder.forEach((nodeId: number, index: number) => {
-      nodeIndexById.set(Number(nodeId), index);
-    });
-
-    for (const link of entry.links ?? []) {
-      const source = Number(link.source);
-      const target = Number(link.target);
-      const edgeType = resolveEdgeType(link.type, typeCache, typeState);
-      if (edgeType === 2) {
-        symmetries.push([source, target]);
-      } else {
-        edges.push([source, target]);
-      }
-    }
-
-    const remapPair = (pair: [number, number]): [number, number] | null => {
-      const sourceIndex = nodeIndexById.get(pair[0]);
-      const targetIndex = nodeIndexById.get(pair[1]);
-      if (sourceIndex === undefined || targetIndex === undefined) return null;
-      return [sourceIndex, targetIndex];
-    };
-
-    const mappedEdges = edges
-      .map(remapPair)
-      .filter((pair): pair is [number, number] => pair !== null);
-
-    const seenSymmetries = new Set<string>();
-    const mappedSymmetries = symmetries
-      .map(remapPair)
-      .filter((pair): pair is [number, number] => pair !== null)
-      .filter(([a, b]) => {
-        const key = a < b ? `${a}-${b}` : `${b}-${a}`;
-        if (seenSymmetries.has(key)) return false;
-        seenSymmetries.add(key);
-        return true;
-      });
-
-    const skeleton = new Skeleton({
-      nodes,
-      edges: mappedEdges,
-      symmetries: mappedSymmetries,
-      name: entry.graph?.name ?? entry.name,
-    });
-    skeletons.push(skeleton);
-  }
-  return skeletons;
-}
-
-function resolveEdgeType(edgeType: any, cache: Map<number, number>, state: { nextId: number }): number {
-  if (!edgeType) return 1;
-  if (edgeType["py/reduce"]) {
-    const typeId = edgeType["py/reduce"][1]?.["py/tuple"]?.[0] ?? 1;
-    cache.set(state.nextId, typeId);
-    state.nextId += 1;
-    return typeId;
-  }
-  if (edgeType["py/tuple"]) {
-    const typeId = edgeType["py/tuple"][0] ?? 1;
-    cache.set(state.nextId, typeId);
-    state.nextId += 1;
-    return typeId;
-  }
-  if (edgeType["py/id"]) {
-    const pyId = edgeType["py/id"];
-    return cache.get(pyId) ?? pyId;
-  }
-  return 1;
-}
+// parseJsonAttr and parseSkeletons are imported from parsers.ts
 
 function readTracks(dataset: any): Track[] {
   if (!dataset) return [];

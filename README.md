@@ -42,6 +42,25 @@ const video = await loadVideo("/path/to/video.mp4", { openBackend: false });
 video.close();
 ```
 
+### Lite mode (Workers-compatible)
+
+For environments that don't support WebAssembly compilation (e.g., Cloudflare Workers), use the `/lite` entry point:
+
+```ts
+import { loadSlpMetadata, validateSlpBuffer } from "@talmolab/sleap-io.js/lite";
+
+// Load metadata without pose coordinates
+const metadata = await loadSlpMetadata(buffer);
+console.log(metadata.skeletons);     // Full skeleton definitions
+console.log(metadata.counts);        // { labeledFrames, instances, points, predictedPoints }
+console.log(metadata.provenance);    // { sleap_version, ... }
+
+// Quick validation
+validateSlpBuffer(buffer);  // throws on invalid
+```
+
+The lite module uses [jsfive](https://github.com/usnistgov/jsfive) (pure JavaScript) instead of h5wasm (WebAssembly), enabling use in restricted environments. It can read all metadata but not pose coordinates or video frames.
+
 ## Architecture
 
 - **I/O layer**: `loadSlp`/`saveSlp` wrap the HDF5 reader/writer in `src/codecs/slp`.
