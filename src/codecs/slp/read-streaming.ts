@@ -8,7 +8,7 @@
  * @module
  */
 
-import { openStreamingH5, StreamingH5File, isStreamingSupported } from "./h5-streaming.js";
+import { openH5Worker, StreamingH5File, isStreamingSupported, type StreamingH5Source } from "./h5-streaming.js";
 import { parseJsonAttr, parseSkeletons, parseTracks, parseVideosMetadata, parseSuggestions } from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
@@ -31,45 +31,62 @@ export interface StreamingSlpOptions {
 }
 
 /**
- * Read an SLP file using HTTP range requests for efficient streaming.
+ * Read an SLP file using a Web Worker for efficient, non-blocking HDF5 access.
  *
- * This function downloads only the data needed (metadata, frames, instances, points)
- * rather than the entire file.
+ * This function offloads all h5wasm operations to a Web Worker, keeping the
+ * main thread responsive. For URLs, it uses HTTP range requests to download
+ * only the data needed rather than the entire file.
  *
  * When `openVideos` is true, video backends are created for embedded videos,
  * allowing frame data to be retrieved. The underlying HDF5 file remains open
  * until all video backends are closed.
  *
- * @param url - URL to the SLP file (must support HTTP range requests)
+ * @param source - URL, File, ArrayBuffer, or Uint8Array containing the SLP file
  * @param options - Optional settings
  * @returns Labels object with all annotation data
  *
  * @example
  * ```typescript
- * // Load with video backends for embedded images
+ * // Load from URL with video backends
  * const labels = await readSlpStreaming('https://example.com/labels.slp', {
  *   openVideos: true
  * });
- * const frame = await labels.video.getFrame(0);
+ *
+ * // Load from File object (file input)
+ * const labels = await readSlpStreaming(fileInput.files[0], {
+ *   openVideos: true
+ * });
+ *
+ * // Load from ArrayBuffer
+ * const labels = await readSlpStreaming(arrayBuffer, {
+ *   filenameHint: 'data.slp'
+ * });
  * ```
  */
 export async function readSlpStreaming(
-  url: string,
+  source: StreamingH5Source,
   options?: StreamingSlpOptions
 ): Promise<Labels> {
   if (!isStreamingSupported()) {
     throw new Error("Streaming HDF5 requires Web Worker support (browser environment)");
   }
 
-  const file = await openStreamingH5(url, {
+  const file = await openH5Worker(source, {
     h5wasmUrl: options?.h5wasmUrl,
     filenameHint: options?.filenameHint,
   });
 
   const openVideos = options?.openVideos ?? false;
 
+  // Determine the source path for video resolution
+  const sourcePath = typeof source === "string"
+    ? source
+    : (typeof File !== "undefined" && source instanceof File)
+      ? source.name
+      : options?.filenameHint ?? "slp-data.slp";
+
   try {
-    return await readFromStreamingFile(file, url, options?.filenameHint, openVideos);
+    return await readFromStreamingFile(file, sourcePath, options?.filenameHint, openVideos);
   } finally {
     // Only close the file if we're NOT opening video backends.
     // When openVideos is true, the file must remain open for video frame access.

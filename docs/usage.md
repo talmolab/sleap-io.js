@@ -57,9 +57,22 @@ See [rendering.md](./rendering.md) for more details.
 
 ## Browser Usage
 
-Browser usage requires an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap) to resolve external dependencies.
+In the browser, `sleap-io.js` automatically uses a **Web Worker** for all HDF5 operations. This keeps the main thread responsive and avoids bundler issues with Node.js dependencies.
+
+### How It Works
+
+When you call `loadSlp()` in the browser:
+
+1. A Web Worker is automatically created with h5wasm loaded from CDN
+2. All HDF5 operations (reading datasets, attributes, etc.) run in the worker
+3. For URLs, HTTP Range requests stream only the needed data
+4. The main thread stays responsive - no blocking!
+
+**No configuration needed** - this happens transparently.
 
 ### Required Import Map
+
+Browser usage requires an [import map](https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap) to resolve external dependencies:
 
 ```html
 <script type="importmap">
@@ -78,7 +91,7 @@ Browser usage requires an [import map](https://developer.mozilla.org/en-US/docs/
 
 | Module | Purpose | Browser handling |
 |--------|---------|------------------|
-| `h5wasm` | HDF5 file reading (WebAssembly) | Load from CDN |
+| `h5wasm` | HDF5 file reading (WebAssembly) | Loaded in Worker from CDN |
 | `yaml` | YAML skeleton parsing | Load from CDN |
 | `skia-canvas` | Server-side rendering (Node.js only) | Stub out |
 | `child_process` | Process spawning (Node.js only) | Stub out |
@@ -89,15 +102,22 @@ Browser usage requires an [import map](https://developer.mozilla.org/en-US/docs/
 <script type="module">
 import { loadSlp } from "./dist/index.js";
 
-// From URL (uses HTTP Range requests)
-const labels = await loadSlp("https://example.com/file.slp", {
-  h5: { stream: "range" }
-});
+// From URL - automatically uses Worker + range requests
+const labels = await loadSlp("https://example.com/file.slp");
 
-// From ArrayBuffer (e.g., file upload)
+// From file input - automatically uses Worker
+const file = document.querySelector('input[type="file"]').files[0];
+const labels = await loadSlp(file);
+
+// From ArrayBuffer - automatically uses Worker
 const buffer = await file.arrayBuffer();
 const labels = await loadSlp(buffer, {
   h5: { filenameHint: file.name }
+});
+
+// Force full download (disable range requests)
+const labels = await loadSlp("https://example.com/file.slp", {
+  h5: { stream: "download" }
 });
 </script>
 ```
@@ -200,6 +220,36 @@ for (const frame of labels.labeledFrames) {
   </script>
 </body>
 </html>
+```
+
+## Advanced: Low-Level Worker APIs
+
+For fine-grained control over HDF5 file access, you can use the streaming APIs directly:
+
+```ts
+import { openH5Worker, isStreamingSupported } from "@talmolab/sleap-io.js";
+
+if (isStreamingSupported()) {
+  // Open from any source type
+  const h5 = await openH5Worker("https://example.com/data.h5");
+  // or: await openH5Worker(file);
+  // or: await openH5Worker(arrayBuffer);
+
+  // Access HDF5 structure
+  const keys = h5.keys();                    // Root-level keys
+  const childKeys = await h5.getKeys("/group");  // Group children
+
+  // Read attributes
+  const attr = await h5.getAttr("/", "format_id");
+  const allAttrs = await h5.getAttrs("/metadata");
+
+  // Read datasets
+  const meta = await h5.getDatasetMeta("/points");  // { shape, dtype }
+  const data = await h5.getDatasetValue("/points"); // { value, shape, dtype }
+
+  // Cleanup
+  await h5.close();
+}
 ```
 
 ## Lite Mode (Workers-Compatible)

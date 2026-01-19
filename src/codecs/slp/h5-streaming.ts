@@ -25,6 +25,11 @@ export interface StreamingH5Options {
 }
 
 /**
+ * Source types supported by the streaming HDF5 file.
+ */
+export type StreamingH5Source = string | ArrayBuffer | Uint8Array | File;
+
+/**
  * Reconstructs a TypedArray from transferred worker data.
  */
 function reconstructValue(data: unknown): unknown {
@@ -132,7 +137,7 @@ export class StreamingH5File {
   }
 
   /**
-   * Open a remote HDF5 file for streaming access.
+   * Open a remote HDF5 file for streaming access via URL.
    *
    * @param url - URL to the HDF5 file (must support HTTP range requests)
    * @param options - Optional settings
@@ -145,6 +150,59 @@ export class StreamingH5File {
     const result = await this.send("openUrl", { url, filename });
     this._keys = (result.keys as string[]) || [];
     this._isOpen = true;
+  }
+
+  /**
+   * Open a local File object using WORKERFS (zero-copy).
+   *
+   * @param file - File object from file input or drag-and-drop
+   * @param options - Optional settings
+   */
+  async openLocal(file: File, options?: StreamingH5Options): Promise<void> {
+    // Initialize if not already done
+    await this.init(options);
+
+    const filename = options?.filenameHint || file.name || "data.h5";
+    const result = await this.send("openLocal", { file, filename });
+    this._keys = (result.keys as string[]) || [];
+    this._isOpen = true;
+  }
+
+  /**
+   * Open an HDF5 file from an ArrayBuffer or Uint8Array.
+   *
+   * @param buffer - ArrayBuffer or Uint8Array containing the HDF5 file data
+   * @param options - Optional settings
+   */
+  async openBuffer(buffer: ArrayBuffer | Uint8Array, options?: StreamingH5Options): Promise<void> {
+    // Initialize if not already done
+    await this.init(options);
+
+    const filename = options?.filenameHint || "data.h5";
+    // Transfer the buffer to the worker for efficiency
+    const data = buffer instanceof Uint8Array ? buffer.buffer : buffer;
+    const result = await this.send("openBuffer", { buffer: data, filename });
+    this._keys = (result.keys as string[]) || [];
+    this._isOpen = true;
+  }
+
+  /**
+   * Open an HDF5 file from any supported source.
+   *
+   * @param source - URL string, File, ArrayBuffer, or Uint8Array
+   * @param options - Optional settings
+   */
+  async openAny(source: StreamingH5Source, options?: StreamingH5Options): Promise<void> {
+    if (typeof source === "string") {
+      return this.open(source, options);
+    }
+    if (typeof File !== "undefined" && source instanceof File) {
+      return this.openLocal(source, options);
+    }
+    if (source instanceof ArrayBuffer || source instanceof Uint8Array) {
+      return this.openBuffer(source, options);
+    }
+    throw new Error("Unsupported source type for StreamingH5File");
   }
 
   /**
@@ -250,5 +308,40 @@ export async function openStreamingH5(
 
   const file = new StreamingH5File();
   await file.open(url, options);
+  return file;
+}
+
+/**
+ * Open an HDF5 file from any supported source using a Web Worker.
+ *
+ * This is the recommended way to open HDF5 files in the browser as it
+ * offloads all h5wasm operations to a Web Worker, avoiding main thread blocking.
+ *
+ * @param source - URL string, File object, ArrayBuffer, or Uint8Array
+ * @param options - Optional settings
+ * @returns A StreamingH5File instance
+ *
+ * @example
+ * ```typescript
+ * // From URL
+ * const file = await openH5Worker("https://example.com/data.h5");
+ *
+ * // From File (file input)
+ * const file = await openH5Worker(inputElement.files[0]);
+ *
+ * // From ArrayBuffer
+ * const file = await openH5Worker(arrayBuffer);
+ * ```
+ */
+export async function openH5Worker(
+  source: StreamingH5Source,
+  options?: StreamingH5Options
+): Promise<StreamingH5File> {
+  if (!isStreamingSupported()) {
+    throw new Error("Web Worker HDF5 access requires Worker/Blob/URL support");
+  }
+
+  const file = new StreamingH5File();
+  await file.openAny(source, options);
   return file;
 }

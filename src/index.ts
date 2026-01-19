@@ -16,7 +16,13 @@ export * from "./codecs/skeleton-yaml.js";
 export * from "./rendering/index.js";
 
 // Streaming HDF5 utilities for advanced use cases
-export { StreamingH5File, openStreamingH5, isStreamingSupported } from "./codecs/slp/h5-streaming.js";
+export {
+  StreamingH5File,
+  openStreamingH5,
+  openH5Worker,
+  isStreamingSupported,
+  type StreamingH5Source,
+} from "./codecs/slp/h5-streaming.js";
 
-// Streaming SLP reader (lower-level API)
+// Streaming SLP reader (uses Web Worker, recommended for browser)
 export { readSlpStreaming } from "./codecs/slp/read-streaming.js";
