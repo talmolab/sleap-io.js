@@ -342,6 +342,38 @@ declare function isStreamingSupported(): boolean;
  */
 declare function openStreamingH5(url: string, options?: StreamingH5Options): Promise<StreamingH5File>;
 
+/**
+ * Video backend for embedded images in HDF5 files accessed via streaming.
+ *
+ * This backend uses StreamingH5File (Web Worker + range requests) instead of
+ * a synchronous h5wasm File object, making it suitable for browser environments
+ * where the SLP file is loaded via HTTP range requests.
+ */
+declare class StreamingHdf5VideoBackend implements VideoBackend {
+    filename: string;
+    dataset?: string | null;
+    shape?: [number, number, number, number];
+    fps?: number;
+    private h5file;
+    private datasetPath;
+    private frameNumbers;
+    private format;
+    private channelOrder;
+    private cachedData;
+    constructor(options: {
+        filename: string;
+        h5file: StreamingH5File;
+        datasetPath: string;
+        frameNumbers?: number[];
+        format?: string;
+        channelOrder?: string;
+        shape?: [number, number, number, number];
+        fps?: number;
+    });
+    getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    close(): void;
+}
+
 type SlpSource = string | ArrayBuffer | Uint8Array | File | FileSystemFileHandle;
 type StreamMode = "auto" | "range" | "download";
 type OpenH5Options = {
@@ -702,12 +734,18 @@ interface StreamingSlpOptions {
     h5wasmUrl?: string;
     /** Filename hint for the HDF5 file */
     filenameHint?: string;
+    /** Whether to open video backends for embedded videos (default: false) */
+    openVideos?: boolean;
 }
 /**
  * Read an SLP file using HTTP range requests for efficient streaming.
  *
  * This function downloads only the data needed (metadata, frames, instances, points)
- * rather than the entire file. Embedded videos are NOT loaded - only metadata.
+ * rather than the entire file.
+ *
+ * When `openVideos` is true, video backends are created for embedded videos,
+ * allowing frame data to be retrieved. The underlying HDF5 file remains open
+ * until all video backends are closed.
  *
  * @param url - URL to the SLP file (must support HTTP range requests)
  * @param options - Optional settings
@@ -715,10 +753,13 @@ interface StreamingSlpOptions {
  *
  * @example
  * ```typescript
- * const labels = await readSlpStreaming('https://example.com/labels.slp');
- * console.log(`Loaded ${labels.labeledFrames.length} frames`);
+ * // Load with video backends for embedded images
+ * const labels = await readSlpStreaming('https://example.com/labels.slp', {
+ *   openVideos: true
+ * });
+ * const frame = await labels.video.getFrame(0);
  * ```
  */
 declare function readSlpStreaming(url: string, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, openStreamingH5, readSlpStreaming, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, toDataURL, toDict, toJPEG, toNumpy, toPNG };
+export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, openStreamingH5, readSlpStreaming, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, toDataURL, toDict, toJPEG, toNumpy, toPNG };

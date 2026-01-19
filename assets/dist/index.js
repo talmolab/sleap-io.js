@@ -1206,6 +1206,101 @@ var Mp4BoxVideoBackend = class {
   }
 };
 
+// src/video/streaming-hdf5-video.ts
+var isBrowser3 = typeof window !== "undefined" && typeof document !== "undefined";
+var StreamingHdf5VideoBackend = class {
+  filename;
+  dataset;
+  shape;
+  fps;
+  h5file;
+  datasetPath;
+  frameNumbers;
+  format;
+  channelOrder;
+  cachedData;
+  constructor(options) {
+    this.filename = options.filename;
+    this.h5file = options.h5file;
+    this.datasetPath = options.datasetPath;
+    this.dataset = options.datasetPath;
+    this.frameNumbers = options.frameNumbers ?? [];
+    this.format = options.format ?? "png";
+    this.channelOrder = options.channelOrder ?? "RGB";
+    this.shape = options.shape;
+    this.fps = options.fps;
+    this.cachedData = null;
+  }
+  async getFrame(frameIndex) {
+    const index = this.frameNumbers.length ? this.frameNumbers.indexOf(frameIndex) : frameIndex;
+    if (index < 0) return null;
+    if (!this.cachedData) {
+      try {
+        const data = await this.h5file.getDatasetValue(this.datasetPath);
+        this.cachedData = data.value;
+      } catch {
+        return null;
+      }
+    }
+    const entry = this.cachedData[index];
+    if (entry == null) return null;
+    const rawBytes = toUint8Array(entry);
+    if (!rawBytes) return null;
+    if (isEncodedFormat(this.format)) {
+      const decoded = await decodeImageBytes(rawBytes, this.format);
+      return decoded ?? rawBytes;
+    }
+    const image = decodeRawFrame(rawBytes, this.shape, this.channelOrder);
+    return image ?? rawBytes;
+  }
+  close() {
+    this.cachedData = null;
+  }
+};
+function toUint8Array(entry) {
+  if (entry instanceof Uint8Array) return entry;
+  if (entry instanceof ArrayBuffer) return new Uint8Array(entry);
+  if (ArrayBuffer.isView(entry)) return new Uint8Array(entry.buffer, entry.byteOffset, entry.byteLength);
+  if (Array.isArray(entry)) return new Uint8Array(entry.flat());
+  if (entry && typeof entry === "object" && "buffer" in entry) {
+    return new Uint8Array(entry.buffer);
+  }
+  return null;
+}
+function isEncodedFormat(format) {
+  const normalized = format.toLowerCase();
+  return normalized === "png" || normalized === "jpg" || normalized === "jpeg";
+}
+async function decodeImageBytes(bytes, format) {
+  if (!isBrowser3 || typeof createImageBitmap === "undefined") return null;
+  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
+  const safeBytes = new Uint8Array(bytes);
+  const blob = new Blob([safeBytes.buffer], { type: mime });
+  return createImageBitmap(blob);
+}
+function decodeRawFrame(bytes, shape, channelOrder) {
+  if (!isBrowser3 || !shape) return null;
+  const [, height, width, channels] = shape;
+  if (!height || !width || !channels) return null;
+  const expectedLength = height * width * channels;
+  if (bytes.length < expectedLength) return null;
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  const useBgr = channelOrder.toUpperCase() === "BGR";
+  for (let i = 0; i < width * height; i += 1) {
+    const base = i * channels;
+    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
+    const g = bytes[base + 1] ?? 0;
+    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
+    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
+    const out = i * 4;
+    rgba[out] = r;
+    rgba[out + 1] = g;
+    rgba[out + 2] = b;
+    rgba[out + 3] = a;
+  }
+  return new ImageData(rgba, width, height);
+}
+
 // src/codecs/slp/h5-worker.ts
 var H5_WORKER_CODE = `
 // h5wasm streaming worker
@@ -1719,7 +1814,7 @@ function getH5FileSystem(module) {
 }
 
 // src/video/hdf5-video.ts
-var isBrowser3 = typeof window !== "undefined" && typeof document !== "undefined";
+var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
 var Hdf5VideoBackend = class {
   filename;
   dataset;
@@ -1753,20 +1848,20 @@ var Hdf5VideoBackend = class {
     }
     const entry = this.cachedData[index];
     if (entry == null) return null;
-    const rawBytes = toUint8Array(entry);
+    const rawBytes = toUint8Array2(entry);
     if (!rawBytes) return null;
-    if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes(rawBytes, this.format);
+    if (isEncodedFormat2(this.format)) {
+      const decoded = await decodeImageBytes2(rawBytes, this.format);
       return decoded ?? rawBytes;
     }
-    const image = decodeRawFrame(rawBytes, this.shape, this.channelOrder);
+    const image = decodeRawFrame2(rawBytes, this.shape, this.channelOrder);
     return image ?? rawBytes;
   }
   close() {
     this.cachedData = null;
   }
 };
-function toUint8Array(entry) {
+function toUint8Array2(entry) {
   if (entry instanceof Uint8Array) return entry;
   if (entry instanceof ArrayBuffer) return new Uint8Array(entry);
   if (ArrayBuffer.isView(entry)) return new Uint8Array(entry.buffer, entry.byteOffset, entry.byteLength);
@@ -1774,19 +1869,19 @@ function toUint8Array(entry) {
   if (entry?.buffer) return new Uint8Array(entry.buffer);
   return null;
 }
-function isEncodedFormat(format) {
+function isEncodedFormat2(format) {
   const normalized = format.toLowerCase();
   return normalized === "png" || normalized === "jpg" || normalized === "jpeg";
 }
-async function decodeImageBytes(bytes, format) {
-  if (!isBrowser3 || typeof createImageBitmap === "undefined") return null;
+async function decodeImageBytes2(bytes, format) {
+  if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
   const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
   const safeBytes = new Uint8Array(bytes);
   const blob = new Blob([safeBytes.buffer], { type: mime });
   return createImageBitmap(blob);
 }
-function decodeRawFrame(bytes, shape, channelOrder) {
-  if (!isBrowser3 || !shape) return null;
+function decodeRawFrame2(bytes, shape, channelOrder) {
+  if (!isBrowser4 || !shape) return null;
   const [, height, width, channels] = shape;
   if (!height || !width || !channels) return null;
   const expectedLength = height * width * channels;
@@ -2235,13 +2330,16 @@ async function readSlpStreaming(url, options) {
     h5wasmUrl: options?.h5wasmUrl,
     filenameHint: options?.filenameHint
   });
+  const openVideos = options?.openVideos ?? false;
   try {
-    return await readFromStreamingFile(file, url, options?.filenameHint);
+    return await readFromStreamingFile(file, url, options?.filenameHint, openVideos);
   } finally {
-    await file.close();
+    if (!openVideos) {
+      await file.close();
+    }
   }
 }
-async function readFromStreamingFile(file, url, filenameHint) {
+async function readFromStreamingFile(file, url, filenameHint, openVideos = false) {
   const metadataAttrs = await file.getAttrs("metadata");
   const formatId = Number(
     metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
@@ -2250,7 +2348,7 @@ async function readFromStreamingFile(file, url, filenameHint) {
   const labelsPath = filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
   const skeletons = parseSkeletons(metadataJson);
   const tracks = await readTracksStreaming(file);
-  const videos = await readVideosStreaming(file, labelsPath);
+  const videos = await readVideosStreaming(file, labelsPath, openVideos);
   const suggestions = await readSuggestionsStreaming(file, videos);
   const framesData = await readStructDatasetStreaming(file, "frames");
   const instancesData = await readStructDatasetStreaming(file, "instances");
@@ -2288,27 +2386,41 @@ async function readTracksStreaming(file) {
     return [];
   }
 }
-async function readVideosStreaming(file, labelsPath) {
+async function readVideosStreaming(file, labelsPath, openVideos = false) {
   try {
     const keys = file.keys();
     if (!keys.includes("videos_json")) return [];
     const data = await file.getDatasetValue("videos_json");
     const values = normalizeDatasetArray(data.value);
     const metadataList = parseVideosMetadata(values, labelsPath);
-    return metadataList.map((meta) => new Video({
-      filename: meta.filename,
-      backend: null,
-      // No backend in streaming mode
-      backendMetadata: {
-        dataset: meta.dataset,
-        format: meta.format,
-        shape: meta.frameCount && meta.height && meta.width && meta.channels ? [meta.frameCount, meta.height, meta.width, meta.channels] : void 0,
-        fps: meta.fps,
-        channel_order: meta.channelOrder
-      },
-      sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
-      openBackend: false
-    }));
+    return metadataList.map((meta) => {
+      const shape = meta.frameCount && meta.height && meta.width && meta.channels ? [meta.frameCount, meta.height, meta.width, meta.channels] : void 0;
+      let backend = null;
+      if (openVideos && meta.embedded && meta.dataset) {
+        backend = new StreamingHdf5VideoBackend({
+          filename: meta.filename,
+          h5file: file,
+          datasetPath: meta.dataset,
+          format: meta.format ?? "png",
+          channelOrder: meta.channelOrder ?? "RGB",
+          shape,
+          fps: meta.fps
+        });
+      }
+      return new Video({
+        filename: meta.filename,
+        backend,
+        backendMetadata: {
+          dataset: meta.dataset,
+          format: meta.format,
+          shape,
+          fps: meta.fps,
+          channel_order: meta.channelOrder
+        },
+        sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
+        openBackend: openVideos && meta.embedded
+      });
+    });
   } catch {
     return [];
   }
@@ -2827,15 +2939,16 @@ function createMatrixDataset(file, name, rows, fieldNames, dtype) {
 function isProbablyUrl2(source) {
   return typeof source === "string" && /^https?:\/\//i.test(source);
 }
-function isBrowser4() {
+function isBrowser5() {
   return typeof window !== "undefined" && typeof Worker !== "undefined";
 }
 async function loadSlp(source, options) {
   const streamMode = options?.h5?.stream ?? "auto";
-  if (isProbablyUrl2(source) && isBrowser4() && isStreamingSupported() && (streamMode === "range" || streamMode === "auto")) {
+  if (isProbablyUrl2(source) && isBrowser5() && isStreamingSupported() && (streamMode === "range" || streamMode === "auto")) {
     try {
       return await readSlpStreaming(source, {
-        filenameHint: options?.h5?.filenameHint
+        filenameHint: options?.h5?.filenameHint,
+        openVideos: options?.openVideos ?? true
       });
     } catch (e) {
       if (streamMode === "auto") {
@@ -3714,6 +3827,7 @@ export {
   RenderContext,
   Skeleton,
   StreamingH5File,
+  StreamingHdf5VideoBackend,
   SuggestionFrame,
   Symmetry,
   Track,
