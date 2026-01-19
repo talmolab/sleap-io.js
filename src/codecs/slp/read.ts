@@ -114,20 +114,30 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
       datasetPath = findVideoDataset(file, videoIndex);
     }
 
-    // Determine channel order: use explicit attribute if present, otherwise
-    // default to BGR for legacy files (format_id < 1.4) since they were
-    // typically encoded with OpenCV which uses BGR order
-    const channelOrder = backendMeta.channel_order ?? (formatId < 1.4 ? "BGR" : "RGB");
-
-    // Read format from JSON metadata, or fall back to HDF5 dataset attributes
+    // Read format and channel_order from HDF5 dataset attributes if available
+    // This matches Python sleap-io behavior (video_reading.py:987-1006)
     let format = backendMeta.format as string | undefined;
-    if (!format && datasetPath) {
+    let channelOrderFromAttrs: string | undefined;
+    if (datasetPath) {
       const videoDs = file.get(datasetPath);
       if (videoDs) {
         const attrs = (videoDs as { attrs?: Record<string, { value?: string }> }).attrs ?? {};
-        format = attrs.format?.value ?? (attrs.format as unknown as string);
+        // Read format attribute
+        if (!format) {
+          format = attrs.format?.value ?? (attrs.format as unknown as string);
+        }
+        // Read channel_order attribute (like Python does)
+        if (attrs.channel_order) {
+          channelOrderFromAttrs = attrs.channel_order?.value ?? (attrs.channel_order as unknown as string);
+        }
       }
     }
+
+    // Determine channel order with priority:
+    // 1. JSON metadata (backendMeta.channel_order)
+    // 2. HDF5 dataset attribute (channelOrderFromAttrs)
+    // 3. Legacy fallback based on format_id (BGR for < 1.4)
+    const channelOrder = (backendMeta.channel_order as string | undefined) ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
 
     let backend = null;
     if (openVideos) {
