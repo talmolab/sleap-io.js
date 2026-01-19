@@ -241,10 +241,118 @@ declare class Mp4BoxVideoBackend implements VideoBackend {
     private addToCache;
 }
 
+/**
+ * Streaming HDF5 file access via Web Worker.
+ *
+ * This module provides a high-level API for accessing remote HDF5 files
+ * using HTTP range requests for efficient streaming. The actual HDF5
+ * operations run in a Web Worker where synchronous XHR is allowed.
+ *
+ * @module
+ */
+/**
+ * Options for opening a streaming HDF5 file.
+ */
+interface StreamingH5Options {
+    /** URL to h5wasm IIFE bundle. Defaults to CDN. */
+    h5wasmUrl?: string;
+    /** Filename hint for the HDF5 file. */
+    filenameHint?: string;
+}
+/**
+ * A streaming HDF5 file handle that uses a Web Worker for range request access.
+ *
+ * This class provides an API similar to h5wasm.File but operates via message
+ * passing to a worker where createLazyFile enables HTTP range requests.
+ */
+declare class StreamingH5File {
+    private worker;
+    private messageId;
+    private pendingMessages;
+    private _keys;
+    private _isOpen;
+    constructor();
+    private handleMessage;
+    private handleError;
+    private send;
+    /**
+     * Initialize the h5wasm module in the worker.
+     */
+    init(options?: StreamingH5Options): Promise<void>;
+    /**
+     * Open a remote HDF5 file for streaming access.
+     *
+     * @param url - URL to the HDF5 file (must support HTTP range requests)
+     * @param options - Optional settings
+     */
+    open(url: string, options?: StreamingH5Options): Promise<void>;
+    /**
+     * Whether a file is currently open.
+     */
+    get isOpen(): boolean;
+    /**
+     * Get the root-level keys in the file.
+     */
+    keys(): string[];
+    /**
+     * Get the keys (children) at a given path.
+     */
+    getKeys(path: string): Promise<string[]>;
+    /**
+     * Get an attribute value.
+     */
+    getAttr(path: string, name: string): Promise<unknown>;
+    /**
+     * Get all attributes at a path.
+     */
+    getAttrs(path: string): Promise<Record<string, unknown>>;
+    /**
+     * Get dataset metadata (shape, dtype) without reading values.
+     */
+    getDatasetMeta(path: string): Promise<{
+        shape: number[];
+        dtype: string;
+    }>;
+    /**
+     * Read a dataset's value.
+     *
+     * @param path - Path to the dataset
+     * @param slice - Optional slice specification (array of [start, end] pairs)
+     */
+    getDatasetValue(path: string, slice?: Array<[number, number] | []>): Promise<{
+        value: unknown;
+        shape: number[];
+        dtype: string;
+    }>;
+    /**
+     * Close the file and terminate the worker.
+     */
+    close(): Promise<void>;
+}
+/**
+ * Check if streaming via Web Worker is supported in the current environment.
+ */
+declare function isStreamingSupported(): boolean;
+/**
+ * Open a remote HDF5 file with streaming support.
+ *
+ * @param url - URL to the HDF5 file
+ * @param options - Optional settings
+ * @returns A StreamingH5File instance
+ */
+declare function openStreamingH5(url: string, options?: StreamingH5Options): Promise<StreamingH5File>;
+
 type SlpSource = string | ArrayBuffer | Uint8Array | File | FileSystemFileHandle;
 type StreamMode = "auto" | "range" | "download";
 type OpenH5Options = {
+    /**
+     * Streaming mode for remote files:
+     * - "auto": Try range requests, fall back to download
+     * - "range": Use HTTP range requests (requires Worker support in browser)
+     * - "download": Always download the entire file
+     */
     stream?: StreamMode;
+    /** Filename hint for the HDF5 file */
     filenameHint?: string;
 };
 
@@ -550,4 +658,4 @@ declare function checkFfmpeg(): Promise<boolean>;
  */
 declare function renderVideo(source: Labels | LabeledFrame[], outputPath: string, options?: VideoOptions): Promise<void>;
 
-export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, toDataURL, toDict, toJPEG, toNumpy, toPNG };
+export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, openStreamingH5, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, toDataURL, toDict, toJPEG, toNumpy, toPNG };
