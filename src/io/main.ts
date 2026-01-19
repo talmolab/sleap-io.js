@@ -62,6 +62,7 @@ export async function loadSlp(
     try {
       return await readSlpStreaming(source, {
         filenameHint: options?.h5?.filenameHint,
+        openVideos: options?.openVideos ?? true,
       });
     } catch (e) {
       // If streaming fails and mode is 'auto', fall back to full download

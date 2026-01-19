@@ -16,6 +16,7 @@ import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFro
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
+import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 
 /**
  * Options for streaming SLP file loading.
@@ -25,13 +26,19 @@ export interface StreamingSlpOptions {
   h5wasmUrl?: string;
   /** Filename hint for the HDF5 file */
   filenameHint?: string;
+  /** Whether to open video backends for embedded videos (default: false) */
+  openVideos?: boolean;
 }
 
 /**
  * Read an SLP file using HTTP range requests for efficient streaming.
  *
  * This function downloads only the data needed (metadata, frames, instances, points)
- * rather than the entire file. Embedded videos are NOT loaded - only metadata.
+ * rather than the entire file.
+ *
+ * When `openVideos` is true, video backends are created for embedded videos,
+ * allowing frame data to be retrieved. The underlying HDF5 file remains open
+ * until all video backends are closed.
  *
  * @param url - URL to the SLP file (must support HTTP range requests)
  * @param options - Optional settings
@@ -39,8 +46,11 @@ export interface StreamingSlpOptions {
  *
  * @example
  * ```typescript
- * const labels = await readSlpStreaming('https://example.com/labels.slp');
- * console.log(`Loaded ${labels.labeledFrames.length} frames`);
+ * // Load with video backends for embedded images
+ * const labels = await readSlpStreaming('https://example.com/labels.slp', {
+ *   openVideos: true
+ * });
+ * const frame = await labels.video.getFrame(0);
  * ```
  */
 export async function readSlpStreaming(
@@ -56,10 +66,16 @@ export async function readSlpStreaming(
     filenameHint: options?.filenameHint,
   });
 
+  const openVideos = options?.openVideos ?? false;
+
   try {
-    return await readFromStreamingFile(file, url, options?.filenameHint);
+    return await readFromStreamingFile(file, url, options?.filenameHint, openVideos);
   } finally {
-    await file.close();
+    // Only close the file if we're NOT opening video backends.
+    // When openVideos is true, the file must remain open for video frame access.
+    if (!openVideos) {
+      await file.close();
+    }
   }
 }
 
@@ -69,7 +85,8 @@ export async function readSlpStreaming(
 async function readFromStreamingFile(
   file: StreamingH5File,
   url: string,
-  filenameHint?: string
+  filenameHint?: string,
+  openVideos: boolean = false
 ): Promise<Labels> {
   // Read metadata
   const metadataAttrs = await file.getAttrs("metadata");
@@ -86,8 +103,8 @@ async function readFromStreamingFile(
   // Read tracks
   const tracks = await readTracksStreaming(file);
 
-  // Read video metadata (no backends for streaming)
-  const videos = await readVideosStreaming(file, labelsPath);
+  // Read video metadata (and optionally create backends for embedded videos)
+  const videos = await readVideosStreaming(file, labelsPath, openVideos);
 
   // Read suggestions
   const suggestions = await readSuggestionsStreaming(file, videos);
@@ -139,9 +156,13 @@ async function readTracksStreaming(file: StreamingH5File): Promise<Track[]> {
 
 /**
  * Read video metadata from videos_json dataset.
- * Note: Video backends are NOT created in streaming mode.
+ * When openVideos is true, creates StreamingHdf5VideoBackend for embedded videos.
  */
-async function readVideosStreaming(file: StreamingH5File, labelsPath: string): Promise<Video[]> {
+async function readVideosStreaming(
+  file: StreamingH5File,
+  labelsPath: string,
+  openVideos: boolean = false
+): Promise<Video[]> {
   try {
     const keys = file.keys();
     if (!keys.includes("videos_json")) return [];
@@ -150,21 +171,40 @@ async function readVideosStreaming(file: StreamingH5File, labelsPath: string): P
     const values = normalizeDatasetArray(data.value);
     const metadataList = parseVideosMetadata(values, labelsPath);
 
-    return metadataList.map(meta => new Video({
-      filename: meta.filename,
-      backend: null, // No backend in streaming mode
-      backendMetadata: {
-        dataset: meta.dataset,
-        format: meta.format,
-        shape: meta.frameCount && meta.height && meta.width && meta.channels
+    return metadataList.map(meta => {
+      const shape: [number, number, number, number] | undefined =
+        meta.frameCount && meta.height && meta.width && meta.channels
           ? [meta.frameCount, meta.height, meta.width, meta.channels]
-          : undefined,
-        fps: meta.fps,
-        channel_order: meta.channelOrder,
-      },
-      sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
-      openBackend: false,
-    }));
+          : undefined;
+
+      // Create streaming backend for embedded videos when openVideos is true
+      let backend = null;
+      if (openVideos && meta.embedded && meta.dataset) {
+        backend = new StreamingHdf5VideoBackend({
+          filename: meta.filename,
+          h5file: file,
+          datasetPath: meta.dataset,
+          format: meta.format ?? "png",
+          channelOrder: meta.channelOrder ?? "RGB",
+          shape,
+          fps: meta.fps,
+        });
+      }
+
+      return new Video({
+        filename: meta.filename,
+        backend,
+        backendMetadata: {
+          dataset: meta.dataset,
+          format: meta.format,
+          shape,
+          fps: meta.fps,
+          channel_order: meta.channelOrder,
+        },
+        sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
+        openBackend: openVideos && meta.embedded,
+      });
+    });
   } catch {
     return [];
   }
