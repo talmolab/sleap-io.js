@@ -1208,6 +1208,8 @@ var Mp4BoxVideoBackend = class {
 
 // src/video/streaming-hdf5-video.ts
 var isBrowser3 = typeof window !== "undefined" && typeof document !== "undefined";
+var PNG_MAGIC = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+var JPEG_MAGIC = new Uint8Array([255, 216, 255]);
 var StreamingHdf5VideoBackend = class {
   filename;
   dataset;
@@ -1219,6 +1221,8 @@ var StreamingHdf5VideoBackend = class {
   format;
   channelOrder;
   cachedData;
+  frameOffsets;
+  // For contiguous buffer: byte offsets of each frame
   constructor(options) {
     this.filename = options.filename;
     this.h5file = options.h5file;
@@ -1230,6 +1234,7 @@ var StreamingHdf5VideoBackend = class {
     this.shape = options.shape;
     this.fps = options.fps;
     this.cachedData = null;
+    this.frameOffsets = null;
   }
   async getFrame(frameIndex) {
     const index = this.frameNumbers.length ? this.frameNumbers.indexOf(frameIndex) : frameIndex;
@@ -1237,15 +1242,30 @@ var StreamingHdf5VideoBackend = class {
     if (!this.cachedData) {
       try {
         const data = await this.h5file.getDatasetValue(this.datasetPath);
-        this.cachedData = data.value;
+        this.cachedData = normalizeVideoData(data.value, data.shape);
+        if (isContiguousEncodedBuffer(this.cachedData, this.format, this.shape)) {
+          this.frameOffsets = findEncodedFrameOffsets(
+            this.cachedData,
+            this.format,
+            this.shape?.[0] ?? 0
+          );
+        }
       } catch {
         return null;
       }
     }
-    const entry = this.cachedData[index];
-    if (entry == null) return null;
-    const rawBytes = toUint8Array(entry);
-    if (!rawBytes) return null;
+    let rawBytes;
+    if (this.frameOffsets && this.frameOffsets.length > index) {
+      const buffer = this.cachedData;
+      const start = this.frameOffsets[index];
+      const end = index + 1 < this.frameOffsets.length ? this.frameOffsets[index + 1] : buffer.length;
+      rawBytes = buffer.slice(start, end);
+    } else {
+      const entry = this.cachedData[index];
+      if (entry == null) return null;
+      rawBytes = toUint8Array(entry);
+    }
+    if (!rawBytes || rawBytes.length === 0) return null;
     if (isEncodedFormat(this.format)) {
       const decoded = await decodeImageBytes(rawBytes, this.format);
       return decoded ?? rawBytes;
@@ -1255,8 +1275,55 @@ var StreamingHdf5VideoBackend = class {
   }
   close() {
     this.cachedData = null;
+    this.frameOffsets = null;
   }
 };
+function normalizeVideoData(value, _shape) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) {
+    const arr = value;
+    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+  }
+  return [];
+}
+function isContiguousEncodedBuffer(data, format, shape) {
+  if (!isEncodedFormat(format)) return false;
+  if (!(data instanceof Uint8Array)) return false;
+  if (data.length < 8) return false;
+  const isPng = matchesMagic(data, PNG_MAGIC);
+  const isJpeg = matchesMagic(data, JPEG_MAGIC);
+  if (!isPng && !isJpeg) return false;
+  if (shape) {
+    const frameCount = shape[0];
+    if (frameCount > 1 && data.length > 1e4) {
+      return true;
+    }
+  }
+  return true;
+}
+function matchesMagic(buffer, magic) {
+  if (buffer.length < magic.length) return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (buffer[i] !== magic[i]) return false;
+  }
+  return true;
+}
+function findEncodedFrameOffsets(buffer, format, expectedFrameCount) {
+  const offsets = [];
+  const magic = format.toLowerCase() === "png" ? PNG_MAGIC : JPEG_MAGIC;
+  for (let i = 0; i <= buffer.length - magic.length; i++) {
+    if (matchesMagic(buffer.subarray(i), magic)) {
+      offsets.push(i);
+      i += magic.length - 1;
+      if (expectedFrameCount > 0 && offsets.length >= expectedFrameCount) {
+        break;
+      }
+    }
+  }
+  return offsets;
+}
 function toUint8Array(entry) {
   if (entry instanceof Uint8Array) return entry;
   if (entry instanceof ArrayBuffer) return new Uint8Array(entry);
@@ -1815,6 +1882,8 @@ function getH5FileSystem(module) {
 
 // src/video/hdf5-video.ts
 var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
+var PNG_MAGIC2 = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+var JPEG_MAGIC2 = new Uint8Array([255, 216, 255]);
 var Hdf5VideoBackend = class {
   filename;
   dataset;
@@ -1826,6 +1895,7 @@ var Hdf5VideoBackend = class {
   format;
   channelOrder;
   cachedData;
+  frameOffsets;
   constructor(options) {
     this.filename = options.filename;
     this.file = options.file;
@@ -1837,6 +1907,7 @@ var Hdf5VideoBackend = class {
     this.shape = options.shape;
     this.fps = options.fps;
     this.cachedData = null;
+    this.frameOffsets = null;
   }
   async getFrame(frameIndex) {
     const dataset = this.file.get(this.datasetPath);
@@ -1844,12 +1915,28 @@ var Hdf5VideoBackend = class {
     const index = this.frameNumbers.length ? this.frameNumbers.indexOf(frameIndex) : frameIndex;
     if (index < 0) return null;
     if (!this.cachedData) {
-      this.cachedData = dataset.value;
+      const value = dataset.value;
+      this.cachedData = normalizeVideoData2(value);
+      if (isContiguousEncodedBuffer2(this.cachedData, this.format, this.shape)) {
+        this.frameOffsets = findEncodedFrameOffsets2(
+          this.cachedData,
+          this.format,
+          this.shape?.[0] ?? 0
+        );
+      }
     }
-    const entry = this.cachedData[index];
-    if (entry == null) return null;
-    const rawBytes = toUint8Array2(entry);
-    if (!rawBytes) return null;
+    let rawBytes;
+    if (this.frameOffsets && this.frameOffsets.length > index) {
+      const buffer = this.cachedData;
+      const start = this.frameOffsets[index];
+      const end = index + 1 < this.frameOffsets.length ? this.frameOffsets[index + 1] : buffer.length;
+      rawBytes = buffer.slice(start, end);
+    } else {
+      const entry = this.cachedData[index];
+      if (entry == null) return null;
+      rawBytes = toUint8Array2(entry);
+    }
+    if (!rawBytes || rawBytes.length === 0) return null;
     if (isEncodedFormat2(this.format)) {
       const decoded = await decodeImageBytes2(rawBytes, this.format);
       return decoded ?? rawBytes;
@@ -1859,8 +1946,55 @@ var Hdf5VideoBackend = class {
   }
   close() {
     this.cachedData = null;
+    this.frameOffsets = null;
   }
 };
+function normalizeVideoData2(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) {
+    const arr = value;
+    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+  }
+  return [];
+}
+function isContiguousEncodedBuffer2(data, format, shape) {
+  if (!isEncodedFormat2(format)) return false;
+  if (!(data instanceof Uint8Array)) return false;
+  if (data.length < 8) return false;
+  const isPng = matchesMagic2(data, PNG_MAGIC2);
+  const isJpeg = matchesMagic2(data, JPEG_MAGIC2);
+  if (!isPng && !isJpeg) return false;
+  if (shape) {
+    const frameCount = shape[0];
+    if (frameCount > 1 && data.length > 1e4) {
+      return true;
+    }
+  }
+  return true;
+}
+function matchesMagic2(buffer, magic) {
+  if (buffer.length < magic.length) return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (buffer[i] !== magic[i]) return false;
+  }
+  return true;
+}
+function findEncodedFrameOffsets2(buffer, format, expectedFrameCount) {
+  const offsets = [];
+  const magic = format.toLowerCase() === "png" ? PNG_MAGIC2 : JPEG_MAGIC2;
+  for (let i = 0; i <= buffer.length - magic.length; i++) {
+    if (matchesMagic2(buffer.subarray(i), magic)) {
+      offsets.push(i);
+      i += magic.length - 1;
+      if (expectedFrameCount > 0 && offsets.length >= expectedFrameCount) {
+        break;
+      }
+    }
+  }
+  return offsets;
+}
 function toUint8Array2(entry) {
   if (entry instanceof Uint8Array) return entry;
   if (entry instanceof ArrayBuffer) return new Uint8Array(entry);
@@ -2393,21 +2527,24 @@ async function readVideosStreaming(file, labelsPath, openVideos = false) {
     const data = await file.getDatasetValue("videos_json");
     const values = normalizeDatasetArray(data.value);
     const metadataList = parseVideosMetadata(values, labelsPath);
-    return metadataList.map((meta) => {
+    const videos = [];
+    for (const meta of metadataList) {
       const shape = meta.frameCount && meta.height && meta.width && meta.channels ? [meta.frameCount, meta.height, meta.width, meta.channels] : void 0;
       let backend = null;
       if (openVideos && meta.embedded && meta.dataset) {
+        const frameNumbers = await readFrameNumbersStreaming(file, meta.dataset);
         backend = new StreamingHdf5VideoBackend({
           filename: meta.filename,
           h5file: file,
           datasetPath: meta.dataset,
+          frameNumbers,
           format: meta.format ?? "png",
           channelOrder: meta.channelOrder ?? "RGB",
           shape,
           fps: meta.fps
         });
       }
-      return new Video({
+      videos.push(new Video({
         filename: meta.filename,
         backend,
         backendMetadata: {
@@ -2419,8 +2556,30 @@ async function readVideosStreaming(file, labelsPath, openVideos = false) {
         },
         sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
         openBackend: openVideos && meta.embedded
-      });
-    });
+      }));
+    }
+    return videos;
+  } catch {
+    return [];
+  }
+}
+async function readFrameNumbersStreaming(file, datasetPath) {
+  try {
+    const groupPath = datasetPath.endsWith("/video") ? datasetPath.slice(0, -6) : datasetPath;
+    const frameNumbersPath = `${groupPath}/frame_numbers`;
+    const groupKeys = await file.getKeys(groupPath);
+    if (!groupKeys.includes("frame_numbers")) {
+      return [];
+    }
+    const data = await file.getDatasetValue(frameNumbersPath);
+    const values = data.value;
+    if (Array.isArray(values)) {
+      return values.map((v) => Number(v));
+    }
+    if (ArrayBuffer.isView(values)) {
+      return Array.from(values).map(Number);
+    }
+    return [];
   } catch {
     return [];
   }

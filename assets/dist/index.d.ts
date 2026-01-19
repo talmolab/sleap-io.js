@@ -348,6 +348,10 @@ declare function openStreamingH5(url: string, options?: StreamingH5Options): Pro
  * This backend uses StreamingH5File (Web Worker + range requests) instead of
  * a synchronous h5wasm File object, making it suitable for browser environments
  * where the SLP file is loaded via HTTP range requests.
+ *
+ * Supports two data storage formats:
+ * 1. vlen-encoded: Array of individual frame blobs (each index = one frame)
+ * 2. Contiguous buffer: Single buffer with all frames concatenated
  */
 declare class StreamingHdf5VideoBackend implements VideoBackend {
     filename: string;
@@ -360,6 +364,7 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
     private format;
     private channelOrder;
     private cachedData;
+    private frameOffsets;
     constructor(options: {
         filename: string;
         h5file: StreamingH5File;
