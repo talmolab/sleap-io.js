@@ -204,26 +204,39 @@ async function readVideosStreaming(
         datasetPath = (await findVideoDatasetStreaming(file, videoIndex)) ?? undefined;
       }
 
-      // Determine channel order: use explicit attribute if present, otherwise
-      // default to BGR for legacy files (format_id < 1.4) since they were
-      // typically encoded with OpenCV which uses BGR order
-      const channelOrder = meta.channelOrder ?? (formatId < 1.4 ? "BGR" : "RGB");
-
-      // Read format from metadata, or fall back to HDF5 dataset attributes
+      // Read format and channel_order from HDF5 dataset attributes if available
+      // This matches Python sleap-io behavior (video_reading.py:987-1006)
       let format = meta.format;
-      if (!format && datasetPath) {
+      let channelOrderFromAttrs: string | undefined;
+      if (datasetPath) {
         try {
           const attrs = await file.getAttrs(datasetPath);
-          const formatAttr = attrs.format;
-          if (formatAttr) {
-            format = typeof formatAttr === "string"
-              ? formatAttr
-              : (formatAttr as { value?: string })?.value;
+          // Read format attribute
+          if (!format) {
+            const formatAttr = attrs.format;
+            if (formatAttr) {
+              format = typeof formatAttr === "string"
+                ? formatAttr
+                : (formatAttr as { value?: string })?.value;
+            }
+          }
+          // Read channel_order attribute (like Python does)
+          const channelOrderAttr = attrs.channel_order;
+          if (channelOrderAttr) {
+            channelOrderFromAttrs = typeof channelOrderAttr === "string"
+              ? channelOrderAttr
+              : (channelOrderAttr as { value?: string })?.value;
           }
         } catch {
           // Ignore attribute read errors
         }
       }
+
+      // Determine channel order with priority:
+      // 1. JSON metadata (meta.channelOrder)
+      // 2. HDF5 dataset attribute (channelOrderFromAttrs)
+      // 3. Legacy fallback based on format_id (BGR for < 1.4)
+      const channelOrder = meta.channelOrder ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
 
       // Create streaming backend for embedded videos when openVideos is true
       let backend = null;
