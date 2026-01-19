@@ -13,3 +13,6 @@ export * from "./codecs/dictionary.js";
 export * from "./codecs/numpy.js";
 export * from "./codecs/skeleton-yaml.js";
 export * from "./rendering/index.js";
+
+// Streaming HDF5 utilities for advanced use cases
+export { StreamingH5File, openStreamingH5, isStreamingSupported } from "./codecs/slp/h5-streaming.js";
