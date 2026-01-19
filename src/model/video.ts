@@ -6,6 +6,7 @@ export class Video {
   backendMetadata: Record<string, unknown>;
   sourceVideo: Video | null;
   openBackend: boolean;
+  private _embedded: boolean;
 
   constructor(options: {
     filename: string | string[];
@@ -13,12 +14,18 @@ export class Video {
     backendMetadata?: Record<string, unknown>;
     sourceVideo?: Video | null;
     openBackend?: boolean;
+    embedded?: boolean;
   }) {
     this.filename = options.filename;
     this.backend = options.backend ?? null;
     this.backendMetadata = options.backendMetadata ?? {};
     this.sourceVideo = options.sourceVideo ?? null;
     this.openBackend = options.openBackend ?? true;
+    this._embedded = options.embedded ?? false;
+  }
+
+  get hasEmbeddedImages(): boolean {
+    return this._embedded;
   }
 
   get originalVideo(): Video | null {

@@ -174,29 +174,52 @@ async function readVideosStreaming(
 
     const videos: Video[] = [];
 
-    for (const meta of metadataList) {
+    for (let videoIndex = 0; videoIndex < metadataList.length; videoIndex++) {
+      const meta = metadataList[videoIndex];
       const shape: [number, number, number, number] | undefined =
         meta.frameCount && meta.height && meta.width && meta.channels
           ? [meta.frameCount, meta.height, meta.width, meta.channels]
           : undefined;
+
+      // Auto-detect dataset path when embedded but not specified in metadata
+      let datasetPath: string | undefined = meta.dataset;
+      if (meta.embedded && !datasetPath) {
+        datasetPath = (await findVideoDatasetStreaming(file, videoIndex)) ?? undefined;
+      }
 
       // Determine channel order: use explicit attribute if present, otherwise
       // default to BGR for legacy files (format_id < 1.4) since they were
       // typically encoded with OpenCV which uses BGR order
       const channelOrder = meta.channelOrder ?? (formatId < 1.4 ? "BGR" : "RGB");
 
+      // Read format from metadata, or fall back to HDF5 dataset attributes
+      let format = meta.format;
+      if (!format && datasetPath) {
+        try {
+          const attrs = await file.getAttrs(datasetPath);
+          const formatAttr = attrs.format;
+          if (formatAttr) {
+            format = typeof formatAttr === "string"
+              ? formatAttr
+              : (formatAttr as { value?: string })?.value;
+          }
+        } catch {
+          // Ignore attribute read errors
+        }
+      }
+
       // Create streaming backend for embedded videos when openVideos is true
       let backend = null;
-      if (openVideos && meta.embedded && meta.dataset) {
+      if (openVideos && meta.embedded && datasetPath) {
         // Read frame_numbers for this video
-        const frameNumbers = await readFrameNumbersStreaming(file, meta.dataset);
+        const frameNumbers = await readFrameNumbersStreaming(file, datasetPath);
 
         backend = new StreamingHdf5VideoBackend({
           filename: meta.filename,
           h5file: file,
-          datasetPath: meta.dataset,
+          datasetPath,
           frameNumbers,
-          format: meta.format ?? "png",
+          format: format ?? "png",
           channelOrder,
           shape,
           fps: meta.fps,
@@ -207,14 +230,15 @@ async function readVideosStreaming(
         filename: meta.filename,
         backend,
         backendMetadata: {
-          dataset: meta.dataset,
-          format: meta.format,
+          dataset: datasetPath,
+          format,
           shape,
           fps: meta.fps,
           channel_order: channelOrder,
         },
         sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
         openBackend: openVideos && meta.embedded,
+        embedded: meta.embedded,
       }));
     }
 
@@ -259,6 +283,57 @@ async function readFrameNumbersStreaming(
     return [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * Auto-detect video dataset path by scanning HDF5 structure.
+ * Async version for streaming file access.
+ */
+async function findVideoDatasetStreaming(
+  file: StreamingH5File,
+  videoIndex: number
+): Promise<string | null> {
+  try {
+    // Try explicit path first (video0/video, video1/video, etc.)
+    const explicitPath = `video${videoIndex}/video`;
+    const explicitGroupPath = `video${videoIndex}`;
+    try {
+      const groupKeys = await file.getKeys(explicitGroupPath);
+      if (groupKeys.includes("video")) {
+        return explicitPath;
+      }
+    } catch {
+      // Group doesn't exist, continue to scan
+    }
+
+    // Scan root keys for video groups
+    const rootKeys = file.keys();
+    for (const key of rootKeys) {
+      if (key.startsWith("video")) {
+        try {
+          const groupKeys = await file.getKeys(key);
+          if (groupKeys.includes("video")) {
+            const candidatePath = `${key}/video`;
+            // For single video case, return first found
+            if (videoIndex === 0) {
+              return candidatePath;
+            }
+            // For multi-video, try to match by index from key
+            const keyIndex = parseInt(key.slice(5), 10);
+            if (!isNaN(keyIndex) && keyIndex === videoIndex) {
+              return candidatePath;
+            }
+          }
+        } catch {
+          // Group read failed, skip
+        }
+      }
+    }
+
+    return null;
+  } catch {
+    return null;
   }
 }
 

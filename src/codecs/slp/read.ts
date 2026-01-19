@@ -95,7 +95,8 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
   const values = dataset.value ?? [];
   const videos: Video[] = [];
 
-  for (const entry of values) {
+  for (let videoIndex = 0; videoIndex < values.length; videoIndex++) {
+    const entry = values[videoIndex];
     if (!entry) continue;
     const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
     const backendMeta = parsed.backend ?? {};
@@ -108,10 +109,25 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
       filename = labelsPath;
     }
 
+    // Auto-detect dataset path when embedded but not specified in metadata
+    if (embedded && !datasetPath) {
+      datasetPath = findVideoDataset(file, videoIndex);
+    }
+
     // Determine channel order: use explicit attribute if present, otherwise
     // default to BGR for legacy files (format_id < 1.4) since they were
     // typically encoded with OpenCV which uses BGR order
     const channelOrder = backendMeta.channel_order ?? (formatId < 1.4 ? "BGR" : "RGB");
+
+    // Read format from JSON metadata, or fall back to HDF5 dataset attributes
+    let format = backendMeta.format as string | undefined;
+    if (!format && datasetPath) {
+      const videoDs = file.get(datasetPath);
+      if (videoDs) {
+        const attrs = (videoDs as { attrs?: Record<string, { value?: string }> }).attrs ?? {};
+        format = attrs.format?.value ?? (attrs.format as unknown as string);
+      }
+    }
 
     let backend = null;
     if (openVideos) {
@@ -119,7 +135,7 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
         dataset: datasetPath ?? undefined,
         embedded,
         frameNumbers: readFrameNumbers(file, datasetPath),
-        format: backendMeta.format,
+        format,
         channelOrder,
         shape: backendMeta.shape,
         fps: backendMeta.fps,
@@ -135,6 +151,7 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
         backendMetadata: backendMeta,
         sourceVideo,
         openBackend: openVideos,
+        embedded,
       })
     );
   }
@@ -149,6 +166,39 @@ function readFrameNumbers(file: any, datasetPath: string | null): number[] {
   if (!frameDataset) return [];
   const values = frameDataset.value ?? [];
   return Array.from(values).map((v: any) => Number(v));
+}
+
+/**
+ * Auto-detect video dataset path by scanning HDF5 structure.
+ * Tries explicit path first, then scans root keys for video groups.
+ */
+function findVideoDataset(file: any, videoIndex: number): string | null {
+  // Try explicit path first (video0/video, video1/video, etc.)
+  const explicitPath = `video${videoIndex}/video`;
+  if (file.get(explicitPath)) {
+    return explicitPath;
+  }
+
+  // Scan root keys for video groups
+  const keys = file.keys?.() ?? [];
+  for (const key of keys) {
+    if (key.startsWith("video")) {
+      const candidatePath = `${key}/video`;
+      if (file.get(candidatePath)) {
+        // For single video case, return first found
+        if (videoIndex === 0) {
+          return candidatePath;
+        }
+        // For multi-video, try to match by index from key
+        const keyIndex = parseInt(key.slice(5), 10);
+        if (!isNaN(keyIndex) && keyIndex === videoIndex) {
+          return candidatePath;
+        }
+      }
+    }
+  }
+
+  return null;
 }
 
 function readSuggestions(dataset: any, videos: Video[]): SuggestionFrame[] {
