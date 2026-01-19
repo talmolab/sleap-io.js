@@ -368,6 +368,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#advanced-low-level-worker-apis" class="md-nav__link">
+    <span class="md-ellipsis">
+      Advanced: Low-Level Worker APIs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#lite-mode-workers-compatible" class="md-nav__link">
     <span class="md-ellipsis">
       Lite Mode (Workers-Compatible)
@@ -525,6 +534,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#advanced-low-level-worker-apis" class="md-nav__link">
+    <span class="md-ellipsis">
+      Advanced: Low-Level Worker APIs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#lite-mode-workers-compatible" class="md-nav__link">
     <span class="md-ellipsis">
       Lite Mode (Workers-Compatible)
@@ -620,8 +638,18 @@
 </code></pre></div>
 <p>See <a href="../rendering/">rendering.md</a> for more details.</p>
 <h2 id="browser-usage">Browser Usage<a class="headerlink" href="#browser-usage" title="Permanent link">&para;</a></h2>
-<p>Browser usage requires an <a href="https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap">import map</a> to resolve external dependencies.</p>
+<p>In the browser, <code>sleap-io.js</code> automatically uses a <strong>Web Worker</strong> for all HDF5 operations. This keeps the main thread responsive and avoids bundler issues with Node.js dependencies.</p>
+<h3 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
+<p>When you call <code>loadSlp()</code> in the browser:</p>
+<ol>
+<li>A Web Worker is automatically created with h5wasm loaded from CDN</li>
+<li>All HDF5 operations (reading datasets, attributes, etc.) run in the worker</li>
+<li>For URLs, HTTP Range requests stream only the needed data</li>
+<li>The main thread stays responsive - no blocking!</li>
+</ol>
+<p><strong>No configuration needed</strong> - this happens transparently.</p>
 <h3 id="required-import-map">Required Import Map<a class="headerlink" href="#required-import-map" title="Permanent link">&para;</a></h3>
+<p>Browser usage requires an <a href="https://developer.mozilla.org/en-US/docs/Web/HTML/Element/script/type/importmap">import map</a> to resolve external dependencies:</p>
 <div class="highlight"><pre><span></span><code><span class="p">&lt;</span><span class="nt">script</span> <span class="na">type</span><span class="o">=</span><span class="s">&quot;importmap&quot;</span><span class="p">&gt;</span>
 <span class="p">{</span>
 <span class="w">  </span><span class="s2">&quot;imports&quot;</span><span class="o">:</span><span class="w"> </span><span class="p">{</span>
@@ -646,7 +674,7 @@
 <tr>
 <td><code>h5wasm</code></td>
 <td>HDF5 file reading (WebAssembly)</td>
-<td>Load from CDN</td>
+<td>Loaded in Worker from CDN</td>
 </tr>
 <tr>
 <td><code>yaml</code></td>
@@ -669,15 +697,22 @@
 <div class="highlight"><pre><span></span><code><span class="p">&lt;</span><span class="nt">script</span> <span class="na">type</span><span class="o">=</span><span class="s">&quot;module&quot;</span><span class="p">&gt;</span>
 <span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;./dist/index.js&quot;</span><span class="p">;</span>
 
-<span class="c1">// From URL (uses HTTP Range requests)</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;https://example.com/file.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nx">h5</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">stream</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;range&quot;</span><span class="w"> </span><span class="p">}</span>
-<span class="p">});</span>
+<span class="c1">// From URL - automatically uses Worker + range requests</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;https://example.com/file.slp&quot;</span><span class="p">);</span>
 
-<span class="c1">// From ArrayBuffer (e.g., file upload)</span>
+<span class="c1">// From file input - automatically uses Worker</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">file</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">document</span><span class="p">.</span><span class="nx">querySelector</span><span class="p">(</span><span class="s1">&#39;input[type=&quot;file&quot;]&#39;</span><span class="p">).</span><span class="nx">files</span><span class="p">[</span><span class="mf">0</span><span class="p">];</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="nx">file</span><span class="p">);</span>
+
+<span class="c1">// From ArrayBuffer - automatically uses Worker</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">buffer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">file</span><span class="p">.</span><span class="nx">arrayBuffer</span><span class="p">();</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="nx">buffer</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">h5</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">filenameHint</span><span class="o">:</span><span class="w"> </span><span class="nx">file</span><span class="p">.</span><span class="nx">name</span><span class="w"> </span><span class="p">}</span>
+<span class="p">});</span>
+
+<span class="c1">// Force full download (disable range requests)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;https://example.com/file.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">h5</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">stream</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;download&quot;</span><span class="w"> </span><span class="p">}</span>
 <span class="p">});</span>
 <span class="p">&lt;/</span><span class="nt">script</span><span class="p">&gt;</span>
 </code></pre></div>
@@ -765,6 +800,32 @@
 <span class="w">  </span><span class="p">&lt;/</span><span class="nt">script</span><span class="p">&gt;</span>
 <span class="p">&lt;/</span><span class="nt">body</span><span class="p">&gt;</span>
 <span class="p">&lt;/</span><span class="nt">html</span><span class="p">&gt;</span>
+</code></pre></div>
+<h2 id="advanced-low-level-worker-apis">Advanced: Low-Level Worker APIs<a class="headerlink" href="#advanced-low-level-worker-apis" title="Permanent link">&para;</a></h2>
+<p>For fine-grained control over HDF5 file access, you can use the streaming APIs directly:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">openH5Worker</span><span class="p">,</span><span class="w"> </span><span class="nx">isStreamingSupported</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="nx">isStreamingSupported</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="c1">// Open from any source type</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">h5</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">openH5Worker</span><span class="p">(</span><span class="s2">&quot;https://example.com/data.h5&quot;</span><span class="p">);</span>
+<span class="w">  </span><span class="c1">// or: await openH5Worker(file);</span>
+<span class="w">  </span><span class="c1">// or: await openH5Worker(arrayBuffer);</span>
+
+<span class="w">  </span><span class="c1">// Access HDF5 structure</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">keys</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">h5</span><span class="p">.</span><span class="nx">keys</span><span class="p">();</span><span class="w">                    </span><span class="c1">// Root-level keys</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">childKeys</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">h5</span><span class="p">.</span><span class="nx">getKeys</span><span class="p">(</span><span class="s2">&quot;/group&quot;</span><span class="p">);</span><span class="w">  </span><span class="c1">// Group children</span>
+
+<span class="w">  </span><span class="c1">// Read attributes</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">attr</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">h5</span><span class="p">.</span><span class="nx">getAttr</span><span class="p">(</span><span class="s2">&quot;/&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;format_id&quot;</span><span class="p">);</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">allAttrs</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">h5</span><span class="p">.</span><span class="nx">getAttrs</span><span class="p">(</span><span class="s2">&quot;/metadata&quot;</span><span class="p">);</span>
+
+<span class="w">  </span><span class="c1">// Read datasets</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">meta</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">h5</span><span class="p">.</span><span class="nx">getDatasetMeta</span><span class="p">(</span><span class="s2">&quot;/points&quot;</span><span class="p">);</span><span class="w">  </span><span class="c1">// { shape, dtype }</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">data</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">h5</span><span class="p">.</span><span class="nx">getDatasetValue</span><span class="p">(</span><span class="s2">&quot;/points&quot;</span><span class="p">);</span><span class="w"> </span><span class="c1">// { value, shape, dtype }</span>
+
+<span class="w">  </span><span class="c1">// Cleanup</span>
+<span class="w">  </span><span class="k">await</span><span class="w"> </span><span class="nx">h5</span><span class="p">.</span><span class="nx">close</span><span class="p">();</span>
+<span class="p">}</span>
 </code></pre></div>
 <h2 id="lite-mode-workers-compatible">Lite Mode (Workers-Compatible)<a class="headerlink" href="#lite-mode-workers-compatible" title="Permanent link">&para;</a></h2>
 <p>For environments that don't support WebAssembly compilation at runtime (e.g., Cloudflare Workers), use the lite entry point:</p>

@@ -263,6 +263,10 @@ interface StreamingH5Options {
     filenameHint?: string;
 }
 /**
+ * Source types supported by the streaming HDF5 file.
+ */
+type StreamingH5Source = string | ArrayBuffer | Uint8Array | File;
+/**
  * A streaming HDF5 file handle that uses a Web Worker for range request access.
  *
  * This class provides an API similar to h5wasm.File but operates via message
@@ -283,12 +287,33 @@ declare class StreamingH5File {
      */
     init(options?: StreamingH5Options): Promise<void>;
     /**
-     * Open a remote HDF5 file for streaming access.
+     * Open a remote HDF5 file for streaming access via URL.
      *
      * @param url - URL to the HDF5 file (must support HTTP range requests)
      * @param options - Optional settings
      */
     open(url: string, options?: StreamingH5Options): Promise<void>;
+    /**
+     * Open a local File object using WORKERFS (zero-copy).
+     *
+     * @param file - File object from file input or drag-and-drop
+     * @param options - Optional settings
+     */
+    openLocal(file: File, options?: StreamingH5Options): Promise<void>;
+    /**
+     * Open an HDF5 file from an ArrayBuffer or Uint8Array.
+     *
+     * @param buffer - ArrayBuffer or Uint8Array containing the HDF5 file data
+     * @param options - Optional settings
+     */
+    openBuffer(buffer: ArrayBuffer | Uint8Array, options?: StreamingH5Options): Promise<void>;
+    /**
+     * Open an HDF5 file from any supported source.
+     *
+     * @param source - URL string, File, ArrayBuffer, or Uint8Array
+     * @param options - Optional settings
+     */
+    openAny(source: StreamingH5Source, options?: StreamingH5Options): Promise<void>;
     /**
      * Whether a file is currently open.
      */
@@ -344,6 +369,29 @@ declare function isStreamingSupported(): boolean;
  * @returns A StreamingH5File instance
  */
 declare function openStreamingH5(url: string, options?: StreamingH5Options): Promise<StreamingH5File>;
+/**
+ * Open an HDF5 file from any supported source using a Web Worker.
+ *
+ * This is the recommended way to open HDF5 files in the browser as it
+ * offloads all h5wasm operations to a Web Worker, avoiding main thread blocking.
+ *
+ * @param source - URL string, File object, ArrayBuffer, or Uint8Array
+ * @param options - Optional settings
+ * @returns A StreamingH5File instance
+ *
+ * @example
+ * ```typescript
+ * // From URL
+ * const file = await openH5Worker("https://example.com/data.h5");
+ *
+ * // From File (file input)
+ * const file = await openH5Worker(inputElement.files[0]);
+ *
+ * // From ArrayBuffer
+ * const file = await openH5Worker(arrayBuffer);
+ * ```
+ */
+declare function openH5Worker(source: StreamingH5Source, options?: StreamingH5Options): Promise<StreamingH5File>;
 
 /**
  * Video backend for embedded images in HDF5 files accessed via streaming.
@@ -399,27 +447,36 @@ type OpenH5Options = {
 /**
  * Load an SLP file.
  *
- * When loading from a URL in a browser with `h5.stream` set to 'range' or 'auto',
- * this function automatically uses HTTP range requests for efficient streaming.
- * Only the annotation data needed is downloaded, not the entire file.
+ * In browser environments, this function automatically uses a Web Worker for all
+ * HDF5 operations, keeping the main thread responsive. For URLs, it uses HTTP
+ * range requests to download only the data needed rather than the entire file.
+ *
+ * In Node.js, this uses the native h5wasm bindings directly.
  *
  * @param source - Path, URL, ArrayBuffer, File, or FileSystemFileHandle
  * @param options - Loading options
- * @param options.openVideos - Whether to open video backends (default: true, but false for streaming)
+ * @param options.openVideos - Whether to open video backends (default: true)
  * @param options.h5 - HDF5 options including streaming mode
  * @param options.h5.stream - 'auto' | 'range' | 'download' (default: 'auto')
  *
  * @example
  * ```typescript
- * // Load from URL with streaming (uses range requests automatically)
- * const labels = await loadSlp('https://example.com/labels.slp', {
- *   h5: { stream: 'range' }
- * });
+ * // Browser: Load from URL (automatically uses Worker + range requests)
+ * const labels = await loadSlp('https://example.com/labels.slp');
  *
- * // Force full download
+ * // Browser: Load from file input (automatically uses Worker)
+ * const labels = await loadSlp(fileInput.files[0]);
+ *
+ * // Browser: Load from ArrayBuffer (automatically uses Worker)
+ * const labels = await loadSlp(arrayBuffer);
+ *
+ * // Force full download instead of range requests
  * const labels = await loadSlp('https://example.com/labels.slp', {
  *   h5: { stream: 'download' }
  * });
+ *
+ * // Node.js: Load from file path
+ * const labels = await loadSlp('/path/to/file.slp');
  * ```
  */
 declare function loadSlp(source: SlpSource, options?: {
@@ -746,28 +803,38 @@ interface StreamingSlpOptions {
     openVideos?: boolean;
 }
 /**
- * Read an SLP file using HTTP range requests for efficient streaming.
+ * Read an SLP file using a Web Worker for efficient, non-blocking HDF5 access.
  *
- * This function downloads only the data needed (metadata, frames, instances, points)
- * rather than the entire file.
+ * This function offloads all h5wasm operations to a Web Worker, keeping the
+ * main thread responsive. For URLs, it uses HTTP range requests to download
+ * only the data needed rather than the entire file.
  *
  * When `openVideos` is true, video backends are created for embedded videos,
  * allowing frame data to be retrieved. The underlying HDF5 file remains open
  * until all video backends are closed.
  *
- * @param url - URL to the SLP file (must support HTTP range requests)
+ * @param source - URL, File, ArrayBuffer, or Uint8Array containing the SLP file
  * @param options - Optional settings
  * @returns Labels object with all annotation data
  *
  * @example
  * ```typescript
- * // Load with video backends for embedded images
+ * // Load from URL with video backends
  * const labels = await readSlpStreaming('https://example.com/labels.slp', {
  *   openVideos: true
  * });
- * const frame = await labels.video.getFrame(0);
+ *
+ * // Load from File object (file input)
+ * const labels = await readSlpStreaming(fileInput.files[0], {
+ *   openVideos: true
+ * });
+ *
+ * // Load from ArrayBuffer
+ * const labels = await readSlpStreaming(arrayBuffer, {
+ *   filenameHint: 'data.slp'
+ * });
  * ```
  */
-declare function readSlpStreaming(url: string, options?: StreamingSlpOptions): Promise<Labels>;
+declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, openStreamingH5, readSlpStreaming, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, toDataURL, toDict, toJPEG, toNumpy, toPNG };
+export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, readSlpStreaming, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, toDataURL, toDict, toJPEG, toNumpy, toPNG };

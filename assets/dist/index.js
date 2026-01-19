@@ -1394,7 +1394,8 @@ function decodeRawFrame(bytes, shape, channelOrder) {
 // src/codecs/slp/h5-worker.ts
 var H5_WORKER_CODE = `
 // h5wasm streaming worker
-// Uses createLazyFile for HTTP range request streaming
+// Handles all HDF5 operations in a Web Worker to avoid main thread blocking
+// Supports: URL streaming (range requests), local files (WORKERFS), and ArrayBuffers
 
 let h5wasmModule = null;
 let FS = null;
@@ -1412,8 +1413,18 @@ self.onmessage = async function(e) {
         break;
 
       case 'openUrl':
-        const result = await openRemoteFile(payload.url, payload.filename);
-        respond(id, result);
+        const urlResult = await openRemoteFile(payload.url, payload.filename);
+        respond(id, urlResult);
+        break;
+
+      case 'openLocal':
+        const localResult = await openLocalFile(payload.file, payload.filename);
+        respond(id, localResult);
+        break;
+
+      case 'openBuffer':
+        const bufferResult = await openBufferFile(payload.buffer, payload.filename);
+        respond(id, bufferResult);
         break;
 
       case 'getKeys':
@@ -1495,6 +1506,66 @@ async function openRemoteFile(url, filename = 'data.h5') {
   // Open with h5wasm
   const filePath = mountPath + '/' + filename;
   currentFile = new h5wasm.File(filePath, 'r');
+
+  return {
+    success: true,
+    path: currentFile.path,
+    filename: currentFile.filename,
+    keys: currentFile.keys()
+  };
+}
+
+async function openLocalFile(file, filename) {
+  if (!h5wasmModule) {
+    throw new Error('h5wasm not initialized');
+  }
+
+  // Close any existing file
+  closeFile();
+
+  // Use provided filename or file.name
+  const fname = filename || file.name || 'local.h5';
+
+  // Create mount point for WORKERFS
+  mountPath = '/local-' + Date.now();
+  FS.mkdir(mountPath);
+
+  // Mount the file using WORKERFS (zero-copy access)
+  FS.mount(FS.filesystems.WORKERFS, { files: [file] }, mountPath);
+
+  // Open with h5wasm
+  const filePath = mountPath + '/' + fname;
+  currentFile = new h5wasm.File(filePath, 'r');
+
+  return {
+    success: true,
+    path: currentFile.path,
+    filename: currentFile.filename,
+    keys: currentFile.keys()
+  };
+}
+
+async function openBufferFile(buffer, filename = 'data.h5') {
+  if (!h5wasmModule) {
+    throw new Error('h5wasm not initialized');
+  }
+
+  // Close any existing file
+  closeFile();
+
+  // Write buffer to virtual filesystem
+  const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  mountPath = '/buffer-' + Date.now() + '/' + filename;
+
+  // Create parent directory
+  const dir = mountPath.substring(0, mountPath.lastIndexOf('/'));
+  FS.mkdir(dir);
+
+  // Write file to virtual FS
+  FS.writeFile(mountPath, data);
+
+  // Open with h5wasm
+  currentFile = new h5wasm.File(mountPath, 'r');
 
   return {
     success: true,
@@ -1695,7 +1766,7 @@ var StreamingH5File = class {
     await this.send("init", { h5wasmUrl: options?.h5wasmUrl });
   }
   /**
-   * Open a remote HDF5 file for streaming access.
+   * Open a remote HDF5 file for streaming access via URL.
    *
    * @param url - URL to the HDF5 file (must support HTTP range requests)
    * @param options - Optional settings
@@ -1706,6 +1777,51 @@ var StreamingH5File = class {
     const result = await this.send("openUrl", { url, filename });
     this._keys = result.keys || [];
     this._isOpen = true;
+  }
+  /**
+   * Open a local File object using WORKERFS (zero-copy).
+   *
+   * @param file - File object from file input or drag-and-drop
+   * @param options - Optional settings
+   */
+  async openLocal(file, options) {
+    await this.init(options);
+    const filename = options?.filenameHint || file.name || "data.h5";
+    const result = await this.send("openLocal", { file, filename });
+    this._keys = result.keys || [];
+    this._isOpen = true;
+  }
+  /**
+   * Open an HDF5 file from an ArrayBuffer or Uint8Array.
+   *
+   * @param buffer - ArrayBuffer or Uint8Array containing the HDF5 file data
+   * @param options - Optional settings
+   */
+  async openBuffer(buffer, options) {
+    await this.init(options);
+    const filename = options?.filenameHint || "data.h5";
+    const data = buffer instanceof Uint8Array ? buffer.buffer : buffer;
+    const result = await this.send("openBuffer", { buffer: data, filename });
+    this._keys = result.keys || [];
+    this._isOpen = true;
+  }
+  /**
+   * Open an HDF5 file from any supported source.
+   *
+   * @param source - URL string, File, ArrayBuffer, or Uint8Array
+   * @param options - Optional settings
+   */
+  async openAny(source, options) {
+    if (typeof source === "string") {
+      return this.open(source, options);
+    }
+    if (typeof File !== "undefined" && source instanceof File) {
+      return this.openLocal(source, options);
+    }
+    if (source instanceof ArrayBuffer || source instanceof Uint8Array) {
+      return this.openBuffer(source, options);
+    }
+    throw new Error("Unsupported source type for StreamingH5File");
   }
   /**
    * Whether a file is currently open.
@@ -1784,6 +1900,14 @@ async function openStreamingH5(url, options) {
   }
   const file = new StreamingH5File();
   await file.open(url, options);
+  return file;
+}
+async function openH5Worker(source, options) {
+  if (!isStreamingSupported()) {
+    throw new Error("Web Worker HDF5 access requires Worker/Blob/URL support");
+  }
+  const file = new StreamingH5File();
+  await file.openAny(source, options);
   return file;
 }
 
@@ -2552,17 +2676,18 @@ function slicePoints(data, start, end, predicted = false) {
 }
 
 // src/codecs/slp/read-streaming.ts
-async function readSlpStreaming(url, options) {
+async function readSlpStreaming(source, options) {
   if (!isStreamingSupported()) {
     throw new Error("Streaming HDF5 requires Web Worker support (browser environment)");
   }
-  const file = await openStreamingH5(url, {
+  const file = await openH5Worker(source, {
     h5wasmUrl: options?.h5wasmUrl,
     filenameHint: options?.filenameHint
   });
   const openVideos = options?.openVideos ?? false;
+  const sourcePath = typeof source === "string" ? source : typeof File !== "undefined" && source instanceof File ? source.name : options?.filenameHint ?? "slp-data.slp";
   try {
-    return await readFromStreamingFile(file, url, options?.filenameHint, openVideos);
+    return await readFromStreamingFile(file, sourcePath, options?.filenameHint, openVideos);
   } finally {
     if (!openVideos) {
       await file.close();
@@ -3244,29 +3369,44 @@ function createMatrixDataset(file, name, rows, fieldNames, dtype) {
 }
 
 // src/io/main.ts
-function isProbablyUrl2(source) {
-  return typeof source === "string" && /^https?:\/\//i.test(source);
+function isNode3() {
+  return typeof process !== "undefined" && !!process.versions?.node;
 }
-function isBrowser5() {
-  return typeof window !== "undefined" && typeof Worker !== "undefined";
+function isBrowserWithWorkerSupport() {
+  return typeof window !== "undefined" && isStreamingSupported();
 }
 async function loadSlp(source, options) {
   const streamMode = options?.h5?.stream ?? "auto";
-  if (isProbablyUrl2(source) && isBrowser5() && isStreamingSupported() && (streamMode === "range" || streamMode === "auto")) {
-    try {
-      return await readSlpStreaming(source, {
-        filenameHint: options?.h5?.filenameHint,
-        openVideos: options?.openVideos ?? true
-      });
-    } catch (e) {
-      if (streamMode === "auto") {
-        console.warn("Streaming failed, falling back to full download:", e);
-      } else {
-        throw e;
+  const openVideos = options?.openVideos ?? true;
+  if (isBrowserWithWorkerSupport() && !isNode3() && streamMode !== "download") {
+    let streamingSource;
+    if (typeof source === "string") {
+      streamingSource = source;
+    } else if (source instanceof ArrayBuffer || source instanceof Uint8Array) {
+      streamingSource = source;
+    } else if (typeof File !== "undefined" && source instanceof File) {
+      streamingSource = source;
+    } else if (typeof FileSystemFileHandle !== "undefined" && "getFile" in source) {
+      streamingSource = await source.getFile();
+    } else {
+      streamingSource = null;
+    }
+    if (streamingSource !== null) {
+      try {
+        return await readSlpStreaming(streamingSource, {
+          filenameHint: options?.h5?.filenameHint,
+          openVideos
+        });
+      } catch (e) {
+        if (streamMode === "auto") {
+          console.warn("[sleap-io] Worker-based loading failed, falling back to main thread:", e);
+        } else {
+          throw e;
+        }
       }
     }
   }
-  return readSlp(source, { openVideos: options?.openVideos ?? true, h5: options?.h5 });
+  return readSlp(source, { openVideos, h5: options?.h5 });
 }
 async function saveSlp(labels, filename, options) {
   await writeSlp(filename, labels, {
@@ -4158,6 +4298,7 @@ export {
   loadSlp,
   loadVideo,
   makeCameraFromDict,
+  openH5Worker,
   openStreamingH5,
   pointsEmpty,
   pointsFromArray,
