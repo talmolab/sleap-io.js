@@ -8,13 +8,16 @@ import {
   Track,
   parseJsonAttr,
   parseSkeletons,
+  parseSuggestions,
+  parseTracks,
+  parseVideosMetadata,
   pointsEmpty,
   pointsFromArray,
   pointsFromDict,
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-CDU5QGU6.js";
+} from "./chunk-23DE7GPK.js";
 
 // src/model/labeled-frame.ts
 var LabeledFrame = class {
@@ -2223,6 +2226,302 @@ function slicePoints(data, start, end, predicted = false) {
   return points;
 }
 
+// src/codecs/slp/read-streaming.ts
+async function readSlpStreaming(url, options) {
+  if (!isStreamingSupported()) {
+    throw new Error("Streaming HDF5 requires Web Worker support (browser environment)");
+  }
+  const file = await openStreamingH5(url, {
+    h5wasmUrl: options?.h5wasmUrl,
+    filenameHint: options?.filenameHint
+  });
+  try {
+    return await readFromStreamingFile(file, url, options?.filenameHint);
+  } finally {
+    await file.close();
+  }
+}
+async function readFromStreamingFile(file, url, filenameHint) {
+  const metadataAttrs = await file.getAttrs("metadata");
+  const formatId = Number(
+    metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
+  );
+  const metadataJson = parseJsonAttr(metadataAttrs["json"]);
+  const labelsPath = filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
+  const skeletons = parseSkeletons(metadataJson);
+  const tracks = await readTracksStreaming(file);
+  const videos = await readVideosStreaming(file, labelsPath);
+  const suggestions = await readSuggestionsStreaming(file, videos);
+  const framesData = await readStructDatasetStreaming(file, "frames");
+  const instancesData = await readStructDatasetStreaming(file, "instances");
+  const pointsData = await readStructDatasetStreaming(file, "points");
+  const predPointsData = await readStructDatasetStreaming(file, "pred_points");
+  const labeledFrames = buildLabeledFrames2({
+    framesData,
+    instancesData,
+    pointsData,
+    predPointsData,
+    skeletons,
+    tracks,
+    videos,
+    formatId
+  });
+  return new Labels({
+    labeledFrames,
+    videos,
+    skeletons,
+    tracks,
+    suggestions,
+    sessions: [],
+    // Sessions require complex parsing, skip for now
+    provenance: metadataJson?.provenance ?? {}
+  });
+}
+async function readTracksStreaming(file) {
+  try {
+    const keys = file.keys();
+    if (!keys.includes("tracks_json")) return [];
+    const data = await file.getDatasetValue("tracks_json");
+    const values = normalizeDatasetArray(data.value);
+    return parseTracks(values);
+  } catch {
+    return [];
+  }
+}
+async function readVideosStreaming(file, labelsPath) {
+  try {
+    const keys = file.keys();
+    if (!keys.includes("videos_json")) return [];
+    const data = await file.getDatasetValue("videos_json");
+    const values = normalizeDatasetArray(data.value);
+    const metadataList = parseVideosMetadata(values, labelsPath);
+    return metadataList.map((meta) => new Video({
+      filename: meta.filename,
+      backend: null,
+      // No backend in streaming mode
+      backendMetadata: {
+        dataset: meta.dataset,
+        format: meta.format,
+        shape: meta.frameCount && meta.height && meta.width && meta.channels ? [meta.frameCount, meta.height, meta.width, meta.channels] : void 0,
+        fps: meta.fps,
+        channel_order: meta.channelOrder
+      },
+      sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
+      openBackend: false
+    }));
+  } catch {
+    return [];
+  }
+}
+async function readSuggestionsStreaming(file, videos) {
+  try {
+    const keys = file.keys();
+    if (!keys.includes("suggestions_json")) return [];
+    const data = await file.getDatasetValue("suggestions_json");
+    const values = normalizeDatasetArray(data.value);
+    const metadataList = parseSuggestions(values);
+    return metadataList.map((meta) => {
+      const video = videos[meta.video];
+      if (!video) return null;
+      return new SuggestionFrame({
+        video,
+        frameIdx: meta.frameIdx,
+        metadata: meta.metadata
+      });
+    }).filter((s) => s !== null);
+  } catch {
+    return [];
+  }
+}
+async function readStructDatasetStreaming(file, path) {
+  try {
+    const keys = file.keys();
+    if (!keys.includes(path)) return {};
+    const meta = await file.getDatasetMeta(path);
+    const data = await file.getDatasetValue(path);
+    const fieldNames = getFieldNamesFromMeta(meta);
+    return normalizeStructData(data.value, data.shape, fieldNames);
+  } catch {
+    return {};
+  }
+}
+function getFieldNamesFromMeta(meta) {
+  const dtype = meta.dtype;
+  if (typeof dtype === "string") {
+    const namesMatch = dtype.match(/'names':\s*\[([^\]]+)\]/);
+    if (namesMatch) {
+      const namesStr = namesMatch[1];
+      const names = namesStr.match(/'([^']+)'/g);
+      if (names) {
+        return names.map((n) => n.replace(/'/g, ""));
+      }
+    }
+  }
+  if (typeof dtype === "object" && dtype !== null) {
+    const dtypeObj = dtype;
+    if (dtypeObj.compound_type && typeof dtypeObj.compound_type === "object") {
+      const compound = dtypeObj.compound_type;
+      if (compound.members) {
+        return compound.members.map((m) => m.name).filter((n) => !!n);
+      }
+    }
+  }
+  return [];
+}
+function normalizeStructData(value, shape, fieldNames) {
+  if (!value) return {};
+  if (value && typeof value === "object" && !Array.isArray(value) && !ArrayBuffer.isView(value)) {
+    const obj = value;
+    const firstKey = Object.keys(obj)[0];
+    if (firstKey && Array.isArray(obj[firstKey])) {
+      return obj;
+    }
+  }
+  if (ArrayBuffer.isView(value) && shape.length === 2) {
+    const [rowCount, colCount] = shape;
+    const arr = value;
+    if (fieldNames.length === colCount) {
+      const result = {};
+      for (let col = 0; col < colCount; col++) {
+        const colData = [];
+        for (let row = 0; row < rowCount; row++) {
+          colData.push(arr[row * colCount + col]);
+        }
+        result[fieldNames[col]] = colData;
+      }
+      return result;
+    }
+  }
+  if (Array.isArray(value) && value.length > 0 && Array.isArray(value[0])) {
+    const rows = value;
+    if (fieldNames.length) {
+      const result = {};
+      fieldNames.forEach((field, colIdx) => {
+        result[field] = rows.map((row) => row[colIdx]);
+      });
+      return result;
+    }
+  }
+  return {};
+}
+function normalizeDatasetArray(value) {
+  if (Array.isArray(value)) return value;
+  if (ArrayBuffer.isView(value)) {
+    return Array.from(value);
+  }
+  return [];
+}
+function buildLabeledFrames2(options) {
+  const frames = [];
+  const { framesData, instancesData, pointsData, predPointsData, skeletons, tracks, videos, formatId } = options;
+  const frameIds = framesData.frame_id ?? [];
+  const videoIdToIndex = buildVideoIdMap2(framesData, videos);
+  const instanceById = /* @__PURE__ */ new Map();
+  const fromPredictedPairs = [];
+  for (let frameIdx = 0; frameIdx < frameIds.length; frameIdx += 1) {
+    const rawVideoId = Number(framesData.video?.[frameIdx] ?? 0);
+    const videoIndex = videoIdToIndex.get(rawVideoId) ?? rawVideoId;
+    const frameIndex = Number(framesData.frame_idx?.[frameIdx] ?? 0);
+    const instStart = Number(framesData.instance_id_start?.[frameIdx] ?? 0);
+    const instEnd = Number(framesData.instance_id_end?.[frameIdx] ?? 0);
+    const video = videos[videoIndex];
+    if (!video) continue;
+    const instances = [];
+    for (let instIdx = instStart; instIdx < instEnd; instIdx += 1) {
+      const instanceType = Number(instancesData.instance_type?.[instIdx] ?? 0);
+      const skeletonId = Number(instancesData.skeleton?.[instIdx] ?? 0);
+      const trackId = Number(instancesData.track?.[instIdx] ?? -1);
+      const pointStart = Number(instancesData.point_id_start?.[instIdx] ?? 0);
+      const pointEnd = Number(instancesData.point_id_end?.[instIdx] ?? 0);
+      const score = Number(instancesData.score?.[instIdx] ?? 0);
+      const trackingScore = Number(instancesData.tracking_score?.[instIdx] ?? 0);
+      const fromPredicted = Number(instancesData.from_predicted?.[instIdx] ?? -1);
+      const skeleton = skeletons[skeletonId] ?? skeletons[0] ?? new Skeleton({ nodes: [] });
+      const track = trackId >= 0 ? tracks[trackId] : null;
+      let instance;
+      if (instanceType === 0) {
+        const points = slicePoints2(pointsData, pointStart, pointEnd);
+        instance = new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton, track, trackingScore });
+        if (formatId < 1.1) {
+          instance.points.forEach((point) => {
+            point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
+          });
+        }
+        if (fromPredicted >= 0) {
+          fromPredictedPairs.push([instIdx, fromPredicted]);
+        }
+      } else {
+        const points = slicePoints2(predPointsData, pointStart, pointEnd, true);
+        instance = new PredictedInstance({ points: predictedPointsFromArray(points, skeleton.nodeNames), skeleton, track, score, trackingScore });
+        if (formatId < 1.1) {
+          instance.points.forEach((point) => {
+            point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
+          });
+        }
+      }
+      instanceById.set(instIdx, instance);
+      instances.push(instance);
+    }
+    frames.push(new LabeledFrame({ video, frameIdx: frameIndex, instances }));
+  }
+  for (const [instanceId, fromPredictedId] of fromPredictedPairs) {
+    const instance = instanceById.get(instanceId);
+    const predicted = instanceById.get(fromPredictedId);
+    if (instance && predicted instanceof PredictedInstance && instance instanceof Instance) {
+      instance.fromPredicted = predicted;
+    }
+  }
+  return frames;
+}
+function buildVideoIdMap2(framesData, videos) {
+  const videoIds = /* @__PURE__ */ new Set();
+  for (const value of framesData.video ?? []) {
+    videoIds.add(Number(value));
+  }
+  if (!videoIds.size) return /* @__PURE__ */ new Map();
+  const maxId = Math.max(...Array.from(videoIds));
+  if (videoIds.size === videos.length && maxId === videos.length - 1) {
+    const identity = /* @__PURE__ */ new Map();
+    for (let i = 0; i < videos.length; i += 1) {
+      identity.set(i, i);
+    }
+    return identity;
+  }
+  const map = /* @__PURE__ */ new Map();
+  for (let index = 0; index < videos.length; index += 1) {
+    const video = videos[index];
+    const dataset = video.backendMetadata?.dataset ?? "";
+    const parsedId = parseVideoIdFromDataset2(dataset);
+    if (parsedId != null) {
+      map.set(parsedId, index);
+    }
+  }
+  return map;
+}
+function parseVideoIdFromDataset2(dataset) {
+  if (!dataset) return null;
+  const group = dataset.split("/")[0];
+  if (!group.startsWith("video")) return null;
+  const id = Number(group.slice(5));
+  return Number.isNaN(id) ? null : id;
+}
+function slicePoints2(data, start, end, predicted = false) {
+  const xs = data.x ?? [];
+  const ys = data.y ?? [];
+  const visible = data.visible ?? [];
+  const complete = data.complete ?? [];
+  const scores = data.score ?? [];
+  const points = [];
+  for (let i = start; i < end; i += 1) {
+    if (predicted) {
+      points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
+    } else {
+      points.push([xs[i], ys[i], visible[i], complete[i]]);
+    }
+  }
+  return points;
+}
+
 // src/codecs/slp/write.ts
 var isNode2 = typeof process !== "undefined" && !!process.versions?.node;
 var FORMAT_ID = 1.4;
@@ -2525,7 +2824,27 @@ function createMatrixDataset(file, name, rows, fieldNames, dtype) {
 }
 
 // src/io/main.ts
+function isProbablyUrl2(source) {
+  return typeof source === "string" && /^https?:\/\//i.test(source);
+}
+function isBrowser4() {
+  return typeof window !== "undefined" && typeof Worker !== "undefined";
+}
 async function loadSlp(source, options) {
+  const streamMode = options?.h5?.stream ?? "auto";
+  if (isProbablyUrl2(source) && isBrowser4() && isStreamingSupported() && (streamMode === "range" || streamMode === "auto")) {
+    try {
+      return await readSlpStreaming(source, {
+        filenameHint: options?.h5?.filenameHint
+      });
+    } catch (e) {
+      if (streamMode === "auto") {
+        console.warn("Streaming failed, falling back to full download:", e);
+      } else {
+        throw e;
+      }
+    }
+  }
   return readSlp(source, { openVideos: options?.openVideos ?? true, h5: options?.h5 });
 }
 async function saveSlp(labels, filename, options) {
@@ -3424,6 +3743,7 @@ export {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict,
+  readSlpStreaming,
   renderImage,
   renderVideo,
   resolveColor,

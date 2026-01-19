@@ -356,6 +356,32 @@ type OpenH5Options = {
     filenameHint?: string;
 };
 
+/**
+ * Load an SLP file.
+ *
+ * When loading from a URL in a browser with `h5.stream` set to 'range' or 'auto',
+ * this function automatically uses HTTP range requests for efficient streaming.
+ * Only the annotation data needed is downloaded, not the entire file.
+ *
+ * @param source - Path, URL, ArrayBuffer, File, or FileSystemFileHandle
+ * @param options - Loading options
+ * @param options.openVideos - Whether to open video backends (default: true, but false for streaming)
+ * @param options.h5 - HDF5 options including streaming mode
+ * @param options.h5.stream - 'auto' | 'range' | 'download' (default: 'auto')
+ *
+ * @example
+ * ```typescript
+ * // Load from URL with streaming (uses range requests automatically)
+ * const labels = await loadSlp('https://example.com/labels.slp', {
+ *   h5: { stream: 'range' }
+ * });
+ *
+ * // Force full download
+ * const labels = await loadSlp('https://example.com/labels.slp', {
+ *   h5: { stream: 'download' }
+ * });
+ * ```
+ */
 declare function loadSlp(source: SlpSource, options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
@@ -658,4 +684,41 @@ declare function checkFfmpeg(): Promise<boolean>;
  */
 declare function renderVideo(source: Labels | LabeledFrame[], outputPath: string, options?: VideoOptions): Promise<void>;
 
-export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, openStreamingH5, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, toDataURL, toDict, toJPEG, toNumpy, toPNG };
+/**
+ * Streaming SLP file reader using HTTP range requests.
+ *
+ * This module provides a streaming alternative to `readSlp` that uses
+ * `StreamingH5File` for efficient range request-based file access.
+ * Only the data actually needed is downloaded, rather than the entire file.
+ *
+ * @module
+ */
+
+/**
+ * Options for streaming SLP file loading.
+ */
+interface StreamingSlpOptions {
+    /** URL hint for h5wasm CDN */
+    h5wasmUrl?: string;
+    /** Filename hint for the HDF5 file */
+    filenameHint?: string;
+}
+/**
+ * Read an SLP file using HTTP range requests for efficient streaming.
+ *
+ * This function downloads only the data needed (metadata, frames, instances, points)
+ * rather than the entire file. Embedded videos are NOT loaded - only metadata.
+ *
+ * @param url - URL to the SLP file (must support HTTP range requests)
+ * @param options - Optional settings
+ * @returns Labels object with all annotation data
+ *
+ * @example
+ * ```typescript
+ * const labels = await readSlpStreaming('https://example.com/labels.slp');
+ * console.log(`Loaded ${labels.labeledFrames.length} frames`);
+ * ```
+ */
+declare function readSlpStreaming(url: string, options?: StreamingSlpOptions): Promise<Labels>;
+
+export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, openStreamingH5, readSlpStreaming, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, toDataURL, toDict, toJPEG, toNumpy, toPNG };

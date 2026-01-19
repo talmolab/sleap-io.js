@@ -364,6 +364,9 @@ function parseJsonAttr(attr) {
   if (value && typeof value === "object" && "buffer" in value) {
     return JSON.parse(textDecoder.decode(new Uint8Array(value.buffer)));
   }
+  if (value && typeof value === "object") {
+    return value;
+  }
   return JSON.parse(String(value));
 }
 function trimHdf5String(str) {
