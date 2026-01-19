@@ -171,7 +171,9 @@ async function readVideosStreaming(
     const values = normalizeDatasetArray(data.value);
     const metadataList = parseVideosMetadata(values, labelsPath);
 
-    return metadataList.map(meta => {
+    const videos: Video[] = [];
+
+    for (const meta of metadataList) {
       const shape: [number, number, number, number] | undefined =
         meta.frameCount && meta.height && meta.width && meta.channels
           ? [meta.frameCount, meta.height, meta.width, meta.channels]
@@ -180,10 +182,14 @@ async function readVideosStreaming(
       // Create streaming backend for embedded videos when openVideos is true
       let backend = null;
       if (openVideos && meta.embedded && meta.dataset) {
+        // Read frame_numbers for this video
+        const frameNumbers = await readFrameNumbersStreaming(file, meta.dataset);
+
         backend = new StreamingHdf5VideoBackend({
           filename: meta.filename,
           h5file: file,
           datasetPath: meta.dataset,
+          frameNumbers,
           format: meta.format ?? "png",
           channelOrder: meta.channelOrder ?? "RGB",
           shape,
@@ -191,7 +197,7 @@ async function readVideosStreaming(
         });
       }
 
-      return new Video({
+      videos.push(new Video({
         filename: meta.filename,
         backend,
         backendMetadata: {
@@ -203,8 +209,48 @@ async function readVideosStreaming(
         },
         sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
         openBackend: openVideos && meta.embedded,
-      });
-    });
+      }));
+    }
+
+    return videos;
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read frame_numbers dataset for a video.
+ * Returns the mapping from frame indices to storage indices.
+ */
+async function readFrameNumbersStreaming(
+  file: StreamingH5File,
+  datasetPath: string
+): Promise<number[]> {
+  try {
+    // Extract group path from dataset path (e.g., "video0/video" -> "video0")
+    const groupPath = datasetPath.endsWith("/video")
+      ? datasetPath.slice(0, -6)
+      : datasetPath;
+
+    const frameNumbersPath = `${groupPath}/frame_numbers`;
+
+    // Check if dataset exists
+    const groupKeys = await file.getKeys(groupPath);
+    if (!groupKeys.includes("frame_numbers")) {
+      return [];
+    }
+
+    const data = await file.getDatasetValue(frameNumbersPath);
+    const values = data.value;
+
+    // Convert to number array
+    if (Array.isArray(values)) {
+      return values.map((v: unknown) => Number(v));
+    }
+    if (ArrayBuffer.isView(values)) {
+      return Array.from(values as unknown as ArrayLike<number>).map(Number);
+    }
+    return [];
   } catch {
     return [];
   }
