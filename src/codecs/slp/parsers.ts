@@ -20,6 +20,10 @@ export function parseJsonAttr(attr: unknown): unknown {
   if (value && typeof value === "object" && "buffer" in value) {
     return JSON.parse(textDecoder.decode(new Uint8Array((value as { buffer: ArrayBuffer }).buffer)));
   }
+  // If value is already a parsed object (e.g., from streaming worker), return as-is
+  if (value && typeof value === "object") {
+    return value;
+  }
   return JSON.parse(String(value));
 }
 
