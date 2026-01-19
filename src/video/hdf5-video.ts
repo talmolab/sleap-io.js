@@ -91,7 +91,7 @@ export class Hdf5VideoBackend implements VideoBackend {
     if (!rawBytes || rawBytes.length === 0) return null;
 
     if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes(rawBytes, this.format);
+      const decoded = await decodeImageBytes(rawBytes, this.format, this.channelOrder);
       return decoded ?? rawBytes;
     }
 
@@ -193,12 +193,43 @@ function isEncodedFormat(format: string): boolean {
   return normalized === "png" || normalized === "jpg" || normalized === "jpeg";
 }
 
-async function decodeImageBytes(bytes: Uint8Array, format: string): Promise<VideoFrame | null> {
+async function decodeImageBytes(
+  bytes: Uint8Array,
+  format: string,
+  channelOrder: string
+): Promise<VideoFrame | null> {
   if (!isBrowser || typeof createImageBitmap === "undefined") return null;
   const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
   const safeBytes = new Uint8Array(bytes);
   const blob = new Blob([safeBytes.buffer], { type: mime });
-  return createImageBitmap(blob);
+  const bitmap = await createImageBitmap(blob);
+
+  // If channel order is BGR, we need to swap R and B channels
+  // This happens when images were encoded with OpenCV (which uses BGR order)
+  // but the PNG/JPEG bytes were written directly without RGB conversion
+  const useBgr = channelOrder.toUpperCase() === "BGR";
+  if (!useBgr) {
+    return bitmap;
+  }
+
+  // Swap R and B channels by drawing to canvas and manipulating pixel data
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return bitmap;
+
+  ctx.drawImage(bitmap, 0, 0);
+  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  const data = imageData.data;
+
+  // Swap R and B for each pixel (RGBA format: indices 0=R, 1=G, 2=B, 3=A)
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const b = data[i + 2];
+    data[i] = b;
+    data[i + 2] = r;
+  }
+
+  return imageData;
 }
 
 function decodeRawFrame(
