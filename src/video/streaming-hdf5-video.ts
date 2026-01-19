@@ -27,7 +27,7 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
   fps?: number;
   private h5file: StreamingH5File;
   private datasetPath: string;
-  private frameNumbers: number[];
+  private frameNumberToIndex: Map<number, number>;
   private format: string;
   private channelOrder: string;
   private cachedData: unknown[] | Uint8Array | null;
@@ -47,7 +47,9 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     this.h5file = options.h5file;
     this.datasetPath = options.datasetPath;
     this.dataset = options.datasetPath;
-    this.frameNumbers = options.frameNumbers ?? [];
+    // Build O(1) lookup map from frame numbers
+    const frameNumbers = options.frameNumbers ?? [];
+    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";
     this.shape = options.shape;
@@ -57,8 +59,11 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
   }
 
   async getFrame(frameIndex: number): Promise<VideoFrame | null> {
-    const index = this.frameNumbers.length ? this.frameNumbers.indexOf(frameIndex) : frameIndex;
-    if (index < 0) return null;
+    // Use O(1) Map lookup; if no frame numbers provided, use frameIndex directly
+    const index = this.frameNumberToIndex.size > 0
+      ? this.frameNumberToIndex.get(frameIndex)
+      : frameIndex;
+    if (index === undefined) return null;
 
     // Load data if not cached
     if (!this.cachedData) {
