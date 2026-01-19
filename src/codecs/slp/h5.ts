@@ -5,9 +5,19 @@ export type SlpSource = string | ArrayBuffer | Uint8Array | File | FileSystemFil
 export type StreamMode = "auto" | "range" | "download";
 
 export type OpenH5Options = {
+  /**
+   * Streaming mode for remote files:
+   * - "auto": Try range requests, fall back to download
+   * - "range": Use HTTP range requests (requires Worker support in browser)
+   * - "download": Always download the entire file
+   */
   stream?: StreamMode;
+  /** Filename hint for the HDF5 file */
   filenameHint?: string;
 };
+
+// Re-export streaming utilities for advanced use cases
+export { StreamingH5File, openStreamingH5, isStreamingSupported } from "./h5-streaming.js";
 
 type H5FileSystem = {
   writeFile: (path: string, data: Uint8Array) => void;

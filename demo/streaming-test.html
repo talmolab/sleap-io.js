@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Streaming HDF5 Test - sleap-io.js</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "h5wasm": "https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js",
+          "yaml": "https://esm.sh/yaml@2.6.1",
+          "skia-canvas": "data:text/javascript,export class Canvas{}",
+          "child_process": "data:text/javascript,export function spawn(){}"
+        }
+      }
+    </script>
+    <style>
+      :root { color-scheme: dark; }
+      body {
+        font-family: system-ui, -apple-system, sans-serif;
+        background: #0c0f0d;
+        color: #f9f2e5;
+        padding: 24px;
+        max-width: 800px;
+        margin: 0 auto;
+      }
+      h1 { color: #f3c56c; }
+      .panel {
+        background: rgba(247, 242, 232, 0.06);
+        border: 1px solid rgba(243, 197, 108, 0.2);
+        border-radius: 12px;
+        padding: 16px;
+        margin-bottom: 16px;
+      }
+      pre {
+        background: #1a1a1a;
+        padding: 12px;
+        border-radius: 8px;
+        overflow-x: auto;
+        font-size: 13px;
+        max-height: 300px;
+        overflow-y: auto;
+      }
+      button {
+        padding: 10px 20px;
+        border-radius: 999px;
+        border: 1px solid #f3c56c;
+        background: transparent;
+        color: #f9f2e5;
+        cursor: pointer;
+        font-size: 14px;
+      }
+      button:hover { background: rgba(243, 197, 108, 0.1); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .success { color: #4caf50; }
+      .error { color: #f44336; }
+      .info { color: #ffc107; }
+      input[type="text"] {
+        width: 100%;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.2);
+        background: rgba(255, 255, 255, 0.08);
+        color: #f9f2e5;
+        margin-bottom: 12px;
+      }
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(3, 1fr);
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      .stat {
+        background: rgba(0,0,0,0.2);
+        padding: 12px;
+        border-radius: 8px;
+        text-align: center;
+      }
+      .stat-value { font-size: 24px; font-weight: bold; color: #f3c56c; }
+      .stat-label { font-size: 12px; color: #c7bbaa; }
+    </style>
+  </head>
+  <body>
+    <h1>Streaming HDF5 Test</h1>
+    <p>Tests HTTP range request streaming for large HDF5 files using Web Workers.</p>
+
+    <div class="panel">
+      <label>Test URL (must support CORS and range requests)</label>
+      <input type="text" id="url" value="https://slp.sh/YcJ3bY/labels.slp" />
+      <button id="runTest">Run Streaming Test</button>
+    </div>
+
+    <div class="stats">
+      <div class="stat">
+        <div class="stat-value" id="statRequests">-</div>
+        <div class="stat-label">Range Requests</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="statBytes">-</div>
+        <div class="stat-label">Bytes Transferred</div>
+      </div>
+      <div class="stat">
+        <div class="stat-value" id="statTime">-</div>
+        <div class="stat-label">Open Time (ms)</div>
+      </div>
+    </div>
+
+    <div class="panel">
+      <h3>Log</h3>
+      <pre id="output">Click "Run Streaming Test" to begin...</pre>
+    </div>
+
+    <script type="module">
+      import { openStreamingH5, isStreamingSupported } from '../dist/index.js';
+
+      const output = document.getElementById('output');
+      const urlInput = document.getElementById('url');
+      const runBtn = document.getElementById('runTest');
+
+      function log(msg, type = '') {
+        const line = document.createElement('div');
+        line.className = type;
+        line.textContent = msg;
+        output.appendChild(line);
+        output.scrollTop = output.scrollHeight;
+        console.log(msg);
+      }
+
+      function updateStat(id, value) {
+        document.getElementById(id).textContent = value;
+      }
+
+      runBtn.addEventListener('click', async () => {
+        output.innerHTML = '';
+        runBtn.disabled = true;
+
+        try {
+          log('=== Streaming HDF5 Test ===\n', 'success');
+
+          // Check support
+          log('1. Checking streaming support...');
+          if (!isStreamingSupported()) {
+            log('   ERROR: Streaming not supported in this environment', 'error');
+            return;
+          }
+          log('   Streaming is supported!', 'success');
+
+          // Open file
+          const url = urlInput.value;
+          log(`\n2. Opening remote file...`);
+          log(`   URL: ${url}`);
+
+          const startTime = performance.now();
+          const file = await openStreamingH5(url, { filenameHint: 'labels.slp' });
+          const openTime = performance.now() - startTime;
+
+          updateStat('statTime', openTime.toFixed(0));
+          log(`   File opened in ${openTime.toFixed(0)}ms`, 'success');
+
+          // List keys
+          log('\n3. File contents:');
+          const keys = file.keys();
+          log(`   Root keys: ${keys.slice(0, 10).join(', ')}${keys.length > 10 ? '...' : ''}`);
+
+          // Read metadata
+          log('\n4. Reading metadata...');
+          try {
+            const attrs = await file.getAttrs('metadata');
+            log(`   Metadata attrs: ${Object.keys(attrs).join(', ')}`, 'success');
+          } catch (e) {
+            log(`   Could not read metadata attrs: ${e.message}`, 'info');
+          }
+
+          // Read a dataset
+          log('\n5. Reading frames dataset...');
+          try {
+            const meta = await file.getDatasetMeta('frames');
+            log(`   Shape: [${meta.shape.join(', ')}]`, 'success');
+            log(`   Dtype: ${meta.dtype}`);
+
+            // Read the actual data
+            const data = await file.getDatasetValue('frames');
+            log(`   Got ${data.shape[0]} frames`, 'success');
+          } catch (e) {
+            log(`   Could not read frames: ${e.message}`, 'info');
+          }
+
+          // Read instances
+          log('\n6. Reading instances dataset...');
+          try {
+            const meta = await file.getDatasetMeta('instances');
+            log(`   Shape: [${meta.shape.join(', ')}]`, 'success');
+          } catch (e) {
+            log(`   Could not read instances: ${e.message}`, 'info');
+          }
+
+          // Close
+          log('\n7. Closing file...');
+          await file.close();
+          log('   File closed', 'success');
+
+          log('\n=== Test Complete ===', 'success');
+          log('\nNote: Check browser Network tab (filter by "slp.sh") to see');
+          log('the actual range requests with 206 Partial Content status.');
+
+          // Estimate requests/bytes from performance API
+          const entries = performance.getEntriesByType('resource')
+            .filter(e => e.name.includes('slp.sh') || e.name.includes('labels.slp'));
+          const requests = entries.length;
+          const bytes = entries.reduce((sum, e) => sum + (e.transferSize || 0), 0);
+
+          updateStat('statRequests', requests > 0 ? requests : '(check DevTools)');
+          updateStat('statBytes', bytes > 0 ? `${(bytes / 1024).toFixed(1)}KB` : '(check DevTools)');
+
+        } catch (error) {
+          log(`\nERROR: ${error.message}`, 'error');
+          console.error(error);
+        } finally {
+          runBtn.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>
