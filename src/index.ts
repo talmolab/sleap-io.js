@@ -16,3 +16,6 @@ export * from "./rendering/index.js";
 
 // Streaming HDF5 utilities for advanced use cases
 export { StreamingH5File, openStreamingH5, isStreamingSupported } from "./codecs/slp/h5-streaming.js";
+
+// Streaming SLP reader (lower-level API)
+export { readSlpStreaming } from "./codecs/slp/read-streaming.js";
