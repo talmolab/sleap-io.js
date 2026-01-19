@@ -2129,7 +2129,7 @@ async function readSlp(source, options) {
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
-    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file);
+    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
     const framesData = normalizeStructDataset(file.get("frames"));
     const instancesData = normalizeStructDataset(file.get("instances"));
@@ -2182,7 +2182,7 @@ function readTracks(dataset) {
   }
   return tracks;
 }
-async function readVideos(dataset, labelsPath, openVideos, file) {
+async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const videos = [];
@@ -2197,6 +2197,7 @@ async function readVideos(dataset, labelsPath, openVideos, file) {
       embedded = true;
       filename = labelsPath;
     }
+    const channelOrder = backendMeta.channel_order ?? (formatId < 1.4 ? "BGR" : "RGB");
     let backend = null;
     if (openVideos) {
       backend = await createVideoBackend(filename, {
@@ -2204,7 +2205,7 @@ async function readVideos(dataset, labelsPath, openVideos, file) {
         embedded,
         frameNumbers: readFrameNumbers(file, datasetPath),
         format: backendMeta.format,
-        channelOrder: backendMeta.channel_order,
+        channelOrder,
         shape: backendMeta.shape,
         fps: backendMeta.fps
       });
@@ -2535,7 +2536,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   const labelsPath = filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
   const skeletons = parseSkeletons(metadataJson);
   const tracks = await readTracksStreaming(file);
-  const videos = await readVideosStreaming(file, labelsPath, openVideos);
+  const videos = await readVideosStreaming(file, labelsPath, openVideos, formatId);
   const suggestions = await readSuggestionsStreaming(file, videos);
   const framesData = await readStructDatasetStreaming(file, "frames");
   const instancesData = await readStructDatasetStreaming(file, "instances");
@@ -2573,7 +2574,7 @@ async function readTracksStreaming(file) {
     return [];
   }
 }
-async function readVideosStreaming(file, labelsPath, openVideos = false) {
+async function readVideosStreaming(file, labelsPath, openVideos = false, formatId = 1) {
   try {
     const keys = file.keys();
     if (!keys.includes("videos_json")) return [];
@@ -2583,6 +2584,7 @@ async function readVideosStreaming(file, labelsPath, openVideos = false) {
     const videos = [];
     for (const meta of metadataList) {
       const shape = meta.frameCount && meta.height && meta.width && meta.channels ? [meta.frameCount, meta.height, meta.width, meta.channels] : void 0;
+      const channelOrder = meta.channelOrder ?? (formatId < 1.4 ? "BGR" : "RGB");
       let backend = null;
       if (openVideos && meta.embedded && meta.dataset) {
         const frameNumbers = await readFrameNumbersStreaming(file, meta.dataset);
@@ -2592,7 +2594,7 @@ async function readVideosStreaming(file, labelsPath, openVideos = false) {
           datasetPath: meta.dataset,
           frameNumbers,
           format: meta.format ?? "png",
-          channelOrder: meta.channelOrder ?? "RGB",
+          channelOrder,
           shape,
           fps: meta.fps
         });
@@ -2605,7 +2607,7 @@ async function readVideosStreaming(file, labelsPath, openVideos = false) {
           format: meta.format,
           shape,
           fps: meta.fps,
-          channel_order: meta.channelOrder
+          channel_order: channelOrder
         },
         sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
         openBackend: openVideos && meta.embedded
