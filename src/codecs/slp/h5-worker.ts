@@ -15,7 +15,8 @@
  */
 export const H5_WORKER_CODE = `
 // h5wasm streaming worker
-// Uses createLazyFile for HTTP range request streaming
+// Handles all HDF5 operations in a Web Worker to avoid main thread blocking
+// Supports: URL streaming (range requests), local files (WORKERFS), and ArrayBuffers
 
 let h5wasmModule = null;
 let FS = null;
@@ -33,8 +34,18 @@ self.onmessage = async function(e) {
         break;
 
       case 'openUrl':
-        const result = await openRemoteFile(payload.url, payload.filename);
-        respond(id, result);
+        const urlResult = await openRemoteFile(payload.url, payload.filename);
+        respond(id, urlResult);
+        break;
+
+      case 'openLocal':
+        const localResult = await openLocalFile(payload.file, payload.filename);
+        respond(id, localResult);
+        break;
+
+      case 'openBuffer':
+        const bufferResult = await openBufferFile(payload.buffer, payload.filename);
+        respond(id, bufferResult);
         break;
 
       case 'getKeys':
@@ -116,6 +127,66 @@ async function openRemoteFile(url, filename = 'data.h5') {
   // Open with h5wasm
   const filePath = mountPath + '/' + filename;
   currentFile = new h5wasm.File(filePath, 'r');
+
+  return {
+    success: true,
+    path: currentFile.path,
+    filename: currentFile.filename,
+    keys: currentFile.keys()
+  };
+}
+
+async function openLocalFile(file, filename) {
+  if (!h5wasmModule) {
+    throw new Error('h5wasm not initialized');
+  }
+
+  // Close any existing file
+  closeFile();
+
+  // Use provided filename or file.name
+  const fname = filename || file.name || 'local.h5';
+
+  // Create mount point for WORKERFS
+  mountPath = '/local-' + Date.now();
+  FS.mkdir(mountPath);
+
+  // Mount the file using WORKERFS (zero-copy access)
+  FS.mount(FS.filesystems.WORKERFS, { files: [file] }, mountPath);
+
+  // Open with h5wasm
+  const filePath = mountPath + '/' + fname;
+  currentFile = new h5wasm.File(filePath, 'r');
+
+  return {
+    success: true,
+    path: currentFile.path,
+    filename: currentFile.filename,
+    keys: currentFile.keys()
+  };
+}
+
+async function openBufferFile(buffer, filename = 'data.h5') {
+  if (!h5wasmModule) {
+    throw new Error('h5wasm not initialized');
+  }
+
+  // Close any existing file
+  closeFile();
+
+  // Write buffer to virtual filesystem
+  const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+  mountPath = '/buffer-' + Date.now() + '/' + filename;
+
+  // Create parent directory
+  const dir = mountPath.substring(0, mountPath.lastIndexOf('/'));
+  FS.mkdir(dir);
+
+  // Write file to virtual FS
+  FS.writeFile(mountPath, data);
+
+  // Open with h5wasm
+  currentFile = new h5wasm.File(mountPath, 'r');
 
   return {
     success: true,
@@ -256,6 +327,8 @@ export function createH5Worker(): Worker {
 export type H5WorkerMessageType =
   | "init"
   | "openUrl"
+  | "openLocal"
+  | "openBuffer"
   | "getKeys"
   | "getAttr"
   | "getAttrs"
