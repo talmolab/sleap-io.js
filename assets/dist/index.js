@@ -2332,15 +2332,21 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
     if (embedded && !datasetPath) {
       datasetPath = findVideoDataset(file, videoIndex);
     }
-    const channelOrder = backendMeta.channel_order ?? (formatId < 1.4 ? "BGR" : "RGB");
     let format = backendMeta.format;
-    if (!format && datasetPath) {
+    let channelOrderFromAttrs;
+    if (datasetPath) {
       const videoDs = file.get(datasetPath);
       if (videoDs) {
         const attrs = videoDs.attrs ?? {};
-        format = attrs.format?.value ?? attrs.format;
+        if (!format) {
+          format = attrs.format?.value ?? attrs.format;
+        }
+        if (attrs.channel_order) {
+          channelOrderFromAttrs = attrs.channel_order?.value ?? attrs.channel_order;
+        }
       }
     }
+    const channelOrder = backendMeta.channel_order ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
     let backend = null;
     if (openVideos) {
       backend = await createVideoBackend(filename, {
@@ -2756,18 +2762,25 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
       if (meta.embedded && !datasetPath) {
         datasetPath = await findVideoDatasetStreaming(file, videoIndex) ?? void 0;
       }
-      const channelOrder = meta.channelOrder ?? (formatId < 1.4 ? "BGR" : "RGB");
       let format = meta.format;
-      if (!format && datasetPath) {
+      let channelOrderFromAttrs;
+      if (datasetPath) {
         try {
           const attrs = await file.getAttrs(datasetPath);
-          const formatAttr = attrs.format;
-          if (formatAttr) {
-            format = typeof formatAttr === "string" ? formatAttr : formatAttr?.value;
+          if (!format) {
+            const formatAttr = attrs.format;
+            if (formatAttr) {
+              format = typeof formatAttr === "string" ? formatAttr : formatAttr?.value;
+            }
+          }
+          const channelOrderAttr = attrs.channel_order;
+          if (channelOrderAttr) {
+            channelOrderFromAttrs = typeof channelOrderAttr === "string" ? channelOrderAttr : channelOrderAttr?.value;
           }
         } catch {
         }
       }
+      const channelOrder = meta.channelOrder ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
       let backend = null;
       if (openVideos && meta.embedded && datasetPath) {
         const frameNumbers = await readFrameNumbersStreaming(file, datasetPath);
