@@ -3,12 +3,22 @@ import type { StreamingH5File } from "../codecs/slp/h5-streaming.js";
 
 const isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
 
+// PNG magic bytes: 0x89 P N G \r \n 0x1A \n
+const PNG_MAGIC = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+// JPEG magic bytes: 0xFF 0xD8 0xFF
+const JPEG_MAGIC = new Uint8Array([0xff, 0xd8, 0xff]);
+
 /**
  * Video backend for embedded images in HDF5 files accessed via streaming.
  *
  * This backend uses StreamingH5File (Web Worker + range requests) instead of
  * a synchronous h5wasm File object, making it suitable for browser environments
  * where the SLP file is loaded via HTTP range requests.
+ *
+ * Supports two data storage formats:
+ * 1. vlen-encoded: Array of individual frame blobs (each index = one frame)
+ * 2. Contiguous buffer: Single buffer with all frames concatenated
  */
 export class StreamingHdf5VideoBackend implements VideoBackend {
   filename: string;
@@ -20,7 +30,8 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
   private frameNumbers: number[];
   private format: string;
   private channelOrder: string;
-  private cachedData: unknown[] | null;
+  private cachedData: unknown[] | Uint8Array | null;
+  private frameOffsets: number[] | null;  // For contiguous buffer: byte offsets of each frame
 
   constructor(options: {
     filename: string;
@@ -42,6 +53,7 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     this.shape = options.shape;
     this.fps = options.fps;
     this.cachedData = null;
+    this.frameOffsets = null;
   }
 
   async getFrame(frameIndex: number): Promise<VideoFrame | null> {
@@ -52,17 +64,39 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     if (!this.cachedData) {
       try {
         const data = await this.h5file.getDatasetValue(this.datasetPath);
-        this.cachedData = data.value as unknown[];
+        this.cachedData = normalizeVideoData(data.value, data.shape);
+
+        // Detect if this is a contiguous buffer of encoded images
+        if (isContiguousEncodedBuffer(this.cachedData, this.format, this.shape)) {
+          this.frameOffsets = findEncodedFrameOffsets(
+            this.cachedData as unknown as Uint8Array,
+            this.format,
+            this.shape?.[0] ?? 0
+          );
+        }
       } catch {
         return null;
       }
     }
 
-    const entry = this.cachedData[index];
-    if (entry == null) return null;
+    let rawBytes: Uint8Array | null;
 
-    const rawBytes = toUint8Array(entry);
-    if (!rawBytes) return null;
+    // Handle contiguous buffer with computed frame offsets
+    if (this.frameOffsets && this.frameOffsets.length > index) {
+      const buffer = this.cachedData as unknown as Uint8Array;
+      const start = this.frameOffsets[index];
+      const end = index + 1 < this.frameOffsets.length
+        ? this.frameOffsets[index + 1]
+        : buffer.length;
+      rawBytes = buffer.slice(start, end);
+    } else {
+      // Standard vlen-encoded array: each index is a frame blob
+      const entry = (this.cachedData as unknown[])[index];
+      if (entry == null) return null;
+      rawBytes = toUint8Array(entry);
+    }
+
+    if (!rawBytes || rawBytes.length === 0) return null;
 
     if (isEncodedFormat(this.format)) {
       const decoded = await decodeImageBytes(rawBytes, this.format);
@@ -75,8 +109,104 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
 
   close(): void {
     this.cachedData = null;
+    this.frameOffsets = null;
     // Note: We don't close the h5file here as it may be shared across multiple backends
   }
+}
+
+/**
+ * Normalize video data to a consistent format.
+ * Handles both TypedArrays (contiguous) and regular arrays (vlen-encoded).
+ */
+function normalizeVideoData(value: unknown, _shape: number[]): unknown[] | Uint8Array {
+  // Already an array of frame blobs
+  if (Array.isArray(value)) {
+    return value;
+  }
+
+  // TypedArray - could be contiguous buffer or raw pixel data
+  if (ArrayBuffer.isView(value)) {
+    // Return as Uint8Array for further processing
+    const arr = value as ArrayBufferView;
+    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+  }
+
+  // Fallback
+  return [];
+}
+
+/**
+ * Check if the data is a contiguous buffer of encoded (PNG/JPEG) images.
+ */
+function isContiguousEncodedBuffer(
+  data: unknown[] | Uint8Array,
+  format: string,
+  shape?: [number, number, number, number]
+): boolean {
+  if (!isEncodedFormat(format)) return false;
+  if (!(data instanceof Uint8Array)) return false;
+
+  // If it's a Uint8Array and format is PNG/JPEG, check for magic bytes
+  if (data.length < 8) return false;
+
+  // Check if buffer starts with PNG or JPEG magic bytes
+  const isPng = matchesMagic(data, PNG_MAGIC);
+  const isJpeg = matchesMagic(data, JPEG_MAGIC);
+
+  if (!isPng && !isJpeg) return false;
+
+  // If we have shape info, check if buffer is much larger than a single frame
+  // (indicating multiple concatenated frames)
+  if (shape) {
+    const frameCount = shape[0];
+    if (frameCount > 1 && data.length > 10000) {
+      return true;
+    }
+  }
+
+  return true;
+}
+
+/**
+ * Check if buffer starts with magic bytes.
+ */
+function matchesMagic(buffer: Uint8Array, magic: Uint8Array): boolean {
+  if (buffer.length < magic.length) return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (buffer[i] !== magic[i]) return false;
+  }
+  return true;
+}
+
+/**
+ * Find byte offsets of each encoded frame in a contiguous buffer.
+ * Scans for PNG/JPEG magic bytes to find frame boundaries.
+ */
+function findEncodedFrameOffsets(
+  buffer: Uint8Array,
+  format: string,
+  expectedFrameCount: number
+): number[] {
+  const offsets: number[] = [];
+  const magic = format.toLowerCase() === "png" ? PNG_MAGIC : JPEG_MAGIC;
+
+  // Scan for magic bytes
+  for (let i = 0; i <= buffer.length - magic.length; i++) {
+    if (matchesMagic(buffer.subarray(i), magic)) {
+      offsets.push(i);
+      // Skip ahead to avoid finding embedded magic bytes
+      // For PNG, skip at least the header (8 bytes)
+      // For JPEG, we need to be more careful as magic is only 3 bytes
+      i += magic.length - 1;
+
+      // Early exit if we found expected number of frames
+      if (expectedFrameCount > 0 && offsets.length >= expectedFrameCount) {
+        break;
+      }
+    }
+  }
+
+  return offsets;
 }
 
 function toUint8Array(entry: unknown): Uint8Array | null {
