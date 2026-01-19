@@ -104,7 +104,7 @@ async function readFromStreamingFile(
   const tracks = await readTracksStreaming(file);
 
   // Read video metadata (and optionally create backends for embedded videos)
-  const videos = await readVideosStreaming(file, labelsPath, openVideos);
+  const videos = await readVideosStreaming(file, labelsPath, openVideos, formatId);
 
   // Read suggestions
   const suggestions = await readSuggestionsStreaming(file, videos);
@@ -161,7 +161,8 @@ async function readTracksStreaming(file: StreamingH5File): Promise<Track[]> {
 async function readVideosStreaming(
   file: StreamingH5File,
   labelsPath: string,
-  openVideos: boolean = false
+  openVideos: boolean = false,
+  formatId: number = 1.0
 ): Promise<Video[]> {
   try {
     const keys = file.keys();
@@ -179,6 +180,11 @@ async function readVideosStreaming(
           ? [meta.frameCount, meta.height, meta.width, meta.channels]
           : undefined;
 
+      // Determine channel order: use explicit attribute if present, otherwise
+      // default to BGR for legacy files (format_id < 1.4) since they were
+      // typically encoded with OpenCV which uses BGR order
+      const channelOrder = meta.channelOrder ?? (formatId < 1.4 ? "BGR" : "RGB");
+
       // Create streaming backend for embedded videos when openVideos is true
       let backend = null;
       if (openVideos && meta.embedded && meta.dataset) {
@@ -191,7 +197,7 @@ async function readVideosStreaming(
           datasetPath: meta.dataset,
           frameNumbers,
           format: meta.format ?? "png",
-          channelOrder: meta.channelOrder ?? "RGB",
+          channelOrder,
           shape,
           fps: meta.fps,
         });
@@ -205,7 +211,7 @@ async function readVideosStreaming(
           format: meta.format,
           shape,
           fps: meta.fps,
-          channel_order: meta.channelOrder,
+          channel_order: channelOrder,
         },
         sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
         openBackend: openVideos && meta.embedded,

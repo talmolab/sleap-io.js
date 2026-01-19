@@ -29,7 +29,7 @@ export async function readSlp(
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
-    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file);
+    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
     const framesData = normalizeStructDataset(file.get("frames"));
@@ -90,7 +90,7 @@ function readTracks(dataset: any): Track[] {
   return tracks;
 }
 
-async function readVideos(dataset: any, labelsPath: string, openVideos: boolean, file: any): Promise<Video[]> {
+async function readVideos(dataset: any, labelsPath: string, openVideos: boolean, file: any, formatId: number): Promise<Video[]> {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const videos: Video[] = [];
@@ -108,6 +108,11 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
       filename = labelsPath;
     }
 
+    // Determine channel order: use explicit attribute if present, otherwise
+    // default to BGR for legacy files (format_id < 1.4) since they were
+    // typically encoded with OpenCV which uses BGR order
+    const channelOrder = backendMeta.channel_order ?? (formatId < 1.4 ? "BGR" : "RGB");
+
     let backend = null;
     if (openVideos) {
       backend = await createVideoBackend(filename, {
@@ -115,7 +120,7 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
         embedded,
         frameNumbers: readFrameNumbers(file, datasetPath),
         format: backendMeta.format,
-        channelOrder: backendMeta.channel_order,
+        channelOrder,
         shape: backendMeta.shape,
         fps: backendMeta.fps,
       });
