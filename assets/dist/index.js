@@ -1488,19 +1488,38 @@ function getKeys(path) {
   return item.keys ? item.keys() : [];
 }
 
+function serializeAttrValue(attr) {
+  if (!attr) return null;
+  // h5wasm Attribute objects have a .value property
+  const val = attr.value !== undefined ? attr.value : attr;
+  // Convert Uint8Array to string for JSON attributes
+  if (val instanceof Uint8Array) {
+    return { value: new TextDecoder().decode(val) };
+  }
+  // Wrap primitive values to preserve structure
+  return { value: val };
+}
+
 function getAttr(path, name) {
   if (!currentFile) throw new Error('No file open');
   const item = path === '/' || !path ? currentFile : currentFile.get(path);
   if (!item) throw new Error('Path not found: ' + path);
   const attrs = item.attrs;
-  return attrs?.[name] || null;
+  const attr = attrs?.[name];
+  return serializeAttrValue(attr);
 }
 
 function getAttrs(path) {
   if (!currentFile) throw new Error('No file open');
   const item = path === '/' || !path ? currentFile : currentFile.get(path);
   if (!item) throw new Error('Path not found: ' + path);
-  return item.attrs || {};
+  const rawAttrs = item.attrs || {};
+  // Serialize all attributes for proper transfer through postMessage
+  const serialized = {};
+  for (const key of Object.keys(rawAttrs)) {
+    serialized[key] = serializeAttrValue(rawAttrs[key]);
+  }
+  return serialized;
 }
 
 function getDatasetMeta(path) {
