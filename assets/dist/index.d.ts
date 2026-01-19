@@ -18,13 +18,16 @@ declare class Video {
     backendMetadata: Record<string, unknown>;
     sourceVideo: Video | null;
     openBackend: boolean;
+    private _embedded;
     constructor(options: {
         filename: string | string[];
         backend?: VideoBackend | null;
         backendMetadata?: Record<string, unknown>;
         sourceVideo?: Video | null;
         openBackend?: boolean;
+        embedded?: boolean;
     });
+    get hasEmbeddedImages(): boolean;
     get originalVideo(): Video | null;
     get shape(): [number, number, number, number] | null;
     get fps(): number | null;
@@ -360,7 +363,7 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
     fps?: number;
     private h5file;
     private datasetPath;
-    private frameNumbers;
+    private frameNumberToIndex;
     private format;
     private channelOrder;
     private cachedData;

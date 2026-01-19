@@ -85,12 +85,17 @@ var Video = class {
   backendMetadata;
   sourceVideo;
   openBackend;
+  _embedded;
   constructor(options) {
     this.filename = options.filename;
     this.backend = options.backend ?? null;
     this.backendMetadata = options.backendMetadata ?? {};
     this.sourceVideo = options.sourceVideo ?? null;
     this.openBackend = options.openBackend ?? true;
+    this._embedded = options.embedded ?? false;
+  }
+  get hasEmbeddedImages() {
+    return this._embedded;
   }
   get originalVideo() {
     if (!this.sourceVideo) return null;
@@ -1217,7 +1222,7 @@ var StreamingHdf5VideoBackend = class {
   fps;
   h5file;
   datasetPath;
-  frameNumbers;
+  frameNumberToIndex;
   format;
   channelOrder;
   cachedData;
@@ -1228,7 +1233,8 @@ var StreamingHdf5VideoBackend = class {
     this.h5file = options.h5file;
     this.datasetPath = options.datasetPath;
     this.dataset = options.datasetPath;
-    this.frameNumbers = options.frameNumbers ?? [];
+    const frameNumbers = options.frameNumbers ?? [];
+    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";
     this.shape = options.shape;
@@ -1237,8 +1243,8 @@ var StreamingHdf5VideoBackend = class {
     this.frameOffsets = null;
   }
   async getFrame(frameIndex) {
-    const index = this.frameNumbers.length ? this.frameNumbers.indexOf(frameIndex) : frameIndex;
-    if (index < 0) return null;
+    const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
+    if (index === void 0) return null;
     if (!this.cachedData) {
       try {
         const data = await this.h5file.getDatasetValue(this.datasetPath);
@@ -1927,7 +1933,7 @@ var Hdf5VideoBackend = class {
   fps;
   file;
   datasetPath;
-  frameNumbers;
+  frameNumberToIndex;
   format;
   channelOrder;
   cachedData;
@@ -1937,7 +1943,8 @@ var Hdf5VideoBackend = class {
     this.file = options.file;
     this.datasetPath = options.datasetPath;
     this.dataset = options.datasetPath;
-    this.frameNumbers = options.frameNumbers ?? [];
+    const frameNumbers = options.frameNumbers ?? [];
+    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";
     this.shape = options.shape;
@@ -1948,8 +1955,8 @@ var Hdf5VideoBackend = class {
   async getFrame(frameIndex) {
     const dataset = this.file.get(this.datasetPath);
     if (!dataset) return null;
-    const index = this.frameNumbers.length ? this.frameNumbers.indexOf(frameIndex) : frameIndex;
-    if (index < 0) return null;
+    const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
+    if (index === void 0) return null;
     if (!this.cachedData) {
       const value = dataset.value;
       this.cachedData = normalizeVideoData2(value);
@@ -2186,7 +2193,8 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const videos = [];
-  for (const entry of values) {
+  for (let videoIndex = 0; videoIndex < values.length; videoIndex++) {
+    const entry = values[videoIndex];
     if (!entry) continue;
     const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
     const backendMeta = parsed.backend ?? {};
@@ -2197,14 +2205,25 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
       embedded = true;
       filename = labelsPath;
     }
+    if (embedded && !datasetPath) {
+      datasetPath = findVideoDataset(file, videoIndex);
+    }
     const channelOrder = backendMeta.channel_order ?? (formatId < 1.4 ? "BGR" : "RGB");
+    let format = backendMeta.format;
+    if (!format && datasetPath) {
+      const videoDs = file.get(datasetPath);
+      if (videoDs) {
+        const attrs = videoDs.attrs ?? {};
+        format = attrs.format?.value ?? attrs.format;
+      }
+    }
     let backend = null;
     if (openVideos) {
       backend = await createVideoBackend(filename, {
         dataset: datasetPath ?? void 0,
         embedded,
         frameNumbers: readFrameNumbers(file, datasetPath),
-        format: backendMeta.format,
+        format,
         channelOrder,
         shape: backendMeta.shape,
         fps: backendMeta.fps
@@ -2217,7 +2236,8 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
         backend,
         backendMetadata: backendMeta,
         sourceVideo,
-        openBackend: openVideos
+        openBackend: openVideos,
+        embedded
       })
     );
   }
@@ -2230,6 +2250,28 @@ function readFrameNumbers(file, datasetPath) {
   if (!frameDataset) return [];
   const values = frameDataset.value ?? [];
   return Array.from(values).map((v) => Number(v));
+}
+function findVideoDataset(file, videoIndex) {
+  const explicitPath = `video${videoIndex}/video`;
+  if (file.get(explicitPath)) {
+    return explicitPath;
+  }
+  const keys = file.keys?.() ?? [];
+  for (const key of keys) {
+    if (key.startsWith("video")) {
+      const candidatePath = `${key}/video`;
+      if (file.get(candidatePath)) {
+        if (videoIndex === 0) {
+          return candidatePath;
+        }
+        const keyIndex = parseInt(key.slice(5), 10);
+        if (!isNaN(keyIndex) && keyIndex === videoIndex) {
+          return candidatePath;
+        }
+      }
+    }
+  }
+  return null;
 }
 function readSuggestions(dataset, videos) {
   if (!dataset) return [];
@@ -2582,18 +2624,34 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
     const values = normalizeDatasetArray(data.value);
     const metadataList = parseVideosMetadata(values, labelsPath);
     const videos = [];
-    for (const meta of metadataList) {
+    for (let videoIndex = 0; videoIndex < metadataList.length; videoIndex++) {
+      const meta = metadataList[videoIndex];
       const shape = meta.frameCount && meta.height && meta.width && meta.channels ? [meta.frameCount, meta.height, meta.width, meta.channels] : void 0;
+      let datasetPath = meta.dataset;
+      if (meta.embedded && !datasetPath) {
+        datasetPath = await findVideoDatasetStreaming(file, videoIndex) ?? void 0;
+      }
       const channelOrder = meta.channelOrder ?? (formatId < 1.4 ? "BGR" : "RGB");
+      let format = meta.format;
+      if (!format && datasetPath) {
+        try {
+          const attrs = await file.getAttrs(datasetPath);
+          const formatAttr = attrs.format;
+          if (formatAttr) {
+            format = typeof formatAttr === "string" ? formatAttr : formatAttr?.value;
+          }
+        } catch {
+        }
+      }
       let backend = null;
-      if (openVideos && meta.embedded && meta.dataset) {
-        const frameNumbers = await readFrameNumbersStreaming(file, meta.dataset);
+      if (openVideos && meta.embedded && datasetPath) {
+        const frameNumbers = await readFrameNumbersStreaming(file, datasetPath);
         backend = new StreamingHdf5VideoBackend({
           filename: meta.filename,
           h5file: file,
-          datasetPath: meta.dataset,
+          datasetPath,
           frameNumbers,
-          format: meta.format ?? "png",
+          format: format ?? "png",
           channelOrder,
           shape,
           fps: meta.fps
@@ -2603,14 +2661,15 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
         filename: meta.filename,
         backend,
         backendMetadata: {
-          dataset: meta.dataset,
-          format: meta.format,
+          dataset: datasetPath,
+          format,
           shape,
           fps: meta.fps,
           channel_order: channelOrder
         },
         sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
-        openBackend: openVideos && meta.embedded
+        openBackend: openVideos && meta.embedded,
+        embedded: meta.embedded
       }));
     }
     return videos;
@@ -2637,6 +2696,41 @@ async function readFrameNumbersStreaming(file, datasetPath) {
     return [];
   } catch {
     return [];
+  }
+}
+async function findVideoDatasetStreaming(file, videoIndex) {
+  try {
+    const explicitPath = `video${videoIndex}/video`;
+    const explicitGroupPath = `video${videoIndex}`;
+    try {
+      const groupKeys = await file.getKeys(explicitGroupPath);
+      if (groupKeys.includes("video")) {
+        return explicitPath;
+      }
+    } catch {
+    }
+    const rootKeys = file.keys();
+    for (const key of rootKeys) {
+      if (key.startsWith("video")) {
+        try {
+          const groupKeys = await file.getKeys(key);
+          if (groupKeys.includes("video")) {
+            const candidatePath = `${key}/video`;
+            if (videoIndex === 0) {
+              return candidatePath;
+            }
+            const keyIndex = parseInt(key.slice(5), 10);
+            if (!isNaN(keyIndex) && keyIndex === videoIndex) {
+              return candidatePath;
+            }
+          }
+        } catch {
+        }
+      }
+    }
+    return null;
+  } catch {
+    return null;
   }
 }
 async function readSuggestionsStreaming(file, videos) {
