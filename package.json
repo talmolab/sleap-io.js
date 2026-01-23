@@ -15,7 +15,9 @@
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/talmolab/sleap-io.js.git"
@@ -29,6 +31,7 @@
   "dependencies": {
     "h5wasm": "^0.8.8",
     "jsfive": "^0.3.10",
+    "mediabunny": "^1.30.0",
     "mp4box": "^0.5.4",
     "skia-canvas": "^3.0.8",
     "yaml": "^2.6.1"
