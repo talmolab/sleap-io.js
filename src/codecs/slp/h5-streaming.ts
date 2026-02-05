@@ -104,7 +104,14 @@ export class StreamingH5File {
       if (data.success) {
         pending.resolve(e.data);
       } else {
-        pending.reject(new Error(data.error || "Worker operation failed"));
+        // Ensure error is a string for the Error message
+        let errorMessage = "Worker operation failed";
+        if (typeof data.error === "string") {
+          errorMessage = data.error;
+        } else if (data.error && typeof data.error === "object") {
+          errorMessage = JSON.stringify(data.error);
+        }
+        pending.reject(new Error(errorMessage));
       }
     }
   }

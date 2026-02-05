@@ -341,7 +341,8 @@ const handleLoad = async () => {
 
   // Determine source
   const slpSource = file ? await file.arrayBuffer() : slpUrl;
-  const slpFilename = file ? file.name : slpUrl;
+  // Extract just the filename (not the full URL) for the filenameHint
+  const slpFilename = file ? file.name : slpUrl.split("/").pop()?.split("?")[0] || "data.slp";
 
   if (!slpSource) {
     setStatus("Enter an SLP URL or select a file.");
@@ -425,7 +426,14 @@ const handleLoad = async () => {
       setStatus("Ready.");
     }
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown error";
+    let message = "Unknown error";
+    if (error instanceof Error) {
+      message = error.message;
+    } else if (typeof error === "string") {
+      message = error;
+    } else if (error && typeof error === "object") {
+      message = JSON.stringify(error);
+    }
     setStatus(`Load failed: ${message}`);
     console.error(error);
   } finally {
