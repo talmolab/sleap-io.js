@@ -66,14 +66,14 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   private isDecoding: boolean;
   private pendingFrame: number | null;
 
-  constructor(filename: string, options?: { cacheSize?: number; lookahead?: number }) {
+  constructor(source: string | File | Blob, options?: { cacheSize?: number; lookahead?: number }) {
     if (!hasWebCodecs) {
       throw new Error("Mp4BoxVideoBackend requires WebCodecs support.");
     }
     if (!isBrowser) {
       throw new Error("Mp4BoxVideoBackend requires a browser environment.");
     }
-    this.filename = filename;
+    this.filename = source instanceof Blob ? (source as File).name ?? "" : source;
     this.dataset = null;
     this.samples = [];
     this.keyframeIndices = [];
@@ -87,6 +87,13 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     this.fileBlob = null;
     this.isDecoding = false;
     this.pendingFrame = null;
+
+    if (source instanceof Blob) {
+      this.fileBlob = source;
+      this.fileSize = source.size;
+      this.supportsRangeRequests = false;
+    }
+
     this.ready = this.init();
   }
 
@@ -144,7 +151,9 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   }
 
   private async init(): Promise<void> {
-    await this.openSource();
+    if (!this.fileBlob) {
+      await this.openSource();
+    }
 
     this.mp4box = await loadMp4box();
     this.mp4boxFile = this.mp4box.createFile();
@@ -197,31 +206,32 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   }
 
   private async openSource(): Promise<void> {
-    if (typeof this.filename !== "string") {
-      throw new Error("Mp4BoxVideoBackend requires a single filename string.");
-    }
+    const response = await fetch(this.filename, {
+      headers: { Range: "bytes=0-0" },
+    });
 
-    const response = await fetch(this.filename, { method: "HEAD" });
-    if (!response.ok) throw new Error(`Failed to fetch video: ${response.status}`);
-
-    const size = response.headers.get("Content-Length");
-    this.fileSize = size ? Number.parseInt(size, 10) : 0;
-
-    if (this.fileSize > 0) {
-      try {
-        const rangeTest = await fetch(this.filename, { method: "GET", headers: { Range: "bytes=0-0" } });
-        this.supportsRangeRequests = rangeTest.status === 206;
-      } catch {
-        this.supportsRangeRequests = false;
+    if (response.status === 206) {
+      // Range requests supported — extract total size from Content-Range header
+      const contentRange = response.headers.get("Content-Range");
+      const match = contentRange?.match(/\/(\d+)$/);
+      if (match) {
+        this.fileSize = Number.parseInt(match[1], 10);
+        this.supportsRangeRequests = true;
+        return;
       }
     }
 
-    if (!this.supportsRangeRequests || !this.fileSize) {
-      const full = await fetch(this.filename);
-      const blob = await full.blob();
-      this.fileBlob = blob;
-      this.fileSize = blob.size;
+    if (!response.ok && response.status !== 206) {
+      throw new Error(`Failed to fetch video: ${response.status}`);
     }
+
+    // No range support or couldn't determine size — fall back to full download
+    const full = await fetch(this.filename);
+    if (!full.ok) throw new Error(`Failed to fetch video: ${full.status}`);
+    const blob = await full.blob();
+    this.fileBlob = blob;
+    this.fileSize = blob.size;
+    this.supportsRangeRequests = false;
   }
 
   private async readChunk(offset: number, size: number): Promise<ArrayBuffer> {
