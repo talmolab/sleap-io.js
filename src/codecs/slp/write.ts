@@ -5,43 +5,72 @@ import { RecordingSession, Camera, InstanceGroup, FrameGroup } from "../../model
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
-import { getH5Module } from "./h5.js";
+import { getH5Module, getH5FileSystem } from "./h5.js";
 
 const isNode = typeof process !== "undefined" && !!process.versions?.node;
 
 const FORMAT_ID = 1.4;
 const SPAWNED_ON = 0;
 
-export async function writeSlp(
-  filename: string,
+export type SlpWriteOptions = {
+  embed?: boolean | string;
+  restoreOriginalVideos?: boolean;
+};
+
+function writeSlpToFile(file: any, labels: Labels): void {
+  writeMetadata(file, labels);
+  writeVideos(file, labels.videos);
+  writeTracks(file, labels.tracks);
+  writeSuggestions(file, labels.suggestions, labels.videos);
+  writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
+  writeLabeledFrames(file, labels);
+}
+
+/**
+ * Serialize Labels to SLP format and return the bytes.
+ * Works in both Node.js and browser environments.
+ */
+export async function saveSlpToBytes(
   labels: Labels,
-  options?: {
-    embed?: boolean | string;
-    restoreOriginalVideos?: boolean;
-  }
-): Promise<void> {
+  options?: SlpWriteOptions
+): Promise<Uint8Array> {
   const embedMode = options?.embed ?? false;
   if (embedMode && embedMode !== "source") {
     throw new Error("Embedding frames is not supported yet in writeSlp.");
   }
-  if (!isNode) {
-    throw new Error("writeSlp currently requires a Node.js environment.");
-  }
 
   const module = await getH5Module();
+  const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
 
-  const file = new module.File(filename, "w");
+  const file = new module.File(memPath, "w");
   try {
-    writeMetadata(file, labels);
-    writeVideos(file, labels.videos);
-    writeTracks(file, labels.tracks);
-    writeSuggestions(file, labels.suggestions, labels.videos);
-    writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
-    writeLabeledFrames(file, labels);
+    writeSlpToFile(file, labels);
   } finally {
     file.close();
   }
 
+  const fs = getH5FileSystem(module);
+  const bytes = fs.readFile!(memPath);
+  fs.unlink!(memPath);
+  return bytes;
+}
+
+export async function writeSlp(
+  filename: string,
+  labels: Labels,
+  options?: SlpWriteOptions
+): Promise<void> {
+  const bytes = await saveSlpToBytes(labels, options);
+
+  if (isNode) {
+    const fs = await import("fs");
+    fs.writeFileSync(filename, bytes);
+  } else {
+    throw new Error(
+      "writeSlp requires a Node.js environment for file I/O. " +
+      "Use saveSlpToBytes() to get the SLP data as a Uint8Array in the browser."
+    );
+  }
 }
 
 function writeMetadata(file: any, labels: Labels): void {
