@@ -17,34 +17,69 @@ export type SlpWriteOptions = {
   restoreOriginalVideos?: boolean;
 };
 
-function writeSlpToFile(file: any, labels: Labels): void {
+/** Frame data collected for embedding a single video. */
+interface EmbeddedVideoFrames {
+  /** Video index in labels.videos */
+  videoIndex: number;
+  /** Frame indices (original video frame numbers) */
+  frameNumbers: number[];
+  /** Encoded frame bytes (PNG/JPEG) indexed by frame number */
+  frameData: Map<number, Uint8Array>;
+  /** Image format (png, jpeg) */
+  format: string;
+  /** Channel order (RGB, BGR) */
+  channelOrder: string;
+}
+
+function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<number, EmbeddedVideoFrames> | null): void {
   writeMetadata(file, labels);
-  writeVideos(file, labels.videos);
+
+  if (embeddedVideoData && embeddedVideoData.size > 0) {
+    writeEmbeddedVideos(file, labels, embeddedVideoData);
+  } else {
+    writeVideos(file, labels.videos);
+  }
+
   writeTracks(file, labels.tracks);
   writeSuggestions(file, labels.suggestions, labels.videos);
   writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
   writeLabeledFrames(file, labels);
+  writeNegativeFrames(file, labels);
 }
 
 /**
  * Serialize Labels to SLP format and return the bytes.
  * Works in both Node.js and browser environments.
+ *
+ * When `embed` is set, video frames are read from their backends and stored
+ * directly in the SLP file as HDF5 datasets (video0/video, video1/video, etc.).
+ * The video backends must be open and able to return frame data.
+ *
+ * Supported embed modes:
+ * - `true` or `"all"` - Embed all labeled frames
+ * - `"user"` - Embed only frames with user instances
+ * - `"suggestions"` - Embed only suggestion frames
+ * - `"user+suggestions"` - Embed user instance frames and suggestion frames
+ * - `"source"` - Restore original video paths (no embedding)
  */
 export async function saveSlpToBytes(
   labels: Labels,
   options?: SlpWriteOptions
 ): Promise<Uint8Array> {
   const embedMode = options?.embed ?? false;
-  if (embedMode && embedMode !== "source") {
-    throw new Error("Embedding frames is not supported yet in writeSlp.");
-  }
 
   const module = await getH5Module();
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
 
+  // If embedding, we need to determine frames per video and prepare embedded data
+  let embeddedVideoData: Map<number, EmbeddedVideoFrames> | null = null;
+  if (embedMode && embedMode !== "source") {
+    embeddedVideoData = await collectFramesForEmbedding(labels, embedMode);
+  }
+
   const file = new module.File(memPath, "w");
   try {
-    writeSlpToFile(file, labels);
+    writeSlpToFile(file, labels, embeddedVideoData);
   } finally {
     file.close();
   }
@@ -164,7 +199,7 @@ function writeSuggestions(file: any, suggestions: SuggestionFrame[], videos: Vid
     JSON.stringify({
       video: String(videos.indexOf(suggestion.video)),
       frame_idx: suggestion.frameIdx,
-      group: suggestion.metadata?.group ?? 0,
+      group: suggestion.group ?? "default",
     })
   );
   file.create_dataset({ name: "suggestions_json", data: payload });
@@ -383,6 +418,194 @@ function writeLabeledFrames(file: any, labels: Labels): void {
   );
   createMatrixDataset(file, "points", points, ["x", "y", "visible", "complete"], "<f8");
   createMatrixDataset(file, "pred_points", predPoints, ["x", "y", "visible", "complete", "score"], "<f8");
+}
+
+function writeNegativeFrames(file: any, labels: Labels): void {
+  const negativeFrames = labels.labeledFrames.filter((f) => f.isNegative);
+  if (!negativeFrames.length) return;
+  const rows: number[][] = [];
+  for (const frame of negativeFrames) {
+    const videoIndex = Math.max(0, labels.videos.indexOf(frame.video));
+    rows.push([videoIndex, frame.frameIdx]);
+  }
+  createMatrixDataset(file, "negative_frames", rows, ["video_id", "frame_idx"], "<i8");
+}
+
+/**
+ * Collect frame data for embedding from video backends.
+ */
+async function collectFramesForEmbedding(
+  labels: Labels,
+  embedMode: boolean | string
+): Promise<Map<number, EmbeddedVideoFrames>> {
+  const result = new Map<number, EmbeddedVideoFrames>();
+
+  // Determine which frame indices to embed per video
+  const framesByVideo = new Map<number, Set<number>>();
+  const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
+
+  for (const frame of labels.labeledFrames) {
+    const videoIndex = labels.videos.indexOf(frame.video);
+    if (videoIndex < 0) continue;
+
+    let include = false;
+    if (mode === "all") {
+      include = true;
+    } else if (mode === "user") {
+      include = frame.hasUserInstances;
+    } else if (mode === "suggestions") {
+      // Include if this frame is a suggestion
+      include = false; // handled below
+    } else if (mode === "user+suggestions") {
+      include = frame.hasUserInstances;
+    }
+
+    if (include) {
+      if (!framesByVideo.has(videoIndex)) framesByVideo.set(videoIndex, new Set());
+      framesByVideo.get(videoIndex)!.add(frame.frameIdx);
+    }
+  }
+
+  // Add suggestion frames
+  if (mode === "suggestions" || mode === "user+suggestions") {
+    for (const suggestion of labels.suggestions) {
+      const videoIndex = labels.videos.indexOf(suggestion.video);
+      if (videoIndex < 0) continue;
+      if (!framesByVideo.has(videoIndex)) framesByVideo.set(videoIndex, new Set());
+      framesByVideo.get(videoIndex)!.add(suggestion.frameIdx);
+    }
+  }
+
+  // Read frames from backends
+  for (const [videoIndex, frameIndices] of framesByVideo) {
+    const video = labels.videos[videoIndex];
+    if (!video || !video.backend) continue;
+
+    const sortedFrames = Array.from(frameIndices).sort((a, b) => a - b);
+    const frameData = new Map<number, Uint8Array>();
+
+    for (const frameIdx of sortedFrames) {
+      const frame = await video.getFrame(frameIdx);
+      if (frame) {
+        const bytes = frameToBytes(frame);
+        if (bytes) {
+          frameData.set(frameIdx, bytes);
+        }
+      }
+    }
+
+    if (frameData.size > 0) {
+      const backendFormat = (video.backendMetadata?.format as string) ?? "png";
+      const backendChannelOrder = (video.backendMetadata?.channel_order as string) ?? "RGB";
+      result.set(videoIndex, {
+        videoIndex,
+        frameNumbers: sortedFrames.filter((f) => frameData.has(f)),
+        frameData,
+        format: backendFormat,
+        channelOrder: backendChannelOrder,
+      });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Convert a video frame to Uint8Array bytes for embedding.
+ */
+function frameToBytes(frame: unknown): Uint8Array | null {
+  if (frame instanceof Uint8Array) return frame;
+  if (frame instanceof ArrayBuffer) return new Uint8Array(frame);
+  if (ArrayBuffer.isView(frame)) {
+    const view = frame as ArrayBufferView;
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  }
+  return null;
+}
+
+/**
+ * Write video metadata and embedded frame data for videos that are being embedded.
+ */
+function writeEmbeddedVideos(
+  file: any,
+  labels: Labels,
+  embeddedVideoData: Map<number, EmbeddedVideoFrames>
+): void {
+  const payload = labels.videos.map((video, videoIndex) => {
+    const embedData = embeddedVideoData.get(videoIndex);
+    if (embedData) {
+      // This video is being embedded - update metadata
+      const backend: Record<string, unknown> = {
+        filename: ".",
+        dataset: `video${videoIndex}/video`,
+        format: embedData.format,
+        channel_order: embedData.channelOrder,
+      };
+      if (video.backend?.shape) backend.shape = video.backend.shape;
+      if (video.backend?.fps != null) backend.fps = video.backend.fps;
+
+      const entry: Record<string, unknown> = {
+        filename: ".",
+        backend,
+      };
+      // Preserve source_video reference to original
+      if (video.sourceVideo) {
+        entry.source_video = { filename: video.sourceVideo.filename };
+      } else if (!video.hasEmbeddedImages) {
+        // If this video wasn't already embedded, save original path as source
+        entry.source_video = { filename: Array.isArray(video.filename) ? video.filename[0] : video.filename };
+      }
+      return JSON.stringify(entry);
+    } else {
+      return JSON.stringify(serializeVideo(video));
+    }
+  });
+  file.create_dataset({ name: "videos_json", data: payload });
+
+  // Write embedded video datasets
+  for (const [videoIndex, embedData] of embeddedVideoData) {
+    const groupName = `video${videoIndex}`;
+    file.create_group(groupName);
+
+    // Write frame data as vlen array
+    const frameBytes: Uint8Array[] = [];
+    for (const frameNum of embedData.frameNumbers) {
+      const data = embedData.frameData.get(frameNum);
+      if (data) frameBytes.push(data);
+    }
+
+    // Concatenate all frame bytes into a single buffer
+    const totalSize = frameBytes.reduce((sum, b) => sum + b.length, 0);
+    const combined = new Uint8Array(totalSize);
+    let offset = 0;
+    for (const bytes of frameBytes) {
+      combined.set(bytes, offset);
+      offset += bytes.length;
+    }
+
+    // Write video data as a 1D uint8 dataset
+    file.create_dataset({
+      name: `${groupName}/video`,
+      data: combined,
+      shape: [combined.length],
+      dtype: "<B",
+    });
+
+    // Set format and channel_order attributes on the dataset
+    const videoDs = file.get(`${groupName}/video`);
+    if (videoDs) {
+      videoDs.create_attribute("format", embedData.format);
+      videoDs.create_attribute("channel_order", embedData.channelOrder);
+    }
+
+    // Write frame_numbers dataset
+    file.create_dataset({
+      name: `${groupName}/frame_numbers`,
+      data: embedData.frameNumbers,
+      shape: [embedData.frameNumbers.length],
+      dtype: "<i4",
+    });
+  }
 }
 
 function createMatrixDataset(file: any, name: string, rows: number[][], fieldNames: string[], dtype: string): void {
