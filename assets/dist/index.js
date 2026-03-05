@@ -3778,6 +3778,26 @@ function readSkeletonJson(json) {
   return new Skeleton({ nodes, edges, symmetries, name: data.graph?.name });
 }
 
+// src/codecs/training-config.ts
+function readTrainingConfigSkeletons(json) {
+  const data = typeof json === "string" ? JSON.parse(json) : json;
+  const dataSection = data.data;
+  const labels = dataSection?.labels;
+  const skeletonsList = labels?.skeletons;
+  if (!skeletonsList || !skeletonsList.length) {
+    throw new Error("No skeletons found in training config");
+  }
+  return skeletonsList.map((skeletonData) => readSkeletonJson(skeletonData));
+}
+function readTrainingConfigSkeleton(json) {
+  const skeletons = readTrainingConfigSkeletons(json);
+  return skeletons[0];
+}
+function isTrainingConfig(json) {
+  const data = typeof json === "string" ? JSON.parse(json) : json;
+  return !!(data.data && data.data.labels);
+}
+
 // src/rendering/colors.ts
 var NAMED_COLORS = {
   black: [0, 0, 0],
@@ -4583,6 +4603,7 @@ export {
   getMarkerFunction,
   getPalette,
   isStreamingSupported,
+  isTrainingConfig,
   labelsFromNumpy,
   loadSlp,
   loadVideo,
@@ -4597,6 +4618,8 @@ export {
   predictedPointsFromDict,
   readSkeletonJson,
   readSlpStreaming,
+  readTrainingConfigSkeleton,
+  readTrainingConfigSkeletons,
   renderImage,
   renderVideo,
   resolveColor,
