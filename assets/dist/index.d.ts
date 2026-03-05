@@ -226,7 +226,7 @@ declare class Mp4BoxVideoBackend implements VideoBackend {
     private fileBlob;
     private isDecoding;
     private pendingFrame;
-    constructor(filename: string, options?: {
+    constructor(source: string | File | Blob, options?: {
         cacheSize?: number;
         lookahead?: number;
     });
