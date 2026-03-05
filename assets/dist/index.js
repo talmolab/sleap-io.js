@@ -145,10 +145,12 @@ var Video = class {
 var SuggestionFrame = class {
   video;
   frameIdx;
+  group;
   metadata;
   constructor(options) {
     this.video = options.video;
     this.frameIdx = options.frameIdx;
+    this.group = options.group ?? (options.metadata?.group != null ? String(options.metadata.group) : "default");
     this.metadata = options.metadata ?? {};
   }
 };
@@ -2431,7 +2433,7 @@ function readSuggestions(dataset, videos) {
     const videoIndex = Number(parsed.video ?? 0);
     const video = videos[videoIndex];
     if (!video) continue;
-    suggestions.push(new SuggestionFrame({ video, frameIdx: parsed.frame_idx ?? parsed.frameIdx ?? 0, metadata: parsed }));
+    suggestions.push(new SuggestionFrame({ video, frameIdx: parsed.frame_idx ?? parsed.frameIdx ?? 0, group: parsed.group != null ? String(parsed.group) : void 0, metadata: parsed }));
   }
   return suggestions;
 }
@@ -3216,7 +3218,7 @@ function writeSuggestions(file, suggestions, videos) {
     (suggestion) => JSON.stringify({
       video: String(videos.indexOf(suggestion.video)),
       frame_idx: suggestion.frameIdx,
-      group: suggestion.metadata?.group ?? 0
+      group: suggestion.group ?? "default"
     })
   );
   file.create_dataset({ name: "suggestions_json", data: payload });

@@ -67,10 +67,12 @@ declare class LabeledFrame {
 declare class SuggestionFrame {
     video: Video;
     frameIdx: number;
+    group: string;
     metadata: Record<string, unknown>;
     constructor(options: {
         video: Video;
         frameIdx: number;
+        group?: string;
         metadata?: Record<string, unknown>;
     });
 }
