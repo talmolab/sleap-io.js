@@ -239,8 +239,8 @@ function pointsToDict(instance: Instance): Record<string, number[]> {
       point.visible ? 1 : 0,
       point.complete ? 1 : 0,
     ];
-    if ((point as any).score != null) {
-      row.push((point as any).score as number);
+    if (point.score != null) {
+      row.push(point.score);
     }
     dict[name] = row;
   });
