@@ -212,6 +212,9 @@ declare class LabelsSet {
     values(): IterableIterator<Labels>;
     entries(): IterableIterator<[string, Labels]>;
     [Symbol.iterator](): IterableIterator<[string, Labels]>;
+    static fromLabelsList(labelsList: Labels[], keys?: string[]): LabelsSet;
+    toArray(): Labels[];
+    keyArray(): string[];
 }
 
 declare class Mp4BoxVideoBackend implements VideoBackend {
@@ -463,41 +466,6 @@ type SlpWriteOptions = {
  */
 declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Promise<Uint8Array>;
 
-/**
- * Load an SLP file.
- *
- * In browser environments, this function automatically uses a Web Worker for all
- * HDF5 operations, keeping the main thread responsive. For URLs, it uses HTTP
- * range requests to download only the data needed rather than the entire file.
- *
- * In Node.js, this uses the native h5wasm bindings directly.
- *
- * @param source - Path, URL, ArrayBuffer, File, or FileSystemFileHandle
- * @param options - Loading options
- * @param options.openVideos - Whether to open video backends (default: true)
- * @param options.h5 - HDF5 options including streaming mode
- * @param options.h5.stream - 'auto' | 'range' | 'download' (default: 'auto')
- *
- * @example
- * ```typescript
- * // Browser: Load from URL (automatically uses Worker + range requests)
- * const labels = await loadSlp('https://example.com/labels.slp');
- *
- * // Browser: Load from file input (automatically uses Worker)
- * const labels = await loadSlp(fileInput.files[0]);
- *
- * // Browser: Load from ArrayBuffer (automatically uses Worker)
- * const labels = await loadSlp(arrayBuffer);
- *
- * // Force full download instead of range requests
- * const labels = await loadSlp('https://example.com/labels.slp', {
- *   h5: { stream: 'download' }
- * });
- *
- * // Node.js: Load from file path
- * const labels = await loadSlp('/path/to/file.slp');
- * ```
- */
 declare function loadSlp(source: SlpSource, options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
@@ -507,6 +475,14 @@ declare function saveSlp(labels: Labels, filename: string, options?: {
     restoreOriginalVideos?: boolean;
 }): Promise<void>;
 
+declare function loadSlpSet(sources: string[] | Record<string, string>, options?: {
+    openVideos?: boolean;
+    h5?: OpenH5Options;
+}): Promise<LabelsSet>;
+declare function saveSlpSet(labelsSet: LabelsSet, options?: {
+    embed?: boolean | string;
+    restoreOriginalVideos?: boolean;
+}): Promise<void>;
 declare function loadVideo(filename: string, options?: {
     dataset?: string;
     openBackend?: boolean;
@@ -884,4 +860,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, saveSlpToBytes, toDataURL, toDict, toJPEG, toNumpy, toPNG };
+export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, saveSlpSet, saveSlpToBytes, toDataURL, toDict, toJPEG, toNumpy, toPNG };

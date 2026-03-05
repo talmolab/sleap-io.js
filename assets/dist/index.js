@@ -648,7 +648,7 @@ var Labels = class {
 };
 
 // src/model/labels-set.ts
-var LabelsSet = class {
+var LabelsSet = class _LabelsSet {
   labels;
   constructor(entries) {
     this.labels = new Map(Object.entries(entries ?? {}));
@@ -676,6 +676,20 @@ var LabelsSet = class {
   }
   [Symbol.iterator]() {
     return this.labels.entries();
+  }
+  static fromLabelsList(labelsList, keys) {
+    const set = new _LabelsSet();
+    for (let i = 0; i < labelsList.length; i++) {
+      const key = keys?.[i] ?? `labels_${i}`;
+      set.set(key, labelsList[i]);
+    }
+    return set;
+  }
+  toArray() {
+    return Array.from(this.labels.values());
+  }
+  keyArray() {
+    return Array.from(this.labels.keys());
   }
 };
 
@@ -3584,6 +3598,29 @@ async function saveSlp(labels, filename, options) {
     restoreOriginalVideos: options?.restoreOriginalVideos ?? true
   });
 }
+async function loadSlpSet(sources, options) {
+  const set = new LabelsSet();
+  if (Array.isArray(sources)) {
+    const results = await Promise.all(sources.map((src) => loadSlp(src, options)));
+    for (let i = 0; i < sources.length; i++) {
+      set.set(sources[i], results[i]);
+    }
+  } else {
+    const entries = Object.entries(sources);
+    const results = await Promise.all(entries.map(([, src]) => loadSlp(src, options)));
+    for (let i = 0; i < entries.length; i++) {
+      set.set(entries[i][0], results[i]);
+    }
+  }
+  return set;
+}
+async function saveSlpSet(labelsSet, options) {
+  const promises = [];
+  for (const [filename, labels] of labelsSet) {
+    promises.push(saveSlp(labels, filename, options));
+  }
+  await Promise.all(promises);
+}
 async function loadVideo(filename, options) {
   const backend = await createVideoBackend(filename, { dataset: options?.dataset });
   return new Video({ filename, backend, openBackend: options?.openBackend ?? true });
@@ -4606,6 +4643,7 @@ export {
   isTrainingConfig,
   labelsFromNumpy,
   loadSlp,
+  loadSlpSet,
   loadVideo,
   makeCameraFromDict,
   openH5Worker,
@@ -4627,6 +4665,7 @@ export {
   rodriguesTransformation,
   saveImage,
   saveSlp,
+  saveSlpSet,
   saveSlpToBytes,
   toDataURL,
   toDict,
