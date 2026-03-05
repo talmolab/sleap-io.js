@@ -2,7 +2,7 @@ import { Labels } from "../model/labels.js";
 import { Video } from "../model/video.js";
 import { readSlp } from "../codecs/slp/read.js";
 import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
-import { writeSlp } from "../codecs/slp/write.js";
+import { writeSlp, saveSlpToBytes } from "../codecs/slp/write.js";
 import { createVideoBackend } from "../video/factory.js";
 import { OpenH5Options, SlpSource, isStreamingSupported } from "../codecs/slp/h5.js";
 
@@ -116,6 +116,8 @@ export async function saveSlp(
     restoreOriginalVideos: options?.restoreOriginalVideos ?? true,
   });
 }
+
+export { saveSlpToBytes } from "../codecs/slp/write.js";
 
 export async function loadVideo(filename: string, options?: { dataset?: string; openBackend?: boolean }): Promise<Video> {
   const backend = await createVideoBackend(filename, { dataset: options?.dataset });
