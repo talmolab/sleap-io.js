@@ -6,7 +6,7 @@ import { openH5File } from "../codecs/slp/h5.js";
 
 export async function createVideoBackend(
   filename: string,
-  options?: { dataset?: string; embedded?: boolean; frameNumbers?: number[]; format?: string; channelOrder?: string; shape?: [number, number, number, number]; fps?: number }
+  options?: { dataset?: string; embedded?: boolean; frameNumbers?: number[]; frameSizes?: number[]; format?: string; channelOrder?: string; shape?: [number, number, number, number]; fps?: number }
 ): Promise<VideoBackend> {
   if (options?.embedded || filename.endsWith(".slp") || filename.endsWith(".h5") || filename.endsWith(".hdf5")) {
     const { file } = await openH5File(filename);
@@ -16,6 +16,7 @@ export async function createVideoBackend(
       file,
       datasetPath,
       frameNumbers: options?.frameNumbers,
+      frameSizes: options?.frameSizes,
       format: options?.format,
       channelOrder: options?.channelOrder,
       shape: options?.shape,
