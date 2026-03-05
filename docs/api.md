@@ -5,6 +5,7 @@ This document covers the public API exported from `src/index.ts`. All examples a
 import {
   loadSlp,
   saveSlp,
+  saveSlpToBytes,
   loadVideo,
   Video,
   Mp4BoxVideoBackend,
@@ -53,6 +54,17 @@ await saveSlp(labels, "/tmp/roundtrip.slp", {
 - `options.embed`: embed frames (`true`, `false`, or dataset name).
 - `options.restoreOriginalVideos` (default `true`): keep original video paths.
 
+### `saveSlpToBytes(labels, options)`
+Serialize Labels to SLP format and return the bytes. Works in both Node.js and browser environments.
+
+```ts
+const bytes: Uint8Array = await saveSlpToBytes(labels, { embed: false });
+```
+
+- `labels`: `Labels` object to serialize.
+- `options.embed`: embed frames (`true`, `false`, or dataset name).
+- Returns `Promise<Uint8Array>`.
+
 ### `loadVideo(filename, options)`
 Open a `Video` with an appropriate backend.
 
@@ -73,23 +85,37 @@ video.close();
 ```ts
 const video = await loadVideo("/data/movie.mp4");
 const timestamps = await video.getFrameTimes(); // number[] | null
+
+// shape and fps have setters
+video.shape = [100, 480, 640, 3];
+video.fps = 30;
 ```
 
+- `shape` and `fps` have both getters and setters.
+- `getFrame(index, signal?)` accepts an optional `AbortSignal` to cancel in-flight decodes.
 - `getFrameTimes()` returns `null` if the backend does not implement it.
 
 ### `Mp4BoxVideoBackend`
 Browser-only backend for `.mp4` with WebCodecs + mp4box. Supports range requests when the server honors `Range` and falls back to full download.
 
 ```ts
+// From URL
 const backend = new Mp4BoxVideoBackend("/data/movie.mp4");
+
+// From File or Blob (browser)
+const backend = new Mp4BoxVideoBackend(file);
+
 const video = new Video({ filename: "/data/movie.mp4", backend });
 const t = await video.getFrameTimes();
 ```
 
+Constructor: `new Mp4BoxVideoBackend(source: string | File | Blob, options?)`
+
 Notes:
 - Requires WebCodecs (`VideoDecoder`, `EncodedVideoChunk`).
-- Uses HEAD + `Range: bytes=0-0` probe to detect range support.
+- Uses a `Range: bytes=0-0` probe to detect range support (no longer requires HEAD).
 - Provides precise frame timestamps via `getFrameTimes()`.
+- `getFrame()` uses an async queue internally to prevent race conditions, and accepts an optional `AbortSignal`.
 
 ### `Hdf5VideoBackend`
 Used for `.slp`, `.h5`, or `.hdf5` sources (embedded frames).
@@ -111,6 +137,7 @@ Key types:
 - `Skeleton`, `Track`
 - `Video`, `SuggestionFrame`, `LabelsSet`
 - `Camera`, `CameraGroup`, `RecordingSession` (camera utilities)
+- `Point` has fields `{ xy, visible, complete, score? }` where `score` is an optional confidence value.
 
 ```ts
 const skeleton = new Skeleton(["nose", "tail"]);
