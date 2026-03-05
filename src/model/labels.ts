@@ -158,7 +158,9 @@ export class Labels {
   }
 
   numpy(options?: { video?: Video; returnConfidence?: boolean }): number[][][][] {
-    if (this._lazyFrameList) this.materialize();
+    if (this._lazyDataStore) {
+      return this._lazyDataStore.toNumpy(options);
+    }
     const targetVideo = options?.video ?? this.video;
     const frames = this.labeledFrames.filter((frame) => frame.video.matchesPath(targetVideo, true));
     if (!frames.length) return [];

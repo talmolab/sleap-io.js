@@ -68,6 +68,28 @@ export async function saveSlpToBytes(
 ): Promise<Uint8Array> {
   const embedMode = options?.embed ?? false;
 
+  // Source mode: restore original video paths before writing
+  let writeLabels = labels;
+  if (embedMode === "source") {
+    const restoredVideos = labels.videos.map((video) => {
+      if (video.sourceVideo) return video.sourceVideo;
+      return video;
+    });
+    writeLabels = new Labels({
+      labeledFrames: labels.labeledFrames.map((frame) => {
+        const videoIdx = labels.videos.indexOf(frame.video);
+        const restoredVideo = videoIdx >= 0 ? restoredVideos[videoIdx] : frame.video;
+        return new LabeledFrame({ video: restoredVideo, frameIdx: frame.frameIdx, instances: frame.instances });
+      }),
+      videos: restoredVideos,
+      skeletons: labels.skeletons,
+      tracks: labels.tracks,
+      suggestions: labels.suggestions,
+      sessions: labels.sessions,
+      provenance: labels.provenance,
+    });
+  }
+
   const module = await getH5Module();
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
 
@@ -79,7 +101,7 @@ export async function saveSlpToBytes(
 
   const file = new module.File(memPath, "w");
   try {
-    writeSlpToFile(file, labels, embeddedVideoData);
+    writeSlpToFile(file, writeLabels, embeddedVideoData);
   } finally {
     file.close();
   }
