@@ -2923,9 +2923,9 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames) {
       const calibration = parsed.calibration ?? {};
       const cameraGroup = new CameraGroup();
       const cameraMap = /* @__PURE__ */ new Map();
-      for (const [key, camData] of Object.entries(calibration)) {
+      for (const [key, data2] of Object.entries(calibration)) {
         if (key === "metadata") continue;
-        const cameraData = camData;
+        const cameraData = data2;
         const camera = new Camera({
           name: cameraData.name ?? key,
           rvec: cameraData.rotation ?? [0, 0, 0],
