@@ -25,8 +25,11 @@ await saveSlp(labels, "/tmp/session-roundtrip.slp", { embed: false });
 ## Features
 
 - SLP read/write with embedded frame support.
-- Streaming inputs (URL, `File`, `FileSystemFileHandle`).
+- Browser-compatible SLP writing via `saveSlpToBytes()`.
+- Streaming inputs (URL, `File`, `FileSystemFileHandle`, `Blob`).
 - Data model types (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`).
+- Video backends accept `string`, `File`, or `Blob` sources.
+- Browser-safe: Node.js-only imports are dynamic, so no bundler stubs needed.
 - Dictionary and numpy codecs.
 - **Lite mode** for Workers-compatible metadata extraction (no WASM).
 
