@@ -5,11 +5,13 @@ export class LabeledFrame {
   video: Video;
   frameIdx: number;
   instances: Array<Instance | PredictedInstance>;
+  isNegative: boolean;
 
-  constructor(options: { video: Video; frameIdx: number; instances?: Array<Instance | PredictedInstance> }) {
+  constructor(options: { video: Video; frameIdx: number; instances?: Array<Instance | PredictedInstance>; isNegative?: boolean }) {
     this.video = options.video;
     this.frameIdx = options.frameIdx;
     this.instances = options.instances ?? [];
+    this.isNegative = options.isNegative ?? false;
   }
 
   get length(): number {
