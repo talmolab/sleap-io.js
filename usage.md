@@ -55,6 +55,24 @@ const pngBuffer = await renderLabelsImage(labels, {
 
 See [rendering.md](./rendering.md) for more details.
 
+### Saving SLP (Browser)
+
+Use `saveSlpToBytes()` to serialize labels to SLP bytes in the browser:
+
+```ts
+import { loadSlp, saveSlpToBytes } from "@talmolab/sleap-io.js";
+
+const labels = await loadSlp(source);
+const bytes: Uint8Array = await saveSlpToBytes(labels);
+
+// Download via blob
+const blob = new Blob([bytes], { type: "application/octet-stream" });
+const a = document.createElement("a");
+a.href = URL.createObjectURL(blob);
+a.download = "labels.slp";
+a.click();
+```
+
 ## Browser Usage
 
 In the browser, `sleap-io.js` automatically uses a **Web Worker** for all HDF5 operations. This keeps the main thread responsive and avoids bundler issues with Node.js dependencies.
@@ -79,9 +97,7 @@ Browser usage requires an [import map](https://developer.mozilla.org/en-US/docs/
 {
   "imports": {
     "h5wasm": "https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js",
-    "yaml": "https://esm.sh/yaml@2.6.1",
-    "skia-canvas": "data:text/javascript,export class Canvas{}",
-    "child_process": "data:text/javascript,export function spawn(){}"
+    "yaml": "https://esm.sh/yaml@2.6.1"
   }
 }
 </script>
@@ -93,8 +109,8 @@ Browser usage requires an [import map](https://developer.mozilla.org/en-US/docs/
 |--------|---------|------------------|
 | `h5wasm` | HDF5 file reading (WebAssembly) | Loaded in Worker from CDN |
 | `yaml` | YAML skeleton parsing | Load from CDN |
-| `skia-canvas` | Server-side rendering (Node.js only) | Stub out |
-| `child_process` | Process spawning (Node.js only) | Stub out |
+
+> **Note:** `skia-canvas` and `child_process` stubs are no longer needed in the import map. These Node.js-only dependencies are now dynamically imported, so browser bundlers can safely tree-shake them.
 
 ### Loading SLP Files
 
@@ -183,9 +199,7 @@ for (const frame of labels.labeledFrames) {
   {
     "imports": {
       "h5wasm": "https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js",
-      "yaml": "https://esm.sh/yaml@2.6.1",
-      "skia-canvas": "data:text/javascript,export class Canvas{}",
-      "child_process": "data:text/javascript,export function spawn(){}"
+      "yaml": "https://esm.sh/yaml@2.6.1"
     }
   }
   </script>
@@ -288,10 +302,10 @@ Supports:
 
 Returns a video backend with:
 
-- `getFrame(index)` - Get frame as `ImageBitmap`, `ImageData`, or raw bytes
+- `getFrame(index, signal?)` - Get frame as `ImageBitmap`, `ImageData`, or raw bytes. Accepts an optional `AbortSignal` to cancel in-flight decodes.
 - `getFrameTimes()` - Get array of frame timestamps
-- `fps` - Frames per second
-- `shape` - `[frames, height, width, channels]`
+- `fps` - Frames per second (getter and setter)
+- `shape` - `[frames, height, width, channels]` (getter and setter)
 
 ## Error Handling
 

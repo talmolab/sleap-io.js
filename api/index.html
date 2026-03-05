@@ -566,6 +566,7 @@
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">loadSlp</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">saveSlp</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">saveSlpToBytes</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">loadVideo</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Video</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Mp4BoxVideoBackend</span><span class="p">,</span>
@@ -608,6 +609,15 @@
 <li><code>options.embed</code>: embed frames (<code>true</code>, <code>false</code>, or dataset name).</li>
 <li><code>options.restoreOriginalVideos</code> (default <code>true</code>): keep original video paths.</li>
 </ul>
+<h3 id="saveslptobyteslabels-options"><code>saveSlpToBytes(labels, options)</code><a class="headerlink" href="#saveslptobyteslabels-options" title="Permanent link">&para;</a></h3>
+<p>Serialize Labels to SLP format and return the bytes. Works in both Node.js and browser environments.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">bytes</span><span class="o">:</span><span class="w"> </span><span class="kt">Uint8Array</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">saveSlpToBytes</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">embed</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<ul>
+<li><code>labels</code>: <code>Labels</code> object to serialize.</li>
+<li><code>options.embed</code>: embed frames (<code>true</code>, <code>false</code>, or dataset name).</li>
+<li>Returns <code>Promise&lt;Uint8Array&gt;</code>.</li>
+</ul>
 <h3 id="loadvideofilename-options"><code>loadVideo(filename, options)</code><a class="headerlink" href="#loadvideofilename-options" title="Permanent link">&para;</a></h3>
 <p>Open a <code>Video</code> with an appropriate backend.</p>
 <div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadVideo</span><span class="p">(</span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">openBackend</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
@@ -623,20 +633,33 @@
 <p><code>Video</code> wraps a backend and exposes <code>shape</code>, <code>fps</code>, <code>getFrame</code>, <code>getFrameTimes</code>, and <code>close</code>.</p>
 <div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadVideo</span><span class="p">(</span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">);</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">timestamps</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">video</span><span class="p">.</span><span class="nx">getFrameTimes</span><span class="p">();</span><span class="w"> </span><span class="c1">// number[] | null</span>
+
+<span class="c1">// shape and fps have setters</span>
+<span class="nx">video</span><span class="p">.</span><span class="nx">shape</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="p">[</span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">,</span><span class="w"> </span><span class="mf">3</span><span class="p">];</span>
+<span class="nx">video</span><span class="p">.</span><span class="nx">fps</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="mf">30</span><span class="p">;</span>
 </code></pre></div>
 <ul>
+<li><code>shape</code> and <code>fps</code> have both getters and setters.</li>
+<li><code>getFrame(index, signal?)</code> accepts an optional <code>AbortSignal</code> to cancel in-flight decodes.</li>
 <li><code>getFrameTimes()</code> returns <code>null</code> if the backend does not implement it.</li>
 </ul>
 <h3 id="mp4boxvideobackend"><code>Mp4BoxVideoBackend</code><a class="headerlink" href="#mp4boxvideobackend" title="Permanent link">&para;</a></h3>
 <p>Browser-only backend for <code>.mp4</code> with WebCodecs + mp4box. Supports range requests when the server honors <code>Range</code> and falls back to full download.</p>
-<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">backend</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Mp4BoxVideoBackend</span><span class="p">(</span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">);</span>
+<div class="highlight"><pre><span></span><code><span class="c1">// From URL</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">backend</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Mp4BoxVideoBackend</span><span class="p">(</span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">);</span>
+
+<span class="c1">// From File or Blob (browser)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">backend</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Mp4BoxVideoBackend</span><span class="p">(</span><span class="nx">file</span><span class="p">);</span>
+
 <span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Video</span><span class="p">({</span><span class="w"> </span><span class="nx">filename</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">backend</span><span class="w"> </span><span class="p">});</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">t</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">video</span><span class="p">.</span><span class="nx">getFrameTimes</span><span class="p">();</span>
 </code></pre></div>
+<p>Constructor: <code>new Mp4BoxVideoBackend(source: string | File | Blob, options?)</code></p>
 <p>Notes:
 - Requires WebCodecs (<code>VideoDecoder</code>, <code>EncodedVideoChunk</code>).
-- Uses HEAD + <code>Range: bytes=0-0</code> probe to detect range support.
-- Provides precise frame timestamps via <code>getFrameTimes()</code>.</p>
+- Uses a <code>Range: bytes=0-0</code> probe to detect range support (no longer requires HEAD).
+- Provides precise frame timestamps via <code>getFrameTimes()</code>.
+- <code>getFrame()</code> uses an async queue internally to prevent race conditions, and accepts an optional <code>AbortSignal</code>.</p>
 <h3 id="hdf5videobackend"><code>Hdf5VideoBackend</code><a class="headerlink" href="#hdf5videobackend" title="Permanent link">&para;</a></h3>
 <p>Used for <code>.slp</code>, <code>.h5</code>, or <code>.hdf5</code> sources (embedded frames).</p>
 <ul>
@@ -656,6 +679,7 @@
 <li><code>Skeleton</code>, <code>Track</code></li>
 <li><code>Video</code>, <code>SuggestionFrame</code>, <code>LabelsSet</code></li>
 <li><code>Camera</code>, <code>CameraGroup</code>, <code>RecordingSession</code> (camera utilities)</li>
+<li><code>Point</code> has fields <code>{ xy, visible, complete, score? }</code> where <code>score</code> is an optional confidence value.</li>
 </ul>
 <div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">skeleton</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Skeleton</span><span class="p">([</span><span class="s2">&quot;nose&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;tail&quot;</span><span class="p">]);</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">inst</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">Instance</span><span class="p">.</span><span class="nx">fromArray</span><span class="p">([[</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">30</span><span class="p">,</span><span class="w"> </span><span class="mf">40</span><span class="p">]],</span><span class="w"> </span><span class="nx">skeleton</span><span class="p">);</span>

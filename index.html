@@ -561,8 +561,11 @@ npm<span class="w"> </span>run<span class="w"> </span>build
 <h2 id="features">Features<a class="headerlink" href="#features" title="Permanent link">&para;</a></h2>
 <ul>
 <li>SLP read/write with embedded frame support.</li>
-<li>Streaming inputs (URL, <code>File</code>, <code>FileSystemFileHandle</code>).</li>
+<li>Browser-compatible SLP writing via <code>saveSlpToBytes()</code>.</li>
+<li>Streaming inputs (URL, <code>File</code>, <code>FileSystemFileHandle</code>, <code>Blob</code>).</li>
 <li>Data model types (<code>Labels</code>, <code>LabeledFrame</code>, <code>Instance</code>, <code>Skeleton</code>, <code>Video</code>).</li>
+<li>Video backends accept <code>string</code>, <code>File</code>, or <code>Blob</code> sources.</li>
+<li>Browser-safe: Node.js-only imports are dynamic, so no bundler stubs needed.</li>
 <li>Dictionary and numpy codecs.</li>
 <li><strong>Lite mode</strong> for Workers-compatible metadata extraction (no WASM).</li>
 </ul>

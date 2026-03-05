@@ -405,7 +405,7 @@ const jpegBuffer = await toJPEG(imageData, 0.9); // quality 0-1
 import { renderImage, toDataURL } from "@talmolab/sleap-io.js";
 
 const imageData = await renderImage(lf, { width: 640, height: 480 });
-const dataUrl = toDataURL(imageData, "png");
+const dataUrl = await toDataURL(imageData, "png"); // Note: toDataURL is now async
 // "data:image/png;base64,..."
 ```
 

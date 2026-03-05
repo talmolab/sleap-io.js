@@ -637,6 +637,20 @@
 <span class="c1">// pngBuffer is a Node.js Buffer containing PNG data</span>
 </code></pre></div>
 <p>See <a href="../rendering/">rendering.md</a> for more details.</p>
+<h3 id="saving-slp-browser">Saving SLP (Browser)<a class="headerlink" href="#saving-slp-browser" title="Permanent link">&para;</a></h3>
+<p>Use <code>saveSlpToBytes()</code> to serialize labels to SLP bytes in the browser:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">saveSlpToBytes</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="nx">source</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">bytes</span><span class="o">:</span><span class="w"> </span><span class="kt">Uint8Array</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">saveSlpToBytes</span><span class="p">(</span><span class="nx">labels</span><span class="p">);</span>
+
+<span class="c1">// Download via blob</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">blob</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Blob</span><span class="p">([</span><span class="nx">bytes</span><span class="p">],</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;application/octet-stream&quot;</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">a</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">document</span><span class="p">.</span><span class="nx">createElement</span><span class="p">(</span><span class="s2">&quot;a&quot;</span><span class="p">);</span>
+<span class="nx">a</span><span class="p">.</span><span class="nx">href</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">URL</span><span class="p">.</span><span class="nx">createObjectURL</span><span class="p">(</span><span class="nx">blob</span><span class="p">);</span>
+<span class="nx">a</span><span class="p">.</span><span class="nx">download</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;labels.slp&quot;</span><span class="p">;</span>
+<span class="nx">a</span><span class="p">.</span><span class="nx">click</span><span class="p">();</span>
+</code></pre></div>
 <h2 id="browser-usage">Browser Usage<a class="headerlink" href="#browser-usage" title="Permanent link">&para;</a></h2>
 <p>In the browser, <code>sleap-io.js</code> automatically uses a <strong>Web Worker</strong> for all HDF5 operations. This keeps the main thread responsive and avoids bundler issues with Node.js dependencies.</p>
 <h3 id="how-it-works">How It Works<a class="headerlink" href="#how-it-works" title="Permanent link">&para;</a></h3>
@@ -654,9 +668,7 @@
 <span class="p">{</span>
 <span class="w">  </span><span class="s2">&quot;imports&quot;</span><span class="o">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="s2">&quot;h5wasm&quot;</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s2">&quot;yaml&quot;</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;https://esm.sh/yaml@2.6.1&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s2">&quot;skia-canvas&quot;</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;data:text/javascript,export class Canvas{}&quot;</span><span class="p">,</span>
-<span class="w">    </span><span class="s2">&quot;child_process&quot;</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;data:text/javascript,export function spawn(){}&quot;</span>
+<span class="w">    </span><span class="s2">&quot;yaml&quot;</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;https://esm.sh/yaml@2.6.1&quot;</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 <span class="p">&lt;/</span><span class="nt">script</span><span class="p">&gt;</span>
@@ -681,18 +693,11 @@
 <td>YAML skeleton parsing</td>
 <td>Load from CDN</td>
 </tr>
-<tr>
-<td><code>skia-canvas</code></td>
-<td>Server-side rendering (Node.js only)</td>
-<td>Stub out</td>
-</tr>
-<tr>
-<td><code>child_process</code></td>
-<td>Process spawning (Node.js only)</td>
-<td>Stub out</td>
-</tr>
 </tbody>
 </table>
+<blockquote>
+<p><strong>Note:</strong> <code>skia-canvas</code> and <code>child_process</code> stubs are no longer needed in the import map. These Node.js-only dependencies are now dynamically imported, so browser bundlers can safely tree-shake them.</p>
+</blockquote>
 <h3 id="loading-slp-files">Loading SLP Files<a class="headerlink" href="#loading-slp-files" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="p">&lt;</span><span class="nt">script</span> <span class="na">type</span><span class="o">=</span><span class="s">&quot;module&quot;</span><span class="p">&gt;</span>
 <span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;./dist/index.js&quot;</span><span class="p">;</span>
@@ -763,9 +768,7 @@
 <span class="w">  </span><span class="p">{</span>
 <span class="w">    </span><span class="s2">&quot;imports&quot;</span><span class="o">:</span><span class="w"> </span><span class="p">{</span>
 <span class="w">      </span><span class="s2">&quot;h5wasm&quot;</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="s2">&quot;yaml&quot;</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;https://esm.sh/yaml@2.6.1&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="s2">&quot;skia-canvas&quot;</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;data:text/javascript,export class Canvas{}&quot;</span><span class="p">,</span>
-<span class="w">      </span><span class="s2">&quot;child_process&quot;</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;data:text/javascript,export function spawn(){}&quot;</span>
+<span class="w">      </span><span class="s2">&quot;yaml&quot;</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;https://esm.sh/yaml@2.6.1&quot;</span>
 <span class="w">    </span><span class="p">}</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="w">  </span><span class="p">&lt;/</span><span class="nt">script</span><span class="p">&gt;</span>
@@ -878,10 +881,10 @@
 </ul>
 <p>Returns a video backend with:</p>
 <ul>
-<li><code>getFrame(index)</code> - Get frame as <code>ImageBitmap</code>, <code>ImageData</code>, or raw bytes</li>
+<li><code>getFrame(index, signal?)</code> - Get frame as <code>ImageBitmap</code>, <code>ImageData</code>, or raw bytes. Accepts an optional <code>AbortSignal</code> to cancel in-flight decodes.</li>
 <li><code>getFrameTimes()</code> - Get array of frame timestamps</li>
-<li><code>fps</code> - Frames per second</li>
-<li><code>shape</code> - <code>[frames, height, width, channels]</code></li>
+<li><code>fps</code> - Frames per second (getter and setter)</li>
+<li><code>shape</code> - <code>[frames, height, width, channels]</code> (getter and setter)</li>
 </ul>
 <h2 id="error-handling">Error Handling<a class="headerlink" href="#error-handling" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><span class="k">try</span><span class="w"> </span><span class="p">{</span>
