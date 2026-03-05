@@ -392,6 +392,24 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#lazy-loading" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lazy Loading
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#skeleton-codecs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Skeleton Codecs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#codecs-numpy-helpers" class="md-nav__link">
     <span class="md-ellipsis">
       Codecs &amp; Numpy Helpers
@@ -520,6 +538,24 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#lazy-loading" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lazy Loading
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#skeleton-codecs" class="md-nav__link">
+    <span class="md-ellipsis">
+      Skeleton Codecs
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#codecs-numpy-helpers" class="md-nav__link">
     <span class="md-ellipsis">
       Codecs &amp; Numpy Helpers
@@ -564,7 +600,7 @@
   
 
 
-<div class="md-source-file"><a href="../api.md" title="View markdown source" class="md-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6m4 18H6V4h7v5h5v11M13 9V3.5L18.5 9H13Z"/></svg></a></div>
+<a href="../api.md" title="View markdown source" class="md-source-file-link"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6m4 18H6V4h7v5h5v11M13 9V3.5L18.5 9H13Z"/></svg></a>
 <h1 id="api-reference">API Reference<a class="headerlink" href="#api-reference" title="Permanent link">&para;</a></h1>
 <p>This document covers the public API exported from <code>src/index.ts</code>. All examples assume:
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span>
@@ -601,6 +637,7 @@
 <li><code>options.openVideos</code> (default <code>true</code>): set <code>false</code> to skip opening video backends.</li>
 <li><code>options.h5.stream</code>: <code>"auto" | "range" | "download"</code> (browser URL streaming).</li>
 <li><code>options.h5.filenameHint</code>: helps name temporary files.</li>
+<li><code>options.lazy</code> (default <code>false</code>): use lazy loading for on-demand frame materialization.</li>
 </ul>
 <h3 id="saveslplabels-filename-options"><code>saveSlp(labels, filename, options)</code><a class="headerlink" href="#saveslplabels-filename-options" title="Permanent link">&para;</a></h3>
 <p>Write <code>.slp</code> (Node/Electron).</p>
@@ -610,7 +647,7 @@
 <span class="p">});</span>
 </code></pre></div>
 <ul>
-<li><code>options.embed</code>: embed frames (<code>true</code>, <code>false</code>, or dataset name).</li>
+<li><code>options.embed</code>: embed frames (<code>true</code>/<code>"all"</code>, <code>"user"</code>, <code>"suggestions"</code>, <code>"user+suggestions"</code>, or <code>"source"</code> to restore source video paths before writing).</li>
 <li><code>options.restoreOriginalVideos</code> (default <code>true</code>): keep original video paths.</li>
 </ul>
 <h3 id="saveslptobyteslabels-options"><code>saveSlpToBytes(labels, options)</code><a class="headerlink" href="#saveslptobyteslabels-options" title="Permanent link">&para;</a></h3>
@@ -683,13 +720,45 @@
 <li><code>Skeleton</code>, <code>Track</code></li>
 <li><code>Video</code>, <code>SuggestionFrame</code>, <code>LabelsSet</code></li>
 <li><code>Camera</code>, <code>CameraGroup</code>, <code>RecordingSession</code> (camera utilities)</li>
+<li><code>LazyDataStore</code>, <code>LazyFrameList</code> (lazy loading)</li>
 <li><code>Point</code> has fields <code>{ xy, visible, complete, score? }</code> where <code>score</code> is an optional confidence value.</li>
+<li><code>LabeledFrame.isNegative</code> (<code>boolean</code>, default <code>false</code>): marks negative-annotated frames.</li>
+<li><code>SuggestionFrame.group</code> (<code>string</code>, default <code>"default"</code>): the suggestion group name.</li>
 </ul>
 <div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">skeleton</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Skeleton</span><span class="p">([</span><span class="s2">&quot;nose&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;tail&quot;</span><span class="p">]);</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">inst</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">Instance</span><span class="p">.</span><span class="nx">fromArray</span><span class="p">([[</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">30</span><span class="p">,</span><span class="w"> </span><span class="mf">40</span><span class="p">]],</span><span class="w"> </span><span class="nx">skeleton</span><span class="p">);</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Video</span><span class="p">({</span><span class="w"> </span><span class="nx">filename</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="w"> </span><span class="p">});</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">frame</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">instances</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">inst</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Labels</span><span class="p">({</span><span class="w"> </span><span class="nx">labeledFrames</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">frame</span><span class="p">],</span><span class="w"> </span><span class="nx">skeletons</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">skeleton</span><span class="p">],</span><span class="w"> </span><span class="nx">videos</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">video</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h2 id="lazy-loading">Lazy Loading<a class="headerlink" href="#lazy-loading" title="Permanent link">&para;</a></h2>
+<p>Load SLP files with on-demand frame materialization for better performance on large datasets.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Load lazily - only metadata is parsed initially</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;large_dataset.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">lazy</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">isLazy</span><span class="p">);</span><span class="w">  </span><span class="c1">// true</span>
+
+<span class="c1">// Access individual frames on demand</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">frame</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">.</span><span class="nx">at</span><span class="p">(</span><span class="mf">0</span><span class="p">);</span>
+
+<span class="c1">// Materialize all frames when needed</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">materialize</span><span class="p">();</span>
+<span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">isLazy</span><span class="p">);</span><span class="w">  </span><span class="c1">// false</span>
+</code></pre></div>
+<p>Key classes:</p>
+<ul>
+<li><strong><code>LazyDataStore</code></strong>: Holds raw HDF5 column data; supports <code>materializeFrame(idx)</code>, <code>materializeAll()</code>, and <code>toNumpy()</code> fast path.</li>
+<li><strong><code>LazyFrameList</code></strong>: Array-like container with <code>at(idx)</code>, <code>length</code>, <code>toArray()</code>, <code>[Symbol.iterator]()</code>, and <code>materializedCount</code>.</li>
+</ul>
+<h2 id="skeleton-codecs">Skeleton Codecs<a class="headerlink" href="#skeleton-codecs" title="Permanent link">&para;</a></h2>
+<h3 id="json-jsonpickle-format">JSON (jsonpickle format)<a class="headerlink" href="#json-jsonpickle-format" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">readSkeletonJson</span><span class="p">,</span><span class="w"> </span><span class="nx">isSkeletonJson</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">skeleton</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">readSkeletonJson</span><span class="p">(</span><span class="nx">jsonString</span><span class="p">);</span>
+</code></pre></div>
+<h3 id="training-config">Training Config<a class="headerlink" href="#training-config" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">readTrainingConfigSkeletons</span><span class="p">,</span><span class="w"> </span><span class="nx">isTrainingConfig</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">skeletons</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">readTrainingConfigSkeletons</span><span class="p">(</span><span class="nx">jsonString</span><span class="p">);</span>
 </code></pre></div>
 <h2 id="codecs-numpy-helpers">Codecs &amp; Numpy Helpers<a class="headerlink" href="#codecs-numpy-helpers" title="Permanent link">&para;</a></h2>
 <h3 id="dictionary-codec">Dictionary codec<a class="headerlink" href="#dictionary-codec" title="Permanent link">&para;</a></h3>

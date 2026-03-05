@@ -40,6 +40,7 @@ const labels = await loadSlp("/data/session.slp", {
 - `options.openVideos` (default `true`): set `false` to skip opening video backends.
 - `options.h5.stream`: `"auto" | "range" | "download"` (browser URL streaming).
 - `options.h5.filenameHint`: helps name temporary files.
+- `options.lazy` (default `false`): use lazy loading for on-demand frame materialization.
 
 ### `saveSlp(labels, filename, options)`
 Write `.slp` (Node/Electron).
@@ -51,7 +52,7 @@ await saveSlp(labels, "/tmp/roundtrip.slp", {
 });
 ```
 
-- `options.embed`: embed frames (`true`, `false`, or dataset name).
+- `options.embed`: embed frames (`true`/`"all"`, `"user"`, `"suggestions"`, `"user+suggestions"`, or `"source"` to restore source video paths before writing).
 - `options.restoreOriginalVideos` (default `true`): keep original video paths.
 
 ### `saveSlpToBytes(labels, options)`
@@ -137,7 +138,10 @@ Key types:
 - `Skeleton`, `Track`
 - `Video`, `SuggestionFrame`, `LabelsSet`
 - `Camera`, `CameraGroup`, `RecordingSession` (camera utilities)
+- `LazyDataStore`, `LazyFrameList` (lazy loading)
 - `Point` has fields `{ xy, visible, complete, score? }` where `score` is an optional confidence value.
+- `LabeledFrame.isNegative` (`boolean`, default `false`): marks negative-annotated frames.
+- `SuggestionFrame.group` (`string`, default `"default"`): the suggestion group name.
 
 ```ts
 const skeleton = new Skeleton(["nose", "tail"]);
@@ -145,6 +149,44 @@ const inst = Instance.fromArray([[10, 20], [30, 40]], skeleton);
 const video = new Video({ filename: "/data/movie.mp4" });
 const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 const labels = new Labels({ labeledFrames: [frame], skeletons: [skeleton], videos: [video] });
+```
+
+## Lazy Loading
+
+Load SLP files with on-demand frame materialization for better performance on large datasets.
+
+```ts
+// Load lazily - only metadata is parsed initially
+const labels = await loadSlp("large_dataset.slp", { lazy: true });
+console.log(labels.isLazy);  // true
+
+// Access individual frames on demand
+const frame = labels.labeledFrames.at(0);
+
+// Materialize all frames when needed
+labels.materialize();
+console.log(labels.isLazy);  // false
+```
+
+Key classes:
+
+- **`LazyDataStore`**: Holds raw HDF5 column data; supports `materializeFrame(idx)`, `materializeAll()`, and `toNumpy()` fast path.
+- **`LazyFrameList`**: Array-like container with `at(idx)`, `length`, `toArray()`, `[Symbol.iterator]()`, and `materializedCount`.
+
+## Skeleton Codecs
+
+### JSON (jsonpickle format)
+```ts
+import { readSkeletonJson, isSkeletonJson } from "@talmolab/sleap-io.js";
+
+const skeleton = readSkeletonJson(jsonString);
+```
+
+### Training Config
+```ts
+import { readTrainingConfigSkeletons, isTrainingConfig } from "@talmolab/sleap-io.js";
+
+const skeletons = readTrainingConfigSkeletons(jsonString);
 ```
 
 ## Codecs & Numpy Helpers

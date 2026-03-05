@@ -372,6 +372,33 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#lazy-loading" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lazy Loading
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#saving-with-embedded-frames" class="md-nav__link">
+    <span class="md-ellipsis">
+      Saving with Embedded Frames
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#multi-file-loading" class="md-nav__link">
+    <span class="md-ellipsis">
+      Multi-File Loading
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#advanced-low-level-worker-apis" class="md-nav__link">
     <span class="md-ellipsis">
       Advanced: Low-Level Worker APIs
@@ -538,6 +565,33 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#lazy-loading" class="md-nav__link">
+    <span class="md-ellipsis">
+      Lazy Loading
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#saving-with-embedded-frames" class="md-nav__link">
+    <span class="md-ellipsis">
+      Saving with Embedded Frames
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#multi-file-loading" class="md-nav__link">
+    <span class="md-ellipsis">
+      Multi-File Loading
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#advanced-low-level-worker-apis" class="md-nav__link">
     <span class="md-ellipsis">
       Advanced: Low-Level Worker APIs
@@ -600,7 +654,7 @@
   
 
 
-<div class="md-source-file"><a href="../usage.md" title="View markdown source" class="md-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6m4 18H6V4h7v5h5v11M13 9V3.5L18.5 9H13Z"/></svg></a></div>
+<a href="../usage.md" title="View markdown source" class="md-source-file-link"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6m4 18H6V4h7v5h5v11M13 9V3.5L18.5 9H13Z"/></svg></a>
 <h1 id="usage-guide">Usage Guide<a class="headerlink" href="#usage-guide" title="Permanent link">&para;</a></h1>
 <p>This guide covers how to use <code>sleap-io.js</code> in both Node.js and browser environments.</p>
 <h2 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">&para;</a></h2>
@@ -808,6 +862,59 @@
 <span class="p">&lt;/</span><span class="nt">body</span><span class="p">&gt;</span>
 <span class="p">&lt;/</span><span class="nt">html</span><span class="p">&gt;</span>
 </code></pre></div>
+<h2 id="lazy-loading">Lazy Loading<a class="headerlink" href="#lazy-loading" title="Permanent link">&para;</a></h2>
+<p>For large SLP files, lazy loading defers frame parsing until individual frames are accessed:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Only metadata is parsed upfront</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;large_dataset.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">lazy</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">isLazy</span><span class="p">);</span><span class="w">           </span><span class="c1">// true</span>
+<span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">.</span><span class="nx">length</span><span class="p">);</span><span class="w"> </span><span class="c1">// frame count available immediately</span>
+
+<span class="c1">// Frames are materialized on demand</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">frame</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">.</span><span class="nx">at</span><span class="p">(</span><span class="mf">0</span><span class="p">);</span>
+
+<span class="c1">// Fast numpy conversion without materializing frames</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">array</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">numpy</span><span class="p">();</span>
+
+<span class="c1">// Fully materialize when needed</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">materialize</span><span class="p">();</span>
+</code></pre></div>
+<h2 id="saving-with-embedded-frames">Saving with Embedded Frames<a class="headerlink" href="#saving-with-embedded-frames" title="Permanent link">&para;</a></h2>
+<p>Embed video frames directly into the SLP file:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">saveSlp</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Embed all frames</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">embed</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Embed only user-labeled frames</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">embed</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;user&quot;</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Embed user + suggestion frames</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">embed</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;user+suggestions&quot;</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Restore source video references (strip embedded data)</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">embed</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;source&quot;</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h2 id="multi-file-loading">Multi-File Loading<a class="headerlink" href="#multi-file-loading" title="Permanent link">&para;</a></h2>
+<p>Load and save multiple SLP files in parallel:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlpSet</span><span class="p">,</span><span class="w"> </span><span class="nx">saveSlpSet</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Load from array of paths</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">set</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlpSet</span><span class="p">([</span><span class="s2">&quot;train.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;val.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;test.slp&quot;</span><span class="p">]);</span>
+
+<span class="c1">// Load from record (custom keys)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">set</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlpSet</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">train</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;/data/train.slp&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">val</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;/data/val.slp&quot;</span><span class="p">,</span>
+<span class="p">});</span>
+
+<span class="c1">// Access individual labels</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">trainLabels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">set</span><span class="p">.</span><span class="nx">get</span><span class="p">(</span><span class="s2">&quot;train&quot;</span><span class="p">);</span>
+
+<span class="c1">// Save all back</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveSlpSet</span><span class="p">(</span><span class="nx">set</span><span class="p">);</span>
+</code></pre></div>
 <h2 id="advanced-low-level-worker-apis">Advanced: Low-Level Worker APIs<a class="headerlink" href="#advanced-low-level-worker-apis" title="Permanent link">&para;</a></h2>
 <p>For fine-grained control over HDF5 file access, you can use the streaming APIs directly:</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">openH5Worker</span><span class="p">,</span><span class="w"> </span><span class="nx">isStreamingSupported</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
@@ -864,15 +971,21 @@
 </tr>
 <tr>
 <td><code>h5.stream</code></td>
-<td><code>"range"</code> | <code>undefined</code></td>
-<td><code>undefined</code></td>
-<td>Use HTTP Range requests for streaming</td>
+<td><code>"auto"</code> | <code>"range"</code> | <code>"download"</code></td>
+<td><code>"auto"</code></td>
+<td>HDF5 streaming mode</td>
 </tr>
 <tr>
 <td><code>h5.filenameHint</code></td>
 <td><code>string</code></td>
 <td><code>undefined</code></td>
 <td>Filename hint for embedded video paths</td>
+</tr>
+<tr>
+<td><code>lazy</code></td>
+<td><code>boolean</code></td>
+<td><code>false</code></td>
+<td>Use lazy loading for on-demand frame materialization</td>
 </tr>
 </tbody>
 </table>
