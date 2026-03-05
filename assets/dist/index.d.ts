@@ -528,6 +528,17 @@ type SlpWriteOptions = {
 /**
  * Serialize Labels to SLP format and return the bytes.
  * Works in both Node.js and browser environments.
+ *
+ * When `embed` is set, video frames are read from their backends and stored
+ * directly in the SLP file as HDF5 datasets (video0/video, video1/video, etc.).
+ * The video backends must be open and able to return frame data.
+ *
+ * Supported embed modes:
+ * - `true` or `"all"` - Embed all labeled frames
+ * - `"user"` - Embed only frames with user instances
+ * - `"suggestions"` - Embed only suggestion frames
+ * - `"user+suggestions"` - Embed user instance frames and suggestion frames
+ * - `"source"` - Restore original video paths (no embedding)
  */
 declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Promise<Uint8Array>;
 
