@@ -83,7 +83,7 @@ export class Labels {
 
   find(options: { video?: Video; frameIdx?: number }): LabeledFrame[] {
     return this.labeledFrames.filter((frame) => {
-      if (options.video && frame.video !== options.video && !frame.video.matchesPath(options.video, false)) {
+      if (options.video && frame.video !== options.video) {
         return false;
       }
       if (options.frameIdx !== undefined && frame.frameIdx !== options.frameIdx) {
