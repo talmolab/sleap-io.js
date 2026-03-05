@@ -461,41 +461,6 @@ type SlpWriteOptions = {
  */
 declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Promise<Uint8Array>;
 
-/**
- * Load an SLP file.
- *
- * In browser environments, this function automatically uses a Web Worker for all
- * HDF5 operations, keeping the main thread responsive. For URLs, it uses HTTP
- * range requests to download only the data needed rather than the entire file.
- *
- * In Node.js, this uses the native h5wasm bindings directly.
- *
- * @param source - Path, URL, ArrayBuffer, File, or FileSystemFileHandle
- * @param options - Loading options
- * @param options.openVideos - Whether to open video backends (default: true)
- * @param options.h5 - HDF5 options including streaming mode
- * @param options.h5.stream - 'auto' | 'range' | 'download' (default: 'auto')
- *
- * @example
- * ```typescript
- * // Browser: Load from URL (automatically uses Worker + range requests)
- * const labels = await loadSlp('https://example.com/labels.slp');
- *
- * // Browser: Load from file input (automatically uses Worker)
- * const labels = await loadSlp(fileInput.files[0]);
- *
- * // Browser: Load from ArrayBuffer (automatically uses Worker)
- * const labels = await loadSlp(arrayBuffer);
- *
- * // Force full download instead of range requests
- * const labels = await loadSlp('https://example.com/labels.slp', {
- *   h5: { stream: 'download' }
- * });
- *
- * // Node.js: Load from file path
- * const labels = await loadSlp('/path/to/file.slp');
- * ```
- */
 declare function loadSlp(source: SlpSource, options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
