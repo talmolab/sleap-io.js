@@ -48,6 +48,7 @@ type Point = {
     xy: [number, number];
     visible: boolean;
     complete: boolean;
+    score?: number;
     name?: string;
 };
 type PredictedPoint = Point & {

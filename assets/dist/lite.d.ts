@@ -1,5 +1,5 @@
-import { S as Skeleton, T as Track } from './instance-D_5PPN1y.js';
-export { E as Edge, N as Node, j as Symmetry } from './instance-D_5PPN1y.js';
+import { S as Skeleton, T as Track } from './instance-DzZInuvQ.js';
+export { E as Edge, N as Node, j as Symmetry } from './instance-DzZInuvQ.js';
 
 /**
  * jsfive-based HDF5 file interface.
