@@ -561,6 +561,19 @@ declare function decodeYamlSkeleton(yamlData: string): Skeleton | Skeleton[];
 declare function encodeYamlSkeleton(skeletons: Skeleton | Skeleton[]): string;
 
 /**
+ * Parse a skeleton from jsonpickle graph format (used in .json skeleton files
+ * and training config files).
+ *
+ * The jsonpickle format uses py/object for first occurrences and py/id for
+ * back-references. Two format variants exist:
+ * - Shared-object: nodes use py/id refs across links (flies13 style)
+ * - Duplicate-object: every link has fresh py/object nodes (fly32 style)
+ *
+ * We use separate ID registries for nodes and edge types to handle both.
+ */
+declare function readSkeletonJson(json: string | Record<string, unknown>): Skeleton;
+
+/**
  * Context passed to pre/post render callbacks.
  */
 declare class RenderContext {
@@ -852,4 +865,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, readSlpStreaming, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, saveSlpToBytes, toDataURL, toDict, toJPEG, toNumpy, toPNG };
+export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, labelsFromNumpy, loadSlp, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, readSkeletonJson, readSlpStreaming, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, saveSlpToBytes, toDataURL, toDict, toJPEG, toNumpy, toPNG };

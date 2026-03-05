@@ -3542,6 +3542,120 @@ function encodeYamlSkeleton(skeletons) {
   return YAML.stringify(payload);
 }
 
+// src/codecs/skeleton-json.ts
+function readSkeletonJson(json) {
+  const data = typeof json === "string" ? JSON.parse(json) : json;
+  const globalRegistry = /* @__PURE__ */ new Map();
+  let globalCounter = 0;
+  const usesSharedNodeRefs = data.links.some(
+    (link) => link.source["py/id"] !== void 0 || link.target["py/id"] !== void 0
+  );
+  const edgeTypeRegistry = /* @__PURE__ */ new Map();
+  let edgeTypeCounter = 0;
+  function resolveNode(obj) {
+    if (obj["py/object"]) {
+      const name = obj["py/state"]["py/tuple"][0];
+      if (usesSharedNodeRefs) {
+        globalCounter += 1;
+        globalRegistry.set(globalCounter, name);
+      }
+      return name;
+    }
+    if (obj["py/id"] !== void 0) {
+      return globalRegistry.get(obj["py/id"]);
+    }
+    throw new Error("Cannot resolve jsonpickle node reference");
+  }
+  function resolveEdgeTypeValue(obj) {
+    if (obj["py/reduce"]) {
+      const value = obj["py/reduce"][1]["py/tuple"][0];
+      if (usesSharedNodeRefs) {
+        globalCounter += 1;
+        globalRegistry.set(globalCounter, value);
+      } else {
+        edgeTypeCounter += 1;
+        edgeTypeRegistry.set(edgeTypeCounter, value);
+      }
+      return value;
+    }
+    if (obj["py/id"] !== void 0) {
+      if (usesSharedNodeRefs) {
+        return globalRegistry.get(obj["py/id"]);
+      }
+      return edgeTypeRegistry.get(obj["py/id"]);
+    }
+    return 1;
+  }
+  const edgePairs = [];
+  const symmetryPairs = [];
+  const allNodeNames = [];
+  const nodeNameSet = /* @__PURE__ */ new Set();
+  for (const link of data.links) {
+    const sourceName = resolveNode(link.source);
+    const targetName = resolveNode(link.target);
+    const edgeType = resolveEdgeTypeValue(link.type);
+    if (!nodeNameSet.has(sourceName)) {
+      nodeNameSet.add(sourceName);
+      allNodeNames.push(sourceName);
+    }
+    if (!nodeNameSet.has(targetName)) {
+      nodeNameSet.add(targetName);
+      allNodeNames.push(targetName);
+    }
+    if (edgeType === 1) {
+      edgePairs.push([sourceName, targetName]);
+    } else if (edgeType === 2) {
+      symmetryPairs.push([sourceName, targetName]);
+    }
+  }
+  let nodeNames;
+  if (usesSharedNodeRefs && data.nodes.length > 0) {
+    const orderedNames = [];
+    for (const nodeEntry of data.nodes) {
+      const nodeObj = nodeEntry.id;
+      if (nodeObj["py/object"]) {
+        globalCounter += 1;
+        const name = nodeObj["py/state"]["py/tuple"][0];
+        globalRegistry.set(globalCounter, name);
+        orderedNames.push(name);
+      } else if (nodeObj["py/id"] !== void 0) {
+        const resolved = globalRegistry.get(nodeObj["py/id"]);
+        if (typeof resolved === "string") {
+          orderedNames.push(resolved);
+        }
+      }
+    }
+    nodeNames = orderedNames.length === nodeNameSet.size ? orderedNames : allNodeNames;
+  } else {
+    for (const nodeEntry of data.nodes) {
+      const nodeObj = nodeEntry.id;
+      if (nodeObj["py/object"]) {
+        const name = nodeObj["py/state"]["py/tuple"][0];
+        if (!nodeNameSet.has(name)) {
+          nodeNameSet.add(name);
+          allNodeNames.push(name);
+        }
+      }
+    }
+    nodeNames = allNodeNames;
+  }
+  const nodes = nodeNames.map((name) => new Node(name));
+  const nodeMap = new Map(nodes.map((n) => [n.name, n]));
+  const edges = edgePairs.map(
+    ([src, dst]) => new Edge(nodeMap.get(src), nodeMap.get(dst))
+  );
+  const seenSymmetries = /* @__PURE__ */ new Set();
+  const symmetries = [];
+  for (const [a, b] of symmetryPairs) {
+    const key = [a, b].sort().join("\0");
+    if (!seenSymmetries.has(key)) {
+      seenSymmetries.add(key);
+      symmetries.push(new Symmetry([nodeMap.get(a), nodeMap.get(b)]));
+    }
+  }
+  return new Skeleton({ nodes, edges, symmetries, name: data.graph?.name });
+}
+
 // src/rendering/colors.ts
 var NAMED_COLORS = {
   black: [0, 0, 0],
@@ -4359,6 +4473,7 @@ export {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict,
+  readSkeletonJson,
   readSlpStreaming,
   renderImage,
   renderVideo,
