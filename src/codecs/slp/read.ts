@@ -8,6 +8,7 @@ import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
 import { createVideoBackend } from "../../video/factory.js";
 import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
+import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 
 const textDecoder = new TextDecoder();
 
@@ -48,6 +49,25 @@ export async function readSlp(
       formatId,
     });
 
+
+    // Read negative frames
+    const negativeFramesDs = file.get("negative_frames");
+    if (negativeFramesDs) {
+      const negData = normalizeStructDataset(negativeFramesDs);
+      const videoIds = negData.video_id ?? negData.video ?? [];
+      const frameIdxs = negData.frame_idx ?? [];
+      const negativeSet = new Set<string>();
+      for (let i = 0; i < frameIdxs.length; i++) {
+        negativeSet.add(`${Number(videoIds[i])}_${Number(frameIdxs[i])}`);
+      }
+      for (const frame of labeledFrames) {
+        const videoIndex = Math.max(0, videos.indexOf(frame.video));
+        if (negativeSet.has(`${videoIndex}_${frame.frameIdx}`)) {
+          frame.isNegative = true;
+        }
+      }
+    }
+
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
 
     return new Labels({
@@ -59,6 +79,71 @@ export async function readSlp(
       sessions,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
     });
+  } finally {
+    close();
+  }
+}
+
+
+
+/**
+ * Read an SLP file in lazy mode. Frames are not materialized until accessed.
+ * Returns a Labels object with a LazyFrameList that loads frames on demand.
+ */
+export async function readSlpLazy(
+  source: SlpSource,
+  options?: { openVideos?: boolean; h5?: OpenH5Options }
+): Promise<Labels> {
+  const { file, close } = await openH5File(source, options?.h5);
+  try {
+    const metadataGroup = file.get("metadata");
+    if (!metadataGroup) {
+      throw new Error("Missing /metadata group in SLP file");
+    }
+
+    const metadataAttrs = (metadataGroup as unknown as { attrs?: Record<string, any> }).attrs ?? {};
+    const formatId = Number(metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0);
+    const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<string, unknown> | null;
+
+    const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
+    const skeletons = parseSkeletons(metadataJson);
+    const tracks = readTracks(file.get("tracks_json"));
+    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId);
+    const suggestions = readSuggestions(file.get("suggestions_json"), videos);
+
+    // Read raw data but don't build frames yet
+    const framesData = normalizeStructDataset(file.get("frames"));
+    const instancesData = normalizeStructDataset(file.get("instances"));
+    const pointsData = normalizeStructDataset(file.get("points"));
+    const predPointsData = normalizeStructDataset(file.get("pred_points"));
+
+    const store = new LazyDataStore({
+      framesData,
+      instancesData,
+      pointsData,
+      predPointsData,
+      skeletons,
+      tracks,
+      videos,
+      formatId,
+    });
+
+    const lazyFrames = new LazyFrameList(store);
+
+    const labels = new Labels({
+      videos,
+      skeletons,
+      tracks,
+      suggestions,
+      sessions: [],
+      provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
+    });
+
+    // Replace the eager labeledFrames with lazy proxy
+    labels._lazyFrameList = lazyFrames;
+    labels._lazyDataStore = store;
+
+    return labels;
   } finally {
     close();
   }
@@ -220,7 +305,7 @@ function readSuggestions(dataset: any, videos: Video[]): SuggestionFrame[] {
     const videoIndex = Number(parsed.video ?? 0);
     const video = videos[videoIndex];
     if (!video) continue;
-    suggestions.push(new SuggestionFrame({ video, frameIdx: parsed.frame_idx ?? parsed.frameIdx ?? 0, metadata: parsed }));
+    suggestions.push(new SuggestionFrame({ video, frameIdx: parsed.frame_idx ?? parsed.frameIdx ?? 0, group: parsed.group != null ? String(parsed.group) : undefined, metadata: parsed }));
   }
   return suggestions;
 }
