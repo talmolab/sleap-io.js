@@ -635,7 +635,9 @@ var Labels = class {
     });
   }
   numpy(options) {
-    if (this._lazyFrameList) this.materialize();
+    if (this._lazyDataStore) {
+      return this._lazyDataStore.toNumpy(options);
+    }
     const targetVideo = options?.video ?? this.video;
     const frames = this.labeledFrames.filter((frame) => frame.video.matchesPath(targetVideo, true));
     if (!frames.length) return [];
@@ -931,7 +933,8 @@ var LazyDataStore = class {
       const pointStart = Number(this.instancesData.point_id_start?.[instIdx] ?? 0);
       const pointEnd = Number(this.instancesData.point_id_end?.[instIdx] ?? 0);
       const score = Number(this.instancesData.score?.[instIdx] ?? 0);
-      const trackingScore = Number(this.instancesData.tracking_score?.[instIdx] ?? 0);
+      const rawTrackingScore = this.formatId < 1.2 ? 0 : Number(this.instancesData.tracking_score?.[instIdx] ?? 0);
+      const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
       const fromPredicted = Number(this.instancesData.from_predicted?.[instIdx] ?? -1);
       const skeleton = this.skeletons[skeletonId] ?? this.skeletons[0];
       const track = trackId >= 0 ? this.tracks[trackId] : null;
@@ -967,6 +970,103 @@ var LazyDataStore = class {
       }
     }
     return new LabeledFrame({ video, frameIdx: frameIndex, instances });
+  }
+  /**
+   * Build a 4D numpy-like array directly from raw column data without
+   * materializing any LabeledFrame or Instance objects.
+   *
+   * Returns [frames, tracks/instances, nodes, coords] where coords is
+   * [x, y] or [x, y, score] when returnConfidence is true.
+   */
+  toNumpy(options) {
+    const targetVideo = options?.video ?? this.videos[0];
+    if (!targetVideo) return [];
+    const targetVideoIdx = this.videos.indexOf(targetVideo);
+    if (targetVideoIdx < 0) return [];
+    const frameIds = this.framesData.frame_id ?? [];
+    const frameVideos = this.framesData.video ?? [];
+    const frameIndices = this.framesData.frame_idx ?? [];
+    const instStarts = this.framesData.instance_id_start ?? [];
+    const instEnds = this.framesData.instance_id_end ?? [];
+    let maxFrameIdx = 0;
+    const trackCount = this.tracks.length ? this.tracks.length : (() => {
+      let maxInst = 1;
+      for (let i = 0; i < frameIds.length; i++) {
+        if (Number(frameVideos[i]) !== targetVideoIdx) continue;
+        const count = Number(instEnds[i]) - Number(instStarts[i]);
+        if (count > maxInst) maxInst = count;
+      }
+      return maxInst;
+    })();
+    const matchingFrames = [];
+    for (let i = 0; i < frameIds.length; i++) {
+      if (Number(frameVideos[i]) !== targetVideoIdx) continue;
+      const fi = Number(frameIndices[i]);
+      if (fi > maxFrameIdx) maxFrameIdx = fi;
+      matchingFrames.push(i);
+    }
+    if (!matchingFrames.length) return [];
+    const nodeCount = this.skeletons[0]?.nodes.length ?? 0;
+    const channelCount = options?.returnConfidence ? 3 : 2;
+    const output = Array.from(
+      { length: maxFrameIdx + 1 },
+      () => Array.from(
+        { length: trackCount },
+        () => Array.from({ length: nodeCount }, () => Array.from({ length: channelCount }, () => Number.NaN))
+      )
+    );
+    const instTypes = this.instancesData.instance_type ?? [];
+    const instTracks = this.instancesData.track ?? [];
+    const instPointStarts = this.instancesData.point_id_start ?? [];
+    const instPointEnds = this.instancesData.point_id_end ?? [];
+    const instScores = this.instancesData.score ?? [];
+    const px = this.pointsData.x ?? [];
+    const py = this.pointsData.y ?? [];
+    const ppx = this.predPointsData.x ?? [];
+    const ppy = this.predPointsData.y ?? [];
+    const ppScores = this.predPointsData.score ?? [];
+    const coordOffset = this.formatId < 1.1 ? -0.5 : 0;
+    for (const fi of matchingFrames) {
+      const frameSlotIdx = Number(frameIndices[fi]);
+      const frameSlot = output[frameSlotIdx];
+      if (!frameSlot) continue;
+      const iStart = Number(instStarts[fi]);
+      const iEnd = Number(instEnds[fi]);
+      let localIdx = 0;
+      for (let instIdx = iStart; instIdx < iEnd; instIdx++) {
+        const isPredicted = Number(instTypes[instIdx]) === 1;
+        const trackId = Number(instTracks[instIdx]);
+        const trackIndex = trackId >= 0 && this.tracks.length ? trackId : localIdx;
+        localIdx++;
+        const trackSlot = frameSlot[trackIndex];
+        if (!trackSlot) continue;
+        const pStart = Number(instPointStarts[instIdx]);
+        const pEnd = Number(instPointEnds[instIdx]);
+        const pointCount = Math.min(pEnd - pStart, nodeCount);
+        if (isPredicted) {
+          for (let p = 0; p < pointCount; p++) {
+            const row = trackSlot[p];
+            if (!row) continue;
+            row[0] = Number(ppx[pStart + p]) + coordOffset;
+            row[1] = Number(ppy[pStart + p]) + coordOffset;
+            if (channelCount === 3) {
+              row[2] = Number(ppScores[pStart + p] ?? Number.NaN);
+            }
+          }
+        } else {
+          for (let p = 0; p < pointCount; p++) {
+            const row = trackSlot[p];
+            if (!row) continue;
+            row[0] = Number(px[pStart + p]) + coordOffset;
+            row[1] = Number(py[pStart + p]) + coordOffset;
+            if (channelCount === 3) {
+              row[2] = Number.NaN;
+            }
+          }
+        }
+      }
+    }
+    return output;
   }
   /** Materialize all frames at once. */
   materializeAll() {
@@ -2904,7 +3004,8 @@ function buildLabeledFrames(options) {
       const pointStart = Number(instancesData.point_id_start?.[instIdx] ?? 0);
       const pointEnd = Number(instancesData.point_id_end?.[instIdx] ?? 0);
       const score = Number(instancesData.score?.[instIdx] ?? 0);
-      const trackingScore = Number(instancesData.tracking_score?.[instIdx] ?? 0);
+      const rawTrackingScore = formatId < 1.2 ? 0 : Number(instancesData.tracking_score?.[instIdx] ?? 0);
+      const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
       const fromPredicted = Number(instancesData.from_predicted?.[instIdx] ?? -1);
       const skeleton = skeletons[skeletonId] ?? skeletons[0];
       const track = trackId >= 0 ? tracks[trackId] : null;
@@ -3390,7 +3491,8 @@ function buildLabeledFrames2(options) {
       const pointStart = Number(instancesData.point_id_start?.[instIdx] ?? 0);
       const pointEnd = Number(instancesData.point_id_end?.[instIdx] ?? 0);
       const score = Number(instancesData.score?.[instIdx] ?? 0);
-      const trackingScore = Number(instancesData.tracking_score?.[instIdx] ?? 0);
+      const rawTrackingScore = formatId < 1.2 ? 0 : Number(instancesData.tracking_score?.[instIdx] ?? 0);
+      const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
       const fromPredicted = Number(instancesData.from_predicted?.[instIdx] ?? -1);
       const skeleton = skeletons[skeletonId] ?? skeletons[0] ?? new Skeleton({ nodes: [] });
       const track = trackId >= 0 ? tracks[trackId] : null;
@@ -3497,6 +3599,26 @@ function writeSlpToFile(file, labels, embeddedVideoData) {
 }
 async function saveSlpToBytes(labels, options) {
   const embedMode = options?.embed ?? false;
+  let writeLabels = labels;
+  if (embedMode === "source") {
+    const restoredVideos = labels.videos.map((video) => {
+      if (video.sourceVideo) return video.sourceVideo;
+      return video;
+    });
+    writeLabels = new Labels({
+      labeledFrames: labels.labeledFrames.map((frame) => {
+        const videoIdx = labels.videos.indexOf(frame.video);
+        const restoredVideo = videoIdx >= 0 ? restoredVideos[videoIdx] : frame.video;
+        return new LabeledFrame({ video: restoredVideo, frameIdx: frame.frameIdx, instances: frame.instances });
+      }),
+      videos: restoredVideos,
+      skeletons: labels.skeletons,
+      tracks: labels.tracks,
+      suggestions: labels.suggestions,
+      sessions: labels.sessions,
+      provenance: labels.provenance
+    });
+  }
   const module = await getH5Module();
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
   let embeddedVideoData = null;
@@ -3505,7 +3627,7 @@ async function saveSlpToBytes(labels, options) {
   }
   const file = new module.File(memPath, "w");
   try {
-    writeSlpToFile(file, labels, embeddedVideoData);
+    writeSlpToFile(file, writeLabels, embeddedVideoData);
   } finally {
     file.close();
   }

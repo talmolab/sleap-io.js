@@ -185,6 +185,17 @@ declare class LazyDataStore {
      * Materialize a single LabeledFrame by index.
      */
     materializeFrame(frameIdx: number): LabeledFrame | null;
+    /**
+     * Build a 4D numpy-like array directly from raw column data without
+     * materializing any LabeledFrame or Instance objects.
+     *
+     * Returns [frames, tracks/instances, nodes, coords] where coords is
+     * [x, y] or [x, y, score] when returnConfidence is true.
+     */
+    toNumpy(options?: {
+        video?: Video;
+        returnConfidence?: boolean;
+    }): number[][][][];
     /** Materialize all frames at once. */
     materializeAll(): LabeledFrame[];
     private slicePoints;
