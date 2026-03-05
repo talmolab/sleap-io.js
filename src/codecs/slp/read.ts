@@ -130,12 +130,16 @@ export async function readSlpLazy(
 
     const lazyFrames = new LazyFrameList(store);
 
+    // Read sessions eagerly - they don't depend on frame data.
+    // Pass empty labeledFrames since frames aren't materialized yet.
+    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
+
     const labels = new Labels({
       videos,
       skeletons,
       tracks,
       suggestions,
-      sessions: [],
+      sessions,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
     });
 
@@ -230,6 +234,7 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
         dataset: datasetPath ?? undefined,
         embedded,
         frameNumbers: readFrameNumbers(file, datasetPath),
+        frameSizes: readFrameSizes(file, datasetPath),
         format,
         channelOrder,
         shape: backendMeta.shape,
@@ -260,6 +265,15 @@ function readFrameNumbers(file: any, datasetPath: string | null): number[] {
   const frameDataset = file.get(`${groupPath}/frame_numbers`);
   if (!frameDataset) return [];
   const values = frameDataset.value ?? [];
+  return Array.from(values).map((v: any) => Number(v));
+}
+
+function readFrameSizes(file: any, datasetPath: string | null): number[] | undefined {
+  if (!datasetPath) return undefined;
+  const groupPath = datasetPath.endsWith("/video") ? datasetPath.slice(0, -6) : datasetPath;
+  const sizesDataset = file.get(`${groupPath}/frame_sizes`);
+  if (!sizesDataset) return undefined;
+  const values = sizesDataset.value ?? [];
   return Array.from(values).map((v: any) => Number(v));
 }
 

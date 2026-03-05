@@ -27,12 +27,14 @@ export class Hdf5VideoBackend implements VideoBackend {
   private channelOrder: string;
   private cachedData: unknown[] | Uint8Array | null;
   private frameOffsets: number[] | null;
+  private frameSizes: number[] | undefined;
 
   constructor(options: {
     filename: string;
     file: any;
     datasetPath: string;
     frameNumbers?: number[];
+    frameSizes?: number[];
     format?: string;
     channelOrder?: string;
     shape?: [number, number, number, number];
@@ -51,6 +53,7 @@ export class Hdf5VideoBackend implements VideoBackend {
     this.fps = options.fps;
     this.cachedData = null;
     this.frameOffsets = null;
+    this.frameSizes = options.frameSizes;
   }
 
   async getFrame(frameIndex: number): Promise<VideoFrame | null> {
@@ -66,8 +69,11 @@ export class Hdf5VideoBackend implements VideoBackend {
       const value = dataset.value;
       this.cachedData = normalizeVideoData(value);
 
-      // Detect if this is a contiguous buffer of encoded images
-      if (isContiguousEncodedBuffer(this.cachedData, this.format, this.shape)) {
+      // Use frame_sizes for reliable frame boundary detection if available
+      if (this.frameSizes && this.frameSizes.length > 0 && this.cachedData instanceof Uint8Array) {
+        this.frameOffsets = computeOffsetsFromSizes(this.frameSizes);
+      } else if (isContiguousEncodedBuffer(this.cachedData, this.format, this.shape)) {
+        // Fall back to magic byte scanning for old files without frame_sizes
         this.frameOffsets = findEncodedFrameOffsets(
           this.cachedData as Uint8Array,
           this.format,
@@ -181,6 +187,19 @@ function findEncodedFrameOffsets(
     }
   }
 
+  return offsets;
+}
+
+/**
+ * Compute byte offsets from an array of frame sizes (cumulative sum).
+ */
+function computeOffsetsFromSizes(sizes: number[]): number[] {
+  const offsets: number[] = new Array(sizes.length);
+  let offset = 0;
+  for (let i = 0; i < sizes.length; i++) {
+    offsets[i] = offset;
+    offset += sizes[i];
+  }
   return offsets;
 }
 

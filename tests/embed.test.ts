@@ -107,6 +107,43 @@ describe("Frame Embedding", () => {
     expect(reloaded.videos[0].hasEmbeddedImages).toBe(false);
   });
 
+  it("writes frame_sizes dataset and reads frames correctly", async () => {
+    const labels = await loadSlp(
+      path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"),
+      { openVideos: true }
+    );
+
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sleap-sizes-"));
+    const tmpFile = path.join(tmpDir, "with_sizes.slp");
+
+    const bytes = await saveSlpToBytes(labels, { embed: true });
+    fs.writeFileSync(tmpFile, bytes);
+
+    // Verify frame_sizes dataset exists in the HDF5 file
+    const { openH5File } = await import("../src/codecs/slp/h5.js");
+    const { file } = await openH5File(tmpFile);
+    const frameSizesDs = file.get("video0/frame_sizes");
+    expect(frameSizesDs).not.toBeNull();
+    const frameSizes = Array.from(frameSizesDs.value).map((v: any) => Number(v));
+    expect(frameSizes.length).toBeGreaterThan(0);
+    expect(frameSizes.every((s: number) => s > 0)).toBe(true);
+
+    // Verify total of frame sizes matches the video dataset length
+    const videoDs = file.get("video0/video");
+    const videoData = videoDs.value;
+    const totalSize = frameSizes.reduce((sum: number, s: number) => sum + s, 0);
+    expect(totalSize).toBe(videoData.length);
+
+    // Read back and verify frames are accessible
+    const reloaded = await readSlp(tmpFile, { openVideos: true });
+    const frame = await reloaded.videos[0].getFrame(reloaded.labeledFrames[0].frameIdx);
+    expect(frame).not.toBeNull();
+
+    fs.rmSync(tmpDir, { recursive: true });
+  });
+
   it("re-embedded pkg.slp preserves frame data", async () => {
     const labels = await loadSlp(
       path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"),

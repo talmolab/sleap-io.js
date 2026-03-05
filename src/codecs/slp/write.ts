@@ -605,6 +605,15 @@ function writeEmbeddedVideos(
       shape: [embedData.frameNumbers.length],
       dtype: "<i4",
     });
+
+    // Write frame_sizes dataset for reliable frame boundary detection
+    const frameSizes = frameBytes.map(b => b.length);
+    file.create_dataset({
+      name: `${groupName}/frame_sizes`,
+      data: frameSizes,
+      shape: [frameSizes.length],
+      dtype: "<i4",
+    });
   }
 }
 
