@@ -40,9 +40,9 @@ body[data-md-page-path="demo/"] .md-content {
 
 .md-source-file-link {
   float: right;
-  margin-top: 0.4em;
   opacity: 0.5;
   transition: opacity 0.2s;
+  line-height: 1;
 }
 
 .md-source-file-link:hover {
@@ -50,7 +50,6 @@ body[data-md-page-path="demo/"] .md-content {
 }
 
 .md-source-file-link svg {
-  width: 1.2em;
-  height: 1.2em;
   fill: currentColor;
+  vertical-align: middle;
 }
