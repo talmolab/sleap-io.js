@@ -542,24 +542,78 @@ type SlpWriteOptions = {
  */
 declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Promise<Uint8Array>;
 
+/**
+ * Load a SLEAP labels file (.slp).
+ *
+ * Automatically selects the best loading strategy:
+ * - Browser with Worker support: uses streaming reader via Web Worker
+ * - Node.js or fallback: uses standard HDF5 reader
+ *
+ * @param source - Path to .slp file, ArrayBuffer, Uint8Array, File, or FileSystemFileHandle
+ * @param options - Loading options
+ * @param options.openVideos - Whether to open video backends (default: true)
+ * @param options.h5 - HDF5 opening options (stream mode, filename hint)
+ * @param options.lazy - If true, use lazy loading for on-demand frame materialization (default: false)
+ * @returns Loaded Labels object
+ */
 declare function loadSlp(source: SlpSource, options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
     lazy?: boolean;
 }): Promise<Labels>;
+/**
+ * Save labels to a SLEAP labels file (.slp).
+ *
+ * @param labels - Labels object to save
+ * @param filename - Output file path
+ * @param options - Save options
+ * @param options.embed - Embed video frames: true/"all", "user", "suggestions", "user+suggestions"
+ * @param options.restoreOriginalVideos - Restore source video paths on save (default: true)
+ */
 declare function saveSlp(labels: Labels, filename: string, options?: {
     embed?: boolean | string;
     restoreOriginalVideos?: boolean;
 }): Promise<void>;
 
+/**
+ * Load multiple SLP files in parallel.
+ *
+ * Accepts either an array of file paths (keys default to filenames) or a
+ * record mapping custom keys to file paths.
+ *
+ * Note: Uses Promise.all internally — if any single file fails to load,
+ * the entire operation fails.
+ *
+ * @param sources - Array of file paths or record mapping keys to paths
+ * @param options - Loading options (forwarded to loadSlp)
+ * @returns LabelsSet containing all loaded labels
+ */
 declare function loadSlpSet(sources: string[] | Record<string, string>, options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
 }): Promise<LabelsSet>;
+/**
+ * Save all labels in a LabelsSet to their respective file paths.
+ *
+ * Each key in the set is used as the output filename, so keys should be
+ * valid file paths.
+ *
+ * @param labelsSet - LabelsSet to save
+ * @param options - Save options (forwarded to saveSlp)
+ */
 declare function saveSlpSet(labelsSet: LabelsSet, options?: {
     embed?: boolean | string;
     restoreOriginalVideos?: boolean;
 }): Promise<void>;
+/**
+ * Load a video file and create a Video object with an active backend.
+ *
+ * @param filename - Path to video file
+ * @param options - Video loading options
+ * @param options.dataset - HDF5 dataset path for embedded videos
+ * @param options.openBackend - Whether to open the backend (default: true)
+ * @returns Video object with backend
+ */
 declare function loadVideo(filename: string, options?: {
     dataset?: string;
     openBackend?: boolean;
