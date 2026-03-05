@@ -1,6 +1,5 @@
 // src/rendering/render.ts
 
-import { Canvas } from "skia-canvas";
 import type { Labels } from "../model/labels.js";
 import type { LabeledFrame } from "../model/labeled-frame.js";
 import type { Instance, PredictedInstance, Track } from "../model/instance.js";
@@ -89,6 +88,7 @@ export async function renderImage(
   // Create canvas
   const scaledWidth = Math.round(width * opts.scale);
   const scaledHeight = Math.round(height * opts.scale);
+  const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(scaledWidth, scaledHeight);
   const ctx = canvas.getContext("2d");
 
@@ -426,6 +426,7 @@ function buildColorMap(
  * Convert ImageData to PNG buffer (Node.js only).
  */
 export async function toPNG(imageData: ImageData): Promise<Buffer> {
+  const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -440,6 +441,7 @@ export async function toJPEG(
   imageData: ImageData,
   quality: number = 0.9
 ): Promise<Buffer> {
+  const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -450,10 +452,11 @@ export async function toJPEG(
 /**
  * Convert ImageData to data URL.
  */
-export function toDataURL(
+export async function toDataURL(
   imageData: ImageData,
   format: "png" | "jpeg" = "png"
-): string {
+): Promise<string> {
+  const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -471,6 +474,7 @@ export async function saveImage(
   imageData: ImageData,
   path: string
 ): Promise<void> {
+  const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
