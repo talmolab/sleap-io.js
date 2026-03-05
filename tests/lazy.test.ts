@@ -168,3 +168,46 @@ describe("LazyFrameList", () => {
     expect(arr.length).toBe(lazy.length);
   });
 });
+
+describe("Lazy auto-materialization", () => {
+  it("labels.instances in lazy mode returns correct results", async () => {
+    const eager = await loadFixture("typical.slp");
+    const lazy = await loadFixtureLazy("typical.slp");
+    expect(lazy.isLazy).toBe(true);
+    const instances = lazy.instances;
+    expect(instances.length).toBe(eager.instances.length);
+    expect(instances.length).toBeGreaterThan(0);
+  });
+
+  it("labels.find() in lazy mode works correctly", async () => {
+    const eager = await loadFixture("typical.slp");
+    const lazy = await loadFixtureLazy("typical.slp");
+    const video = lazy.videos[0];
+    const eagerResults = eager.find({ video: eager.videos[0] });
+    const lazyResults = lazy.find({ video });
+    expect(lazyResults.length).toBe(eagerResults.length);
+    expect(lazyResults.length).toBeGreaterThan(0);
+  });
+
+  it("labels.negativeFrames in lazy mode works", async () => {
+    const lazy = await loadFixtureLazy("typical.slp");
+    const negFrames = lazy.negativeFrames;
+    expect(Array.isArray(negFrames)).toBe(true);
+  });
+
+  it("auto-materialization sets isLazy to false", async () => {
+    const lazy = await loadFixtureLazy("typical.slp");
+    expect(lazy.isLazy).toBe(true);
+    lazy.instances;
+    expect(lazy.isLazy).toBe(false);
+  });
+
+  it("labels.numpy() in lazy mode returns data", async () => {
+    const eager = await loadFixture("typical.slp");
+    const lazy = await loadFixtureLazy("typical.slp");
+    const eagerNumpy = eager.numpy();
+    const lazyNumpy = lazy.numpy();
+    expect(lazyNumpy.length).toBe(eagerNumpy.length);
+    expect(lazyNumpy.length).toBeGreaterThan(0);
+  });
+});

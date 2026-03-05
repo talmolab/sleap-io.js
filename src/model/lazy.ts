@@ -179,16 +179,17 @@ export class LazyFrameList {
     return result;
   }
 
-  /** Iterator support. */
+  /** Iterator support. Skips null frames instead of stopping early. */
   [Symbol.iterator](): Iterator<LabeledFrame> {
     let index = 0;
     const self = this;
     return {
       next(): IteratorResult<LabeledFrame> {
-        if (index >= self.length) return { done: true, value: undefined };
-        const frame = self.at(index++);
-        if (!frame) return { done: true, value: undefined };
-        return { done: false, value: frame };
+        while (index < self.length) {
+          const frame = self.at(index++);
+          if (frame) return { value: frame, done: false };
+        }
+        return { value: undefined as any, done: true };
       },
     };
   }
