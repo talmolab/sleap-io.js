@@ -239,7 +239,7 @@ function readSuggestions(dataset: any, videos: Video[]): SuggestionFrame[] {
     const videoIndex = Number(parsed.video ?? 0);
     const video = videos[videoIndex];
     if (!video) continue;
-    suggestions.push(new SuggestionFrame({ video, frameIdx: parsed.frame_idx ?? parsed.frameIdx ?? 0, metadata: parsed }));
+    suggestions.push(new SuggestionFrame({ video, frameIdx: parsed.frame_idx ?? parsed.frameIdx ?? 0, group: parsed.group != null ? String(parsed.group) : undefined, metadata: parsed }));
   }
   return suggestions;
 }

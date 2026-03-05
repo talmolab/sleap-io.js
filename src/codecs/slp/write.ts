@@ -165,7 +165,7 @@ function writeSuggestions(file: any, suggestions: SuggestionFrame[], videos: Vid
     JSON.stringify({
       video: String(videos.indexOf(suggestion.video)),
       frame_idx: suggestion.frameIdx,
-      group: suggestion.metadata?.group ?? 0,
+      group: suggestion.group ?? "default",
     })
   );
   file.create_dataset({ name: "suggestions_json", data: payload });
