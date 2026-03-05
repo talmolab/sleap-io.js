@@ -1,7 +1,7 @@
 import { Labels } from "../model/labels.js";
 import { LabelsSet } from "../model/labels-set.js";
 import { Video } from "../model/video.js";
-import { readSlp } from "../codecs/slp/read.js";
+import { readSlp, readSlpLazy } from "../codecs/slp/read.js";
 import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
 import { writeSlp, saveSlpToBytes } from "../codecs/slp/write.js";
 import { createVideoBackend } from "../video/factory.js";
@@ -17,10 +17,11 @@ function isBrowserWithWorkerSupport(): boolean {
 
 export async function loadSlp(
   source: SlpSource,
-  options?: { openVideos?: boolean; h5?: OpenH5Options }
+  options?: { openVideos?: boolean; h5?: OpenH5Options; lazy?: boolean }
 ): Promise<Labels> {
   const streamMode = options?.h5?.stream ?? "auto";
   const openVideos = options?.openVideos ?? true;
+  const lazy = options?.lazy ?? false;
 
   if (isBrowserWithWorkerSupport() && !isNode() && streamMode !== "download") {
     let streamingSource: string | ArrayBuffer | Uint8Array | File;
@@ -53,6 +54,10 @@ export async function loadSlp(
     }
   }
 
+  // Fall back to standard reader (Node.js, or browser without Worker support, or download mode)
+  if (lazy) {
+    return readSlpLazy(source, { openVideos, h5: options?.h5 });
+  }
   return readSlp(source, { openVideos, h5: options?.h5 });
 }
 

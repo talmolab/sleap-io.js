@@ -6,6 +6,7 @@ import { Video } from "./video.js";
 import { RecordingSession } from "./camera.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
+import type { LazyDataStore, LazyFrameList } from "./lazy.js";
 
 export class Labels {
   labeledFrames: LabeledFrame[];
@@ -15,6 +16,11 @@ export class Labels {
   suggestions: SuggestionFrame[];
   sessions: RecordingSession[];
   provenance: Record<string, unknown>;
+
+  /** @internal Lazy frame list for on-demand materialization. */
+  _lazyFrameList: LazyFrameList | null = null;
+  /** @internal Lazy data store holding raw HDF5 data. */
+  _lazyDataStore: LazyDataStore | null = null;
 
   constructor(options?: {
     labeledFrames?: LabeledFrame[];
@@ -62,6 +68,22 @@ export class Labels {
     }
   }
 
+  /** Whether this Labels instance is in lazy mode. */
+  get isLazy(): boolean {
+    return this._lazyFrameList !== null;
+  }
+
+  /**
+   * Materialize all lazy frames, converting to eager mode.
+   * No-op if already eager.
+   */
+  materialize(): void {
+    if (!this._lazyFrameList) return;
+    this.labeledFrames = this._lazyFrameList.toArray();
+    this._lazyFrameList = null;
+    this._lazyDataStore = null;
+  }
+
   get negativeFrames(): LabeledFrame[] {
     return this.labeledFrames.filter((f) => f.isNegative);
   }
@@ -74,10 +96,12 @@ export class Labels {
   }
 
   get length(): number {
+    if (this._lazyFrameList) return this._lazyFrameList.length;
     return this.labeledFrames.length;
   }
 
   [Symbol.iterator](): Iterator<LabeledFrame> {
+    if (this._lazyFrameList) return this._lazyFrameList[Symbol.iterator]();
     return this.labeledFrames[Symbol.iterator]();
   }
 
