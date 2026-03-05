@@ -84,6 +84,10 @@ export class Labels {
     this._lazyDataStore = null;
   }
 
+  get negativeFrames(): LabeledFrame[] {
+    return this.labeledFrames.filter((f) => f.isNegative);
+  }
+
   get video(): Video {
     if (!this.videos.length) {
       throw new Error("No videos available on Labels.");
