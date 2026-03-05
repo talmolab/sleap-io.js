@@ -45,10 +45,12 @@ declare class LabeledFrame {
     video: Video;
     frameIdx: number;
     instances: Array<Instance | PredictedInstance>;
+    isNegative: boolean;
     constructor(options: {
         video: Video;
         frameIdx: number;
         instances?: Array<Instance | PredictedInstance>;
+        isNegative?: boolean;
     });
     get length(): number;
     [Symbol.iterator](): Iterator<Instance | PredictedInstance>;
@@ -170,6 +172,7 @@ declare class Labels {
         sessions?: RecordingSession[];
         provenance?: Record<string, unknown>;
     });
+    get negativeFrames(): LabeledFrame[];
     get video(): Video;
     get length(): number;
     [Symbol.iterator](): Iterator<LabeledFrame>;

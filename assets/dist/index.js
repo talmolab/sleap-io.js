@@ -24,10 +24,12 @@ var LabeledFrame = class {
   video;
   frameIdx;
   instances;
+  isNegative;
   constructor(options) {
     this.video = options.video;
     this.frameIdx = options.frameIdx;
     this.instances = options.instances ?? [];
+    this.isNegative = options.isNegative ?? false;
   }
   get length() {
     return this.instances.length;
@@ -551,6 +553,9 @@ var Labels = class {
       }
       this.tracks = Array.from(uniqueTracks.values());
     }
+  }
+  get negativeFrames() {
+    return this.labeledFrames.filter((f) => f.isNegative);
   }
   get video() {
     if (!this.videos.length) {
@@ -2297,6 +2302,22 @@ async function readSlp(source, options) {
       videos,
       formatId
     });
+    const negativeFramesDs = file.get("negative_frames");
+    if (negativeFramesDs) {
+      const negData = normalizeStructDataset(negativeFramesDs);
+      const videoIds = negData.video_id ?? negData.video ?? [];
+      const frameIdxs = negData.frame_idx ?? [];
+      const negativeSet = /* @__PURE__ */ new Set();
+      for (let i = 0; i < frameIdxs.length; i++) {
+        negativeSet.add(`${Number(videoIds[i])}_${Number(frameIdxs[i])}`);
+      }
+      for (const frame of labeledFrames) {
+        const videoIndex = Math.max(0, videos.indexOf(frame.video));
+        if (negativeSet.has(`${videoIndex}_${frame.frameIdx}`)) {
+          frame.isNegative = true;
+        }
+      }
+    }
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
     return new Labels({
       labeledFrames,
@@ -3112,6 +3133,7 @@ function writeSlpToFile(file, labels) {
   writeSuggestions(file, labels.suggestions, labels.videos);
   writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
   writeLabeledFrames(file, labels);
+  writeNegativeFrames(file, labels);
 }
 async function saveSlpToBytes(labels, options) {
   const embedMode = options?.embed ?? false;
@@ -3408,6 +3430,16 @@ function writeLabeledFrames(file, labels) {
   );
   createMatrixDataset(file, "points", points, ["x", "y", "visible", "complete"], "<f8");
   createMatrixDataset(file, "pred_points", predPoints, ["x", "y", "visible", "complete", "score"], "<f8");
+}
+function writeNegativeFrames(file, labels) {
+  const negativeFrames = labels.labeledFrames.filter((f) => f.isNegative);
+  if (!negativeFrames.length) return;
+  const rows = [];
+  for (const frame of negativeFrames) {
+    const videoIndex = Math.max(0, labels.videos.indexOf(frame.video));
+    rows.push([videoIndex, frame.frameIdx]);
+  }
+  createMatrixDataset(file, "negative_frames", rows, ["video_id", "frame_idx"], "<i8");
 }
 function createMatrixDataset(file, name, rows, fieldNames, dtype) {
   const rowCount = rows.length;
