@@ -24,6 +24,7 @@ function writeSlpToFile(file: any, labels: Labels): void {
   writeSuggestions(file, labels.suggestions, labels.videos);
   writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
   writeLabeledFrames(file, labels);
+  writeNegativeFrames(file, labels);
 }
 
 /**
@@ -383,6 +384,17 @@ function writeLabeledFrames(file: any, labels: Labels): void {
   );
   createMatrixDataset(file, "points", points, ["x", "y", "visible", "complete"], "<f8");
   createMatrixDataset(file, "pred_points", predPoints, ["x", "y", "visible", "complete", "score"], "<f8");
+}
+
+function writeNegativeFrames(file: any, labels: Labels): void {
+  const negativeFrames = labels.labeledFrames.filter((f) => f.isNegative);
+  if (!negativeFrames.length) return;
+  const rows: number[][] = [];
+  for (const frame of negativeFrames) {
+    const videoIndex = Math.max(0, labels.videos.indexOf(frame.video));
+    rows.push([videoIndex, frame.frameIdx]);
+  }
+  createMatrixDataset(file, "negative_frames", rows, ["video_id", "frame_idx"], "<i8");
 }
 
 function createMatrixDataset(file: any, name: string, rows: number[][], fieldNames: string[], dtype: string): void {

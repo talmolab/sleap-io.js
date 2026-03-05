@@ -48,6 +48,25 @@ export async function readSlp(
       formatId,
     });
 
+
+    // Read negative frames
+    const negativeFramesDs = file.get("negative_frames");
+    if (negativeFramesDs) {
+      const negData = normalizeStructDataset(negativeFramesDs);
+      const videoIds = negData.video_id ?? negData.video ?? [];
+      const frameIdxs = negData.frame_idx ?? [];
+      const negativeSet = new Set<string>();
+      for (let i = 0; i < frameIdxs.length; i++) {
+        negativeSet.add(`${Number(videoIds[i])}_${Number(frameIdxs[i])}`);
+      }
+      for (const frame of labeledFrames) {
+        const videoIndex = Math.max(0, videos.indexOf(frame.video));
+        if (negativeSet.has(`${videoIndex}_${frame.frameIdx}`)) {
+          frame.isNegative = true;
+        }
+      }
+    }
+
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
 
     return new Labels({
