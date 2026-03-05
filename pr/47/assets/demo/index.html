@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>SLEAP SLP Demo</title>
+    <script type="importmap">
+      {
+        "imports": {
+          "h5wasm": "https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js",
+          "yaml": "https://esm.sh/yaml@2.6.1",
+          "skia-canvas": "data:text/javascript,export class Canvas{}",
+          "child_process": "data:text/javascript,export function spawn(){}"
+        }
+      }
+    </script>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #0c0f0d;
+        --panel: rgba(247, 242, 232, 0.06);
+        --ink: #f9f2e5;
+        --muted: #c7bbaa;
+        --accent: #f3c56c;
+        --line: rgba(243, 197, 108, 0.2);
+      }
+
+      * { box-sizing: border-box; }
+      body {
+        margin: 0;
+        font-family: system-ui, -apple-system, sans-serif;
+        background: var(--bg);
+        color: var(--ink);
+        padding: 24px;
+      }
+      h1 { margin: 0 0 12px; font-size: 20px; }
+      .layout { display: grid; grid-template-columns: 320px 1fr; gap: 20px; align-items: start; }
+      .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 16px; }
+      label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 6px; }
+      input[type="text"] { width: 100%; padding: 10px 12px; border-radius: 10px; border: 1px solid transparent; background: rgba(255, 255, 255, 0.08); color: var(--ink); }
+      button { margin-top: 12px; padding: 8px 14px; border-radius: 999px; border: 1px solid var(--accent); background: transparent; color: var(--ink); cursor: pointer; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
+      .status { margin-top: 12px; font-size: 13px; color: var(--muted); }
+      .player { position: relative; border-radius: 14px; overflow: hidden; border: 1px solid var(--line); background: #000; }
+      video { width: 100%; display: block; }
+      canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
+      .controls { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+      .controls input[type="range"] { flex: 1; }
+      .meta { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.4; }
+      .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); margin-right: 6px; }
+      .coords { margin-top: 12px; padding: 12px; }
+      .coords__label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.08em; color: var(--muted); margin-bottom: 6px; }
+      .coords__body {
+        margin: 0;
+        max-height: 140px;
+        overflow: auto;
+        font-family: ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+        font-size: 12px;
+        line-height: 1.4;
+        color: var(--ink);
+        background: var(--panel);
+        border: 1px solid var(--line);
+        border-radius: 10px;
+        padding: 10px;
+        white-space: pre;
+      }
+      @media (max-width: 900px) {
+        .layout { grid-template-columns: 1fr; }
+      }
+    </style>
+  </head>
+  <body>
+    <h1>SLEAP SLP Demo</h1>
+    <div class="layout">
+      <div class="panel">
+        <label for="slp-file">SLP File (for embedded images)</label>
+        <input id="slp-file" type="file" accept=".slp,.h5,.hdf5" style="width: 100%; padding: 8px 0; color: var(--ink);" />
+
+        <label for="slp-url" style="margin-top: 14px;">— or SLP URL —</label>
+        <input id="slp-url" type="text" />
+
+        <label for="video-url" style="margin-top: 14px;">Video URL (optional, leave blank for embedded)</label>
+        <input id="video-url" type="text" />
+
+        <button id="load-btn">Load</button>
+        <div class="status" id="status">Idle.</div>
+        <div class="meta" id="meta"></div>
+      </div>
+
+      <div>
+        <div class="player">
+          <video id="video" playsinline muted></video>
+          <canvas id="overlay"></canvas>
+        </div>
+        <div class="controls">
+          <button id="play-btn">Play</button>
+          <input id="seek" type="range" min="0" max="0" value="0" step="1" />
+          <span id="frame-label" class="pill">Frame 0</span>
+        </div>
+        <div class="panel coords">
+          <div class="coords__label">Coordinates</div>
+          <pre id="coords" class="coords__body">—</pre>
+        </div>
+      </div>
+    </div>
+
+    <script type="module" src="./demo.js"></script>
+  </body>
+</html>
