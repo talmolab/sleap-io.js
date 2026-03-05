@@ -3917,7 +3917,6 @@ var InstanceContext = class {
 };
 
 // src/rendering/render.ts
-import { Canvas } from "skia-canvas";
 var DEFAULT_OPTIONS = {
   colorBy: "auto",
   palette: "standard",
@@ -3948,6 +3947,7 @@ async function renderImage(source, options = {}) {
   }
   const scaledWidth = Math.round(width * opts.scale);
   const scaledHeight = Math.round(height * opts.scale);
+  const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(scaledWidth, scaledHeight);
   const ctx = canvas.getContext("2d");
   if (opts.image) {
@@ -4171,24 +4171,28 @@ function buildColorMap(scheme, instances, nNodes, paletteName, tracks) {
   }
 }
 async function toPNG(imageData) {
+  const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   ctx.putImageData(imageData, 0, 0);
   return canvas.toBuffer("png");
 }
 async function toJPEG(imageData, quality = 0.9) {
+  const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   ctx.putImageData(imageData, 0, 0);
   return canvas.toBuffer("jpeg", { quality });
 }
-function toDataURL(imageData, format = "png") {
+async function toDataURL(imageData, format = "png") {
+  const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   ctx.putImageData(imageData, 0, 0);
   return canvas.toDataURL(`image/${format}`);
 }
 async function saveImage(imageData, path) {
+  const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   ctx.putImageData(imageData, 0, 0);
@@ -4196,8 +4200,8 @@ async function saveImage(imageData, path) {
 }
 
 // src/rendering/video.ts
-import { spawn } from "child_process";
 async function checkFfmpeg() {
+  const { spawn } = await import("child_process");
   return new Promise((resolve) => {
     const proc = spawn("ffmpeg", ["-version"]);
     proc.on("error", () => resolve(false));
@@ -4259,6 +4263,7 @@ async function renderVideo(source, outputPath, options = {}) {
     ffmpegArgs.push("-crf", String(crf), "-preset", preset);
   }
   ffmpegArgs.push(outputPath);
+  const { spawn } = await import("child_process");
   const ffmpeg = spawn("ffmpeg", ffmpegArgs, {
     stdio: ["pipe", "pipe", "pipe"]
   });

@@ -765,7 +765,7 @@ declare function toJPEG(imageData: ImageData, quality?: number): Promise<Buffer>
 /**
  * Convert ImageData to data URL.
  */
-declare function toDataURL(imageData: ImageData, format?: "png" | "jpeg"): string;
+declare function toDataURL(imageData: ImageData, format?: "png" | "jpeg"): Promise<string>;
 /**
  * Save ImageData to a file.
  */
