@@ -203,7 +203,7 @@ declare class LazyFrameList {
     at(index: number): LabeledFrame | undefined;
     /** Materialize all frames and return as a regular array. */
     toArray(): LabeledFrame[];
-    /** Iterator support. */
+    /** Iterator support. Skips null frames instead of stopping early. */
     [Symbol.iterator](): Iterator<LabeledFrame>;
     /** Number of frames that have been materialized. */
     get materializedCount(): number;

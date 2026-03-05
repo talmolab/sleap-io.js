@@ -574,6 +574,7 @@ var Labels = class {
     this._lazyDataStore = null;
   }
   get negativeFrames() {
+    if (this._lazyFrameList) this.materialize();
     return this.labeledFrames.filter((f) => f.isNegative);
   }
   get video() {
@@ -591,9 +592,11 @@ var Labels = class {
     return this.labeledFrames[Symbol.iterator]();
   }
   get instances() {
+    if (this._lazyFrameList) this.materialize();
     return this.labeledFrames.flatMap((frame) => frame.instances);
   }
   find(options) {
+    if (this._lazyFrameList) this.materialize();
     return this.labeledFrames.filter((frame) => {
       if (options.video && frame.video !== options.video) {
         return false;
@@ -605,12 +608,14 @@ var Labels = class {
     });
   }
   append(frame) {
+    if (this._lazyFrameList) this.materialize();
     this.labeledFrames.push(frame);
     if (!this.videos.includes(frame.video)) {
       this.videos.push(frame.video);
     }
   }
   toDict(options) {
+    if (this._lazyFrameList) this.materialize();
     return toDict(this, options);
   }
   static fromNumpy(data, options) {
@@ -630,6 +635,7 @@ var Labels = class {
     });
   }
   numpy(options) {
+    if (this._lazyFrameList) this.materialize();
     const targetVideo = options?.video ?? this.video;
     const frames = this.labeledFrames.filter((frame) => frame.video.matchesPath(targetVideo, true));
     if (!frames.length) return [];
@@ -1017,16 +1023,17 @@ var LazyFrameList = class {
     }
     return result;
   }
-  /** Iterator support. */
+  /** Iterator support. Skips null frames instead of stopping early. */
   [Symbol.iterator]() {
     let index = 0;
     const self = this;
     return {
       next() {
-        if (index >= self.length) return { done: true, value: void 0 };
-        const frame = self.at(index++);
-        if (!frame) return { done: true, value: void 0 };
-        return { done: false, value: frame };
+        while (index < self.length) {
+          const frame = self.at(index++);
+          if (frame) return { value: frame, done: false };
+        }
+        return { value: void 0, done: true };
       }
     };
   }
