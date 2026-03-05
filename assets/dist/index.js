@@ -885,8 +885,8 @@ var Mp4BoxVideoBackend = class {
   fileSize;
   supportsRangeRequests;
   fileBlob;
-  isDecoding;
-  pendingFrame;
+  decodeQueue;
+  latestRequestedFrame;
   constructor(source, options) {
     if (!hasWebCodecs) {
       throw new Error("Mp4BoxVideoBackend requires WebCodecs support.");
@@ -906,8 +906,8 @@ var Mp4BoxVideoBackend = class {
     this.fileSize = 0;
     this.supportsRangeRequests = false;
     this.fileBlob = null;
-    this.isDecoding = false;
-    this.pendingFrame = null;
+    this.decodeQueue = Promise.resolve();
+    this.latestRequestedFrame = null;
     if (source instanceof Blob) {
       this.fileBlob = source;
       this.fileSize = source.size;
@@ -915,7 +915,7 @@ var Mp4BoxVideoBackend = class {
     }
     this.ready = this.init();
   }
-  async getFrame(frameIndex) {
+  async getFrame(frameIndex, signal) {
     await this.ready;
     if (frameIndex < 0 || frameIndex >= this.samples.length) return null;
     if (this.cache.has(frameIndex)) {
@@ -926,22 +926,14 @@ var Mp4BoxVideoBackend = class {
       }
       return bitmap;
     }
-    if (this.isDecoding) {
-      this.pendingFrame = frameIndex;
-      await new Promise((resolve) => {
-        const check = () => this.isDecoding ? setTimeout(check, 10) : resolve(null);
-        check();
-      });
-      if (this.cache.has(frameIndex)) {
-        return this.cache.get(frameIndex) ?? null;
-      }
-      if (this.pendingFrame !== null && this.pendingFrame !== frameIndex) {
-        return null;
-      }
-    }
-    const keyframe = this.findKeyframeBefore(frameIndex);
-    const end = Math.min(frameIndex + this.lookahead, this.samples.length - 1);
-    await this.decodeRange(keyframe, end, frameIndex);
+    this.latestRequestedFrame = frameIndex;
+    await (this.decodeQueue = this.decodeQueue.then(async () => {
+      if (this.latestRequestedFrame !== frameIndex) return;
+      if (signal?.aborted) return;
+      const keyframe = this.findKeyframeBefore(frameIndex);
+      const end = Math.min(frameIndex + this.lookahead, this.samples.length - 1);
+      await this.decodeRange(keyframe, end, frameIndex);
+    }));
     return this.cache.get(frameIndex) ?? null;
   }
   async getFrameTimes() {
@@ -1114,104 +1106,99 @@ var Mp4BoxVideoBackend = class {
   }
   async decodeRange(start, end, target) {
     if (!this.config) throw new Error("Decoder not configured");
-    this.isDecoding = true;
-    try {
-      if (this.decoder) {
-        try {
-          this.decoder.close();
-        } catch {
-        }
+    if (this.decoder) {
+      try {
+        this.decoder.close();
+      } catch {
       }
-      let minDecodeIndex = Infinity;
-      let maxDecodeIndex = -Infinity;
-      for (let i = start; i <= end; i += 1) {
-        minDecodeIndex = Math.min(minDecodeIndex, this.samples[i].decodeIndex);
-        maxDecodeIndex = Math.max(maxDecodeIndex, this.samples[i].decodeIndex);
+    }
+    let minDecodeIndex = Infinity;
+    let maxDecodeIndex = -Infinity;
+    for (let i = start; i <= end; i += 1) {
+      minDecodeIndex = Math.min(minDecodeIndex, this.samples[i].decodeIndex);
+      maxDecodeIndex = Math.max(maxDecodeIndex, this.samples[i].decodeIndex);
+    }
+    const toFeed = [];
+    for (let i = 0; i < this.samples.length; i += 1) {
+      const sample = this.samples[i];
+      if (sample.decodeIndex >= minDecodeIndex && sample.decodeIndex <= maxDecodeIndex) {
+        toFeed.push({ pi: i, sample });
       }
-      const toFeed = [];
-      for (let i = 0; i < this.samples.length; i += 1) {
-        const sample = this.samples[i];
-        if (sample.decodeIndex >= minDecodeIndex && sample.decodeIndex <= maxDecodeIndex) {
-          toFeed.push({ pi: i, sample });
-        }
-      }
-      toFeed.sort((a, b) => a.sample.decodeIndex - b.sample.decodeIndex);
-      const dataMap = await this.readSampleDataByDecodeOrder(toFeed);
-      const timestampMap = /* @__PURE__ */ new Map();
-      for (const { pi, sample } of toFeed) {
-        timestampMap.set(Math.round(sample.timestamp), pi);
-      }
-      const halfCache = Math.floor(this.cacheSize / 2);
-      const cacheStart = Math.max(start, target - halfCache);
-      const cacheEnd = Math.min(end, target + halfCache);
-      let decodedCount = 0;
-      let resolveComplete;
-      let rejectComplete;
-      const completionPromise = new Promise((resolve, reject) => {
-        resolveComplete = resolve;
-        rejectComplete = reject;
-      });
-      this.decoder = new VideoDecoder({
-        output: (frame) => {
-          const roundedTimestamp = Math.round(frame.timestamp);
-          let frameIndex = timestampMap.get(roundedTimestamp);
-          if (frameIndex === void 0) {
-            let bestDiff = Infinity;
-            for (const [ts, idx] of timestampMap) {
-              const diff = Math.abs(ts - frame.timestamp);
-              if (diff < bestDiff) {
-                bestDiff = diff;
-                frameIndex = idx;
-              }
+    }
+    toFeed.sort((a, b) => a.sample.decodeIndex - b.sample.decodeIndex);
+    const dataMap = await this.readSampleDataByDecodeOrder(toFeed);
+    const timestampMap = /* @__PURE__ */ new Map();
+    for (const { pi, sample } of toFeed) {
+      timestampMap.set(Math.round(sample.timestamp), pi);
+    }
+    const halfCache = Math.floor(this.cacheSize / 2);
+    const cacheStart = Math.max(start, target - halfCache);
+    const cacheEnd = Math.min(end, target + halfCache);
+    let decodedCount = 0;
+    let resolveComplete;
+    let rejectComplete;
+    const completionPromise = new Promise((resolve, reject) => {
+      resolveComplete = resolve;
+      rejectComplete = reject;
+    });
+    this.decoder = new VideoDecoder({
+      output: (frame) => {
+        const roundedTimestamp = Math.round(frame.timestamp);
+        let frameIndex = timestampMap.get(roundedTimestamp);
+        if (frameIndex === void 0) {
+          let bestDiff = Infinity;
+          for (const [ts, idx] of timestampMap) {
+            const diff = Math.abs(ts - frame.timestamp);
+            if (diff < bestDiff) {
+              bestDiff = diff;
+              frameIndex = idx;
             }
           }
-          const handleClose = () => {
-            frame.close();
-            decodedCount += 1;
-            if (decodedCount >= toFeed.length) resolveComplete();
-          };
-          if (frameIndex !== void 0 && frameIndex >= cacheStart && frameIndex <= cacheEnd) {
-            createImageBitmap(frame).then((bitmap) => {
-              this.addToCache(frameIndex, bitmap);
-              handleClose();
-            }).catch(handleClose);
-          } else {
+        }
+        const handleClose = () => {
+          frame.close();
+          decodedCount += 1;
+          if (decodedCount >= toFeed.length) resolveComplete();
+        };
+        if (frameIndex !== void 0 && frameIndex >= cacheStart && frameIndex <= cacheEnd) {
+          createImageBitmap(frame).then((bitmap) => {
+            this.addToCache(frameIndex, bitmap);
             handleClose();
-          }
-        },
-        error: (error) => {
-          if (error.name === "AbortError") {
-            resolveComplete();
-          } else {
-            rejectComplete(error);
-          }
+          }).catch(handleClose);
+        } else {
+          handleClose();
         }
-      });
-      this.decoder.configure(this.config);
-      const BATCH_SIZE = 15;
-      for (let i = 0; i < toFeed.length; i += BATCH_SIZE) {
-        const batch = toFeed.slice(i, i + BATCH_SIZE);
-        for (const { sample } of batch) {
-          const data = dataMap.get(sample.decodeIndex);
-          if (!data) continue;
-          this.decoder.decode(
-            new EncodedVideoChunk({
-              type: sample.isKeyframe ? "key" : "delta",
-              timestamp: sample.timestamp,
-              duration: sample.duration,
-              data
-            })
-          );
-        }
-        if (i + BATCH_SIZE < toFeed.length) {
-          await new Promise((resolve) => setTimeout(resolve, 0));
+      },
+      error: (error) => {
+        if (error.name === "AbortError") {
+          resolveComplete();
+        } else {
+          rejectComplete(error);
         }
       }
-      await this.decoder.flush();
-      await completionPromise;
-    } finally {
-      this.isDecoding = false;
+    });
+    this.decoder.configure(this.config);
+    const BATCH_SIZE = 15;
+    for (let i = 0; i < toFeed.length; i += BATCH_SIZE) {
+      const batch = toFeed.slice(i, i + BATCH_SIZE);
+      for (const { sample } of batch) {
+        const data = dataMap.get(sample.decodeIndex);
+        if (!data) continue;
+        this.decoder.decode(
+          new EncodedVideoChunk({
+            type: sample.isKeyframe ? "key" : "delta",
+            timestamp: sample.timestamp,
+            duration: sample.duration,
+            data
+          })
+        );
+      }
+      if (i + BATCH_SIZE < toFeed.length) {
+        await new Promise((resolve) => setTimeout(resolve, 0));
+      }
     }
+    await this.decoder.flush();
+    await completionPromise;
   }
   addToCache(frameIndex, bitmap) {
     if (this.cache.size >= this.cacheSize) {

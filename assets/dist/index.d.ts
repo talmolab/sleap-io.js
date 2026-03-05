@@ -228,13 +228,13 @@ declare class Mp4BoxVideoBackend implements VideoBackend {
     private fileSize;
     private supportsRangeRequests;
     private fileBlob;
-    private isDecoding;
-    private pendingFrame;
+    private decodeQueue;
+    private latestRequestedFrame;
     constructor(source: string | File | Blob, options?: {
         cacheSize?: number;
         lookahead?: number;
     });
-    getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    getFrame(frameIndex: number, signal?: AbortSignal): Promise<VideoFrame | null>;
     getFrameTimes(): Promise<number[] | null>;
     close(): void;
     private init;
