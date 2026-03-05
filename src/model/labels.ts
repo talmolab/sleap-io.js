@@ -85,6 +85,7 @@ export class Labels {
   }
 
   get negativeFrames(): LabeledFrame[] {
+    if (this._lazyFrameList) this.materialize();
     return this.labeledFrames.filter((f) => f.isNegative);
   }
 
@@ -106,10 +107,12 @@ export class Labels {
   }
 
   get instances(): Array<Instance | PredictedInstance> {
+    if (this._lazyFrameList) this.materialize();
     return this.labeledFrames.flatMap((frame) => frame.instances);
   }
 
   find(options: { video?: Video; frameIdx?: number }): LabeledFrame[] {
+    if (this._lazyFrameList) this.materialize();
     return this.labeledFrames.filter((frame) => {
       if (options.video && frame.video !== options.video) {
         return false;
@@ -122,6 +125,7 @@ export class Labels {
   }
 
   append(frame: LabeledFrame): void {
+    if (this._lazyFrameList) this.materialize();
     this.labeledFrames.push(frame);
     if (!this.videos.includes(frame.video)) {
       this.videos.push(frame.video);
@@ -129,6 +133,7 @@ export class Labels {
   }
 
   toDict(options?: { video?: Video | number; skipEmptyFrames?: boolean }) {
+    if (this._lazyFrameList) this.materialize();
     return toDict(this, options);
   }
 
@@ -153,6 +158,7 @@ export class Labels {
   }
 
   numpy(options?: { video?: Video; returnConfidence?: boolean }): number[][][][] {
+    if (this._lazyFrameList) this.materialize();
     const targetVideo = options?.video ?? this.video;
     const frames = this.labeledFrames.filter((frame) => frame.video.matchesPath(targetVideo, true));
     if (!frames.length) return [];

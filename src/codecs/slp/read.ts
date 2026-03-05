@@ -130,12 +130,16 @@ export async function readSlpLazy(
 
     const lazyFrames = new LazyFrameList(store);
 
+    // Read sessions eagerly - they don't depend on frame data.
+    // Pass empty labeledFrames since frames aren't materialized yet.
+    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
+
     const labels = new Labels({
       videos,
       skeletons,
       tracks,
       suggestions,
-      sessions: [],
+      sessions,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
     });
 
