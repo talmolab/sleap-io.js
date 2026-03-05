@@ -19,6 +19,8 @@ declare class Video {
     sourceVideo: Video | null;
     openBackend: boolean;
     private _embedded;
+    private _shape;
+    private _fps;
     constructor(options: {
         filename: string | string[];
         backend?: VideoBackend | null;
@@ -30,7 +32,9 @@ declare class Video {
     get hasEmbeddedImages(): boolean;
     get originalVideo(): Video | null;
     get shape(): [number, number, number, number] | null;
+    set shape(value: [number, number, number, number] | null);
     get fps(): number | null;
+    set fps(value: number | null);
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
     getFrameTimes(): Promise<number[] | null>;
     close(): void;

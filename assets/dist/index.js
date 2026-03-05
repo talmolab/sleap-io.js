@@ -86,6 +86,8 @@ var Video = class {
   sourceVideo;
   openBackend;
   _embedded;
+  _shape = null;
+  _fps = null;
   constructor(options) {
     this.filename = options.filename;
     this.backend = options.backend ?? null;
@@ -106,10 +108,16 @@ var Video = class {
     return current;
   }
   get shape() {
-    return this.backend?.shape ?? this.backendMetadata.shape ?? null;
+    return this._shape ?? this.backend?.shape ?? this.backendMetadata.shape ?? null;
+  }
+  set shape(value) {
+    this._shape = value;
   }
   get fps() {
-    return this.backend?.fps ?? this.backendMetadata.fps ?? null;
+    return this._fps ?? this.backend?.fps ?? this.backendMetadata.fps ?? null;
+  }
+  set fps(value) {
+    this._fps = value;
   }
   async getFrame(frameIndex) {
     if (!this.backend) return null;
@@ -127,8 +135,8 @@ var Video = class {
       return JSON.stringify(this.filename) === JSON.stringify(other.filename);
     }
     if (strict) return this.filename === other.filename;
-    const basenameA = this.filename.split("/").pop();
-    const basenameB = other.filename.split("/").pop();
+    const basenameA = this.filename.split(/[/\\]/).pop();
+    const basenameB = other.filename.split(/[/\\]/).pop();
     return basenameA === basenameB;
   }
 };
@@ -559,7 +567,7 @@ var Labels = class {
   }
   find(options) {
     return this.labeledFrames.filter((frame) => {
-      if (options.video && frame.video !== options.video && !frame.video.matchesPath(options.video, false)) {
+      if (options.video && frame.video !== options.video) {
         return false;
       }
       if (options.frameIdx !== void 0 && frame.frameIdx !== options.frameIdx) {
