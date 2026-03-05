@@ -15,9 +15,8 @@ def on_page_content(html: str, page, config, files) -> str:  # noqa: ARG001
         '2-2V8l-6-6m4 18H6V4h7v5h5v11M13 9V3.5L18.5 9H13Z"/></svg>'
     )
     source_link = (
-        f'<div class="md-source-file">'
-        f'<a href="{md_url}" title="View markdown source" class="md-icon">'
-        f"{svg_icon}</a></div>\n"
+        f'<a href="{md_url}" title="View markdown source"'
+        f' class="md-source-file-link">{svg_icon}</a>\n'
     )
 
     return source_link + html

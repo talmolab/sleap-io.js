@@ -236,6 +236,71 @@ for (const frame of labels.labeledFrames) {
 </html>
 ```
 
+## Lazy Loading
+
+For large SLP files, lazy loading defers frame parsing until individual frames are accessed:
+
+```ts
+import { loadSlp } from "@talmolab/sleap-io.js";
+
+// Only metadata is parsed upfront
+const labels = await loadSlp("large_dataset.slp", { lazy: true });
+console.log(labels.isLazy);           // true
+console.log(labels.labeledFrames.length); // frame count available immediately
+
+// Frames are materialized on demand
+const frame = labels.labeledFrames.at(0);
+
+// Fast numpy conversion without materializing frames
+const array = labels.numpy();
+
+// Fully materialize when needed
+labels.materialize();
+```
+
+## Saving with Embedded Frames
+
+Embed video frames directly into the SLP file:
+
+```ts
+import { saveSlp } from "@talmolab/sleap-io.js";
+
+// Embed all frames
+await saveSlp(labels, "output.slp", { embed: true });
+
+// Embed only user-labeled frames
+await saveSlp(labels, "output.slp", { embed: "user" });
+
+// Embed user + suggestion frames
+await saveSlp(labels, "output.slp", { embed: "user+suggestions" });
+
+// Restore source video references (strip embedded data)
+await saveSlp(labels, "output.slp", { embed: "source" });
+```
+
+## Multi-File Loading
+
+Load and save multiple SLP files in parallel:
+
+```ts
+import { loadSlpSet, saveSlpSet } from "@talmolab/sleap-io.js";
+
+// Load from array of paths
+const set = await loadSlpSet(["train.slp", "val.slp", "test.slp"]);
+
+// Load from record (custom keys)
+const set = await loadSlpSet({
+  train: "/data/train.slp",
+  val: "/data/val.slp",
+});
+
+// Access individual labels
+const trainLabels = set.get("train");
+
+// Save all back
+await saveSlpSet(set);
+```
+
 ## Advanced: Low-Level Worker APIs
 
 For fine-grained control over HDF5 file access, you can use the streaming APIs directly:
@@ -289,8 +354,9 @@ See [lite.md](./lite.md) for full documentation.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `openVideos` | `boolean` | `true` | Open video backends for embedded images |
-| `h5.stream` | `"range"` \| `undefined` | `undefined` | Use HTTP Range requests for streaming |
+| `h5.stream` | `"auto"` \| `"range"` \| `"download"` | `"auto"` | HDF5 streaming mode |
 | `h5.filenameHint` | `string` | `undefined` | Filename hint for embedded video paths |
+| `lazy` | `boolean` | `false` | Use lazy loading for on-demand frame materialization |
 
 ### `loadVideo(source)`
 
