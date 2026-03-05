@@ -527,7 +527,8 @@ function buildLabeledFrames(options: {
       const pointStart = Number(instancesData.point_id_start?.[instIdx] ?? 0);
       const pointEnd = Number(instancesData.point_id_end?.[instIdx] ?? 0);
       const score = Number(instancesData.score?.[instIdx] ?? 0);
-      const trackingScore = Number(instancesData.tracking_score?.[instIdx] ?? 0);
+      const rawTrackingScore = formatId < 1.2 ? 0 : Number(instancesData.tracking_score?.[instIdx] ?? 0);
+      const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
       const fromPredicted = Number(instancesData.from_predicted?.[instIdx] ?? -1);
       const skeleton = skeletons[skeletonId] ?? skeletons[0];
       const track = trackId >= 0 ? tracks[trackId] : null;
