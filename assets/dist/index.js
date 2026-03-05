@@ -7,6 +7,7 @@ import {
   Symmetry,
   Track,
   parseJsonAttr,
+  parseJsonEntry,
   parseSkeletons,
   parseSuggestions,
   parseTracks,
@@ -17,7 +18,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-23DE7GPK.js";
+} from "./chunk-NWJVKWIL.js";
 
 // src/model/labeled-frame.ts
 var LabeledFrame = class {
@@ -2767,14 +2768,14 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     videos,
     formatId
   });
+  const sessions = await readSessionsStreaming(file, videos, skeletons, labeledFrames);
   return new Labels({
     labeledFrames,
     videos,
     skeletons,
     tracks,
     suggestions,
-    sessions: [],
-    // Sessions require complex parsing, skip for now
+    sessions,
     provenance: metadataJson?.provenance ?? {}
   });
 }
@@ -2929,6 +2930,93 @@ async function readSuggestionsStreaming(file, videos) {
         metadata: meta.metadata
       });
     }).filter((s) => s !== null);
+  } catch {
+    return [];
+  }
+}
+async function readSessionsStreaming(file, videos, skeletons, labeledFrames) {
+  try {
+    const keys = file.keys();
+    if (!keys.includes("sessions_json")) return [];
+    const data = await file.getDatasetValue("sessions_json");
+    const values = normalizeDatasetArray(data.value);
+    const sessions = [];
+    for (const entry of values) {
+      const parsed = parseJsonEntry(entry);
+      const calibration = parsed.calibration ?? {};
+      const cameraGroup = new CameraGroup();
+      const cameraMap = /* @__PURE__ */ new Map();
+      for (const [key, data2] of Object.entries(calibration)) {
+        if (key === "metadata") continue;
+        const cameraData = data2;
+        const camera = new Camera({
+          name: cameraData.name ?? key,
+          rvec: cameraData.rotation ?? [0, 0, 0],
+          tvec: cameraData.translation ?? [0, 0, 0],
+          matrix: cameraData.matrix,
+          distortions: cameraData.distortions
+        });
+        cameraGroup.cameras.push(camera);
+        cameraMap.set(String(key), camera);
+      }
+      const session = new RecordingSession({ cameraGroup, metadata: parsed.metadata ?? {} });
+      const map = parsed.camcorder_to_video_idx_map ?? {};
+      for (const [cameraKey, videoIdx] of Object.entries(map)) {
+        const camera = cameraMap.get(cameraKey);
+        const video = videos[Number(videoIdx)];
+        if (camera && video) {
+          session.addVideo(video, camera);
+        }
+      }
+      const frameGroups = Array.isArray(parsed.frame_group_dicts) ? parsed.frame_group_dicts : [];
+      for (const group of frameGroups) {
+        const groupRecord = group;
+        const frameIdx = groupRecord.frame_idx ?? groupRecord.frameIdx ?? 0;
+        const instanceGroups = [];
+        const instanceGroupList = Array.isArray(groupRecord.instance_groups) ? groupRecord.instance_groups : [];
+        for (const instanceGroup of instanceGroupList) {
+          const instanceGroupRecord = instanceGroup;
+          const instanceByCamera = /* @__PURE__ */ new Map();
+          const instancesRecord = instanceGroupRecord.instances ?? {};
+          for (const [cameraKey, points] of Object.entries(instancesRecord)) {
+            const camera = cameraMap.get(cameraKey);
+            if (!camera) continue;
+            const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+            instanceByCamera.set(camera, new Instance({ points, skeleton }));
+          }
+          const rawPoints = instanceGroupRecord.points;
+          const pointsValue = Array.isArray(rawPoints) ? rawPoints : void 0;
+          instanceGroups.push(
+            new InstanceGroup({
+              instanceByCamera,
+              score: instanceGroupRecord.score,
+              points: pointsValue,
+              metadata: instanceGroupRecord.metadata ?? {}
+            })
+          );
+        }
+        const labeledFrameByCamera = /* @__PURE__ */ new Map();
+        const labeledFrameMap = groupRecord.labeled_frame_by_camera ?? {};
+        for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
+          const camera = cameraMap.get(cameraKey);
+          const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
+          if (camera && labeledFrame) {
+            labeledFrameByCamera.set(camera, labeledFrame);
+          }
+        }
+        session.frameGroups.set(
+          Number(frameIdx),
+          new FrameGroup({
+            frameIdx: Number(frameIdx),
+            instanceGroups,
+            labeledFrameByCamera,
+            metadata: groupRecord.metadata ?? {}
+          })
+        );
+      }
+      sessions.push(session);
+    }
+    return sessions;
   } catch {
     return [];
   }

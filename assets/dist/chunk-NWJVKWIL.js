@@ -585,6 +585,7 @@ export {
   Symmetry,
   Skeleton,
   parseJsonAttr,
+  parseJsonEntry,
   parseSkeletons,
   parseTracks,
   parseVideosMetadata,
