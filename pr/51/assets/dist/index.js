@@ -639,6 +639,38 @@ var Labels = class {
   }
 };
 
+// src/model/labels-set.ts
+var LabelsSet = class {
+  labels;
+  constructor(entries) {
+    this.labels = new Map(Object.entries(entries ?? {}));
+  }
+  get size() {
+    return this.labels.size;
+  }
+  get(key) {
+    return this.labels.get(key);
+  }
+  set(key, value) {
+    this.labels.set(key, value);
+  }
+  delete(key) {
+    this.labels.delete(key);
+  }
+  keys() {
+    return this.labels.keys();
+  }
+  values() {
+    return this.labels.values();
+  }
+  entries() {
+    return this.labels.entries();
+  }
+  [Symbol.iterator]() {
+    return this.labels.entries();
+  }
+};
+
 // src/model/camera.ts
 function rodriguesTransformation(input) {
   if (input.length === 3 && Array.isArray(input[0]) === false) {
@@ -4399,6 +4431,7 @@ export {
   InstanceGroup,
   LabeledFrame,
   Labels,
+  LabelsSet,
   MARKER_FUNCTIONS,
   Mp4BoxVideoBackend,
   NAMED_COLORS,
