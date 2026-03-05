@@ -155,6 +155,60 @@ declare class RecordingSession {
 }
 declare function makeCameraFromDict(data: Record<string, unknown>): Camera;
 
+/**
+ * Raw data store holding HDF5 dataset arrays for lazy materialization.
+ * Keeps the parsed column data from frames/instances/points datasets
+ * so individual frames can be materialized on demand.
+ */
+declare class LazyDataStore {
+    framesData: Record<string, any[]>;
+    instancesData: Record<string, any[]>;
+    pointsData: Record<string, any[]>;
+    predPointsData: Record<string, any[]>;
+    skeletons: Skeleton[];
+    tracks: Track[];
+    videos: Video[];
+    formatId: number;
+    constructor(options: {
+        framesData: Record<string, any[]>;
+        instancesData: Record<string, any[]>;
+        pointsData: Record<string, any[]>;
+        predPointsData: Record<string, any[]>;
+        skeletons: Skeleton[];
+        tracks: Track[];
+        videos: Video[];
+        formatId: number;
+    });
+    /** Total number of frames in the store. */
+    get frameCount(): number;
+    /**
+     * Materialize a single LabeledFrame by index.
+     */
+    materializeFrame(frameIdx: number): LabeledFrame | null;
+    /** Materialize all frames at once. */
+    materializeAll(): LabeledFrame[];
+    private slicePoints;
+}
+/**
+ * A lazy array-like container for LabeledFrames.
+ * Frames are materialized from the LazyDataStore only when accessed.
+ * Supports indexing, iteration, length, and conversion to a real array.
+ */
+declare class LazyFrameList {
+    private store;
+    private cache;
+    constructor(store: LazyDataStore);
+    get length(): number;
+    /** Get a frame by index, materializing it if needed. */
+    at(index: number): LabeledFrame | undefined;
+    /** Materialize all frames and return as a regular array. */
+    toArray(): LabeledFrame[];
+    /** Iterator support. */
+    [Symbol.iterator](): Iterator<LabeledFrame>;
+    /** Number of frames that have been materialized. */
+    get materializedCount(): number;
+}
+
 declare class Labels {
     labeledFrames: LabeledFrame[];
     videos: Video[];
@@ -163,6 +217,10 @@ declare class Labels {
     suggestions: SuggestionFrame[];
     sessions: RecordingSession[];
     provenance: Record<string, unknown>;
+    /** @internal Lazy frame list for on-demand materialization. */
+    _lazyFrameList: LazyFrameList | null;
+    /** @internal Lazy data store holding raw HDF5 data. */
+    _lazyDataStore: LazyDataStore | null;
     constructor(options?: {
         labeledFrames?: LabeledFrame[];
         videos?: Video[];
@@ -172,6 +230,13 @@ declare class Labels {
         sessions?: RecordingSession[];
         provenance?: Record<string, unknown>;
     });
+    /** Whether this Labels instance is in lazy mode. */
+    get isLazy(): boolean;
+    /**
+     * Materialize all lazy frames, converting to eager mode.
+     * No-op if already eager.
+     */
+    materialize(): void;
     get negativeFrames(): LabeledFrame[];
     get video(): Video;
     get length(): number;
@@ -469,6 +534,7 @@ declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Prom
 declare function loadSlp(source: SlpSource, options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
+    lazy?: boolean;
 }): Promise<Labels>;
 declare function saveSlp(labels: Labels, filename: string, options?: {
     embed?: boolean | string;
@@ -860,4 +926,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, saveSlpSet, saveSlpToBytes, toDataURL, toDict, toJPEG, toNumpy, toPNG };
+export { Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, RecordingSession, RenderContext, type RenderOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, checkFfmpeg, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, renderImage, renderVideo, resolveColor, rgbToCSS, rodriguesTransformation, saveImage, saveSlp, saveSlpSet, saveSlpToBytes, toDataURL, toDict, toJPEG, toNumpy, toPNG };

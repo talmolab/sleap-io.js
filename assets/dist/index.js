@@ -521,6 +521,10 @@ var Labels = class {
   suggestions;
   sessions;
   provenance;
+  /** @internal Lazy frame list for on-demand materialization. */
+  _lazyFrameList = null;
+  /** @internal Lazy data store holding raw HDF5 data. */
+  _lazyDataStore = null;
   constructor(options) {
     this.labeledFrames = options?.labeledFrames ?? [];
     this.videos = options?.videos ?? [];
@@ -555,6 +559,20 @@ var Labels = class {
       this.tracks = Array.from(uniqueTracks.values());
     }
   }
+  /** Whether this Labels instance is in lazy mode. */
+  get isLazy() {
+    return this._lazyFrameList !== null;
+  }
+  /**
+   * Materialize all lazy frames, converting to eager mode.
+   * No-op if already eager.
+   */
+  materialize() {
+    if (!this._lazyFrameList) return;
+    this.labeledFrames = this._lazyFrameList.toArray();
+    this._lazyFrameList = null;
+    this._lazyDataStore = null;
+  }
   get negativeFrames() {
     return this.labeledFrames.filter((f) => f.isNegative);
   }
@@ -565,9 +583,11 @@ var Labels = class {
     return this.videos[0];
   }
   get length() {
+    if (this._lazyFrameList) return this._lazyFrameList.length;
     return this.labeledFrames.length;
   }
   [Symbol.iterator]() {
+    if (this._lazyFrameList) return this._lazyFrameList[Symbol.iterator]();
     return this.labeledFrames[Symbol.iterator]();
   }
   get instances() {
@@ -857,6 +877,164 @@ function makeCameraFromDict(data) {
     distortions: data.distortions
   });
 }
+
+// src/model/lazy.ts
+var LazyDataStore = class {
+  framesData;
+  instancesData;
+  pointsData;
+  predPointsData;
+  skeletons;
+  tracks;
+  videos;
+  formatId;
+  constructor(options) {
+    this.framesData = options.framesData;
+    this.instancesData = options.instancesData;
+    this.pointsData = options.pointsData;
+    this.predPointsData = options.predPointsData;
+    this.skeletons = options.skeletons;
+    this.tracks = options.tracks;
+    this.videos = options.videos;
+    this.formatId = options.formatId;
+  }
+  /** Total number of frames in the store. */
+  get frameCount() {
+    return (this.framesData.frame_id ?? []).length;
+  }
+  /**
+   * Materialize a single LabeledFrame by index.
+   */
+  materializeFrame(frameIdx) {
+    const frameIds = this.framesData.frame_id ?? [];
+    if (frameIdx < 0 || frameIdx >= frameIds.length) return null;
+    const rawVideoId = Number(this.framesData.video?.[frameIdx] ?? 0);
+    const videoIndex = rawVideoId;
+    const frameIndex = Number(this.framesData.frame_idx?.[frameIdx] ?? 0);
+    const instStart = Number(this.framesData.instance_id_start?.[frameIdx] ?? 0);
+    const instEnd = Number(this.framesData.instance_id_end?.[frameIdx] ?? 0);
+    const video = this.videos[videoIndex];
+    if (!video) return null;
+    const instances = [];
+    const instanceById = /* @__PURE__ */ new Map();
+    const fromPredictedPairs = [];
+    for (let instIdx = instStart; instIdx < instEnd; instIdx++) {
+      const instanceType = Number(this.instancesData.instance_type?.[instIdx] ?? 0);
+      const skeletonId = Number(this.instancesData.skeleton?.[instIdx] ?? 0);
+      const trackId = Number(this.instancesData.track?.[instIdx] ?? -1);
+      const pointStart = Number(this.instancesData.point_id_start?.[instIdx] ?? 0);
+      const pointEnd = Number(this.instancesData.point_id_end?.[instIdx] ?? 0);
+      const score = Number(this.instancesData.score?.[instIdx] ?? 0);
+      const trackingScore = Number(this.instancesData.tracking_score?.[instIdx] ?? 0);
+      const fromPredicted = Number(this.instancesData.from_predicted?.[instIdx] ?? -1);
+      const skeleton = this.skeletons[skeletonId] ?? this.skeletons[0];
+      const track = trackId >= 0 ? this.tracks[trackId] : null;
+      let instance;
+      if (instanceType === 0) {
+        const points = this.slicePoints(this.pointsData, pointStart, pointEnd);
+        instance = new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton, track, trackingScore });
+        if (this.formatId < 1.1) {
+          instance.points.forEach((point) => {
+            point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
+          });
+        }
+        if (fromPredicted >= 0) {
+          fromPredictedPairs.push([instIdx, fromPredicted]);
+        }
+      } else {
+        const points = this.slicePoints(this.predPointsData, pointStart, pointEnd, true);
+        instance = new PredictedInstance({ points: predictedPointsFromArray(points, skeleton.nodeNames), skeleton, track, score, trackingScore });
+        if (this.formatId < 1.1) {
+          instance.points.forEach((point) => {
+            point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
+          });
+        }
+      }
+      instanceById.set(instIdx, instance);
+      instances.push(instance);
+    }
+    for (const [instanceId, fromPredictedId] of fromPredictedPairs) {
+      const instance = instanceById.get(instanceId);
+      const predicted = instanceById.get(fromPredictedId);
+      if (instance && predicted instanceof PredictedInstance && instance instanceof Instance) {
+        instance.fromPredicted = predicted;
+      }
+    }
+    return new LabeledFrame({ video, frameIdx: frameIndex, instances });
+  }
+  /** Materialize all frames at once. */
+  materializeAll() {
+    const frames = [];
+    for (let i = 0; i < this.frameCount; i++) {
+      const frame = this.materializeFrame(i);
+      if (frame) frames.push(frame);
+    }
+    return frames;
+  }
+  slicePoints(data, start, end, predicted = false) {
+    const xs = data.x ?? [];
+    const ys = data.y ?? [];
+    const visible = data.visible ?? [];
+    const complete = data.complete ?? [];
+    const scores = data.score ?? [];
+    const points = [];
+    for (let i = start; i < end; i++) {
+      if (predicted) {
+        points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
+      } else {
+        points.push([xs[i], ys[i], visible[i], complete[i]]);
+      }
+    }
+    return points;
+  }
+};
+var LazyFrameList = class {
+  store;
+  cache;
+  constructor(store) {
+    this.store = store;
+    this.cache = /* @__PURE__ */ new Map();
+  }
+  get length() {
+    return this.store.frameCount;
+  }
+  /** Get a frame by index, materializing it if needed. */
+  at(index) {
+    if (index < 0 || index >= this.length) return void 0;
+    if (this.cache.has(index)) return this.cache.get(index);
+    const frame = this.store.materializeFrame(index);
+    if (frame) {
+      this.cache.set(index, frame);
+    }
+    return frame ?? void 0;
+  }
+  /** Materialize all frames and return as a regular array. */
+  toArray() {
+    const result = [];
+    for (let i = 0; i < this.length; i++) {
+      const frame = this.at(i);
+      if (frame) result.push(frame);
+    }
+    return result;
+  }
+  /** Iterator support. */
+  [Symbol.iterator]() {
+    let index = 0;
+    const self = this;
+    return {
+      next() {
+        if (index >= self.length) return { done: true, value: void 0 };
+        const frame = self.at(index++);
+        if (!frame) return { done: true, value: void 0 };
+        return { done: false, value: frame };
+      }
+    };
+  }
+  /** Number of frames that have been materialized. */
+  get materializedCount() {
+    return this.cache.size;
+  }
+};
 
 // src/video/mp4box-video.ts
 var isBrowser2 = typeof window !== "undefined" && typeof document !== "undefined";
@@ -2347,6 +2525,51 @@ async function readSlp(source, options) {
     close();
   }
 }
+async function readSlpLazy(source, options) {
+  const { file, close } = await openH5File(source, options?.h5);
+  try {
+    const metadataGroup = file.get("metadata");
+    if (!metadataGroup) {
+      throw new Error("Missing /metadata group in SLP file");
+    }
+    const metadataAttrs = metadataGroup.attrs ?? {};
+    const formatId = Number(metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1);
+    const metadataJson = parseJsonAttr(metadataAttrs["json"]);
+    const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
+    const skeletons = parseSkeletons(metadataJson);
+    const tracks = readTracks(file.get("tracks_json"));
+    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId);
+    const suggestions = readSuggestions(file.get("suggestions_json"), videos);
+    const framesData = normalizeStructDataset(file.get("frames"));
+    const instancesData = normalizeStructDataset(file.get("instances"));
+    const pointsData = normalizeStructDataset(file.get("points"));
+    const predPointsData = normalizeStructDataset(file.get("pred_points"));
+    const store = new LazyDataStore({
+      framesData,
+      instancesData,
+      pointsData,
+      predPointsData,
+      skeletons,
+      tracks,
+      videos,
+      formatId
+    });
+    const lazyFrames = new LazyFrameList(store);
+    const labels = new Labels({
+      videos,
+      skeletons,
+      tracks,
+      suggestions,
+      sessions: [],
+      provenance: metadataJson?.provenance ?? {}
+    });
+    labels._lazyFrameList = lazyFrames;
+    labels._lazyDataStore = store;
+    return labels;
+  } finally {
+    close();
+  }
+}
 function readTracks(dataset) {
   if (!dataset) return [];
   const values = dataset.value ?? [];
@@ -3562,6 +3785,7 @@ function isBrowserWithWorkerSupport() {
 async function loadSlp(source, options) {
   const streamMode = options?.h5?.stream ?? "auto";
   const openVideos = options?.openVideos ?? true;
+  const lazy = options?.lazy ?? false;
   if (isBrowserWithWorkerSupport() && !isNode3() && streamMode !== "download") {
     let streamingSource;
     if (typeof source === "string") {
@@ -3589,6 +3813,9 @@ async function loadSlp(source, options) {
         }
       }
     }
+  }
+  if (lazy) {
+    return readSlpLazy(source, { openVideos, h5: options?.h5 });
   }
   return readSlp(source, { openVideos, h5: options?.h5 });
 }
@@ -4611,6 +4838,8 @@ export {
   LabeledFrame,
   Labels,
   LabelsSet,
+  LazyDataStore,
+  LazyFrameList,
   MARKER_FUNCTIONS,
   Mp4BoxVideoBackend,
   NAMED_COLORS,
