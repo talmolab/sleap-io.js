@@ -3103,25 +3103,41 @@ function slicePoints2(data, start, end, predicted = false) {
 var isNode2 = typeof process !== "undefined" && !!process.versions?.node;
 var FORMAT_ID = 1.4;
 var SPAWNED_ON = 0;
-async function writeSlp(filename, labels, options) {
+function writeSlpToFile(file, labels) {
+  writeMetadata(file, labels);
+  writeVideos(file, labels.videos);
+  writeTracks(file, labels.tracks);
+  writeSuggestions(file, labels.suggestions, labels.videos);
+  writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
+  writeLabeledFrames(file, labels);
+}
+async function saveSlpToBytes(labels, options) {
   const embedMode = options?.embed ?? false;
   if (embedMode && embedMode !== "source") {
     throw new Error("Embedding frames is not supported yet in writeSlp.");
   }
-  if (!isNode2) {
-    throw new Error("writeSlp currently requires a Node.js environment.");
-  }
   const module = await getH5Module();
-  const file = new module.File(filename, "w");
+  const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+  const file = new module.File(memPath, "w");
   try {
-    writeMetadata(file, labels);
-    writeVideos(file, labels.videos);
-    writeTracks(file, labels.tracks);
-    writeSuggestions(file, labels.suggestions, labels.videos);
-    writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
-    writeLabeledFrames(file, labels);
+    writeSlpToFile(file, labels);
   } finally {
     file.close();
+  }
+  const fs = getH5FileSystem(module);
+  const bytes = fs.readFile(memPath);
+  fs.unlink(memPath);
+  return bytes;
+}
+async function writeSlp(filename, labels, options) {
+  const bytes = await saveSlpToBytes(labels, options);
+  if (isNode2) {
+    const fs = await import("fs");
+    fs.writeFileSync(filename, bytes);
+  } else {
+    throw new Error(
+      "writeSlp requires a Node.js environment for file I/O. Use saveSlpToBytes() to get the SLP data as a Uint8Array in the browser."
+    );
   }
 }
 function writeMetadata(file, labels) {
@@ -4351,6 +4367,7 @@ export {
   rodriguesTransformation,
   saveImage,
   saveSlp,
+  saveSlpToBytes,
   toDataURL,
   toDict,
   toJPEG,
