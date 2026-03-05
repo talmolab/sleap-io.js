@@ -12,7 +12,6 @@ on:
       - "package.json"
       - "package-lock.json"
       - ".github/workflows/pr-preview.yml"
-      - ".github/workflows/release.yml"
 
 concurrency:
   group: pr-preview-${{ github.event.number }}
@@ -24,30 +23,39 @@ permissions:
 
 jobs:
   deploy:
+    name: Deploy Preview
     if: github.event.action != 'closed'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
+
       - name: Install JS dependencies
         run: npm ci
+
       - name: Build package
         run: npm run build
+
       - name: Copy dist into docs assets
         run: |
           mkdir -p docs/assets/dist
           cp -R dist/* docs/assets/dist/
+
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
       - name: Install docs dependencies
         run: pip install -r docs/requirements.txt
+
       - name: Build docs
         run: mkdocs build --site-dir _site
+
       - name: Deploy PR Preview
         uses: JamesIves/github-pages-deploy-action@v4
         with:
@@ -55,22 +63,31 @@ jobs:
           folder: _site
           target-folder: pr/${{ github.event.number }}
           commit-message: "Deploy PR #${{ github.event.number }} preview"
+
       - name: Comment on PR
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: docs-preview
           message: |
             ## Docs Preview
-            - Preview URL: https://talmolab.github.io/sleap-io.js/pr/${{ github.event.number }}/
-            - Commit: `${{ github.event.pull_request.head.sha }}`
+
+            | | |
+            |---|---|
+            | **Preview URL** | https://iojs.sleap.ai/pr/${{ github.event.number }}/ |
+            | **Commit** | `${{ github.event.pull_request.head.sha }}` |
+
+            _This preview will be removed when the PR is closed._
 
   cleanup:
+    name: Cleanup Preview
     if: github.event.action == 'closed'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout gh-pages
+        uses: actions/checkout@v4
         with:
           ref: gh-pages
+
       - name: Remove PR preview
         run: |
           if [ -d "pr/${{ github.event.number }}" ]; then
@@ -80,11 +97,15 @@ jobs:
             git add -A
             git commit -m "Remove PR #${{ github.event.number }} preview" || echo "Nothing to commit"
             git push
+          else
+            echo "Preview directory pr/${{ github.event.number }} does not exist"
           fi
+
       - name: Comment on PR (cleanup)
         uses: marocchino/sticky-pull-request-comment@v2
         with:
           header: docs-preview
           message: |
             ## Docs Preview
+
             Preview has been removed.

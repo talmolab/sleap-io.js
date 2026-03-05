@@ -1,8 +1,12 @@
 name: Docs
 
 on:
+  release:
+    types:
+      - published
   push:
-    branches: [main]
+    branches:
+      - main
     paths:
       - "docs/**"
       - "mkdocs.yml"
@@ -13,20 +17,25 @@ on:
       - "package-lock.json"
       - ".github/workflows/docs.yml"
 
-permissions:
-  contents: write
-
+# Only one docs deployment runs at a time; additional runs queue up
 concurrency:
-  group: docs-deploy
+  group: docs-deployment
   cancel-in-progress: false
 
 jobs:
-  build:
+  docs:
+    name: Docs
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
-      - uses: actions/setup-node@v4
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
           node-version: 22
           cache: npm
@@ -50,11 +59,95 @@ jobs:
       - name: Install docs dependencies
         run: pip install -r docs/requirements.txt
 
-      - name: Build docs
-        run: mkdocs build --site-dir _site
+      - name: Setup Git user
+        run: |
+          git config --global user.name "github-actions[bot]"
+          git config --global user.email "github-actions[bot]@users.noreply.github.com"
 
-      - name: Deploy to GitHub Pages
-        uses: JamesIves/github-pages-deploy-action@v4
-        with:
-          branch: gh-pages
-          folder: _site
+      - name: Deploy docs (release)
+        if: ${{ github.event_name == 'release' && github.event.action == 'published' }}
+        run: |
+          # Fetch the latest gh-pages state to reduce conflicts
+          git fetch origin gh-pages --depth=1 || true
+
+          # Build and commit docs locally
+          mike deploy --update-aliases --allow-empty "${{ github.event.release.tag_name }}" latest
+          mike set-default latest
+
+          # Push with retry logic to handle race conditions
+          for i in {1..3}; do
+            if git push origin gh-pages; then
+              echo "Successfully pushed documentation for ${{ github.event.release.tag_name }}"
+              break
+            else
+              echo "Push failed (attempt $i/3)"
+              if [ $i -eq 3 ]; then
+                echo "Failed to push documentation after 3 attempts"
+                exit 1
+              fi
+              echo "Fetching latest gh-pages and rebasing..."
+              git fetch origin gh-pages
+              git rebase origin/gh-pages
+              sleep 2
+            fi
+          done
+
+      - name: Deploy docs (dev)
+        if: ${{ github.event_name == 'push' }}
+        run: |
+          # Fetch the latest gh-pages state to reduce conflicts
+          git fetch origin gh-pages --depth=1 || true
+
+          # Build and commit docs locally
+          mike deploy --update-aliases --allow-empty dev
+
+          # Set dev as default only if no 'latest' alias exists yet
+          if ! mike list 2>/dev/null | grep -q 'latest'; then
+            mike set-default dev
+          fi
+
+          # Push with retry logic
+          for i in {1..3}; do
+            if git push origin gh-pages; then
+              echo "Successfully pushed dev documentation"
+              break
+            else
+              echo "Push failed (attempt $i/3)"
+              if [ $i -eq 3 ]; then
+                echo "Failed to push documentation after 3 attempts"
+                exit 1
+              fi
+              echo "Fetching latest gh-pages and rebasing..."
+              git fetch origin gh-pages
+              git rebase origin/gh-pages
+              sleep 2
+            fi
+          done
+
+      - name: Reorder versions.json on gh-pages
+        if: ${{ github.event_name == 'release' || github.event_name == 'push' }}
+        run: |
+          # Copy the reordering script to temp location before switching branches
+          cp scripts/reorder_versions.py /tmp/reorder_versions.py
+
+          # Fetch and checkout gh-pages branch
+          git fetch origin gh-pages
+          git checkout gh-pages
+
+          # Run the reordering script
+          python /tmp/reorder_versions.py versions.json
+
+          # Commit and push if there are changes
+          if git diff --quiet; then
+            echo "No changes to versions.json"
+          else
+            git add versions.json
+            git commit -m "Reorder versions.json for proper version dropdown sorting"
+            git push origin gh-pages
+          fi
+
+          # Switch back to the original branch
+          git checkout -
+
+          # Clean up temp file
+          rm /tmp/reorder_versions.py
