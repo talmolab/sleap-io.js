@@ -6,6 +6,7 @@ export * from "./model/video.js";
 export * from "./model/suggestions.js";
 export * from "./model/labels-set.js";
 export * from "./model/camera.js";
+export * from "./model/lazy.js";
 export * from "./video/backend.js";
 export * from "./video/mp4box-video.js";
 export * from "./video/streaming-hdf5-video.js";
