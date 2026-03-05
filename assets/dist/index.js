@@ -2281,6 +2281,7 @@ var Hdf5VideoBackend = class {
   channelOrder;
   cachedData;
   frameOffsets;
+  frameSizes;
   constructor(options) {
     this.filename = options.filename;
     this.file = options.file;
@@ -2294,6 +2295,7 @@ var Hdf5VideoBackend = class {
     this.fps = options.fps;
     this.cachedData = null;
     this.frameOffsets = null;
+    this.frameSizes = options.frameSizes;
   }
   async getFrame(frameIndex) {
     const dataset = this.file.get(this.datasetPath);
@@ -2303,7 +2305,9 @@ var Hdf5VideoBackend = class {
     if (!this.cachedData) {
       const value = dataset.value;
       this.cachedData = normalizeVideoData2(value);
-      if (isContiguousEncodedBuffer2(this.cachedData, this.format, this.shape)) {
+      if (this.frameSizes && this.frameSizes.length > 0 && this.cachedData instanceof Uint8Array) {
+        this.frameOffsets = computeOffsetsFromSizes(this.frameSizes);
+      } else if (isContiguousEncodedBuffer2(this.cachedData, this.format, this.shape)) {
         this.frameOffsets = findEncodedFrameOffsets2(
           this.cachedData,
           this.format,
@@ -2381,6 +2385,15 @@ function findEncodedFrameOffsets2(buffer, format, expectedFrameCount) {
   }
   return offsets;
 }
+function computeOffsetsFromSizes(sizes) {
+  const offsets = new Array(sizes.length);
+  let offset = 0;
+  for (let i = 0; i < sizes.length; i++) {
+    offsets[i] = offset;
+    offset += sizes[i];
+  }
+  return offsets;
+}
 function toUint8Array2(entry) {
   if (entry instanceof Uint8Array) return entry;
   if (entry instanceof ArrayBuffer) return new Uint8Array(entry);
@@ -2450,6 +2463,7 @@ async function createVideoBackend(filename, options) {
       file,
       datasetPath,
       frameNumbers: options?.frameNumbers,
+      frameSizes: options?.frameSizes,
       format: options?.format,
       channelOrder: options?.channelOrder,
       shape: options?.shape,
@@ -2555,12 +2569,13 @@ async function readSlpLazy(source, options) {
       formatId
     });
     const lazyFrames = new LazyFrameList(store);
+    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
     const labels = new Labels({
       videos,
       skeletons,
       tracks,
       suggestions,
-      sessions: [],
+      sessions,
       provenance: metadataJson?.provenance ?? {}
     });
     labels._lazyFrameList = lazyFrames;
@@ -2633,6 +2648,7 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
         dataset: datasetPath ?? void 0,
         embedded,
         frameNumbers: readFrameNumbers(file, datasetPath),
+        frameSizes: readFrameSizes(file, datasetPath),
         format,
         channelOrder,
         shape: backendMeta.shape,
@@ -2659,6 +2675,14 @@ function readFrameNumbers(file, datasetPath) {
   const frameDataset = file.get(`${groupPath}/frame_numbers`);
   if (!frameDataset) return [];
   const values = frameDataset.value ?? [];
+  return Array.from(values).map((v) => Number(v));
+}
+function readFrameSizes(file, datasetPath) {
+  if (!datasetPath) return void 0;
+  const groupPath = datasetPath.endsWith("/video") ? datasetPath.slice(0, -6) : datasetPath;
+  const sizesDataset = file.get(`${groupPath}/frame_sizes`);
+  if (!sizesDataset) return void 0;
+  const values = sizesDataset.value ?? [];
   return Array.from(values).map((v) => Number(v));
 }
 function findVideoDataset(file, videoIndex) {
@@ -3895,6 +3919,13 @@ function writeEmbeddedVideos(file, labels, embeddedVideoData) {
       name: `${groupName}/frame_numbers`,
       data: embedData.frameNumbers,
       shape: [embedData.frameNumbers.length],
+      dtype: "<i4"
+    });
+    const frameSizes = frameBytes.map((b) => b.length);
+    file.create_dataset({
+      name: `${groupName}/frame_sizes`,
+      data: frameSizes,
+      shape: [frameSizes.length],
       dtype: "<i4"
     });
   }
