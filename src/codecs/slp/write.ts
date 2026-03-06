@@ -6,6 +6,8 @@ import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
 import { getH5Module, getH5FileSystem } from "./h5.js";
+import { ROI, encodeWkb } from "../../model/roi.js";
+import { SegmentationMask } from "../../model/mask.js";
 
 const isNode = typeof process !== "undefined" && !!process.versions?.node;
 
@@ -45,6 +47,8 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
   writeLabeledFrames(file, labels);
   writeNegativeFrames(file, labels);
+  writeRois(file, labels.rois, labels.videos, labels.tracks);
+  writeMasks(file, labels.masks, labels.videos, labels.tracks);
 }
 
 /**
@@ -143,9 +147,11 @@ function writeMetadata(file: any, labels: Labels): void {
     provenance: labels.provenance ?? {},
   };
 
+  const formatId = (labels.rois.length > 0 || labels.masks.length > 0) ? 1.5 : FORMAT_ID;
+
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
-  metadataGroup.create_attribute("format_id", FORMAT_ID);
+  metadataGroup.create_attribute("format_id", formatId);
   metadataGroup.create_attribute("json", JSON.stringify(metadata));
 }
 
@@ -646,4 +652,105 @@ function createMatrixDataset(file: any, name: string, rows: number[][], fieldNam
   file.create_dataset({ name, data, shape: [rowCount, colCount], dtype });
   const dataset = file.get(name);
   dataset.create_attribute("field_names", fieldNames);
+}
+
+function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name: string }>): void {
+  if (!rois.length) return;
+
+  const rows: number[][] = [];
+  const wkbChunks: Uint8Array[] = [];
+  let wkbOffset = 0;
+  const categories: string[] = [];
+  const names: string[] = [];
+  const sources: string[] = [];
+
+  for (const roi of rois) {
+    const wkb = encodeWkb(roi.geometry);
+    const wkbStart = wkbOffset;
+    const wkbEnd = wkbOffset + wkb.length;
+    wkbChunks.push(wkb);
+    wkbOffset = wkbEnd;
+
+    const videoIdx = roi.video ? videos.indexOf(roi.video) : -1;
+    const frameIdx = roi.frameIdx ?? -1;
+    const trackIdx = roi.track ? tracks.indexOf(roi.track as any) : -1;
+    const score = roi.score ?? Number.NaN;
+
+    rows.push([roi.annotationType, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd]);
+    categories.push(roi.category);
+    names.push(roi.name);
+    sources.push(roi.source);
+  }
+
+  createMatrixDataset(file, "rois", rows,
+    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end"], "<f8");
+
+  // Set string metadata as attributes
+  const roisDs = file.get("rois");
+  roisDs.create_attribute("categories", JSON.stringify(categories));
+  roisDs.create_attribute("names", JSON.stringify(names));
+  roisDs.create_attribute("sources", JSON.stringify(sources));
+
+  // Write concatenated WKB bytes
+  const totalWkb = wkbChunks.reduce((sum, c) => sum + c.length, 0);
+  const wkbFlat = new Uint8Array(totalWkb);
+  let offset = 0;
+  for (const chunk of wkbChunks) {
+    wkbFlat.set(chunk, offset);
+    offset += chunk.length;
+  }
+  file.create_dataset({ name: "roi_wkb", data: wkbFlat, shape: [wkbFlat.length], dtype: "<B" });
+}
+
+function writeMasks(file: any, masks: SegmentationMask[], videos: Video[], tracks: Array<{ name: string }>): void {
+  if (!masks.length) return;
+
+  const rows: number[][] = [];
+  const rleChunks: Uint8Array[] = [];
+  let rleOffset = 0;
+  const categories: string[] = [];
+  const names: string[] = [];
+  const sources: string[] = [];
+
+  for (const mask of masks) {
+    // Convert Uint32Array RLE counts to bytes (little-endian)
+    const rleBytes = new Uint8Array(mask.rleCounts.length * 4);
+    const view = new DataView(rleBytes.buffer);
+    for (let j = 0; j < mask.rleCounts.length; j++) {
+      view.setUint32(j * 4, mask.rleCounts[j], true);
+    }
+    const rleStart = rleOffset;
+    const rleEnd = rleOffset + rleBytes.length;
+    rleChunks.push(rleBytes);
+    rleOffset = rleEnd;
+
+    const videoIdx = mask.video ? videos.indexOf(mask.video) : -1;
+    const frameIdx = mask.frameIdx ?? -1;
+    const trackIdx = mask.track ? tracks.indexOf(mask.track as any) : -1;
+    const score = mask.score ?? Number.NaN;
+
+    rows.push([mask.height, mask.width, mask.annotationType, videoIdx, frameIdx, trackIdx, score, rleStart, rleEnd]);
+    categories.push(mask.category);
+    names.push(mask.name);
+    sources.push(mask.source);
+  }
+
+  createMatrixDataset(file, "masks", rows,
+    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end"], "<f8");
+
+  // Set string metadata as attributes
+  const masksDs = file.get("masks");
+  masksDs.create_attribute("categories", JSON.stringify(categories));
+  masksDs.create_attribute("names", JSON.stringify(names));
+  masksDs.create_attribute("sources", JSON.stringify(sources));
+
+  // Write concatenated RLE bytes
+  const totalRle = rleChunks.reduce((sum, c) => sum + c.length, 0);
+  const rleFlat = new Uint8Array(totalRle);
+  let offset = 0;
+  for (const chunk of rleChunks) {
+    rleFlat.set(chunk, offset);
+    offset += chunk.length;
+  }
+  file.create_dataset({ name: "mask_rle", data: rleFlat, shape: [rleFlat.length], dtype: "<B" });
 }
