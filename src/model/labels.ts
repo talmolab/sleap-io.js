@@ -191,6 +191,7 @@ export class Labels {
     annotationType?: AnnotationType;
     category?: string;
     track?: Track;
+    instance?: Instance | PredictedInstance;
   }): SegmentationMask[] {
     if (!filters) return [...this.masks];
     let results = this.masks;
@@ -208,6 +209,9 @@ export class Labels {
     }
     if (filters.track !== undefined) {
       results = results.filter((m) => m.track === filters.track);
+    }
+    if (filters.instance !== undefined) {
+      results = results.filter((m) => m.instance === filters.instance);
     }
     return results;
   }
