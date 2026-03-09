@@ -1,6 +1,8 @@
 import type { Video } from "./video.js";
 import type { Track, Instance } from "./instance.js";
 
+import type { SegmentationMask } from "./mask.js";
+
 // Late-binding factory to avoid circular imports with mask.ts.
 // Set by mask.ts when it is imported.
 type MaskFactory = (
@@ -8,7 +10,7 @@ type MaskFactory = (
   height: number,
   width: number,
   options: Record<string, unknown>,
-) => unknown;
+) => SegmentationMask;
 let _maskFactory: MaskFactory | null = null;
 export function _registerMaskFactory(factory: MaskFactory): void {
   _maskFactory = factory;
@@ -193,7 +195,7 @@ export class ROI {
     return { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
   }
 
-  toMask(height: number, width: number): unknown {
+  toMask(height: number, width: number): SegmentationMask {
     if (!_maskFactory) {
       throw new Error(
         "SegmentationMask not available. Import mask.ts before calling toMask().",

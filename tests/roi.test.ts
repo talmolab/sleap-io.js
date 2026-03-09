@@ -8,7 +8,6 @@ import {
   decodeWkb,
 } from "../src/model/roi.js";
 import "../src/model/mask.js"; // Ensure mask factory is registered
-import { SegmentationMask } from "../src/model/mask.js";
 import { Video } from "../src/model/video.js";
 import type { Geometry } from "../src/model/roi.js";
 
@@ -143,7 +142,7 @@ describe("ROI", () => {
 
   it("toMask rasterizes correctly", () => {
     const roi = ROI.fromBbox(2, 3, 4, 5, { name: "test_roi", category: "cat" });
-    const mask = roi.toMask(20, 20) as SegmentationMask;
+    const mask = roi.toMask(20, 20);
 
     expect(mask.height).toBe(20);
     expect(mask.width).toBe(20);
@@ -249,6 +248,24 @@ describe("WKB", () => {
     if (decoded.type === "Point") {
       expect(decoded.coordinates[0]).toBeCloseTo(3.5);
       expect(decoded.coordinates[1]).toBeCloseTo(7.2);
+    }
+  });
+
+  it("encode and decode multipolygon", () => {
+    const geom: Geometry = {
+      type: "MultiPolygon",
+      coordinates: [
+        [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
+        [[[15, 15], [20, 15], [20, 20], [15, 20], [15, 15]]],
+      ],
+    };
+    const wkb = encodeWkb(geom);
+    const decoded = decodeWkb(wkb);
+    expect(decoded.type).toBe("MultiPolygon");
+    if (decoded.type === "MultiPolygon") {
+      expect(decoded.coordinates.length).toBe(2);
+      expect(decoded.coordinates[0][0][0]).toEqual([0, 0]);
+      expect(decoded.coordinates[1][0][0]).toEqual([15, 15]);
     }
   });
 
