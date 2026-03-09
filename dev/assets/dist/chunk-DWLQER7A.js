@@ -2289,6 +2289,493 @@ async function openH5Worker(source, options) {
   return file;
 }
 
+// src/model/roi.ts
+var _maskFactory = null;
+function _registerMaskFactory(factory) {
+  _maskFactory = factory;
+}
+var AnnotationType = /* @__PURE__ */ ((AnnotationType3) => {
+  AnnotationType3[AnnotationType3["DEFAULT"] = 0] = "DEFAULT";
+  AnnotationType3[AnnotationType3["BOUNDING_BOX"] = 1] = "BOUNDING_BOX";
+  AnnotationType3[AnnotationType3["SEGMENTATION"] = 2] = "SEGMENTATION";
+  AnnotationType3[AnnotationType3["ARENA"] = 3] = "ARENA";
+  AnnotationType3[AnnotationType3["ANCHOR"] = 4] = "ANCHOR";
+  return AnnotationType3;
+})(AnnotationType || {});
+var ROI = class _ROI {
+  geometry;
+  annotationType;
+  name;
+  category;
+  score;
+  source;
+  video;
+  frameIdx;
+  track;
+  instance;
+  constructor(options) {
+    this.geometry = options.geometry;
+    this.annotationType = options.annotationType ?? 0 /* DEFAULT */;
+    this.name = options.name ?? "";
+    this.category = options.category ?? "";
+    this.score = options.score ?? null;
+    this.source = options.source ?? "";
+    this.video = options.video ?? null;
+    this.frameIdx = options.frameIdx ?? null;
+    this.track = options.track ?? null;
+    this.instance = options.instance ?? null;
+  }
+  static fromBbox(x, y, width, height, options) {
+    const geometry = {
+      type: "Polygon",
+      coordinates: [
+        [
+          [x, y],
+          [x + width, y],
+          [x + width, y + height],
+          [x, y + height],
+          [x, y]
+        ]
+      ]
+    };
+    return new _ROI({
+      geometry,
+      annotationType: 1 /* BOUNDING_BOX */,
+      ...options
+    });
+  }
+  static fromXyxy(x1, y1, x2, y2, options) {
+    const geometry = {
+      type: "Polygon",
+      coordinates: [
+        [
+          [x1, y1],
+          [x2, y1],
+          [x2, y2],
+          [x1, y2],
+          [x1, y1]
+        ]
+      ]
+    };
+    return new _ROI({
+      geometry,
+      annotationType: 1 /* BOUNDING_BOX */,
+      ...options
+    });
+  }
+  static fromPolygon(coords, options) {
+    const ring = [...coords];
+    if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) {
+      ring.push([ring[0][0], ring[0][1]]);
+    }
+    const geometry = { type: "Polygon", coordinates: [ring] };
+    return new _ROI({
+      geometry,
+      annotationType: 2 /* SEGMENTATION */,
+      ...options
+    });
+  }
+  get isPredicted() {
+    return this.score !== null;
+  }
+  get isStatic() {
+    return this.frameIdx === null;
+  }
+  get isBbox() {
+    if (this.geometry.type !== "Polygon") return false;
+    const coords = this.geometry.coordinates[0];
+    if (!coords || coords.length !== 5) return false;
+    for (let i = 0; i < 4; i++) {
+      const dx = Math.abs(coords[i + 1][0] - coords[i][0]);
+      const dy = Math.abs(coords[i + 1][1] - coords[i][1]);
+      if (dx > 1e-10 && dy > 1e-10) return false;
+    }
+    return true;
+  }
+  get bounds() {
+    const points = this._allPoints();
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [x, y] of points) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    return { minX, minY, maxX, maxY };
+  }
+  get area() {
+    if (this.geometry.type === "Point") return 0;
+    if (this.geometry.type === "Polygon") {
+      return polygonArea(this.geometry.coordinates);
+    }
+    if (this.geometry.type === "MultiPolygon") {
+      let total = 0;
+      for (const poly of this.geometry.coordinates) {
+        total += polygonArea(poly);
+      }
+      return total;
+    }
+    return 0;
+  }
+  get centroid() {
+    if (this.geometry.type === "Point") {
+      return { x: this.geometry.coordinates[0], y: this.geometry.coordinates[1] };
+    }
+    const b = this.bounds;
+    return { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
+  }
+  toMask(height, width) {
+    if (!_maskFactory) {
+      throw new Error(
+        "SegmentationMask not available. Import mask.ts before calling toMask()."
+      );
+    }
+    const mask = rasterizeGeometry(this.geometry, height, width);
+    return _maskFactory(mask, height, width, {
+      annotationType: this.annotationType,
+      name: this.name,
+      category: this.category,
+      score: this.score,
+      source: this.source,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance
+    });
+  }
+  _allPoints() {
+    if (this.geometry.type === "Point") {
+      return [this.geometry.coordinates];
+    }
+    if (this.geometry.type === "Polygon") {
+      return this.geometry.coordinates.flat();
+    }
+    if (this.geometry.type === "MultiPolygon") {
+      return this.geometry.coordinates.flat(2);
+    }
+    return [];
+  }
+};
+function ringArea(ring) {
+  let area = 0;
+  const n = ring.length;
+  for (let i = 0; i < n - 1; i++) {
+    area += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  }
+  return area / 2;
+}
+function polygonArea(rings) {
+  if (rings.length === 0) return 0;
+  let area = Math.abs(ringArea(rings[0]));
+  for (let i = 1; i < rings.length; i++) {
+    area -= Math.abs(ringArea(rings[i]));
+  }
+  return Math.abs(area);
+}
+function rasterizeGeometry(geometry, height, width) {
+  const mask = new Uint8Array(height * width);
+  if (geometry.type !== "Polygon") return mask;
+  scanlineFill(geometry.coordinates[0], mask, height, width, true);
+  for (let i = 1; i < geometry.coordinates.length; i++) {
+    scanlineFill(geometry.coordinates[i], mask, height, width, false);
+  }
+  return mask;
+}
+function scanlineFill(coords, mask, height, width, fill) {
+  if (!coords || coords.length < 3) return;
+  let minY = Infinity, maxY = -Infinity;
+  for (const [, y] of coords) {
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const startY = Math.max(0, Math.floor(minY));
+  const endY = Math.min(height - 1, Math.floor(maxY));
+  const n = coords.length - 1;
+  for (let y = startY; y <= endY; y++) {
+    const intersections = [];
+    for (let i = 0; i < n; i++) {
+      const y0 = coords[i][1];
+      const y1 = coords[i + 1][1];
+      if (y0 === y1) continue;
+      const lo = Math.min(y0, y1);
+      const hi = Math.max(y0, y1);
+      if (lo <= y + 0.5 && y + 0.5 < hi) {
+        const x0 = coords[i][0];
+        const x1 = coords[i + 1][0];
+        const t = (y + 0.5 - y0) / (y1 - y0);
+        intersections.push(x0 + t * (x1 - x0));
+      }
+    }
+    intersections.sort((a, b) => a - b);
+    for (let j = 0; j < intersections.length - 1; j += 2) {
+      const xStart = Math.max(0, Math.floor(intersections[j]));
+      const xEnd = Math.min(width, Math.ceil(intersections[j + 1]));
+      const val = fill ? 1 : 0;
+      for (let x = xStart; x < xEnd; x++) {
+        mask[y * width + x] = val;
+      }
+    }
+  }
+}
+function encodeWkb(geometry) {
+  if (geometry.type === "Point") {
+    const buf = new ArrayBuffer(21);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 1, true);
+    view.setFloat64(5, geometry.coordinates[0], true);
+    view.setFloat64(13, geometry.coordinates[1], true);
+    return new Uint8Array(buf);
+  }
+  if (geometry.type === "Polygon") {
+    return encodeWkbPolygon(geometry.coordinates);
+  }
+  if (geometry.type === "MultiPolygon") {
+    const polygonBuffers = [];
+    for (const poly of geometry.coordinates) {
+      polygonBuffers.push(encodeWkbPolygon(poly));
+    }
+    const totalSize = 9 + polygonBuffers.reduce((sum, b) => sum + b.length, 0);
+    const buf = new ArrayBuffer(totalSize);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 6, true);
+    view.setUint32(5, geometry.coordinates.length, true);
+    let offset = 9;
+    for (const pb of polygonBuffers) {
+      new Uint8Array(buf, offset, pb.length).set(pb);
+      offset += pb.length;
+    }
+    return new Uint8Array(buf);
+  }
+  throw new Error(`Unsupported geometry type: ${geometry.type}`);
+}
+function encodeWkbPolygon(rings) {
+  let size = 9;
+  for (const ring of rings) {
+    size += 4 + ring.length * 16;
+  }
+  const buf = new ArrayBuffer(size);
+  const view = new DataView(buf);
+  view.setUint8(0, 1);
+  view.setUint32(1, 3, true);
+  view.setUint32(5, rings.length, true);
+  let offset = 9;
+  for (const ring of rings) {
+    view.setUint32(offset, ring.length, true);
+    offset += 4;
+    for (const [x, y] of ring) {
+      view.setFloat64(offset, x, true);
+      view.setFloat64(offset + 8, y, true);
+      offset += 16;
+    }
+  }
+  return new Uint8Array(buf);
+}
+function decodeWkb(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const byteOrder = view.getUint8(0);
+  const le = byteOrder === 1;
+  const wkbType = view.getUint32(1, le);
+  if (wkbType === 1) {
+    const x = view.getFloat64(5, le);
+    const y = view.getFloat64(13, le);
+    return { type: "Point", coordinates: [x, y] };
+  }
+  if (wkbType === 3) {
+    const { rings } = decodeWkbPolygon(view, 5, le);
+    return { type: "Polygon", coordinates: rings };
+  }
+  if (wkbType === 6) {
+    const numPolygons = view.getUint32(5, le);
+    const polygons = [];
+    let offset = 9;
+    for (let i = 0; i < numPolygons; i++) {
+      const innerLe = view.getUint8(offset) === 1;
+      offset += 5;
+      const { rings, bytesRead } = decodeWkbPolygon(view, offset, innerLe);
+      polygons.push(rings);
+      offset += bytesRead;
+    }
+    return { type: "MultiPolygon", coordinates: polygons };
+  }
+  throw new Error(`Unsupported WKB type: ${wkbType}`);
+}
+function decodeWkbPolygon(view, offset, le) {
+  const numRings = view.getUint32(offset, le);
+  let pos = offset + 4;
+  const rings = [];
+  for (let i = 0; i < numRings; i++) {
+    const numPoints = view.getUint32(pos, le);
+    pos += 4;
+    const ring = [];
+    for (let j = 0; j < numPoints; j++) {
+      const x = view.getFloat64(pos, le);
+      const y = view.getFloat64(pos + 8, le);
+      ring.push([x, y]);
+      pos += 16;
+    }
+    rings.push(ring);
+  }
+  return { rings, bytesRead: pos - offset };
+}
+
+// src/model/mask.ts
+function encodeRle(mask, height, width) {
+  const total = height * width;
+  if (total === 0) return new Uint32Array(0);
+  const runs = [];
+  let currentVal = 0;
+  let count = 0;
+  for (let i = 0; i < total; i++) {
+    const val = mask[i] ? 1 : 0;
+    if (val === currentVal) {
+      count++;
+    } else {
+      runs.push(count);
+      currentVal = val;
+      count = 1;
+    }
+  }
+  runs.push(count);
+  return new Uint32Array(runs);
+}
+function decodeRle(rleCounts, height, width) {
+  const total = height * width;
+  if (rleCounts.length === 0) return new Uint8Array(total);
+  const flat = new Uint8Array(total);
+  let pos = 0;
+  for (let i = 0; i < rleCounts.length; i++) {
+    const val = i % 2 === 0 ? 0 : 1;
+    const count = rleCounts[i];
+    if (val === 1) {
+      for (let j = 0; j < count && pos + j < total; j++) {
+        flat[pos + j] = 1;
+      }
+    }
+    pos += count;
+  }
+  return flat;
+}
+var SegmentationMask = class _SegmentationMask {
+  rleCounts;
+  height;
+  width;
+  annotationType;
+  name;
+  category;
+  score;
+  source;
+  video;
+  frameIdx;
+  track;
+  instance;
+  constructor(options) {
+    this.rleCounts = options.rleCounts;
+    this.height = options.height;
+    this.width = options.width;
+    this.annotationType = options.annotationType ?? 2 /* SEGMENTATION */;
+    this.name = options.name ?? "";
+    this.category = options.category ?? "";
+    this.score = options.score ?? null;
+    this.source = options.source ?? "";
+    this.video = options.video ?? null;
+    this.frameIdx = options.frameIdx ?? null;
+    this.track = options.track ?? null;
+    this.instance = options.instance ?? null;
+  }
+  static fromArray(mask, height, width, options) {
+    let flat;
+    if (mask instanceof Uint8Array) {
+      flat = mask;
+    } else {
+      flat = new Uint8Array(height * width);
+      for (let r = 0; r < height; r++) {
+        for (let c = 0; c < width; c++) {
+          flat[r * width + c] = mask[r][c] ? 1 : 0;
+        }
+      }
+    }
+    const rleCounts = encodeRle(flat, height, width);
+    return new _SegmentationMask({
+      rleCounts,
+      height,
+      width,
+      ...options
+    });
+  }
+  get data() {
+    return decodeRle(this.rleCounts, this.height, this.width);
+  }
+  get area() {
+    let total = 0;
+    for (let i = 1; i < this.rleCounts.length; i += 2) {
+      total += this.rleCounts[i];
+    }
+    return total;
+  }
+  get bbox() {
+    const flat = this.data;
+    let minR = this.height, maxR = -1, minC = this.width, maxC = -1;
+    for (let r = 0; r < this.height; r++) {
+      for (let c = 0; c < this.width; c++) {
+        if (flat[r * this.width + c]) {
+          if (r < minR) minR = r;
+          if (r > maxR) maxR = r;
+          if (c < minC) minC = c;
+          if (c > maxC) maxC = c;
+        }
+      }
+    }
+    if (maxR === -1) return { x: 0, y: 0, width: 0, height: 0 };
+    return {
+      x: minC,
+      y: minR,
+      width: maxC - minC + 1,
+      height: maxR - minR + 1
+    };
+  }
+  /** Convert the mask to a bounding-box polygon ROI. */
+  toPolygon() {
+    const bb = this.bbox;
+    let geometry;
+    if (bb.width === 0 || bb.height === 0) {
+      geometry = { type: "Polygon", coordinates: [[]] };
+    } else {
+      const { x, y, width, height } = bb;
+      geometry = {
+        type: "Polygon",
+        coordinates: [
+          [
+            [x, y],
+            [x + width, y],
+            [x + width, y + height],
+            [x, y + height],
+            [x, y]
+          ]
+        ]
+      };
+    }
+    return new ROI({
+      geometry,
+      annotationType: this.annotationType,
+      name: this.name,
+      category: this.category,
+      score: this.score,
+      source: this.source,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance
+    });
+  }
+};
+_registerMaskFactory(
+  (mask, height, width, options) => {
+    return SegmentationMask.fromArray(mask, height, width, options);
+  }
+);
+
 // src/codecs/slp/read-streaming.ts
 async function readSlpStreaming(source, options) {
   if (!isStreamingSupported()) {
@@ -2927,6 +3414,8 @@ function writeSlpToFile(file, labels, embeddedVideoData) {
   writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
   writeLabeledFrames(file, labels);
   writeNegativeFrames(file, labels);
+  writeRois(file, labels.rois, labels.videos, labels.tracks);
+  writeMasks(file, labels.masks, labels.videos, labels.tracks);
 }
 async function saveSlpToBytes(labels, options) {
   const embedMode = options?.embed ?? false;
@@ -2990,9 +3479,10 @@ function writeMetadata(file, labels) {
     negative_anchors: {},
     provenance: labels.provenance ?? {}
   };
+  const formatId = labels.rois.length > 0 || labels.masks.length > 0 ? 1.5 : FORMAT_ID;
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
-  metadataGroup.create_attribute("format_id", FORMAT_ID);
+  metadataGroup.create_attribute("format_id", formatId);
   metadataGroup.create_attribute("json", JSON.stringify(metadata));
 }
 function serializeSkeletons(skeletons) {
@@ -3398,6 +3888,96 @@ function createMatrixDataset(file, name, rows, fieldNames, dtype) {
   const dataset = file.get(name);
   dataset.create_attribute("field_names", fieldNames);
 }
+function writeRois(file, rois, videos, tracks) {
+  if (!rois.length) return;
+  const rows = [];
+  const wkbChunks = [];
+  let wkbOffset = 0;
+  const categories = [];
+  const names = [];
+  const sources = [];
+  for (const roi of rois) {
+    const wkb = encodeWkb(roi.geometry);
+    const wkbStart = wkbOffset;
+    const wkbEnd = wkbOffset + wkb.length;
+    wkbChunks.push(wkb);
+    wkbOffset = wkbEnd;
+    const videoIdx = roi.video ? videos.indexOf(roi.video) : -1;
+    const frameIdx = roi.frameIdx ?? -1;
+    const trackIdx = roi.track ? tracks.indexOf(roi.track) : -1;
+    const score = roi.score ?? Number.NaN;
+    rows.push([roi.annotationType, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd]);
+    categories.push(roi.category);
+    names.push(roi.name);
+    sources.push(roi.source);
+  }
+  createMatrixDataset(
+    file,
+    "rois",
+    rows,
+    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end"],
+    "<f8"
+  );
+  const roisDs = file.get("rois");
+  roisDs.create_attribute("categories", JSON.stringify(categories));
+  roisDs.create_attribute("names", JSON.stringify(names));
+  roisDs.create_attribute("sources", JSON.stringify(sources));
+  const totalWkb = wkbChunks.reduce((sum, c) => sum + c.length, 0);
+  const wkbFlat = new Uint8Array(totalWkb);
+  let offset = 0;
+  for (const chunk of wkbChunks) {
+    wkbFlat.set(chunk, offset);
+    offset += chunk.length;
+  }
+  file.create_dataset({ name: "roi_wkb", data: wkbFlat, shape: [wkbFlat.length], dtype: "<B" });
+}
+function writeMasks(file, masks, videos, tracks) {
+  if (!masks.length) return;
+  const rows = [];
+  const rleChunks = [];
+  let rleOffset = 0;
+  const categories = [];
+  const names = [];
+  const sources = [];
+  for (const mask of masks) {
+    const rleBytes = new Uint8Array(mask.rleCounts.length * 4);
+    const view = new DataView(rleBytes.buffer);
+    for (let j = 0; j < mask.rleCounts.length; j++) {
+      view.setUint32(j * 4, mask.rleCounts[j], true);
+    }
+    const rleStart = rleOffset;
+    const rleEnd = rleOffset + rleBytes.length;
+    rleChunks.push(rleBytes);
+    rleOffset = rleEnd;
+    const videoIdx = mask.video ? videos.indexOf(mask.video) : -1;
+    const frameIdx = mask.frameIdx ?? -1;
+    const trackIdx = mask.track ? tracks.indexOf(mask.track) : -1;
+    const score = mask.score ?? Number.NaN;
+    rows.push([mask.height, mask.width, mask.annotationType, videoIdx, frameIdx, trackIdx, score, rleStart, rleEnd]);
+    categories.push(mask.category);
+    names.push(mask.name);
+    sources.push(mask.source);
+  }
+  createMatrixDataset(
+    file,
+    "masks",
+    rows,
+    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end"],
+    "<f8"
+  );
+  const masksDs = file.get("masks");
+  masksDs.create_attribute("categories", JSON.stringify(categories));
+  masksDs.create_attribute("names", JSON.stringify(names));
+  masksDs.create_attribute("sources", JSON.stringify(sources));
+  const totalRle = rleChunks.reduce((sum, c) => sum + c.length, 0);
+  const rleFlat = new Uint8Array(totalRle);
+  let offset = 0;
+  for (const chunk of rleChunks) {
+    rleFlat.set(chunk, offset);
+    offset += chunk.length;
+  }
+  file.create_dataset({ name: "mask_rle", data: rleFlat, shape: [rleFlat.length], dtype: "<B" });
+}
 
 // src/video/hdf5-video.ts
 var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
@@ -3660,6 +4240,8 @@ async function readSlp(source, options) {
       }
     }
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
+    const rois = readRois(file, videos, tracks);
+    const masks = readMasks(file, videos, tracks);
     return new Labels({
       labeledFrames,
       videos,
@@ -3667,7 +4249,9 @@ async function readSlp(source, options) {
       tracks,
       suggestions,
       sessions,
-      provenance: metadataJson?.provenance ?? {}
+      provenance: metadataJson?.provenance ?? {},
+      rois,
+      masks
     });
   } finally {
     close();
@@ -3704,13 +4288,17 @@ async function readSlpLazy(source, options) {
     });
     const lazyFrames = new LazyFrameList(store);
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
+    const rois = readRois(file, videos, tracks);
+    const masks = readMasks(file, videos, tracks);
     const labels = new Labels({
       videos,
       skeletons,
       tracks,
       suggestions,
       sessions,
-      provenance: metadataJson?.provenance ?? {}
+      provenance: metadataJson?.provenance ?? {},
+      rois,
+      masks
     });
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;
@@ -3940,6 +4528,129 @@ function asRecord(value) {
     return value;
   }
   return {};
+}
+function readAttrString(dataset, name) {
+  const attrs = dataset.attrs ?? {};
+  const raw = attrs[name];
+  if (!raw) return [];
+  const value = raw.value ?? raw;
+  if (typeof value === "string") {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return [];
+    }
+  }
+  if (value instanceof Uint8Array) {
+    try {
+      return JSON.parse(textDecoder.decode(value));
+    } catch {
+      return [];
+    }
+  }
+  if (Array.isArray(value)) return value.map(String);
+  return [];
+}
+function readRois(file, videos, tracks) {
+  const roisDs = file.get("rois");
+  if (!roisDs) return [];
+  const roisData = normalizeStructDataset(roisDs);
+  const annotationTypes = roisData.annotation_type ?? [];
+  if (!annotationTypes.length) return [];
+  const wkbDs = file.get("roi_wkb");
+  if (!wkbDs) return [];
+  const wkbFlat = wkbDs.value instanceof Uint8Array ? wkbDs.value : new Uint8Array(wkbDs.value ?? []);
+  const categories = readAttrString(roisDs, "categories");
+  const names = readAttrString(roisDs, "names");
+  const sources = readAttrString(roisDs, "sources");
+  const videoIndices = roisData.video ?? [];
+  const frameIndices = roisData.frame_idx ?? [];
+  const trackIndices = roisData.track ?? [];
+  const scores = roisData.score ?? [];
+  const wkbStarts = roisData.wkb_start ?? [];
+  const wkbEnds = roisData.wkb_end ?? [];
+  const rois = [];
+  for (let i = 0; i < annotationTypes.length; i++) {
+    const wkbStart = Number(wkbStarts[i]);
+    const wkbEnd = Number(wkbEnds[i]);
+    const wkbBytes = wkbFlat.slice(wkbStart, wkbEnd);
+    const geometry = decodeWkb(wkbBytes);
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+    const frameIdxVal = Number(frameIndices[i]);
+    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const scoreVal = Number(scores[i]);
+    const score = Number.isNaN(scoreVal) ? null : scoreVal;
+    rois.push(new ROI({
+      geometry,
+      annotationType: Number(annotationTypes[i]),
+      name: names[i] ?? "",
+      category: categories[i] ?? "",
+      score,
+      source: sources[i] ?? "",
+      video,
+      frameIdx,
+      track
+    }));
+  }
+  return rois;
+}
+function readMasks(file, videos, tracks) {
+  const masksDs = file.get("masks");
+  if (!masksDs) return [];
+  const masksData = normalizeStructDataset(masksDs);
+  const heights = masksData.height ?? [];
+  if (!heights.length) return [];
+  const rleDs = file.get("mask_rle");
+  if (!rleDs) return [];
+  const rleFlat = rleDs.value instanceof Uint8Array ? rleDs.value : new Uint8Array(rleDs.value ?? []);
+  const categories = readAttrString(masksDs, "categories");
+  const names = readAttrString(masksDs, "names");
+  const sources = readAttrString(masksDs, "sources");
+  const widths = masksData.width ?? [];
+  const annotationTypes = masksData.annotation_type ?? [];
+  const videoIndices = masksData.video ?? [];
+  const frameIndices = masksData.frame_idx ?? [];
+  const trackIndices = masksData.track ?? [];
+  const scores = masksData.score ?? [];
+  const rleStarts = masksData.rle_start ?? [];
+  const rleEnds = masksData.rle_end ?? [];
+  const masks = [];
+  for (let i = 0; i < heights.length; i++) {
+    const rleStart = Number(rleStarts[i]);
+    const rleEnd = Number(rleEnds[i]);
+    const rleRaw = rleFlat.slice(rleStart, rleEnd);
+    const numCounts = rleRaw.byteLength / 4;
+    const rleCounts = new Uint32Array(numCounts);
+    const rleView = new DataView(rleRaw.buffer, rleRaw.byteOffset, rleRaw.byteLength);
+    for (let j = 0; j < numCounts; j++) {
+      rleCounts[j] = rleView.getUint32(j * 4, true);
+    }
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+    const frameIdxVal = Number(frameIndices[i]);
+    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const scoreVal = Number(scores[i]);
+    const score = Number.isNaN(scoreVal) ? null : scoreVal;
+    masks.push(new SegmentationMask({
+      rleCounts,
+      height: Number(heights[i]),
+      width: Number(widths[i]),
+      annotationType: Number(annotationTypes[i]),
+      name: names[i] ?? "",
+      category: categories[i] ?? "",
+      score,
+      source: sources[i] ?? "",
+      video,
+      frameIdx,
+      track
+    }));
+  }
+  return masks;
 }
 function normalizeStructDataset(dataset) {
   if (!dataset) return {};
@@ -4810,6 +5521,15 @@ export {
   isStreamingSupported,
   openStreamingH5,
   openH5Worker,
+  _registerMaskFactory,
+  AnnotationType,
+  ROI,
+  rasterizeGeometry,
+  encodeWkb,
+  decodeWkb,
+  encodeRle,
+  decodeRle,
+  SegmentationMask,
   readSlpStreaming,
   saveSlpToBytes,
   loadSlp,
