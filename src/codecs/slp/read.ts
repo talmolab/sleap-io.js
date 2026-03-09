@@ -534,8 +534,12 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
     const rleRaw = rleFlat.slice(rleStart, rleEnd);
 
     // Convert packed uint8 bytes back to Uint32Array (4 bytes per count, little-endian)
-    const rleBuffer = rleRaw.buffer.slice(rleRaw.byteOffset, rleRaw.byteOffset + rleRaw.byteLength);
-    const rleCounts = new Uint32Array(rleBuffer);
+    const numCounts = rleRaw.byteLength / 4;
+    const rleCounts = new Uint32Array(numCounts);
+    const rleView = new DataView(rleRaw.buffer, rleRaw.byteOffset, rleRaw.byteLength);
+    for (let j = 0; j < numCounts; j++) {
+      rleCounts[j] = rleView.getUint32(j * 4, true);
+    }
 
     const videoIdx = Number(videoIndices[i]);
     const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
