@@ -9,7 +9,7 @@ import { labelsFromNumpy } from "../codecs/numpy.js";
 import type { LazyDataStore, LazyFrameList } from "./lazy.js";
 import type { ROI } from "./roi.js";
 import type { SegmentationMask } from "./mask.js";
-import { AnnotationType } from "./roi.js";
+import type { AnnotationType } from "./roi.js";
 
 export class Labels {
   labeledFrames: LabeledFrame[];
