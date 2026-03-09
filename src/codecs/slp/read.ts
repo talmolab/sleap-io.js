@@ -9,6 +9,8 @@ import { Video } from "../../model/video.js";
 import { createVideoBackend } from "../../video/factory.js";
 import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
+import { ROI, AnnotationType, decodeWkb } from "../../model/roi.js";
+import { SegmentationMask } from "../../model/mask.js";
 
 const textDecoder = new TextDecoder();
 
@@ -69,6 +71,8 @@ export async function readSlp(
     }
 
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
+    const rois = readRois(file, videos, tracks);
+    const masks = readMasks(file, videos, tracks);
 
     return new Labels({
       labeledFrames,
@@ -78,6 +82,8 @@ export async function readSlp(
       suggestions,
       sessions,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
+      rois,
+      masks,
     });
   } finally {
     close();
@@ -133,6 +139,8 @@ export async function readSlpLazy(
     // Read sessions eagerly - they don't depend on frame data.
     // Pass empty labeledFrames since frames aren't materialized yet.
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
+    const rois = readRois(file, videos, tracks);
+    const masks = readMasks(file, videos, tracks);
 
     const labels = new Labels({
       videos,
@@ -141,6 +149,8 @@ export async function readSlpLazy(
       suggestions,
       sessions,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
+      rois,
+      masks,
     });
 
     // Replace the eager labeledFrames with lazy proxy
@@ -417,6 +427,148 @@ function asRecord(value: unknown): Record<string, unknown> {
   return {};
 }
 
+
+function readAttrString(dataset: any, name: string): string[] {
+  const attrs = (dataset as { attrs?: Record<string, any> }).attrs ?? {};
+  const raw = attrs[name];
+  if (!raw) return [];
+  const value = raw.value ?? raw;
+  if (typeof value === "string") {
+    try { return JSON.parse(value); } catch { return []; }
+  }
+  if (value instanceof Uint8Array) {
+    try { return JSON.parse(textDecoder.decode(value)); } catch { return []; }
+  }
+  if (Array.isArray(value)) return value.map(String);
+  return [];
+}
+
+function readRois(file: any, videos: Video[], tracks: Track[]): ROI[] {
+  const roisDs = file.get("rois");
+  if (!roisDs) return [];
+  const roisData = normalizeStructDataset(roisDs);
+  const annotationTypes = roisData.annotation_type ?? [];
+  if (!annotationTypes.length) return [];
+
+  const wkbDs = file.get("roi_wkb");
+  if (!wkbDs) return [];
+  const wkbFlat: Uint8Array = wkbDs.value instanceof Uint8Array
+    ? wkbDs.value
+    : new Uint8Array(wkbDs.value ?? []);
+
+  const categories = readAttrString(roisDs, "categories");
+  const names = readAttrString(roisDs, "names");
+  const sources = readAttrString(roisDs, "sources");
+
+  const videoIndices = roisData.video ?? [];
+  const frameIndices = roisData.frame_idx ?? [];
+  const trackIndices = roisData.track ?? [];
+  const scores = roisData.score ?? [];
+  const wkbStarts = roisData.wkb_start ?? [];
+  const wkbEnds = roisData.wkb_end ?? [];
+
+  const rois: ROI[] = [];
+  for (let i = 0; i < annotationTypes.length; i++) {
+    const wkbStart = Number(wkbStarts[i]);
+    const wkbEnd = Number(wkbEnds[i]);
+    const wkbBytes = wkbFlat.slice(wkbStart, wkbEnd);
+    const geometry = decodeWkb(wkbBytes);
+
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+
+    const frameIdxVal = Number(frameIndices[i]);
+    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
+
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+
+    const scoreVal = Number(scores[i]);
+    const score = Number.isNaN(scoreVal) ? null : scoreVal;
+
+    rois.push(new ROI({
+      geometry,
+      annotationType: Number(annotationTypes[i]) as AnnotationType,
+      name: names[i] ?? "",
+      category: categories[i] ?? "",
+      score,
+      source: sources[i] ?? "",
+      video,
+      frameIdx,
+      track,
+    }));
+  }
+  return rois;
+}
+
+function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMask[] {
+  const masksDs = file.get("masks");
+  if (!masksDs) return [];
+  const masksData = normalizeStructDataset(masksDs);
+  const heights = masksData.height ?? [];
+  if (!heights.length) return [];
+
+  const rleDs = file.get("mask_rle");
+  if (!rleDs) return [];
+  const rleFlat: Uint8Array = rleDs.value instanceof Uint8Array
+    ? rleDs.value
+    : new Uint8Array(rleDs.value ?? []);
+
+  const categories = readAttrString(masksDs, "categories");
+  const names = readAttrString(masksDs, "names");
+  const sources = readAttrString(masksDs, "sources");
+
+  const widths = masksData.width ?? [];
+  const annotationTypes = masksData.annotation_type ?? [];
+  const videoIndices = masksData.video ?? [];
+  const frameIndices = masksData.frame_idx ?? [];
+  const trackIndices = masksData.track ?? [];
+  const scores = masksData.score ?? [];
+  const rleStarts = masksData.rle_start ?? [];
+  const rleEnds = masksData.rle_end ?? [];
+
+  const masks: SegmentationMask[] = [];
+  for (let i = 0; i < heights.length; i++) {
+    const rleStart = Number(rleStarts[i]);
+    const rleEnd = Number(rleEnds[i]);
+    const rleRaw = rleFlat.slice(rleStart, rleEnd);
+
+    // Convert packed uint8 bytes back to Uint32Array (4 bytes per count, little-endian)
+    const numCounts = rleRaw.byteLength / 4;
+    const rleCounts = new Uint32Array(numCounts);
+    const rleView = new DataView(rleRaw.buffer, rleRaw.byteOffset, rleRaw.byteLength);
+    for (let j = 0; j < numCounts; j++) {
+      rleCounts[j] = rleView.getUint32(j * 4, true);
+    }
+
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+
+    const frameIdxVal = Number(frameIndices[i]);
+    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
+
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+
+    const scoreVal = Number(scores[i]);
+    const score = Number.isNaN(scoreVal) ? null : scoreVal;
+
+    masks.push(new SegmentationMask({
+      rleCounts,
+      height: Number(heights[i]),
+      width: Number(widths[i]),
+      annotationType: Number(annotationTypes[i]) as AnnotationType,
+      name: names[i] ?? "",
+      category: categories[i] ?? "",
+      score,
+      source: sources[i] ?? "",
+      video,
+      frameIdx,
+      track,
+    }));
+  }
+  return masks;
+}
 
 function normalizeStructDataset(dataset: any): Record<string, any[]> {
   if (!dataset) return {};
