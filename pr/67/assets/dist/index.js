@@ -515,41 +515,23 @@ var SegmentationMask = class _SegmentationMask {
       height: maxR - minR + 1
     };
   }
+  /** Convert the mask to a bounding-box polygon ROI. */
   toPolygon() {
-    const flat = this.data;
-    const rectangles = [];
-    for (let y = 0; y < this.height; y++) {
-      let x = 0;
-      while (x < this.width) {
-        if (flat[y * this.width + x]) {
-          const start = x;
-          while (x < this.width && flat[y * this.width + x]) x++;
-          rectangles.push([start, y, x, y + 1]);
-        } else {
-          x++;
-        }
-      }
-    }
+    const bb = this.bbox;
     let geometry;
-    if (rectangles.length === 0) {
+    if (bb.width === 0 || bb.height === 0) {
       geometry = { type: "Polygon", coordinates: [[]] };
     } else {
-      let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-      for (const [x1, y1, x2, y2] of rectangles) {
-        if (x1 < minX) minX = x1;
-        if (y1 < minY) minY = y1;
-        if (x2 > maxX) maxX = x2;
-        if (y2 > maxY) maxY = y2;
-      }
+      const { x, y, width, height } = bb;
       geometry = {
         type: "Polygon",
         coordinates: [
           [
-            [minX, minY],
-            [maxX, minY],
-            [maxX, maxY],
-            [minX, maxY],
-            [minX, minY]
+            [x, y],
+            [x + width, y],
+            [x + width, y + height],
+            [x, y + height],
+            [x, y]
           ]
         ]
       };

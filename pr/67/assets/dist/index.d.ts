@@ -3,7 +3,49 @@ export { Camera, CameraGroup, ColorScheme, ColorSpec, FrameGroup, InstanceContex
 import { T as Track, I as Instance, P as PredictedInstance } from './instance-CCNYsiwF.js';
 export { E as Edge, N as Node, k as NodeOrIndex, b as Point, d as PointsArray, c as PredictedPoint, e as PredictedPointsArray, S as Skeleton, a as Symmetry, p as pointsEmpty, g as pointsFromArray, i as pointsFromDict, f as predictedPointsEmpty, h as predictedPointsFromArray, j as predictedPointsFromDict } from './instance-CCNYsiwF.js';
 
-type MaskFactory = (mask: Uint8Array, height: number, width: number, options: Record<string, unknown>) => unknown;
+declare function encodeRle(mask: Uint8Array, height: number, width: number): Uint32Array;
+declare function decodeRle(rleCounts: Uint32Array, height: number, width: number): Uint8Array;
+declare class SegmentationMask {
+    rleCounts: Uint32Array;
+    height: number;
+    width: number;
+    annotationType: AnnotationType;
+    name: string;
+    category: string;
+    score: number | null;
+    source: string;
+    video: Video | null;
+    frameIdx: number | null;
+    track: Track | null;
+    instance: Instance | null;
+    constructor(options: {
+        rleCounts: Uint32Array;
+        height: number;
+        width: number;
+        annotationType?: AnnotationType | number;
+        name?: string;
+        category?: string;
+        score?: number | null;
+        source?: string;
+        video?: Video | null;
+        frameIdx?: number | null;
+        track?: Track | null;
+        instance?: Instance | null;
+    });
+    static fromArray(mask: Uint8Array | boolean[][], height: number, width: number, options?: Omit<ConstructorParameters<typeof SegmentationMask>[0], "rleCounts" | "height" | "width">): SegmentationMask;
+    get data(): Uint8Array;
+    get area(): number;
+    get bbox(): {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    /** Convert the mask to a bounding-box polygon ROI. */
+    toPolygon(): ROI;
+}
+
+type MaskFactory = (mask: Uint8Array, height: number, width: number, options: Record<string, unknown>) => SegmentationMask;
 declare function _registerMaskFactory(factory: MaskFactory): void;
 declare enum AnnotationType {
     DEFAULT = 0,
@@ -62,53 +104,12 @@ declare class ROI {
         x: number;
         y: number;
     };
-    toMask(height: number, width: number): unknown;
+    toMask(height: number, width: number): SegmentationMask;
     private _allPoints;
 }
 declare function rasterizeGeometry(geometry: Geometry, height: number, width: number): Uint8Array;
 declare function encodeWkb(geometry: Geometry): Uint8Array;
 declare function decodeWkb(bytes: Uint8Array): Geometry;
-
-declare function encodeRle(mask: Uint8Array, height: number, width: number): Uint32Array;
-declare function decodeRle(rleCounts: Uint32Array, height: number, width: number): Uint8Array;
-declare class SegmentationMask {
-    rleCounts: Uint32Array;
-    height: number;
-    width: number;
-    annotationType: AnnotationType;
-    name: string;
-    category: string;
-    score: number | null;
-    source: string;
-    video: Video | null;
-    frameIdx: number | null;
-    track: Track | null;
-    instance: Instance | null;
-    constructor(options: {
-        rleCounts: Uint32Array;
-        height: number;
-        width: number;
-        annotationType?: AnnotationType | number;
-        name?: string;
-        category?: string;
-        score?: number | null;
-        source?: string;
-        video?: Video | null;
-        frameIdx?: number | null;
-        track?: Track | null;
-        instance?: Instance | null;
-    });
-    static fromArray(mask: Uint8Array | boolean[][], height: number, width: number, options?: Omit<ConstructorParameters<typeof SegmentationMask>[0], "rleCounts" | "height" | "width">): SegmentationMask;
-    get data(): Uint8Array;
-    get area(): number;
-    get bbox(): {
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-    };
-    toPolygon(): ROI;
-}
 
 /**
  * Render poses on a single frame.
