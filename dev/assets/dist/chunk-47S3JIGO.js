@@ -240,6 +240,8 @@ var Labels = class {
   suggestions;
   sessions;
   provenance;
+  rois;
+  masks;
   /** @internal Lazy frame list for on-demand materialization. */
   _lazyFrameList = null;
   /** @internal Lazy data store holding raw HDF5 data. */
@@ -252,6 +254,8 @@ var Labels = class {
     this.suggestions = options?.suggestions ?? [];
     this.sessions = options?.sessions ?? [];
     this.provenance = options?.provenance ?? {};
+    this.rois = options?.rois ?? [];
+    this.masks = options?.masks ?? [];
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = /* @__PURE__ */ new Map();
       for (const frame of this.labeledFrames) {
@@ -336,6 +340,58 @@ var Labels = class {
   toDict(options) {
     if (this._lazyFrameList) this.materialize();
     return toDict(this, options);
+  }
+  get staticRois() {
+    return this.rois.filter((roi) => roi.isStatic);
+  }
+  get temporalRois() {
+    return this.rois.filter((roi) => !roi.isStatic);
+  }
+  getRois(filters) {
+    if (!filters) return [...this.rois];
+    let results = this.rois;
+    if (filters.video !== void 0) {
+      results = results.filter((r) => r.video === filters.video);
+    }
+    if (filters.frameIdx !== void 0) {
+      results = results.filter((r) => r.frameIdx === filters.frameIdx);
+    }
+    if (filters.annotationType !== void 0) {
+      results = results.filter((r) => r.annotationType === filters.annotationType);
+    }
+    if (filters.category !== void 0) {
+      results = results.filter((r) => r.category === filters.category);
+    }
+    if (filters.track !== void 0) {
+      results = results.filter((r) => r.track === filters.track);
+    }
+    if (filters.instance !== void 0) {
+      results = results.filter((r) => r.instance === filters.instance);
+    }
+    return results;
+  }
+  getMasks(filters) {
+    if (!filters) return [...this.masks];
+    let results = this.masks;
+    if (filters.video !== void 0) {
+      results = results.filter((m) => m.video === filters.video);
+    }
+    if (filters.frameIdx !== void 0) {
+      results = results.filter((m) => m.frameIdx === filters.frameIdx);
+    }
+    if (filters.annotationType !== void 0) {
+      results = results.filter((m) => m.annotationType === filters.annotationType);
+    }
+    if (filters.category !== void 0) {
+      results = results.filter((m) => m.category === filters.category);
+    }
+    if (filters.track !== void 0) {
+      results = results.filter((m) => m.track === filters.track);
+    }
+    if (filters.instance !== void 0) {
+      results = results.filter((m) => m.instance === filters.instance);
+    }
+    return results;
   }
   static fromNumpy(data, options) {
     const video = options.video ?? options.videos?.[0];

@@ -124,4 +124,4 @@ declare class PredictedInstance extends Instance {
 declare function pointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PointsArray;
 declare function predictedPointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PredictedPointsArray;
 
-export { Edge as E, Instance as I, Node as N, PredictedInstance as P, Skeleton as S, Track as T, Symmetry as a, type Point as b, type PredictedPoint as c, type PointsArray as d, type PredictedPointsArray as e, predictedPointsEmpty as f, pointsFromArray as g, predictedPointsFromArray as h, pointsFromDict as i, predictedPointsFromDict as j, type NodeOrIndex as k, pointsEmpty as p };
+export { Edge as E, Instance as I, Node as N, PredictedInstance as P, Symmetry as S, Track as T, type Point as a, type PredictedPoint as b, type PointsArray as c, type PredictedPointsArray as d, predictedPointsEmpty as e, pointsFromArray as f, predictedPointsFromArray as g, pointsFromDict as h, predictedPointsFromDict as i, type NodeOrIndex as j, Skeleton as k, pointsEmpty as p };
