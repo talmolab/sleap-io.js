@@ -9,7 +9,19 @@ import { getH5Module, getH5FileSystem } from "./h5.js";
 import { ROI, encodeWkb } from "../../model/roi.js";
 import { SegmentationMask } from "../../model/mask.js";
 
-const isNode = typeof process !== "undefined" && !!process.versions?.node;
+// File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
+let _writeToFile: ((filename: string, bytes: Uint8Array) => Promise<void>) | null = null;
+
+/**
+ * Register a file writer for Node.js environments.
+ * Called as a side-effect when the Node entry point imports h5-node.ts.
+ * @internal
+ */
+export function _registerFileWriter(
+  writer: (filename: string, bytes: Uint8Array) => Promise<void>
+): void {
+  _writeToFile = writer;
+}
 
 const FORMAT_ID = 1.4;
 const SPAWNED_ON = 0;
@@ -123,9 +135,8 @@ export async function writeSlp(
 ): Promise<void> {
   const bytes = await saveSlpToBytes(labels, options);
 
-  if (isNode) {
-    const fs = await import("fs");
-    fs.writeFileSync(filename, bytes);
+  if (_writeToFile) {
+    await _writeToFile(filename, bytes);
   } else {
     throw new Error(
       "writeSlp requires a Node.js environment for file I/O. " +

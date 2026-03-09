@@ -1,3 +1,8 @@
+// Register Node.js-specific h5wasm and file I/O providers.
+// This side-effect import ensures the Node entry uses h5wasm/node and native fs,
+// while the browser entry (index.browser.ts) never touches these modules.
+import "./codecs/slp/h5-node.js";
+
 export * from "./model/labels.js";
 export * from "./model/labeled-frame.js";
 export * from "./model/instance.js";
