@@ -1,5 +1,5 @@
-import { I as Instance, P as PredictedInstance, k as Skeleton, T as Track } from './instance-BmOdR704.js';
-export { E as Edge, N as Node, j as NodeOrIndex, a as Point, c as PointsArray, b as PredictedPoint, d as PredictedPointsArray, S as Symmetry, p as pointsEmpty, f as pointsFromArray, h as pointsFromDict, e as predictedPointsEmpty, g as predictedPointsFromArray, i as predictedPointsFromDict } from './instance-BmOdR704.js';
+import { I as Instance, P as PredictedInstance, S as Skeleton, T as Track } from './instance-CCNYsiwF.js';
+export { E as Edge, N as Node, k as NodeOrIndex, b as Point, d as PointsArray, c as PredictedPoint, e as PredictedPointsArray, a as Symmetry, p as pointsEmpty, g as pointsFromArray, i as pointsFromDict, f as predictedPointsEmpty, h as predictedPointsFromArray, j as predictedPointsFromDict } from './instance-CCNYsiwF.js';
 
 type VideoFrame = ImageData | ImageBitmap | Uint8Array | ArrayBuffer;
 interface VideoBackend {
