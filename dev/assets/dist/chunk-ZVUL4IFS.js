@@ -3264,12 +3264,20 @@ function slicePoints(data, start, end, predicted = false) {
 }
 
 // src/codecs/slp/h5.ts
-var isNode = typeof process !== "undefined" && !!process.versions?.node;
+var _nodeGetModule = null;
+var _nodeOpenFile = null;
+function _registerNodeH5(getModule, openFile) {
+  _nodeGetModule = getModule;
+  _nodeOpenFile = openFile;
+}
 var modulePromise = null;
 async function getH5Module() {
+  if (_nodeGetModule) {
+    return _nodeGetModule();
+  }
   if (!modulePromise) {
     modulePromise = (async () => {
-      const module = isNode ? await import("h5wasm/node") : await import("h5wasm");
+      const module = await import("h5wasm");
       await module.ready;
       return module;
     })();
@@ -3278,8 +3286,8 @@ async function getH5Module() {
 }
 async function openH5File(source, options) {
   const module = await getH5Module();
-  if (isNode) {
-    return openH5FileNode(module, source);
+  if (_nodeOpenFile) {
+    return _nodeOpenFile(module, source);
   }
   return openH5FileBrowser(module, source, options);
 }
@@ -3288,29 +3296,6 @@ function isProbablyUrl(value) {
 }
 function isFileHandle(value) {
   return typeof value === "object" && value !== null && "getFile" in value;
-}
-async function openH5FileNode(module, source) {
-  if (typeof source === "string") {
-    const file = new module.File(source, "r");
-    return { file, close: () => file.close() };
-  }
-  if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
-    const { writeFileSync, unlinkSync } = await import("fs");
-    const { tmpdir } = await import("os");
-    const { join } = await import("path");
-    const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join(tmpdir(), `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
-    writeFileSync(tempPath, data);
-    const file = new module.File(tempPath, "r");
-    return {
-      file,
-      close: () => {
-        file.close();
-        unlinkSync(tempPath);
-      }
-    };
-  }
-  throw new Error("Node environments only support string paths or byte buffers for SLP inputs.");
 }
 async function openH5FileBrowser(module, source, options) {
   const fs = getH5FileSystem(module);
@@ -3399,7 +3384,10 @@ function getH5FileSystem(module) {
 }
 
 // src/codecs/slp/write.ts
-var isNode2 = typeof process !== "undefined" && !!process.versions?.node;
+var _writeToFile = null;
+function _registerFileWriter(writer) {
+  _writeToFile = writer;
+}
 var FORMAT_ID = 1.4;
 var SPAWNED_ON = 0;
 function writeSlpToFile(file, labels, embeddedVideoData) {
@@ -3458,9 +3446,8 @@ async function saveSlpToBytes(labels, options) {
 }
 async function writeSlp(filename, labels, options) {
   const bytes = await saveSlpToBytes(labels, options);
-  if (isNode2) {
-    const fs = await import("fs");
-    fs.writeFileSync(filename, bytes);
+  if (_writeToFile) {
+    await _writeToFile(filename, bytes);
   } else {
     throw new Error(
       "writeSlp requires a Node.js environment for file I/O. Use saveSlpToBytes() to get the SLP data as a Uint8Array in the browser."
@@ -4832,7 +4819,7 @@ function slicePoints2(data, start, end, predicted = false) {
 }
 
 // src/io/main.ts
-function isNode3() {
+function isNode() {
   return typeof process !== "undefined" && !!process.versions?.node;
 }
 function isBrowserWithWorkerSupport() {
@@ -4842,7 +4829,7 @@ async function loadSlp(source, options) {
   const streamMode = options?.h5?.stream ?? "auto";
   const openVideos = options?.openVideos ?? true;
   const lazy = options?.lazy ?? false;
-  if (isBrowserWithWorkerSupport() && !isNode3() && streamMode !== "download") {
+  if (isBrowserWithWorkerSupport() && !isNode() && streamMode !== "download") {
     let streamingSource;
     if (typeof source === "string") {
       streamingSource = source;
@@ -5521,6 +5508,7 @@ export {
   isStreamingSupported,
   openStreamingH5,
   openH5Worker,
+  _registerNodeH5,
   _registerMaskFactory,
   AnnotationType,
   ROI,
@@ -5531,6 +5519,7 @@ export {
   decodeRle,
   SegmentationMask,
   readSlpStreaming,
+  _registerFileWriter,
   saveSlpToBytes,
   loadSlp,
   saveSlp,

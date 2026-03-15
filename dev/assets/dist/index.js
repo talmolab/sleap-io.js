@@ -22,7 +22,9 @@ import {
   StreamingHdf5VideoBackend,
   SuggestionFrame,
   Video,
+  _registerFileWriter,
   _registerMaskFactory,
+  _registerNodeH5,
   decodeRle,
   decodeWkb,
   decodeYamlSkeleton,
@@ -61,7 +63,7 @@ import {
   saveSlpToBytes,
   toDict,
   toNumpy
-} from "./chunk-DWLQER7A.js";
+} from "./chunk-ZVUL4IFS.js";
 import {
   Edge,
   Instance,
@@ -77,6 +79,47 @@ import {
   predictedPointsFromArray,
   predictedPointsFromDict
 } from "./chunk-NWJVKWIL.js";
+
+// src/codecs/slp/h5-node.ts
+var modulePromise = null;
+async function getH5ModuleNode() {
+  if (!modulePromise) {
+    modulePromise = (async () => {
+      const module = await import("h5wasm/node");
+      await module.ready;
+      return module;
+    })();
+  }
+  return modulePromise;
+}
+async function openH5FileNode(module, source) {
+  if (typeof source === "string") {
+    const file = new module.File(source, "r");
+    return { file, close: () => file.close() };
+  }
+  if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
+    const { writeFileSync, unlinkSync } = await import("fs");
+    const { tmpdir } = await import("os");
+    const { join } = await import("path");
+    const data = source instanceof Uint8Array ? source : new Uint8Array(source);
+    const tempPath = join(tmpdir(), `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
+    writeFileSync(tempPath, data);
+    const file = new module.File(tempPath, "r");
+    return {
+      file,
+      close: () => {
+        file.close();
+        unlinkSync(tempPath);
+      }
+    };
+  }
+  throw new Error("Node environments only support string paths or byte buffers for SLP inputs.");
+}
+_registerNodeH5(getH5ModuleNode, openH5FileNode);
+_registerFileWriter(async (filename, bytes) => {
+  const { writeFile } = await import("fs/promises");
+  await writeFile(filename, bytes);
+});
 
 // src/rendering/render.ts
 var DEFAULT_OPTIONS = {

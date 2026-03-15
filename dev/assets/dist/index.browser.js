@@ -52,7 +52,7 @@ import {
   saveSlpToBytes,
   toDict,
   toNumpy
-} from "./chunk-DWLQER7A.js";
+} from "./chunk-ZVUL4IFS.js";
 import {
   Edge,
   Instance,
