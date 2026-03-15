@@ -401,6 +401,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#roi-segmentation-masks" class="md-nav__link">
+    <span class="md-ellipsis">
+      ROI &amp; Segmentation Masks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skeleton-codecs" class="md-nav__link">
     <span class="md-ellipsis">
       Skeleton Codecs
@@ -547,6 +556,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#roi-segmentation-masks" class="md-nav__link">
+    <span class="md-ellipsis">
+      ROI &amp; Segmentation Masks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skeleton-codecs" class="md-nav__link">
     <span class="md-ellipsis">
       Skeleton Codecs
@@ -617,6 +635,9 @@
 <span class="w">  </span><span class="nx">Track</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">LabelsSet</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">SuggestionFrame</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">ROI</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">AnnotationType</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">SegmentationMask</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">toDict</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">fromDict</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">toNumpy</span><span class="p">,</span>
@@ -720,6 +741,7 @@
 <li><code>Video</code>, <code>SuggestionFrame</code>, <code>LabelsSet</code></li>
 <li><code>Camera</code>, <code>CameraGroup</code>, <code>RecordingSession</code> (camera utilities)</li>
 <li><code>LazyDataStore</code>, <code>LazyFrameList</code> (lazy loading)</li>
+<li><code>ROI</code>, <code>SegmentationMask</code>, <code>AnnotationType</code> (spatial annotations)</li>
 <li><code>Point</code> has fields <code>{ xy, visible, complete, score? }</code> where <code>score</code> is an optional confidence value.</li>
 <li><code>LabeledFrame.isNegative</code> (<code>boolean</code>, default <code>false</code>): marks negative-annotated frames.</li>
 <li><code>SuggestionFrame.group</code> (<code>string</code>, default <code>"default"</code>): the suggestion group name.</li>
@@ -748,6 +770,58 @@
 <li><strong><code>LazyDataStore</code></strong>: Holds raw HDF5 column data; supports <code>materializeFrame(idx)</code>, <code>materializeAll()</code>, and <code>toNumpy()</code> fast path.</li>
 <li><strong><code>LazyFrameList</code></strong>: Array-like container with <code>at(idx)</code>, <code>length</code>, <code>toArray()</code>, <code>[Symbol.iterator]()</code>, and <code>materializedCount</code>.</li>
 </ul>
+<h2 id="roi-segmentation-masks">ROI &amp; Segmentation Masks<a class="headerlink" href="#roi-segmentation-masks" title="Permanent link">&para;</a></h2>
+<p>Spatial annotations stored alongside pose data in SLP format 1.5.</p>
+<h3 id="roi"><code>ROI</code><a class="headerlink" href="#roi" title="Permanent link">&para;</a></h3>
+<p>Region of interest with GeoJSON-like geometry.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Create from bounding box</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ROI</span><span class="p">.</span><span class="nx">fromBbox</span><span class="p">(</span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">200</span><span class="p">,</span><span class="w"> </span><span class="mf">50</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">annotationType</span><span class="o">:</span><span class="w"> </span><span class="kt">AnnotationType.ARENA</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span>
+<span class="p">});</span>
+
+<span class="c1">// Create from polygon vertices</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ROI</span><span class="p">.</span><span class="nx">fromPolygon</span><span class="p">([[</span><span class="mf">0</span><span class="p">,</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">100</span><span class="p">,</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">100</span><span class="p">,</span><span class="mf">100</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">0</span><span class="p">,</span><span class="mf">100</span><span class="p">]],</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;region&quot;</span><span class="p">,</span>
+<span class="p">});</span>
+
+<span class="c1">// Properties</span>
+<span class="nx">roi</span><span class="p">.</span><span class="nx">bounds</span><span class="p">;</span><span class="w">    </span><span class="c1">// { minX, minY, maxX, maxY }</span>
+<span class="nx">roi</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">      </span><span class="c1">// polygon area</span>
+<span class="nx">roi</span><span class="p">.</span><span class="nx">centroid</span><span class="p">;</span><span class="w">  </span><span class="c1">// { x, y }</span>
+<span class="nx">roi</span><span class="p">.</span><span class="nx">isBbox</span><span class="p">;</span><span class="w">    </span><span class="c1">// true if axis-aligned rectangle</span>
+
+<span class="c1">// Convert to mask</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">roi</span><span class="p">.</span><span class="nx">toMask</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span>
+</code></pre></div>
+<h3 id="segmentationmask"><code>SegmentationMask</code><a class="headerlink" href="#segmentationmask" title="Permanent link">&para;</a></h3>
+<p>RLE-encoded binary mask.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Create from 2D boolean array</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">SegmentationMask</span><span class="p">.</span><span class="nx">fromArray</span><span class="p">(</span><span class="nx">boolArray</span><span class="p">,</span><span class="w"> </span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;segmentation&quot;</span><span class="p">,</span>
+<span class="p">});</span>
+
+<span class="c1">// Properties</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">data</span><span class="p">;</span><span class="w">  </span><span class="c1">// Uint8Array (decoded)</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">  </span><span class="c1">// pixel count</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">bbox</span><span class="p">;</span><span class="w">  </span><span class="c1">// { x, y, width, height }</span>
+
+<span class="c1">// Convert to polygon ROI</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">toPolygon</span><span class="p">();</span>
+</code></pre></div>
+<h3 id="labels-roimask-access"><code>Labels</code> ROI/Mask Access<a class="headerlink" href="#labels-roimask-access" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1">// Direct access</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">;</span><span class="w">       </span><span class="c1">// ROI[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">masks</span><span class="p">;</span><span class="w">      </span><span class="c1">// SegmentationMask[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">staticRois</span><span class="p">;</span><span class="w"> </span><span class="c1">// ROIs without frame index</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">temporalRois</span><span class="p">;</span><span class="w"> </span><span class="c1">// ROIs with frame index</span>
+
+<span class="c1">// Filtered queries</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">getRois</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">annotationType</span><span class="o">:</span><span class="w"> </span><span class="kt">AnnotationType.SEGMENTATION</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<p>ROIs and masks are read/written in SLP format 1.5 files. The format ID is automatically set to 1.5 when ROIs or masks are present.</p>
 <h2 id="skeleton-codecs">Skeleton Codecs<a class="headerlink" href="#skeleton-codecs" title="Permanent link">&para;</a></h2>
 <h3 id="json-jsonpickle-format">JSON (jsonpickle format)<a class="headerlink" href="#json-jsonpickle-format" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">readSkeletonJson</span><span class="p">,</span><span class="w"> </span><span class="nx">isSkeletonJson</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>

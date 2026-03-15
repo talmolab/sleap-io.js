@@ -17,6 +17,9 @@ import {
   Track,
   LabelsSet,
   SuggestionFrame,
+  ROI,
+  AnnotationType,
+  SegmentationMask,
   toDict,
   fromDict,
   toNumpy,
@@ -139,6 +142,7 @@ Key types:
 - `Video`, `SuggestionFrame`, `LabelsSet`
 - `Camera`, `CameraGroup`, `RecordingSession` (camera utilities)
 - `LazyDataStore`, `LazyFrameList` (lazy loading)
+- `ROI`, `SegmentationMask`, `AnnotationType` (spatial annotations)
 - `Point` has fields `{ xy, visible, complete, score? }` where `score` is an optional confidence value.
 - `LabeledFrame.isNegative` (`boolean`, default `false`): marks negative-annotated frames.
 - `SuggestionFrame.group` (`string`, default `"default"`): the suggestion group name.
@@ -172,6 +176,70 @@ Key classes:
 
 - **`LazyDataStore`**: Holds raw HDF5 column data; supports `materializeFrame(idx)`, `materializeAll()`, and `toNumpy()` fast path.
 - **`LazyFrameList`**: Array-like container with `at(idx)`, `length`, `toArray()`, `[Symbol.iterator]()`, and `materializedCount`.
+
+## ROI & Segmentation Masks
+
+Spatial annotations stored alongside pose data in SLP format 1.5.
+
+### `ROI`
+Region of interest with GeoJSON-like geometry.
+
+```ts
+// Create from bounding box
+const roi = ROI.fromBbox(100, 200, 50, 80, {
+  category: "arena",
+  annotationType: AnnotationType.ARENA,
+  video: labels.videos[0],
+});
+
+// Create from polygon vertices
+const roi = ROI.fromPolygon([[0,0], [100,0], [100,100], [0,100]], {
+  category: "region",
+});
+
+// Properties
+roi.bounds;    // { minX, minY, maxX, maxY }
+roi.area;      // polygon area
+roi.centroid;  // { x, y }
+roi.isBbox;    // true if axis-aligned rectangle
+
+// Convert to mask
+const mask = roi.toMask(480, 640);
+```
+
+### `SegmentationMask`
+RLE-encoded binary mask.
+
+```ts
+// Create from 2D boolean array
+const mask = SegmentationMask.fromArray(boolArray, 480, 640, {
+  category: "segmentation",
+});
+
+// Properties
+mask.data;  // Uint8Array (decoded)
+mask.area;  // pixel count
+mask.bbox;  // { x, y, width, height }
+
+// Convert to polygon ROI
+const roi = mask.toPolygon();
+```
+
+### `Labels` ROI/Mask Access
+
+```ts
+// Direct access
+labels.rois;       // ROI[]
+labels.masks;      // SegmentationMask[]
+labels.staticRois; // ROIs without frame index
+labels.temporalRois; // ROIs with frame index
+
+// Filtered queries
+labels.getRois({ video, frameIdx: 0, category: "arena" });
+labels.getMasks({ video, annotationType: AnnotationType.SEGMENTATION });
+```
+
+ROIs and masks are read/written in SLP format 1.5 files. The format ID is automatically set to 1.5 when ROIs or masks are present.
 
 ## Skeleton Codecs
 

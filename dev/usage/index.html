@@ -399,6 +399,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#roi-segmentation-masks" class="md-nav__link">
+    <span class="md-ellipsis">
+      ROI &amp; Segmentation Masks
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#advanced-low-level-worker-apis" class="md-nav__link">
     <span class="md-ellipsis">
       Advanced: Low-Level Worker APIs
@@ -586,6 +595,15 @@
   <a href="#multi-file-loading" class="md-nav__link">
     <span class="md-ellipsis">
       Multi-File Loading
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#roi-segmentation-masks" class="md-nav__link">
+    <span class="md-ellipsis">
+      ROI &amp; Segmentation Masks
     </span>
   </a>
   
@@ -913,6 +931,29 @@
 
 <span class="c1">// Save all back</span>
 <span class="k">await</span><span class="w"> </span><span class="nx">saveSlpSet</span><span class="p">(</span><span class="nx">set</span><span class="p">);</span>
+</code></pre></div>
+<h2 id="roi-segmentation-masks">ROI &amp; Segmentation Masks<a class="headerlink" href="#roi-segmentation-masks" title="Permanent link">&para;</a></h2>
+<p>SLP format 1.5 supports spatial annotations (regions of interest and segmentation masks) alongside pose data:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">ROI</span><span class="p">,</span><span class="w"> </span><span class="nx">SegmentationMask</span><span class="p">,</span><span class="w"> </span><span class="nx">AnnotationType</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;dataset.slp&quot;</span><span class="p">);</span>
+
+<span class="c1">// Access ROIs and masks</span>
+<span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="sb">`</span><span class="si">${</span><span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">.</span><span class="nx">length</span><span class="si">}</span><span class="sb"> ROIs, </span><span class="si">${</span><span class="nx">labels</span><span class="p">.</span><span class="nx">masks</span><span class="p">.</span><span class="nx">length</span><span class="si">}</span><span class="sb"> masks`</span><span class="p">);</span>
+
+<span class="c1">// Query by video and frame</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">frameRois</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getRois</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">frameMasks</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Create new ROIs</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ROI</span><span class="p">.</span><span class="nx">fromBbox</span><span class="p">(</span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">200</span><span class="p">,</span><span class="w"> </span><span class="mf">50</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span>
+<span class="p">});</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">bbox</span><span class="p">);</span>
+
+<span class="c1">// Save — format 1.5 is used automatically when ROIs/masks are present</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.slp&quot;</span><span class="p">);</span>
 </code></pre></div>
 <h2 id="advanced-low-level-worker-apis">Advanced: Low-Level Worker APIs<a class="headerlink" href="#advanced-low-level-worker-apis" title="Permanent link">&para;</a></h2>
 <p>For fine-grained control over HDF5 file access, you can use the streaming APIs directly:</p>

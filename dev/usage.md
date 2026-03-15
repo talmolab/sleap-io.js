@@ -301,6 +301,33 @@ const trainLabels = set.get("train");
 await saveSlpSet(set);
 ```
 
+## ROI & Segmentation Masks
+
+SLP format 1.5 supports spatial annotations (regions of interest and segmentation masks) alongside pose data:
+
+```ts
+import { loadSlp, ROI, SegmentationMask, AnnotationType } from "@talmolab/sleap-io.js";
+
+const labels = await loadSlp("dataset.slp");
+
+// Access ROIs and masks
+console.log(`${labels.rois.length} ROIs, ${labels.masks.length} masks`);
+
+// Query by video and frame
+const frameRois = labels.getRois({ video: labels.videos[0], frameIdx: 0 });
+const frameMasks = labels.getMasks({ video: labels.videos[0], frameIdx: 0 });
+
+// Create new ROIs
+const bbox = ROI.fromBbox(100, 200, 50, 80, {
+  category: "arena",
+  video: labels.videos[0],
+});
+labels.rois.push(bbox);
+
+// Save — format 1.5 is used automatically when ROIs/masks are present
+await saveSlp(labels, "output.slp");
+```
+
 ## Advanced: Low-Level Worker APIs
 
 For fine-grained control over HDF5 file access, you can use the streaming APIs directly:
