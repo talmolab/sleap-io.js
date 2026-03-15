@@ -31,13 +31,35 @@ type H5FileSystem = {
   filesystems?: Record<string, unknown>;
 };
 
-const isNode = typeof process !== "undefined" && !!process.versions?.node;
+// Node provider hooks — registered by h5-node.ts (imported as side-effect from Node entry point).
+// When null, only browser code paths are used, keeping the browser bundle free of Node-only imports.
+let _nodeGetModule: (() => Promise<H5Module>) | null = null;
+let _nodeOpenFile: ((module: H5Module, source: SlpSource) => Promise<{ file: H5File; close: () => void }>) | null = null;
+
+/**
+ * Register Node.js-specific h5wasm provider.
+ * Called as a side-effect when the Node entry point imports h5-node.ts.
+ * @internal
+ */
+export function _registerNodeH5(
+  getModule: () => Promise<H5Module>,
+  openFile: (module: H5Module, source: SlpSource) => Promise<{ file: H5File; close: () => void }>
+): void {
+  _nodeGetModule = getModule;
+  _nodeOpenFile = openFile;
+}
+
+// Browser-only module cache — unused when Node provider is registered, but kept
+// at module scope so the browser code path caches across calls.
 let modulePromise: Promise<H5Module> | null = null;
 
 export async function getH5Module(): Promise<H5Module> {
+  if (_nodeGetModule) {
+    return _nodeGetModule();
+  }
   if (!modulePromise) {
     modulePromise = (async () => {
-      const module = isNode ? await import("h5wasm/node") : await import("h5wasm");
+      const module = await import("h5wasm");
       await module.ready;
       return module as H5Module;
     })();
@@ -51,8 +73,8 @@ export async function openH5File(
 ): Promise<{ file: H5File; close: () => void }> {
   const module = await getH5Module();
 
-  if (isNode) {
-    return openH5FileNode(module, source);
+  if (_nodeOpenFile) {
+    return _nodeOpenFile(module, source);
   }
 
   return openH5FileBrowser(module, source, options);
@@ -64,32 +86,6 @@ function isProbablyUrl(value: string): boolean {
 
 function isFileHandle(value: SlpSource): value is FileSystemFileHandle {
   return typeof value === "object" && value !== null && "getFile" in value;
-}
-
-async function openH5FileNode(module: H5Module, source: SlpSource): Promise<{ file: H5File; close: () => void }> {
-  if (typeof source === "string") {
-    const file = new module.File(source, "r");
-    return { file, close: () => file.close() };
-  }
-
-  if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
-    const { writeFileSync, unlinkSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
-    const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join(tmpdir(), `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
-    writeFileSync(tempPath, data);
-    const file = new module.File(tempPath, "r");
-    return {
-      file,
-      close: () => {
-        file.close();
-        unlinkSync(tempPath);
-      },
-    };
-  }
-
-  throw new Error("Node environments only support string paths or byte buffers for SLP inputs.");
 }
 
 async function openH5FileBrowser(
