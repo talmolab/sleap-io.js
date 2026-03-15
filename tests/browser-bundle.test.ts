@@ -67,7 +67,8 @@ describe("Browser bundle isolation (issue #70)", () => {
   });
 
   it("browser entry and shared chunks contain no Node-only imports", () => {
-    expect(browserFiles.length).toBeGreaterThan(0);
+    // Ensure we actually found the entry + chunks (guard against chunk naming changes)
+    expect(browserFiles.length).toBeGreaterThanOrEqual(2);
 
     for (const filePath of browserFiles) {
       const content = readFileSync(filePath, "utf-8");
@@ -85,8 +86,9 @@ describe("Browser bundle isolation (issue #70)", () => {
     const content = readFileSync(nodeEntry, "utf-8");
 
     // The Node entry should contain h5wasm/node and fs imports
+    // (tsup strips the "node:" prefix, so match both "fs" and "node:fs")
     expect(content).toMatch(/import\(\s*["']h5wasm\/node["']\s*\)/);
-    expect(content).toMatch(/import\(\s*["']fs["']\s*\)/);
+    expect(content).toMatch(/import\(\s*["'](node:)?fs/);
   });
 
   it("browser entry does not import h5-node chunk", () => {

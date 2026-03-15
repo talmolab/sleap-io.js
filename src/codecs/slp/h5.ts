@@ -49,6 +49,8 @@ export function _registerNodeH5(
   _nodeOpenFile = openFile;
 }
 
+// Browser-only module cache — unused when Node provider is registered, but kept
+// at module scope so the browser code path caches across calls.
 let modulePromise: Promise<H5Module> | null = null;
 
 export async function getH5Module(): Promise<H5Module> {

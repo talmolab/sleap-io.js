@@ -58,6 +58,6 @@ async function openH5FileNode(
 _registerNodeH5(getH5ModuleNode, openH5FileNode);
 
 _registerFileWriter(async (filename: string, bytes: Uint8Array) => {
-  const fs = await import("fs");
-  fs.writeFileSync(filename, bytes);
+  const { writeFile } = await import("node:fs/promises");
+  await writeFile(filename, bytes);
 });
