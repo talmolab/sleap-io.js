@@ -117,8 +117,8 @@ async function openH5FileNode(module, source) {
 }
 _registerNodeH5(getH5ModuleNode, openH5FileNode);
 _registerFileWriter(async (filename, bytes) => {
-  const fs = await import("fs");
-  fs.writeFileSync(filename, bytes);
+  const { writeFile } = await import("fs/promises");
+  await writeFile(filename, bytes);
 });
 
 // src/rendering/render.ts
