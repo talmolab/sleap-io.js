@@ -9,13 +9,14 @@
  */
 
 import { openH5Worker, StreamingH5File, isStreamingSupported, type StreamingH5Source } from "./h5-streaming.js";
-import { parseJsonAttr, parseSkeletons, parseTracks, parseVideosMetadata, parseSuggestions } from "./parsers.js";
+import { parseJsonAttr, parseJsonEntry, parseSkeletons, parseTracks, parseVideosMetadata, parseSuggestions } from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../../model/instance.js";
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
+import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 
 /**
@@ -144,13 +145,16 @@ async function readFromStreamingFile(
     formatId,
   });
 
+  // Read sessions
+  const sessions = await readSessionsStreaming(file, videos, skeletons, labeledFrames);
+
   return new Labels({
     labeledFrames,
     videos,
     skeletons,
     tracks,
     suggestions,
-    sessions: [], // Sessions require complex parsing, skip for now
+    sessions,
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
   });
 }
@@ -396,6 +400,111 @@ async function readSuggestionsStreaming(file: StreamingH5File, videos: Video[]):
 }
 
 /**
+ * Read recording sessions from sessions_json dataset.
+ */
+async function readSessionsStreaming(
+  file: StreamingH5File,
+  videos: Video[],
+  skeletons: Skeleton[],
+  labeledFrames: LabeledFrame[]
+): Promise<RecordingSession[]> {
+  try {
+    const keys = file.keys();
+    if (!keys.includes("sessions_json")) return [];
+
+    const data = await file.getDatasetValue("sessions_json");
+    const values = normalizeDatasetArray(data.value);
+
+    const sessions: RecordingSession[] = [];
+    for (const entry of values) {
+      const parsed = parseJsonEntry(entry) as Record<string, unknown>;
+      const calibration = (parsed.calibration ?? {}) as Record<string, unknown>;
+
+      const cameraGroup = new CameraGroup();
+      const cameraMap = new Map<string, Camera>();
+
+      for (const [key, data] of Object.entries(calibration)) {
+        if (key === "metadata") continue;
+        const cameraData = data as Record<string, unknown>;
+        const camera = new Camera({
+          name: (cameraData.name as string | undefined) ?? key,
+          rvec: (cameraData.rotation as number[] | undefined) ?? [0, 0, 0],
+          tvec: (cameraData.translation as number[] | undefined) ?? [0, 0, 0],
+          matrix: cameraData.matrix as number[][] | undefined,
+          distortions: cameraData.distortions as number[] | undefined,
+        });
+        cameraGroup.cameras.push(camera);
+        cameraMap.set(String(key), camera);
+      }
+
+      const session = new RecordingSession({ cameraGroup, metadata: (parsed.metadata as Record<string, unknown> | undefined) ?? {} });
+
+      const map = (parsed.camcorder_to_video_idx_map ?? {}) as Record<string, unknown>;
+      for (const [cameraKey, videoIdx] of Object.entries(map)) {
+        const camera = cameraMap.get(cameraKey);
+        const video = videos[Number(videoIdx)];
+        if (camera && video) {
+          session.addVideo(video, camera);
+        }
+      }
+
+      const frameGroups = Array.isArray(parsed.frame_group_dicts) ? parsed.frame_group_dicts : [];
+      for (const group of frameGroups) {
+        const groupRecord = group as Record<string, unknown>;
+        const frameIdx = (groupRecord.frame_idx as number | undefined) ?? (groupRecord.frameIdx as number | undefined) ?? 0;
+        const instanceGroups: InstanceGroup[] = [];
+        const instanceGroupList = Array.isArray(groupRecord.instance_groups) ? groupRecord.instance_groups : [];
+        for (const instanceGroup of instanceGroupList) {
+          const instanceGroupRecord = instanceGroup as Record<string, unknown>;
+          const instanceByCamera = new Map<Camera, Instance>();
+          const instancesRecord = (instanceGroupRecord.instances ?? {}) as Record<string, unknown>;
+          for (const [cameraKey, points] of Object.entries(instancesRecord)) {
+            const camera = cameraMap.get(cameraKey);
+            if (!camera) continue;
+            const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+            instanceByCamera.set(camera, new Instance({ points: points as Record<string, number[]>, skeleton }));
+          }
+          const rawPoints = instanceGroupRecord.points;
+          const pointsValue = Array.isArray(rawPoints) ? (rawPoints as number[][]) : undefined;
+          instanceGroups.push(
+            new InstanceGroup({
+              instanceByCamera,
+              score: instanceGroupRecord.score as number | undefined,
+              points: pointsValue,
+              metadata: (instanceGroupRecord.metadata as Record<string, unknown> | undefined) ?? {},
+            })
+          );
+        }
+
+        const labeledFrameByCamera = new Map<Camera, LabeledFrame>();
+        const labeledFrameMap = (groupRecord.labeled_frame_by_camera ?? {}) as Record<string, unknown>;
+        for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
+          const camera = cameraMap.get(cameraKey);
+          const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
+          if (camera && labeledFrame) {
+            labeledFrameByCamera.set(camera, labeledFrame);
+          }
+        }
+
+        session.frameGroups.set(
+          Number(frameIdx),
+          new FrameGroup({
+            frameIdx: Number(frameIdx),
+            instanceGroups,
+            labeledFrameByCamera,
+            metadata: (groupRecord.metadata as Record<string, unknown> | undefined) ?? {},
+          })
+        );
+      }
+      sessions.push(session);
+    }
+    return sessions;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Read a structured dataset and normalize to column format.
  */
 async function readStructDatasetStreaming(
@@ -556,7 +665,8 @@ function buildLabeledFrames(options: {
       const pointStart = Number((instancesData.point_id_start as number[])?.[instIdx] ?? 0);
       const pointEnd = Number((instancesData.point_id_end as number[])?.[instIdx] ?? 0);
       const score = Number((instancesData.score as number[])?.[instIdx] ?? 0);
-      const trackingScore = Number((instancesData.tracking_score as number[])?.[instIdx] ?? 0);
+      const rawTrackingScore = formatId < 1.2 ? 0 : Number((instancesData.tracking_score as number[])?.[instIdx] ?? 0);
+      const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
       const fromPredicted = Number((instancesData.from_predicted as number[])?.[instIdx] ?? -1);
       const skeleton = skeletons[skeletonId] ?? skeletons[0] ?? new Skeleton({ nodes: [] });
       const track = trackId >= 0 ? tracks[trackId] : null;

@@ -24,9 +24,13 @@ await saveSlp(labels, "/tmp/session-roundtrip.slp", { embed: false });
 
 ## Features
 
-- SLP read/write with embedded frame support.
-- Streaming inputs (URL, `File`, `FileSystemFileHandle`).
-- Data model types (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`).
+- SLP read/write with embedded frame support (format 1.0–1.5).
+- ROI and segmentation mask annotations (format 1.5).
+- Browser-compatible SLP writing via `saveSlpToBytes()`.
+- Streaming inputs (URL, `File`, `FileSystemFileHandle`, `Blob`).
+- Data model types (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`, `ROI`, `SegmentationMask`).
+- Video backends accept `string`, `File`, or `Blob` sources.
+- Browser-safe: Node.js-only code is fully isolated from the browser bundle.
 - Dictionary and numpy codecs.
 - **Lite mode** for Workers-compatible metadata extraction (no WASM).
 
@@ -39,4 +43,4 @@ await saveSlp(labels, "/tmp/session-roundtrip.slp", { embed: false });
 ## Links
 
 - Python sleap-io: https://github.com/talmolab/sleap-io
-- Docs: https://io.sleap.ai
+- Docs: https://iojs.sleap.ai

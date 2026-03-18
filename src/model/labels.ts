@@ -6,6 +6,10 @@ import { Video } from "./video.js";
 import { RecordingSession } from "./camera.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
+import type { LazyDataStore, LazyFrameList } from "./lazy.js";
+import type { ROI } from "./roi.js";
+import type { SegmentationMask } from "./mask.js";
+import type { AnnotationType } from "./roi.js";
 
 export class Labels {
   labeledFrames: LabeledFrame[];
@@ -15,6 +19,13 @@ export class Labels {
   suggestions: SuggestionFrame[];
   sessions: RecordingSession[];
   provenance: Record<string, unknown>;
+  rois: ROI[];
+  masks: SegmentationMask[];
+
+  /** @internal Lazy frame list for on-demand materialization. */
+  _lazyFrameList: LazyFrameList | null = null;
+  /** @internal Lazy data store holding raw HDF5 data. */
+  _lazyDataStore: LazyDataStore | null = null;
 
   constructor(options?: {
     labeledFrames?: LabeledFrame[];
@@ -24,6 +35,8 @@ export class Labels {
     suggestions?: SuggestionFrame[];
     sessions?: RecordingSession[];
     provenance?: Record<string, unknown>;
+    rois?: ROI[];
+    masks?: SegmentationMask[];
   }) {
     this.labeledFrames = options?.labeledFrames ?? [];
     this.videos = options?.videos ?? [];
@@ -32,6 +45,8 @@ export class Labels {
     this.suggestions = options?.suggestions ?? [];
     this.sessions = options?.sessions ?? [];
     this.provenance = options?.provenance ?? {};
+    this.rois = options?.rois ?? [];
+    this.masks = options?.masks ?? [];
 
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = new Map<string | Video, Video>();
@@ -62,6 +77,27 @@ export class Labels {
     }
   }
 
+  /** Whether this Labels instance is in lazy mode. */
+  get isLazy(): boolean {
+    return this._lazyFrameList !== null;
+  }
+
+  /**
+   * Materialize all lazy frames, converting to eager mode.
+   * No-op if already eager.
+   */
+  materialize(): void {
+    if (!this._lazyFrameList) return;
+    this.labeledFrames = this._lazyFrameList.toArray();
+    this._lazyFrameList = null;
+    this._lazyDataStore = null;
+  }
+
+  get negativeFrames(): LabeledFrame[] {
+    if (this._lazyFrameList) this.materialize();
+    return this.labeledFrames.filter((f) => f.isNegative);
+  }
+
   get video(): Video {
     if (!this.videos.length) {
       throw new Error("No videos available on Labels.");
@@ -70,20 +106,24 @@ export class Labels {
   }
 
   get length(): number {
+    if (this._lazyFrameList) return this._lazyFrameList.length;
     return this.labeledFrames.length;
   }
 
   [Symbol.iterator](): Iterator<LabeledFrame> {
+    if (this._lazyFrameList) return this._lazyFrameList[Symbol.iterator]();
     return this.labeledFrames[Symbol.iterator]();
   }
 
   get instances(): Array<Instance | PredictedInstance> {
+    if (this._lazyFrameList) this.materialize();
     return this.labeledFrames.flatMap((frame) => frame.instances);
   }
 
   find(options: { video?: Video; frameIdx?: number }): LabeledFrame[] {
+    if (this._lazyFrameList) this.materialize();
     return this.labeledFrames.filter((frame) => {
-      if (options.video && frame.video !== options.video && !frame.video.matchesPath(options.video, false)) {
+      if (options.video && frame.video !== options.video) {
         return false;
       }
       if (options.frameIdx !== undefined && frame.frameIdx !== options.frameIdx) {
@@ -94,6 +134,7 @@ export class Labels {
   }
 
   append(frame: LabeledFrame): void {
+    if (this._lazyFrameList) this.materialize();
     this.labeledFrames.push(frame);
     if (!this.videos.includes(frame.video)) {
       this.videos.push(frame.video);
@@ -101,7 +142,78 @@ export class Labels {
   }
 
   toDict(options?: { video?: Video | number; skipEmptyFrames?: boolean }) {
+    if (this._lazyFrameList) this.materialize();
     return toDict(this, options);
+  }
+
+  get staticRois(): ROI[] {
+    return this.rois.filter((roi) => roi.isStatic);
+  }
+
+  get temporalRois(): ROI[] {
+    return this.rois.filter((roi) => !roi.isStatic);
+  }
+
+  getRois(filters?: {
+    video?: Video;
+    frameIdx?: number;
+    annotationType?: AnnotationType;
+    category?: string;
+    track?: Track;
+    instance?: Instance | PredictedInstance;
+  }): ROI[] {
+    if (!filters) return [...this.rois];
+    let results = this.rois;
+    if (filters.video !== undefined) {
+      results = results.filter((r) => r.video === filters.video);
+    }
+    if (filters.frameIdx !== undefined) {
+      results = results.filter((r) => r.frameIdx === filters.frameIdx);
+    }
+    if (filters.annotationType !== undefined) {
+      results = results.filter((r) => r.annotationType === filters.annotationType);
+    }
+    if (filters.category !== undefined) {
+      results = results.filter((r) => r.category === filters.category);
+    }
+    if (filters.track !== undefined) {
+      results = results.filter((r) => r.track === filters.track);
+    }
+    if (filters.instance !== undefined) {
+      results = results.filter((r) => r.instance === filters.instance);
+    }
+    return results;
+  }
+
+  getMasks(filters?: {
+    video?: Video;
+    frameIdx?: number;
+    annotationType?: AnnotationType;
+    category?: string;
+    track?: Track;
+    instance?: Instance | PredictedInstance;
+  }): SegmentationMask[] {
+    if (!filters) return [...this.masks];
+    let results = this.masks;
+    if (filters.video !== undefined) {
+      results = results.filter((m) => m.video === filters.video);
+    }
+    if (filters.frameIdx !== undefined) {
+      results = results.filter((m) => m.frameIdx === filters.frameIdx);
+    }
+    if (filters.annotationType !== undefined) {
+      results = results.filter((m) => m.annotationType === filters.annotationType);
+    }
+    if (filters.category !== undefined) {
+      results = results.filter((m) => m.category === filters.category);
+    }
+    if (filters.track !== undefined) {
+      results = results.filter((m) => m.track === filters.track);
+    }
+    if (filters.instance !== undefined) {
+      results = results.filter((m) => m.instance === filters.instance);
+    }
+    return results;
   }
 
   static fromNumpy(
@@ -125,6 +237,9 @@ export class Labels {
   }
 
   numpy(options?: { video?: Video; returnConfidence?: boolean }): number[][][][] {
+    if (this._lazyDataStore) {
+      return this._lazyDataStore.toNumpy(options);
+    }
     const targetVideo = options?.video ?? this.video;
     const frames = this.labeledFrames.filter((frame) => frame.video.matchesPath(targetVideo, true));
     if (!frames.length) return [];

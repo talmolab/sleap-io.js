@@ -55,6 +55,24 @@ const pngBuffer = await renderLabelsImage(labels, {
 
 See [rendering.md](./rendering.md) for more details.
 
+### Saving SLP (Browser)
+
+Use `saveSlpToBytes()` to serialize labels to SLP bytes in the browser:
+
+```ts
+import { loadSlp, saveSlpToBytes } from "@talmolab/sleap-io.js";
+
+const labels = await loadSlp(source);
+const bytes: Uint8Array = await saveSlpToBytes(labels);
+
+// Download via blob
+const blob = new Blob([bytes], { type: "application/octet-stream" });
+const a = document.createElement("a");
+a.href = URL.createObjectURL(blob);
+a.download = "labels.slp";
+a.click();
+```
+
 ## Browser Usage
 
 In the browser, `sleap-io.js` automatically uses a **Web Worker** for all HDF5 operations. This keeps the main thread responsive and avoids bundler issues with Node.js dependencies.
@@ -79,9 +97,7 @@ Browser usage requires an [import map](https://developer.mozilla.org/en-US/docs/
 {
   "imports": {
     "h5wasm": "https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js",
-    "yaml": "https://esm.sh/yaml@2.6.1",
-    "skia-canvas": "data:text/javascript,export class Canvas{}",
-    "child_process": "data:text/javascript,export function spawn(){}"
+    "yaml": "https://esm.sh/yaml@2.6.1"
   }
 }
 </script>
@@ -93,8 +109,8 @@ Browser usage requires an [import map](https://developer.mozilla.org/en-US/docs/
 |--------|---------|------------------|
 | `h5wasm` | HDF5 file reading (WebAssembly) | Loaded in Worker from CDN |
 | `yaml` | YAML skeleton parsing | Load from CDN |
-| `skia-canvas` | Server-side rendering (Node.js only) | Stub out |
-| `child_process` | Process spawning (Node.js only) | Stub out |
+
+> **Note:** `skia-canvas` and `child_process` stubs are no longer needed in the import map. These Node.js-only dependencies are now dynamically imported, so browser bundlers can safely tree-shake them.
 
 ### Loading SLP Files
 
@@ -183,9 +199,7 @@ for (const frame of labels.labeledFrames) {
   {
     "imports": {
       "h5wasm": "https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js",
-      "yaml": "https://esm.sh/yaml@2.6.1",
-      "skia-canvas": "data:text/javascript,export class Canvas{}",
-      "child_process": "data:text/javascript,export function spawn(){}"
+      "yaml": "https://esm.sh/yaml@2.6.1"
     }
   }
   </script>
@@ -220,6 +234,98 @@ for (const frame of labels.labeledFrames) {
   </script>
 </body>
 </html>
+```
+
+## Lazy Loading
+
+For large SLP files, lazy loading defers frame parsing until individual frames are accessed:
+
+```ts
+import { loadSlp } from "@talmolab/sleap-io.js";
+
+// Only metadata is parsed upfront
+const labels = await loadSlp("large_dataset.slp", { lazy: true });
+console.log(labels.isLazy);           // true
+console.log(labels.labeledFrames.length); // frame count available immediately
+
+// Frames are materialized on demand
+const frame = labels.labeledFrames.at(0);
+
+// Fast numpy conversion without materializing frames
+const array = labels.numpy();
+
+// Fully materialize when needed
+labels.materialize();
+```
+
+## Saving with Embedded Frames
+
+Embed video frames directly into the SLP file:
+
+```ts
+import { saveSlp } from "@talmolab/sleap-io.js";
+
+// Embed all frames
+await saveSlp(labels, "output.slp", { embed: true });
+
+// Embed only user-labeled frames
+await saveSlp(labels, "output.slp", { embed: "user" });
+
+// Embed user + suggestion frames
+await saveSlp(labels, "output.slp", { embed: "user+suggestions" });
+
+// Restore source video references (strip embedded data)
+await saveSlp(labels, "output.slp", { embed: "source" });
+```
+
+## Multi-File Loading
+
+Load and save multiple SLP files in parallel:
+
+```ts
+import { loadSlpSet, saveSlpSet } from "@talmolab/sleap-io.js";
+
+// Load from array of paths
+const set = await loadSlpSet(["train.slp", "val.slp", "test.slp"]);
+
+// Load from record (custom keys)
+const set = await loadSlpSet({
+  train: "/data/train.slp",
+  val: "/data/val.slp",
+});
+
+// Access individual labels
+const trainLabels = set.get("train");
+
+// Save all back
+await saveSlpSet(set);
+```
+
+## ROI & Segmentation Masks
+
+SLP format 1.5 supports spatial annotations (regions of interest and segmentation masks) alongside pose data:
+
+```ts
+import { loadSlp, ROI, SegmentationMask, AnnotationType } from "@talmolab/sleap-io.js";
+
+const labels = await loadSlp("dataset.slp");
+
+// Access ROIs and masks
+console.log(`${labels.rois.length} ROIs, ${labels.masks.length} masks`);
+
+// Query by video and frame
+const frameRois = labels.getRois({ video: labels.videos[0], frameIdx: 0 });
+const frameMasks = labels.getMasks({ video: labels.videos[0], frameIdx: 0 });
+
+// Create new ROIs
+const bbox = ROI.fromBbox(100, 200, 50, 80, {
+  category: "arena",
+  video: labels.videos[0],
+});
+labels.rois.push(bbox);
+
+// Save — format 1.5 is used automatically when ROIs/masks are present
+await saveSlp(labels, "output.slp");
 ```
 
 ## Advanced: Low-Level Worker APIs
@@ -275,8 +381,9 @@ See [lite.md](./lite.md) for full documentation.
 | Option | Type | Default | Description |
 |--------|------|---------|-------------|
 | `openVideos` | `boolean` | `true` | Open video backends for embedded images |
-| `h5.stream` | `"range"` \| `undefined` | `undefined` | Use HTTP Range requests for streaming |
+| `h5.stream` | `"auto"` \| `"range"` \| `"download"` | `"auto"` | HDF5 streaming mode |
 | `h5.filenameHint` | `string` | `undefined` | Filename hint for embedded video paths |
+| `lazy` | `boolean` | `false` | Use lazy loading for on-demand frame materialization |
 
 ### `loadVideo(source)`
 
@@ -288,10 +395,10 @@ Supports:
 
 Returns a video backend with:
 
-- `getFrame(index)` - Get frame as `ImageBitmap`, `ImageData`, or raw bytes
+- `getFrame(index, signal?)` - Get frame as `ImageBitmap`, `ImageData`, or raw bytes. Accepts an optional `AbortSignal` to cancel in-flight decodes.
 - `getFrameTimes()` - Get array of frame timestamps
-- `fps` - Frames per second
-- `shape` - `[frames, height, width, channels]`
+- `fps` - Frames per second (getter and setter)
+- `shape` - `[frames, height, width, channels]` (getter and setter)
 
 ## Error Handling
 

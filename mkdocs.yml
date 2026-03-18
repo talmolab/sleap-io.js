@@ -34,6 +34,7 @@ theme:
 
 plugins:
   - search
+  - mike
 
 extra_css:
   - assets/extra.css
@@ -54,6 +55,10 @@ markdown_extensions:
   - pymdownx.superfences
   - pymdownx.tabbed:
       alternate_style: true
+
+extra:
+  version:
+    provider: mike
 
 nav:
   - Overview: index.md

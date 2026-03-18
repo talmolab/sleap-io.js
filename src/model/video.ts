@@ -7,6 +7,8 @@ export class Video {
   sourceVideo: Video | null;
   openBackend: boolean;
   private _embedded: boolean;
+  private _shape: [number, number, number, number] | null = null;
+  private _fps: number | null = null;
 
   constructor(options: {
     filename: string | string[];
@@ -38,11 +40,19 @@ export class Video {
   }
 
   get shape(): [number, number, number, number] | null {
-    return this.backend?.shape ?? (this.backendMetadata.shape as [number, number, number, number] | undefined) ?? null;
+    return this._shape ?? this.backend?.shape ?? (this.backendMetadata.shape as [number, number, number, number] | undefined) ?? null;
+  }
+
+  set shape(value: [number, number, number, number] | null) {
+    this._shape = value;
   }
 
   get fps(): number | null {
-    return this.backend?.fps ?? (this.backendMetadata.fps as number | undefined) ?? null;
+    return this._fps ?? this.backend?.fps ?? (this.backendMetadata.fps as number | undefined) ?? null;
+  }
+
+  set fps(value: number | null) {
+    this._fps = value;
   }
 
   async getFrame(frameIndex: number): Promise<VideoFrame | null> {
@@ -64,8 +74,8 @@ export class Video {
       return JSON.stringify(this.filename) === JSON.stringify(other.filename);
     }
     if (strict) return this.filename === other.filename;
-    const basenameA = this.filename.split("/").pop();
-    const basenameB = other.filename.split("/").pop();
+    const basenameA = this.filename.split(/[/\\]/).pop();
+    const basenameB = other.filename.split(/[/\\]/).pop();
     return basenameA === basenameB;
   }
 }

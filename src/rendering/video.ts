@@ -1,6 +1,6 @@
 // src/rendering/video.ts
 
-import { spawn, type ChildProcess } from "child_process";
+import type { ChildProcess } from "child_process";
 import type { Labels } from "../model/labels.js";
 import type { LabeledFrame } from "../model/labeled-frame.js";
 import type { VideoOptions } from "./types.js";
@@ -10,6 +10,7 @@ import { renderImage } from "./render.js";
  * Check if ffmpeg is available in PATH.
  */
 export async function checkFfmpeg(): Promise<boolean> {
+  const { spawn } = await import("child_process");
   return new Promise((resolve) => {
     const proc = spawn("ffmpeg", ["-version"]);
     proc.on("error", () => resolve(false));
@@ -95,6 +96,7 @@ export async function renderVideo(
   ffmpegArgs.push(outputPath);
 
   // Spawn ffmpeg process
+  const { spawn } = await import("child_process");
   const ffmpeg: ChildProcess = spawn("ffmpeg", ffmpegArgs, {
     stdio: ["pipe", "pipe", "pipe"],
   });

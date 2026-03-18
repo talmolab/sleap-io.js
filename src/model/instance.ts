@@ -12,6 +12,7 @@ export type Point = {
   xy: [number, number];
   visible: boolean;
   complete: boolean;
+  score?: number;
   name?: string;
 };
 
@@ -245,7 +246,7 @@ export class PredictedInstance extends Instance {
     return this.points.map((point) => {
       const xy = invisibleAsNaN && !point.visible ? [Number.NaN, Number.NaN] : [point.xy[0], point.xy[1]];
       if (options?.scores) {
-        return [xy[0], xy[1], (point as PredictedPoint).score ?? 0];
+        return [xy[0], xy[1], point.score ?? 0];
       }
       return xy;
     });

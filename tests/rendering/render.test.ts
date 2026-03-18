@@ -447,7 +447,7 @@ describe("export utilities", () => {
         height: 100,
       });
 
-      const dataUrl = toDataURL(imageData);
+      const dataUrl = await toDataURL(imageData);
 
       expect(dataUrl).toMatch(/^data:image\/png;base64,/);
     });
@@ -459,7 +459,7 @@ describe("export utilities", () => {
         background: [255, 255, 255],
       });
 
-      const dataUrl = toDataURL(imageData, "jpeg");
+      const dataUrl = await toDataURL(imageData, "jpeg");
 
       expect(dataUrl).toMatch(/^data:image\/jpeg;base64,/);
     });

@@ -10,15 +10,20 @@ def on_page_content(html: str, page, config, files) -> str:  # noqa: ARG001
         md_url = f"../{src_path.name}"
 
     svg_icon = (
-        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24">'
+        '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"'
+        ' width="18" height="18">'
         '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 '
         '2-2V8l-6-6m4 18H6V4h7v5h5v11M13 9V3.5L18.5 9H13Z"/></svg>'
     )
     source_link = (
-        f'<div class="md-source-file">'
-        f'<a href="{md_url}" title="View markdown source" class="md-icon">'
-        f"{svg_icon}</a></div>\n"
+        f'<a href="{md_url}" title="View markdown source"'
+        f' class="md-source-file-link">{svg_icon}</a>'
     )
+
+    # Insert inside the <h1> tag (before the headerlink) so it renders inline
+    h1_close = html.find("</h1>")
+    if h1_close >= 0:
+        return html[:h1_close] + source_link + html[h1_close:]
 
     return source_link + html
 

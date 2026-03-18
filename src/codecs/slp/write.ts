@@ -5,43 +5,144 @@ import { RecordingSession, Camera, InstanceGroup, FrameGroup } from "../../model
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
-import { getH5Module } from "./h5.js";
+import { getH5Module, getH5FileSystem } from "./h5.js";
+import { ROI, encodeWkb } from "../../model/roi.js";
+import { SegmentationMask } from "../../model/mask.js";
 
-const isNode = typeof process !== "undefined" && !!process.versions?.node;
+// File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
+let _writeToFile: ((filename: string, bytes: Uint8Array) => Promise<void>) | null = null;
+
+/**
+ * Register a file writer for Node.js environments.
+ * Called as a side-effect when the Node entry point imports h5-node.ts.
+ * @internal
+ */
+export function _registerFileWriter(
+  writer: (filename: string, bytes: Uint8Array) => Promise<void>
+): void {
+  _writeToFile = writer;
+}
 
 const FORMAT_ID = 1.4;
 const SPAWNED_ON = 0;
 
-export async function writeSlp(
-  filename: string,
+export type SlpWriteOptions = {
+  embed?: boolean | string;
+  restoreOriginalVideos?: boolean;
+};
+
+/** Frame data collected for embedding a single video. */
+interface EmbeddedVideoFrames {
+  /** Video index in labels.videos */
+  videoIndex: number;
+  /** Frame indices (original video frame numbers) */
+  frameNumbers: number[];
+  /** Encoded frame bytes (PNG/JPEG) indexed by frame number */
+  frameData: Map<number, Uint8Array>;
+  /** Image format (png, jpeg) */
+  format: string;
+  /** Channel order (RGB, BGR) */
+  channelOrder: string;
+}
+
+function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<number, EmbeddedVideoFrames> | null): void {
+  writeMetadata(file, labels);
+
+  if (embeddedVideoData && embeddedVideoData.size > 0) {
+    writeEmbeddedVideos(file, labels, embeddedVideoData);
+  } else {
+    writeVideos(file, labels.videos);
+  }
+
+  writeTracks(file, labels.tracks);
+  writeSuggestions(file, labels.suggestions, labels.videos);
+  writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
+  writeLabeledFrames(file, labels);
+  writeNegativeFrames(file, labels);
+  writeRois(file, labels.rois, labels.videos, labels.tracks);
+  writeMasks(file, labels.masks, labels.videos, labels.tracks);
+}
+
+/**
+ * Serialize Labels to SLP format and return the bytes.
+ * Works in both Node.js and browser environments.
+ *
+ * When `embed` is set, video frames are read from their backends and stored
+ * directly in the SLP file as HDF5 datasets (video0/video, video1/video, etc.).
+ * The video backends must be open and able to return frame data.
+ *
+ * Supported embed modes:
+ * - `true` or `"all"` - Embed all labeled frames
+ * - `"user"` - Embed only frames with user instances
+ * - `"suggestions"` - Embed only suggestion frames
+ * - `"user+suggestions"` - Embed user instance frames and suggestion frames
+ * - `"source"` - Restore original video paths (no embedding)
+ */
+export async function saveSlpToBytes(
   labels: Labels,
-  options?: {
-    embed?: boolean | string;
-    restoreOriginalVideos?: boolean;
-  }
-): Promise<void> {
+  options?: SlpWriteOptions
+): Promise<Uint8Array> {
   const embedMode = options?.embed ?? false;
-  if (embedMode && embedMode !== "source") {
-    throw new Error("Embedding frames is not supported yet in writeSlp.");
-  }
-  if (!isNode) {
-    throw new Error("writeSlp currently requires a Node.js environment.");
+
+  // Source mode: restore original video paths before writing
+  let writeLabels = labels;
+  if (embedMode === "source") {
+    const restoredVideos = labels.videos.map((video) => {
+      if (video.sourceVideo) return video.sourceVideo;
+      return video;
+    });
+    writeLabels = new Labels({
+      labeledFrames: labels.labeledFrames.map((frame) => {
+        const videoIdx = labels.videos.indexOf(frame.video);
+        const restoredVideo = videoIdx >= 0 ? restoredVideos[videoIdx] : frame.video;
+        return new LabeledFrame({ video: restoredVideo, frameIdx: frame.frameIdx, instances: frame.instances });
+      }),
+      videos: restoredVideos,
+      skeletons: labels.skeletons,
+      tracks: labels.tracks,
+      suggestions: labels.suggestions,
+      sessions: labels.sessions,
+      provenance: labels.provenance,
+    });
   }
 
   const module = await getH5Module();
+  const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
 
-  const file = new module.File(filename, "w");
+  // If embedding, we need to determine frames per video and prepare embedded data
+  let embeddedVideoData: Map<number, EmbeddedVideoFrames> | null = null;
+  if (embedMode && embedMode !== "source") {
+    embeddedVideoData = await collectFramesForEmbedding(labels, embedMode);
+  }
+
+  const file = new module.File(memPath, "w");
   try {
-    writeMetadata(file, labels);
-    writeVideos(file, labels.videos);
-    writeTracks(file, labels.tracks);
-    writeSuggestions(file, labels.suggestions, labels.videos);
-    writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
-    writeLabeledFrames(file, labels);
+    writeSlpToFile(file, writeLabels, embeddedVideoData);
   } finally {
     file.close();
   }
 
+  const fs = getH5FileSystem(module);
+  const bytes = fs.readFile!(memPath);
+  fs.unlink!(memPath);
+  return bytes;
+}
+
+export async function writeSlp(
+  filename: string,
+  labels: Labels,
+  options?: SlpWriteOptions
+): Promise<void> {
+  const bytes = await saveSlpToBytes(labels, options);
+
+  if (_writeToFile) {
+    await _writeToFile(filename, bytes);
+  } else {
+    throw new Error(
+      "writeSlp requires a Node.js environment for file I/O. " +
+      "Use saveSlpToBytes() to get the SLP data as a Uint8Array in the browser."
+    );
+  }
 }
 
 function writeMetadata(file: any, labels: Labels): void {
@@ -57,9 +158,11 @@ function writeMetadata(file: any, labels: Labels): void {
     provenance: labels.provenance ?? {},
   };
 
+  const formatId = (labels.rois.length > 0 || labels.masks.length > 0) ? 1.5 : FORMAT_ID;
+
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
-  metadataGroup.create_attribute("format_id", FORMAT_ID);
+  metadataGroup.create_attribute("format_id", formatId);
   metadataGroup.create_attribute("json", JSON.stringify(metadata));
 }
 
@@ -135,7 +238,7 @@ function writeSuggestions(file: any, suggestions: SuggestionFrame[], videos: Vid
     JSON.stringify({
       video: String(videos.indexOf(suggestion.video)),
       frame_idx: suggestion.frameIdx,
-      group: suggestion.metadata?.group ?? 0,
+      group: suggestion.group ?? "default",
     })
   );
   file.create_dataset({ name: "suggestions_json", data: payload });
@@ -239,8 +342,8 @@ function pointsToDict(instance: Instance): Record<string, number[]> {
       point.visible ? 1 : 0,
       point.complete ? 1 : 0,
     ];
-    if ((point as any).score != null) {
-      row.push((point as any).score as number);
+    if (point.score != null) {
+      row.push(point.score);
     }
     dict[name] = row;
   });
@@ -356,6 +459,203 @@ function writeLabeledFrames(file: any, labels: Labels): void {
   createMatrixDataset(file, "pred_points", predPoints, ["x", "y", "visible", "complete", "score"], "<f8");
 }
 
+function writeNegativeFrames(file: any, labels: Labels): void {
+  const negativeFrames = labels.labeledFrames.filter((f) => f.isNegative);
+  if (!negativeFrames.length) return;
+  const rows: number[][] = [];
+  for (const frame of negativeFrames) {
+    const videoIndex = Math.max(0, labels.videos.indexOf(frame.video));
+    rows.push([videoIndex, frame.frameIdx]);
+  }
+  createMatrixDataset(file, "negative_frames", rows, ["video_id", "frame_idx"], "<i8");
+}
+
+/**
+ * Collect frame data for embedding from video backends.
+ */
+async function collectFramesForEmbedding(
+  labels: Labels,
+  embedMode: boolean | string
+): Promise<Map<number, EmbeddedVideoFrames>> {
+  const result = new Map<number, EmbeddedVideoFrames>();
+
+  // Determine which frame indices to embed per video
+  const framesByVideo = new Map<number, Set<number>>();
+  const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
+
+  for (const frame of labels.labeledFrames) {
+    const videoIndex = labels.videos.indexOf(frame.video);
+    if (videoIndex < 0) continue;
+
+    let include = false;
+    if (mode === "all") {
+      include = true;
+    } else if (mode === "user") {
+      include = frame.hasUserInstances;
+    } else if (mode === "suggestions") {
+      // Include if this frame is a suggestion
+      include = false; // handled below
+    } else if (mode === "user+suggestions") {
+      include = frame.hasUserInstances;
+    }
+
+    if (include) {
+      if (!framesByVideo.has(videoIndex)) framesByVideo.set(videoIndex, new Set());
+      framesByVideo.get(videoIndex)!.add(frame.frameIdx);
+    }
+  }
+
+  // Add suggestion frames
+  if (mode === "suggestions" || mode === "user+suggestions") {
+    for (const suggestion of labels.suggestions) {
+      const videoIndex = labels.videos.indexOf(suggestion.video);
+      if (videoIndex < 0) continue;
+      if (!framesByVideo.has(videoIndex)) framesByVideo.set(videoIndex, new Set());
+      framesByVideo.get(videoIndex)!.add(suggestion.frameIdx);
+    }
+  }
+
+  // Read frames from backends
+  for (const [videoIndex, frameIndices] of framesByVideo) {
+    const video = labels.videos[videoIndex];
+    if (!video || !video.backend) continue;
+
+    const sortedFrames = Array.from(frameIndices).sort((a, b) => a - b);
+    const frameData = new Map<number, Uint8Array>();
+
+    for (const frameIdx of sortedFrames) {
+      const frame = await video.getFrame(frameIdx);
+      if (frame) {
+        const bytes = frameToBytes(frame);
+        if (bytes) {
+          frameData.set(frameIdx, bytes);
+        }
+      }
+    }
+
+    if (frameData.size > 0) {
+      const backendFormat = (video.backendMetadata?.format as string) ?? "png";
+      const backendChannelOrder = (video.backendMetadata?.channel_order as string) ?? "RGB";
+      result.set(videoIndex, {
+        videoIndex,
+        frameNumbers: sortedFrames.filter((f) => frameData.has(f)),
+        frameData,
+        format: backendFormat,
+        channelOrder: backendChannelOrder,
+      });
+    }
+  }
+
+  return result;
+}
+
+/**
+ * Convert a video frame to Uint8Array bytes for embedding.
+ */
+function frameToBytes(frame: unknown): Uint8Array | null {
+  if (frame instanceof Uint8Array) return frame;
+  if (frame instanceof ArrayBuffer) return new Uint8Array(frame);
+  if (ArrayBuffer.isView(frame)) {
+    const view = frame as ArrayBufferView;
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  }
+  return null;
+}
+
+/**
+ * Write video metadata and embedded frame data for videos that are being embedded.
+ */
+function writeEmbeddedVideos(
+  file: any,
+  labels: Labels,
+  embeddedVideoData: Map<number, EmbeddedVideoFrames>
+): void {
+  const payload = labels.videos.map((video, videoIndex) => {
+    const embedData = embeddedVideoData.get(videoIndex);
+    if (embedData) {
+      // This video is being embedded - update metadata
+      const backend: Record<string, unknown> = {
+        filename: ".",
+        dataset: `video${videoIndex}/video`,
+        format: embedData.format,
+        channel_order: embedData.channelOrder,
+      };
+      if (video.backend?.shape) backend.shape = video.backend.shape;
+      if (video.backend?.fps != null) backend.fps = video.backend.fps;
+
+      const entry: Record<string, unknown> = {
+        filename: ".",
+        backend,
+      };
+      // Preserve source_video reference to original
+      if (video.sourceVideo) {
+        entry.source_video = { filename: video.sourceVideo.filename };
+      } else if (!video.hasEmbeddedImages) {
+        // If this video wasn't already embedded, save original path as source
+        entry.source_video = { filename: Array.isArray(video.filename) ? video.filename[0] : video.filename };
+      }
+      return JSON.stringify(entry);
+    } else {
+      return JSON.stringify(serializeVideo(video));
+    }
+  });
+  file.create_dataset({ name: "videos_json", data: payload });
+
+  // Write embedded video datasets
+  for (const [videoIndex, embedData] of embeddedVideoData) {
+    const groupName = `video${videoIndex}`;
+    file.create_group(groupName);
+
+    // Write frame data as vlen array
+    const frameBytes: Uint8Array[] = [];
+    for (const frameNum of embedData.frameNumbers) {
+      const data = embedData.frameData.get(frameNum);
+      if (data) frameBytes.push(data);
+    }
+
+    // Concatenate all frame bytes into a single buffer
+    const totalSize = frameBytes.reduce((sum, b) => sum + b.length, 0);
+    const combined = new Uint8Array(totalSize);
+    let offset = 0;
+    for (const bytes of frameBytes) {
+      combined.set(bytes, offset);
+      offset += bytes.length;
+    }
+
+    // Write video data as a 1D uint8 dataset
+    file.create_dataset({
+      name: `${groupName}/video`,
+      data: combined,
+      shape: [combined.length],
+      dtype: "<B",
+    });
+
+    // Set format and channel_order attributes on the dataset
+    const videoDs = file.get(`${groupName}/video`);
+    if (videoDs) {
+      videoDs.create_attribute("format", embedData.format);
+      videoDs.create_attribute("channel_order", embedData.channelOrder);
+    }
+
+    // Write frame_numbers dataset
+    file.create_dataset({
+      name: `${groupName}/frame_numbers`,
+      data: embedData.frameNumbers,
+      shape: [embedData.frameNumbers.length],
+      dtype: "<i4",
+    });
+
+    // Write frame_sizes dataset for reliable frame boundary detection
+    const frameSizes = frameBytes.map(b => b.length);
+    file.create_dataset({
+      name: `${groupName}/frame_sizes`,
+      data: frameSizes,
+      shape: [frameSizes.length],
+      dtype: "<i4",
+    });
+  }
+}
+
 function createMatrixDataset(file: any, name: string, rows: number[][], fieldNames: string[], dtype: string): void {
   const rowCount = rows.length;
   const colCount = fieldNames.length;
@@ -363,4 +663,105 @@ function createMatrixDataset(file: any, name: string, rows: number[][], fieldNam
   file.create_dataset({ name, data, shape: [rowCount, colCount], dtype });
   const dataset = file.get(name);
   dataset.create_attribute("field_names", fieldNames);
+}
+
+function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name: string }>): void {
+  if (!rois.length) return;
+
+  const rows: number[][] = [];
+  const wkbChunks: Uint8Array[] = [];
+  let wkbOffset = 0;
+  const categories: string[] = [];
+  const names: string[] = [];
+  const sources: string[] = [];
+
+  for (const roi of rois) {
+    const wkb = encodeWkb(roi.geometry);
+    const wkbStart = wkbOffset;
+    const wkbEnd = wkbOffset + wkb.length;
+    wkbChunks.push(wkb);
+    wkbOffset = wkbEnd;
+
+    const videoIdx = roi.video ? videos.indexOf(roi.video) : -1;
+    const frameIdx = roi.frameIdx ?? -1;
+    const trackIdx = roi.track ? tracks.indexOf(roi.track as any) : -1;
+    const score = roi.score ?? Number.NaN;
+
+    rows.push([roi.annotationType, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd]);
+    categories.push(roi.category);
+    names.push(roi.name);
+    sources.push(roi.source);
+  }
+
+  createMatrixDataset(file, "rois", rows,
+    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end"], "<f8");
+
+  // Set string metadata as attributes
+  const roisDs = file.get("rois");
+  roisDs.create_attribute("categories", JSON.stringify(categories));
+  roisDs.create_attribute("names", JSON.stringify(names));
+  roisDs.create_attribute("sources", JSON.stringify(sources));
+
+  // Write concatenated WKB bytes
+  const totalWkb = wkbChunks.reduce((sum, c) => sum + c.length, 0);
+  const wkbFlat = new Uint8Array(totalWkb);
+  let offset = 0;
+  for (const chunk of wkbChunks) {
+    wkbFlat.set(chunk, offset);
+    offset += chunk.length;
+  }
+  file.create_dataset({ name: "roi_wkb", data: wkbFlat, shape: [wkbFlat.length], dtype: "<B" });
+}
+
+function writeMasks(file: any, masks: SegmentationMask[], videos: Video[], tracks: Array<{ name: string }>): void {
+  if (!masks.length) return;
+
+  const rows: number[][] = [];
+  const rleChunks: Uint8Array[] = [];
+  let rleOffset = 0;
+  const categories: string[] = [];
+  const names: string[] = [];
+  const sources: string[] = [];
+
+  for (const mask of masks) {
+    // Convert Uint32Array RLE counts to bytes (little-endian)
+    const rleBytes = new Uint8Array(mask.rleCounts.length * 4);
+    const view = new DataView(rleBytes.buffer);
+    for (let j = 0; j < mask.rleCounts.length; j++) {
+      view.setUint32(j * 4, mask.rleCounts[j], true);
+    }
+    const rleStart = rleOffset;
+    const rleEnd = rleOffset + rleBytes.length;
+    rleChunks.push(rleBytes);
+    rleOffset = rleEnd;
+
+    const videoIdx = mask.video ? videos.indexOf(mask.video) : -1;
+    const frameIdx = mask.frameIdx ?? -1;
+    const trackIdx = mask.track ? tracks.indexOf(mask.track as any) : -1;
+    const score = mask.score ?? Number.NaN;
+
+    rows.push([mask.height, mask.width, mask.annotationType, videoIdx, frameIdx, trackIdx, score, rleStart, rleEnd]);
+    categories.push(mask.category);
+    names.push(mask.name);
+    sources.push(mask.source);
+  }
+
+  createMatrixDataset(file, "masks", rows,
+    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end"], "<f8");
+
+  // Set string metadata as attributes
+  const masksDs = file.get("masks");
+  masksDs.create_attribute("categories", JSON.stringify(categories));
+  masksDs.create_attribute("names", JSON.stringify(names));
+  masksDs.create_attribute("sources", JSON.stringify(sources));
+
+  // Write concatenated RLE bytes
+  const totalRle = rleChunks.reduce((sum, c) => sum + c.length, 0);
+  const rleFlat = new Uint8Array(totalRle);
+  let offset = 0;
+  for (const chunk of rleChunks) {
+    rleFlat.set(chunk, offset);
+    offset += chunk.length;
+  }
+  file.create_dataset({ name: "mask_rle", data: rleFlat, shape: [rleFlat.length], dtype: "<B" });
 }

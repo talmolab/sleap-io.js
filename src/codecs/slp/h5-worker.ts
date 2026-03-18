@@ -82,7 +82,17 @@ self.onmessage = async function(e) {
         respond(id, { success: false, error: 'Unknown message type: ' + type });
     }
   } catch (error) {
-    respond(id, { success: false, error: error.message || String(error) });
+    // Robustly extract error message from various error types
+    let errorMessage = 'Unknown error';
+    if (error instanceof Error) {
+      errorMessage = error.message;
+    } else if (typeof error === 'string') {
+      errorMessage = error;
+    } else if (error && typeof error === 'object') {
+      // Handle Emscripten errors which may be objects with various properties
+      errorMessage = error.message || error.error || error.reason || JSON.stringify(error);
+    }
+    respond(id, { success: false, error: errorMessage });
   }
 };
 
@@ -104,9 +114,10 @@ async function initH5Wasm(h5wasmUrl) {
   importScripts(url);
 
   // Wait for module to be ready
-  const Module = await h5wasm.ready;
+  await h5wasm.ready;
   h5wasmModule = h5wasm;
-  FS = Module.FS;
+  // FS is exposed directly on h5wasm module after ready
+  FS = h5wasm.FS;
 }
 
 async function openRemoteFile(url, filename = 'data.h5') {
