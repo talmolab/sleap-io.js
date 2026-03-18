@@ -101,6 +101,6 @@ describe("MediaBunnyVideoBackend integration (real WebM file)", () => {
   });
 
   // Frame decoding (getFrame with valid index) requires WebCodecs (VideoDecoder),
-  // which is only available in browsers. Initialization, metadata, and frame time
-  // tests above verify the MediaBunny parsing pipeline works correctly.
+  // which is available in browser/Tauri WebView but not in Node.js where Vitest runs.
+  // The full decode pipeline works in Tauri v2 — this is a test-runner limitation only.
 });
