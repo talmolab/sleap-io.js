@@ -21,6 +21,15 @@ import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+function hasUv(): boolean {
+  try {
+    execSync("uv --version", { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function tmpSlp(): string {
   return join(tmpdir(), `sleap-io-js-test-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
 }
@@ -187,7 +196,7 @@ describe("Python compatibility (#76)", () => {
     }
   });
 
-  it("Python h5py reads fixed-length string attrs as bytes with .decode()", async () => {
+  it.skipIf(!hasUv())("Python h5py reads fixed-length string attrs as bytes with .decode()", async () => {
     // This directly tests the fix for #76: the metadata JSON attribute
     // must be readable by Python's `json.loads(md.decode())` pattern.
     const skeleton = new Skeleton({ name: "fly", nodes: ["head", "thorax", "abdomen"] });
