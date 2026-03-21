@@ -123,6 +123,18 @@ export async function readSlpLazy(
     const pointsData = normalizeStructDataset(file.get("points"));
     const predPointsData = normalizeStructDataset(file.get("pred_points"));
 
+    // Read negative frames
+    const negativeFrames = new Set<string>();
+    const negativeFramesDs = file.get("negative_frames");
+    if (negativeFramesDs) {
+      const negData = normalizeStructDataset(negativeFramesDs);
+      const videoIds = negData.video_id ?? negData.video ?? [];
+      const frameIdxs = negData.frame_idx ?? [];
+      for (let i = 0; i < frameIdxs.length; i++) {
+        negativeFrames.add(`${Number(videoIds[i])}:${Number(frameIdxs[i])}`);
+      }
+    }
+
     const store = new LazyDataStore({
       framesData,
       instancesData,
@@ -132,6 +144,7 @@ export async function readSlpLazy(
       tracks,
       videos,
       formatId,
+      negativeFrames,
     });
 
     const lazyFrames = new LazyFrameList(store);

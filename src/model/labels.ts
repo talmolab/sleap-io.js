@@ -244,7 +244,11 @@ export class Labels {
     const frames = this.labeledFrames.filter((frame) => frame.video.matchesPath(targetVideo, true));
     if (!frames.length) return [];
 
-    const maxFrame = Math.max(...frames.map((frame) => frame.frameIdx));
+    let maxFrame = Math.max(...frames.map((frame) => frame.frameIdx));
+    const videoLength = targetVideo.shape?.[0] ?? 0;
+    if (videoLength > 0) {
+      maxFrame = Math.max(maxFrame, videoLength - 1);
+    }
     const tracks = this.tracks.length ? this.tracks.length : Math.max(1, ...frames.map((frame) => frame.instances.length));
     const nodes = this.skeletons[0]?.nodes.length ?? 0;
     const channelCount = options?.returnConfidence ? 3 : 2;

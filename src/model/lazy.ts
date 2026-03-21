@@ -17,6 +17,7 @@ export class LazyDataStore {
   tracks: Track[];
   videos: Video[];
   formatId: number;
+  negativeFrames: Set<string>;
 
   constructor(options: {
     framesData: Record<string, any[]>;
@@ -27,6 +28,7 @@ export class LazyDataStore {
     tracks: Track[];
     videos: Video[];
     formatId: number;
+    negativeFrames?: Set<string>;
   }) {
     this.framesData = options.framesData;
     this.instancesData = options.instancesData;
@@ -36,6 +38,7 @@ export class LazyDataStore {
     this.tracks = options.tracks;
     this.videos = options.videos;
     this.formatId = options.formatId;
+    this.negativeFrames = options.negativeFrames ?? new Set();
   }
 
   /** Total number of frames in the store. */
@@ -110,7 +113,12 @@ export class LazyDataStore {
       }
     }
 
-    return new LabeledFrame({ video, frameIdx: frameIndex, instances });
+    const frame = new LabeledFrame({ video, frameIdx: frameIndex, instances });
+    const negKey = `${videoIndex}:${frameIndex}`;
+    if (this.negativeFrames.has(negKey)) {
+      frame.isNegative = true;
+    }
+    return frame;
   }
 
   /**
@@ -156,6 +164,11 @@ export class LazyDataStore {
       matchingFrames.push(i);
     }
     if (!matchingFrames.length) return [];
+
+    const videoLength = targetVideo.shape?.[0] ?? 0;
+    if (videoLength > 0) {
+      maxFrameIdx = Math.max(maxFrameIdx, videoLength - 1);
+    }
 
     const nodeCount = this.skeletons[0]?.nodes.length ?? 0;
     const channelCount = options?.returnConfidence ? 3 : 2;
