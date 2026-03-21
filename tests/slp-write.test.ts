@@ -8,6 +8,7 @@ import { Skeleton } from "../src/model/skeleton.js";
 import { Video } from "../src/model/video.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
+import { ready, File as H5File } from "h5wasm/node";
 
 const fixtureRoot = fileURLToPath(new URL("./data", import.meta.url));
 
@@ -110,6 +111,64 @@ describe("saveSlpToBytes", () => {
     for (let i = 0; i < original.labeledFrames.length; i++) {
       expect(loaded.labeledFrames[i].frameIdx).toBe(original.labeledFrames[i].frameIdx);
       expect(loaded.labeledFrames[i].instances.length).toBe(original.labeledFrames[i].instances.length);
+    }
+  });
+
+  it("writes string attributes as bytes for Python compatibility (#76)", async () => {
+    const skeleton = new Skeleton({ name: "test", nodes: ["A", "B"] });
+    const video = new Video({ filename: "test.mp4" });
+    const instance = new Instance({
+      skeleton,
+      points: [
+        { xy: [10, 20], visible: true, complete: true },
+        { xy: [30, 40], visible: true, complete: true },
+      ],
+    });
+    const labeledFrame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instance],
+    });
+    const labels = new Labels({
+      skeletons: [skeleton],
+      videos: [video],
+      labeledFrames: [labeledFrame],
+    });
+
+    const bytes = await saveSlpToBytes(labels);
+
+    // Round-trip still works
+    const loaded = await loadSlp(bytes, { openVideos: false });
+    expect(loaded.skeletons[0].name).toBe("test");
+    expect(loaded.skeletons[0].nodeNames).toEqual(["A", "B"]);
+
+    // Open HDF5 directly and verify attributes are byte arrays, not strings
+    const module = await ready;
+    const memPath = `/tmp/attr_type_test_${Date.now()}.slp`;
+    module.FS.writeFile(memPath, bytes);
+    const file = new H5File(memPath, "r");
+    try {
+      const metadataGroup = file.get("metadata");
+      const jsonAttr = (metadataGroup as any).attrs["json"];
+      expect(jsonAttr.value).toBeInstanceOf(Uint8Array);
+
+      const framesDs = file.get("frames");
+      const fieldNamesAttr = (framesDs as any).attrs["field_names"];
+      expect(fieldNamesAttr.value).toBeInstanceOf(Uint8Array);
+
+      // Verify the byte content decodes to valid JSON
+      const decoder = new TextDecoder();
+      const jsonStr = decoder.decode(jsonAttr.value as Uint8Array);
+      const metadata = JSON.parse(jsonStr);
+      expect(metadata).toHaveProperty("version");
+      expect(metadata).toHaveProperty("skeletons");
+
+      const fieldNamesStr = decoder.decode(fieldNamesAttr.value as Uint8Array);
+      const fieldNames = JSON.parse(fieldNamesStr);
+      expect(fieldNames).toContain("frame_id");
+    } finally {
+      file.close();
+      module.FS.unlink(memPath);
     }
   });
 });
