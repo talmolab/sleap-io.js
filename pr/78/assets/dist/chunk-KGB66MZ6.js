@@ -4303,20 +4303,47 @@ function serializeSkeletons(skeletons) {
   }
   const serialized = skeletons.map((skeleton) => {
     const links = [];
+    const edgeTypePyId = {};
+    let nextPyId = 1;
+    let edgeInsertIdx = 0;
+    function makeEdgeType(typeVal) {
+      if (edgeTypePyId[typeVal] != null) {
+        return { "py/id": edgeTypePyId[typeVal] };
+      }
+      edgeTypePyId[typeVal] = nextPyId++;
+      return {
+        "py/reduce": [
+          { "py/type": "sleap.skeleton.EdgeType" },
+          { "py/tuple": [typeVal] }
+        ]
+      };
+    }
     for (const edge of skeleton.edges) {
       const source = nodeIndex.get(edge.source.name) ?? 0;
       const target = nodeIndex.get(edge.destination.name) ?? 0;
-      links.push({ source, target, type: { "py/tuple": [1] } });
+      links.push({
+        edge_insert_idx: edgeInsertIdx++,
+        key: 0,
+        source,
+        target,
+        type: makeEdgeType(1)
+      });
     }
     for (const [left, right] of skeleton.symmetryNames) {
       const source = nodeIndex.get(left) ?? 0;
       const target = nodeIndex.get(right) ?? 0;
-      links.push({ source, target, type: { "py/tuple": [2] } });
+      links.push({ key: 0, source, target, type: makeEdgeType(2) });
     }
+    const skeletonNodeIds = skeleton.nodeNames.map((name) => nodeIndex.get(name) ?? 0);
     return {
+      directed: true,
+      graph: {
+        name: skeleton.name ?? "",
+        num_edges_inserted: skeleton.edges.length
+      },
       links,
-      name: skeleton.name ?? void 0,
-      graph: skeleton.name ? { name: skeleton.name } : void 0
+      multigraph: true,
+      nodes: skeletonNodeIds.map((id) => ({ id }))
     };
   });
   return { skeletons: serialized, nodes };
