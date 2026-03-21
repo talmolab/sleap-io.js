@@ -20,6 +20,7 @@ export * from "./video/mediabunny-video.js";
 export * from "./video/streaming-hdf5-video.js";
 export { createVideoBackend, type VideoBackendType } from "./video/factory.js";
 export * from "./io/main.js";
+export * from "./io/geojson.js";
 export * from "./codecs/dictionary.js";
 export * from "./codecs/numpy.js";
 export * from "./codecs/skeleton-yaml.js";

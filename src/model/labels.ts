@@ -91,6 +91,15 @@ export class Labels {
     this.labeledFrames = this._lazyFrameList.toArray();
     this._lazyFrameList = null;
     this._lazyDataStore = null;
+
+    // Resolve deferred ROI instance references
+    const allInstances = this.labeledFrames.flatMap((f) => f.instances);
+    for (const roi of this.rois) {
+      if (roi._instanceIdx !== null && roi._instanceIdx >= 0 && roi._instanceIdx < allInstances.length) {
+        roi.instance = allInstances[roi._instanceIdx];
+        roi._instanceIdx = null;
+      }
+    }
   }
 
   get negativeFrames(): LabeledFrame[] {

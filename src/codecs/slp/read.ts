@@ -71,7 +71,8 @@ export async function readSlp(
     }
 
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
-    const rois = readRois(file, videos, tracks);
+    const allInstances = labeledFrames.flatMap((f) => f.instances);
+    const rois = readRois(file, videos, tracks, allInstances);
     const masks = readMasks(file, videos, tracks);
 
     return new Labels({
@@ -456,7 +457,7 @@ function readAttrString(dataset: any, name: string): string[] {
   return [];
 }
 
-function readRois(file: any, videos: Video[], tracks: Track[]): ROI[] {
+function readRois(file: any, videos: Video[], tracks: Track[], instances?: Array<Instance | PredictedInstance>): ROI[] {
   const roisDs = file.get("rois");
   if (!roisDs) return [];
   const roisData = normalizeStructDataset(roisDs);
@@ -479,6 +480,7 @@ function readRois(file: any, videos: Video[], tracks: Track[]): ROI[] {
   const scores = roisData.score ?? [];
   const wkbStarts = roisData.wkb_start ?? [];
   const wkbEnds = roisData.wkb_end ?? [];
+  const instanceIndices = roisData.instance ?? [];
 
   const rois: ROI[] = [];
   for (let i = 0; i < annotationTypes.length; i++) {
@@ -499,7 +501,7 @@ function readRois(file: any, videos: Video[], tracks: Track[]): ROI[] {
     const scoreVal = Number(scores[i]);
     const score = Number.isNaN(scoreVal) ? null : scoreVal;
 
-    rois.push(new ROI({
+    const roi = new ROI({
       geometry,
       annotationType: Number(annotationTypes[i]) as AnnotationType,
       name: names[i] ?? "",
@@ -509,7 +511,19 @@ function readRois(file: any, videos: Video[], tracks: Track[]): ROI[] {
       video,
       frameIdx,
       track,
-    }));
+    });
+
+    // Format >= 1.6: resolve instance references
+    if (instanceIndices.length > 0) {
+      const instIdx = Number(instanceIndices[i]);
+      if (instances && instIdx >= 0 && instIdx < instances.length) {
+        roi.instance = instances[instIdx];
+      } else if (instIdx >= 0) {
+        roi._instanceIdx = instIdx;
+      }
+    }
+
+    rois.push(roi);
   }
   return rois;
 }
