@@ -5,6 +5,7 @@ import { Skeleton, Edge, Node, Symmetry } from "../model/skeleton.js";
 import { Video } from "../model/video.js";
 import { SuggestionFrame } from "../model/suggestions.js";
 import { MediaVideoBackend } from "../video/media-video.js";
+import { MediaBunnyVideoBackend } from "../video/mediabunny-video.js";
 
 export type LabelsDict = {
   version: string;
@@ -253,6 +254,7 @@ function dictToInstance(
 function resolveBackendType(video: Video): string | null {
   if (!video.backend) return null;
   if (video.backend instanceof MediaVideoBackend) return "MediaVideo";
+  if (video.backend instanceof MediaBunnyVideoBackend) return "MediaBunny";
   return video.backend.constructor?.name ?? null;
 }
 
