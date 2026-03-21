@@ -9,7 +9,7 @@ import { labelsFromNumpy } from "../codecs/numpy.js";
 import type { LazyDataStore, LazyFrameList } from "./lazy.js";
 import type { ROI } from "./roi.js";
 import type { SegmentationMask } from "./mask.js";
-import type { AnnotationType } from "./roi.js";
+import type { BoundingBox } from "./bbox.js";
 
 export class Labels {
   labeledFrames: LabeledFrame[];
@@ -21,6 +21,7 @@ export class Labels {
   provenance: Record<string, unknown>;
   rois: ROI[];
   masks: SegmentationMask[];
+  bboxes: BoundingBox[];
 
   /** @internal Lazy frame list for on-demand materialization. */
   _lazyFrameList: LazyFrameList | null = null;
@@ -37,6 +38,7 @@ export class Labels {
     provenance?: Record<string, unknown>;
     rois?: ROI[];
     masks?: SegmentationMask[];
+    bboxes?: BoundingBox[];
   }) {
     this.labeledFrames = options?.labeledFrames ?? [];
     this.videos = options?.videos ?? [];
@@ -47,6 +49,7 @@ export class Labels {
     this.provenance = options?.provenance ?? {};
     this.rois = options?.rois ?? [];
     this.masks = options?.masks ?? [];
+    this.bboxes = options?.bboxes ?? [];
 
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = new Map<string | Video, Video>();
@@ -91,6 +94,15 @@ export class Labels {
     this.labeledFrames = this._lazyFrameList.toArray();
     this._lazyFrameList = null;
     this._lazyDataStore = null;
+
+    // Resolve bbox instance references
+    const allInstances = this.labeledFrames.flatMap((f) => f.instances);
+    for (const bbox of this.bboxes) {
+      if (bbox._instanceIdx !== null && bbox._instanceIdx >= 0 && bbox._instanceIdx < allInstances.length) {
+        bbox.instance = allInstances[bbox._instanceIdx];
+        bbox._instanceIdx = null;
+      }
+    }
   }
 
   get negativeFrames(): LabeledFrame[] {
@@ -157,7 +169,6 @@ export class Labels {
   getRois(filters?: {
     video?: Video;
     frameIdx?: number;
-    annotationType?: AnnotationType;
     category?: string;
     track?: Track;
     instance?: Instance | PredictedInstance;
@@ -169,9 +180,6 @@ export class Labels {
     }
     if (filters.frameIdx !== undefined) {
       results = results.filter((r) => r.frameIdx === filters.frameIdx);
-    }
-    if (filters.annotationType !== undefined) {
-      results = results.filter((r) => r.annotationType === filters.annotationType);
     }
     if (filters.category !== undefined) {
       results = results.filter((r) => r.category === filters.category);
@@ -188,7 +196,6 @@ export class Labels {
   getMasks(filters?: {
     video?: Video;
     frameIdx?: number;
-    annotationType?: AnnotationType;
     category?: string;
     track?: Track;
     instance?: Instance | PredictedInstance;
@@ -201,9 +208,6 @@ export class Labels {
     if (filters.frameIdx !== undefined) {
       results = results.filter((m) => m.frameIdx === filters.frameIdx);
     }
-    if (filters.annotationType !== undefined) {
-      results = results.filter((m) => m.annotationType === filters.annotationType);
-    }
     if (filters.category !== undefined) {
       results = results.filter((m) => m.category === filters.category);
     }
@@ -212,6 +216,45 @@ export class Labels {
     }
     if (filters.instance !== undefined) {
       results = results.filter((m) => m.instance === filters.instance);
+    }
+    return results;
+  }
+
+  get staticBboxes(): BoundingBox[] {
+    return this.bboxes.filter((b) => b.isStatic);
+  }
+
+  get temporalBboxes(): BoundingBox[] {
+    return this.bboxes.filter((b) => !b.isStatic);
+  }
+
+  getBboxes(filters?: {
+    video?: Video;
+    frameIdx?: number;
+    category?: string;
+    track?: Track;
+    instance?: Instance;
+    predicted?: boolean;
+  }): BoundingBox[] {
+    if (!filters) return [...this.bboxes];
+    let results = this.bboxes as BoundingBox[];
+    if (filters.video !== undefined) {
+      results = results.filter((b) => b.video === filters.video);
+    }
+    if (filters.frameIdx !== undefined) {
+      results = results.filter((b) => b.frameIdx === filters.frameIdx);
+    }
+    if (filters.category !== undefined) {
+      results = results.filter((b) => b.category === filters.category);
+    }
+    if (filters.track !== undefined) {
+      results = results.filter((b) => b.track === filters.track);
+    }
+    if (filters.instance !== undefined) {
+      results = results.filter((b) => b.instance === filters.instance);
+    }
+    if (filters.predicted !== undefined) {
+      results = results.filter((b) => b.isPredicted === filters.predicted);
     }
     return results;
   }

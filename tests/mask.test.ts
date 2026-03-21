@@ -5,7 +5,6 @@ import {
   encodeRle,
   decodeRle,
 } from "../src/model/mask.js";
-import { AnnotationType } from "../src/model/roi.js";
 
 function makeMask2D(height: number, width: number, fill?: (r: number, c: number) => boolean): Uint8Array {
   const flat = new Uint8Array(height * width);
@@ -89,7 +88,6 @@ describe("SegmentationMask", () => {
     expect(mask.height).toBe(10);
     expect(mask.width).toBe(15);
     expect(mask.name).toBe("test");
-    expect(mask.annotationType).toBe(AnnotationType.SEGMENTATION);
   });
 
   it("data roundtrip", () => {
@@ -124,21 +122,6 @@ describe("SegmentationMask", () => {
     expect(bb.y).toBe(0);
     expect(bb.width).toBe(0);
     expect(bb.height).toBe(0);
-  });
-
-  it("annotation type defaults to SEGMENTATION", () => {
-    const mask = SegmentationMask.fromArray(makeMask2D(5, 5), 5, 5);
-    expect(mask.annotationType).toBe(AnnotationType.SEGMENTATION);
-  });
-
-  it("with score", () => {
-    const mask = SegmentationMask.fromArray(
-      makeMask2D(5, 5, () => true),
-      5,
-      5,
-      { score: 0.95 },
-    );
-    expect(mask.score).toBe(0.95);
   });
 
   it("fromArray with boolean 2D array", () => {

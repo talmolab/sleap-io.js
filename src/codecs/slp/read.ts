@@ -11,6 +11,7 @@ import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { ROI, AnnotationType, decodeWkb } from "../../model/roi.js";
 import { SegmentationMask } from "../../model/mask.js";
+import { BoundingBox, UserBoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
 
 const textDecoder = new TextDecoder();
 
@@ -71,8 +72,15 @@ export async function readSlp(
     }
 
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
-    const rois = readRois(file, videos, tracks);
+    const { rois: readRoisResult, migratedBboxes } = readRoisWithMigration(file, videos, tracks);
+    let rois = readRoisResult;
     const masks = readMasks(file, videos, tracks);
+
+    // Read native bboxes dataset; fall back to migrated bbox ROIs
+    let bboxes = readBboxes(file, videos, tracks);
+    if (bboxes.length === 0 && migratedBboxes.length > 0) {
+      bboxes = migratedBboxes;
+    }
 
     return new Labels({
       labeledFrames,
@@ -84,6 +92,7 @@ export async function readSlp(
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
       rois,
       masks,
+      bboxes,
     });
   } finally {
     close();
@@ -139,8 +148,15 @@ export async function readSlpLazy(
     // Read sessions eagerly - they don't depend on frame data.
     // Pass empty labeledFrames since frames aren't materialized yet.
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
-    const rois = readRois(file, videos, tracks);
+    const { rois: readRoisResult, migratedBboxes } = readRoisWithMigration(file, videos, tracks);
+    const rois = readRoisResult;
     const masks = readMasks(file, videos, tracks);
+
+    // Read native bboxes dataset; fall back to migrated bbox ROIs
+    let bboxes = readBboxes(file, videos, tracks);
+    if (bboxes.length === 0 && migratedBboxes.length > 0) {
+      bboxes = migratedBboxes;
+    }
 
     const labels = new Labels({
       videos,
@@ -151,6 +167,7 @@ export async function readSlpLazy(
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
       rois,
       masks,
+      bboxes,
     });
 
     // Replace the eager labeledFrames with lazy proxy
@@ -443,15 +460,19 @@ function readAttrString(dataset: any, name: string): string[] {
   return [];
 }
 
-function readRois(file: any, videos: Video[], tracks: Track[]): ROI[] {
+function readRoisWithMigration(
+  file: any,
+  videos: Video[],
+  tracks: Track[],
+): { rois: ROI[]; migratedBboxes: BoundingBox[] } {
   const roisDs = file.get("rois");
-  if (!roisDs) return [];
+  if (!roisDs) return { rois: [], migratedBboxes: [] };
   const roisData = normalizeStructDataset(roisDs);
   const annotationTypes = roisData.annotation_type ?? [];
-  if (!annotationTypes.length) return [];
+  if (!annotationTypes.length) return { rois: [], migratedBboxes: [] };
 
   const wkbDs = file.get("roi_wkb");
-  if (!wkbDs) return [];
+  if (!wkbDs) return { rois: [], migratedBboxes: [] };
   const wkbFlat: Uint8Array = wkbDs.value instanceof Uint8Array
     ? wkbDs.value
     : new Uint8Array(wkbDs.value ?? []);
@@ -468,6 +489,8 @@ function readRois(file: any, videos: Video[], tracks: Track[]): ROI[] {
   const wkbEnds = roisData.wkb_end ?? [];
 
   const rois: ROI[] = [];
+  const migratedBboxes: BoundingBox[] = [];
+
   for (let i = 0; i < annotationTypes.length; i++) {
     const wkbStart = Number(wkbStarts[i]);
     const wkbEnd = Number(wkbEnds[i]);
@@ -483,22 +506,112 @@ function readRois(file: any, videos: Video[], tracks: Track[]): ROI[] {
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
 
-    const scoreVal = Number(scores[i]);
-    const score = Number.isNaN(scoreVal) ? null : scoreVal;
+    const annotType = Number(annotationTypes[i]);
 
-    rois.push(new ROI({
-      geometry,
-      annotationType: Number(annotationTypes[i]) as AnnotationType,
-      name: names[i] ?? "",
-      category: categories[i] ?? "",
-      score,
-      source: sources[i] ?? "",
+    // Migration: annotation_type === 1 (BOUNDING_BOX) -> BoundingBox object
+    if (annotType === AnnotationType.BOUNDING_BOX) {
+      const roi = new ROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, frameIdx, track });
+      const b = roi.bounds;
+      const scoreVal = Number(scores[i]);
+      const score = Number.isNaN(scoreVal) ? null : scoreVal;
+
+      const bboxOptions = {
+        xCenter: (b.minX + b.maxX) / 2,
+        yCenter: (b.minY + b.maxY) / 2,
+        width: b.maxX - b.minX,
+        height: b.maxY - b.minY,
+        video,
+        frameIdx,
+        track,
+        category: categories[i] ?? "",
+        name: names[i] ?? "",
+        source: sources[i] ?? "",
+      };
+
+      if (score !== null) {
+        migratedBboxes.push(new PredictedBoundingBox({ ...bboxOptions, score }));
+      } else {
+        migratedBboxes.push(new UserBoundingBox(bboxOptions));
+      }
+    } else {
+      rois.push(new ROI({
+        geometry,
+        name: names[i] ?? "",
+        category: categories[i] ?? "",
+        source: sources[i] ?? "",
+        video,
+        frameIdx,
+        track,
+      }));
+    }
+  }
+
+  return { rois, migratedBboxes };
+}
+
+function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] {
+  const bboxesDs = file.get("bboxes");
+  if (!bboxesDs) return [];
+  const bboxesData = normalizeStructDataset(bboxesDs);
+  const xCenters = bboxesData.x_center ?? [];
+  if (!xCenters.length) return [];
+
+  const categories = readAttrString(bboxesDs, "categories");
+  const names = readAttrString(bboxesDs, "names");
+  const sources = readAttrString(bboxesDs, "sources");
+
+  const yCenters = bboxesData.y_center ?? [];
+  const widths = bboxesData.width ?? [];
+  const heights = bboxesData.height ?? [];
+  const angles = bboxesData.angle ?? [];
+  const videoIndices = bboxesData.video ?? [];
+  const frameIndices = bboxesData.frame_idx ?? [];
+  const trackIndices = bboxesData.track ?? [];
+  const scores = bboxesData.score ?? [];
+  const instanceIndices = bboxesData.instance ?? [];
+
+  const bboxes: BoundingBox[] = [];
+  for (let i = 0; i < xCenters.length; i++) {
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+
+    const frameIdxVal = Number(frameIndices[i]);
+    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
+
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+
+    const scoreVal = Number(scores[i]);
+    const instanceIdx = Number(instanceIndices[i]);
+
+    const options = {
+      xCenter: Number(xCenters[i]),
+      yCenter: Number(yCenters[i]),
+      width: Number(widths[i]),
+      height: Number(heights[i]),
+      angle: Number(angles[i]),
       video,
       frameIdx,
       track,
-    }));
+      category: categories[i] ?? "",
+      name: names[i] ?? "",
+      source: sources[i] ?? "",
+    };
+
+    let bbox: BoundingBox;
+    if (Number.isNaN(scoreVal)) {
+      bbox = new UserBoundingBox(options);
+    } else {
+      bbox = new PredictedBoundingBox({ ...options, score: scoreVal });
+    }
+
+    if (instanceIdx >= 0) {
+      bbox._instanceIdx = instanceIdx;
+    }
+
+    bboxes.push(bbox);
   }
-  return rois;
+  return bboxes;
 }
 
 function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMask[] {
@@ -550,17 +663,12 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
 
-    const scoreVal = Number(scores[i]);
-    const score = Number.isNaN(scoreVal) ? null : scoreVal;
-
     masks.push(new SegmentationMask({
       rleCounts,
       height: Number(heights[i]),
       width: Number(widths[i]),
-      annotationType: Number(annotationTypes[i]) as AnnotationType,
       name: names[i] ?? "",
       category: categories[i] ?? "",
-      score,
       source: sources[i] ?? "",
       video,
       frameIdx,

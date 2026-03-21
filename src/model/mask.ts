@@ -1,6 +1,6 @@
 import type { Video } from "./video.js";
 import type { Track, Instance } from "./instance.js";
-import { AnnotationType, ROI, _registerMaskFactory } from "./roi.js";
+import { ROI, _registerMaskFactory } from "./roi.js";
 import type { Geometry } from "./roi.js";
 
 export function encodeRle(
@@ -58,10 +58,8 @@ export class SegmentationMask {
   rleCounts: Uint32Array;
   height: number;
   width: number;
-  annotationType: AnnotationType;
   name: string;
   category: string;
-  score: number | null;
   source: string;
   video: Video | null;
   frameIdx: number | null;
@@ -72,10 +70,8 @@ export class SegmentationMask {
     rleCounts: Uint32Array;
     height: number;
     width: number;
-    annotationType?: AnnotationType | number;
     name?: string;
     category?: string;
-    score?: number | null;
     source?: string;
     video?: Video | null;
     frameIdx?: number | null;
@@ -85,10 +81,8 @@ export class SegmentationMask {
     this.rleCounts = options.rleCounts;
     this.height = options.height;
     this.width = options.width;
-    this.annotationType = (options.annotationType ?? AnnotationType.SEGMENTATION) as AnnotationType;
     this.name = options.name ?? "";
     this.category = options.category ?? "";
-    this.score = options.score ?? null;
     this.source = options.source ?? "";
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
@@ -186,10 +180,8 @@ export class SegmentationMask {
 
     return new ROI({
       geometry,
-      annotationType: this.annotationType,
       name: this.name,
       category: this.category,
-      score: this.score,
       source: this.source,
       video: this.video,
       frameIdx: this.frameIdx,

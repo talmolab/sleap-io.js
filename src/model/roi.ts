@@ -31,10 +31,8 @@ export type Geometry =
 
 export class ROI {
   geometry: Geometry;
-  annotationType: AnnotationType;
   name: string;
   category: string;
-  score: number | null;
   source: string;
   video: Video | null;
   frameIdx: number | null;
@@ -43,10 +41,8 @@ export class ROI {
 
   constructor(options: {
     geometry: Geometry;
-    annotationType?: AnnotationType | number;
     name?: string;
     category?: string;
-    score?: number | null;
     source?: string;
     video?: Video | null;
     frameIdx?: number | null;
@@ -54,10 +50,8 @@ export class ROI {
     instance?: Instance | null;
   }) {
     this.geometry = options.geometry;
-    this.annotationType = (options.annotationType ?? AnnotationType.DEFAULT) as AnnotationType;
     this.name = options.name ?? "";
     this.category = options.category ?? "";
-    this.score = options.score ?? null;
     this.source = options.source ?? "";
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
@@ -86,7 +80,6 @@ export class ROI {
     };
     return new ROI({
       geometry,
-      annotationType: AnnotationType.BOUNDING_BOX,
       ...options,
     });
   }
@@ -112,7 +105,6 @@ export class ROI {
     };
     return new ROI({
       geometry,
-      annotationType: AnnotationType.BOUNDING_BOX,
       ...options,
     });
   }
@@ -132,13 +124,8 @@ export class ROI {
     const geometry: Geometry = { type: "Polygon", coordinates: [ring] };
     return new ROI({
       geometry,
-      annotationType: AnnotationType.SEGMENTATION,
       ...options,
     });
-  }
-
-  get isPredicted(): boolean {
-    return this.score !== null;
   }
 
   get isStatic(): boolean {
@@ -203,10 +190,8 @@ export class ROI {
     }
     const mask = rasterizeGeometry(this.geometry, height, width);
     return _maskFactory(mask, height, width, {
-      annotationType: this.annotationType,
       name: this.name,
       category: this.category,
-      score: this.score,
       source: this.source,
       video: this.video,
       frameIdx: this.frameIdx,
