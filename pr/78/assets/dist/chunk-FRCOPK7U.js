@@ -4200,8 +4200,9 @@ function _registerFileWriter(writer) {
 }
 var FORMAT_ID = 1.4;
 var textEncoder = new TextEncoder();
-function encodeAttr(value) {
-  return textEncoder.encode(value);
+function setStringAttr(target, name, value) {
+  const byteLength = textEncoder.encode(value).length;
+  target.create_attribute(name, value, null, `S${byteLength}`);
 }
 var SPAWNED_ON = 0;
 function writeSlpToFile(file, labels, embeddedVideoData) {
@@ -4287,7 +4288,7 @@ function writeMetadata(file, labels) {
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
-  metadataGroup.create_attribute("json", encodeAttr(JSON.stringify(metadata)));
+  setStringAttr(metadataGroup, "json", JSON.stringify(metadata));
 }
 function serializeSkeletons(skeletons) {
   const nodes = [];
@@ -4666,8 +4667,8 @@ function writeEmbeddedVideos(file, labels, embeddedVideoData) {
     });
     const videoDs = file.get(`${groupName}/video`);
     if (videoDs) {
-      videoDs.create_attribute("format", encodeAttr(embedData.format));
-      videoDs.create_attribute("channel_order", encodeAttr(embedData.channelOrder));
+      setStringAttr(videoDs, "format", embedData.format);
+      setStringAttr(videoDs, "channel_order", embedData.channelOrder);
     }
     file.create_dataset({
       name: `${groupName}/frame_numbers`,
@@ -4690,7 +4691,7 @@ function createMatrixDataset(file, name, rows, fieldNames, dtype) {
   const data = rows.flat();
   file.create_dataset({ name, data, shape: [rowCount, colCount], dtype });
   const dataset = file.get(name);
-  dataset.create_attribute("field_names", encodeAttr(JSON.stringify(fieldNames)));
+  setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
 }
 function writeRois(file, rois, videos, tracks, instances) {
   if (!rois.length) return;
@@ -4724,9 +4725,9 @@ function writeRois(file, rois, videos, tracks, instances) {
     "<f8"
   );
   const roisDs = file.get("rois");
-  roisDs.create_attribute("categories", encodeAttr(JSON.stringify(categories)));
-  roisDs.create_attribute("names", encodeAttr(JSON.stringify(names)));
-  roisDs.create_attribute("sources", encodeAttr(JSON.stringify(sources)));
+  setStringAttr(roisDs, "categories", JSON.stringify(categories));
+  setStringAttr(roisDs, "names", JSON.stringify(names));
+  setStringAttr(roisDs, "sources", JSON.stringify(sources));
   const totalWkb = wkbChunks.reduce((sum, c) => sum + c.length, 0);
   const wkbFlat = new Uint8Array(totalWkb);
   let offset = 0;
@@ -4770,9 +4771,9 @@ function writeMasks(file, masks, videos, tracks) {
     "<f8"
   );
   const masksDs = file.get("masks");
-  masksDs.create_attribute("categories", encodeAttr(JSON.stringify(categories)));
-  masksDs.create_attribute("names", encodeAttr(JSON.stringify(names)));
-  masksDs.create_attribute("sources", encodeAttr(JSON.stringify(sources)));
+  setStringAttr(masksDs, "categories", JSON.stringify(categories));
+  setStringAttr(masksDs, "names", JSON.stringify(names));
+  setStringAttr(masksDs, "sources", JSON.stringify(sources));
   const totalRle = rleChunks.reduce((sum, c) => sum + c.length, 0);
   const rleFlat = new Uint8Array(totalRle);
   let offset = 0;
@@ -4818,9 +4819,9 @@ function writeBboxes(file, bboxes, videos, tracks, instances) {
     "<f8"
   );
   const bboxesDs = file.get("bboxes");
-  bboxesDs.create_attribute("categories", encodeAttr(JSON.stringify(categories)));
-  bboxesDs.create_attribute("names", encodeAttr(JSON.stringify(names)));
-  bboxesDs.create_attribute("sources", encodeAttr(JSON.stringify(sources)));
+  setStringAttr(bboxesDs, "categories", JSON.stringify(categories));
+  setStringAttr(bboxesDs, "names", JSON.stringify(names));
+  setStringAttr(bboxesDs, "sources", JSON.stringify(sources));
 }
 
 // src/codecs/slp/read.ts
