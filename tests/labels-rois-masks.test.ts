@@ -8,7 +8,8 @@ import {
   Track,
   ROI,
   SegmentationMask,
-  AnnotationType,
+  UserBoundingBox,
+  PredictedBoundingBox,
 } from "../src/index.js";
 
 describe("Labels ROI and Mask integration", () => {
@@ -71,15 +72,6 @@ describe("Labels ROI and Mask integration", () => {
     expect(labels.getRois({ category: "arena" })).toEqual([roi2]);
   });
 
-  it("getRois filters by annotationType", () => {
-    const roi1 = ROI.fromBbox(0, 0, 10, 10);
-    const roi2 = ROI.fromPolygon([[0, 0], [10, 0], [10, 10], [0, 10]]);
-    const labels = new Labels({ rois: [roi1, roi2] });
-
-    expect(labels.getRois({ annotationType: AnnotationType.BOUNDING_BOX })).toEqual([roi1]);
-    expect(labels.getRois({ annotationType: AnnotationType.SEGMENTATION })).toEqual([roi2]);
-  });
-
   it("getRois filters by track and instance", () => {
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track({ name: "track1" });
@@ -140,16 +132,44 @@ describe("Labels ROI and Mask integration", () => {
     expect(labels.getMasks({ track })).toEqual([m1]);
   });
 
-  it("getMasks filters by annotationType", () => {
-    const m1 = SegmentationMask.fromArray(new Uint8Array(4), 2, 2, {
-      annotationType: AnnotationType.SEGMENTATION,
-    });
-    const m2 = SegmentationMask.fromArray(new Uint8Array(4), 2, 2, {
-      annotationType: AnnotationType.ARENA,
-    });
-    const labels = new Labels({ masks: [m1, m2] });
+});
 
-    expect(labels.getMasks({ annotationType: AnnotationType.SEGMENTATION })).toEqual([m1]);
-    expect(labels.getMasks({ annotationType: AnnotationType.ARENA })).toEqual([m2]);
+describe("getBboxes", () => {
+  it("returns all bboxes without filters", () => {
+    const bb1 = new UserBoundingBox({ xCenter: 50, yCenter: 50, width: 100, height: 80 });
+    const bb2 = new PredictedBoundingBox({ xCenter: 20, yCenter: 20, width: 40, height: 30, score: 0.9 });
+    const labels = new Labels({ bboxes: [bb1, bb2] });
+    expect(labels.getBboxes()).toHaveLength(2);
+  });
+
+  it("filters by video", () => {
+    const v1 = new Video({ filename: "a.mp4" });
+    const v2 = new Video({ filename: "b.mp4" });
+    const bb1 = new UserBoundingBox({ xCenter: 50, yCenter: 50, width: 100, height: 80, video: v1 });
+    const bb2 = new UserBoundingBox({ xCenter: 20, yCenter: 20, width: 40, height: 30, video: v2 });
+    const labels = new Labels({ bboxes: [bb1, bb2] });
+    expect(labels.getBboxes({ video: v1 })).toEqual([bb1]);
+    expect(labels.getBboxes({ video: v2 })).toEqual([bb2]);
+  });
+
+  it("filters by predicted", () => {
+    const bb1 = new UserBoundingBox({ xCenter: 50, yCenter: 50, width: 100, height: 80 });
+    const bb2 = new PredictedBoundingBox({ xCenter: 20, yCenter: 20, width: 40, height: 30, score: 0.9 });
+    const labels = new Labels({ bboxes: [bb1, bb2] });
+    expect(labels.getBboxes({ predicted: false })).toEqual([bb1]);
+    expect(labels.getBboxes({ predicted: true })).toEqual([bb2]);
+  });
+
+  it("staticBboxes and temporalBboxes", () => {
+    const bb1 = new UserBoundingBox({ xCenter: 50, yCenter: 50, width: 100, height: 80 });
+    const bb2 = new UserBoundingBox({ xCenter: 20, yCenter: 20, width: 40, height: 30, frameIdx: 5 });
+    const labels = new Labels({ bboxes: [bb1, bb2] });
+    expect(labels.staticBboxes).toEqual([bb1]);
+    expect(labels.temporalBboxes).toEqual([bb2]);
+  });
+
+  it("defaults bboxes to empty array", () => {
+    const labels = new Labels();
+    expect(labels.bboxes).toEqual([]);
   });
 });

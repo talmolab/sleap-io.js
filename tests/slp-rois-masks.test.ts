@@ -1,13 +1,15 @@
 /* @vitest-environment node */
 import { describe, it, expect } from "vitest";
 import { Labels } from "../src/model/labels.js";
-import { ROI, AnnotationType } from "../src/model/roi.js";
+import { ROI } from "../src/model/roi.js";
 import { SegmentationMask } from "../src/model/mask.js";
 import { Video } from "../src/model/video.js";
 import { Track } from "../src/model/instance.js";
 import { Skeleton, Instance } from "../src/index.js";
+import { UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
 import { readSlp } from "../src/codecs/slp/read.js";
+import { LabeledFrame } from "../src/model/labeled-frame.js";
 
 async function roundTrip(labels: Labels): Promise<Labels> {
   const bytes = await saveSlpToBytes(labels);
@@ -29,7 +31,6 @@ describe("SLP ROI/Mask I/O", () => {
       video,
       frameIdx: 5,
       track,
-      annotationType: AnnotationType.BOUNDING_BOX,
     });
 
     const polyRoi = ROI.fromPolygon(
@@ -40,8 +41,6 @@ describe("SLP ROI/Mask I/O", () => {
         source: "auto",
         video,
         frameIdx: null,
-        score: 0.95,
-        annotationType: AnnotationType.SEGMENTATION,
       },
     );
 
@@ -59,12 +58,10 @@ describe("SLP ROI/Mask I/O", () => {
 
     // Check bbox ROI
     const loadedBbox = loaded.rois[0];
-    expect(loadedBbox.annotationType).toBe(AnnotationType.BOUNDING_BOX);
     expect(loadedBbox.name).toBe("roi1");
     expect(loadedBbox.category).toBe("arena");
     expect(loadedBbox.source).toBe("manual");
     expect(loadedBbox.frameIdx).toBe(5);
-    expect(loadedBbox.score).toBeNull();
     expect(loadedBbox.video).not.toBeNull();
     expect(loadedBbox.track).not.toBeNull();
     expect(loadedBbox.track!.name).toBe("track0");
@@ -78,12 +75,10 @@ describe("SLP ROI/Mask I/O", () => {
 
     // Check polygon ROI
     const loadedPoly = loaded.rois[1];
-    expect(loadedPoly.annotationType).toBe(AnnotationType.SEGMENTATION);
     expect(loadedPoly.name).toBe("roi2");
     expect(loadedPoly.category).toBe("region");
     expect(loadedPoly.source).toBe("auto");
     expect(loadedPoly.frameIdx).toBeNull(); // static ROI
-    expect(loadedPoly.score).toBeCloseTo(0.95);
     expect(loadedPoly.video).not.toBeNull();
     expect(loadedPoly.track).toBeNull();
   });
@@ -108,7 +103,6 @@ describe("SLP ROI/Mask I/O", () => {
       source: "model",
       video,
       frameIdx: 3,
-      score: 0.88,
     });
 
     const labels = new Labels({
@@ -128,7 +122,6 @@ describe("SLP ROI/Mask I/O", () => {
     expect(loadedMask.category).toBe("cell");
     expect(loadedMask.source).toBe("model");
     expect(loadedMask.frameIdx).toBe(3);
-    expect(loadedMask.score).toBeCloseTo(0.88, 1);
     expect(loadedMask.video).not.toBeNull();
 
     // Verify RLE round-trips correctly
@@ -154,6 +147,7 @@ describe("SLP ROI/Mask I/O", () => {
     const loaded = await roundTrip(labels);
     expect(loaded.rois).toEqual([]);
     expect(loaded.masks).toEqual([]);
+    expect(loaded.bboxes).toEqual([]);
   });
 
   it("sets format_id to 1.5 when ROIs present", async () => {
@@ -238,7 +232,7 @@ describe("SLP ROI/Mask I/O", () => {
     expect(loadedRoi.name).toBe("orphan");
   });
 
-  it("mask with score round-trips", async () => {
+  it("mask round-trips metadata", async () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });
     const inst = new Instance({ points: { A: [1, 2] }, skeleton });
@@ -250,7 +244,6 @@ describe("SLP ROI/Mask I/O", () => {
     maskData[17] = 1;
 
     const mask = SegmentationMask.fromArray(maskData, 10, 10, {
-      score: 0.75,
       name: "predicted_mask",
       category: "obj",
     });
@@ -264,12 +257,128 @@ describe("SLP ROI/Mask I/O", () => {
 
     const loaded = await roundTrip(labels);
     expect(loaded.masks.length).toBe(1);
-    expect(loaded.masks[0].score).toBeCloseTo(0.75, 1);
     expect(loaded.masks[0].name).toBe("predicted_mask");
     expect(loaded.masks[0].category).toBe("obj");
     expect(loaded.masks[0].area).toBe(3);
   });
 });
 
-// Need to import LabeledFrame for test usage
-import { LabeledFrame } from "../src/model/labeled-frame.js";
+describe("SLP BoundingBox I/O", () => {
+  it("round-trips bboxes through write and read", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const track = new Track("track0");
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [1, 2] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const bb1 = new UserBoundingBox({
+      xCenter: 50, yCenter: 60, width: 100, height: 80,
+      video, frameIdx: 3, track, category: "animal", name: "bb1", source: "manual",
+    });
+    const bb2 = new PredictedBoundingBox({
+      xCenter: 20, yCenter: 30, width: 40, height: 50,
+      score: 0.95, video, frameIdx: 1,
+    });
+
+    const labels = new Labels({
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [track],
+      bboxes: [bb1, bb2],
+    });
+
+    const loaded = await roundTrip(labels);
+
+    expect(loaded.bboxes.length).toBe(2);
+
+    const loadedBb1 = loaded.bboxes[0];
+    expect(loadedBb1.xCenter).toBeCloseTo(50);
+    expect(loadedBb1.yCenter).toBeCloseTo(60);
+    expect(loadedBb1.width).toBeCloseTo(100);
+    expect(loadedBb1.height).toBeCloseTo(80);
+    expect(loadedBb1.isPredicted).toBe(false);
+    expect(loadedBb1.category).toBe("animal");
+    expect(loadedBb1.name).toBe("bb1");
+    expect(loadedBb1.source).toBe("manual");
+    expect(loadedBb1.frameIdx).toBe(3);
+    expect(loadedBb1.video).not.toBeNull();
+    expect(loadedBb1.track).not.toBeNull();
+    expect(loadedBb1.track!.name).toBe("track0");
+
+    const loadedBb2 = loaded.bboxes[1];
+    expect(loadedBb2.xCenter).toBeCloseTo(20);
+    expect(loadedBb2.yCenter).toBeCloseTo(30);
+    expect(loadedBb2.width).toBeCloseTo(40);
+    expect(loadedBb2.height).toBeCloseTo(50);
+    expect(loadedBb2.isPredicted).toBe(true);
+    expect((loadedBb2 as PredictedBoundingBox).score).toBeCloseTo(0.95);
+    expect(loadedBb2.frameIdx).toBe(1);
+  });
+
+  it("handles empty bboxes array", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [1, 2] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const labels = new Labels({
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
+      bboxes: [],
+    });
+
+    const loaded = await roundTrip(labels);
+    expect(loaded.bboxes).toEqual([]);
+  });
+});
+
+describe("SLP ROI instance association (format 1.6)", () => {
+  it("round-trips ROI instance references", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A", "B"] });
+    const inst0 = new Instance({ points: { A: [10, 20], B: [30, 40] }, skeleton });
+    const inst1 = new Instance({ points: { A: [50, 60], B: [70, 80] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst0, inst1] });
+
+    const roi = ROI.fromPolygon(
+      [[0, 0], [100, 0], [100, 100], [0, 100]],
+      { name: "inst-roi", video, frameIdx: 0, instance: inst1 },
+    );
+
+    const labels = new Labels({
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
+      rois: [roi],
+    });
+
+    const loaded = await roundTrip(labels);
+    expect(loaded.rois.length).toBe(1);
+    const loadedRoi = loaded.rois[0];
+    expect(loadedRoi.name).toBe("inst-roi");
+    expect(loadedRoi.instance).not.toBeNull();
+    // Should resolve to the second instance (index 1)
+    expect(loadedRoi.instance).toBe(loaded.labeledFrames[0].instances[1]);
+  });
+
+  it("ROI without instance round-trips with null instance", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [1, 2] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const roi = ROI.fromBbox(0, 0, 50, 50, { name: "no-inst" });
+    const labels = new Labels({
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
+      rois: [roi],
+    });
+
+    const loaded = await roundTrip(labels);
+    expect(loaded.rois.length).toBe(1);
+    expect(loaded.rois[0].instance).toBeNull();
+  });
+});

@@ -26,6 +26,7 @@ export type LabelsDict = {
     frame_idx: number;
     video_idx: number;
     instances: Array<Record<string, unknown>>;
+    is_negative?: boolean;
   }>;
   suggestions: Array<Record<string, unknown>>;
   provenance: Record<string, unknown>;
@@ -61,13 +62,14 @@ export function toDict(
   const labeledFrames: LabelsDict["labeled_frames"] = [];
   for (const frame of labels.labeledFrames) {
     if (videoFilter && !frame.video.matchesPath(videoFilter.video, true)) continue;
-    if (options?.skipEmptyFrames && frame.instances.length === 0) continue;
+    if (options?.skipEmptyFrames && frame.instances.length === 0 && !frame.isNegative) continue;
     const videoIdx = videos.indexOf(frame.video);
     if (videoIdx < 0) continue;
     labeledFrames.push({
       frame_idx: frame.frameIdx,
       video_idx: videoIdx,
       instances: frame.instances.map((instance) => instanceToDict(instance, labels, trackIndex)),
+      ...(frame.isNegative ? { is_negative: true } : {}),
     });
   }
 
@@ -121,7 +123,7 @@ export function fromDict(data: LabelsDict): Labels {
   const labeledFrames = data.labeled_frames.map((frame) => {
     const video = videos[frame.video_idx];
     const instances = frame.instances.map((inst) => dictToInstance(inst, skeletons, tracks));
-    return new LabeledFrame({ video, frameIdx: frame.frame_idx, instances });
+    return new LabeledFrame({ video, frameIdx: frame.frame_idx, instances, isNegative: frame.is_negative ?? false });
   });
 
   const suggestions = data.suggestions.map((suggestion) => {

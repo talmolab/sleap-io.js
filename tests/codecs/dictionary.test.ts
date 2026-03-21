@@ -197,4 +197,41 @@ describe("dictionary codec", () => {
     const filtered = labels.toDict({ video: 0 });
     expect(filtered.videos.length).toBe(1);
   });
+
+  it("preserves negative frames in round-trip", () => {
+    const skeleton = new Skeleton({ nodes: ["node1", "node2"] });
+    const video = new Video({ filename: "test.mp4" });
+    const instance = Instance.fromNumpy({ pointsData: [[1, 2], [3, 4]], skeleton });
+    const normalFrame = new LabeledFrame({ video, frameIdx: 0, instances: [instance] });
+    const negativeFrame = new LabeledFrame({ video, frameIdx: 5, isNegative: true });
+    const negativeWithInst = new LabeledFrame({ video, frameIdx: 10, instances: [instance], isNegative: true });
+    const labels = new Labels({ labeledFrames: [normalFrame, negativeFrame, negativeWithInst], videos: [video], skeletons: [skeleton] });
+
+    const dict = toDict(labels);
+    expect(dict.labeled_frames[0].is_negative).toBeUndefined();
+    expect(dict.labeled_frames[1].is_negative).toBe(true);
+    expect(dict.labeled_frames[2].is_negative).toBe(true);
+
+    const restored = fromDict(dict);
+    expect(restored.labeledFrames[0].isNegative).toBe(false);
+    expect(restored.labeledFrames[1].isNegative).toBe(true);
+    expect(restored.labeledFrames[2].isNegative).toBe(true);
+  });
+
+  it("skipEmptyFrames preserves negative frames", () => {
+    const skeleton = new Skeleton({ nodes: ["node1"] });
+    const video = new Video({ filename: "test.mp4" });
+    const instance = Instance.fromNumpy({ pointsData: [[1, 2]], skeleton });
+    const normalFrame = new LabeledFrame({ video, frameIdx: 0, instances: [instance] });
+    const emptyFrame = new LabeledFrame({ video, frameIdx: 1 }); // empty, not negative
+    const negativeFrame = new LabeledFrame({ video, frameIdx: 2, isNegative: true }); // empty but negative
+    const labels = new Labels({ labeledFrames: [normalFrame, emptyFrame, negativeFrame], videos: [video], skeletons: [skeleton] });
+
+    const dict = toDict(labels, { skipEmptyFrames: true });
+    // emptyFrame should be dropped, but negativeFrame should be kept
+    expect(dict.labeled_frames.length).toBe(2);
+    expect(dict.labeled_frames[0].frame_idx).toBe(0);
+    expect(dict.labeled_frames[1].frame_idx).toBe(2);
+    expect(dict.labeled_frames[1].is_negative).toBe(true);
+  });
 });
