@@ -34,10 +34,8 @@ export type Geometry =
 
 export class ROI {
   geometry: Geometry;
-  annotationType: AnnotationType;
   name: string;
   category: string;
-  score: number | null;
   source: string;
   video: Video | null;
   frameIdx: number | null;
@@ -48,10 +46,8 @@ export class ROI {
 
   constructor(options: {
     geometry: Geometry;
-    annotationType?: AnnotationType | number;
     name?: string;
     category?: string;
-    score?: number | null;
     source?: string;
     video?: Video | null;
     frameIdx?: number | null;
@@ -59,10 +55,8 @@ export class ROI {
     instance?: Instance | null;
   }) {
     this.geometry = options.geometry;
-    this.annotationType = (options.annotationType ?? AnnotationType.DEFAULT) as AnnotationType;
     this.name = options.name ?? "";
     this.category = options.category ?? "";
-    this.score = options.score ?? null;
     this.source = options.source ?? "";
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
@@ -91,7 +85,6 @@ export class ROI {
     };
     return new ROI({
       geometry,
-      annotationType: AnnotationType.BOUNDING_BOX,
       ...options,
     });
   }
@@ -117,7 +110,6 @@ export class ROI {
     };
     return new ROI({
       geometry,
-      annotationType: AnnotationType.BOUNDING_BOX,
       ...options,
     });
   }
@@ -137,7 +129,6 @@ export class ROI {
     const geometry: Geometry = { type: "Polygon", coordinates: [ring] };
     return new ROI({
       geometry,
-      annotationType: AnnotationType.SEGMENTATION,
       ...options,
     });
   }
@@ -153,19 +144,20 @@ export class ROI {
   }
 
   explode(): ROI[] {
+    const copyFields = {
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance,
+    };
     if (this.geometry.type === "MultiPolygon") {
       return this.geometry.coordinates.map((coords) =>
         new ROI({
           geometry: { type: "Polygon", coordinates: coords },
-          annotationType: this.annotationType,
-          name: this.name,
-          category: this.category,
-          score: this.score,
-          source: this.source,
-          video: this.video,
-          frameIdx: this.frameIdx,
-          track: this.track,
-          instance: this.instance,
+          ...copyFields,
         })
       );
     }
@@ -173,30 +165,14 @@ export class ROI {
       return this.geometry.geometries.map((geom) =>
         new ROI({
           geometry: geom,
-          annotationType: this.annotationType,
-          name: this.name,
-          category: this.category,
-          score: this.score,
-          source: this.source,
-          video: this.video,
-          frameIdx: this.frameIdx,
-          track: this.track,
-          instance: this.instance,
+          ...copyFields,
         })
       );
     }
     // Single geometry, return copy
     return [new ROI({
       geometry: this.geometry,
-      annotationType: this.annotationType,
-      name: this.name,
-      category: this.category,
-      score: this.score,
-      source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
-      track: this.track,
-      instance: this.instance,
+      ...copyFields,
     })];
   }
 
@@ -213,15 +189,9 @@ export class ROI {
         category: this.category,
         source: this.source,
         frame_idx: this.frameIdx,
-        annotation_type: this.annotationType,
-        score: this.score,
         roi_type: this.isStatic ? "static" : "temporal",
       },
     };
-  }
-
-  get isPredicted(): boolean {
-    return this.score !== null;
   }
 
   get isStatic(): boolean {
@@ -296,10 +266,8 @@ export class ROI {
     }
     const mask = rasterizeGeometry(this.geometry, height, width);
     return _maskFactory(mask, height, width, {
-      annotationType: this.annotationType,
       name: this.name,
       category: this.category,
-      score: this.score,
       source: this.source,
       video: this.video,
       frameIdx: this.frameIdx,

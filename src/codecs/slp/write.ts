@@ -8,6 +8,7 @@ import { Video } from "../../model/video.js";
 import { getH5Module, getH5FileSystem } from "./h5.js";
 import { ROI, encodeWkb } from "../../model/roi.js";
 import { SegmentationMask } from "../../model/mask.js";
+import { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile: ((filename: string, bytes: Uint8Array) => Promise<void>) | null = null;
@@ -62,6 +63,7 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
   writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
   writeMasks(file, labels.masks, labels.videos, labels.tracks);
+  writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
 }
 
 /**
@@ -160,7 +162,13 @@ function writeMetadata(file: any, labels: Labels): void {
   };
 
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
-  const formatId = hasRoiInstance ? 1.6 : (labels.rois.length > 0 || labels.masks.length > 0) ? 1.5 : FORMAT_ID;
+  const formatId = (labels.bboxes?.length ?? 0) > 0
+    ? 1.7
+    : hasRoiInstance
+      ? 1.6
+      : (labels.rois.length > 0 || labels.masks.length > 0)
+        ? 1.5
+        : FORMAT_ID;
 
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
@@ -688,10 +696,10 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
     const videoIdx = roi.video ? videos.indexOf(roi.video) : -1;
     const frameIdx = roi.frameIdx ?? -1;
     const trackIdx = roi.track ? tracks.indexOf(roi.track as any) : -1;
-    const score = roi.score ?? Number.NaN;
     const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : -1;
 
-    rows.push([roi.annotationType, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd, instanceIdx]);
+    // Hardcode annotation_type=0 (DEFAULT) and score=NaN for backward compat
+    rows.push([0, videoIdx, frameIdx, trackIdx, Number.NaN, wkbStart, wkbEnd, instanceIdx]);
     categories.push(roi.category);
     names.push(roi.name);
     sources.push(roi.source);
@@ -742,9 +750,9 @@ function writeMasks(file: any, masks: SegmentationMask[], videos: Video[], track
     const videoIdx = mask.video ? videos.indexOf(mask.video) : -1;
     const frameIdx = mask.frameIdx ?? -1;
     const trackIdx = mask.track ? tracks.indexOf(mask.track as any) : -1;
-    const score = mask.score ?? Number.NaN;
 
-    rows.push([mask.height, mask.width, mask.annotationType, videoIdx, frameIdx, trackIdx, score, rleStart, rleEnd]);
+    // Hardcode annotation_type=2 (SEGMENTATION) and score=NaN for backward compat
+    rows.push([mask.height, mask.width, 2, videoIdx, frameIdx, trackIdx, Number.NaN, rleStart, rleEnd]);
     categories.push(mask.category);
     names.push(mask.name);
     sources.push(mask.source);
@@ -768,4 +776,52 @@ function writeMasks(file: any, masks: SegmentationMask[], videos: Video[], track
     offset += chunk.length;
   }
   file.create_dataset({ name: "mask_rle", data: rleFlat, shape: [rleFlat.length], dtype: "<B" });
+}
+
+function writeBboxes(
+  file: any,
+  bboxes: BoundingBox[],
+  videos: Video[],
+  tracks: Array<{ name: string }>,
+  instances: (Instance | PredictedInstance)[],
+): void {
+  if (!bboxes.length) return;
+
+  const rows: number[][] = [];
+  const categories: string[] = [];
+  const names: string[] = [];
+  const sources: string[] = [];
+
+  for (const bbox of bboxes) {
+    const videoIdx = bbox.video ? videos.indexOf(bbox.video) : -1;
+    const frameIdx = bbox.frameIdx ?? -1;
+    const trackIdx = bbox.track ? tracks.indexOf(bbox.track as any) : -1;
+    const score = bbox.isPredicted ? (bbox as PredictedBoundingBox).score : Number.NaN;
+    const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance as Instance) : -1;
+
+    rows.push([
+      bbox.xCenter,
+      bbox.yCenter,
+      bbox.width,
+      bbox.height,
+      bbox.angle,
+      videoIdx,
+      frameIdx,
+      trackIdx,
+      score,
+      instanceIdx,
+    ]);
+    categories.push(bbox.category);
+    names.push(bbox.name);
+    sources.push(bbox.source);
+  }
+
+  createMatrixDataset(file, "bboxes", rows,
+    ["x_center", "y_center", "width", "height", "angle", "video", "frame_idx", "track", "score", "instance"], "<f8");
+
+  // Set string metadata as attributes
+  const bboxesDs = file.get("bboxes");
+  bboxesDs.create_attribute("categories", JSON.stringify(categories));
+  bboxesDs.create_attribute("names", JSON.stringify(names));
+  bboxesDs.create_attribute("sources", JSON.stringify(sources));
 }

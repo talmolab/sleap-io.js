@@ -32,7 +32,6 @@ describe("ROI", () => {
 
   it("fromBbox creates correct geometry", () => {
     const roi = ROI.fromBbox(10, 20, 30, 40);
-    expect(roi.annotationType).toBe(AnnotationType.BOUNDING_BOX);
     const b = roi.bounds;
     expect(b.minX).toBe(10);
     expect(b.minY).toBe(20);
@@ -43,7 +42,6 @@ describe("ROI", () => {
 
   it("fromXyxy creates correct geometry", () => {
     const roi = ROI.fromXyxy(10, 20, 40, 60);
-    expect(roi.annotationType).toBe(AnnotationType.BOUNDING_BOX);
     const b = roi.bounds;
     expect(b.minX).toBe(10);
     expect(b.minY).toBe(20);
@@ -60,7 +58,6 @@ describe("ROI", () => {
       [0, 10],
     ];
     const roi = ROI.fromPolygon(coords);
-    expect(roi.annotationType).toBe(AnnotationType.SEGMENTATION);
     expect(roi.area).toBeCloseTo(100);
   });
 
@@ -74,14 +71,6 @@ describe("ROI", () => {
     const roi = ROI.fromPolygon(coords, { name: "test", category: "cat1" });
     expect(roi.name).toBe("test");
     expect(roi.category).toBe("cat1");
-  });
-
-  it("isPredicted", () => {
-    const roi1 = ROI.fromBbox(0, 0, 10, 10);
-    expect(roi1.isPredicted).toBe(false);
-
-    const roi2 = ROI.fromBbox(0, 0, 10, 10, { score: 0.9 });
-    expect(roi2.isPredicted).toBe(true);
   });
 
   it("isStatic", () => {
@@ -155,14 +144,6 @@ describe("ROI", () => {
     expect(data[5 * 20 + 4]).toBe(1);
     // Outside the bbox
     expect(data[0 * 20 + 0]).toBe(0);
-  });
-
-  it("annotation type converter accepts number", () => {
-    const roi = new ROI({
-      geometry: { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] },
-      annotationType: 1,
-    });
-    expect(roi.annotationType).toBe(AnnotationType.BOUNDING_BOX);
   });
 
   it("with video and frameIdx", () => {
