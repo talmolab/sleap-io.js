@@ -449,6 +449,7 @@ var Labels = class {
   provenance;
   rois;
   masks;
+  bboxes;
   /** @internal Lazy frame list for on-demand materialization. */
   _lazyFrameList = null;
   /** @internal Lazy data store holding raw HDF5 data. */
@@ -463,6 +464,7 @@ var Labels = class {
     this.provenance = options?.provenance ?? {};
     this.rois = options?.rois ?? [];
     this.masks = options?.masks ?? [];
+    this.bboxes = options?.bboxes ?? [];
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = /* @__PURE__ */ new Map();
       for (const frame of this.labeledFrames) {
@@ -502,6 +504,19 @@ var Labels = class {
     this.labeledFrames = this._lazyFrameList.toArray();
     this._lazyFrameList = null;
     this._lazyDataStore = null;
+    const allInstances = this.labeledFrames.flatMap((f) => f.instances);
+    for (const roi of this.rois) {
+      if (roi._instanceIdx !== null && roi._instanceIdx >= 0 && roi._instanceIdx < allInstances.length) {
+        roi.instance = allInstances[roi._instanceIdx];
+        roi._instanceIdx = null;
+      }
+    }
+    for (const bbox of this.bboxes) {
+      if (bbox._instanceIdx !== null && bbox._instanceIdx >= 0 && bbox._instanceIdx < allInstances.length) {
+        bbox.instance = allInstances[bbox._instanceIdx];
+        bbox._instanceIdx = null;
+      }
+    }
   }
   get negativeFrames() {
     if (this._lazyFrameList) this.materialize();
@@ -563,9 +578,6 @@ var Labels = class {
     if (filters.frameIdx !== void 0) {
       results = results.filter((r) => r.frameIdx === filters.frameIdx);
     }
-    if (filters.annotationType !== void 0) {
-      results = results.filter((r) => r.annotationType === filters.annotationType);
-    }
     if (filters.category !== void 0) {
       results = results.filter((r) => r.category === filters.category);
     }
@@ -586,9 +598,6 @@ var Labels = class {
     if (filters.frameIdx !== void 0) {
       results = results.filter((m) => m.frameIdx === filters.frameIdx);
     }
-    if (filters.annotationType !== void 0) {
-      results = results.filter((m) => m.annotationType === filters.annotationType);
-    }
     if (filters.category !== void 0) {
       results = results.filter((m) => m.category === filters.category);
     }
@@ -597,6 +606,35 @@ var Labels = class {
     }
     if (filters.instance !== void 0) {
       results = results.filter((m) => m.instance === filters.instance);
+    }
+    return results;
+  }
+  get staticBboxes() {
+    return this.bboxes.filter((b) => b.isStatic);
+  }
+  get temporalBboxes() {
+    return this.bboxes.filter((b) => !b.isStatic);
+  }
+  getBboxes(filters) {
+    if (!filters) return [...this.bboxes];
+    let results = this.bboxes;
+    if (filters.video !== void 0) {
+      results = results.filter((b) => b.video === filters.video);
+    }
+    if (filters.frameIdx !== void 0) {
+      results = results.filter((b) => b.frameIdx === filters.frameIdx);
+    }
+    if (filters.category !== void 0) {
+      results = results.filter((b) => b.category === filters.category);
+    }
+    if (filters.track !== void 0) {
+      results = results.filter((b) => b.track === filters.track);
+    }
+    if (filters.instance !== void 0) {
+      results = results.filter((b) => b.instance === filters.instance);
+    }
+    if (filters.predicted !== void 0) {
+      results = results.filter((b) => b.isPredicted === filters.predicted);
     }
     return results;
   }
@@ -623,7 +661,11 @@ var Labels = class {
     const targetVideo = options?.video ?? this.video;
     const frames = this.labeledFrames.filter((frame) => frame.video.matchesPath(targetVideo, true));
     if (!frames.length) return [];
-    const maxFrame = Math.max(...frames.map((frame) => frame.frameIdx));
+    let maxFrame = Math.max(...frames.map((frame) => frame.frameIdx));
+    const videoLength = targetVideo.shape?.[0] ?? 0;
+    if (videoLength > 0) {
+      maxFrame = Math.max(maxFrame, videoLength - 1);
+    }
     const tracks = this.tracks.length ? this.tracks.length : Math.max(1, ...frames.map((frame) => frame.instances.length));
     const nodes = this.skeletons[0]?.nodes.length ?? 0;
     const channelCount = options?.returnConfidence ? 3 : 2;
@@ -754,13 +796,14 @@ function toDict(labels, options) {
   const labeledFrames = [];
   for (const frame of labels.labeledFrames) {
     if (videoFilter && !frame.video.matchesPath(videoFilter.video, true)) continue;
-    if (options?.skipEmptyFrames && frame.instances.length === 0) continue;
+    if (options?.skipEmptyFrames && frame.instances.length === 0 && !frame.isNegative) continue;
     const videoIdx = videos.indexOf(frame.video);
     if (videoIdx < 0) continue;
     labeledFrames.push({
       frame_idx: frame.frameIdx,
       video_idx: videoIdx,
-      instances: frame.instances.map((instance) => instanceToDict(instance, labels, trackIndex))
+      instances: frame.instances.map((instance) => instanceToDict(instance, labels, trackIndex)),
+      ...frame.isNegative ? { is_negative: true } : {}
     });
   }
   const suggestions = labels.suggestions.filter((suggestion) => !videoFilter || suggestion.video.matchesPath(videoFilter.video, true)).map((suggestion) => ({
@@ -805,7 +848,7 @@ function fromDict(data) {
   const labeledFrames = data.labeled_frames.map((frame) => {
     const video = videos[frame.video_idx];
     const instances = frame.instances.map((inst) => dictToInstance(inst, skeletons, tracks));
-    return new LabeledFrame({ video, frameIdx: frame.frame_idx, instances });
+    return new LabeledFrame({ video, frameIdx: frame.frame_idx, instances, isNegative: frame.is_negative ?? false });
   });
   const suggestions = data.suggestions.map((suggestion) => {
     const entry = suggestion;
@@ -1156,6 +1199,7 @@ var LazyDataStore = class {
   tracks;
   videos;
   formatId;
+  negativeFrames;
   constructor(options) {
     this.framesData = options.framesData;
     this.instancesData = options.instancesData;
@@ -1165,6 +1209,7 @@ var LazyDataStore = class {
     this.tracks = options.tracks;
     this.videos = options.videos;
     this.formatId = options.formatId;
+    this.negativeFrames = options.negativeFrames ?? /* @__PURE__ */ new Set();
   }
   /** Total number of frames in the store. */
   get frameCount() {
@@ -1229,7 +1274,12 @@ var LazyDataStore = class {
         instance.fromPredicted = predicted;
       }
     }
-    return new LabeledFrame({ video, frameIdx: frameIndex, instances });
+    const frame = new LabeledFrame({ video, frameIdx: frameIndex, instances });
+    const negKey = `${videoIndex}:${frameIndex}`;
+    if (this.negativeFrames.has(negKey)) {
+      frame.isNegative = true;
+    }
+    return frame;
   }
   /**
    * Build a 4D numpy-like array directly from raw column data without
@@ -1266,6 +1316,10 @@ var LazyDataStore = class {
       matchingFrames.push(i);
     }
     if (!matchingFrames.length) return [];
+    const videoLength = targetVideo.shape?.[0] ?? 0;
+    if (videoLength > 0) {
+      maxFrameIdx = Math.max(maxFrameIdx, videoLength - 1);
+    }
     const nodeCount = this.skeletons[0]?.nodes.length ?? 0;
     const channelCount = options?.returnConfidence ? 3 : 2;
     const output = Array.from(
@@ -1408,31 +1462,29 @@ var _maskFactory = null;
 function _registerMaskFactory(factory) {
   _maskFactory = factory;
 }
-var AnnotationType = /* @__PURE__ */ ((AnnotationType3) => {
-  AnnotationType3[AnnotationType3["DEFAULT"] = 0] = "DEFAULT";
-  AnnotationType3[AnnotationType3["BOUNDING_BOX"] = 1] = "BOUNDING_BOX";
-  AnnotationType3[AnnotationType3["SEGMENTATION"] = 2] = "SEGMENTATION";
-  AnnotationType3[AnnotationType3["ARENA"] = 3] = "ARENA";
-  AnnotationType3[AnnotationType3["ANCHOR"] = 4] = "ANCHOR";
-  return AnnotationType3;
+var AnnotationType = /* @__PURE__ */ ((AnnotationType2) => {
+  AnnotationType2[AnnotationType2["DEFAULT"] = 0] = "DEFAULT";
+  AnnotationType2[AnnotationType2["BOUNDING_BOX"] = 1] = "BOUNDING_BOX";
+  AnnotationType2[AnnotationType2["SEGMENTATION"] = 2] = "SEGMENTATION";
+  AnnotationType2[AnnotationType2["ARENA"] = 3] = "ARENA";
+  AnnotationType2[AnnotationType2["ANCHOR"] = 4] = "ANCHOR";
+  return AnnotationType2;
 })(AnnotationType || {});
 var ROI = class _ROI {
   geometry;
-  annotationType;
   name;
   category;
-  score;
   source;
   video;
   frameIdx;
   track;
   instance;
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx = null;
   constructor(options) {
     this.geometry = options.geometry;
-    this.annotationType = options.annotationType ?? 0 /* DEFAULT */;
     this.name = options.name ?? "";
     this.category = options.category ?? "";
-    this.score = options.score ?? null;
     this.source = options.source ?? "";
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
@@ -1454,7 +1506,6 @@ var ROI = class _ROI {
     };
     return new _ROI({
       geometry,
-      annotationType: 1 /* BOUNDING_BOX */,
       ...options
     });
   }
@@ -1473,7 +1524,6 @@ var ROI = class _ROI {
     };
     return new _ROI({
       geometry,
-      annotationType: 1 /* BOUNDING_BOX */,
       ...options
     });
   }
@@ -1485,12 +1535,58 @@ var ROI = class _ROI {
     const geometry = { type: "Polygon", coordinates: [ring] };
     return new _ROI({
       geometry,
-      annotationType: 2 /* SEGMENTATION */,
       ...options
     });
   }
-  get isPredicted() {
-    return this.score !== null;
+  static fromMultiPolygon(polygons, options) {
+    return new _ROI({
+      geometry: { type: "MultiPolygon", coordinates: polygons },
+      ...options
+    });
+  }
+  explode() {
+    const copyFields = {
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance
+    };
+    if (this.geometry.type === "MultiPolygon") {
+      return this.geometry.coordinates.map(
+        (coords) => new _ROI({
+          geometry: { type: "Polygon", coordinates: coords },
+          ...copyFields
+        })
+      );
+    }
+    if (this.geometry.type === "GeometryCollection") {
+      return this.geometry.geometries.map(
+        (geom) => new _ROI({
+          geometry: geom,
+          ...copyFields
+        })
+      );
+    }
+    return [new _ROI({
+      geometry: this.geometry,
+      ...copyFields
+    })];
+  }
+  toGeoJSON() {
+    return {
+      type: "Feature",
+      geometry: this.geometry,
+      properties: {
+        name: this.name,
+        category: this.category,
+        source: this.source,
+        frame_idx: this.frameIdx,
+        roi_type: this.isStatic ? "static" : "temporal"
+      }
+    };
   }
   get isStatic() {
     return this.frameIdx === null;
@@ -1519,6 +1615,8 @@ var ROI = class _ROI {
   }
   get area() {
     if (this.geometry.type === "Point") return 0;
+    if (this.geometry.type === "MultiPoint") return 0;
+    if (this.geometry.type === "LineString") return 0;
     if (this.geometry.type === "Polygon") {
       return polygonArea(this.geometry.coordinates);
     }
@@ -1526,6 +1624,14 @@ var ROI = class _ROI {
       let total = 0;
       for (const poly of this.geometry.coordinates) {
         total += polygonArea(poly);
+      }
+      return total;
+    }
+    if (this.geometry.type === "GeometryCollection") {
+      let total = 0;
+      for (const geom of this.geometry.geometries) {
+        const sub = new _ROI({ geometry: geom });
+        total += sub.area;
       }
       return total;
     }
@@ -1546,10 +1652,8 @@ var ROI = class _ROI {
     }
     const mask = rasterizeGeometry(this.geometry, height, width);
     return _maskFactory(mask, height, width, {
-      annotationType: this.annotationType,
       name: this.name,
       category: this.category,
-      score: this.score,
       source: this.source,
       video: this.video,
       frameIdx: this.frameIdx,
@@ -1566,6 +1670,20 @@ var ROI = class _ROI {
     }
     if (this.geometry.type === "MultiPolygon") {
       return this.geometry.coordinates.flat(2);
+    }
+    if (this.geometry.type === "MultiPoint") {
+      return this.geometry.coordinates;
+    }
+    if (this.geometry.type === "LineString") {
+      return this.geometry.coordinates;
+    }
+    if (this.geometry.type === "GeometryCollection") {
+      const pts = [];
+      for (const geom of this.geometry.geometries) {
+        const sub = new _ROI({ geometry: geom });
+        pts.push(...sub._allPoints());
+      }
+      return pts;
     }
     return [];
   }
@@ -1588,10 +1706,30 @@ function polygonArea(rings) {
 }
 function rasterizeGeometry(geometry, height, width) {
   const mask = new Uint8Array(height * width);
-  if (geometry.type !== "Polygon") return mask;
-  scanlineFill(geometry.coordinates[0], mask, height, width, true);
-  for (let i = 1; i < geometry.coordinates.length; i++) {
-    scanlineFill(geometry.coordinates[i], mask, height, width, false);
+  if (geometry.type === "Polygon") {
+    scanlineFill(geometry.coordinates[0], mask, height, width, true);
+    for (let i = 1; i < geometry.coordinates.length; i++) {
+      scanlineFill(geometry.coordinates[i], mask, height, width, false);
+    }
+    return mask;
+  }
+  if (geometry.type === "MultiPolygon") {
+    for (const poly of geometry.coordinates) {
+      const polyMask = rasterizeGeometry({ type: "Polygon", coordinates: poly }, height, width);
+      for (let i = 0; i < mask.length; i++) {
+        if (polyMask[i]) mask[i] = 1;
+      }
+    }
+    return mask;
+  }
+  if (geometry.type === "GeometryCollection") {
+    for (const geom of geometry.geometries) {
+      const subMask = rasterizeGeometry(geom, height, width);
+      for (let i = 0; i < mask.length; i++) {
+        if (subMask[i]) mask[i] = 1;
+      }
+    }
+    return mask;
   }
   return mask;
 }
@@ -1662,6 +1800,58 @@ function encodeWkb(geometry) {
     }
     return new Uint8Array(buf);
   }
+  if (geometry.type === "LineString") {
+    const numPoints = geometry.coordinates.length;
+    const size = 9 + numPoints * 16;
+    const buf = new ArrayBuffer(size);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 2, true);
+    view.setUint32(5, numPoints, true);
+    let offset = 9;
+    for (const [x, y] of geometry.coordinates) {
+      view.setFloat64(offset, x, true);
+      view.setFloat64(offset + 8, y, true);
+      offset += 16;
+    }
+    return new Uint8Array(buf);
+  }
+  if (geometry.type === "MultiPoint") {
+    const numPoints = geometry.coordinates.length;
+    const size = 9 + numPoints * 21;
+    const buf = new ArrayBuffer(size);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 4, true);
+    view.setUint32(5, numPoints, true);
+    let offset = 9;
+    for (const [x, y] of geometry.coordinates) {
+      view.setUint8(offset, 1);
+      view.setUint32(offset + 1, 1, true);
+      view.setFloat64(offset + 5, x, true);
+      view.setFloat64(offset + 13, y, true);
+      offset += 21;
+    }
+    return new Uint8Array(buf);
+  }
+  if (geometry.type === "GeometryCollection") {
+    const subBuffers = [];
+    for (const geom of geometry.geometries) {
+      subBuffers.push(encodeWkb(geom));
+    }
+    const totalSize = 9 + subBuffers.reduce((sum, b) => sum + b.length, 0);
+    const buf = new ArrayBuffer(totalSize);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 7, true);
+    view.setUint32(5, geometry.geometries.length, true);
+    let offset = 9;
+    for (const sb of subBuffers) {
+      new Uint8Array(buf, offset, sb.length).set(sb);
+      offset += sb.length;
+    }
+    return new Uint8Array(buf);
+  }
   throw new Error(`Unsupported geometry type: ${geometry.type}`);
 }
 function encodeWkbPolygon(rings) {
@@ -1687,6 +1877,9 @@ function encodeWkbPolygon(rings) {
   return new Uint8Array(buf);
 }
 function decodeWkb(bytes) {
+  return decodeWkbInternal(bytes).geometry;
+}
+function decodeWkbInternal(bytes) {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const byteOrder = view.getUint8(0);
   const le = byteOrder === 1;
@@ -1694,11 +1887,11 @@ function decodeWkb(bytes) {
   if (wkbType === 1) {
     const x = view.getFloat64(5, le);
     const y = view.getFloat64(13, le);
-    return { type: "Point", coordinates: [x, y] };
+    return { geometry: { type: "Point", coordinates: [x, y] }, bytesRead: 21 };
   }
   if (wkbType === 3) {
-    const { rings } = decodeWkbPolygon(view, 5, le);
-    return { type: "Polygon", coordinates: rings };
+    const { rings, bytesRead } = decodeWkbPolygon(view, 5, le);
+    return { geometry: { type: "Polygon", coordinates: rings }, bytesRead: 5 + bytesRead };
   }
   if (wkbType === 6) {
     const numPolygons = view.getUint32(5, le);
@@ -1711,7 +1904,45 @@ function decodeWkb(bytes) {
       polygons.push(rings);
       offset += bytesRead;
     }
-    return { type: "MultiPolygon", coordinates: polygons };
+    return { geometry: { type: "MultiPolygon", coordinates: polygons }, bytesRead: offset };
+  }
+  if (wkbType === 2) {
+    const numPoints = view.getUint32(5, le);
+    const coords = [];
+    let offset = 9;
+    for (let i = 0; i < numPoints; i++) {
+      const x = view.getFloat64(offset, le);
+      const y = view.getFloat64(offset + 8, le);
+      coords.push([x, y]);
+      offset += 16;
+    }
+    return { geometry: { type: "LineString", coordinates: coords }, bytesRead: offset };
+  }
+  if (wkbType === 4) {
+    const numPoints = view.getUint32(5, le);
+    const coords = [];
+    let offset = 9;
+    for (let i = 0; i < numPoints; i++) {
+      const innerLe = view.getUint8(offset) === 1;
+      offset += 5;
+      const x = view.getFloat64(offset, innerLe);
+      const y = view.getFloat64(offset + 8, innerLe);
+      coords.push([x, y]);
+      offset += 16;
+    }
+    return { geometry: { type: "MultiPoint", coordinates: coords }, bytesRead: offset };
+  }
+  if (wkbType === 7) {
+    const numGeometries = view.getUint32(5, le);
+    const geometries = [];
+    let offset = 9;
+    for (let i = 0; i < numGeometries; i++) {
+      const subBytes = new Uint8Array(bytes.buffer, bytes.byteOffset + offset, bytes.byteLength - offset);
+      const { geometry: geom, bytesRead } = decodeWkbInternal(subBytes);
+      geometries.push(geom);
+      offset += bytesRead;
+    }
+    return { geometry: { type: "GeometryCollection", geometries }, bytesRead: offset };
   }
   throw new Error(`Unsupported WKB type: ${wkbType}`);
 }
@@ -1775,10 +2006,8 @@ var SegmentationMask = class _SegmentationMask {
   rleCounts;
   height;
   width;
-  annotationType;
   name;
   category;
-  score;
   source;
   video;
   frameIdx;
@@ -1788,10 +2017,8 @@ var SegmentationMask = class _SegmentationMask {
     this.rleCounts = options.rleCounts;
     this.height = options.height;
     this.width = options.width;
-    this.annotationType = options.annotationType ?? 2 /* SEGMENTATION */;
     this.name = options.name ?? "";
     this.category = options.category ?? "";
-    this.score = options.score ?? null;
     this.source = options.source ?? "";
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
@@ -1872,10 +2099,8 @@ var SegmentationMask = class _SegmentationMask {
     }
     return new ROI({
       geometry,
-      annotationType: this.annotationType,
       name: this.name,
       category: this.category,
-      score: this.score,
       source: this.source,
       video: this.video,
       frameIdx: this.frameIdx,
@@ -1889,6 +2114,156 @@ _registerMaskFactory(
     return SegmentationMask.fromArray(mask, height, width, options);
   }
 );
+
+// src/model/bbox.ts
+var BoundingBox = class {
+  xCenter;
+  yCenter;
+  width;
+  height;
+  angle;
+  video;
+  frameIdx;
+  track;
+  instance;
+  category;
+  name;
+  source;
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx = null;
+  constructor(options) {
+    this.xCenter = options.xCenter;
+    this.yCenter = options.yCenter;
+    this.width = options.width;
+    this.height = options.height;
+    this.angle = options.angle ?? 0;
+    this.video = options.video ?? null;
+    this.frameIdx = options.frameIdx ?? null;
+    this.track = options.track ?? null;
+    this.instance = options.instance ?? null;
+    this.category = options.category ?? "";
+    this.name = options.name ?? "";
+    this.source = options.source ?? "";
+  }
+  /** Create from corner coordinates [x1, y1, x2, y2]. */
+  static fromXyxy(x1, y1, x2, y2, options) {
+    return new UserBoundingBox({
+      xCenter: (x1 + x2) / 2,
+      yCenter: (y1 + y2) / 2,
+      width: Math.abs(x2 - x1),
+      height: Math.abs(y2 - y1),
+      ...options
+    });
+  }
+  /** Create from top-left corner + size [x, y, w, h]. */
+  static fromXywh(x, y, w, h, options) {
+    return new UserBoundingBox({
+      xCenter: x + w / 2,
+      yCenter: y + h / 2,
+      width: w,
+      height: h,
+      ...options
+    });
+  }
+  /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
+  get xyxy() {
+    if (!this.isRotated) {
+      return [
+        this.xCenter - this.width / 2,
+        this.yCenter - this.height / 2,
+        this.xCenter + this.width / 2,
+        this.yCenter + this.height / 2
+      ];
+    }
+    const c = this.corners;
+    const xs = c.map((p) => p[0]);
+    const ys = c.map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  }
+  /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
+  get xywh() {
+    const [x1, y1, x2, y2] = this.xyxy;
+    return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+  }
+  /** Four corner points of the (possibly rotated) bbox. */
+  get corners() {
+    const hw = this.width / 2;
+    const hh = this.height / 2;
+    const local = [
+      [-hw, -hh],
+      [hw, -hh],
+      [hw, hh],
+      [-hw, hh]
+    ];
+    if (!this.isRotated) {
+      return local.map(([dx, dy]) => [this.xCenter + dx, this.yCenter + dy]);
+    }
+    const cos = Math.cos(this.angle);
+    const sin = Math.sin(this.angle);
+    return local.map(([dx, dy]) => [
+      this.xCenter + dx * cos - dy * sin,
+      this.yCenter + dx * sin + dy * cos
+    ]);
+  }
+  /** Axis-aligned bounds. */
+  get bounds() {
+    const [x1, y1, x2, y2] = this.xyxy;
+    return { minX: x1, minY: y1, maxX: x2, maxY: y2 };
+  }
+  /** Area of the bbox (width * height). */
+  get area() {
+    return this.width * this.height;
+  }
+  /** Center point. */
+  get centroid() {
+    return { x: this.xCenter, y: this.yCenter };
+  }
+  /** Whether this is a predicted bbox (has a score). */
+  get isPredicted() {
+    return false;
+  }
+  /** Whether the bbox has no temporal association. */
+  get isStatic() {
+    return this.frameIdx === null;
+  }
+  /** Whether the bbox is rotated (angle != 0). */
+  get isRotated() {
+    return this.angle !== 0;
+  }
+  /** Convert to a Polygon ROI. */
+  toRoi() {
+    const c = this.corners;
+    const ring = [...c, c[0]];
+    return ROI.fromPolygon(ring, {
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance
+    });
+  }
+  /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
+  toMask(height, width) {
+    return this.toRoi().toMask(height, width);
+  }
+};
+var UserBoundingBox = class extends BoundingBox {
+  get isPredicted() {
+    return false;
+  }
+};
+var PredictedBoundingBox = class extends BoundingBox {
+  score;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+  }
+  get isPredicted() {
+    return true;
+  }
+};
 
 // src/video/mp4box-video.ts
 var isBrowser2 = typeof window !== "undefined" && typeof document !== "undefined";
@@ -3837,8 +4212,10 @@ function writeSlpToFile(file, labels, embeddedVideoData) {
   writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
   writeLabeledFrames(file, labels);
   writeNegativeFrames(file, labels);
-  writeRois(file, labels.rois, labels.videos, labels.tracks);
+  const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
+  writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
   writeMasks(file, labels.masks, labels.videos, labels.tracks);
+  writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
 }
 async function saveSlpToBytes(labels, options) {
   const embedMode = options?.embed ?? false;
@@ -3901,7 +4278,8 @@ function writeMetadata(file, labels) {
     negative_anchors: {},
     provenance: labels.provenance ?? {}
   };
-  const formatId = labels.rois.length > 0 || labels.masks.length > 0 ? 1.5 : FORMAT_ID;
+  const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
+  const formatId = (labels.bboxes?.length ?? 0) > 0 ? 1.7 : hasRoiInstance ? 1.6 : labels.rois.length > 0 || labels.masks.length > 0 ? 1.5 : FORMAT_ID;
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
@@ -4310,7 +4688,7 @@ function createMatrixDataset(file, name, rows, fieldNames, dtype) {
   const dataset = file.get(name);
   dataset.create_attribute("field_names", fieldNames);
 }
-function writeRois(file, rois, videos, tracks) {
+function writeRois(file, rois, videos, tracks, instances) {
   if (!rois.length) return;
   const rows = [];
   const wkbChunks = [];
@@ -4318,6 +4696,7 @@ function writeRois(file, rois, videos, tracks) {
   const categories = [];
   const names = [];
   const sources = [];
+  const hasInstances = instances && instances.length > 0;
   for (const roi of rois) {
     const wkb = encodeWkb(roi.geometry);
     const wkbStart = wkbOffset;
@@ -4327,8 +4706,8 @@ function writeRois(file, rois, videos, tracks) {
     const videoIdx = roi.video ? videos.indexOf(roi.video) : -1;
     const frameIdx = roi.frameIdx ?? -1;
     const trackIdx = roi.track ? tracks.indexOf(roi.track) : -1;
-    const score = roi.score ?? Number.NaN;
-    rows.push([roi.annotationType, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd]);
+    const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : -1;
+    rows.push([0, videoIdx, frameIdx, trackIdx, Number.NaN, wkbStart, wkbEnd, instanceIdx]);
     categories.push(roi.category);
     names.push(roi.name);
     sources.push(roi.source);
@@ -4337,7 +4716,7 @@ function writeRois(file, rois, videos, tracks) {
     file,
     "rois",
     rows,
-    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end"],
+    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end", "instance"],
     "<f8"
   );
   const roisDs = file.get("rois");
@@ -4374,8 +4753,7 @@ function writeMasks(file, masks, videos, tracks) {
     const videoIdx = mask.video ? videos.indexOf(mask.video) : -1;
     const frameIdx = mask.frameIdx ?? -1;
     const trackIdx = mask.track ? tracks.indexOf(mask.track) : -1;
-    const score = mask.score ?? Number.NaN;
-    rows.push([mask.height, mask.width, mask.annotationType, videoIdx, frameIdx, trackIdx, score, rleStart, rleEnd]);
+    rows.push([mask.height, mask.width, 2, videoIdx, frameIdx, trackIdx, Number.NaN, rleStart, rleEnd]);
     categories.push(mask.category);
     names.push(mask.name);
     sources.push(mask.source);
@@ -4399,6 +4777,46 @@ function writeMasks(file, masks, videos, tracks) {
     offset += chunk.length;
   }
   file.create_dataset({ name: "mask_rle", data: rleFlat, shape: [rleFlat.length], dtype: "<B" });
+}
+function writeBboxes(file, bboxes, videos, tracks, instances) {
+  if (!bboxes.length) return;
+  const rows = [];
+  const categories = [];
+  const names = [];
+  const sources = [];
+  for (const bbox of bboxes) {
+    const videoIdx = bbox.video ? videos.indexOf(bbox.video) : -1;
+    const frameIdx = bbox.frameIdx ?? -1;
+    const trackIdx = bbox.track ? tracks.indexOf(bbox.track) : -1;
+    const score = bbox.isPredicted ? bbox.score : Number.NaN;
+    const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance) : -1;
+    rows.push([
+      bbox.xCenter,
+      bbox.yCenter,
+      bbox.width,
+      bbox.height,
+      bbox.angle,
+      videoIdx,
+      frameIdx,
+      trackIdx,
+      score,
+      instanceIdx
+    ]);
+    categories.push(bbox.category);
+    names.push(bbox.name);
+    sources.push(bbox.source);
+  }
+  createMatrixDataset(
+    file,
+    "bboxes",
+    rows,
+    ["x_center", "y_center", "width", "height", "angle", "video", "frame_idx", "track", "score", "instance"],
+    "<f8"
+  );
+  const bboxesDs = file.get("bboxes");
+  bboxesDs.create_attribute("categories", JSON.stringify(categories));
+  bboxesDs.create_attribute("names", JSON.stringify(names));
+  bboxesDs.create_attribute("sources", JSON.stringify(sources));
 }
 
 // src/codecs/slp/read.ts
@@ -4439,17 +4857,18 @@ async function readSlp(source, options) {
       const frameIdxs = negData.frame_idx ?? [];
       const negativeSet = /* @__PURE__ */ new Set();
       for (let i = 0; i < frameIdxs.length; i++) {
-        negativeSet.add(`${Number(videoIds[i])}_${Number(frameIdxs[i])}`);
+        negativeSet.add(`${Number(videoIds[i])}:${Number(frameIdxs[i])}`);
       }
       for (const frame of labeledFrames) {
         const videoIndex = Math.max(0, videos.indexOf(frame.video));
-        if (negativeSet.has(`${videoIndex}_${frame.frameIdx}`)) {
+        if (negativeSet.has(`${videoIndex}:${frame.frameIdx}`)) {
           frame.isNegative = true;
         }
       }
     }
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
-    const rois = readRois(file, videos, tracks);
+    const allInstances = labeledFrames.flatMap((f) => f.instances);
+    const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks, allInstances);
     const masks = readMasks(file, videos, tracks);
     return new Labels({
       labeledFrames,
@@ -4460,7 +4879,8 @@ async function readSlp(source, options) {
       sessions,
       provenance: metadataJson?.provenance ?? {},
       rois,
-      masks
+      masks,
+      bboxes
     });
   } finally {
     close();
@@ -4485,6 +4905,16 @@ async function readSlpLazy(source, options) {
     const instancesData = normalizeStructDataset(file.get("instances"));
     const pointsData = normalizeStructDataset(file.get("points"));
     const predPointsData = normalizeStructDataset(file.get("pred_points"));
+    const negativeFrames = /* @__PURE__ */ new Set();
+    const negativeFramesDs = file.get("negative_frames");
+    if (negativeFramesDs) {
+      const negData = normalizeStructDataset(negativeFramesDs);
+      const videoIds = negData.video_id ?? negData.video ?? [];
+      const frameIdxs = negData.frame_idx ?? [];
+      for (let i = 0; i < frameIdxs.length; i++) {
+        negativeFrames.add(`${Number(videoIds[i])}:${Number(frameIdxs[i])}`);
+      }
+    }
     const store = new LazyDataStore({
       framesData,
       instancesData,
@@ -4493,11 +4923,12 @@ async function readSlpLazy(source, options) {
       skeletons,
       tracks,
       videos,
-      formatId
+      formatId,
+      negativeFrames
     });
     const lazyFrames = new LazyFrameList(store);
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
-    const rois = readRois(file, videos, tracks);
+    const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks);
     const masks = readMasks(file, videos, tracks);
     const labels = new Labels({
       videos,
@@ -4507,7 +4938,8 @@ async function readSlpLazy(source, options) {
       sessions,
       provenance: metadataJson?.provenance ?? {},
       rois,
-      masks
+      masks,
+      bboxes
     });
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;
@@ -4760,14 +5192,22 @@ function readAttrString(dataset, name) {
   if (Array.isArray(value)) return value.map(String);
   return [];
 }
-function readRois(file, videos, tracks) {
+function readRoisAndBboxes(file, videos, tracks, instances) {
+  const { rois, migratedBboxes } = readRoisWithMigration(file, videos, tracks, instances);
+  let bboxes = readBboxes(file, videos, tracks);
+  if (bboxes.length === 0 && migratedBboxes.length > 0) {
+    bboxes = migratedBboxes;
+  }
+  return { rois, bboxes };
+}
+function readRoisWithMigration(file, videos, tracks, instances) {
   const roisDs = file.get("rois");
-  if (!roisDs) return [];
+  if (!roisDs) return { rois: [], migratedBboxes: [] };
   const roisData = normalizeStructDataset(roisDs);
   const annotationTypes = roisData.annotation_type ?? [];
-  if (!annotationTypes.length) return [];
+  if (!annotationTypes.length) return { rois: [], migratedBboxes: [] };
   const wkbDs = file.get("roi_wkb");
-  if (!wkbDs) return [];
+  if (!wkbDs) return { rois: [], migratedBboxes: [] };
   const wkbFlat = wkbDs.value instanceof Uint8Array ? wkbDs.value : new Uint8Array(wkbDs.value ?? []);
   const categories = readAttrString(roisDs, "categories");
   const names = readAttrString(roisDs, "names");
@@ -4778,7 +5218,9 @@ function readRois(file, videos, tracks) {
   const scores = roisData.score ?? [];
   const wkbStarts = roisData.wkb_start ?? [];
   const wkbEnds = roisData.wkb_end ?? [];
+  const instanceIndices = roisData.instance ?? [];
   const rois = [];
+  const migratedBboxes = [];
   for (let i = 0; i < annotationTypes.length; i++) {
     const wkbStart = Number(wkbStarts[i]);
     const wkbEnd = Number(wkbEnds[i]);
@@ -4790,21 +5232,105 @@ function readRois(file, videos, tracks) {
     const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-    const scoreVal = Number(scores[i]);
-    const score = Number.isNaN(scoreVal) ? null : scoreVal;
-    rois.push(new ROI({
-      geometry,
-      annotationType: Number(annotationTypes[i]),
-      name: names[i] ?? "",
-      category: categories[i] ?? "",
-      score,
-      source: sources[i] ?? "",
+    const annotType = Number(annotationTypes[i]);
+    if (annotType === 1 /* BOUNDING_BOX */) {
+      const tmpRoi = new ROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, frameIdx, track });
+      const b = tmpRoi.bounds;
+      const scoreVal = Number(scores[i]);
+      const bboxScore = Number.isNaN(scoreVal) ? null : scoreVal;
+      const bboxOptions = {
+        xCenter: (b.minX + b.maxX) / 2,
+        yCenter: (b.minY + b.maxY) / 2,
+        width: b.maxX - b.minX,
+        height: b.maxY - b.minY,
+        video,
+        frameIdx,
+        track,
+        category: categories[i] ?? "",
+        name: names[i] ?? "",
+        source: sources[i] ?? ""
+      };
+      if (bboxScore !== null) {
+        migratedBboxes.push(new PredictedBoundingBox({ ...bboxOptions, score: bboxScore }));
+      } else {
+        migratedBboxes.push(new UserBoundingBox(bboxOptions));
+      }
+    } else {
+      const roi = new ROI({
+        geometry,
+        name: names[i] ?? "",
+        category: categories[i] ?? "",
+        source: sources[i] ?? "",
+        video,
+        frameIdx,
+        track
+      });
+      if (instanceIndices.length > 0) {
+        const instIdx = Number(instanceIndices[i]);
+        if (instances && instIdx >= 0 && instIdx < instances.length) {
+          roi.instance = instances[instIdx];
+        } else if (instIdx >= 0) {
+          roi._instanceIdx = instIdx;
+        }
+      }
+      rois.push(roi);
+    }
+  }
+  return { rois, migratedBboxes };
+}
+function readBboxes(file, videos, tracks) {
+  const bboxesDs = file.get("bboxes");
+  if (!bboxesDs) return [];
+  const bboxesData = normalizeStructDataset(bboxesDs);
+  const xCenters = bboxesData.x_center ?? [];
+  if (!xCenters.length) return [];
+  const categories = readAttrString(bboxesDs, "categories");
+  const names = readAttrString(bboxesDs, "names");
+  const sources = readAttrString(bboxesDs, "sources");
+  const yCenters = bboxesData.y_center ?? [];
+  const widths = bboxesData.width ?? [];
+  const heights = bboxesData.height ?? [];
+  const angles = bboxesData.angle ?? [];
+  const videoIndices = bboxesData.video ?? [];
+  const frameIndices = bboxesData.frame_idx ?? [];
+  const trackIndices = bboxesData.track ?? [];
+  const bboxScores = bboxesData.score ?? [];
+  const instanceIndices = bboxesData.instance ?? [];
+  const bboxes = [];
+  for (let i = 0; i < xCenters.length; i++) {
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+    const frameIdxVal = Number(frameIndices[i]);
+    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const scoreVal = Number(bboxScores[i]);
+    const instanceIdx = Number(instanceIndices[i]);
+    const options = {
+      xCenter: Number(xCenters[i]),
+      yCenter: Number(yCenters[i]),
+      width: Number(widths[i]),
+      height: Number(heights[i]),
+      angle: Number(angles[i]),
       video,
       frameIdx,
-      track
-    }));
+      track,
+      category: categories[i] ?? "",
+      name: names[i] ?? "",
+      source: sources[i] ?? ""
+    };
+    let bbox;
+    if (Number.isNaN(scoreVal)) {
+      bbox = new UserBoundingBox(options);
+    } else {
+      bbox = new PredictedBoundingBox({ ...options, score: scoreVal });
+    }
+    if (instanceIdx >= 0) {
+      bbox._instanceIdx = instanceIdx;
+    }
+    bboxes.push(bbox);
   }
-  return rois;
+  return bboxes;
 }
 function readMasks(file, videos, tracks) {
   const masksDs = file.get("masks");
@@ -4819,11 +5345,9 @@ function readMasks(file, videos, tracks) {
   const names = readAttrString(masksDs, "names");
   const sources = readAttrString(masksDs, "sources");
   const widths = masksData.width ?? [];
-  const annotationTypes = masksData.annotation_type ?? [];
   const videoIndices = masksData.video ?? [];
   const frameIndices = masksData.frame_idx ?? [];
   const trackIndices = masksData.track ?? [];
-  const scores = masksData.score ?? [];
   const rleStarts = masksData.rle_start ?? [];
   const rleEnds = masksData.rle_end ?? [];
   const masks = [];
@@ -4843,16 +5367,12 @@ function readMasks(file, videos, tracks) {
     const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-    const scoreVal = Number(scores[i]);
-    const score = Number.isNaN(scoreVal) ? null : scoreVal;
     masks.push(new SegmentationMask({
       rleCounts,
       height: Number(heights[i]),
       width: Number(widths[i]),
-      annotationType: Number(annotationTypes[i]),
       name: names[i] ?? "",
       category: categories[i] ?? "",
-      score,
       source: sources[i] ?? "",
       video,
       frameIdx,
@@ -5119,6 +5639,33 @@ async function loadVideo(filename, options) {
     backend: options?.backend
   });
   return new Video({ filename, backend, openBackend: options?.openBackend ?? true });
+}
+
+// src/io/geojson.ts
+function roisToGeoJSON(rois) {
+  return {
+    type: "FeatureCollection",
+    features: rois.map((roi) => roi.toGeoJSON())
+  };
+}
+function roisFromGeoJSON(geojson) {
+  const features = geojson.type === "FeatureCollection" ? geojson.features : [geojson];
+  return features.map((feature) => {
+    const props = feature.properties ?? {};
+    return new ROI({
+      geometry: feature.geometry,
+      name: String(props.name ?? ""),
+      category: String(props.category ?? ""),
+      source: String(props.source ?? ""),
+      frameIdx: typeof props.frame_idx === "number" ? props.frame_idx : null
+    });
+  });
+}
+function writeGeoJSON(rois) {
+  return JSON.stringify(roisToGeoJSON(rois), null, 2);
+}
+function readGeoJSON(json) {
+  return roisFromGeoJSON(JSON.parse(json));
 }
 
 // src/codecs/skeleton-yaml.ts
@@ -5737,6 +6284,9 @@ export {
   encodeRle,
   decodeRle,
   SegmentationMask,
+  BoundingBox,
+  UserBoundingBox,
+  PredictedBoundingBox,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
   StreamingH5File,
@@ -5753,6 +6303,10 @@ export {
   loadSlpSet,
   saveSlpSet,
   loadVideo,
+  roisToGeoJSON,
+  roisFromGeoJSON,
+  writeGeoJSON,
+  readGeoJSON,
   decodeYamlSkeleton,
   encodeYamlSkeleton,
   readSkeletonJson,

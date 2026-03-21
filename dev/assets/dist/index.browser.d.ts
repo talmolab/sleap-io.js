@@ -169,6 +169,7 @@ declare class LazyDataStore {
     tracks: Track[];
     videos: Video[];
     formatId: number;
+    negativeFrames: Set<string>;
     constructor(options: {
         framesData: Record<string, any[]>;
         instancesData: Record<string, any[]>;
@@ -178,6 +179,7 @@ declare class LazyDataStore {
         tracks: Track[];
         videos: Video[];
         formatId: number;
+        negativeFrames?: Set<string>;
     });
     /** Total number of frames in the store. */
     get frameCount(): number;
@@ -226,10 +228,8 @@ declare class SegmentationMask {
     rleCounts: Uint32Array;
     height: number;
     width: number;
-    annotationType: AnnotationType;
     name: string;
     category: string;
-    score: number | null;
     source: string;
     video: Video | null;
     frameIdx: number | null;
@@ -239,10 +239,8 @@ declare class SegmentationMask {
         rleCounts: Uint32Array;
         height: number;
         width: number;
-        annotationType?: AnnotationType | number;
         name?: string;
         category?: string;
-        score?: number | null;
         source?: string;
         video?: Video | null;
         frameIdx?: number | null;
@@ -280,24 +278,31 @@ type Geometry = {
 } | {
     type: "MultiPolygon";
     coordinates: number[][][][];
+} | {
+    type: "MultiPoint";
+    coordinates: number[][];
+} | {
+    type: "LineString";
+    coordinates: number[][];
+} | {
+    type: "GeometryCollection";
+    geometries: Geometry[];
 };
 declare class ROI {
     geometry: Geometry;
-    annotationType: AnnotationType;
     name: string;
     category: string;
-    score: number | null;
     source: string;
     video: Video | null;
     frameIdx: number | null;
     track: Track | null;
     instance: Instance | null;
+    /** @internal Deferred instance index for lazy resolution. */
+    _instanceIdx: number | null;
     constructor(options: {
         geometry: Geometry;
-        annotationType?: AnnotationType | number;
         name?: string;
         category?: string;
-        score?: number | null;
         source?: string;
         video?: Video | null;
         frameIdx?: number | null;
@@ -307,7 +312,13 @@ declare class ROI {
     static fromBbox(x: number, y: number, width: number, height: number, options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">): ROI;
     static fromXyxy(x1: number, y1: number, x2: number, y2: number, options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">): ROI;
     static fromPolygon(coords: number[][], options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">): ROI;
-    get isPredicted(): boolean;
+    static fromMultiPolygon(polygons: number[][][][], options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">): ROI;
+    explode(): ROI[];
+    toGeoJSON(): {
+        type: "Feature";
+        geometry: Geometry;
+        properties: Record<string, unknown>;
+    };
     get isStatic(): boolean;
     get isBbox(): boolean;
     get bounds(): {
@@ -328,6 +339,91 @@ declare function rasterizeGeometry(geometry: Geometry, height: number, width: nu
 declare function encodeWkb(geometry: Geometry): Uint8Array;
 declare function decodeWkb(bytes: Uint8Array): Geometry;
 
+/** Options for constructing a BoundingBox. */
+interface BoundingBoxOptions {
+    xCenter: number;
+    yCenter: number;
+    width: number;
+    height: number;
+    angle?: number;
+    video?: Video | null;
+    frameIdx?: number | null;
+    track?: Track | null;
+    instance?: Instance | null;
+    category?: string;
+    name?: string;
+    source?: string;
+}
+/** Base bounding box class for detection/tracking workflows. */
+declare class BoundingBox {
+    xCenter: number;
+    yCenter: number;
+    width: number;
+    height: number;
+    angle: number;
+    video: Video | null;
+    frameIdx: number | null;
+    track: Track | null;
+    instance: Instance | null;
+    category: string;
+    name: string;
+    source: string;
+    /** @internal Deferred instance index for lazy resolution. */
+    _instanceIdx: number | null;
+    constructor(options: BoundingBoxOptions);
+    /** Create from corner coordinates [x1, y1, x2, y2]. */
+    static fromXyxy(x1: number, y1: number, x2: number, y2: number, options?: Omit<BoundingBoxOptions, "xCenter" | "yCenter" | "width" | "height">): UserBoundingBox;
+    /** Create from top-left corner + size [x, y, w, h]. */
+    static fromXywh(x: number, y: number, w: number, h: number, options?: Omit<BoundingBoxOptions, "xCenter" | "yCenter" | "width" | "height">): UserBoundingBox;
+    /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
+    get xyxy(): [number, number, number, number];
+    /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
+    get xywh(): {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    /** Four corner points of the (possibly rotated) bbox. */
+    get corners(): number[][];
+    /** Axis-aligned bounds. */
+    get bounds(): {
+        minX: number;
+        minY: number;
+        maxX: number;
+        maxY: number;
+    };
+    /** Area of the bbox (width * height). */
+    get area(): number;
+    /** Center point. */
+    get centroid(): {
+        x: number;
+        y: number;
+    };
+    /** Whether this is a predicted bbox (has a score). */
+    get isPredicted(): boolean;
+    /** Whether the bbox has no temporal association. */
+    get isStatic(): boolean;
+    /** Whether the bbox is rotated (angle != 0). */
+    get isRotated(): boolean;
+    /** Convert to a Polygon ROI. */
+    toRoi(): ROI;
+    /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
+    toMask(height: number, width: number): SegmentationMask;
+}
+/** User-annotated bounding box (no prediction score). */
+declare class UserBoundingBox extends BoundingBox {
+    get isPredicted(): boolean;
+}
+/** Predicted bounding box with a confidence score. */
+declare class PredictedBoundingBox extends BoundingBox {
+    score: number;
+    constructor(options: BoundingBoxOptions & {
+        score: number;
+    });
+    get isPredicted(): boolean;
+}
+
 declare class Labels {
     labeledFrames: LabeledFrame[];
     videos: Video[];
@@ -338,6 +434,7 @@ declare class Labels {
     provenance: Record<string, unknown>;
     rois: ROI[];
     masks: SegmentationMask[];
+    bboxes: BoundingBox[];
     /** @internal Lazy frame list for on-demand materialization. */
     _lazyFrameList: LazyFrameList | null;
     /** @internal Lazy data store holding raw HDF5 data. */
@@ -352,6 +449,7 @@ declare class Labels {
         provenance?: Record<string, unknown>;
         rois?: ROI[];
         masks?: SegmentationMask[];
+        bboxes?: BoundingBox[];
     });
     /** Whether this Labels instance is in lazy mode. */
     get isLazy(): boolean;
@@ -379,7 +477,6 @@ declare class Labels {
     getRois(filters?: {
         video?: Video;
         frameIdx?: number;
-        annotationType?: AnnotationType;
         category?: string;
         track?: Track;
         instance?: Instance | PredictedInstance;
@@ -387,11 +484,20 @@ declare class Labels {
     getMasks(filters?: {
         video?: Video;
         frameIdx?: number;
-        annotationType?: AnnotationType;
         category?: string;
         track?: Track;
         instance?: Instance | PredictedInstance;
     }): SegmentationMask[];
+    get staticBboxes(): BoundingBox[];
+    get temporalBboxes(): BoundingBox[];
+    getBboxes(filters?: {
+        video?: Video;
+        frameIdx?: number;
+        category?: string;
+        track?: Track;
+        instance?: Instance;
+        predicted?: boolean;
+    }): BoundingBox[];
     static fromNumpy(data: number[][][][], options: {
         videos?: Video[];
         video?: Video;
@@ -815,6 +921,35 @@ declare function loadVideo(filename: string, options?: {
     backend?: VideoBackendType;
 }): Promise<Video>;
 
+/** GeoJSON Feature type */
+interface GeoJSONFeature {
+    type: "Feature";
+    geometry: Geometry;
+    properties?: Record<string, unknown>;
+}
+/** GeoJSON FeatureCollection type */
+interface GeoJSONFeatureCollection {
+    type: "FeatureCollection";
+    features: GeoJSONFeature[];
+}
+/**
+ * Convert ROIs to a GeoJSON FeatureCollection object.
+ */
+declare function roisToGeoJSON(rois: ROI[]): GeoJSONFeatureCollection;
+/**
+ * Parse a GeoJSON object into ROIs.
+ * Accepts either a FeatureCollection or a single Feature.
+ */
+declare function roisFromGeoJSON(geojson: GeoJSONFeatureCollection | GeoJSONFeature): ROI[];
+/**
+ * Serialize ROIs to a GeoJSON string.
+ */
+declare function writeGeoJSON(rois: ROI[]): string;
+/**
+ * Parse a GeoJSON string into ROIs.
+ */
+declare function readGeoJSON(json: string): ROI[];
+
 type LabelsDict = {
     version: string;
     skeletons: Array<{
@@ -834,6 +969,7 @@ type LabelsDict = {
         frame_idx: number;
         video_idx: number;
         instances: Array<Record<string, unknown>>;
+        is_negative?: boolean;
     }>;
     suggestions: Array<Record<string, unknown>>;
     provenance: Record<string, unknown>;
@@ -1148,4 +1284,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AnnotationType, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type Geometry, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, ROI, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resolveColor, rgbToCSS, rodriguesTransformation, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy };
+export { AnnotationType, BoundingBox, type BoundingBoxOptions, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedInstance, type RGB, type RGBA, ROI, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };

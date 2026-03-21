@@ -301,30 +301,46 @@ const trainLabels = set.get("train");
 await saveSlpSet(set);
 ```
 
-## ROI & Segmentation Masks
+## ROI, Segmentation Masks & Bounding Boxes
 
-SLP format 1.5 supports spatial annotations (regions of interest and segmentation masks) alongside pose data:
+SLP format 1.5+ supports spatial annotations alongside pose data: ROIs (format 1.5), ROI-instance associations (format 1.6), and bounding boxes (format 1.7).
 
 ```ts
-import { loadSlp, ROI, SegmentationMask, AnnotationType } from "@talmolab/sleap-io.js";
+import {
+  loadSlp, ROI, SegmentationMask,
+  UserBoundingBox, PredictedBoundingBox, BoundingBox,
+  writeGeoJSON, readGeoJSON,
+} from "@talmolab/sleap-io.js";
 
 const labels = await loadSlp("dataset.slp");
 
-// Access ROIs and masks
-console.log(`${labels.rois.length} ROIs, ${labels.masks.length} masks`);
+// Access ROIs, masks, and bounding boxes
+console.log(`${labels.rois.length} ROIs, ${labels.masks.length} masks, ${labels.bboxes.length} bboxes`);
 
 // Query by video and frame
 const frameRois = labels.getRois({ video: labels.videos[0], frameIdx: 0 });
 const frameMasks = labels.getMasks({ video: labels.videos[0], frameIdx: 0 });
+const frameBboxes = labels.getBboxes({ video: labels.videos[0], frameIdx: 0 });
 
 // Create new ROIs
-const bbox = ROI.fromBbox(100, 200, 50, 80, {
+const roi = ROI.fromBbox(100, 200, 50, 80, {
   category: "arena",
   video: labels.videos[0],
 });
-labels.rois.push(bbox);
+labels.rois.push(roi);
 
-// Save — format 1.5 is used automatically when ROIs/masks are present
+// Create bounding boxes
+const bbox = new UserBoundingBox({
+  xCenter: 150, yCenter: 240, width: 50, height: 80,
+  category: "animal", video: labels.videos[0], frameIdx: 0,
+});
+labels.bboxes.push(bbox);
+
+// Export ROIs to GeoJSON
+const geojsonStr = writeGeoJSON(labels.rois);
+const restoredRois = readGeoJSON(geojsonStr);
+
+// Save — format version is set automatically based on content
 await saveSlp(labels, "output.slp");
 ```
 

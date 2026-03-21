@@ -1,5 +1,6 @@
 import {
   AnnotationType,
+  BoundingBox,
   Camera,
   CameraGroup,
   FrameGroup,
@@ -15,6 +16,7 @@ import {
   Mp4BoxVideoBackend,
   NAMED_COLORS,
   PALETTES,
+  PredictedBoundingBox,
   ROI,
   RecordingSession,
   RenderContext,
@@ -22,6 +24,7 @@ import {
   StreamingH5File,
   StreamingHdf5VideoBackend,
   SuggestionFrame,
+  UserBoundingBox,
   Video,
   _registerFileWriter,
   _registerMaskFactory,
@@ -53,6 +56,7 @@ import {
   openH5Worker,
   openStreamingH5,
   rasterizeGeometry,
+  readGeoJSON,
   readSkeletonJson,
   readSlpStreaming,
   readTrainingConfigSkeleton,
@@ -60,12 +64,15 @@ import {
   resolveColor,
   rgbToCSS,
   rodriguesTransformation,
+  roisFromGeoJSON,
+  roisToGeoJSON,
   saveSlp,
   saveSlpSet,
   saveSlpToBytes,
   toDict,
-  toNumpy
-} from "./chunk-3YTCMLQF.js";
+  toNumpy,
+  writeGeoJSON
+} from "./chunk-UN22VA7E.js";
 import {
   Edge,
   Instance,
@@ -513,6 +520,7 @@ async function renderVideo(source, outputPath, options = {}) {
 }
 export {
   AnnotationType,
+  BoundingBox,
   Camera,
   CameraGroup,
   Edge,
@@ -531,6 +539,7 @@ export {
   NAMED_COLORS,
   Node,
   PALETTES,
+  PredictedBoundingBox,
   PredictedInstance,
   ROI,
   RecordingSession,
@@ -542,6 +551,7 @@ export {
   SuggestionFrame,
   Symmetry,
   Track,
+  UserBoundingBox,
   Video,
   _registerMaskFactory,
   checkFfmpeg,
@@ -578,6 +588,7 @@ export {
   predictedPointsFromArray,
   predictedPointsFromDict,
   rasterizeGeometry,
+  readGeoJSON,
   readSkeletonJson,
   readSlpStreaming,
   readTrainingConfigSkeleton,
@@ -587,6 +598,8 @@ export {
   resolveColor,
   rgbToCSS,
   rodriguesTransformation,
+  roisFromGeoJSON,
+  roisToGeoJSON,
   saveImage,
   saveSlp,
   saveSlpSet,
@@ -595,5 +608,6 @@ export {
   toDict,
   toJPEG,
   toNumpy,
-  toPNG
+  toPNG,
+  writeGeoJSON
 };

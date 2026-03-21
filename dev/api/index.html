@@ -410,6 +410,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#geojson-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      GeoJSON I/O
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skeleton-codecs" class="md-nav__link">
     <span class="md-ellipsis">
       Skeleton Codecs
@@ -565,6 +574,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#geojson-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      GeoJSON I/O
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skeleton-codecs" class="md-nav__link">
     <span class="md-ellipsis">
       Skeleton Codecs
@@ -636,12 +654,18 @@
 <span class="w">  </span><span class="nx">LabelsSet</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">SuggestionFrame</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">ROI</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">AnnotationType</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">SegmentationMask</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">BoundingBox</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">UserBoundingBox</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">PredictedBoundingBox</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">toDict</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">fromDict</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">toNumpy</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">fromNumpy</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">roisToGeoJSON</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">roisFromGeoJSON</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">writeGeoJSON</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">readGeoJSON</span><span class="p">,</span>
 <span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
 </code></pre></div></p>
 <h2 id="core-io">Core I/O<a class="headerlink" href="#core-io" title="Permanent link">&para;</a></h2>
@@ -741,7 +765,8 @@
 <li><code>Video</code>, <code>SuggestionFrame</code>, <code>LabelsSet</code></li>
 <li><code>Camera</code>, <code>CameraGroup</code>, <code>RecordingSession</code> (camera utilities)</li>
 <li><code>LazyDataStore</code>, <code>LazyFrameList</code> (lazy loading)</li>
-<li><code>ROI</code>, <code>SegmentationMask</code>, <code>AnnotationType</code> (spatial annotations)</li>
+<li><code>ROI</code>, <code>SegmentationMask</code> (spatial annotations)</li>
+<li><code>BoundingBox</code>, <code>UserBoundingBox</code>, <code>PredictedBoundingBox</code> (detection/tracking)</li>
 <li><code>Point</code> has fields <code>{ xy, visible, complete, score? }</code> where <code>score</code> is an optional confidence value.</li>
 <li><code>LabeledFrame.isNegative</code> (<code>boolean</code>, default <code>false</code>): marks negative-annotated frames.</li>
 <li><code>SuggestionFrame.group</code> (<code>string</code>, default <code>"default"</code>): the suggestion group name.</li>
@@ -771,13 +796,12 @@
 <li><strong><code>LazyFrameList</code></strong>: Array-like container with <code>at(idx)</code>, <code>length</code>, <code>toArray()</code>, <code>[Symbol.iterator]()</code>, and <code>materializedCount</code>.</li>
 </ul>
 <h2 id="roi-segmentation-masks">ROI &amp; Segmentation Masks<a class="headerlink" href="#roi-segmentation-masks" title="Permanent link">&para;</a></h2>
-<p>Spatial annotations stored alongside pose data in SLP format 1.5.</p>
+<p>Spatial annotations stored alongside pose data (SLP format 1.5+).</p>
 <h3 id="roi"><code>ROI</code><a class="headerlink" href="#roi" title="Permanent link">&para;</a></h3>
-<p>Region of interest with GeoJSON-like geometry.</p>
+<p>Region of interest with GeoJSON-like geometry. Supports <code>Polygon</code>, <code>Point</code>, <code>MultiPolygon</code>, <code>MultiPoint</code>, <code>LineString</code>, and <code>GeometryCollection</code> types.</p>
 <div class="highlight"><pre><span></span><code><span class="c1">// Create from bounding box</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ROI</span><span class="p">.</span><span class="nx">fromBbox</span><span class="p">(</span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">200</span><span class="p">,</span><span class="w"> </span><span class="mf">50</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">annotationType</span><span class="o">:</span><span class="w"> </span><span class="kt">AnnotationType.ARENA</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span>
 <span class="p">});</span>
 
@@ -786,11 +810,23 @@
 <span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;region&quot;</span><span class="p">,</span>
 <span class="p">});</span>
 
+<span class="c1">// Create from multi-polygon</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ROI</span><span class="p">.</span><span class="nx">fromMultiPolygon</span><span class="p">([</span>
+<span class="w">  </span><span class="p">[[[</span><span class="mf">0</span><span class="p">,</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">10</span><span class="p">,</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">10</span><span class="p">,</span><span class="mf">10</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">0</span><span class="p">,</span><span class="mf">10</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">0</span><span class="p">,</span><span class="mf">0</span><span class="p">]]],</span>
+<span class="w">  </span><span class="p">[[[</span><span class="mf">20</span><span class="p">,</span><span class="mf">20</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">30</span><span class="p">,</span><span class="mf">20</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">30</span><span class="p">,</span><span class="mf">30</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">20</span><span class="p">,</span><span class="mf">30</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">20</span><span class="p">,</span><span class="mf">20</span><span class="p">]]],</span>
+<span class="p">]);</span>
+
 <span class="c1">// Properties</span>
 <span class="nx">roi</span><span class="p">.</span><span class="nx">bounds</span><span class="p">;</span><span class="w">    </span><span class="c1">// { minX, minY, maxX, maxY }</span>
 <span class="nx">roi</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">      </span><span class="c1">// polygon area</span>
 <span class="nx">roi</span><span class="p">.</span><span class="nx">centroid</span><span class="p">;</span><span class="w">  </span><span class="c1">// { x, y }</span>
 <span class="nx">roi</span><span class="p">.</span><span class="nx">isBbox</span><span class="p">;</span><span class="w">    </span><span class="c1">// true if axis-aligned rectangle</span>
+
+<span class="c1">// Explode multi-geometries into individual ROIs</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">parts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">roi</span><span class="p">.</span><span class="nx">explode</span><span class="p">();</span><span class="w">  </span><span class="c1">// ROI[]</span>
+
+<span class="c1">// Convert to GeoJSON Feature</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">feature</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">roi</span><span class="p">.</span><span class="nx">toGeoJSON</span><span class="p">();</span>
 
 <span class="c1">// Convert to mask</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">roi</span><span class="p">.</span><span class="nx">toMask</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span>
@@ -810,18 +846,67 @@
 <span class="c1">// Convert to polygon ROI</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">toPolygon</span><span class="p">();</span>
 </code></pre></div>
-<h3 id="labels-roimask-access"><code>Labels</code> ROI/Mask Access<a class="headerlink" href="#labels-roimask-access" title="Permanent link">&para;</a></h3>
+<h3 id="boundingbox"><code>BoundingBox</code><a class="headerlink" href="#boundingbox" title="Permanent link">&para;</a></h3>
+<p>Axis-aligned or rotated bounding box for detection/tracking workflows (SLP format 1.7).</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Create user-annotated bbox</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserBoundingBox</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">xCenter</span><span class="o">:</span><span class="w"> </span><span class="kt">50</span><span class="p">,</span><span class="w"> </span><span class="nx">yCenter</span><span class="o">:</span><span class="w"> </span><span class="kt">60</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">80</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">3</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;animal&quot;</span><span class="p">,</span>
+<span class="p">});</span>
+
+<span class="c1">// Create predicted bbox with confidence score</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedBoundingBox</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">xCenter</span><span class="o">:</span><span class="w"> </span><span class="kt">50</span><span class="p">,</span><span class="w"> </span><span class="nx">yCenter</span><span class="o">:</span><span class="w"> </span><span class="kt">60</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">80</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.95</span><span class="p">,</span>
+<span class="p">});</span>
+
+<span class="c1">// Factory methods</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXyxy</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">110</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">);</span><span class="w">  </span><span class="c1">// corner coords</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXywh</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">);</span><span class="w">   </span><span class="c1">// top-left + size</span>
+
+<span class="c1">// Properties</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">xyxy</span><span class="p">;</span><span class="w">       </span><span class="c1">// [x1, y1, x2, y2] (axis-aligned)</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">xywh</span><span class="p">;</span><span class="w">       </span><span class="c1">// { x, y, width, height }</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">corners</span><span class="p">;</span><span class="w">    </span><span class="c1">// number[][] (4 corner points, respects rotation)</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">bounds</span><span class="p">;</span><span class="w">     </span><span class="c1">// { minX, minY, maxX, maxY }</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">       </span><span class="c1">// width * height</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">centroid</span><span class="p">;</span><span class="w">   </span><span class="c1">// { x, y }</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">isPredicted</span><span class="p">;</span><span class="w"> </span><span class="c1">// true for PredictedBoundingBox</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">isStatic</span><span class="p">;</span><span class="w">   </span><span class="c1">// true if no frameIdx</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">isRotated</span><span class="p">;</span><span class="w">  </span><span class="c1">// true if angle != 0</span>
+
+<span class="c1">// Conversion</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">toRoi</span><span class="p">();</span><span class="w">              </span><span class="c1">// Polygon ROI</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">toMask</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span><span class="w">    </span><span class="c1">// SegmentationMask</span>
+</code></pre></div>
+<h3 id="labels-roimaskbbox-access"><code>Labels</code> ROI/Mask/BBox Access<a class="headerlink" href="#labels-roimaskbbox-access" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="c1">// Direct access</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">;</span><span class="w">       </span><span class="c1">// ROI[]</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">masks</span><span class="p">;</span><span class="w">      </span><span class="c1">// SegmentationMask[]</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">staticRois</span><span class="p">;</span><span class="w"> </span><span class="c1">// ROIs without frame index</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">;</span><span class="w">         </span><span class="c1">// ROI[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">masks</span><span class="p">;</span><span class="w">        </span><span class="c1">// SegmentationMask[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">bboxes</span><span class="p">;</span><span class="w">       </span><span class="c1">// BoundingBox[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">staticRois</span><span class="p">;</span><span class="w">   </span><span class="c1">// ROIs without frame index</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">temporalRois</span><span class="p">;</span><span class="w"> </span><span class="c1">// ROIs with frame index</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">staticBboxes</span><span class="p">;</span><span class="w"> </span><span class="c1">// BBoxes without frame index</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">temporalBboxes</span><span class="p">;</span><span class="w"> </span><span class="c1">// BBoxes with frame index</span>
 
 <span class="c1">// Filtered queries</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getRois</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="w"> </span><span class="p">});</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">annotationType</span><span class="o">:</span><span class="w"> </span><span class="kt">AnnotationType.SEGMENTATION</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;segmentation&quot;</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">getBboxes</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
 </code></pre></div>
-<p>ROIs and masks are read/written in SLP format 1.5 files. The format ID is automatically set to 1.5 when ROIs or masks are present.</p>
+<p>The format ID is set automatically: 1.5 for ROIs/masks, 1.6 for ROIs with instance associations, 1.7 when bounding boxes are present.</p>
+<h2 id="geojson-io">GeoJSON I/O<a class="headerlink" href="#geojson-io" title="Permanent link">&para;</a></h2>
+<p>Convert ROIs to/from GeoJSON format.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Convert ROIs to GeoJSON FeatureCollection</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">geojson</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">roisToGeoJSON</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">);</span>
+
+<span class="c1">// Serialize to JSON string</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">json</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">writeGeoJSON</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">);</span>
+
+<span class="c1">// Parse GeoJSON back to ROIs</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">rois</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">roisFromGeoJSON</span><span class="p">(</span><span class="nx">geojson</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">rois</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">readGeoJSON</span><span class="p">(</span><span class="nx">jsonString</span><span class="p">);</span>
+</code></pre></div>
 <h2 id="skeleton-codecs">Skeleton Codecs<a class="headerlink" href="#skeleton-codecs" title="Permanent link">&para;</a></h2>
 <h3 id="json-jsonpickle-format">JSON (jsonpickle format)<a class="headerlink" href="#json-jsonpickle-format" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">readSkeletonJson</span><span class="p">,</span><span class="w"> </span><span class="nx">isSkeletonJson</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
