@@ -11,6 +11,7 @@ import {
   LazyDataStore,
   LazyFrameList,
   MARKER_FUNCTIONS,
+  MediaBunnyVideoBackend,
   Mp4BoxVideoBackend,
   NAMED_COLORS,
   PALETTES,
@@ -25,6 +26,7 @@ import {
   _registerFileWriter,
   _registerMaskFactory,
   _registerNodeH5,
+  createVideoBackend,
   decodeRle,
   decodeWkb,
   decodeYamlSkeleton,
@@ -63,7 +65,7 @@ import {
   saveSlpToBytes,
   toDict,
   toNumpy
-} from "./chunk-JMC47NER.js";
+} from "./chunk-3YTCMLQF.js";
 import {
   Edge,
   Instance,
@@ -524,6 +526,7 @@ export {
   LazyDataStore,
   LazyFrameList,
   MARKER_FUNCTIONS,
+  MediaBunnyVideoBackend,
   Mp4BoxVideoBackend,
   NAMED_COLORS,
   Node,
@@ -542,6 +545,7 @@ export {
   Video,
   _registerMaskFactory,
   checkFfmpeg,
+  createVideoBackend,
   decodeRle,
   decodeWkb,
   decodeYamlSkeleton,

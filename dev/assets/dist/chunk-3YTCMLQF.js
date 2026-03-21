@@ -154,6 +154,213 @@ var SuggestionFrame = class {
   }
 };
 
+// src/video/mediabunny-video.ts
+import {
+  Input,
+  UrlSource,
+  BlobSource,
+  VideoSampleSink,
+  EncodedPacketSink,
+  ALL_FORMATS
+} from "mediabunny";
+var MediaBunnyVideoBackend = class _MediaBunnyVideoBackend {
+  filename;
+  shape;
+  fps;
+  dataset = null;
+  input = null;
+  sink = null;
+  _frameTimes = [];
+  cache = /* @__PURE__ */ new Map();
+  cacheSize;
+  frameCount = 0;
+  decodingPromise = null;
+  constructor(filename, options = {}) {
+    this.filename = filename;
+    this.cacheSize = options.cacheSize ?? 120;
+  }
+  static async fromUrl(url, options) {
+    const backend = new _MediaBunnyVideoBackend(url, options);
+    backend.input = new Input({
+      source: new UrlSource(url),
+      formats: ALL_FORMATS
+    });
+    await backend.initialize();
+    return backend;
+  }
+  static async fromBlob(blob, filename, options) {
+    const backend = new _MediaBunnyVideoBackend(filename, options);
+    backend.input = new Input({
+      source: new BlobSource(blob),
+      formats: ALL_FORMATS
+    });
+    await backend.initialize();
+    return backend;
+  }
+  async initialize() {
+    if (!this.input) throw new Error("Input not set");
+    const videoTrack = await this.input.getPrimaryVideoTrack();
+    if (!videoTrack) {
+      throw new Error("No video track found in file");
+    }
+    const width = videoTrack.displayWidth;
+    const height = videoTrack.displayHeight;
+    this.sink = new VideoSampleSink(videoTrack);
+    const packetSink = new EncodedPacketSink(videoTrack);
+    this._frameTimes = [];
+    try {
+      for await (const packet of packetSink.packets()) {
+        this._frameTimes.push(packet.timestamp);
+      }
+    } catch (error) {
+      this._frameTimes = [];
+      this.sink = null;
+      throw new Error(
+        `Failed to build frame time index: ${error instanceof Error ? error.message : String(error)}`
+      );
+    }
+    this.frameCount = this._frameTimes.length;
+    if (this.frameCount === 0) {
+      throw new Error("No frames found in video track");
+    }
+    this.shape = [this.frameCount, height, width, 3];
+    if (this._frameTimes.length >= 2) {
+      const firstTimestamp = this._frameTimes[0];
+      const lastTimestamp = this._frameTimes[this._frameTimes.length - 1];
+      const totalDuration = lastTimestamp - firstTimestamp;
+      if (totalDuration > 0) {
+        this.fps = (this.frameCount - 1) / totalDuration;
+      }
+    }
+  }
+  async getFrame(frameIndex) {
+    if (frameIndex < 0 || frameIndex >= this.frameCount) {
+      return null;
+    }
+    const cached = this.cache.get(frameIndex);
+    if (cached) {
+      this.cache.delete(frameIndex);
+      this.cache.set(frameIndex, cached);
+      return cached;
+    }
+    if (this.decodingPromise) {
+      await this.decodingPromise;
+      if (this.cache.has(frameIndex)) {
+        return this.cache.get(frameIndex) ?? null;
+      }
+    }
+    return this.decodeSingleFrame(frameIndex);
+  }
+  async decodeSingleFrame(frameIndex) {
+    if (!this.sink) throw new Error("Backend not initialized");
+    const timestamp = this._frameTimes[frameIndex];
+    const sample = await this.sink.getSample(timestamp);
+    if (!sample) {
+      return null;
+    }
+    const videoFrame = sample.toVideoFrame();
+    const bitmap = await createImageBitmap(videoFrame);
+    videoFrame.close();
+    this.cacheFrame(frameIndex, bitmap);
+    return bitmap;
+  }
+  async prefetch(startIndex, endIndex) {
+    startIndex = Math.max(0, startIndex);
+    endIndex = Math.min(endIndex, this.frameCount - 1);
+    if (startIndex > endIndex) return;
+    const uncachedRanges = [];
+    let rangeStart = null;
+    for (let i = startIndex; i <= endIndex; i++) {
+      if (!this.cache.has(i)) {
+        if (rangeStart === null) rangeStart = i;
+      } else if (rangeStart !== null) {
+        uncachedRanges.push([rangeStart, i - 1]);
+        rangeStart = null;
+      }
+    }
+    if (rangeStart !== null) {
+      uncachedRanges.push([rangeStart, endIndex]);
+    }
+    for (const [start, end] of uncachedRanges) {
+      await this.decodeRange(start, end);
+    }
+  }
+  async getFrames(startIndex, endIndex) {
+    await this.prefetch(startIndex, endIndex);
+    const result = /* @__PURE__ */ new Map();
+    for (let i = startIndex; i <= endIndex; i++) {
+      const frame = this.cache.get(i);
+      if (frame) {
+        result.set(i, frame);
+      }
+    }
+    return result;
+  }
+  async decodeRange(startIndex, endIndex) {
+    if (!this.sink) throw new Error("Backend not initialized");
+    const sink = this.sink;
+    this.decodingPromise = (async () => {
+      try {
+        const startTime = this._frameTimes[startIndex];
+        const endTime = this._frameTimes[endIndex];
+        const timestampToIndex = /* @__PURE__ */ new Map();
+        for (let i = startIndex; i <= endIndex; i++) {
+          timestampToIndex.set(this._frameTimes[i], i);
+        }
+        for await (const sample of sink.samples(startTime, endTime)) {
+          let frameIndex = timestampToIndex.get(sample.timestamp);
+          if (frameIndex === void 0) {
+            let bestDiff = Infinity;
+            for (const [ts, idx] of timestampToIndex) {
+              const diff = Math.abs(ts - sample.timestamp);
+              if (diff < bestDiff) {
+                bestDiff = diff;
+                frameIndex = idx;
+              }
+            }
+          }
+          if (frameIndex !== void 0 && !this.cache.has(frameIndex)) {
+            const videoFrame = sample.toVideoFrame();
+            const bitmap = await createImageBitmap(videoFrame);
+            videoFrame.close();
+            this.cacheFrame(frameIndex, bitmap);
+          }
+        }
+      } finally {
+        this.decodingPromise = null;
+      }
+    })();
+    return this.decodingPromise;
+  }
+  async getFrameTimes() {
+    return [...this._frameTimes];
+  }
+  get numFrames() {
+    return this.frameCount;
+  }
+  close() {
+    this.cache.forEach((bitmap) => {
+      bitmap.close();
+    });
+    this.cache.clear();
+    this.sink = null;
+    this.input = null;
+    this._frameTimes = [];
+    this.frameCount = 0;
+  }
+  cacheFrame(frameIndex, bitmap) {
+    if (this.cache.size >= this.cacheSize) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey !== void 0) {
+        const evicted = this.cache.get(oldestKey);
+        evicted?.close();
+        this.cache.delete(oldestKey);
+      }
+    }
+    this.cache.set(frameIndex, bitmap);
+  }
+};
+
 // src/codecs/numpy.ts
 function toNumpy(labels, options) {
   return labels.numpy({ returnConfidence: options?.returnConfidence, video: options?.video });
@@ -708,6 +915,7 @@ function dictToInstance(data, skeletons, tracks) {
 function resolveBackendType(video) {
   if (!video.backend) return null;
   if (video.backend instanceof MediaVideoBackend) return "MediaVideo";
+  if (video.backend instanceof MediaBunnyVideoBackend) return "MediaBunny";
   return video.backend.constructor?.name ?? null;
 }
 function trackToDict(track) {
@@ -2776,6 +2984,353 @@ async function openH5Worker(source, options) {
   return file;
 }
 
+// src/video/hdf5-video.ts
+var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
+var PNG_MAGIC2 = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+var JPEG_MAGIC2 = new Uint8Array([255, 216, 255]);
+var Hdf5VideoBackend = class {
+  filename;
+  dataset;
+  shape;
+  fps;
+  file;
+  datasetPath;
+  frameNumberToIndex;
+  format;
+  channelOrder;
+  cachedData;
+  frameOffsets;
+  frameSizes;
+  constructor(options) {
+    this.filename = options.filename;
+    this.file = options.file;
+    this.datasetPath = options.datasetPath;
+    this.dataset = options.datasetPath;
+    const frameNumbers = options.frameNumbers ?? [];
+    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
+    this.format = options.format ?? "png";
+    this.channelOrder = options.channelOrder ?? "RGB";
+    this.shape = options.shape;
+    this.fps = options.fps;
+    this.cachedData = null;
+    this.frameOffsets = null;
+    this.frameSizes = options.frameSizes;
+  }
+  async getFrame(frameIndex) {
+    const dataset = this.file.get(this.datasetPath);
+    if (!dataset) return null;
+    const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
+    if (index === void 0) return null;
+    if (!this.cachedData) {
+      const value = dataset.value;
+      this.cachedData = normalizeVideoData2(value);
+      if (this.frameSizes && this.frameSizes.length > 0 && this.cachedData instanceof Uint8Array) {
+        this.frameOffsets = computeOffsetsFromSizes(this.frameSizes);
+      } else if (isContiguousEncodedBuffer2(this.cachedData, this.format, this.shape)) {
+        this.frameOffsets = findEncodedFrameOffsets2(
+          this.cachedData,
+          this.format,
+          this.shape?.[0] ?? 0
+        );
+      }
+    }
+    let rawBytes;
+    if (this.frameOffsets && this.frameOffsets.length > index) {
+      const buffer = this.cachedData;
+      const start = this.frameOffsets[index];
+      const end = index + 1 < this.frameOffsets.length ? this.frameOffsets[index + 1] : buffer.length;
+      rawBytes = buffer.slice(start, end);
+    } else {
+      const entry = this.cachedData[index];
+      if (entry == null) return null;
+      rawBytes = toUint8Array2(entry);
+    }
+    if (!rawBytes || rawBytes.length === 0) return null;
+    if (isEncodedFormat2(this.format)) {
+      const decoded = await decodeImageBytes2(rawBytes, this.format, this.channelOrder);
+      return decoded ?? rawBytes;
+    }
+    const image = decodeRawFrame2(rawBytes, this.shape, this.channelOrder);
+    return image ?? rawBytes;
+  }
+  close() {
+    this.cachedData = null;
+    this.frameOffsets = null;
+  }
+};
+function normalizeVideoData2(value) {
+  if (Array.isArray(value)) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) {
+    const arr = value;
+    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
+  }
+  return [];
+}
+function isContiguousEncodedBuffer2(data, format, shape) {
+  if (!isEncodedFormat2(format)) return false;
+  if (!(data instanceof Uint8Array)) return false;
+  if (data.length < 8) return false;
+  const isPng = matchesMagic2(data, PNG_MAGIC2);
+  const isJpeg = matchesMagic2(data, JPEG_MAGIC2);
+  if (!isPng && !isJpeg) return false;
+  if (shape) {
+    const frameCount = shape[0];
+    if (frameCount > 1 && data.length > 1e4) {
+      return true;
+    }
+  }
+  return true;
+}
+function matchesMagic2(buffer, magic) {
+  if (buffer.length < magic.length) return false;
+  for (let i = 0; i < magic.length; i++) {
+    if (buffer[i] !== magic[i]) return false;
+  }
+  return true;
+}
+function findEncodedFrameOffsets2(buffer, format, expectedFrameCount) {
+  const offsets = [];
+  const magic = format.toLowerCase() === "png" ? PNG_MAGIC2 : JPEG_MAGIC2;
+  for (let i = 0; i <= buffer.length - magic.length; i++) {
+    if (matchesMagic2(buffer.subarray(i), magic)) {
+      offsets.push(i);
+      i += magic.length - 1;
+      if (expectedFrameCount > 0 && offsets.length >= expectedFrameCount) {
+        break;
+      }
+    }
+  }
+  return offsets;
+}
+function computeOffsetsFromSizes(sizes) {
+  const offsets = new Array(sizes.length);
+  let offset = 0;
+  for (let i = 0; i < sizes.length; i++) {
+    offsets[i] = offset;
+    offset += sizes[i];
+  }
+  return offsets;
+}
+function toUint8Array2(entry) {
+  if (entry instanceof Uint8Array) return entry;
+  if (entry instanceof ArrayBuffer) return new Uint8Array(entry);
+  if (ArrayBuffer.isView(entry)) return new Uint8Array(entry.buffer, entry.byteOffset, entry.byteLength);
+  if (Array.isArray(entry)) return new Uint8Array(entry.flat());
+  if (entry?.buffer) return new Uint8Array(entry.buffer);
+  return null;
+}
+function isEncodedFormat2(format) {
+  const normalized = format.toLowerCase();
+  return normalized === "png" || normalized === "jpg" || normalized === "jpeg";
+}
+async function decodeImageBytes2(bytes, format, channelOrder) {
+  if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
+  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
+  const safeBytes = new Uint8Array(bytes);
+  const blob = new Blob([safeBytes.buffer], { type: mime });
+  const bitmap = await createImageBitmap(blob);
+  const useBgr = channelOrder.toUpperCase() === "BGR";
+  if (!useBgr) {
+    return bitmap;
+  }
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return bitmap;
+  ctx.drawImage(bitmap, 0, 0);
+  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const b = data[i + 2];
+    data[i] = b;
+    data[i + 2] = r;
+  }
+  return imageData;
+}
+function decodeRawFrame2(bytes, shape, channelOrder) {
+  if (!isBrowser4 || !shape) return null;
+  const [, height, width, channels] = shape;
+  if (!height || !width || !channels) return null;
+  const expectedLength = height * width * channels;
+  if (bytes.length < expectedLength) return null;
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  const useBgr = channelOrder.toUpperCase() === "BGR";
+  for (let i = 0; i < width * height; i += 1) {
+    const base = i * channels;
+    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
+    const g = bytes[base + 1] ?? 0;
+    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
+    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
+    const out = i * 4;
+    rgba[out] = r;
+    rgba[out + 1] = g;
+    rgba[out + 2] = b;
+    rgba[out + 3] = a;
+  }
+  return new ImageData(rgba, width, height);
+}
+
+// src/codecs/slp/h5.ts
+var _nodeGetModule = null;
+var _nodeOpenFile = null;
+function _registerNodeH5(getModule, openFile) {
+  _nodeGetModule = getModule;
+  _nodeOpenFile = openFile;
+}
+var modulePromise = null;
+async function getH5Module() {
+  if (_nodeGetModule) {
+    return _nodeGetModule();
+  }
+  if (!modulePromise) {
+    modulePromise = (async () => {
+      const module = await import("h5wasm");
+      await module.ready;
+      return module;
+    })();
+  }
+  return modulePromise;
+}
+async function openH5File(source, options) {
+  const module = await getH5Module();
+  if (_nodeOpenFile) {
+    return _nodeOpenFile(module, source);
+  }
+  return openH5FileBrowser(module, source, options);
+}
+function isProbablyUrl(value) {
+  return /^https?:\/\//i.test(value);
+}
+function isFileHandle(value) {
+  return typeof value === "object" && value !== null && "getFile" in value;
+}
+async function openH5FileBrowser(module, source, options) {
+  const fs = getH5FileSystem(module);
+  if (typeof source === "string" && isProbablyUrl(source)) {
+    return openFromUrl(module, fs, source, options);
+  }
+  if (isFileHandle(source)) {
+    const file = await source.getFile();
+    return openFromFile(module, fs, file, options);
+  }
+  if (typeof File !== "undefined" && source instanceof File) {
+    return openFromFile(module, fs, source, options);
+  }
+  if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
+    const data = source instanceof Uint8Array ? source : new Uint8Array(source);
+    const filename = "/tmp-slp.slp";
+    fs.writeFile(filename, data);
+    const file = new module.File(filename, "r");
+    return { file, close: () => file.close() };
+  }
+  if (typeof source === "string") {
+    return openFromUrl(module, fs, source, options);
+  }
+  throw new Error("Unsupported SLP source type for browser environment.");
+}
+async function openFromUrl(module, fs, url, options) {
+  const filename = options?.filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
+  const streamMode = options?.stream ?? "auto";
+  if (fs.createLazyFile && (streamMode === "auto" || streamMode === "range")) {
+    const mountPath = `/slp-remote-${Date.now()}`;
+    fs.mkdir?.(mountPath);
+    try {
+      fs.createLazyFile(mountPath, filename, url, true, false);
+      const file2 = new module.File(`${mountPath}/${filename}`, "r");
+      return {
+        file: file2,
+        close: () => {
+          file2.close();
+          fs.unlink?.(`${mountPath}/${filename}`);
+          fs.rmdir?.(mountPath);
+        }
+      };
+    } catch {
+      fs.rmdir?.(mountPath);
+    }
+  }
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Failed to fetch SLP file: ${response.status} ${response.statusText}`);
+  }
+  const buffer = new Uint8Array(await response.arrayBuffer());
+  const localPath = "/tmp-slp.slp";
+  fs.writeFile(localPath, buffer);
+  const file = new module.File(localPath, "r");
+  return { file, close: () => file.close() };
+}
+async function openFromFile(module, fs, file, options) {
+  const mountPath = `/slp-local-${Date.now()}`;
+  fs.mkdir?.(mountPath);
+  const filename = options?.filenameHint ?? file.name ?? "local.slp";
+  if (fs.mount && fs.filesystems && fs.filesystems.WORKERFS) {
+    fs.mount(fs.filesystems.WORKERFS, { files: [file] }, mountPath);
+    const filePath = `${mountPath}/${filename}`;
+    const h5file2 = new module.File(filePath, "r");
+    return {
+      file: h5file2,
+      close: () => {
+        h5file2.close();
+        fs.unmount?.(mountPath);
+        fs.rmdir?.(mountPath);
+      }
+    };
+  }
+  const buffer = new Uint8Array(await file.arrayBuffer());
+  const localPath = "/tmp-slp.slp";
+  fs.writeFile(localPath, buffer);
+  const h5file = new module.File(localPath, "r");
+  return { file: h5file, close: () => h5file.close() };
+}
+function getH5FileSystem(module) {
+  const fs = module.FS;
+  if (!fs) {
+    throw new Error("h5wasm FS is not available.");
+  }
+  return fs;
+}
+
+// src/video/factory.ts
+var MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "mpeg", "avi"];
+async function createVideoBackend(filename, options) {
+  if (options?.embedded || filename.endsWith(".slp") || filename.endsWith(".h5") || filename.endsWith(".hdf5")) {
+    const { file } = await openH5File(filename);
+    const datasetPath = options?.dataset ?? "";
+    return new Hdf5VideoBackend({
+      filename,
+      file,
+      datasetPath,
+      frameNumbers: options?.frameNumbers,
+      frameSizes: options?.frameSizes,
+      format: options?.format,
+      channelOrder: options?.channelOrder,
+      shape: options?.shape,
+      fps: options?.fps
+    });
+  }
+  if (options?.backend === "mediabunny") {
+    return MediaBunnyVideoBackend.fromUrl(filename);
+  }
+  if (options?.backend === "mp4box") {
+    return new Mp4BoxVideoBackend(filename);
+  }
+  if (options?.backend === "media") {
+    return new MediaVideoBackend(filename);
+  }
+  const supportsWebCodecs = typeof window !== "undefined" && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
+  const normalized = filename.split("?")[0]?.toLowerCase() ?? "";
+  const ext = normalized.split(".").pop() ?? "";
+  if (supportsWebCodecs && ext === "mp4") {
+    return new Mp4BoxVideoBackend(filename);
+  }
+  if (supportsWebCodecs && MEDIABUNNY_EXTENSIONS.includes(ext)) {
+    return MediaBunnyVideoBackend.fromUrl(filename);
+  }
+  return new MediaVideoBackend(filename);
+}
+
 // src/codecs/slp/read-streaming.ts
 async function readSlpStreaming(source, options) {
   if (!isStreamingSupported()) {
@@ -3261,126 +3816,6 @@ function slicePoints(data, start, end, predicted = false) {
     }
   }
   return points;
-}
-
-// src/codecs/slp/h5.ts
-var _nodeGetModule = null;
-var _nodeOpenFile = null;
-function _registerNodeH5(getModule, openFile) {
-  _nodeGetModule = getModule;
-  _nodeOpenFile = openFile;
-}
-var modulePromise = null;
-async function getH5Module() {
-  if (_nodeGetModule) {
-    return _nodeGetModule();
-  }
-  if (!modulePromise) {
-    modulePromise = (async () => {
-      const module = await import("h5wasm");
-      await module.ready;
-      return module;
-    })();
-  }
-  return modulePromise;
-}
-async function openH5File(source, options) {
-  const module = await getH5Module();
-  if (_nodeOpenFile) {
-    return _nodeOpenFile(module, source);
-  }
-  return openH5FileBrowser(module, source, options);
-}
-function isProbablyUrl(value) {
-  return /^https?:\/\//i.test(value);
-}
-function isFileHandle(value) {
-  return typeof value === "object" && value !== null && "getFile" in value;
-}
-async function openH5FileBrowser(module, source, options) {
-  const fs = getH5FileSystem(module);
-  if (typeof source === "string" && isProbablyUrl(source)) {
-    return openFromUrl(module, fs, source, options);
-  }
-  if (isFileHandle(source)) {
-    const file = await source.getFile();
-    return openFromFile(module, fs, file, options);
-  }
-  if (typeof File !== "undefined" && source instanceof File) {
-    return openFromFile(module, fs, source, options);
-  }
-  if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
-    const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const filename = "/tmp-slp.slp";
-    fs.writeFile(filename, data);
-    const file = new module.File(filename, "r");
-    return { file, close: () => file.close() };
-  }
-  if (typeof source === "string") {
-    return openFromUrl(module, fs, source, options);
-  }
-  throw new Error("Unsupported SLP source type for browser environment.");
-}
-async function openFromUrl(module, fs, url, options) {
-  const filename = options?.filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
-  const streamMode = options?.stream ?? "auto";
-  if (fs.createLazyFile && (streamMode === "auto" || streamMode === "range")) {
-    const mountPath = `/slp-remote-${Date.now()}`;
-    fs.mkdir?.(mountPath);
-    try {
-      fs.createLazyFile(mountPath, filename, url, true, false);
-      const file2 = new module.File(`${mountPath}/${filename}`, "r");
-      return {
-        file: file2,
-        close: () => {
-          file2.close();
-          fs.unlink?.(`${mountPath}/${filename}`);
-          fs.rmdir?.(mountPath);
-        }
-      };
-    } catch {
-      fs.rmdir?.(mountPath);
-    }
-  }
-  const response = await fetch(url);
-  if (!response.ok) {
-    throw new Error(`Failed to fetch SLP file: ${response.status} ${response.statusText}`);
-  }
-  const buffer = new Uint8Array(await response.arrayBuffer());
-  const localPath = "/tmp-slp.slp";
-  fs.writeFile(localPath, buffer);
-  const file = new module.File(localPath, "r");
-  return { file, close: () => file.close() };
-}
-async function openFromFile(module, fs, file, options) {
-  const mountPath = `/slp-local-${Date.now()}`;
-  fs.mkdir?.(mountPath);
-  const filename = options?.filenameHint ?? file.name ?? "local.slp";
-  if (fs.mount && fs.filesystems && fs.filesystems.WORKERFS) {
-    fs.mount(fs.filesystems.WORKERFS, { files: [file] }, mountPath);
-    const filePath = `${mountPath}/${filename}`;
-    const h5file2 = new module.File(filePath, "r");
-    return {
-      file: h5file2,
-      close: () => {
-        h5file2.close();
-        fs.unmount?.(mountPath);
-        fs.rmdir?.(mountPath);
-      }
-    };
-  }
-  const buffer = new Uint8Array(await file.arrayBuffer());
-  const localPath = "/tmp-slp.slp";
-  fs.writeFile(localPath, buffer);
-  const h5file = new module.File(localPath, "r");
-  return { file: h5file, close: () => h5file.close() };
-}
-function getH5FileSystem(module) {
-  const fs = module.FS;
-  if (!fs) {
-    throw new Error("h5wasm FS is not available.");
-  }
-  return fs;
 }
 
 // src/codecs/slp/write.ts
@@ -3964,219 +4399,6 @@ function writeMasks(file, masks, videos, tracks) {
     offset += chunk.length;
   }
   file.create_dataset({ name: "mask_rle", data: rleFlat, shape: [rleFlat.length], dtype: "<B" });
-}
-
-// src/video/hdf5-video.ts
-var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
-var PNG_MAGIC2 = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-var JPEG_MAGIC2 = new Uint8Array([255, 216, 255]);
-var Hdf5VideoBackend = class {
-  filename;
-  dataset;
-  shape;
-  fps;
-  file;
-  datasetPath;
-  frameNumberToIndex;
-  format;
-  channelOrder;
-  cachedData;
-  frameOffsets;
-  frameSizes;
-  constructor(options) {
-    this.filename = options.filename;
-    this.file = options.file;
-    this.datasetPath = options.datasetPath;
-    this.dataset = options.datasetPath;
-    const frameNumbers = options.frameNumbers ?? [];
-    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
-    this.format = options.format ?? "png";
-    this.channelOrder = options.channelOrder ?? "RGB";
-    this.shape = options.shape;
-    this.fps = options.fps;
-    this.cachedData = null;
-    this.frameOffsets = null;
-    this.frameSizes = options.frameSizes;
-  }
-  async getFrame(frameIndex) {
-    const dataset = this.file.get(this.datasetPath);
-    if (!dataset) return null;
-    const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
-    if (index === void 0) return null;
-    if (!this.cachedData) {
-      const value = dataset.value;
-      this.cachedData = normalizeVideoData2(value);
-      if (this.frameSizes && this.frameSizes.length > 0 && this.cachedData instanceof Uint8Array) {
-        this.frameOffsets = computeOffsetsFromSizes(this.frameSizes);
-      } else if (isContiguousEncodedBuffer2(this.cachedData, this.format, this.shape)) {
-        this.frameOffsets = findEncodedFrameOffsets2(
-          this.cachedData,
-          this.format,
-          this.shape?.[0] ?? 0
-        );
-      }
-    }
-    let rawBytes;
-    if (this.frameOffsets && this.frameOffsets.length > index) {
-      const buffer = this.cachedData;
-      const start = this.frameOffsets[index];
-      const end = index + 1 < this.frameOffsets.length ? this.frameOffsets[index + 1] : buffer.length;
-      rawBytes = buffer.slice(start, end);
-    } else {
-      const entry = this.cachedData[index];
-      if (entry == null) return null;
-      rawBytes = toUint8Array2(entry);
-    }
-    if (!rawBytes || rawBytes.length === 0) return null;
-    if (isEncodedFormat2(this.format)) {
-      const decoded = await decodeImageBytes2(rawBytes, this.format, this.channelOrder);
-      return decoded ?? rawBytes;
-    }
-    const image = decodeRawFrame2(rawBytes, this.shape, this.channelOrder);
-    return image ?? rawBytes;
-  }
-  close() {
-    this.cachedData = null;
-    this.frameOffsets = null;
-  }
-};
-function normalizeVideoData2(value) {
-  if (Array.isArray(value)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) {
-    const arr = value;
-    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
-  }
-  return [];
-}
-function isContiguousEncodedBuffer2(data, format, shape) {
-  if (!isEncodedFormat2(format)) return false;
-  if (!(data instanceof Uint8Array)) return false;
-  if (data.length < 8) return false;
-  const isPng = matchesMagic2(data, PNG_MAGIC2);
-  const isJpeg = matchesMagic2(data, JPEG_MAGIC2);
-  if (!isPng && !isJpeg) return false;
-  if (shape) {
-    const frameCount = shape[0];
-    if (frameCount > 1 && data.length > 1e4) {
-      return true;
-    }
-  }
-  return true;
-}
-function matchesMagic2(buffer, magic) {
-  if (buffer.length < magic.length) return false;
-  for (let i = 0; i < magic.length; i++) {
-    if (buffer[i] !== magic[i]) return false;
-  }
-  return true;
-}
-function findEncodedFrameOffsets2(buffer, format, expectedFrameCount) {
-  const offsets = [];
-  const magic = format.toLowerCase() === "png" ? PNG_MAGIC2 : JPEG_MAGIC2;
-  for (let i = 0; i <= buffer.length - magic.length; i++) {
-    if (matchesMagic2(buffer.subarray(i), magic)) {
-      offsets.push(i);
-      i += magic.length - 1;
-      if (expectedFrameCount > 0 && offsets.length >= expectedFrameCount) {
-        break;
-      }
-    }
-  }
-  return offsets;
-}
-function computeOffsetsFromSizes(sizes) {
-  const offsets = new Array(sizes.length);
-  let offset = 0;
-  for (let i = 0; i < sizes.length; i++) {
-    offsets[i] = offset;
-    offset += sizes[i];
-  }
-  return offsets;
-}
-function toUint8Array2(entry) {
-  if (entry instanceof Uint8Array) return entry;
-  if (entry instanceof ArrayBuffer) return new Uint8Array(entry);
-  if (ArrayBuffer.isView(entry)) return new Uint8Array(entry.buffer, entry.byteOffset, entry.byteLength);
-  if (Array.isArray(entry)) return new Uint8Array(entry.flat());
-  if (entry?.buffer) return new Uint8Array(entry.buffer);
-  return null;
-}
-function isEncodedFormat2(format) {
-  const normalized = format.toLowerCase();
-  return normalized === "png" || normalized === "jpg" || normalized === "jpeg";
-}
-async function decodeImageBytes2(bytes, format, channelOrder) {
-  if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
-  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
-  const safeBytes = new Uint8Array(bytes);
-  const blob = new Blob([safeBytes.buffer], { type: mime });
-  const bitmap = await createImageBitmap(blob);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  if (!useBgr) {
-    return bitmap;
-  }
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return bitmap;
-  ctx.drawImage(bitmap, 0, 0);
-  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const b = data[i + 2];
-    data[i] = b;
-    data[i + 2] = r;
-  }
-  return imageData;
-}
-function decodeRawFrame2(bytes, shape, channelOrder) {
-  if (!isBrowser4 || !shape) return null;
-  const [, height, width, channels] = shape;
-  if (!height || !width || !channels) return null;
-  const expectedLength = height * width * channels;
-  if (bytes.length < expectedLength) return null;
-  const rgba = new Uint8ClampedArray(width * height * 4);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  for (let i = 0; i < width * height; i += 1) {
-    const base = i * channels;
-    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
-    const g = bytes[base + 1] ?? 0;
-    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
-    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
-    const out = i * 4;
-    rgba[out] = r;
-    rgba[out + 1] = g;
-    rgba[out + 2] = b;
-    rgba[out + 3] = a;
-  }
-  return new ImageData(rgba, width, height);
-}
-
-// src/video/factory.ts
-async function createVideoBackend(filename, options) {
-  if (options?.embedded || filename.endsWith(".slp") || filename.endsWith(".h5") || filename.endsWith(".hdf5")) {
-    const { file } = await openH5File(filename);
-    const datasetPath = options?.dataset ?? "";
-    return new Hdf5VideoBackend({
-      filename,
-      file,
-      datasetPath,
-      frameNumbers: options?.frameNumbers,
-      frameSizes: options?.frameSizes,
-      format: options?.format,
-      channelOrder: options?.channelOrder,
-      shape: options?.shape,
-      fps: options?.fps
-    });
-  }
-  const supportsWebCodecs = typeof window !== "undefined" && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
-  const normalized = filename.split("?")[0]?.toLowerCase();
-  if (supportsWebCodecs && normalized.endsWith(".mp4")) {
-    return new Mp4BoxVideoBackend(filename);
-  }
-  return new MediaVideoBackend(filename);
 }
 
 // src/codecs/slp/read.ts
@@ -4892,7 +5114,10 @@ async function saveSlpSet(labelsSet, options) {
   await Promise.all(promises);
 }
 async function loadVideo(filename, options) {
-  const backend = await createVideoBackend(filename, { dataset: options?.dataset });
+  const backend = await createVideoBackend(filename, {
+    dataset: options?.dataset,
+    backend: options?.backend
+  });
   return new Video({ filename, backend, openBackend: options?.openBackend ?? true });
 }
 
@@ -5486,6 +5711,7 @@ export {
   LabeledFrame,
   Video,
   SuggestionFrame,
+  MediaBunnyVideoBackend,
   toDict,
   fromDict,
   toNumpy,
@@ -5518,6 +5744,7 @@ export {
   openStreamingH5,
   openH5Worker,
   _registerNodeH5,
+  createVideoBackend,
   readSlpStreaming,
   _registerFileWriter,
   saveSlpToBytes,

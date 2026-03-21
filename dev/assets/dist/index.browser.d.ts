@@ -463,6 +463,46 @@ declare class Mp4BoxVideoBackend implements VideoBackend {
 }
 
 /**
+ * MediaBunny Video Backend
+ *
+ * Alternative video decoding backend using MediaBunny. Supports additional
+ * formats beyond MP4: WebM, Matroska, Ogg, MOV, MPEG-TS.
+ *
+ * Uses timestamp-based frame access internally, with a frame time index
+ * built on initialization by iterating all packets.
+ */
+
+interface MediaBunnyOptions {
+    cacheSize?: number;
+}
+declare class MediaBunnyVideoBackend implements VideoBackend {
+    filename: string | string[];
+    shape?: [number, number, number, number];
+    fps?: number;
+    dataset?: string | null;
+    private input;
+    private sink;
+    private _frameTimes;
+    private cache;
+    private cacheSize;
+    private frameCount;
+    private decodingPromise;
+    constructor(filename: string | string[], options?: MediaBunnyOptions);
+    static fromUrl(url: string, options?: MediaBunnyOptions): Promise<MediaBunnyVideoBackend>;
+    static fromBlob(blob: Blob, filename: string, options?: MediaBunnyOptions): Promise<MediaBunnyVideoBackend>;
+    private initialize;
+    getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    private decodeSingleFrame;
+    prefetch(startIndex: number, endIndex: number): Promise<void>;
+    getFrames(startIndex: number, endIndex: number): Promise<Map<number, ImageBitmap>>;
+    private decodeRange;
+    getFrameTimes(): Promise<number[] | null>;
+    get numFrames(): number;
+    close(): void;
+    private cacheFrame;
+}
+
+/**
  * Streaming HDF5 file access via Web Worker.
  *
  * This module provides a high-level API for accessing remote HDF5 files
@@ -648,6 +688,20 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
     close(): void;
 }
 
+/** Supported video backend identifiers for user selection. */
+type VideoBackendType = "mp4box" | "mediabunny" | "media";
+declare function createVideoBackend(filename: string, options?: {
+    dataset?: string;
+    embedded?: boolean;
+    frameNumbers?: number[];
+    frameSizes?: number[];
+    format?: string;
+    channelOrder?: string;
+    shape?: [number, number, number, number];
+    fps?: number;
+    backend?: VideoBackendType;
+}): Promise<VideoBackend>;
+
 type SlpSource = string | ArrayBuffer | Uint8Array | File | FileSystemFileHandle;
 type StreamMode = "auto" | "range" | "download";
 type OpenH5Options = {
@@ -758,6 +812,7 @@ declare function saveSlpSet(labelsSet: LabelsSet, options?: {
 declare function loadVideo(filename: string, options?: {
     dataset?: string;
     openBackend?: boolean;
+    backend?: VideoBackendType;
 }): Promise<Video>;
 
 type LabelsDict = {
@@ -1093,4 +1148,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AnnotationType, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type Geometry, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, ROI, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoFrame, type VideoOptions, _registerMaskFactory, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resolveColor, rgbToCSS, rodriguesTransformation, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy };
+export { AnnotationType, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type Geometry, Instance, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedInstance, type RGB, type RGBA, ROI, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resolveColor, rgbToCSS, rodriguesTransformation, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy };
