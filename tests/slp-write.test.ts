@@ -114,7 +114,7 @@ describe("saveSlpToBytes", () => {
     }
   });
 
-  it("writes string attributes as bytes for Python compatibility (#76)", async () => {
+  it("writes string attributes as fixed-length strings for Python compatibility (#76)", async () => {
     const skeleton = new Skeleton({ name: "test", nodes: ["A", "B"] });
     const video = new Video({ filename: "test.mp4" });
     const instance = new Instance({
@@ -142,30 +142,30 @@ describe("saveSlpToBytes", () => {
     expect(loaded.skeletons[0].name).toBe("test");
     expect(loaded.skeletons[0].nodeNames).toEqual(["A", "B"]);
 
-    // Open HDF5 directly and verify attributes are byte arrays, not strings
+    // Open HDF5 directly and verify attributes are fixed-length strings (not vlen)
+    // h5py reads fixed-length strings as `bytes` (has .decode()), but reads
+    // vlen strings as `str` (no .decode()) — this is the root cause of #76.
     const module = await ready;
     const memPath = `/tmp/attr_type_test_${Date.now()}.slp`;
     module.FS.writeFile(memPath, bytes);
     const file = new H5File(memPath, "r");
     try {
-      const metadataGroup = file.get("metadata");
-      const jsonAttr = (metadataGroup as any).attrs["json"];
-      expect(jsonAttr.value).toBeInstanceOf(Uint8Array);
+      const metadataGroup = file.get("metadata") as any;
+      const jsonAttr = metadataGroup.attrs["json"];
+      // Fixed-length string: dtype is "S<n>" (e.g. "S123"), not "S" (vlen)
+      expect(jsonAttr.metadata.type).toBe(3); // H5T_STRING
+      expect(jsonAttr.metadata.vlen).toBe(false);
 
-      const framesDs = file.get("frames");
-      const fieldNamesAttr = (framesDs as any).attrs["field_names"];
-      expect(fieldNamesAttr.value).toBeInstanceOf(Uint8Array);
-
-      // Verify the byte content decodes to valid JSON
-      const decoder = new TextDecoder();
-      const jsonStr = decoder.decode(jsonAttr.value as Uint8Array);
-      const metadata = JSON.parse(jsonStr);
+      // Verify content is valid JSON
+      const metadata = JSON.parse(jsonAttr.value);
       expect(metadata).toHaveProperty("version");
       expect(metadata).toHaveProperty("skeletons");
 
-      const fieldNamesStr = decoder.decode(fieldNamesAttr.value as Uint8Array);
-      const fieldNames = JSON.parse(fieldNamesStr);
-      expect(fieldNames).toContain("frame_id");
+      const framesDs = file.get("frames") as any;
+      const fieldNamesAttr = framesDs.attrs["field_names"];
+      expect(fieldNamesAttr.metadata.type).toBe(3); // H5T_STRING
+      expect(fieldNamesAttr.metadata.vlen).toBe(false);
+      expect(JSON.parse(fieldNamesAttr.value)).toContain("frame_id");
     } finally {
       file.close();
       module.FS.unlink(memPath);

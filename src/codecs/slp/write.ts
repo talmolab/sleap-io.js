@@ -27,10 +27,13 @@ export function _registerFileWriter(
 const FORMAT_ID = 1.4;
 const textEncoder = new TextEncoder();
 
-/** Encode a string as UTF-8 bytes for HDF5 attribute storage.
- *  Ensures Python h5py reads the attribute as `bytes` (not `str`). */
-function encodeAttr(value: string): Uint8Array {
-  return textEncoder.encode(value);
+/** Write a string as a fixed-length HDF5 string attribute (H5T_STRING).
+ *  h5py reads fixed-length strings as `bytes`, so Python's `.decode()` works.
+ *  Using `S<n>` dtype avoids variable-length strings (returned as `str`)
+ *  and uint8 arrays (returned as `numpy.ndarray`). */
+function setStringAttr(target: any, name: string, value: string): void {
+  const byteLength = textEncoder.encode(value).length;
+  target.create_attribute(name, value, null, `S${byteLength}`);
 }
 const SPAWNED_ON = 0;
 
@@ -180,7 +183,7 @@ function writeMetadata(file: any, labels: Labels): void {
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
-  metadataGroup.create_attribute("json", encodeAttr(JSON.stringify(metadata)));
+  setStringAttr(metadataGroup, "json", JSON.stringify(metadata));
 }
 
 function serializeSkeletons(skeletons: Skeleton[]): { skeletons: any[]; nodes: Array<{ name: string }> } {
@@ -650,8 +653,8 @@ function writeEmbeddedVideos(
     // Set format and channel_order attributes on the dataset
     const videoDs = file.get(`${groupName}/video`);
     if (videoDs) {
-      videoDs.create_attribute("format", encodeAttr(embedData.format));
-      videoDs.create_attribute("channel_order", encodeAttr(embedData.channelOrder));
+      setStringAttr(videoDs, "format", embedData.format);
+      setStringAttr(videoDs, "channel_order", embedData.channelOrder);
     }
 
     // Write frame_numbers dataset
@@ -679,7 +682,7 @@ function createMatrixDataset(file: any, name: string, rows: number[][], fieldNam
   const data = rows.flat();
   file.create_dataset({ name, data, shape: [rowCount, colCount], dtype });
   const dataset = file.get(name);
-  dataset.create_attribute("field_names", encodeAttr(JSON.stringify(fieldNames)));
+  setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
 }
 
 function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name: string }>, instances?: Array<Instance | PredictedInstance>): void {
@@ -717,9 +720,9 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
 
   // Set string metadata as attributes
   const roisDs = file.get("rois");
-  roisDs.create_attribute("categories", encodeAttr(JSON.stringify(categories)));
-  roisDs.create_attribute("names", encodeAttr(JSON.stringify(names)));
-  roisDs.create_attribute("sources", encodeAttr(JSON.stringify(sources)));
+  setStringAttr(roisDs, "categories", JSON.stringify(categories));
+  setStringAttr(roisDs, "names", JSON.stringify(names));
+  setStringAttr(roisDs, "sources", JSON.stringify(sources));
 
   // Write concatenated WKB bytes
   const totalWkb = wkbChunks.reduce((sum, c) => sum + c.length, 0);
@@ -770,9 +773,9 @@ function writeMasks(file: any, masks: SegmentationMask[], videos: Video[], track
 
   // Set string metadata as attributes
   const masksDs = file.get("masks");
-  masksDs.create_attribute("categories", encodeAttr(JSON.stringify(categories)));
-  masksDs.create_attribute("names", encodeAttr(JSON.stringify(names)));
-  masksDs.create_attribute("sources", encodeAttr(JSON.stringify(sources)));
+  setStringAttr(masksDs, "categories", JSON.stringify(categories));
+  setStringAttr(masksDs, "names", JSON.stringify(names));
+  setStringAttr(masksDs, "sources", JSON.stringify(sources));
 
   // Write concatenated RLE bytes
   const totalRle = rleChunks.reduce((sum, c) => sum + c.length, 0);
@@ -828,7 +831,7 @@ function writeBboxes(
 
   // Set string metadata as attributes
   const bboxesDs = file.get("bboxes");
-  bboxesDs.create_attribute("categories", encodeAttr(JSON.stringify(categories)));
-  bboxesDs.create_attribute("names", encodeAttr(JSON.stringify(names)));
-  bboxesDs.create_attribute("sources", encodeAttr(JSON.stringify(sources)));
+  setStringAttr(bboxesDs, "categories", JSON.stringify(categories));
+  setStringAttr(bboxesDs, "names", JSON.stringify(names));
+  setStringAttr(bboxesDs, "sources", JSON.stringify(sources));
 }
