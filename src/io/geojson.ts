@@ -37,10 +37,10 @@ export function roisFromGeoJSON(
     const props = feature.properties ?? {};
     return new ROI({
       geometry: feature.geometry as Geometry,
-      name: (props.name as string) ?? "",
-      category: (props.category as string) ?? "",
-      source: (props.source as string) ?? "",
-      frameIdx: (props.frame_idx as number) ?? null,
+      name: String(props.name ?? ""),
+      category: String(props.category ?? ""),
+      source: String(props.source ?? ""),
+      frameIdx: typeof props.frame_idx === "number" ? props.frame_idx : null,
     });
   });
 }

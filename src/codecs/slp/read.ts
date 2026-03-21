@@ -73,14 +73,8 @@ export async function readSlp(
 
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
     const allInstances = labeledFrames.flatMap((f) => f.instances);
-    const { rois, migratedBboxes } = readRoisWithMigration(file, videos, tracks, allInstances);
+    const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks, allInstances);
     const masks = readMasks(file, videos, tracks);
-
-    // Read native bboxes dataset; fall back to migrated bbox ROIs
-    let bboxes = readBboxes(file, videos, tracks);
-    if (bboxes.length === 0 && migratedBboxes.length > 0) {
-      bboxes = migratedBboxes;
-    }
 
     return new Labels({
       labeledFrames,
@@ -161,15 +155,8 @@ export async function readSlpLazy(
     // Read sessions eagerly - they don't depend on frame data.
     // Pass empty labeledFrames since frames aren't materialized yet.
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
-    const { rois: readRoisResult, migratedBboxes } = readRoisWithMigration(file, videos, tracks);
-    const rois = readRoisResult;
+    const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks);
     const masks = readMasks(file, videos, tracks);
-
-    // Read native bboxes dataset; fall back to migrated bbox ROIs
-    let bboxes = readBboxes(file, videos, tracks);
-    if (bboxes.length === 0 && migratedBboxes.length > 0) {
-      bboxes = migratedBboxes;
-    }
 
     const labels = new Labels({
       videos,
@@ -471,6 +458,20 @@ function readAttrString(dataset: any, name: string): string[] {
   }
   if (Array.isArray(value)) return value.map(String);
   return [];
+}
+
+function readRoisAndBboxes(
+  file: any,
+  videos: Video[],
+  tracks: Track[],
+  instances?: Array<Instance | PredictedInstance>,
+): { rois: ROI[]; bboxes: BoundingBox[] } {
+  const { rois, migratedBboxes } = readRoisWithMigration(file, videos, tracks, instances);
+  let bboxes = readBboxes(file, videos, tracks);
+  if (bboxes.length === 0 && migratedBboxes.length > 0) {
+    bboxes = migratedBboxes;
+  }
+  return { rois, bboxes };
 }
 
 function readRoisWithMigration(

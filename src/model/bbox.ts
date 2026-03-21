@@ -1,5 +1,6 @@
 import type { Video } from "./video.js";
 import type { Track, Instance } from "./instance.js";
+import type { SegmentationMask } from "./mask.js";
 import { ROI } from "./roi.js";
 
 /** Options for constructing a BoundingBox. */
@@ -32,6 +33,7 @@ export class BoundingBox {
   category: string;
   name: string;
   source: string;
+  /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx: number | null = null;
 
   constructor(options: BoundingBoxOptions) {
@@ -176,7 +178,7 @@ export class BoundingBox {
   }
 
   /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
-  toMask(height: number, width: number) {
+  toMask(height: number, width: number): SegmentationMask {
     return this.toRoi().toMask(height, width);
   }
 }

@@ -333,3 +333,52 @@ describe("SLP BoundingBox I/O", () => {
     expect(loaded.bboxes).toEqual([]);
   });
 });
+
+describe("SLP ROI instance association (format 1.6)", () => {
+  it("round-trips ROI instance references", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A", "B"] });
+    const inst0 = new Instance({ points: { A: [10, 20], B: [30, 40] }, skeleton });
+    const inst1 = new Instance({ points: { A: [50, 60], B: [70, 80] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst0, inst1] });
+
+    const roi = ROI.fromPolygon(
+      [[0, 0], [100, 0], [100, 100], [0, 100]],
+      { name: "inst-roi", video, frameIdx: 0, instance: inst1 },
+    );
+
+    const labels = new Labels({
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
+      rois: [roi],
+    });
+
+    const loaded = await roundTrip(labels);
+    expect(loaded.rois.length).toBe(1);
+    const loadedRoi = loaded.rois[0];
+    expect(loadedRoi.name).toBe("inst-roi");
+    expect(loadedRoi.instance).not.toBeNull();
+    // Should resolve to the second instance (index 1)
+    expect(loadedRoi.instance).toBe(loaded.labeledFrames[0].instances[1]);
+  });
+
+  it("ROI without instance round-trips with null instance", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [1, 2] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const roi = ROI.fromBbox(0, 0, 50, 50, { name: "no-inst" });
+    const labels = new Labels({
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
+      rois: [roi],
+    });
+
+    const loaded = await roundTrip(labels);
+    expect(loaded.rois.length).toBe(1);
+    expect(loaded.rois[0].instance).toBeNull();
+  });
+});
