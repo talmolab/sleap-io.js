@@ -239,6 +239,148 @@ describe("ROI", () => {
   });
 });
 
+describe("New geometry types", () => {
+  it("LineString ROI has correct bounds and zero area", () => {
+    const roi = new ROI({
+      geometry: { type: "LineString", coordinates: [[0, 0], [10, 5], [20, 0]] },
+    });
+    expect(roi.area).toBe(0);
+    const b = roi.bounds;
+    expect(b.minX).toBe(0);
+    expect(b.minY).toBe(0);
+    expect(b.maxX).toBe(20);
+    expect(b.maxY).toBe(5);
+  });
+
+  it("MultiPoint ROI has correct bounds and zero area", () => {
+    const roi = new ROI({
+      geometry: { type: "MultiPoint", coordinates: [[1, 2], [3, 4], [5, 6]] },
+    });
+    expect(roi.area).toBe(0);
+    const b = roi.bounds;
+    expect(b.minX).toBe(1);
+    expect(b.minY).toBe(2);
+    expect(b.maxX).toBe(5);
+    expect(b.maxY).toBe(6);
+  });
+
+  it("GeometryCollection ROI has correct bounds and summed area", () => {
+    const roi = new ROI({
+      geometry: {
+        type: "GeometryCollection",
+        geometries: [
+          { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] },
+          { type: "Point", coordinates: [20, 20] },
+        ],
+      },
+    });
+    expect(roi.area).toBeCloseTo(100);
+    const b = roi.bounds;
+    expect(b.minX).toBe(0);
+    expect(b.minY).toBe(0);
+    expect(b.maxX).toBe(20);
+    expect(b.maxY).toBe(20);
+  });
+
+  it("rasterize LineString returns empty mask", () => {
+    const geom: Geometry = { type: "LineString", coordinates: [[0, 0], [10, 10]] };
+    const mask = rasterizeGeometry(geom, 20, 20);
+    expect(mask.reduce((a, b) => a + b, 0)).toBe(0);
+  });
+
+  it("rasterize MultiPoint returns empty mask", () => {
+    const geom: Geometry = { type: "MultiPoint", coordinates: [[1, 1], [5, 5]] };
+    const mask = rasterizeGeometry(geom, 10, 10);
+    expect(mask.reduce((a, b) => a + b, 0)).toBe(0);
+  });
+
+  it("rasterize GeometryCollection unions sub-geometries", () => {
+    const geom: Geometry = {
+      type: "GeometryCollection",
+      geometries: [
+        { type: "Polygon", coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] },
+      ],
+    };
+    const mask = rasterizeGeometry(geom, 10, 10);
+    expect(mask[5 * 10 + 5]).toBe(1);
+    expect(mask[0]).toBe(0);
+  });
+});
+
+describe("fromMultiPolygon and explode", () => {
+  it("fromMultiPolygon creates correct geometry", () => {
+    const roi = ROI.fromMultiPolygon([
+      [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
+      [[[20, 20], [30, 20], [30, 30], [20, 30], [20, 20]]],
+    ], { name: "multi" });
+    expect(roi.geometry.type).toBe("MultiPolygon");
+    expect(roi.name).toBe("multi");
+    if (roi.geometry.type === "MultiPolygon") {
+      expect(roi.geometry.coordinates.length).toBe(2);
+    }
+  });
+
+  it("explode MultiPolygon splits into individual Polygon ROIs", () => {
+    const roi = ROI.fromMultiPolygon([
+      [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
+      [[[20, 20], [30, 20], [30, 30], [20, 30], [20, 20]]],
+    ], { name: "multi", category: "cat" });
+    const parts = roi.explode();
+    expect(parts.length).toBe(2);
+    expect(parts[0].geometry.type).toBe("Polygon");
+    expect(parts[1].geometry.type).toBe("Polygon");
+    expect(parts[0].name).toBe("multi");
+    expect(parts[1].category).toBe("cat");
+  });
+
+  it("explode GeometryCollection splits into individual ROIs", () => {
+    const roi = new ROI({
+      geometry: {
+        type: "GeometryCollection",
+        geometries: [
+          { type: "Point", coordinates: [1, 2] },
+          { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]] },
+        ],
+      },
+      name: "gc",
+    });
+    const parts = roi.explode();
+    expect(parts.length).toBe(2);
+    expect(parts[0].geometry.type).toBe("Point");
+    expect(parts[1].geometry.type).toBe("Polygon");
+    expect(parts[0].name).toBe("gc");
+  });
+
+  it("explode on single geometry returns array with one ROI", () => {
+    const roi = ROI.fromBbox(0, 0, 10, 10, { name: "single" });
+    const parts = roi.explode();
+    expect(parts.length).toBe(1);
+    expect(parts[0].geometry.type).toBe("Polygon");
+    expect(parts[0].name).toBe("single");
+    expect(parts[0]).not.toBe(roi); // should be a new instance
+  });
+});
+
+describe("toGeoJSON", () => {
+  it("returns correct Feature structure", () => {
+    const roi = ROI.fromBbox(0, 0, 10, 10, { name: "test", category: "cat", source: "src", frameIdx: 5 });
+    const feature = roi.toGeoJSON();
+    expect(feature.type).toBe("Feature");
+    expect(feature.geometry.type).toBe("Polygon");
+    expect(feature.properties.name).toBe("test");
+    expect(feature.properties.category).toBe("cat");
+    expect(feature.properties.source).toBe("src");
+    expect(feature.properties.frame_idx).toBe(5);
+    expect(feature.properties.roi_type).toBe("temporal");
+  });
+
+  it("static ROI has roi_type static", () => {
+    const roi = ROI.fromBbox(0, 0, 10, 10);
+    const feature = roi.toGeoJSON();
+    expect(feature.properties.roi_type).toBe("static");
+  });
+});
+
 describe("WKB", () => {
   it("encode and decode point", () => {
     const geom: Geometry = { type: "Point", coordinates: [3.5, 7.2] };
@@ -289,6 +431,64 @@ describe("WKB", () => {
       expect(decoded.coordinates[0].length).toBe(5);
       expect(decoded.coordinates[0][0]).toEqual([0, 0]);
       expect(decoded.coordinates[0][2]).toEqual([10, 10]);
+    }
+  });
+
+  it("encode and decode LineString", () => {
+    const geom: Geometry = {
+      type: "LineString",
+      coordinates: [[0, 0], [5, 5], [10, 0]],
+    };
+    const wkb = encodeWkb(geom);
+    const decoded = decodeWkb(wkb);
+    expect(decoded.type).toBe("LineString");
+    if (decoded.type === "LineString") {
+      expect(decoded.coordinates.length).toBe(3);
+      expect(decoded.coordinates[0]).toEqual([0, 0]);
+      expect(decoded.coordinates[1]).toEqual([5, 5]);
+      expect(decoded.coordinates[2]).toEqual([10, 0]);
+    }
+  });
+
+  it("encode and decode MultiPoint", () => {
+    const geom: Geometry = {
+      type: "MultiPoint",
+      coordinates: [[1, 2], [3, 4], [5, 6]],
+    };
+    const wkb = encodeWkb(geom);
+    const decoded = decodeWkb(wkb);
+    expect(decoded.type).toBe("MultiPoint");
+    if (decoded.type === "MultiPoint") {
+      expect(decoded.coordinates.length).toBe(3);
+      expect(decoded.coordinates[0]).toEqual([1, 2]);
+      expect(decoded.coordinates[1]).toEqual([3, 4]);
+      expect(decoded.coordinates[2]).toEqual([5, 6]);
+    }
+  });
+
+  it("encode and decode GeometryCollection", () => {
+    const geom: Geometry = {
+      type: "GeometryCollection",
+      geometries: [
+        { type: "Point", coordinates: [1, 2] },
+        { type: "LineString", coordinates: [[0, 0], [10, 10]] },
+        { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]] },
+      ],
+    };
+    const wkb = encodeWkb(geom);
+    const decoded = decodeWkb(wkb);
+    expect(decoded.type).toBe("GeometryCollection");
+    if (decoded.type === "GeometryCollection") {
+      expect(decoded.geometries.length).toBe(3);
+      expect(decoded.geometries[0].type).toBe("Point");
+      expect(decoded.geometries[1].type).toBe("LineString");
+      expect(decoded.geometries[2].type).toBe("Polygon");
+      if (decoded.geometries[0].type === "Point") {
+        expect(decoded.geometries[0].coordinates).toEqual([1, 2]);
+      }
+      if (decoded.geometries[1].type === "LineString") {
+        expect(decoded.geometries[1].coordinates).toEqual([[0, 0], [10, 10]]);
+      }
     }
   });
 });

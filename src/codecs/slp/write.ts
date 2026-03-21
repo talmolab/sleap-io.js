@@ -59,7 +59,8 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
   writeLabeledFrames(file, labels);
   writeNegativeFrames(file, labels);
-  writeRois(file, labels.rois, labels.videos, labels.tracks);
+  const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
+  writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
   writeMasks(file, labels.masks, labels.videos, labels.tracks);
 }
 
@@ -158,7 +159,8 @@ function writeMetadata(file: any, labels: Labels): void {
     provenance: labels.provenance ?? {},
   };
 
-  const formatId = (labels.rois.length > 0 || labels.masks.length > 0) ? 1.5 : FORMAT_ID;
+  const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
+  const formatId = hasRoiInstance ? 1.6 : (labels.rois.length > 0 || labels.masks.length > 0) ? 1.5 : FORMAT_ID;
 
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
@@ -665,7 +667,7 @@ function createMatrixDataset(file: any, name: string, rows: number[][], fieldNam
   dataset.create_attribute("field_names", fieldNames);
 }
 
-function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name: string }>): void {
+function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name: string }>, instances?: Array<Instance | PredictedInstance>): void {
   if (!rois.length) return;
 
   const rows: number[][] = [];
@@ -674,6 +676,7 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
   const categories: string[] = [];
   const names: string[] = [];
   const sources: string[] = [];
+  const hasInstances = instances && instances.length > 0;
 
   for (const roi of rois) {
     const wkb = encodeWkb(roi.geometry);
@@ -686,15 +689,16 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
     const frameIdx = roi.frameIdx ?? -1;
     const trackIdx = roi.track ? tracks.indexOf(roi.track as any) : -1;
     const score = roi.score ?? Number.NaN;
+    const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : -1;
 
-    rows.push([roi.annotationType, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd]);
+    rows.push([roi.annotationType, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd, instanceIdx]);
     categories.push(roi.category);
     names.push(roi.name);
     sources.push(roi.source);
   }
 
   createMatrixDataset(file, "rois", rows,
-    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end"], "<f8");
+    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end", "instance"], "<f8");
 
   // Set string metadata as attributes
   const roisDs = file.get("rois");

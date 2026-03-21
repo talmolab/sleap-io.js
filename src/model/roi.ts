@@ -27,7 +27,10 @@ export enum AnnotationType {
 export type Geometry =
   | { type: "Polygon"; coordinates: number[][][] }
   | { type: "Point"; coordinates: number[] }
-  | { type: "MultiPolygon"; coordinates: number[][][][] };
+  | { type: "MultiPolygon"; coordinates: number[][][][] }
+  | { type: "MultiPoint"; coordinates: number[][] }
+  | { type: "LineString"; coordinates: number[][] }
+  | { type: "GeometryCollection"; geometries: Geometry[] };
 
 export class ROI {
   geometry: Geometry;
@@ -40,6 +43,8 @@ export class ROI {
   frameIdx: number | null;
   track: Track | null;
   instance: Instance | null;
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx: number | null = null;
 
   constructor(options: {
     geometry: Geometry;
@@ -137,6 +142,84 @@ export class ROI {
     });
   }
 
+  static fromMultiPolygon(
+    polygons: number[][][][],
+    options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">,
+  ): ROI {
+    return new ROI({
+      geometry: { type: "MultiPolygon", coordinates: polygons },
+      ...options,
+    });
+  }
+
+  explode(): ROI[] {
+    if (this.geometry.type === "MultiPolygon") {
+      return this.geometry.coordinates.map((coords) =>
+        new ROI({
+          geometry: { type: "Polygon", coordinates: coords },
+          annotationType: this.annotationType,
+          name: this.name,
+          category: this.category,
+          score: this.score,
+          source: this.source,
+          video: this.video,
+          frameIdx: this.frameIdx,
+          track: this.track,
+          instance: this.instance,
+        })
+      );
+    }
+    if (this.geometry.type === "GeometryCollection") {
+      return this.geometry.geometries.map((geom) =>
+        new ROI({
+          geometry: geom,
+          annotationType: this.annotationType,
+          name: this.name,
+          category: this.category,
+          score: this.score,
+          source: this.source,
+          video: this.video,
+          frameIdx: this.frameIdx,
+          track: this.track,
+          instance: this.instance,
+        })
+      );
+    }
+    // Single geometry, return copy
+    return [new ROI({
+      geometry: this.geometry,
+      annotationType: this.annotationType,
+      name: this.name,
+      category: this.category,
+      score: this.score,
+      source: this.source,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance,
+    })];
+  }
+
+  toGeoJSON(): {
+    type: "Feature";
+    geometry: Geometry;
+    properties: Record<string, unknown>;
+  } {
+    return {
+      type: "Feature",
+      geometry: this.geometry,
+      properties: {
+        name: this.name,
+        category: this.category,
+        source: this.source,
+        frame_idx: this.frameIdx,
+        annotation_type: this.annotationType,
+        score: this.score,
+        roi_type: this.isStatic ? "static" : "temporal",
+      },
+    };
+  }
+
   get isPredicted(): boolean {
     return this.score !== null;
   }
@@ -174,6 +257,8 @@ export class ROI {
 
   get area(): number {
     if (this.geometry.type === "Point") return 0;
+    if (this.geometry.type === "MultiPoint") return 0;
+    if (this.geometry.type === "LineString") return 0;
     if (this.geometry.type === "Polygon") {
       return polygonArea(this.geometry.coordinates);
     }
@@ -181,6 +266,14 @@ export class ROI {
       let total = 0;
       for (const poly of this.geometry.coordinates) {
         total += polygonArea(poly);
+      }
+      return total;
+    }
+    if (this.geometry.type === "GeometryCollection") {
+      let total = 0;
+      for (const geom of this.geometry.geometries) {
+        const sub = new ROI({ geometry: geom });
+        total += sub.area;
       }
       return total;
     }
@@ -225,6 +318,20 @@ export class ROI {
     if (this.geometry.type === "MultiPolygon") {
       return this.geometry.coordinates.flat(2);
     }
+    if (this.geometry.type === "MultiPoint") {
+      return this.geometry.coordinates;
+    }
+    if (this.geometry.type === "LineString") {
+      return this.geometry.coordinates;
+    }
+    if (this.geometry.type === "GeometryCollection") {
+      const pts: number[][] = [];
+      for (const geom of this.geometry.geometries) {
+        const sub = new ROI({ geometry: geom });
+        pts.push(...sub._allPoints());
+      }
+      return pts;
+    }
     return [];
   }
 }
@@ -253,14 +360,36 @@ export function rasterizeGeometry(
   width: number,
 ): Uint8Array {
   const mask = new Uint8Array(height * width);
-  if (geometry.type !== "Polygon") return mask;
 
-  scanlineFill(geometry.coordinates[0], mask, height, width, true);
-
-  for (let i = 1; i < geometry.coordinates.length; i++) {
-    scanlineFill(geometry.coordinates[i], mask, height, width, false);
+  if (geometry.type === "Polygon") {
+    scanlineFill(geometry.coordinates[0], mask, height, width, true);
+    for (let i = 1; i < geometry.coordinates.length; i++) {
+      scanlineFill(geometry.coordinates[i], mask, height, width, false);
+    }
+    return mask;
   }
 
+  if (geometry.type === "MultiPolygon") {
+    for (const poly of geometry.coordinates) {
+      const polyMask = rasterizeGeometry({ type: "Polygon", coordinates: poly }, height, width);
+      for (let i = 0; i < mask.length; i++) {
+        if (polyMask[i]) mask[i] = 1;
+      }
+    }
+    return mask;
+  }
+
+  if (geometry.type === "GeometryCollection") {
+    for (const geom of geometry.geometries) {
+      const subMask = rasterizeGeometry(geom, height, width);
+      for (let i = 0; i < mask.length; i++) {
+        if (subMask[i]) mask[i] = 1;
+      }
+    }
+    return mask;
+  }
+
+  // Point, MultiPoint, LineString: return empty mask
   return mask;
 }
 
@@ -348,6 +477,64 @@ export function encodeWkb(geometry: Geometry): Uint8Array {
     return new Uint8Array(buf);
   }
 
+  if (geometry.type === "LineString") {
+    // WKB type 2: header(5) + numPoints(4) + points(numPoints * 16)
+    const numPoints = geometry.coordinates.length;
+    const size = 9 + numPoints * 16;
+    const buf = new ArrayBuffer(size);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 2, true);
+    view.setUint32(5, numPoints, true);
+    let offset = 9;
+    for (const [x, y] of geometry.coordinates) {
+      view.setFloat64(offset, x, true);
+      view.setFloat64(offset + 8, y, true);
+      offset += 16;
+    }
+    return new Uint8Array(buf);
+  }
+
+  if (geometry.type === "MultiPoint") {
+    // WKB type 4: header(5) + numPoints(4) + for each: WKB Point(21)
+    const numPoints = geometry.coordinates.length;
+    const size = 9 + numPoints * 21;
+    const buf = new ArrayBuffer(size);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 4, true);
+    view.setUint32(5, numPoints, true);
+    let offset = 9;
+    for (const [x, y] of geometry.coordinates) {
+      view.setUint8(offset, 1);
+      view.setUint32(offset + 1, 1, true);
+      view.setFloat64(offset + 5, x, true);
+      view.setFloat64(offset + 13, y, true);
+      offset += 21;
+    }
+    return new Uint8Array(buf);
+  }
+
+  if (geometry.type === "GeometryCollection") {
+    // WKB type 7: header(5) + numGeometries(4) + for each: recursive encodeWkb
+    const subBuffers: Uint8Array[] = [];
+    for (const geom of geometry.geometries) {
+      subBuffers.push(encodeWkb(geom));
+    }
+    const totalSize = 9 + subBuffers.reduce((sum, b) => sum + b.length, 0);
+    const buf = new ArrayBuffer(totalSize);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 7, true);
+    view.setUint32(5, geometry.geometries.length, true);
+    let offset = 9;
+    for (const sb of subBuffers) {
+      new Uint8Array(buf, offset, sb.length).set(sb);
+      offset += sb.length;
+    }
+    return new Uint8Array(buf);
+  }
+
   throw new Error(`Unsupported geometry type: ${(geometry as Geometry).type}`);
 }
 
@@ -375,6 +562,10 @@ function encodeWkbPolygon(rings: number[][][]): Uint8Array {
 }
 
 export function decodeWkb(bytes: Uint8Array): Geometry {
+  return decodeWkbInternal(bytes).geometry;
+}
+
+function decodeWkbInternal(bytes: Uint8Array): { geometry: Geometry; bytesRead: number } {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const byteOrder = view.getUint8(0);
   const le = byteOrder === 1;
@@ -383,12 +574,12 @@ export function decodeWkb(bytes: Uint8Array): Geometry {
   if (wkbType === 1) {
     const x = view.getFloat64(5, le);
     const y = view.getFloat64(13, le);
-    return { type: "Point", coordinates: [x, y] };
+    return { geometry: { type: "Point", coordinates: [x, y] }, bytesRead: 21 };
   }
 
   if (wkbType === 3) {
-    const { rings } = decodeWkbPolygon(view, 5, le);
-    return { type: "Polygon", coordinates: rings };
+    const { rings, bytesRead } = decodeWkbPolygon(view, 5, le);
+    return { geometry: { type: "Polygon", coordinates: rings }, bytesRead: 5 + bytesRead };
   }
 
   if (wkbType === 6) {
@@ -402,7 +593,51 @@ export function decodeWkb(bytes: Uint8Array): Geometry {
       polygons.push(rings);
       offset += bytesRead;
     }
-    return { type: "MultiPolygon", coordinates: polygons };
+    return { geometry: { type: "MultiPolygon", coordinates: polygons }, bytesRead: offset };
+  }
+
+  if (wkbType === 2) {
+    // LineString
+    const numPoints = view.getUint32(5, le);
+    const coords: number[][] = [];
+    let offset = 9;
+    for (let i = 0; i < numPoints; i++) {
+      const x = view.getFloat64(offset, le);
+      const y = view.getFloat64(offset + 8, le);
+      coords.push([x, y]);
+      offset += 16;
+    }
+    return { geometry: { type: "LineString", coordinates: coords }, bytesRead: offset };
+  }
+
+  if (wkbType === 4) {
+    // MultiPoint
+    const numPoints = view.getUint32(5, le);
+    const coords: number[][] = [];
+    let offset = 9;
+    for (let i = 0; i < numPoints; i++) {
+      const innerLe = view.getUint8(offset) === 1;
+      offset += 5;
+      const x = view.getFloat64(offset, innerLe);
+      const y = view.getFloat64(offset + 8, innerLe);
+      coords.push([x, y]);
+      offset += 16;
+    }
+    return { geometry: { type: "MultiPoint", coordinates: coords }, bytesRead: offset };
+  }
+
+  if (wkbType === 7) {
+    // GeometryCollection
+    const numGeometries = view.getUint32(5, le);
+    const geometries: Geometry[] = [];
+    let offset = 9;
+    for (let i = 0; i < numGeometries; i++) {
+      const subBytes = new Uint8Array(bytes.buffer, bytes.byteOffset + offset, bytes.byteLength - offset);
+      const { geometry: geom, bytesRead } = decodeWkbInternal(subBytes);
+      geometries.push(geom);
+      offset += bytesRead;
+    }
+    return { geometry: { type: "GeometryCollection", geometries }, bytesRead: offset };
   }
 
   throw new Error(`Unsupported WKB type: ${wkbType}`);
