@@ -18,12 +18,18 @@ import {
   LabelsSet,
   SuggestionFrame,
   ROI,
-  AnnotationType,
   SegmentationMask,
+  BoundingBox,
+  UserBoundingBox,
+  PredictedBoundingBox,
   toDict,
   fromDict,
   toNumpy,
   fromNumpy,
+  roisToGeoJSON,
+  roisFromGeoJSON,
+  writeGeoJSON,
+  readGeoJSON,
 } from "@talmolab/sleap-io.js";
 ```
 
@@ -142,7 +148,8 @@ Key types:
 - `Video`, `SuggestionFrame`, `LabelsSet`
 - `Camera`, `CameraGroup`, `RecordingSession` (camera utilities)
 - `LazyDataStore`, `LazyFrameList` (lazy loading)
-- `ROI`, `SegmentationMask`, `AnnotationType` (spatial annotations)
+- `ROI`, `SegmentationMask` (spatial annotations)
+- `BoundingBox`, `UserBoundingBox`, `PredictedBoundingBox` (detection/tracking)
 - `Point` has fields `{ xy, visible, complete, score? }` where `score` is an optional confidence value.
 - `LabeledFrame.isNegative` (`boolean`, default `false`): marks negative-annotated frames.
 - `SuggestionFrame.group` (`string`, default `"default"`): the suggestion group name.
@@ -179,16 +186,15 @@ Key classes:
 
 ## ROI & Segmentation Masks
 
-Spatial annotations stored alongside pose data in SLP format 1.5.
+Spatial annotations stored alongside pose data (SLP format 1.5+).
 
 ### `ROI`
-Region of interest with GeoJSON-like geometry.
+Region of interest with GeoJSON-like geometry. Supports `Polygon`, `Point`, `MultiPolygon`, `MultiPoint`, `LineString`, and `GeometryCollection` types.
 
 ```ts
 // Create from bounding box
 const roi = ROI.fromBbox(100, 200, 50, 80, {
   category: "arena",
-  annotationType: AnnotationType.ARENA,
   video: labels.videos[0],
 });
 
@@ -197,11 +203,23 @@ const roi = ROI.fromPolygon([[0,0], [100,0], [100,100], [0,100]], {
   category: "region",
 });
 
+// Create from multi-polygon
+const roi = ROI.fromMultiPolygon([
+  [[[0,0], [10,0], [10,10], [0,10], [0,0]]],
+  [[[20,20], [30,20], [30,30], [20,30], [20,20]]],
+]);
+
 // Properties
 roi.bounds;    // { minX, minY, maxX, maxY }
 roi.area;      // polygon area
 roi.centroid;  // { x, y }
 roi.isBbox;    // true if axis-aligned rectangle
+
+// Explode multi-geometries into individual ROIs
+const parts = roi.explode();  // ROI[]
+
+// Convert to GeoJSON Feature
+const feature = roi.toGeoJSON();
 
 // Convert to mask
 const mask = roi.toMask(480, 640);
@@ -225,21 +243,77 @@ mask.bbox;  // { x, y, width, height }
 const roi = mask.toPolygon();
 ```
 
-### `Labels` ROI/Mask Access
+### `BoundingBox`
+Axis-aligned or rotated bounding box for detection/tracking workflows (SLP format 1.7).
+
+```ts
+// Create user-annotated bbox
+const bbox = new UserBoundingBox({
+  xCenter: 50, yCenter: 60, width: 100, height: 80,
+  video: labels.videos[0], frameIdx: 3, category: "animal",
+});
+
+// Create predicted bbox with confidence score
+const bbox = new PredictedBoundingBox({
+  xCenter: 50, yCenter: 60, width: 100, height: 80,
+  score: 0.95,
+});
+
+// Factory methods
+const bbox = BoundingBox.fromXyxy(10, 20, 110, 100);  // corner coords
+const bbox = BoundingBox.fromXywh(10, 20, 100, 80);   // top-left + size
+
+// Properties
+bbox.xyxy;       // [x1, y1, x2, y2] (axis-aligned)
+bbox.xywh;       // { x, y, width, height }
+bbox.corners;    // number[][] (4 corner points, respects rotation)
+bbox.bounds;     // { minX, minY, maxX, maxY }
+bbox.area;       // width * height
+bbox.centroid;   // { x, y }
+bbox.isPredicted; // true for PredictedBoundingBox
+bbox.isStatic;   // true if no frameIdx
+bbox.isRotated;  // true if angle != 0
+
+// Conversion
+const roi = bbox.toRoi();              // Polygon ROI
+const mask = bbox.toMask(480, 640);    // SegmentationMask
+```
+
+### `Labels` ROI/Mask/BBox Access
 
 ```ts
 // Direct access
-labels.rois;       // ROI[]
-labels.masks;      // SegmentationMask[]
-labels.staticRois; // ROIs without frame index
+labels.rois;         // ROI[]
+labels.masks;        // SegmentationMask[]
+labels.bboxes;       // BoundingBox[]
+labels.staticRois;   // ROIs without frame index
 labels.temporalRois; // ROIs with frame index
+labels.staticBboxes; // BBoxes without frame index
+labels.temporalBboxes; // BBoxes with frame index
 
 // Filtered queries
 labels.getRois({ video, frameIdx: 0, category: "arena" });
-labels.getMasks({ video, annotationType: AnnotationType.SEGMENTATION });
+labels.getMasks({ video, category: "segmentation" });
+labels.getBboxes({ video, frameIdx: 0, predicted: true });
 ```
 
-ROIs and masks are read/written in SLP format 1.5 files. The format ID is automatically set to 1.5 when ROIs or masks are present.
+The format ID is set automatically: 1.5 for ROIs/masks, 1.6 for ROIs with instance associations, 1.7 when bounding boxes are present.
+
+## GeoJSON I/O
+
+Convert ROIs to/from GeoJSON format.
+
+```ts
+// Convert ROIs to GeoJSON FeatureCollection
+const geojson = roisToGeoJSON(labels.rois);
+
+// Serialize to JSON string
+const json = writeGeoJSON(labels.rois);
+
+// Parse GeoJSON back to ROIs
+const rois = roisFromGeoJSON(geojson);
+const rois = readGeoJSON(jsonString);
+```
 
 ## Skeleton Codecs
 
