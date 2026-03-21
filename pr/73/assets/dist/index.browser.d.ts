@@ -474,7 +474,6 @@ declare class Mp4BoxVideoBackend implements VideoBackend {
 
 interface MediaBunnyOptions {
     cacheSize?: number;
-    lookahead?: number;
 }
 declare class MediaBunnyVideoBackend implements VideoBackend {
     filename: string | string[];
@@ -486,9 +485,8 @@ declare class MediaBunnyVideoBackend implements VideoBackend {
     private _frameTimes;
     private cache;
     private cacheSize;
-    private lookahead;
     private frameCount;
-    private isDecoding;
+    private decodingPromise;
     constructor(filename: string | string[], options?: MediaBunnyOptions);
     static fromUrl(url: string, options?: MediaBunnyOptions): Promise<MediaBunnyVideoBackend>;
     static fromBlob(blob: Blob, filename: string, options?: MediaBunnyOptions): Promise<MediaBunnyVideoBackend>;

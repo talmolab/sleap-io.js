@@ -173,13 +173,11 @@ var MediaBunnyVideoBackend = class _MediaBunnyVideoBackend {
   _frameTimes = [];
   cache = /* @__PURE__ */ new Map();
   cacheSize;
-  lookahead;
   frameCount = 0;
-  isDecoding = false;
+  decodingPromise = null;
   constructor(filename, options = {}) {
     this.filename = filename;
     this.cacheSize = options.cacheSize ?? 120;
-    this.lookahead = options.lookahead ?? 60;
   }
   static async fromUrl(url, options) {
     const backend = new _MediaBunnyVideoBackend(url, options);
@@ -245,11 +243,8 @@ var MediaBunnyVideoBackend = class _MediaBunnyVideoBackend {
       this.cache.set(frameIndex, cached);
       return cached;
     }
-    if (this.isDecoding) {
-      await new Promise((resolve) => {
-        const check = () => this.isDecoding ? setTimeout(check, 10) : resolve();
-        check();
-      });
+    if (this.decodingPromise) {
+      await this.decodingPromise;
       if (this.cache.has(frameIndex)) {
         return this.cache.get(frameIndex) ?? null;
       }
@@ -303,36 +298,39 @@ var MediaBunnyVideoBackend = class _MediaBunnyVideoBackend {
   }
   async decodeRange(startIndex, endIndex) {
     if (!this.sink) throw new Error("Backend not initialized");
-    this.isDecoding = true;
-    try {
-      const startTime = this._frameTimes[startIndex];
-      const endTime = this._frameTimes[endIndex];
-      const timestampToIndex = /* @__PURE__ */ new Map();
-      for (let i = startIndex; i <= endIndex; i++) {
-        timestampToIndex.set(this._frameTimes[i], i);
-      }
-      for await (const sample of this.sink.samples(startTime, endTime)) {
-        let frameIndex = timestampToIndex.get(sample.timestamp);
-        if (frameIndex === void 0) {
-          let bestDiff = Infinity;
-          for (const [ts, idx] of timestampToIndex) {
-            const diff = Math.abs(ts - sample.timestamp);
-            if (diff < bestDiff) {
-              bestDiff = diff;
-              frameIndex = idx;
+    const sink = this.sink;
+    this.decodingPromise = (async () => {
+      try {
+        const startTime = this._frameTimes[startIndex];
+        const endTime = this._frameTimes[endIndex];
+        const timestampToIndex = /* @__PURE__ */ new Map();
+        for (let i = startIndex; i <= endIndex; i++) {
+          timestampToIndex.set(this._frameTimes[i], i);
+        }
+        for await (const sample of sink.samples(startTime, endTime)) {
+          let frameIndex = timestampToIndex.get(sample.timestamp);
+          if (frameIndex === void 0) {
+            let bestDiff = Infinity;
+            for (const [ts, idx] of timestampToIndex) {
+              const diff = Math.abs(ts - sample.timestamp);
+              if (diff < bestDiff) {
+                bestDiff = diff;
+                frameIndex = idx;
+              }
             }
           }
+          if (frameIndex !== void 0 && !this.cache.has(frameIndex)) {
+            const videoFrame = sample.toVideoFrame();
+            const bitmap = await createImageBitmap(videoFrame);
+            videoFrame.close();
+            this.cacheFrame(frameIndex, bitmap);
+          }
         }
-        if (frameIndex !== void 0 && !this.cache.has(frameIndex)) {
-          const videoFrame = sample.toVideoFrame();
-          const bitmap = await createImageBitmap(videoFrame);
-          videoFrame.close();
-          this.cacheFrame(frameIndex, bitmap);
-        }
+      } finally {
+        this.decodingPromise = null;
       }
-    } finally {
-      this.isDecoding = false;
-    }
+    })();
+    return this.decodingPromise;
   }
   async getFrameTimes() {
     return [...this._frameTimes];
@@ -3295,7 +3293,7 @@ function getH5FileSystem(module) {
 }
 
 // src/video/factory.ts
-var MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "ts", "mpeg", "avi"];
+var MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "mpeg", "avi"];
 async function createVideoBackend(filename, options) {
   if (options?.embedded || filename.endsWith(".slp") || filename.endsWith(".h5") || filename.endsWith(".hdf5")) {
     const { file } = await openH5File(filename);
@@ -3327,7 +3325,7 @@ async function createVideoBackend(filename, options) {
   if (supportsWebCodecs && ext === "mp4") {
     return new Mp4BoxVideoBackend(filename);
   }
-  if (MEDIABUNNY_EXTENSIONS.includes(ext)) {
+  if (supportsWebCodecs && MEDIABUNNY_EXTENSIONS.includes(ext)) {
     return MediaBunnyVideoBackend.fromUrl(filename);
   }
   return new MediaVideoBackend(filename);
