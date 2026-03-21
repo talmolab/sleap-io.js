@@ -368,6 +368,7 @@ declare class BoundingBox {
     category: string;
     name: string;
     source: string;
+    /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx: number | null;
     constructor(options: BoundingBoxOptions);
     /** Create from corner coordinates [x1, y1, x2, y2]. */

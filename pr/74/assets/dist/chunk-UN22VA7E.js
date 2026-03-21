@@ -2129,6 +2129,7 @@ var BoundingBox = class {
   category;
   name;
   source;
+  /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx = null;
   constructor(options) {
     this.xCenter = options.xCenter;
@@ -4867,12 +4868,8 @@ async function readSlp(source, options) {
     }
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
     const allInstances = labeledFrames.flatMap((f) => f.instances);
-    const { rois, migratedBboxes } = readRoisWithMigration(file, videos, tracks, allInstances);
+    const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks, allInstances);
     const masks = readMasks(file, videos, tracks);
-    let bboxes = readBboxes(file, videos, tracks);
-    if (bboxes.length === 0 && migratedBboxes.length > 0) {
-      bboxes = migratedBboxes;
-    }
     return new Labels({
       labeledFrames,
       videos,
@@ -4931,13 +4928,8 @@ async function readSlpLazy(source, options) {
     });
     const lazyFrames = new LazyFrameList(store);
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
-    const { rois: readRoisResult, migratedBboxes } = readRoisWithMigration(file, videos, tracks);
-    const rois = readRoisResult;
+    const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks);
     const masks = readMasks(file, videos, tracks);
-    let bboxes = readBboxes(file, videos, tracks);
-    if (bboxes.length === 0 && migratedBboxes.length > 0) {
-      bboxes = migratedBboxes;
-    }
     const labels = new Labels({
       videos,
       skeletons,
@@ -5199,6 +5191,14 @@ function readAttrString(dataset, name) {
   }
   if (Array.isArray(value)) return value.map(String);
   return [];
+}
+function readRoisAndBboxes(file, videos, tracks, instances) {
+  const { rois, migratedBboxes } = readRoisWithMigration(file, videos, tracks, instances);
+  let bboxes = readBboxes(file, videos, tracks);
+  if (bboxes.length === 0 && migratedBboxes.length > 0) {
+    bboxes = migratedBboxes;
+  }
+  return { rois, bboxes };
 }
 function readRoisWithMigration(file, videos, tracks, instances) {
   const roisDs = file.get("rois");
@@ -5654,10 +5654,10 @@ function roisFromGeoJSON(geojson) {
     const props = feature.properties ?? {};
     return new ROI({
       geometry: feature.geometry,
-      name: props.name ?? "",
-      category: props.category ?? "",
-      source: props.source ?? "",
-      frameIdx: props.frame_idx ?? null
+      name: String(props.name ?? ""),
+      category: String(props.category ?? ""),
+      source: String(props.source ?? ""),
+      frameIdx: typeof props.frame_idx === "number" ? props.frame_idx : null
     });
   });
 }
