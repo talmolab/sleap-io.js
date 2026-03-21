@@ -20,7 +20,6 @@ import {
 
 export interface MediaBunnyOptions {
   cacheSize?: number;
-  lookahead?: number;
 }
 
 export class MediaBunnyVideoBackend implements VideoBackend {
@@ -34,14 +33,12 @@ export class MediaBunnyVideoBackend implements VideoBackend {
   private _frameTimes: number[] = [];
   private cache: Map<number, ImageBitmap> = new Map();
   private cacheSize: number;
-  private lookahead: number;
   private frameCount: number = 0;
-  private isDecoding: boolean = false;
+  private decodingPromise: Promise<void> | null = null;
 
   constructor(filename: string | string[], options: MediaBunnyOptions = {}) {
     this.filename = filename;
     this.cacheSize = options.cacheSize ?? 120;
-    this.lookahead = options.lookahead ?? 60;
   }
 
   static async fromUrl(
@@ -130,11 +127,8 @@ export class MediaBunnyVideoBackend implements VideoBackend {
       return cached;
     }
 
-    if (this.isDecoding) {
-      await new Promise<void>((resolve) => {
-        const check = () => (this.isDecoding ? setTimeout(check, 10) : resolve());
-        check();
-      });
+    if (this.decodingPromise) {
+      await this.decodingPromise;
       if (this.cache.has(frameIndex)) {
         return this.cache.get(frameIndex) ?? null;
       }
@@ -202,41 +196,45 @@ export class MediaBunnyVideoBackend implements VideoBackend {
   private async decodeRange(startIndex: number, endIndex: number): Promise<void> {
     if (!this.sink) throw new Error("Backend not initialized");
 
-    this.isDecoding = true;
+    const sink = this.sink;
 
-    try {
-      const startTime = this._frameTimes[startIndex];
-      const endTime = this._frameTimes[endIndex];
+    this.decodingPromise = (async () => {
+      try {
+        const startTime = this._frameTimes[startIndex];
+        const endTime = this._frameTimes[endIndex];
 
-      const timestampToIndex = new Map<number, number>();
-      for (let i = startIndex; i <= endIndex; i++) {
-        timestampToIndex.set(this._frameTimes[i], i);
-      }
+        const timestampToIndex = new Map<number, number>();
+        for (let i = startIndex; i <= endIndex; i++) {
+          timestampToIndex.set(this._frameTimes[i], i);
+        }
 
-      for await (const sample of this.sink.samples(startTime, endTime)) {
-        let frameIndex = timestampToIndex.get(sample.timestamp);
+        for await (const sample of sink.samples(startTime, endTime)) {
+          let frameIndex = timestampToIndex.get(sample.timestamp);
 
-        if (frameIndex === undefined) {
-          let bestDiff = Infinity;
-          for (const [ts, idx] of timestampToIndex) {
-            const diff = Math.abs(ts - sample.timestamp);
-            if (diff < bestDiff) {
-              bestDiff = diff;
-              frameIndex = idx;
+          if (frameIndex === undefined) {
+            let bestDiff = Infinity;
+            for (const [ts, idx] of timestampToIndex) {
+              const diff = Math.abs(ts - sample.timestamp);
+              if (diff < bestDiff) {
+                bestDiff = diff;
+                frameIndex = idx;
+              }
             }
           }
-        }
 
-        if (frameIndex !== undefined && !this.cache.has(frameIndex)) {
-          const videoFrame = sample.toVideoFrame();
-          const bitmap = await createImageBitmap(videoFrame);
-          videoFrame.close();
-          this.cacheFrame(frameIndex, bitmap);
+          if (frameIndex !== undefined && !this.cache.has(frameIndex)) {
+            const videoFrame = sample.toVideoFrame();
+            const bitmap = await createImageBitmap(videoFrame);
+            videoFrame.close();
+            this.cacheFrame(frameIndex, bitmap);
+          }
         }
+      } finally {
+        this.decodingPromise = null;
       }
-    } finally {
-      this.isDecoding = false;
-    }
+    })();
+
+    return this.decodingPromise;
   }
 
   async getFrameTimes(): Promise<number[] | null> {

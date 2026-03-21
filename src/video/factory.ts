@@ -9,7 +9,7 @@ import { openH5File } from "../codecs/slp/h5.js";
 export type VideoBackendType = "mp4box" | "mediabunny" | "media";
 
 /** File extensions that MediaBunny handles (non-MP4 formats). */
-const MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "ts", "mpeg", "avi"];
+const MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "mpeg", "avi"];
 
 export async function createVideoBackend(
   filename: string,
@@ -68,7 +68,7 @@ export async function createVideoBackend(
   }
 
   // Non-MP4 video formats: use MediaBunny
-  if (MEDIABUNNY_EXTENSIONS.includes(ext)) {
+  if (supportsWebCodecs && MEDIABUNNY_EXTENSIONS.includes(ext)) {
     return MediaBunnyVideoBackend.fromUrl(filename);
   }
 
