@@ -245,7 +245,7 @@ export class Labels {
     predicted?: boolean;
   }): BoundingBox[] {
     if (!filters) return [...this.bboxes];
-    let results = this.bboxes as BoundingBox[];
+    let results = this.bboxes;
     if (filters.video !== undefined) {
       results = results.filter((b) => b.video === filters.video);
     }

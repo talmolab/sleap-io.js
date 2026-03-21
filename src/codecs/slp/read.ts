@@ -61,11 +61,11 @@ export async function readSlp(
       const frameIdxs = negData.frame_idx ?? [];
       const negativeSet = new Set<string>();
       for (let i = 0; i < frameIdxs.length; i++) {
-        negativeSet.add(`${Number(videoIds[i])}_${Number(frameIdxs[i])}`);
+        negativeSet.add(`${Number(videoIds[i])}:${Number(frameIdxs[i])}`);
       }
       for (const frame of labeledFrames) {
         const videoIndex = Math.max(0, videos.indexOf(frame.video));
-        if (negativeSet.has(`${videoIndex}_${frame.frameIdx}`)) {
+        if (negativeSet.has(`${videoIndex}:${frame.frameIdx}`)) {
           frame.isNegative = true;
         }
       }

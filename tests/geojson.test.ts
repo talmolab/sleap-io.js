@@ -6,7 +6,7 @@ import { ROI } from "../src/model/roi.js";
 describe("GeoJSON I/O", () => {
   it("round-trips ROIs through GeoJSON", () => {
     const rois = [
-      ROI.fromPolygon([[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]], { name: "test", category: "region" }),
+      ROI.fromPolygon([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]], { name: "test", category: "region" }),
       ROI.fromBbox(5, 5, 20, 20, { name: "box" }),
     ];
     const json = writeGeoJSON(rois);

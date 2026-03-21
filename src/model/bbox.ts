@@ -100,10 +100,10 @@ export class BoundingBox {
     return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
   }
 
-  /** Top-left x, y and size. */
+  /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
   get xywh(): { x: number; y: number; width: number; height: number } {
-    const [x1, y1] = this.xyxy;
-    return { x: x1, y: y1, width: this.width, height: this.height };
+    const [x1, y1, x2, y2] = this.xyxy;
+    return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
   }
 
   /** Four corner points of the (possibly rotated) bbox. */
