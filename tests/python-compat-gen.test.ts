@@ -149,7 +149,8 @@ describe("Python compatibility (#76)", () => {
       const metadata = JSON.parse(jsonAttr.value);
       expect(metadata.version).toBeDefined();
       expect(metadata.skeletons).toHaveLength(1);
-      expect(metadata.skeletons[0].name).toBe("test");
+      expect(metadata.skeletons[0].graph.name).toBe("test");
+      expect(metadata.skeletons[0].nodes).toHaveLength(3);
       expect(metadata.nodes).toHaveLength(3);
     } finally {
       file.close();
@@ -196,10 +197,10 @@ describe("Python compatibility (#76)", () => {
     }
   });
 
-  it.skipIf(!hasUv())("Python h5py reads fixed-length string attrs as bytes with .decode()", async () => {
-    // This directly tests the fix for #76: the metadata JSON attribute
-    // must be readable by Python's `json.loads(md.decode())` pattern.
+  it.skipIf(!hasUv())("Python can decode metadata and skeletons from JS-written SLP", async () => {
     const skeleton = new Skeleton({ name: "fly", nodes: ["head", "thorax", "abdomen"] });
+    skeleton.addEdge("head", "thorax");
+    skeleton.addEdge("thorax", "abdomen");
     const video = new Video({ filename: "test.mp4" });
     const inst = new Instance({
       skeleton,
@@ -222,26 +223,37 @@ describe("Python compatibility (#76)", () => {
     try {
       writeFileSync(slpPath, bytes);
 
-      // Use h5py directly to verify the attribute type and .decode() behavior.
-      // This is the exact pattern that Python sleap-io uses in read_metadata().
+      // Test metadata reading (#76) and skeleton decoding (format fix).
+      // Full sio.load_slp() not yet supported because JS writes flat <f8
+      // matrices (no compound dtype), so Python gets float indices for the
+      // instances dataset. h5wasm doesn't support compound dtype creation.
       const pyScript = `
 import h5py, json
-with h5py.File("${slpPath}", "r") as f:
-    md = f["metadata"].attrs["json"]
-    assert isinstance(md, (bytes, type(md))), f"Expected bytes-like, got {type(md)}"
-    assert hasattr(md, "decode"), f"Attribute must have .decode() method, got {type(md)}"
-    parsed = json.loads(md.decode())
-    assert "version" in parsed, f"Missing 'version' key in metadata"
-    assert "skeletons" in parsed, f"Missing 'skeletons' key in metadata"
-    assert len(parsed["skeletons"]) == 1, f"Expected 1 skeleton, got {len(parsed['skeletons'])}"
-    assert len(parsed["nodes"]) == 3, f"Expected 3 nodes, got {len(parsed['nodes'])}"
-    print("OK: Python h5py reads metadata as bytes with working .decode()")
+from sleap_io.io.slp import read_metadata, read_skeletons
+
+# Test 1: metadata reads without .decode() error (issue #76)
+md = read_metadata("${slpPath}")
+assert "version" in md, f"Missing version in metadata"
+assert len(md["skeletons"]) == 1, f"Expected 1 skeleton, got {len(md['skeletons'])}"
+assert len(md["nodes"]) == 3, f"Expected 3 nodes, got {len(md['nodes'])}"
+
+# Test 2: skeletons decode correctly (format fix)
+skeletons = read_skeletons("${slpPath}")
+assert len(skeletons) == 1, f"Expected 1 skeleton, got {len(skeletons)}"
+skel = skeletons[0]
+assert skel.name == "fly", f"Expected name 'fly', got '{skel.name}'"
+assert len(skel.nodes) == 3, f"Expected 3 nodes, got {len(skel.nodes)}"
+node_names = [n.name for n in skel.nodes]
+assert node_names == ["head", "thorax", "abdomen"], f"Wrong nodes: {node_names}"
+assert len(skel.edges) == 2, f"Expected 2 edges, got {len(skel.edges)}"
+
+print("OK: Python reads metadata and skeletons from JS-written SLP")
 `;
       const result = execSync(`uv run --with sleap-io python -c '${pyScript}'`, {
         encoding: "utf-8",
         timeout: 30000,
       });
-      expect(result).toContain("OK: Python h5py reads metadata as bytes with working .decode()");
+      expect(result).toContain("OK: Python reads metadata and skeletons from JS-written SLP");
     } finally {
       try { unlinkSync(slpPath); } catch {}
     }

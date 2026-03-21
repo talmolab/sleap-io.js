@@ -200,24 +200,56 @@ function serializeSkeletons(skeletons: Skeleton[]): { skeletons: any[]; nodes: A
   }
 
   const serialized = skeletons.map((skeleton) => {
-    const links: Array<{ source: number; target: number; type: any }> = [];
+    const links: Array<Record<string, any>> = [];
+    // Track py/id assignments for edge types (jsonpickle convention).
+    // First occurrence of each edge type gets py/reduce; subsequent get py/id.
+    const edgeTypePyId: Record<number, number> = {};
+    let nextPyId = 1;
+    let edgeInsertIdx = 0;
+
+    function makeEdgeType(typeVal: number): any {
+      if (edgeTypePyId[typeVal] != null) {
+        return { "py/id": edgeTypePyId[typeVal] };
+      }
+      edgeTypePyId[typeVal] = nextPyId++;
+      return {
+        "py/reduce": [
+          { "py/type": "sleap.skeleton.EdgeType" },
+          { "py/tuple": [typeVal] },
+        ],
+      };
+    }
 
     for (const edge of skeleton.edges) {
       const source = nodeIndex.get(edge.source.name) ?? 0;
       const target = nodeIndex.get(edge.destination.name) ?? 0;
-      links.push({ source, target, type: { "py/tuple": [1] } });
+      links.push({
+        edge_insert_idx: edgeInsertIdx++,
+        key: 0,
+        source,
+        target,
+        type: makeEdgeType(1),
+      });
     }
 
     for (const [left, right] of skeleton.symmetryNames) {
       const source = nodeIndex.get(left) ?? 0;
       const target = nodeIndex.get(right) ?? 0;
-      links.push({ source, target, type: { "py/tuple": [2] } });
+      links.push({ key: 0, source, target, type: makeEdgeType(2) });
     }
 
+    // Build per-skeleton node index list (global indices of this skeleton's nodes)
+    const skeletonNodeIds = skeleton.nodeNames.map((name) => nodeIndex.get(name) ?? 0);
+
     return {
+      directed: true,
+      graph: {
+        name: skeleton.name ?? "",
+        num_edges_inserted: skeleton.edges.length,
+      },
       links,
-      name: skeleton.name ?? undefined,
-      graph: skeleton.name ? { name: skeleton.name } : undefined,
+      multigraph: true,
+      nodes: skeletonNodeIds.map((id) => ({ id })),
     };
   });
 
