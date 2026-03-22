@@ -21,15 +21,6 @@ import { execSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-function hasUv(): boolean {
-  try {
-    execSync("uv --version", { stdio: "ignore" });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function tmpSlp(): string {
   return join(tmpdir(), `sleap-io-js-test-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
 }
@@ -197,7 +188,7 @@ describe("Python compatibility (#76)", () => {
     }
   });
 
-  it.skipIf(!hasUv())("Python can decode metadata and skeletons from JS-written SLP", async () => {
+  it("Python can decode metadata and skeletons from JS-written SLP", async () => {
     const skeleton = new Skeleton({ name: "fly", nodes: ["head", "thorax", "abdomen"] });
     skeleton.addEdge("head", "thorax");
     skeleton.addEdge("thorax", "abdomen");
