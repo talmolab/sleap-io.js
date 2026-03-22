@@ -467,6 +467,7 @@ declare class Labels {
         video?: Video;
         frameIdx?: number;
     }): LabeledFrame[];
+    addVideo(video: Video): void;
     append(frame: LabeledFrame): void;
     toDict(options?: {
         video?: Video | number;
@@ -796,7 +797,7 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
 
 /** Supported video backend identifiers for user selection. */
 type VideoBackendType = "mp4box" | "mediabunny" | "media";
-declare function createVideoBackend(filename: string, options?: {
+declare function createVideoBackend(source: string | File | Blob, options?: {
     dataset?: string;
     embedded?: boolean;
     frameNumbers?: number[];
@@ -909,13 +910,14 @@ declare function saveSlpSet(labelsSet: LabelsSet, options?: {
 /**
  * Load a video file and create a Video object with an active backend.
  *
- * @param filename - Path to video file
+ * @param source - Path to video file, or a browser File object
  * @param options - Video loading options
  * @param options.dataset - HDF5 dataset path for embedded videos
  * @param options.openBackend - Whether to open the backend (default: true)
+ * @param options.backend - Explicit backend selection
  * @returns Video object with backend
  */
-declare function loadVideo(filename: string, options?: {
+declare function loadVideo(source: string | File, options?: {
     dataset?: string;
     openBackend?: boolean;
     backend?: VideoBackendType;

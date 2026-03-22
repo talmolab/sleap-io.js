@@ -552,12 +552,15 @@ var Labels = class {
       return true;
     });
   }
+  addVideo(video) {
+    if (!this.videos.includes(video)) {
+      this.videos.push(video);
+    }
+  }
   append(frame) {
     if (this._lazyFrameList) this.materialize();
     this.labeledFrames.push(frame);
-    if (!this.videos.includes(frame.video)) {
-      this.videos.push(frame.video);
-    }
+    this.addVideo(frame.video);
   }
   toDict(options) {
     if (this._lazyFrameList) this.materialize();
@@ -3669,9 +3672,13 @@ function getH5FileSystem(module) {
 
 // src/video/factory.ts
 var MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "mpeg", "avi"];
-async function createVideoBackend(filename, options) {
-  if (options?.embedded || filename.endsWith(".slp") || filename.endsWith(".h5") || filename.endsWith(".hdf5")) {
-    const { file } = await openH5File(filename);
+async function createVideoBackend(source, options) {
+  const isBlob = typeof Blob !== "undefined" && source instanceof Blob;
+  const filename = isBlob ? source.name ?? "" : source;
+  const normalized = filename.split("?")[0]?.toLowerCase() ?? "";
+  const ext = normalized.split(".").pop() ?? "";
+  if (options?.embedded || ext === "slp" || ext === "h5" || ext === "hdf5") {
+    const { file } = await openH5File(isBlob ? source : filename);
     const datasetPath = options?.dataset ?? "";
     return new Hdf5VideoBackend({
       filename,
@@ -3686,23 +3693,25 @@ async function createVideoBackend(filename, options) {
     });
   }
   if (options?.backend === "mediabunny") {
+    if (isBlob) return MediaBunnyVideoBackend.fromBlob(source, filename);
     return MediaBunnyVideoBackend.fromUrl(filename);
   }
   if (options?.backend === "mp4box") {
-    return new Mp4BoxVideoBackend(filename);
+    return new Mp4BoxVideoBackend(source);
   }
   if (options?.backend === "media") {
+    if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source));
     return new MediaVideoBackend(filename);
   }
   const supportsWebCodecs = typeof window !== "undefined" && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
-  const normalized = filename.split("?")[0]?.toLowerCase() ?? "";
-  const ext = normalized.split(".").pop() ?? "";
   if (supportsWebCodecs && ext === "mp4") {
-    return new Mp4BoxVideoBackend(filename);
+    return new Mp4BoxVideoBackend(source);
   }
   if (supportsWebCodecs && MEDIABUNNY_EXTENSIONS.includes(ext)) {
+    if (isBlob) return MediaBunnyVideoBackend.fromBlob(source, filename);
     return MediaBunnyVideoBackend.fromUrl(filename);
   }
+  if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source));
   return new MediaVideoBackend(filename);
 }
 
@@ -5667,8 +5676,9 @@ async function saveSlpSet(labelsSet, options) {
   }
   await Promise.all(promises);
 }
-async function loadVideo(filename, options) {
-  const backend = await createVideoBackend(filename, {
+async function loadVideo(source, options) {
+  const filename = typeof source === "string" ? source : source.name;
+  const backend = await createVideoBackend(source, {
     dataset: options?.dataset,
     backend: options?.backend
   });
