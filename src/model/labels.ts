@@ -153,12 +153,16 @@ export class Labels {
     });
   }
 
+  addVideo(video: Video): void {
+    if (!this.videos.includes(video)) {
+      this.videos.push(video);
+    }
+  }
+
   append(frame: LabeledFrame): void {
     if (this._lazyFrameList) this.materialize();
     this.labeledFrames.push(frame);
-    if (!this.videos.includes(frame.video)) {
-      this.videos.push(frame.video);
-    }
+    this.addVideo(frame.video);
   }
 
   toDict(options?: { video?: Video | number; skipEmptyFrames?: boolean }) {
