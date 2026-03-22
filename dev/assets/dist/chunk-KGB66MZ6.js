@@ -4199,6 +4199,11 @@ function _registerFileWriter(writer) {
   _writeToFile = writer;
 }
 var FORMAT_ID = 1.4;
+var textEncoder = new TextEncoder();
+function setStringAttr(target, name, value) {
+  const byteLength = textEncoder.encode(value).length;
+  target.create_attribute(name, value, null, `S${byteLength}`);
+}
 var SPAWNED_ON = 0;
 function writeSlpToFile(file, labels, embeddedVideoData) {
   writeMetadata(file, labels);
@@ -4283,7 +4288,7 @@ function writeMetadata(file, labels) {
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
-  metadataGroup.create_attribute("json", JSON.stringify(metadata));
+  setStringAttr(metadataGroup, "json", JSON.stringify(metadata));
 }
 function serializeSkeletons(skeletons) {
   const nodes = [];
@@ -4298,20 +4303,47 @@ function serializeSkeletons(skeletons) {
   }
   const serialized = skeletons.map((skeleton) => {
     const links = [];
+    const edgeTypePyId = {};
+    let nextPyId = 1;
+    let edgeInsertIdx = 0;
+    function makeEdgeType(typeVal) {
+      if (edgeTypePyId[typeVal] != null) {
+        return { "py/id": edgeTypePyId[typeVal] };
+      }
+      edgeTypePyId[typeVal] = nextPyId++;
+      return {
+        "py/reduce": [
+          { "py/type": "sleap.skeleton.EdgeType" },
+          { "py/tuple": [typeVal] }
+        ]
+      };
+    }
     for (const edge of skeleton.edges) {
       const source = nodeIndex.get(edge.source.name) ?? 0;
       const target = nodeIndex.get(edge.destination.name) ?? 0;
-      links.push({ source, target, type: { "py/tuple": [1] } });
+      links.push({
+        edge_insert_idx: edgeInsertIdx++,
+        key: 0,
+        source,
+        target,
+        type: makeEdgeType(1)
+      });
     }
     for (const [left, right] of skeleton.symmetryNames) {
       const source = nodeIndex.get(left) ?? 0;
       const target = nodeIndex.get(right) ?? 0;
-      links.push({ source, target, type: { "py/tuple": [2] } });
+      links.push({ key: 0, source, target, type: makeEdgeType(2) });
     }
+    const skeletonNodeIds = skeleton.nodeNames.map((name) => nodeIndex.get(name) ?? 0);
     return {
+      directed: true,
+      graph: {
+        name: skeleton.name ?? "",
+        num_edges_inserted: skeleton.edges.length
+      },
       links,
-      name: skeleton.name ?? void 0,
-      graph: skeleton.name ? { name: skeleton.name } : void 0
+      multigraph: true,
+      nodes: skeletonNodeIds.map((id) => ({ id }))
     };
   });
   return { skeletons: serialized, nodes };
@@ -4662,8 +4694,8 @@ function writeEmbeddedVideos(file, labels, embeddedVideoData) {
     });
     const videoDs = file.get(`${groupName}/video`);
     if (videoDs) {
-      videoDs.create_attribute("format", embedData.format);
-      videoDs.create_attribute("channel_order", embedData.channelOrder);
+      setStringAttr(videoDs, "format", embedData.format);
+      setStringAttr(videoDs, "channel_order", embedData.channelOrder);
     }
     file.create_dataset({
       name: `${groupName}/frame_numbers`,
@@ -4686,7 +4718,7 @@ function createMatrixDataset(file, name, rows, fieldNames, dtype) {
   const data = rows.flat();
   file.create_dataset({ name, data, shape: [rowCount, colCount], dtype });
   const dataset = file.get(name);
-  dataset.create_attribute("field_names", fieldNames);
+  setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
 }
 function writeRois(file, rois, videos, tracks, instances) {
   if (!rois.length) return;
@@ -4720,9 +4752,9 @@ function writeRois(file, rois, videos, tracks, instances) {
     "<f8"
   );
   const roisDs = file.get("rois");
-  roisDs.create_attribute("categories", JSON.stringify(categories));
-  roisDs.create_attribute("names", JSON.stringify(names));
-  roisDs.create_attribute("sources", JSON.stringify(sources));
+  setStringAttr(roisDs, "categories", JSON.stringify(categories));
+  setStringAttr(roisDs, "names", JSON.stringify(names));
+  setStringAttr(roisDs, "sources", JSON.stringify(sources));
   const totalWkb = wkbChunks.reduce((sum, c) => sum + c.length, 0);
   const wkbFlat = new Uint8Array(totalWkb);
   let offset = 0;
@@ -4766,9 +4798,9 @@ function writeMasks(file, masks, videos, tracks) {
     "<f8"
   );
   const masksDs = file.get("masks");
-  masksDs.create_attribute("categories", JSON.stringify(categories));
-  masksDs.create_attribute("names", JSON.stringify(names));
-  masksDs.create_attribute("sources", JSON.stringify(sources));
+  setStringAttr(masksDs, "categories", JSON.stringify(categories));
+  setStringAttr(masksDs, "names", JSON.stringify(names));
+  setStringAttr(masksDs, "sources", JSON.stringify(sources));
   const totalRle = rleChunks.reduce((sum, c) => sum + c.length, 0);
   const rleFlat = new Uint8Array(totalRle);
   let offset = 0;
@@ -4814,9 +4846,9 @@ function writeBboxes(file, bboxes, videos, tracks, instances) {
     "<f8"
   );
   const bboxesDs = file.get("bboxes");
-  bboxesDs.create_attribute("categories", JSON.stringify(categories));
-  bboxesDs.create_attribute("names", JSON.stringify(names));
-  bboxesDs.create_attribute("sources", JSON.stringify(sources));
+  setStringAttr(bboxesDs, "categories", JSON.stringify(categories));
+  setStringAttr(bboxesDs, "names", JSON.stringify(names));
+  setStringAttr(bboxesDs, "sources", JSON.stringify(sources));
 }
 
 // src/codecs/slp/read.ts
@@ -4997,10 +5029,12 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
       if (videoDs) {
         const attrs = videoDs.attrs ?? {};
         if (!format) {
-          format = attrs.format?.value ?? attrs.format;
+          const rawFormat = attrs.format?.value ?? attrs.format;
+          format = rawFormat instanceof Uint8Array ? textDecoder.decode(rawFormat) : rawFormat;
         }
         if (attrs.channel_order) {
-          channelOrderFromAttrs = attrs.channel_order?.value ?? attrs.channel_order;
+          const rawCo = attrs.channel_order?.value ?? attrs.channel_order;
+          channelOrderFromAttrs = rawCo instanceof Uint8Array ? textDecoder.decode(rawCo) : rawCo;
         }
       }
     }
