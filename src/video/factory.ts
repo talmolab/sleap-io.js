@@ -12,7 +12,7 @@ export type VideoBackendType = "mp4box" | "mediabunny" | "media";
 const MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "mpeg", "avi"];
 
 export async function createVideoBackend(
-  filename: string,
+  source: string | File | Blob,
   options?: {
     dataset?: string;
     embedded?: boolean;
@@ -25,9 +25,16 @@ export async function createVideoBackend(
     backend?: VideoBackendType;
   }
 ): Promise<VideoBackend> {
+  const isBlob = typeof Blob !== "undefined" && source instanceof Blob;
+  const filename = isBlob
+    ? (source as File).name ?? ""
+    : (source as string);
+  const normalized = filename.split("?")[0]?.toLowerCase() ?? "";
+  const ext = normalized.split(".").pop() ?? "";
+
   // HDF5/SLP files always use the HDF5 backend (not overridable)
-  if (options?.embedded || filename.endsWith(".slp") || filename.endsWith(".h5") || filename.endsWith(".hdf5")) {
-    const { file } = await openH5File(filename);
+  if (options?.embedded || ext === "slp" || ext === "h5" || ext === "hdf5") {
+    const { file } = await openH5File(isBlob ? (source as File) : filename);
     const datasetPath = options?.dataset ?? "";
     return new Hdf5VideoBackend({
       filename,
@@ -44,12 +51,14 @@ export async function createVideoBackend(
 
   // User-specified backend override
   if (options?.backend === "mediabunny") {
+    if (isBlob) return MediaBunnyVideoBackend.fromBlob(source as Blob, filename);
     return MediaBunnyVideoBackend.fromUrl(filename);
   }
   if (options?.backend === "mp4box") {
-    return new Mp4BoxVideoBackend(filename);
+    return new Mp4BoxVideoBackend(source);
   }
   if (options?.backend === "media") {
+    if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source as Blob));
     return new MediaVideoBackend(filename);
   }
 
@@ -59,19 +68,18 @@ export async function createVideoBackend(
     typeof window.VideoDecoder !== "undefined" &&
     typeof window.EncodedVideoChunk !== "undefined";
 
-  const normalized = filename.split("?")[0]?.toLowerCase() ?? "";
-  const ext = normalized.split(".").pop() ?? "";
-
   // MP4: prefer Mp4Box (better sequential performance)
   if (supportsWebCodecs && ext === "mp4") {
-    return new Mp4BoxVideoBackend(filename);
+    return new Mp4BoxVideoBackend(source);
   }
 
   // Non-MP4 video formats: use MediaBunny
   if (supportsWebCodecs && MEDIABUNNY_EXTENSIONS.includes(ext)) {
+    if (isBlob) return MediaBunnyVideoBackend.fromBlob(source as Blob, filename);
     return MediaBunnyVideoBackend.fromUrl(filename);
   }
 
   // Fallback: HTML5 video element
+  if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source as Blob));
   return new MediaVideoBackend(filename);
 }

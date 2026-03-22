@@ -56,4 +56,19 @@ describe("createVideoBackend", () => {
       createVideoBackend("video.mp4", { backend: "mediabunny" })
     ).rejects.toThrow(/MediaBunny/);
   });
+
+  it("selects MediaBunny for Blob with .webm filename", async () => {
+    const { createVideoBackend } = await import("../../src/video/factory.js");
+    const blob = new Blob(["fake"], { type: "video/webm" });
+    const file = new File([blob], "clip.webm");
+    await expect(createVideoBackend(file)).rejects.toThrow(/MediaBunny/);
+  });
+
+  it("routes Blob to MediaBunny when backend='mediabunny'", async () => {
+    const { createVideoBackend } = await import("../../src/video/factory.js");
+    const file = new File([new Blob(["fake"])], "clip.mp4");
+    await expect(
+      createVideoBackend(file, { backend: "mediabunny" })
+    ).rejects.toThrow(/MediaBunny/);
+  });
 });

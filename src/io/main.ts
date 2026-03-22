@@ -161,17 +161,19 @@ export async function saveSlpSet(
 /**
  * Load a video file and create a Video object with an active backend.
  *
- * @param filename - Path to video file
+ * @param source - Path to video file, or a browser File object
  * @param options - Video loading options
  * @param options.dataset - HDF5 dataset path for embedded videos
  * @param options.openBackend - Whether to open the backend (default: true)
+ * @param options.backend - Explicit backend selection
  * @returns Video object with backend
  */
 export async function loadVideo(
-  filename: string,
+  source: string | File,
   options?: { dataset?: string; openBackend?: boolean; backend?: VideoBackendType }
 ): Promise<Video> {
-  const backend = await createVideoBackend(filename, {
+  const filename = typeof source === "string" ? source : source.name;
+  const backend = await createVideoBackend(source, {
     dataset: options?.dataset,
     backend: options?.backend,
   });
