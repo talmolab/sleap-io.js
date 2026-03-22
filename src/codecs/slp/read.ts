@@ -238,13 +238,19 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
       const videoDs = file.get(datasetPath);
       if (videoDs) {
         const attrs = (videoDs as { attrs?: Record<string, { value?: string }> }).attrs ?? {};
-        // Read format attribute
+        // Read format attribute (may be string or Uint8Array depending on writer)
         if (!format) {
-          format = attrs.format?.value ?? (attrs.format as unknown as string);
+          const rawFormat = attrs.format?.value ?? (attrs.format as unknown);
+          format = rawFormat instanceof Uint8Array
+            ? textDecoder.decode(rawFormat)
+            : (rawFormat as string | undefined);
         }
         // Read channel_order attribute (like Python does)
         if (attrs.channel_order) {
-          channelOrderFromAttrs = attrs.channel_order?.value ?? (attrs.channel_order as unknown as string);
+          const rawCo = attrs.channel_order?.value ?? (attrs.channel_order as unknown);
+          channelOrderFromAttrs = rawCo instanceof Uint8Array
+            ? textDecoder.decode(rawCo)
+            : (rawCo as string | undefined);
         }
       }
     }
