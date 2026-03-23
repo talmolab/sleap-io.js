@@ -12,6 +12,9 @@ import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { ROI, AnnotationType, decodeWkb } from "../../model/roi.js";
 import { SegmentationMask } from "../../model/mask.js";
 import { BoundingBox, UserBoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
+import { LabelImage } from "../../model/label-image.js";
+import type { LabelImageObjectInfo } from "../../model/label-image.js";
+import { inflate } from "pako";
 
 const textDecoder = new TextDecoder();
 
@@ -75,6 +78,7 @@ export async function readSlp(
     const allInstances = labeledFrames.flatMap((f) => f.instances);
     const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks, allInstances);
     const masks = readMasks(file, videos, tracks);
+    const labelImages = readLabelImages(file, videos, tracks, allInstances);
 
     return new Labels({
       labeledFrames,
@@ -87,6 +91,7 @@ export async function readSlp(
       rois,
       masks,
       bboxes,
+      labelImages,
     });
   } finally {
     close();
@@ -157,6 +162,7 @@ export async function readSlpLazy(
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
     const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks);
     const masks = readMasks(file, videos, tracks);
+    const labelImages = readLabelImages(file, videos, tracks);
 
     const labels = new Labels({
       videos,
@@ -168,6 +174,7 @@ export async function readSlpLazy(
       rois,
       masks,
       bboxes,
+      labelImages,
     });
 
     // Replace the eager labeledFrames with lazy proxy
@@ -709,6 +716,116 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
     }));
   }
   return masks;
+}
+
+function readLabelImages(
+  file: any,
+  videos: Video[],
+  tracks: Track[],
+  instances?: Array<Instance | PredictedInstance>,
+): LabelImage[] {
+  const liDs = file.get("label_images");
+  if (!liDs) return [];
+  const liData = normalizeStructDataset(liDs);
+  const videoIndices = liData.video ?? [];
+  if (!videoIndices.length) return [];
+
+  const frameIndices = liData.frame_idx ?? [];
+  const heights = liData.height ?? [];
+  const widths = liData.width ?? [];
+  const nObjectsList = liData.n_objects ?? [];
+  const objectsStarts = liData.objects_start ?? [];
+  const dataStarts = liData.data_start ?? [];
+  const dataEnds = liData.data_end ?? [];
+
+  const sources = readAttrString(liDs, "sources");
+
+  // Read compressed pixel data blob
+  const dataDs = file.get("label_image_data");
+  if (!dataDs) return [];
+  const dataFlat: Uint8Array = dataDs.value instanceof Uint8Array
+    ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+
+  // Read objects table (may not exist if all label images have 0 objects)
+  let objLabelIds: any[] = [];
+  let objTrackIndices: any[] = [];
+  let objInstanceIndices: any[] = [];
+  let objCategories: string[] = [];
+  let objNames: string[] = [];
+
+  const objDs = file.get("label_image_objects");
+  if (objDs) {
+    const objData = normalizeStructDataset(objDs);
+    objLabelIds = objData.label_id ?? [];
+    objTrackIndices = objData.track ?? [];
+    objInstanceIndices = objData.instance ?? [];
+    objCategories = readAttrString(objDs, "categories");
+    objNames = readAttrString(objDs, "names");
+  }
+
+  const labelImages: LabelImage[] = [];
+  for (let i = 0; i < videoIndices.length; i++) {
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+    const frameIdxVal = Number(frameIndices[i]);
+    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
+    const height = Number(heights[i]);
+    const width = Number(widths[i]);
+
+    // Decompress pixel data
+    const dataStart = Number(dataStarts[i]);
+    const dataEnd = Number(dataEnds[i]);
+    const compressed = dataFlat.slice(dataStart, dataEnd);
+    const decompressed = inflate(compressed);
+    // Convert bytes back to Int32Array (little-endian, matches native)
+    const pixelData = new Int32Array(
+      decompressed.buffer, decompressed.byteOffset, decompressed.byteLength / 4
+    );
+
+    // Build objects map
+    const nObj = Number(nObjectsList[i]);
+    const objStart = Number(objectsStarts[i]);
+    const objects = new Map<number, LabelImageObjectInfo>();
+    const deferredInstances = new Map<number, number>();
+
+    for (let j = objStart; j < objStart + nObj; j++) {
+      const labelId = Number(objLabelIds[j]);
+      const trackIdx = Number(objTrackIndices[j]);
+      const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+      const instIdx = Number(objInstanceIndices[j]);
+      let instance: Instance | null = null;
+
+      if (instances && instIdx >= 0 && instIdx < instances.length) {
+        instance = instances[instIdx] as Instance;
+      } else if (instIdx >= 0) {
+        deferredInstances.set(labelId, instIdx);
+      }
+
+      objects.set(labelId, {
+        track,
+        category: objCategories[j] ?? "",
+        name: objNames[j] ?? "",
+        instance,
+      });
+    }
+
+    const li = new LabelImage({
+      data: pixelData,
+      height,
+      width,
+      objects,
+      video,
+      frameIdx,
+      source: sources[i] ?? "",
+    });
+
+    if (deferredInstances.size > 0) {
+      li._objectInstanceIdxs = deferredInstances;
+    }
+
+    labelImages.push(li);
+  }
+  return labelImages;
 }
 
 function normalizeStructDataset(dataset: any): Record<string, any[]> {
