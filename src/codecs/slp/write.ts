@@ -9,6 +9,8 @@ import { getH5Module, getH5FileSystem } from "./h5.js";
 import { ROI, encodeWkb } from "../../model/roi.js";
 import { SegmentationMask } from "../../model/mask.js";
 import { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
+import { LabelImage } from "../../model/label-image.js";
+import { deflate } from "pako";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile: ((filename: string, bytes: Uint8Array) => Promise<void>) | null = null;
@@ -74,6 +76,7 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
   writeMasks(file, labels.masks, labels.videos, labels.tracks);
   writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
+  writeLabelImages(file, labels.labelImages, labels.videos, labels.tracks, allInstances);
 }
 
 /**
@@ -116,6 +119,10 @@ export async function saveSlpToBytes(
       suggestions: labels.suggestions,
       sessions: labels.sessions,
       provenance: labels.provenance,
+      rois: labels.rois,
+      masks: labels.masks,
+      bboxes: labels.bboxes,
+      labelImages: labels.labelImages,
     });
   }
 
@@ -172,13 +179,15 @@ function writeMetadata(file: any, labels: Labels): void {
   };
 
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
-  const formatId = (labels.bboxes?.length ?? 0) > 0
-    ? 1.7
-    : hasRoiInstance
-      ? 1.6
-      : (labels.rois.length > 0 || labels.masks.length > 0)
-        ? 1.5
-        : FORMAT_ID;
+  const formatId = (labels.labelImages?.length ?? 0) > 0
+    ? 1.8
+    : (labels.bboxes?.length ?? 0) > 0
+      ? 1.7
+      : hasRoiInstance
+        ? 1.6
+        : (labels.rois.length > 0 || labels.masks.length > 0)
+          ? 1.5
+          : FORMAT_ID;
 
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
@@ -866,4 +875,77 @@ function writeBboxes(
   setStringAttr(bboxesDs, "categories", JSON.stringify(categories));
   setStringAttr(bboxesDs, "names", JSON.stringify(names));
   setStringAttr(bboxesDs, "sources", JSON.stringify(sources));
+}
+
+function writeLabelImages(
+  file: any,
+  labelImages: LabelImage[],
+  videos: Video[],
+  tracks: Array<{ name: string }>,
+  instances: (Instance | PredictedInstance)[],
+): void {
+  if (!labelImages.length) return;
+
+  const rows: number[][] = [];
+  const compressedChunks: Uint8Array[] = [];
+  let dataOffset = 0;
+  const objectRows: number[][] = [];
+  const objectCategories: string[] = [];
+  const objectNames: string[] = [];
+  const sources: string[] = [];
+  let objectsOffset = 0;
+
+  for (const li of labelImages) {
+    const videoIdx = li.video ? videos.indexOf(li.video) : -1;
+    const frameIdx = li.frameIdx ?? -1;
+
+    // Compress pixel data: Int32Array -> raw bytes -> zlib
+    const pixelBytes = new Uint8Array(li.data.buffer, li.data.byteOffset, li.data.byteLength);
+    const compressed = deflate(pixelBytes);
+    const dataStart = dataOffset;
+    const dataEnd = dataOffset + compressed.length;
+    compressedChunks.push(compressed);
+    dataOffset = dataEnd;
+
+    // Per-object entries
+    const objectsStart = objectsOffset;
+    for (const [labelId, info] of li.objects) {
+      const trackIdx = info.track ? tracks.indexOf(info.track as any) : -1;
+      const instanceIdx = info.instance ? instances.indexOf(info.instance as Instance) : -1;
+      objectRows.push([labelId, trackIdx, instanceIdx]);
+      objectCategories.push(info.category);
+      objectNames.push(info.name);
+      objectsOffset++;
+    }
+
+    rows.push([videoIdx, frameIdx, li.height, li.width, li.nObjects, objectsStart, dataStart, dataEnd]);
+    sources.push(li.source);
+  }
+
+  // Write main metadata table
+  createMatrixDataset(file, "label_images", rows,
+    ["video", "frame_idx", "height", "width", "n_objects", "objects_start", "data_start", "data_end"], "<f8");
+
+  // Set sources as JSON attribute
+  const liDs = file.get("label_images");
+  setStringAttr(liDs, "sources", JSON.stringify(sources));
+
+  // Write objects table (if any objects exist)
+  if (objectRows.length > 0) {
+    createMatrixDataset(file, "label_image_objects", objectRows,
+      ["label_id", "track", "instance"], "<f8");
+    const objDs = file.get("label_image_objects");
+    setStringAttr(objDs, "categories", JSON.stringify(objectCategories));
+    setStringAttr(objDs, "names", JSON.stringify(objectNames));
+  }
+
+  // Write concatenated compressed pixel data
+  const totalData = compressedChunks.reduce((sum, c) => sum + c.length, 0);
+  const dataFlat = new Uint8Array(totalData);
+  let offset = 0;
+  for (const chunk of compressedChunks) {
+    dataFlat.set(chunk, offset);
+    offset += chunk.length;
+  }
+  file.create_dataset({ name: "label_image_data", data: dataFlat, shape: [dataFlat.length], dtype: "<B" });
 }
