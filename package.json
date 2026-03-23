@@ -38,6 +38,7 @@
     "jsfive": "^0.3.10",
     "mediabunny": "^1.30.0",
     "mp4box": "^0.5.4",
+    "pako": "^2.1.0",
     "yaml": "^2.6.1"
   },
   "optionalDependencies": {

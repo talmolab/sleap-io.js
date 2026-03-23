@@ -10,6 +10,7 @@ import type { LazyDataStore, LazyFrameList } from "./lazy.js";
 import type { ROI } from "./roi.js";
 import type { SegmentationMask } from "./mask.js";
 import type { BoundingBox } from "./bbox.js";
+import type { LabelImage } from "./label-image.js";
 
 export class Labels {
   labeledFrames: LabeledFrame[];
@@ -22,6 +23,7 @@ export class Labels {
   rois: ROI[];
   masks: SegmentationMask[];
   bboxes: BoundingBox[];
+  labelImages: LabelImage[];
 
   /** @internal Lazy frame list for on-demand materialization. */
   _lazyFrameList: LazyFrameList | null = null;
@@ -39,6 +41,7 @@ export class Labels {
     rois?: ROI[];
     masks?: SegmentationMask[];
     bboxes?: BoundingBox[];
+    labelImages?: LabelImage[];
   }) {
     this.labeledFrames = options?.labeledFrames ?? [];
     this.videos = options?.videos ?? [];
@@ -50,6 +53,7 @@ export class Labels {
     this.rois = options?.rois ?? [];
     this.masks = options?.masks ?? [];
     this.bboxes = options?.bboxes ?? [];
+    this.labelImages = options?.labelImages ?? [];
 
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = new Map<string | Video, Video>();
@@ -109,6 +113,19 @@ export class Labels {
       if (bbox._instanceIdx !== null && bbox._instanceIdx >= 0 && bbox._instanceIdx < allInstances.length) {
         bbox.instance = allInstances[bbox._instanceIdx];
         bbox._instanceIdx = null;
+      }
+    }
+
+    // Resolve label image object instance references
+    for (const li of this.labelImages) {
+      if (li._objectInstanceIdxs) {
+        for (const [labelId, instIdx] of li._objectInstanceIdxs) {
+          const obj = li.objects.get(labelId);
+          if (obj && instIdx >= 0 && instIdx < allInstances.length) {
+            obj.instance = allInstances[instIdx];
+          }
+        }
+        li._objectInstanceIdxs = null;
       }
     }
   }
@@ -267,6 +284,41 @@ export class Labels {
     }
     if (filters.predicted !== undefined) {
       results = results.filter((b) => b.isPredicted === filters.predicted);
+    }
+    return results;
+  }
+
+  get staticLabelImages(): LabelImage[] {
+    return this.labelImages.filter((li) => li.isStatic);
+  }
+
+  get temporalLabelImages(): LabelImage[] {
+    return this.labelImages.filter((li) => !li.isStatic);
+  }
+
+  getLabelImages(filters?: {
+    video?: Video;
+    frameIdx?: number;
+    track?: Track;
+    category?: string;
+  }): LabelImage[] {
+    if (!filters) return [...this.labelImages];
+    let results = this.labelImages;
+    if (filters.video !== undefined) {
+      results = results.filter((li) => li.video === filters.video);
+    }
+    if (filters.frameIdx !== undefined) {
+      results = results.filter((li) => li.frameIdx === filters.frameIdx);
+    }
+    if (filters.track !== undefined) {
+      results = results.filter((li) =>
+        Array.from(li.objects.values()).some((info) => info.track === filters.track)
+      );
+    }
+    if (filters.category !== undefined) {
+      results = results.filter((li) =>
+        Array.from(li.objects.values()).some((info) => info.category === filters.category)
+      );
     }
     return results;
   }
