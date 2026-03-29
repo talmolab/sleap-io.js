@@ -8,6 +8,8 @@ import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
 import { createVideoBackend } from "../../video/factory.js";
 import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
+import { Identity } from "../../model/identity.js";
+import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { ROI, AnnotationType, decodeWkb } from "../../model/roi.js";
 import { SegmentationMask } from "../../model/mask.js";
@@ -71,7 +73,8 @@ export async function readSlp(
       }
     }
 
-    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames);
+    const identities = readIdentities(file.get("identities_json"));
+    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames, identities);
     const allInstances = labeledFrames.flatMap((f) => f.instances);
     const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks, allInstances);
     const masks = readMasks(file, videos, tracks);
@@ -83,6 +86,7 @@ export async function readSlp(
       tracks,
       suggestions,
       sessions,
+      identities,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
       rois,
       masks,
@@ -154,7 +158,8 @@ export async function readSlpLazy(
 
     // Read sessions eagerly - they don't depend on frame data.
     // Pass empty labeledFrames since frames aren't materialized yet.
-    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, []);
+    const identities = readIdentities(file.get("identities_json"));
+    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, [], identities);
     const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks);
     const masks = readMasks(file, videos, tracks);
 
@@ -164,6 +169,7 @@ export async function readSlpLazy(
       tracks,
       suggestions,
       sessions,
+      identities,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
       rois,
       masks,
@@ -357,7 +363,23 @@ function readSuggestions(dataset: any, videos: Video[]): SuggestionFrame[] {
   return suggestions;
 }
 
-function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labeledFrames: LabeledFrame[]): RecordingSession[] {
+function readIdentities(dataset: any): Identity[] {
+  if (!dataset) return [];
+  const values = dataset.value ?? [];
+  const identities: Identity[] = [];
+  for (const entry of values) {
+    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
+    const { name, color, ...rest } = parsed;
+    identities.push(new Identity({
+      name: name ?? "",
+      color: color ?? undefined,
+      metadata: rest,
+    }));
+  }
+  return identities;
+}
+
+function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labeledFrames: LabeledFrame[], identities?: Identity[]): RecordingSession[] {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const sessions: RecordingSession[] = [];
@@ -406,13 +428,43 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
           const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
           instanceByCamera.set(camera, new Instance({ points: points as Record<string, number[]>, skeleton }));
         }
+        // Reconstruct Instance3D if 3D points are present
+        let instance3d: Instance3D | undefined;
         const rawPoints = instanceGroupRecord.points;
         const pointsValue = Array.isArray(rawPoints) ? (rawPoints as number[][]) : undefined;
+        if (pointsValue) {
+          const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+          const inst3dScore = instanceGroupRecord.instance_3d_score as number | undefined;
+          const pointScores = instanceGroupRecord.instance_3d_point_scores as number[] | undefined;
+          if (pointScores) {
+            instance3d = new PredictedInstance3D({
+              points: pointsValue,
+              skeleton,
+              score: inst3dScore,
+              pointScores,
+            });
+          } else {
+            instance3d = new Instance3D({
+              points: pointsValue,
+              skeleton,
+              score: inst3dScore,
+            });
+          }
+        }
+
+        // Resolve identity from identity_idx
+        let identity: Identity | undefined;
+        const identityIdx = instanceGroupRecord.identity_idx;
+        if (identityIdx != null && identities) {
+          identity = identities[Number(identityIdx)];
+        }
+
         instanceGroups.push(
           new InstanceGroup({
             instanceByCamera,
             score: instanceGroupRecord.score as number | undefined,
-            points: pointsValue,
+            instance3d,
+            identity,
             metadata: (instanceGroupRecord.metadata as Record<string, unknown> | undefined) ?? {},
           })
         );
