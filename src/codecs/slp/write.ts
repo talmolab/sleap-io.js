@@ -9,6 +9,8 @@ import { getH5Module, getH5FileSystem } from "./h5.js";
 import { ROI, encodeWkb } from "../../model/roi.js";
 import { SegmentationMask } from "../../model/mask.js";
 import { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
+import { Identity } from "../../model/identity.js";
+import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile: ((filename: string, bytes: Uint8Array) => Promise<void>) | null = null;
@@ -67,7 +69,8 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
 
   writeTracks(file, labels.tracks);
   writeSuggestions(file, labels.suggestions, labels.videos);
-  writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames);
+  writeIdentities(file, labels.identities);
+  writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames, labels.identities);
   writeLabeledFrames(file, labels);
   writeNegativeFrames(file, labels);
   const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
@@ -116,6 +119,7 @@ export async function saveSlpToBytes(
       suggestions: labels.suggestions,
       sessions: labels.sessions,
       provenance: labels.provenance,
+      identities: labels.identities,
     });
   }
 
@@ -172,13 +176,17 @@ function writeMetadata(file: any, labels: Labels): void {
   };
 
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
-  const formatId = (labels.bboxes?.length ?? 0) > 0
+  const hasIdentities = (labels.identities?.length ?? 0) > 0;
+  let formatId = (labels.bboxes?.length ?? 0) > 0
     ? 1.7
     : hasRoiInstance
       ? 1.6
       : (labels.rois.length > 0 || labels.masks.length > 0)
         ? 1.5
         : FORMAT_ID;
+  if (hasIdentities) {
+    formatId = Math.max(formatId, 1.9);
+  }
 
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
@@ -296,18 +304,30 @@ function writeSuggestions(file: any, suggestions: SuggestionFrame[], videos: Vid
   file.create_dataset({ name: "suggestions_json", data: payload });
 }
 
-function writeSessions(file: any, sessions: RecordingSession[], videos: Video[], labeledFrames: LabeledFrame[]): void {
+function writeIdentities(file: any, identities: Identity[]): void {
+  if (!identities.length) return;
+  const payload = identities.map((identity) => {
+    const d: Record<string, unknown> = { name: identity.name };
+    if (identity.color != null) d.color = identity.color;
+    Object.assign(d, identity.metadata);
+    return JSON.stringify(d);
+  });
+  file.create_dataset({ name: "identities_json", data: payload });
+}
+
+function writeSessions(file: any, sessions: RecordingSession[], videos: Video[], labeledFrames: LabeledFrame[], identities?: Identity[]): void {
   const labeledFrameIndex = new Map<LabeledFrame, number>();
   labeledFrames.forEach((lf, idx) => labeledFrameIndex.set(lf, idx));
 
-  const payload = sessions.map((session) => JSON.stringify(serializeSession(session, videos, labeledFrameIndex)));
+  const payload = sessions.map((session) => JSON.stringify(serializeSession(session, videos, labeledFrameIndex, identities)));
   file.create_dataset({ name: "sessions_json", data: payload });
 }
 
 function serializeSession(
   session: RecordingSession,
   videos: Video[],
-  labeledFrameIndex: Map<LabeledFrame, number>
+  labeledFrameIndex: Map<LabeledFrame, number>,
+  identities?: Identity[]
 ): Record<string, unknown> {
   const calibration: Record<string, unknown> = { metadata: session.cameraGroup.metadata ?? {} };
   session.cameraGroup.cameras.forEach((camera, idx) => {
@@ -333,7 +353,7 @@ function serializeSession(
   const frame_group_dicts: Record<string, unknown>[] = [];
   for (const frameGroup of session.frameGroups.values()) {
     if (!frameGroup.instanceGroups.length) continue;
-    frame_group_dicts.push(serializeFrameGroup(frameGroup, session, labeledFrameIndex));
+    frame_group_dicts.push(serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities));
   }
 
   return {
@@ -347,9 +367,10 @@ function serializeSession(
 function serializeFrameGroup(
   frameGroup: FrameGroup,
   session: RecordingSession,
-  labeledFrameIndex: Map<LabeledFrame, number>
+  labeledFrameIndex: Map<LabeledFrame, number>,
+  identities?: Identity[]
 ): Record<string, unknown> {
-  const instance_groups = frameGroup.instanceGroups.map((group) => serializeInstanceGroup(group, session));
+  const instance_groups = frameGroup.instanceGroups.map((group) => serializeInstanceGroup(group, session, identities));
   const labeled_frame_by_camera: Record<string, number> = {};
   for (const [camera, labeledFrame] of frameGroup.labeledFrameByCamera.entries()) {
     const cameraKey = cameraKeyForSession(camera, session);
@@ -367,7 +388,7 @@ function serializeFrameGroup(
   };
 }
 
-function serializeInstanceGroup(group: InstanceGroup, session: RecordingSession): Record<string, unknown> {
+function serializeInstanceGroup(group: InstanceGroup, session: RecordingSession, identities?: Identity[]): Record<string, unknown> {
   const instances: Record<string, Record<string, number[]>> = {};
   for (const [camera, instance] of group.instanceByCamera.entries()) {
     const cameraKey = cameraKeyForSession(camera, session);
@@ -378,7 +399,30 @@ function serializeInstanceGroup(group: InstanceGroup, session: RecordingSession)
     instances,
   };
   if (group.score != null) payload.score = group.score;
-  if (group.points != null) payload.points = group.points;
+
+  // 3D points — serialize from Instance3D if present, otherwise raw points
+  if (group.instance3d) {
+    if (group.instance3d.points) {
+      payload.points = group.instance3d.points;
+    }
+    if (group.instance3d.score != null) {
+      payload.instance_3d_score = group.instance3d.score;
+    }
+    if (group.instance3d instanceof PredictedInstance3D && group.instance3d.pointScores) {
+      payload.instance_3d_point_scores = group.instance3d.pointScores;
+    }
+  } else if (group.points != null) {
+    payload.points = group.points;
+  }
+
+  // Identity — serialize as index into Labels.identities
+  if (group.identity && identities) {
+    const identityIdx = identities.indexOf(group.identity);
+    if (identityIdx >= 0) {
+      payload.identity_idx = identityIdx;
+    }
+  }
+
   if (group.metadata && Object.keys(group.metadata).length) payload.metadata = group.metadata;
   return payload;
 }
