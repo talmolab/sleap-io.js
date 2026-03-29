@@ -1,6 +1,8 @@
 import { Instance } from "./instance.js";
 import { LabeledFrame } from "./labeled-frame.js";
 import { Video } from "./video.js";
+import { Identity } from "./identity.js";
+import { Instance3D } from "./instance3d.js";
 
 export function rodriguesTransformation(input: number[][] | number[]): { matrix: number[][]; vector: number[] } {
   if (input.length === 3 && Array.isArray(input[0]) === false) {
@@ -84,13 +86,17 @@ export class CameraGroup {
 export class InstanceGroup {
   instanceByCamera: Map<Camera, Instance>;
   score?: number;
-  points?: number[][];
+  identity?: Identity;
+  instance3d?: Instance3D;
   metadata: Record<string, unknown>;
+  private _points?: number[][];
 
   constructor(options: {
     instanceByCamera: Map<Camera, Instance> | Record<string, Instance>;
     score?: number;
     points?: number[][];
+    identity?: Identity;
+    instance3d?: Instance3D;
     metadata?: Record<string, unknown>;
   }) {
     this.instanceByCamera = options.instanceByCamera instanceof Map ? options.instanceByCamera : new Map();
@@ -101,8 +107,19 @@ export class InstanceGroup {
       }
     }
     this.score = options.score;
-    this.points = options.points;
+    this.identity = options.identity;
+    this.instance3d = options.instance3d;
+    this._points = options.points;
     this.metadata = options.metadata ?? {};
+  }
+
+  get points(): number[][] | undefined {
+    if (this.instance3d?.points) return this.instance3d.points;
+    return this._points;
+  }
+
+  set points(value: number[][] | undefined) {
+    this._points = value;
   }
 
   get instances(): Instance[] {
