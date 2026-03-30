@@ -28,7 +28,7 @@
     "url": "https://github.com/talmolab/sleap-io.js.git"
   },
   "scripts": {
-    "build": "tsup src/index.ts src/index.browser.ts src/lite.ts --format esm --dts --external skia-canvas",
+    "build": "tsup src/index.ts src/index.browser.ts src/lite.ts --format esm --dts --external skia-canvas --external mediabunny",
     "test": "vitest",
     "test:coverage": "vitest --run --coverage",
     "lint": "tsc -p tsconfig.json --noEmit"
