@@ -332,13 +332,15 @@ function serializeSession(
   const calibration: Record<string, unknown> = { metadata: session.cameraGroup.metadata ?? {} };
   session.cameraGroup.cameras.forEach((camera, idx) => {
     const key = camera.name ?? String(idx);
-    calibration[key] = {
+    const camData: Record<string, unknown> = {
       name: camera.name ?? key,
       rotation: camera.rvec,
       translation: camera.tvec,
       matrix: camera.matrix,
       distortions: camera.distortions,
     };
+    if (camera.size) camData.size = camera.size;
+    calibration[key] = camData;
   });
 
   const camcorder_to_video_idx_map: Record<string, number> = {};

@@ -397,6 +397,7 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
         tvec: (cameraData.translation as number[] | undefined) ?? [0, 0, 0],
         matrix: cameraData.matrix as number[][] | undefined,
         distortions: cameraData.distortions as number[] | undefined,
+        size: cameraData.size as [number, number] | undefined,
       });
       cameraGroup.cameras.push(camera);
       cameraMap.set(String(key), camera);

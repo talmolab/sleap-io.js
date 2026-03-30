@@ -63,13 +63,15 @@ export class Camera {
   tvec: number[];
   matrix?: number[][];
   distortions?: number[];
+  size?: [number, number];
 
-  constructor(options: { name?: string; rvec: number[]; tvec: number[]; matrix?: number[][]; distortions?: number[] }) {
+  constructor(options: { name?: string; rvec: number[]; tvec: number[]; matrix?: number[][]; distortions?: number[]; size?: [number, number] }) {
     this.name = options.name;
     this.rvec = options.rvec;
     this.tvec = options.tvec;
     this.matrix = options.matrix;
     this.distortions = options.distortions;
+    this.size = options.size;
   }
 }
 
@@ -221,5 +223,6 @@ export function makeCameraFromDict(data: Record<string, unknown>): Camera {
     tvec: (data.translation as number[]) ?? [0, 0, 0],
     matrix: data.matrix as number[][] | undefined,
     distortions: data.distortions as number[] | undefined,
+    size: data.size as [number, number] | undefined,
   });
 }
