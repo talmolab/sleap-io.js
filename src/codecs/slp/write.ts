@@ -345,10 +345,10 @@ function serializeSession(
 
   const camcorder_to_video_idx_map: Record<string, number> = {};
   for (const [camera, video] of session.videoByCamera.entries()) {
-    const cameraKey = cameraKeyForSession(camera, session);
+    const cameraIndex = session.cameraGroup.cameras.indexOf(camera);
     const videoIndex = videos.indexOf(video);
-    if (videoIndex >= 0) {
-      camcorder_to_video_idx_map[cameraKey] = videoIndex;
+    if (cameraIndex >= 0 && videoIndex >= 0) {
+      camcorder_to_video_idx_map[String(cameraIndex)] = videoIndex;
     }
   }
 

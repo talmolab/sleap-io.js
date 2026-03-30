@@ -406,7 +406,14 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
     const session = new RecordingSession({ cameraGroup, metadata: (parsed.metadata as Record<string, unknown> | undefined) ?? {} });
     const map = asRecord(parsed.camcorder_to_video_idx_map);
     for (const [cameraKey, videoIdx] of Object.entries(map)) {
-      const camera = cameraMap.get(cameraKey);
+      // Keys may be camera names (JS format) or numeric indices (Python format)
+      let camera = cameraMap.get(cameraKey);
+      if (!camera) {
+        const idx = Number(cameraKey);
+        if (!isNaN(idx) && idx >= 0 && idx < cameraGroup.cameras.length) {
+          camera = cameraGroup.cameras[idx];
+        }
+      }
       const video = videos[Number(videoIdx)];
       if (camera && video) {
         session.addVideo(video, camera);
