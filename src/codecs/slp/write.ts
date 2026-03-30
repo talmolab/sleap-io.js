@@ -757,7 +757,16 @@ function writeEmbeddedVideos(
 function createMatrixDataset(file: any, name: string, rows: number[][], fieldNames: string[], dtype: string): void {
   const rowCount = rows.length;
   const colCount = fieldNames.length;
-  const data = rows.flat();
+  // Pre-allocate typed array to avoid intermediate .flat() allocation
+  const TypedArray = dtype.includes("i") ? (dtype.includes("4") ? Int32Array : Float64Array) : Float64Array;
+  const data = new TypedArray(rowCount * colCount);
+  for (let i = 0; i < rowCount; i++) {
+    const row = rows[i];
+    const offset = i * colCount;
+    for (let j = 0; j < colCount; j++) {
+      data[offset + j] = row[j];
+    }
+  }
   file.create_dataset({ name, data, shape: [rowCount, colCount], dtype });
   const dataset = file.get(name);
   setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
