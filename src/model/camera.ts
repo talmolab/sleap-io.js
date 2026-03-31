@@ -121,6 +121,9 @@ export class InstanceGroup {
   }
 
   set points(value: number[][] | undefined) {
+    if (this.instance3d?.points && value != null) {
+      console.warn("Setting points on an InstanceGroup that has an Instance3D — the getter will return instance3d.points, not this value. Set instance3d.points directly instead.");
+    }
     this._points = value;
   }
 

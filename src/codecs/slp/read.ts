@@ -432,7 +432,10 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
         const instancesRecord = asRecord(instanceGroupRecord.instances);
         for (const [cameraKey, points] of Object.entries(instancesRecord)) {
           const camera = cameraMap.get(cameraKey);
-          if (!camera) continue;
+          if (!camera) {
+            console.warn(`Camera key "${cameraKey}" not found in session calibration — skipping 2D instance data for this camera.`);
+            continue;
+          }
           const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
           instanceByCamera.set(camera, new Instance({ points: points as Record<string, number[]>, skeleton }));
         }
@@ -464,7 +467,12 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
         let identity: Identity | undefined;
         const identityIdx = instanceGroupRecord.identity_idx;
         if (identityIdx != null && identities) {
-          identity = identities[Number(identityIdx)];
+          const idx = Number(identityIdx);
+          if (idx >= 0 && idx < identities.length) {
+            identity = identities[idx];
+          } else {
+            console.warn(`identity_idx ${idx} is out of bounds (${identities.length} identities available) — skipping identity for this instance group.`);
+          }
         }
 
         instanceGroups.push(
@@ -482,6 +490,10 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
       const labeledFrameMap = asRecord(groupRecord.labeled_frame_by_camera);
       for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
         const camera = cameraMap.get(cameraKey);
+        if (!camera) {
+          console.warn(`Camera key "${cameraKey}" not found in session calibration — skipping labeled frame mapping.`);
+          continue;
+        }
         const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
         if (camera && labeledFrame) {
           labeledFrameByCamera.set(camera, labeledFrame);

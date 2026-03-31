@@ -422,6 +422,8 @@ function serializeInstanceGroup(group: InstanceGroup, session: RecordingSession,
     const identityIdx = identities.indexOf(group.identity);
     if (identityIdx >= 0) {
       payload.identity_idx = identityIdx;
+    } else {
+      console.warn(`InstanceGroup references an Identity ("${group.identity.name}") not found in Labels.identities — identity will be dropped on save.`);
     }
   }
 
