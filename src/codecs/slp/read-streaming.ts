@@ -17,6 +17,8 @@ import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
 import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
+import { Identity } from "../../model/identity.js";
+import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 
 /**
@@ -145,8 +147,11 @@ async function readFromStreamingFile(
     formatId,
   });
 
+  // Read identities
+  const identities = await readIdentitiesStreaming(file);
+
   // Read sessions
-  const sessions = await readSessionsStreaming(file, videos, skeletons, labeledFrames);
+  const sessions = await readSessionsStreaming(file, videos, skeletons, labeledFrames, identities);
 
   return new Labels({
     labeledFrames,
@@ -155,6 +160,7 @@ async function readFromStreamingFile(
     tracks,
     suggestions,
     sessions,
+    identities,
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
   });
 }
@@ -400,13 +406,40 @@ async function readSuggestionsStreaming(file: StreamingH5File, videos: Video[]):
 }
 
 /**
+ * Read identities from identities_json dataset.
+ */
+async function readIdentitiesStreaming(file: StreamingH5File): Promise<Identity[]> {
+  try {
+    const keys = file.keys();
+    if (!keys.includes("identities_json")) return [];
+
+    const data = await file.getDatasetValue("identities_json");
+    const values = normalizeDatasetArray(data.value);
+    const identities: Identity[] = [];
+    for (const entry of values) {
+      const parsed = parseJsonEntry(entry) as Record<string, unknown>;
+      const { name, color, ...rest } = parsed;
+      identities.push(new Identity({
+        name: (name as string) ?? "",
+        color: color as string | undefined,
+        metadata: rest,
+      }));
+    }
+    return identities;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Read recording sessions from sessions_json dataset.
  */
 async function readSessionsStreaming(
   file: StreamingH5File,
   videos: Video[],
   skeletons: Skeleton[],
-  labeledFrames: LabeledFrame[]
+  labeledFrames: LabeledFrame[],
+  identities?: Identity[]
 ): Promise<RecordingSession[]> {
   try {
     const keys = file.keys();
@@ -460,17 +493,56 @@ async function readSessionsStreaming(
           const instancesRecord = (instanceGroupRecord.instances ?? {}) as Record<string, unknown>;
           for (const [cameraKey, points] of Object.entries(instancesRecord)) {
             const camera = cameraMap.get(cameraKey);
-            if (!camera) continue;
+            if (!camera) {
+              console.warn(`Camera key "${cameraKey}" not found in session calibration — skipping 2D instance data for this camera.`);
+              continue;
+            }
             const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
             instanceByCamera.set(camera, new Instance({ points: points as Record<string, number[]>, skeleton }));
           }
+
+          // Reconstruct Instance3D if 3D points are present
+          let instance3d: Instance3D | undefined;
           const rawPoints = instanceGroupRecord.points;
           const pointsValue = Array.isArray(rawPoints) ? (rawPoints as number[][]) : undefined;
+          if (pointsValue) {
+            const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+            const inst3dScore = instanceGroupRecord.instance_3d_score as number | undefined;
+            const pointScores = instanceGroupRecord.instance_3d_point_scores as number[] | undefined;
+            if (pointScores) {
+              instance3d = new PredictedInstance3D({
+                points: pointsValue,
+                skeleton,
+                score: inst3dScore,
+                pointScores,
+              });
+            } else {
+              instance3d = new Instance3D({
+                points: pointsValue,
+                skeleton,
+                score: inst3dScore,
+              });
+            }
+          }
+
+          // Resolve identity from identity_idx
+          let identity: Identity | undefined;
+          const identityIdx = instanceGroupRecord.identity_idx;
+          if (identityIdx != null && identities) {
+            const idx = Number(identityIdx);
+            if (idx >= 0 && idx < identities.length) {
+              identity = identities[idx];
+            } else {
+              console.warn(`identity_idx ${idx} is out of bounds (${identities.length} identities available) — skipping identity for this instance group.`);
+            }
+          }
+
           instanceGroups.push(
             new InstanceGroup({
               instanceByCamera,
               score: instanceGroupRecord.score as number | undefined,
-              points: pointsValue,
+              instance3d,
+              identity,
               metadata: (instanceGroupRecord.metadata as Record<string, unknown> | undefined) ?? {},
             })
           );
@@ -480,6 +552,10 @@ async function readSessionsStreaming(
         const labeledFrameMap = (groupRecord.labeled_frame_by_camera ?? {}) as Record<string, unknown>;
         for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
           const camera = cameraMap.get(cameraKey);
+          if (!camera) {
+            console.warn(`Camera key "${cameraKey}" not found in session calibration — skipping labeled frame mapping.`);
+            continue;
+          }
           const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
           if (camera && labeledFrame) {
             labeledFrameByCamera.set(camera, labeledFrame);
