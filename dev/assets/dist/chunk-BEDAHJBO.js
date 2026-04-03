@@ -354,6 +354,34 @@ var Skeleton = class {
   }
 };
 
+// src/model/instance3d.ts
+var Instance3D = class {
+  points;
+  skeleton;
+  score;
+  metadata;
+  constructor(options) {
+    this.points = options.points;
+    this.skeleton = options.skeleton;
+    this.score = options.score;
+    this.metadata = options?.metadata ?? {};
+  }
+  get nVisible() {
+    if (!this.points) return 0;
+    return this.points.filter((p) => !p.some(Number.isNaN)).length;
+  }
+  get isEmpty() {
+    return this.nVisible === 0;
+  }
+};
+var PredictedInstance3D = class extends Instance3D {
+  pointScores;
+  constructor(options) {
+    super(options);
+    this.pointScores = options.pointScores;
+  }
+};
+
 // src/codecs/slp/parsers.ts
 var textDecoder = new TextDecoder();
 function parseJsonAttr(attr) {
@@ -569,6 +597,38 @@ function parseSessionsMetadata(values) {
   }
   return sessions;
 }
+function resolveCameraKey(cameraKey, cameraMap, cameras) {
+  let camera = cameraMap.get(cameraKey);
+  if (!camera) {
+    const idx = Number(cameraKey);
+    if (!isNaN(idx) && idx >= 0 && idx < cameras.length) {
+      camera = cameras[idx];
+    }
+  }
+  return camera;
+}
+function reconstructInstance3D(record, skeletons) {
+  const rawPoints = record.points;
+  const pointsValue = Array.isArray(rawPoints) ? rawPoints : void 0;
+  if (!pointsValue) return void 0;
+  const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+  const score = record.instance_3d_score;
+  const pointScores = record.instance_3d_point_scores;
+  if (pointScores) {
+    return new PredictedInstance3D({ points: pointsValue, skeleton, score, pointScores });
+  }
+  return new Instance3D({ points: pointsValue, skeleton, score });
+}
+function resolveIdentity(record, identities) {
+  const identityIdx = record.identity_idx;
+  if (identityIdx == null || !identities) return void 0;
+  const idx = Number(identityIdx);
+  if (idx >= 0 && idx < identities.length) {
+    return identities[idx];
+  }
+  console.warn(`identity_idx ${idx} is out of bounds (${identities.length} identities available) \u2014 skipping identity for this instance group.`);
+  return void 0;
+}
 
 export {
   Track,
@@ -584,11 +644,16 @@ export {
   Edge,
   Symmetry,
   Skeleton,
+  Instance3D,
+  PredictedInstance3D,
   parseJsonAttr,
   parseJsonEntry,
   parseSkeletons,
   parseTracks,
   parseVideosMetadata,
   parseSuggestions,
-  parseSessionsMetadata
+  parseSessionsMetadata,
+  resolveCameraKey,
+  reconstructInstance3D,
+  resolveIdentity
 };
