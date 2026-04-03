@@ -152,4 +152,78 @@ describe("SLP write with identity and 3D data", () => {
     expect(group.instance3d).toBeDefined();
     expect(group.instance3d!.points).toEqual([[50, 100, 200], [150, 300, 400]]);
   });
+
+  it("writes camcorder_to_lf_and_inst_idx_map with numeric keys", async () => {
+    const labels = makeTestLabels();
+    const bytes = await saveSlpToBytes(labels);
+    const { openH5File } = await import("../src/codecs/slp/h5.js");
+    const { file, close } = await openH5File(new Uint8Array(bytes).buffer);
+    try {
+      const ds = file.get("sessions_json") as any;
+      const sessionJson = JSON.parse(typeof ds.value[0] === "string" ? ds.value[0] : new TextDecoder().decode(ds.value[0]));
+      const fg = sessionJson.frame_group_dicts[0];
+      const ig = fg.instance_groups[0];
+
+      // camcorder_to_lf_and_inst_idx_map should exist with numeric keys
+      expect(ig.camcorder_to_lf_and_inst_idx_map).toBeDefined();
+      const mapKeys = Object.keys(ig.camcorder_to_lf_and_inst_idx_map);
+      expect(mapKeys.every((k: string) => !isNaN(Number(k)))).toBe(true);
+
+      // Each value should be [lfIdx, instIdx]
+      for (const val of Object.values(ig.camcorder_to_lf_and_inst_idx_map)) {
+        expect(Array.isArray(val)).toBe(true);
+        expect((val as number[]).length).toBe(2);
+      }
+
+      // instances keys should also be numeric
+      const instKeys = Object.keys(ig.instances);
+      expect(instKeys.every((k: string) => !isNaN(Number(k)))).toBe(true);
+    } finally {
+      close();
+    }
+  });
+
+  it("identity metadata does not clobber name/color", async () => {
+    const id = new Identity({ name: "real_name", color: "#ff0000", metadata: { name: "shadow", color: "#00ff00", extra: 42 } });
+    const skeleton = new Skeleton({ nodes: ["A"], edges: [] });
+    const video = new Video({ filename: "v.mp4" });
+    const inst = Instance.fromArray([[1, 2]], skeleton);
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+    const labels = new Labels({
+      labeledFrames: [lf],
+      videos: [video],
+      skeletons: [skeleton],
+      identities: [id],
+    });
+    const bytes = await saveSlpToBytes(labels);
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+
+    expect(loaded.identities[0].name).toBe("real_name");
+    expect(loaded.identities[0].color).toBe("#ff0000");
+    expect(loaded.identities[0].metadata.extra).toBe(42);
+    expect(loaded.identities[0].metadata).not.toHaveProperty("name");
+    expect(loaded.identities[0].metadata).not.toHaveProperty("color");
+  });
+
+  it("round-trips camera size field", async () => {
+    const skeleton = new Skeleton({ nodes: ["A"], edges: [] });
+    const video = new Video({ filename: "v.mp4" });
+    const cam = new Camera({ name: "cam", rvec: [0, 0, 0], tvec: [0, 0, 0], size: [640, 480] });
+    const inst = Instance.fromArray([[1, 2]], skeleton);
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+    const instanceByCamera = new Map<Camera, Instance>();
+    instanceByCamera.set(cam, inst);
+    const lfByCamera = new Map<Camera, LabeledFrame>();
+    lfByCamera.set(cam, lf);
+    const fg = new FrameGroup({ frameIdx: 0, instanceGroups: [new InstanceGroup({ instanceByCamera })], labeledFrameByCamera: lfByCamera });
+    const session = new RecordingSession({ cameraGroup: new CameraGroup({ cameras: [cam] }) });
+    session.addVideo(video, cam);
+    session.frameGroups.set(0, fg);
+    const labels = new Labels({ labeledFrames: [lf], videos: [video], skeletons: [skeleton], sessions: [session] });
+
+    const bytes = await saveSlpToBytes(labels);
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+
+    expect(loaded.sessions[0].cameraGroup.cameras[0].size).toEqual([640, 480]);
+  });
 });

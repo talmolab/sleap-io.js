@@ -309,7 +309,11 @@ function writeIdentities(file: any, identities: Identity[]): void {
   const payload = identities.map((identity) => {
     const d: Record<string, unknown> = { name: identity.name };
     if (identity.color != null) d.color = identity.color;
-    Object.assign(d, identity.metadata);
+    for (const [key, value] of Object.entries(identity.metadata)) {
+      if (key !== "name" && key !== "color") {
+        d[key] = value;
+      }
+    }
     return JSON.stringify(d);
   });
   file.create_dataset({ name: "identities_json", data: payload });
@@ -345,10 +349,10 @@ function serializeSession(
 
   const camcorder_to_video_idx_map: Record<string, number> = {};
   for (const [camera, video] of session.videoByCamera.entries()) {
-    const cameraIndex = session.cameraGroup.cameras.indexOf(camera);
+    const cameraKey = cameraKeyForSession(camera, session);
     const videoIndex = videos.indexOf(video);
-    if (cameraIndex >= 0 && videoIndex >= 0) {
-      camcorder_to_video_idx_map[String(cameraIndex)] = videoIndex;
+    if (cameraKey !== "-1" && videoIndex >= 0) {
+      camcorder_to_video_idx_map[cameraKey] = videoIndex;
     }
   }
 
@@ -372,7 +376,7 @@ function serializeFrameGroup(
   labeledFrameIndex: Map<LabeledFrame, number>,
   identities?: Identity[]
 ): Record<string, unknown> {
-  const instance_groups = frameGroup.instanceGroups.map((group) => serializeInstanceGroup(group, session, identities));
+  const instance_groups = frameGroup.instanceGroups.map((group) => serializeInstanceGroup(group, session, identities, frameGroup, labeledFrameIndex));
   const labeled_frame_by_camera: Record<string, number> = {};
   for (const [camera, labeledFrame] of frameGroup.labeledFrameByCamera.entries()) {
     const cameraKey = cameraKeyForSession(camera, session);
@@ -390,16 +394,41 @@ function serializeFrameGroup(
   };
 }
 
-function serializeInstanceGroup(group: InstanceGroup, session: RecordingSession, identities?: Identity[]): Record<string, unknown> {
+function serializeInstanceGroup(
+  group: InstanceGroup,
+  session: RecordingSession,
+  identities?: Identity[],
+  frameGroup?: FrameGroup,
+  labeledFrameIndex?: Map<LabeledFrame, number>,
+): Record<string, unknown> {
   const instances: Record<string, Record<string, number[]>> = {};
   for (const [camera, instance] of group.instanceByCamera.entries()) {
     const cameraKey = cameraKeyForSession(camera, session);
     instances[cameraKey] = pointsToDict(instance);
   }
 
+  // Build Python-compatible camcorder_to_lf_and_inst_idx_map
+  const camcorder_to_lf_and_inst_idx_map: Record<string, [number, number]> = {};
+  if (frameGroup && labeledFrameIndex) {
+    for (const [camera, instance] of group.instanceByCamera.entries()) {
+      const cameraKey = cameraKeyForSession(camera, session);
+      const labeledFrame = frameGroup.labeledFrameByCamera.get(camera);
+      if (labeledFrame) {
+        const lfIdx = labeledFrameIndex.get(labeledFrame);
+        const instIdx = labeledFrame.instances.indexOf(instance as Instance);
+        if (lfIdx !== undefined && instIdx >= 0) {
+          camcorder_to_lf_and_inst_idx_map[cameraKey] = [lfIdx, instIdx];
+        }
+      }
+    }
+  }
+
   const payload: Record<string, unknown> = {
     instances,
   };
+  if (Object.keys(camcorder_to_lf_and_inst_idx_map).length > 0) {
+    payload.camcorder_to_lf_and_inst_idx_map = camcorder_to_lf_and_inst_idx_map;
+  }
   if (group.score != null) payload.score = group.score;
 
   // 3D points — serialize from Instance3D if present, otherwise raw points
@@ -451,8 +480,7 @@ function pointsToDict(instance: Instance): Record<string, number[]> {
 }
 
 function cameraKeyForSession(camera: Camera, session: RecordingSession): string {
-  const index = session.cameraGroup.cameras.indexOf(camera);
-  return camera.name ?? String(index);
+  return String(session.cameraGroup.cameras.indexOf(camera));
 }
 
 function writeLabeledFrames(file: any, labels: Labels): void {
