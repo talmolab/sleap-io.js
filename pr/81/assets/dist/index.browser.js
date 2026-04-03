@@ -5,7 +5,6 @@ import {
   CameraGroup,
   FrameGroup,
   Identity,
-  Instance3D,
   InstanceContext,
   InstanceGroup,
   LabeledFrame,
@@ -19,7 +18,6 @@ import {
   NAMED_COLORS,
   PALETTES,
   PredictedBoundingBox,
-  PredictedInstance3D,
   ROI,
   RecordingSession,
   RenderContext,
@@ -73,12 +71,14 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-CN7IR2BS.js";
+} from "./chunk-LWRZJXMZ.js";
 import {
   Edge,
   Instance,
+  Instance3D,
   Node,
   PredictedInstance,
+  PredictedInstance3D,
   Skeleton,
   Symmetry,
   Track,
@@ -88,7 +88,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-NWJVKWIL.js";
+} from "./chunk-BEDAHJBO.js";
 export {
   AnnotationType,
   BoundingBox,

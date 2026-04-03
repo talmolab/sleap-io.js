@@ -3,6 +3,7 @@ import {
   Instance,
   Node,
   PredictedInstance,
+  PredictedInstance3D,
   Skeleton,
   Symmetry,
   Track,
@@ -13,8 +14,11 @@ import {
   parseTracks,
   parseVideosMetadata,
   pointsFromArray,
-  predictedPointsFromArray
-} from "./chunk-NWJVKWIL.js";
+  predictedPointsFromArray,
+  reconstructInstance3D,
+  resolveCameraKey,
+  resolveIdentity
+} from "./chunk-BEDAHJBO.js";
 
 // src/model/labeled-frame.ts
 var LabeledFrame = class {
@@ -1220,34 +1224,6 @@ var Identity = class {
     this.name = options?.name ?? "";
     this.color = options?.color;
     this.metadata = options?.metadata ?? {};
-  }
-};
-
-// src/model/instance3d.ts
-var Instance3D = class {
-  points;
-  skeleton;
-  score;
-  metadata;
-  constructor(options) {
-    this.points = options.points;
-    this.skeleton = options.skeleton;
-    this.score = options.score;
-    this.metadata = options?.metadata ?? {};
-  }
-  get nVisible() {
-    if (!this.points) return 0;
-    return this.points.filter((p) => !p.some(Number.isNaN)).length;
-  }
-  get isEmpty() {
-    return this.nVisible === 0;
-  }
-};
-var PredictedInstance3D = class extends Instance3D {
-  pointScores;
-  constructor(options) {
-    super(options);
-    this.pointScores = options.pointScores;
   }
 };
 
@@ -4027,7 +4003,8 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
           rvec: cameraData.rotation ?? [0, 0, 0],
           tvec: cameraData.translation ?? [0, 0, 0],
           matrix: cameraData.matrix,
-          distortions: cameraData.distortions
+          distortions: cameraData.distortions,
+          size: cameraData.size
         });
         cameraGroup.cameras.push(camera);
         cameraMap.set(String(key), camera);
@@ -4035,7 +4012,7 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
       const session = new RecordingSession({ cameraGroup, metadata: parsed.metadata ?? {} });
       const map = parsed.camcorder_to_video_idx_map ?? {};
       for (const [cameraKey, videoIdx] of Object.entries(map)) {
-        const camera = cameraMap.get(cameraKey);
+        const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
         const video = videos[Number(videoIdx)];
         if (camera && video) {
           session.addVideo(video, camera);
@@ -4052,7 +4029,7 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
           const instanceByCamera = /* @__PURE__ */ new Map();
           const instancesRecord = instanceGroupRecord.instances ?? {};
           for (const [cameraKey, points] of Object.entries(instancesRecord)) {
-            const camera = cameraMap.get(cameraKey);
+            const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
             if (!camera) {
               console.warn(`Camera key "${cameraKey}" not found in session calibration \u2014 skipping 2D instance data for this camera.`);
               continue;
@@ -4060,38 +4037,21 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
             const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
             instanceByCamera.set(camera, new Instance({ points, skeleton }));
           }
-          let instance3d;
-          const rawPoints = instanceGroupRecord.points;
-          const pointsValue = Array.isArray(rawPoints) ? rawPoints : void 0;
-          if (pointsValue) {
-            const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
-            const inst3dScore = instanceGroupRecord.instance_3d_score;
-            const pointScores = instanceGroupRecord.instance_3d_point_scores;
-            if (pointScores) {
-              instance3d = new PredictedInstance3D({
-                points: pointsValue,
-                skeleton,
-                score: inst3dScore,
-                pointScores
-              });
-            } else {
-              instance3d = new Instance3D({
-                points: pointsValue,
-                skeleton,
-                score: inst3dScore
-              });
+          if (instanceByCamera.size === 0) {
+            const lfInstMap = instanceGroupRecord.camcorder_to_lf_and_inst_idx_map ?? {};
+            for (const [camIdx, value] of Object.entries(lfInstMap)) {
+              const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+              if (!camera) continue;
+              const pair = value;
+              const lf = labeledFrames[Number(pair[0])];
+              if (lf) {
+                const inst = lf.instances[Number(pair[1])];
+                if (inst) instanceByCamera.set(camera, inst);
+              }
             }
           }
-          let identity;
-          const identityIdx = instanceGroupRecord.identity_idx;
-          if (identityIdx != null && identities) {
-            const idx = Number(identityIdx);
-            if (idx >= 0 && idx < identities.length) {
-              identity = identities[idx];
-            } else {
-              console.warn(`identity_idx ${idx} is out of bounds (${identities.length} identities available) \u2014 skipping identity for this instance group.`);
-            }
-          }
+          const instance3d = reconstructInstance3D(instanceGroupRecord, skeletons);
+          const identity = resolveIdentity(instanceGroupRecord, identities);
           instanceGroups.push(
             new InstanceGroup({
               instanceByCamera,
@@ -4105,14 +4065,27 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
         const labeledFrameByCamera = /* @__PURE__ */ new Map();
         const labeledFrameMap = groupRecord.labeled_frame_by_camera ?? {};
         for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
-          const camera = cameraMap.get(cameraKey);
+          const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
           if (!camera) {
             console.warn(`Camera key "${cameraKey}" not found in session calibration \u2014 skipping labeled frame mapping.`);
             continue;
           }
           const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
-          if (camera && labeledFrame) {
+          if (labeledFrame) {
             labeledFrameByCamera.set(camera, labeledFrame);
+          }
+        }
+        if (labeledFrameByCamera.size === 0) {
+          for (const instanceGroup of instanceGroupList) {
+            const igRecord = instanceGroup;
+            const lfInstMap = igRecord.camcorder_to_lf_and_inst_idx_map ?? {};
+            for (const [camIdx, value] of Object.entries(lfInstMap)) {
+              const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+              if (!camera) continue;
+              const pair = value;
+              const lf = labeledFrames[Number(pair[0])];
+              if (lf) labeledFrameByCamera.set(camera, lf);
+            }
           }
         }
         session.frameGroups.set(
@@ -4521,7 +4494,11 @@ function writeIdentities(file, identities) {
   const payload = identities.map((identity) => {
     const d = { name: identity.name };
     if (identity.color != null) d.color = identity.color;
-    Object.assign(d, identity.metadata);
+    for (const [key, value] of Object.entries(identity.metadata)) {
+      if (key !== "name" && key !== "color") {
+        d[key] = value;
+      }
+    }
     return JSON.stringify(d);
   });
   file.create_dataset({ name: "identities_json", data: payload });
@@ -4548,10 +4525,10 @@ function serializeSession(session, videos, labeledFrameIndex, identities) {
   });
   const camcorder_to_video_idx_map = {};
   for (const [camera, video] of session.videoByCamera.entries()) {
-    const cameraIndex = session.cameraGroup.cameras.indexOf(camera);
+    const cameraKey = cameraKeyForSession(camera, session);
     const videoIndex = videos.indexOf(video);
-    if (cameraIndex >= 0 && videoIndex >= 0) {
-      camcorder_to_video_idx_map[String(cameraIndex)] = videoIndex;
+    if (cameraKey !== "-1" && videoIndex >= 0) {
+      camcorder_to_video_idx_map[cameraKey] = videoIndex;
     }
   }
   const frame_group_dicts = [];
@@ -4567,7 +4544,7 @@ function serializeSession(session, videos, labeledFrameIndex, identities) {
   };
 }
 function serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities) {
-  const instance_groups = frameGroup.instanceGroups.map((group) => serializeInstanceGroup(group, session, identities));
+  const instance_groups = frameGroup.instanceGroups.map((group) => serializeInstanceGroup(group, session, identities, frameGroup, labeledFrameIndex));
   const labeled_frame_by_camera = {};
   for (const [camera, labeledFrame] of frameGroup.labeledFrameByCamera.entries()) {
     const cameraKey = cameraKeyForSession(camera, session);
@@ -4583,15 +4560,32 @@ function serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities)
     metadata: frameGroup.metadata ?? {}
   };
 }
-function serializeInstanceGroup(group, session, identities) {
+function serializeInstanceGroup(group, session, identities, frameGroup, labeledFrameIndex) {
   const instances = {};
   for (const [camera, instance] of group.instanceByCamera.entries()) {
     const cameraKey = cameraKeyForSession(camera, session);
     instances[cameraKey] = pointsToDict(instance);
   }
+  const camcorder_to_lf_and_inst_idx_map = {};
+  if (frameGroup && labeledFrameIndex) {
+    for (const [camera, instance] of group.instanceByCamera.entries()) {
+      const cameraKey = cameraKeyForSession(camera, session);
+      const labeledFrame = frameGroup.labeledFrameByCamera.get(camera);
+      if (labeledFrame) {
+        const lfIdx = labeledFrameIndex.get(labeledFrame);
+        const instIdx = labeledFrame.instances.indexOf(instance);
+        if (lfIdx !== void 0 && instIdx >= 0) {
+          camcorder_to_lf_and_inst_idx_map[cameraKey] = [lfIdx, instIdx];
+        }
+      }
+    }
+  }
   const payload = {
     instances
   };
+  if (Object.keys(camcorder_to_lf_and_inst_idx_map).length > 0) {
+    payload.camcorder_to_lf_and_inst_idx_map = camcorder_to_lf_and_inst_idx_map;
+  }
   if (group.score != null) payload.score = group.score;
   if (group.instance3d) {
     if (group.instance3d.points) {
@@ -4636,8 +4630,7 @@ function pointsToDict(instance) {
   return dict;
 }
 function cameraKeyForSession(camera, session) {
-  const index = session.cameraGroup.cameras.indexOf(camera);
-  return camera.name ?? String(index);
+  return String(session.cameraGroup.cameras.indexOf(camera));
 }
 function writeLabeledFrames(file, labels) {
   const frames = [];
@@ -5337,13 +5330,7 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
     const session = new RecordingSession({ cameraGroup, metadata: parsed.metadata ?? {} });
     const map = asRecord(parsed.camcorder_to_video_idx_map);
     for (const [cameraKey, videoIdx] of Object.entries(map)) {
-      let camera = cameraMap.get(cameraKey);
-      if (!camera) {
-        const idx = Number(cameraKey);
-        if (!isNaN(idx) && idx >= 0 && idx < cameraGroup.cameras.length) {
-          camera = cameraGroup.cameras[idx];
-        }
-      }
+      const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
       const video = videos[Number(videoIdx)];
       if (camera && video) {
         session.addVideo(video, camera);
@@ -5360,7 +5347,7 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
         const instanceByCamera = /* @__PURE__ */ new Map();
         const instancesRecord = asRecord(instanceGroupRecord.instances);
         for (const [cameraKey, points] of Object.entries(instancesRecord)) {
-          const camera = cameraMap.get(cameraKey);
+          const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
           if (!camera) {
             console.warn(`Camera key "${cameraKey}" not found in session calibration \u2014 skipping 2D instance data for this camera.`);
             continue;
@@ -5368,38 +5355,21 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
           const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
           instanceByCamera.set(camera, new Instance({ points, skeleton }));
         }
-        let instance3d;
-        const rawPoints = instanceGroupRecord.points;
-        const pointsValue = Array.isArray(rawPoints) ? rawPoints : void 0;
-        if (pointsValue) {
-          const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
-          const inst3dScore = instanceGroupRecord.instance_3d_score;
-          const pointScores = instanceGroupRecord.instance_3d_point_scores;
-          if (pointScores) {
-            instance3d = new PredictedInstance3D({
-              points: pointsValue,
-              skeleton,
-              score: inst3dScore,
-              pointScores
-            });
-          } else {
-            instance3d = new Instance3D({
-              points: pointsValue,
-              skeleton,
-              score: inst3dScore
-            });
+        if (instanceByCamera.size === 0) {
+          const lfInstMap = asRecord(instanceGroupRecord.camcorder_to_lf_and_inst_idx_map);
+          for (const [camIdx, value] of Object.entries(lfInstMap)) {
+            const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+            if (!camera) continue;
+            const pair = value;
+            const lf = labeledFrames[Number(pair[0])];
+            if (lf) {
+              const inst = lf.instances[Number(pair[1])];
+              if (inst) instanceByCamera.set(camera, inst);
+            }
           }
         }
-        let identity;
-        const identityIdx = instanceGroupRecord.identity_idx;
-        if (identityIdx != null && identities) {
-          const idx = Number(identityIdx);
-          if (idx >= 0 && idx < identities.length) {
-            identity = identities[idx];
-          } else {
-            console.warn(`identity_idx ${idx} is out of bounds (${identities.length} identities available) \u2014 skipping identity for this instance group.`);
-          }
-        }
+        const instance3d = reconstructInstance3D(instanceGroupRecord, skeletons);
+        const identity = resolveIdentity(instanceGroupRecord, identities);
         instanceGroups.push(
           new InstanceGroup({
             instanceByCamera,
@@ -5413,14 +5383,27 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
       const labeledFrameByCamera = /* @__PURE__ */ new Map();
       const labeledFrameMap = asRecord(groupRecord.labeled_frame_by_camera);
       for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
-        const camera = cameraMap.get(cameraKey);
+        const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
         if (!camera) {
           console.warn(`Camera key "${cameraKey}" not found in session calibration \u2014 skipping labeled frame mapping.`);
           continue;
         }
         const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
-        if (camera && labeledFrame) {
+        if (labeledFrame) {
           labeledFrameByCamera.set(camera, labeledFrame);
+        }
+      }
+      if (labeledFrameByCamera.size === 0) {
+        for (const instanceGroup of instanceGroupList) {
+          const igRecord = asRecord(instanceGroup);
+          const lfInstMap = asRecord(igRecord.camcorder_to_lf_and_inst_idx_map);
+          for (const [camIdx, value] of Object.entries(lfInstMap)) {
+            const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+            if (!camera) continue;
+            const pair = value;
+            const lf = labeledFrames[Number(pair[0])];
+            if (lf) labeledFrameByCamera.set(camera, lf);
+          }
         }
       }
       session.frameGroups.set(
@@ -6548,8 +6531,6 @@ export {
   RecordingSession,
   makeCameraFromDict,
   Identity,
-  Instance3D,
-  PredictedInstance3D,
   LazyDataStore,
   LazyFrameList,
   _registerMaskFactory,
