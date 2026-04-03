@@ -58,7 +58,8 @@ export class LabelImage {
     return this.objects.size;
   }
 
-  /** Sorted unique non-zero label IDs present in the data. */
+  /** Sorted unique non-zero label IDs present in the data.
+   *  Note: Scans the full pixel array on every call. Cache the result if needed multiple times. */
   get labelIds(): number[] {
     const ids = new Set<number>();
     for (let i = 0; i < this.data.length; i++) {
@@ -119,14 +120,14 @@ export class LabelImage {
     return mask;
   }
 
-  /** Get a binary mask for all objects with a given category. Returns zeros if category not found. */
+  /** Get a binary mask for all objects with a given category. Throws if category not found. */
   getCategoryMask(category: string): Uint8Array {
     const matchingIds: number[] = [];
     for (const [lid, info] of this.objects) {
       if (info.category === category) matchingIds.push(lid);
     }
     if (matchingIds.length === 0) {
-      return new Uint8Array(this.height * this.width);
+      throw new Error(`Category "${category}" not found in this LabelImage.`);
     }
     const idSet = new Set(matchingIds);
     const mask = new Uint8Array(this.height * this.width);
@@ -140,14 +141,23 @@ export class LabelImage {
 
   /** Iterate over objects as [track, category, binaryMask] tuples in sorted label ID order. */
   *items(): IterableIterator<[Track | null, string, Uint8Array]> {
-    for (const lid of this.labelIds) {
+    const ids = this.labelIds;
+    const maskMap = new Map<number, Uint8Array>();
+    for (const lid of ids) {
+      maskMap.set(lid, new Uint8Array(this.height * this.width));
+    }
+    for (let i = 0; i < this.data.length; i++) {
+      const mask = maskMap.get(this.data[i]);
+      if (mask) mask[i] = 1;
+    }
+    for (const lid of ids) {
       const info = this.objects.get(lid) ?? {
         track: null,
         category: "",
         name: "",
         instance: null,
       };
-      yield [info.track, info.category, this.getObjectMask(lid)];
+      yield [info.track, info.category, maskMap.get(lid)!];
     }
   }
 
@@ -302,20 +312,25 @@ export class LabelImage {
 
   /** Decompose this LabelImage into individual SegmentationMask objects. */
   toMasks(): SegmentationMask[] {
+    const ids = this.labelIds;
+    const maskMap = new Map<number, Uint8Array>();
+    for (const lid of ids) {
+      maskMap.set(lid, new Uint8Array(this.height * this.width));
+    }
+    for (let i = 0; i < this.data.length; i++) {
+      const mask = maskMap.get(this.data[i]);
+      if (mask) mask[i] = 1;
+    }
     const result: SegmentationMask[] = [];
-    for (const lid of this.labelIds) {
+    for (const lid of ids) {
       const info = this.objects.get(lid) ?? {
         track: null,
         category: "",
         name: "",
         instance: null,
       };
-      const binaryMask = new Uint8Array(this.height * this.width);
-      for (let i = 0; i < this.data.length; i++) {
-        if (this.data[i] === lid) binaryMask[i] = 1;
-      }
       result.push(
-        SegmentationMask.fromArray(binaryMask, this.height, this.width, {
+        SegmentationMask.fromArray(maskMap.get(lid)!, this.height, this.width, {
           track: info.track,
           category: info.category,
           name: info.name,

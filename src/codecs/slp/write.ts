@@ -1,5 +1,6 @@
 import { Labels } from "../../model/labels.js";
 import { Instance, PredictedInstance } from "../../model/instance.js";
+import type { Track } from "../../model/instance.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import { RecordingSession, Camera, InstanceGroup, FrameGroup } from "../../model/camera.js";
 import { Skeleton } from "../../model/skeleton.js";
@@ -881,10 +882,16 @@ function writeLabelImages(
   file: any,
   labelImages: LabelImage[],
   videos: Video[],
-  tracks: Array<{ name: string }>,
+  tracks: Track[],
   instances: (Instance | PredictedInstance)[],
 ): void {
   if (!labelImages.length) return;
+
+  // Verify little-endian platform (label image data is stored as raw LE bytes)
+  const endianCheck = new Uint8Array(new Uint16Array([0x0102]).buffer);
+  if (endianCheck[0] !== 0x02) {
+    throw new Error("LabelImage I/O requires a little-endian platform.");
+  }
 
   const rows: number[][] = [];
   const compressedChunks: Uint8Array[] = [];
@@ -910,7 +917,7 @@ function writeLabelImages(
     // Per-object entries
     const objectsStart = objectsOffset;
     for (const [labelId, info] of li.objects) {
-      const trackIdx = info.track ? tracks.indexOf(info.track as any) : -1;
+      const trackIdx = info.track ? tracks.indexOf(info.track as Track) : -1;
       const instanceIdx = info.instance ? instances.indexOf(info.instance as Instance) : -1;
       objectRows.push([labelId, trackIdx, instanceIdx]);
       objectCategories.push(info.category);

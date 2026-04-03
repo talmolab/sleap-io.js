@@ -777,9 +777,10 @@ function readLabelImages(
     const dataEnd = Number(dataEnds[i]);
     const compressed = dataFlat.slice(dataStart, dataEnd);
     const decompressed = inflate(compressed);
-    // Convert bytes back to Int32Array (little-endian, matches native)
+    // Convert bytes back to Int32Array (little-endian, matches native).
+    // Use buffer.slice() to guarantee 4-byte alignment for Int32Array.
     const pixelData = new Int32Array(
-      decompressed.buffer, decompressed.byteOffset, decompressed.byteLength / 4
+      decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
     );
 
     // Build objects map

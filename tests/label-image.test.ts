@@ -269,7 +269,7 @@ describe("LabelImage", () => {
       expect(mask).toEqual(new Uint8Array([0, 1, 0, 1, 0, 1]));
     });
 
-    it("returns zeros for missing category", () => {
+    it("throws for missing category", () => {
       const { data, height, width } = makeLabelData([
         [1, 2],
         [0, 0],
@@ -279,8 +279,9 @@ describe("LabelImage", () => {
         { id: 2, category: "cell" },
       ]);
       const li = new LabelImage({ data, height, width, objects });
-      const mask = li.getCategoryMask("nonexistent");
-      expect(mask).toEqual(new Uint8Array(4));
+      expect(() => li.getCategoryMask("nonexistent")).toThrow(
+        'Category "nonexistent" not found in this LabelImage.',
+      );
     });
   });
 
