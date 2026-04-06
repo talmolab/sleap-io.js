@@ -410,6 +410,24 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#label-images-dense-segmentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Label Images (Dense Segmentation)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#identity-3d-data-structures" class="md-nav__link">
+    <span class="md-ellipsis">
+      Identity &amp; 3D Data Structures
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#geojson-io" class="md-nav__link">
     <span class="md-ellipsis">
       GeoJSON I/O
@@ -574,6 +592,24 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#label-images-dense-segmentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Label Images (Dense Segmentation)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#identity-3d-data-structures" class="md-nav__link">
+    <span class="md-ellipsis">
+      Identity &amp; 3D Data Structures
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#geojson-io" class="md-nav__link">
     <span class="md-ellipsis">
       GeoJSON I/O
@@ -654,10 +690,24 @@
 <span class="w">  </span><span class="nx">LabelsSet</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">SuggestionFrame</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">ROI</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">UserROI</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">PredictedROI</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">SegmentationMask</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">UserSegmentationMask</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">PredictedSegmentationMask</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">BoundingBox</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">UserBoundingBox</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">PredictedBoundingBox</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">LabelImage</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">UserLabelImage</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">PredictedLabelImage</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">normalizeLabelIds</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">Identity</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">Instance3D</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">PredictedInstance3D</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">Camera</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">CameraGroup</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">RecordingSession</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">toDict</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">fromDict</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">toNumpy</span><span class="p">,</span>
@@ -703,15 +753,21 @@
 <li><code>options.embed</code>: embed frames (<code>true</code>, <code>false</code>, or dataset name).</li>
 <li>Returns <code>Promise&lt;Uint8Array&gt;</code>.</li>
 </ul>
-<h3 id="loadvideofilename-options"><code>loadVideo(filename, options)</code><a class="headerlink" href="#loadvideofilename-options" title="Permanent link">&para;</a></h3>
+<h3 id="loadvideosource-options"><code>loadVideo(source, options)</code><a class="headerlink" href="#loadvideosource-options" title="Permanent link">&para;</a></h3>
 <p>Open a <code>Video</code> with an appropriate backend.</p>
-<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadVideo</span><span class="p">(</span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">openBackend</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+<div class="highlight"><pre><span></span><code><span class="c1">// From file path (Node.js) or URL (browser)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadVideo</span><span class="p">(</span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">openBackend</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">frame0</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">video</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="mf">0</span><span class="p">);</span>
 <span class="nx">video</span><span class="p">.</span><span class="nx">close</span><span class="p">();</span>
+
+<span class="c1">// From File object (browser)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadVideo</span><span class="p">(</span><span class="nx">fileInput</span><span class="p">.</span><span class="nx">files</span><span class="p">[</span><span class="mf">0</span><span class="p">]);</span>
 </code></pre></div>
 <ul>
+<li><code>source</code>: <code>string</code> (path or URL) or <code>File</code> (browser).</li>
 <li><code>options.dataset</code>: dataset path for embedded HDF5 sources.</li>
 <li><code>options.openBackend</code> (default <code>true</code>): set <code>false</code> for deferred open.</li>
+<li><code>options.backend</code>: explicit backend type (<code>"mp4box"</code>, <code>"mediabunny"</code>, <code>"media"</code>, <code>"hdf5"</code>).</li>
 </ul>
 <h2 id="video-backends">Video Backends<a class="headerlink" href="#video-backends" title="Permanent link">&para;</a></h2>
 <h3 id="video"><code>Video</code><a class="headerlink" href="#video" title="Permanent link">&para;</a></h3>
@@ -763,10 +819,14 @@
 <li><code>Labels</code>, <code>LabeledFrame</code>, <code>Instance</code>, <code>PredictedInstance</code></li>
 <li><code>Skeleton</code>, <code>Track</code></li>
 <li><code>Video</code>, <code>SuggestionFrame</code>, <code>LabelsSet</code></li>
-<li><code>Camera</code>, <code>CameraGroup</code>, <code>RecordingSession</code> (camera utilities)</li>
+<li><code>Camera</code>, <code>CameraGroup</code>, <code>RecordingSession</code>, <code>InstanceGroup</code> (camera/3D utilities)</li>
+<li><code>Identity</code> (ground-truth animal identity across sessions)</li>
+<li><code>Instance3D</code>, <code>PredictedInstance3D</code> (3D keypoint data)</li>
 <li><code>LazyDataStore</code>, <code>LazyFrameList</code> (lazy loading)</li>
-<li><code>ROI</code>, <code>SegmentationMask</code> (spatial annotations)</li>
+<li><code>ROI</code>, <code>UserROI</code>, <code>PredictedROI</code> (spatial annotations)</li>
+<li><code>SegmentationMask</code>, <code>UserSegmentationMask</code>, <code>PredictedSegmentationMask</code> (binary masks)</li>
 <li><code>BoundingBox</code>, <code>UserBoundingBox</code>, <code>PredictedBoundingBox</code> (detection/tracking)</li>
+<li><code>LabelImage</code>, <code>UserLabelImage</code>, <code>PredictedLabelImage</code> (dense instance segmentation)</li>
 <li><code>Point</code> has fields <code>{ xy, visible, complete, score? }</code> where <code>score</code> is an optional confidence value.</li>
 <li><code>LabeledFrame.isNegative</code> (<code>boolean</code>, default <code>false</code>): marks negative-annotated frames.</li>
 <li><code>SuggestionFrame.group</code> (<code>string</code>, default <code>"default"</code>): the suggestion group name.</li>
@@ -776,6 +836,9 @@
 <span class="kd">const</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Video</span><span class="p">({</span><span class="w"> </span><span class="nx">filename</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;/data/movie.mp4&quot;</span><span class="w"> </span><span class="p">});</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">frame</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">instances</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">inst</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Labels</span><span class="p">({</span><span class="w"> </span><span class="nx">labeledFrames</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">frame</span><span class="p">],</span><span class="w"> </span><span class="nx">skeletons</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">skeleton</span><span class="p">],</span><span class="w"> </span><span class="nx">videos</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">video</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Add a video with deduplication</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">addVideo</span><span class="p">(</span><span class="nx">video</span><span class="p">);</span><span class="w"> </span><span class="c1">// no-op if already present</span>
 </code></pre></div>
 <h2 id="lazy-loading">Lazy Loading<a class="headerlink" href="#lazy-loading" title="Permanent link">&para;</a></h2>
 <p>Load SLP files with on-demand frame materialization for better performance on large datasets.</p>
@@ -798,14 +861,8 @@
 <h2 id="roi-segmentation-masks">ROI &amp; Segmentation Masks<a class="headerlink" href="#roi-segmentation-masks" title="Permanent link">&para;</a></h2>
 <p>Spatial annotations stored alongside pose data (SLP format 1.5+).</p>
 <h3 id="roi"><code>ROI</code><a class="headerlink" href="#roi" title="Permanent link">&para;</a></h3>
-<p>Region of interest with GeoJSON-like geometry. Supports <code>Polygon</code>, <code>Point</code>, <code>MultiPolygon</code>, <code>MultiPoint</code>, <code>LineString</code>, and <code>GeometryCollection</code> types.</p>
-<div class="highlight"><pre><span></span><code><span class="c1">// Create from bounding box</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ROI</span><span class="p">.</span><span class="nx">fromBbox</span><span class="p">(</span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">200</span><span class="p">,</span><span class="w"> </span><span class="mf">50</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span>
-<span class="p">});</span>
-
-<span class="c1">// Create from polygon vertices</span>
+<p>Region of interest with GeoJSON-like geometry. <code>ROI</code> is abstract; use <code>UserROI</code> or <code>PredictedROI</code> for construction, or use the static factory methods which return <code>UserROI</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Create from polygon vertices</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ROI</span><span class="p">.</span><span class="nx">fromPolygon</span><span class="p">([[</span><span class="mf">0</span><span class="p">,</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">100</span><span class="p">,</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">100</span><span class="p">,</span><span class="mf">100</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">0</span><span class="p">,</span><span class="mf">100</span><span class="p">]],</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;region&quot;</span><span class="p">,</span>
 <span class="p">});</span>
@@ -816,13 +873,20 @@
 <span class="w">  </span><span class="p">[[[</span><span class="mf">20</span><span class="p">,</span><span class="mf">20</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">30</span><span class="p">,</span><span class="mf">20</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">30</span><span class="p">,</span><span class="mf">30</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">20</span><span class="p">,</span><span class="mf">30</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">20</span><span class="p">,</span><span class="mf">20</span><span class="p">]]],</span>
 <span class="p">]);</span>
 
-<span class="c1">// Properties</span>
-<span class="nx">roi</span><span class="p">.</span><span class="nx">bounds</span><span class="p">;</span><span class="w">    </span><span class="c1">// { minX, minY, maxX, maxY }</span>
-<span class="nx">roi</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">      </span><span class="c1">// polygon area</span>
-<span class="nx">roi</span><span class="p">.</span><span class="nx">centroid</span><span class="p">;</span><span class="w">  </span><span class="c1">// { x, y }</span>
-<span class="nx">roi</span><span class="p">.</span><span class="nx">isBbox</span><span class="p">;</span><span class="w">    </span><span class="c1">// true if axis-aligned rectangle</span>
+<span class="c1">// Predicted ROI with confidence score</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">pred</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedROI</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">geometry</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="kr">type</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;Polygon&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">coordinates</span><span class="o">:</span><span class="w"> </span><span class="p">[[[</span><span class="mf">0</span><span class="p">,</span><span class="mf">0</span><span class="p">],[</span><span class="mf">10</span><span class="p">,</span><span class="mf">0</span><span class="p">],[</span><span class="mf">10</span><span class="p">,</span><span class="mf">10</span><span class="p">],[</span><span class="mf">0</span><span class="p">,</span><span class="mf">10</span><span class="p">],[</span><span class="mf">0</span><span class="p">,</span><span class="mf">0</span><span class="p">]]]</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.95</span><span class="p">,</span>
+<span class="p">});</span>
 
-<span class="c1">// Explode multi-geometries into individual ROIs</span>
+<span class="c1">// Properties</span>
+<span class="nx">roi</span><span class="p">.</span><span class="nx">bounds</span><span class="p">;</span><span class="w">       </span><span class="c1">// { minX, minY, maxX, maxY }</span>
+<span class="nx">roi</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">         </span><span class="c1">// polygon area</span>
+<span class="nx">roi</span><span class="p">.</span><span class="nx">centroid</span><span class="p">;</span><span class="w">     </span><span class="c1">// { x, y }</span>
+<span class="nx">roi</span><span class="p">.</span><span class="nx">isBbox</span><span class="p">;</span><span class="w">       </span><span class="c1">// true if axis-aligned rectangle</span>
+<span class="nx">roi</span><span class="p">.</span><span class="nx">isPredicted</span><span class="p">;</span><span class="w">  </span><span class="c1">// false for UserROI, true for PredictedROI</span>
+
+<span class="c1">// Explode multi-geometries into individual ROIs (preserves subclass)</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">parts</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">roi</span><span class="p">.</span><span class="nx">explode</span><span class="p">();</span><span class="w">  </span><span class="c1">// ROI[]</span>
 
 <span class="c1">// Convert to GeoJSON Feature</span>
@@ -831,41 +895,73 @@
 <span class="c1">// Convert to mask</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">roi</span><span class="p">.</span><span class="nx">toMask</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span>
 </code></pre></div>
+<blockquote>
+<p><strong>Note:</strong> <code>ROI.fromBbox()</code> and <code>ROI.fromXyxy()</code> are deprecated. Use <code>BoundingBox.fromXywh()</code> or <code>BoundingBox.fromXyxy()</code> instead.</p>
+</blockquote>
 <h3 id="segmentationmask"><code>SegmentationMask</code><a class="headerlink" href="#segmentationmask" title="Permanent link">&para;</a></h3>
-<p>RLE-encoded binary mask.</p>
+<p>RLE-encoded binary mask. <code>SegmentationMask</code> is abstract; use <code>UserSegmentationMask</code> or <code>PredictedSegmentationMask</code> for direct construction. The <code>fromArray()</code> factory returns <code>UserSegmentationMask</code>.</p>
 <div class="highlight"><pre><span></span><code><span class="c1">// Create from 2D boolean array</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">SegmentationMask</span><span class="p">.</span><span class="nx">fromArray</span><span class="p">(</span><span class="nx">boolArray</span><span class="p">,</span><span class="w"> </span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;segmentation&quot;</span><span class="p">,</span>
 <span class="p">});</span>
 
+<span class="c1">// Create from array with stride (downsampled prediction)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">SegmentationMask</span><span class="p">.</span><span class="nx">fromArray</span><span class="p">(</span><span class="nx">data</span><span class="p">,</span><span class="w"> </span><span class="mf">120</span><span class="p">,</span><span class="w"> </span><span class="mf">160</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">stride</span><span class="o">:</span><span class="w"> </span><span class="kt">4</span><span class="p">,</span><span class="w">  </span><span class="c1">// sets scale to [0.25, 0.25]</span>
+<span class="p">});</span>
+
+<span class="c1">// Predicted mask with score and optional score map</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">pred</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedSegmentationMask</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">rleCounts</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.92</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">scoreMap</span><span class="o">:</span><span class="w"> </span><span class="kt">new</span><span class="w"> </span><span class="nb">Float32Array</span><span class="p">(</span><span class="mf">480</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">640</span><span class="p">),</span><span class="w">  </span><span class="c1">// optional per-pixel confidence</span>
+<span class="p">});</span>
+
 <span class="c1">// Properties</span>
-<span class="nx">mask</span><span class="p">.</span><span class="nx">data</span><span class="p">;</span><span class="w">  </span><span class="c1">// Uint8Array (decoded)</span>
-<span class="nx">mask</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">  </span><span class="c1">// pixel count</span>
-<span class="nx">mask</span><span class="p">.</span><span class="nx">bbox</span><span class="p">;</span><span class="w">  </span><span class="c1">// { x, y, width, height }</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">data</span><span class="p">;</span><span class="w">                </span><span class="c1">// Uint8Array (decoded)</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">                </span><span class="c1">// pixel count</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">bbox</span><span class="p">;</span><span class="w">                </span><span class="c1">// { x, y, width, height }</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">isPredicted</span><span class="p">;</span><span class="w">         </span><span class="c1">// false for User, true for Predicted</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">scale</span><span class="p">;</span><span class="w">               </span><span class="c1">// [number, number] spatial scale (default [1, 1])</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">offset</span><span class="p">;</span><span class="w">              </span><span class="c1">// [number, number] spatial offset (default [0, 0])</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">hasSpatialTransform</span><span class="p">;</span><span class="w"> </span><span class="c1">// true if scale != [1,1] or offset != [0,0]</span>
+<span class="nx">mask</span><span class="p">.</span><span class="nx">imageExtent</span><span class="p">;</span><span class="w">         </span><span class="c1">// { height, width } in image coordinates</span>
+
+<span class="c1">// Resample to target size (removes spatial transform)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">fullRes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">resampled</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span>
 
 <span class="c1">// Convert to polygon ROI</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">toPolygon</span><span class="p">();</span>
 </code></pre></div>
 <h3 id="boundingbox"><code>BoundingBox</code><a class="headerlink" href="#boundingbox" title="Permanent link">&para;</a></h3>
-<p>Axis-aligned or rotated bounding box for detection/tracking workflows (SLP format 1.7).</p>
-<div class="highlight"><pre><span></span><code><span class="c1">// Create user-annotated bbox</span>
+<p>Axis-aligned or rotated bounding box for detection/tracking workflows. <code>BoundingBox</code> is abstract; use <code>UserBoundingBox</code> or <code>PredictedBoundingBox</code> for direct construction.</p>
+<p>Bounding boxes use corner coordinates (<code>x1</code>, <code>y1</code>, <code>x2</code>, <code>y2</code>) as their primary storage. Center-based properties (<code>xCenter</code>, <code>yCenter</code>, <code>width</code>, <code>height</code>) are available as computed getters.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Create user-annotated bbox from corners</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserBoundingBox</span><span class="p">({</span>
-<span class="w">  </span><span class="nx">xCenter</span><span class="o">:</span><span class="w"> </span><span class="kt">50</span><span class="p">,</span><span class="w"> </span><span class="nx">yCenter</span><span class="o">:</span><span class="w"> </span><span class="kt">60</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">80</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">x1</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="o">:</span><span class="w"> </span><span class="kt">20</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">3</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;animal&quot;</span><span class="p">,</span>
 <span class="p">});</span>
 
 <span class="c1">// Create predicted bbox with confidence score</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedBoundingBox</span><span class="p">({</span>
-<span class="w">  </span><span class="nx">xCenter</span><span class="o">:</span><span class="w"> </span><span class="kt">50</span><span class="p">,</span><span class="w"> </span><span class="nx">yCenter</span><span class="o">:</span><span class="w"> </span><span class="kt">60</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">80</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">x1</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="o">:</span><span class="w"> </span><span class="kt">20</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.95</span><span class="p">,</span>
 <span class="p">});</span>
 
-<span class="c1">// Factory methods</span>
+<span class="c1">// Factory methods (return UserBoundingBox)</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXyxy</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">110</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">);</span><span class="w">  </span><span class="c1">// corner coords</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXywh</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">);</span><span class="w">   </span><span class="c1">// top-left + size</span>
 
-<span class="c1">// Properties</span>
-<span class="nx">bbox</span><span class="p">.</span><span class="nx">xyxy</span><span class="p">;</span><span class="w">       </span><span class="c1">// [x1, y1, x2, y2] (axis-aligned)</span>
+<span class="c1">// Stored properties</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">x1</span><span class="p">;</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">y1</span><span class="p">;</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">x2</span><span class="p">;</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">y2</span><span class="p">;</span><span class="w">  </span><span class="c1">// corner coordinates</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">angle</span><span class="p">;</span><span class="w">      </span><span class="c1">// rotation in radians (default 0)</span>
+
+<span class="c1">// Computed properties</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">xCenter</span><span class="p">;</span><span class="w">    </span><span class="c1">// (x1 + x2) / 2</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">yCenter</span><span class="p">;</span><span class="w">    </span><span class="c1">// (y1 + y2) / 2</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">width</span><span class="p">;</span><span class="w">      </span><span class="c1">// abs(x2 - x1)</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">height</span><span class="p">;</span><span class="w">     </span><span class="c1">// abs(y2 - y1)</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">xyxy</span><span class="p">;</span><span class="w">       </span><span class="c1">// [x1, y1, x2, y2] (axis-aligned bounding box)</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">xywh</span><span class="p">;</span><span class="w">       </span><span class="c1">// { x, y, width, height }</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">corners</span><span class="p">;</span><span class="w">    </span><span class="c1">// number[][] (4 corner points, respects rotation)</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">bounds</span><span class="p">;</span><span class="w">     </span><span class="c1">// { minX, minY, maxX, maxY }</span>
@@ -879,22 +975,197 @@
 <span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">toRoi</span><span class="p">();</span><span class="w">              </span><span class="c1">// Polygon ROI</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">toMask</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span><span class="w">    </span><span class="c1">// SegmentationMask</span>
 </code></pre></div>
-<h3 id="labels-roimaskbbox-access"><code>Labels</code> ROI/Mask/BBox Access<a class="headerlink" href="#labels-roimaskbbox-access" title="Permanent link">&para;</a></h3>
+<h3 id="labels-annotation-access"><code>Labels</code> Annotation Access<a class="headerlink" href="#labels-annotation-access" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="c1">// Direct access</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">;</span><span class="w">         </span><span class="c1">// ROI[]</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">masks</span><span class="p">;</span><span class="w">        </span><span class="c1">// SegmentationMask[]</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">bboxes</span><span class="p">;</span><span class="w">       </span><span class="c1">// BoundingBox[]</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">staticRois</span><span class="p">;</span><span class="w">   </span><span class="c1">// ROIs without frame index</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">temporalRois</span><span class="p">;</span><span class="w"> </span><span class="c1">// ROIs with frame index</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">staticBboxes</span><span class="p">;</span><span class="w"> </span><span class="c1">// BBoxes without frame index</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">;</span><span class="w">           </span><span class="c1">// ROI[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">masks</span><span class="p">;</span><span class="w">          </span><span class="c1">// SegmentationMask[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">bboxes</span><span class="p">;</span><span class="w">         </span><span class="c1">// BoundingBox[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">labelImages</span><span class="p">;</span><span class="w">    </span><span class="c1">// LabelImage[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">identities</span><span class="p">;</span><span class="w">     </span><span class="c1">// Identity[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">staticRois</span><span class="p">;</span><span class="w">     </span><span class="c1">// ROIs without frame index</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">temporalRois</span><span class="p">;</span><span class="w">   </span><span class="c1">// ROIs with frame index</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">staticBboxes</span><span class="p">;</span><span class="w">   </span><span class="c1">// BBoxes without frame index</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">temporalBboxes</span><span class="p">;</span><span class="w"> </span><span class="c1">// BBoxes with frame index</span>
 
-<span class="c1">// Filtered queries</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">getRois</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="w"> </span><span class="p">});</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;segmentation&quot;</span><span class="w"> </span><span class="p">});</span>
+<span class="c1">// Filtered queries (all support `predicted` filter)</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">getRois</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;segmentation&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getBboxes</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">getLabelImages</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cell&quot;</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Add a video (deduplicates automatically)</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">addVideo</span><span class="p">(</span><span class="nx">video</span><span class="p">);</span>
 </code></pre></div>
-<p>The format ID is set automatically: 1.5 for ROIs/masks, 1.6 for ROIs with instance associations, 1.7 when bounding boxes are present.</p>
+<p>The SLP format version is set automatically based on content:</p>
+<table>
+<thead>
+<tr>
+<th>Version</th>
+<th>Trigger</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>1.5</td>
+<td>ROIs or masks present</td>
+</tr>
+<tr>
+<td>1.6</td>
+<td>ROIs with instance associations</td>
+</tr>
+<tr>
+<td>1.7</td>
+<td>Bounding boxes</td>
+</tr>
+<tr>
+<td>1.8</td>
+<td>Label images</td>
+</tr>
+<tr>
+<td>1.9</td>
+<td>Identities or predicted annotations</td>
+</tr>
+<tr>
+<td>2.0</td>
+<td>BBox corner-based format</td>
+</tr>
+<tr>
+<td>2.1</td>
+<td>Spatial metadata (scale/offset)</td>
+</tr>
+<tr>
+<td>2.2</td>
+<td>Chunked label image storage</td>
+</tr>
+</tbody>
+</table>
+<h2 id="label-images-dense-segmentation">Label Images (Dense Segmentation)<a class="headerlink" href="#label-images-dense-segmentation" title="Permanent link">&para;</a></h2>
+<p>Dense integer label images for instance segmentation workflows (Cellpose, StarDist, SAM, Mask R-CNN output). Each pixel stores an object ID (0 = background, positive integers = objects) with per-object metadata (track, category, name).</p>
+<p><code>LabelImage</code> is abstract; use <code>UserLabelImage</code> or <code>PredictedLabelImage</code>, or use the static factory methods which return <code>UserLabelImage</code>.</p>
+<h3 id="creating-label-images">Creating Label Images<a class="headerlink" href="#creating-label-images" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1">// From a 2D integer array</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">li</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromArray</span><span class="p">(</span>
+<span class="w">  </span><span class="ow">new</span><span class="w"> </span><span class="nb">Int32Array</span><span class="p">([</span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">]),</span>
+<span class="w">  </span><span class="mf">3</span><span class="p">,</span><span class="w"> </span><span class="mf">3</span><span class="p">,</span><span class="w">  </span><span class="c1">// height, width</span>
+<span class="w">  </span><span class="p">{</span><span class="w"> </span><span class="nx">tracks</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">trackA</span><span class="p">,</span><span class="w"> </span><span class="nx">trackB</span><span class="p">],</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">},</span>
+<span class="p">);</span>
+
+<span class="c1">// From segmentation masks (composites multiple binary masks)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">li</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromMasks</span><span class="p">(</span><span class="nx">masks</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// From per-object binary masks (SAM / Mask R-CNN output)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">li</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromBinaryMasks</span><span class="p">(</span>
+<span class="w">  </span><span class="p">[</span><span class="nx">mask1_2d</span><span class="p">,</span><span class="w"> </span><span class="nx">mask2_2d</span><span class="p">,</span><span class="w"> </span><span class="nx">mask3_2d</span><span class="p">],</span>
+<span class="w">  </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">tracks</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">trackA</span><span class="p">,</span><span class="w"> </span><span class="nx">trackB</span><span class="p">,</span><span class="w"> </span><span class="nx">trackC</span><span class="p">],</span>
+<span class="w">    </span><span class="nx">categories</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;cell&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;cell&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;debris&quot;</span><span class="p">],</span>
+<span class="w">    </span><span class="nx">scores</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0.95</span><span class="p">,</span><span class="w"> </span><span class="mf">0.88</span><span class="p">,</span><span class="w"> </span><span class="mf">0.72</span><span class="p">],</span><span class="w">  </span><span class="c1">// creates PredictedLabelImage if provided</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="p">);</span>
+
+<span class="c1">// Batch creation from a stack of 2D arrays (one per frame)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labelImages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromStack</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">data</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">frame0_2d</span><span class="p">,</span><span class="w"> </span><span class="nx">frame1_2d</span><span class="p">,</span><span class="w"> </span><span class="nx">frame2_2d</span><span class="p">],</span>
+<span class="w">  </span><span class="nx">tracks</span><span class="o">:</span><span class="w"> </span><span class="kt">new</span><span class="w"> </span><span class="nb">Map</span><span class="p">([[</span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="nx">trackA</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">2</span><span class="p">,</span><span class="w"> </span><span class="nx">trackB</span><span class="p">]]),</span>
+<span class="w">  </span><span class="nx">createTracks</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span><span class="w">  </span><span class="c1">// auto-create Track objects from label IDs</span>
+<span class="w">  </span><span class="nx">video</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">],</span>
+<span class="p">});</span>
+</code></pre></div>
+<h3 id="properties-and-methods">Properties and Methods<a class="headerlink" href="#properties-and-methods" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1">// Data access</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">data</span><span class="p">;</span><span class="w">       </span><span class="c1">// Int32Array (flat, row-major)</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">height</span><span class="p">;</span><span class="w">     </span><span class="c1">// number</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">width</span><span class="p">;</span><span class="w">      </span><span class="c1">// number</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">objects</span><span class="p">;</span><span class="w">    </span><span class="c1">// Map&lt;number, LabelImageObjectInfo&gt;</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">nObjects</span><span class="p">;</span><span class="w">   </span><span class="c1">// number of objects</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">labelIds</span><span class="p">;</span><span class="w">   </span><span class="c1">// sorted unique non-zero label IDs in data</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">tracks</span><span class="p">;</span><span class="w">     </span><span class="c1">// Track[] from object metadata</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">categories</span><span class="p">;</span><span class="w"> </span><span class="c1">// Set&lt;string&gt; from object metadata</span>
+
+<span class="c1">// Spatial transforms (for downsampled predictions)</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">scale</span><span class="p">;</span><span class="w">               </span><span class="c1">// [number, number] (default [1, 1])</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">offset</span><span class="p">;</span><span class="w">              </span><span class="c1">// [number, number] (default [0, 0])</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">hasSpatialTransform</span><span class="p">;</span><span class="w"> </span><span class="c1">// boolean</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">imageExtent</span><span class="p">;</span><span class="w">         </span><span class="c1">// { height, width } in image coordinates</span>
+
+<span class="c1">// Mask extraction</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">getObjectMask</span><span class="p">(</span><span class="mf">1</span><span class="p">);</span><span class="w">         </span><span class="c1">// Uint8Array for label ID 1</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">getTrackMask</span><span class="p">(</span><span class="nx">trackA</span><span class="p">);</span><span class="w">     </span><span class="c1">// Uint8Array for all objects with trackA</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">getCategoryMask</span><span class="p">(</span><span class="s2">&quot;cell&quot;</span><span class="p">);</span><span class="w">  </span><span class="c1">// Uint8Array for all &quot;cell&quot; objects</span>
+
+<span class="c1">// Iteration over objects</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">track</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="p">,</span><span class="w"> </span><span class="nx">binaryMask</span><span class="p">]</span><span class="w"> </span><span class="k">of</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">items</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">track</span><span class="o">?</span><span class="p">.</span><span class="nx">name</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="p">,</span><span class="w"> </span><span class="nx">binaryMask</span><span class="p">.</span><span class="nx">length</span><span class="p">);</span>
+<span class="p">}</span>
+
+<span class="c1">// Conversion</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">masks</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">toMasks</span><span class="p">();</span><span class="w">                       </span><span class="c1">// SegmentationMask[]</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">fullRes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">resampled</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span><span class="w">           </span><span class="c1">// new LabelImage at full resolution</span>
+
+<span class="c1">// Predicted label image</span>
+<span class="nx">li</span><span class="p">.</span><span class="nx">isPredicted</span><span class="p">;</span><span class="w">  </span><span class="c1">// false for UserLabelImage, true for PredictedLabelImage</span>
+<span class="c1">// PredictedLabelImage also has: score, scoreMap, scoreMapScale, scoreMapOffset</span>
+</code></pre></div>
+<h3 id="labelimageobjectinfo"><code>LabelImageObjectInfo</code><a class="headerlink" href="#labelimageobjectinfo" title="Permanent link">&para;</a></h3>
+<p>Per-object metadata stored in <code>LabelImage.objects</code>:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">interface</span><span class="w"> </span><span class="nx">LabelImageObjectInfo</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">track</span><span class="o">:</span><span class="w"> </span><span class="kt">Track</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="kc">null</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">instance</span><span class="o">:</span><span class="w"> </span><span class="kt">Instance</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="kc">null</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">score?</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="kc">null</span><span class="p">;</span><span class="w">  </span><span class="c1">// per-object confidence (PredictedLabelImage)</span>
+<span class="p">}</span>
+</code></pre></div>
+<h3 id="normalizelabelids"><code>normalizeLabelIds()</code><a class="headerlink" href="#normalizelabelids" title="Permanent link">&para;</a></h3>
+<p>Normalize label IDs across multiple frames so each Track or category gets a globally consistent ID. Mutates label images in place.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Normalize by track (default) — each Track gets a unique, consistent ID</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">trackMap</span><span class="o">:</span><span class="w"> </span><span class="kt">Map</span><span class="o">&lt;</span><span class="nx">Track</span><span class="p">,</span><span class="w"> </span><span class="kt">number</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">normalizeLabelIds</span><span class="p">(</span><span class="nx">labelImages</span><span class="p">);</span>
+
+<span class="c1">// Normalize by category — same category string gets the same ID</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">catMap</span><span class="o">:</span><span class="w"> </span><span class="kt">Map</span><span class="o">&lt;</span><span class="kt">string</span><span class="p">,</span><span class="w"> </span><span class="kt">number</span><span class="o">&gt;</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">normalizeLabelIds</span><span class="p">(</span><span class="nx">labelImages</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">by</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;category&quot;</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<h2 id="identity-3d-data-structures">Identity &amp; 3D Data Structures<a class="headerlink" href="#identity-3d-data-structures" title="Permanent link">&para;</a></h2>
+<h3 id="identity"><code>Identity</code><a class="headerlink" href="#identity" title="Permanent link">&para;</a></h3>
+<p>Ground-truth animal identity that persists across videos, sessions, and experiments. Unlike <code>Track</code> (which represents a temporal trajectory within a single video), <code>Identity</code> represents the actual animal.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">id</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Identity</span><span class="p">({</span><span class="w"> </span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;mouse_A&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">color</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;#ff0000&quot;</span><span class="w"> </span><span class="p">});</span>
+
+<span class="nx">id</span><span class="p">.</span><span class="nx">name</span><span class="p">;</span><span class="w">      </span><span class="c1">// &quot;mouse_A&quot;</span>
+<span class="nx">id</span><span class="p">.</span><span class="nx">color</span><span class="p">;</span><span class="w">     </span><span class="c1">// &quot;#ff0000&quot;</span>
+<span class="nx">id</span><span class="p">.</span><span class="nx">metadata</span><span class="p">;</span><span class="w">  </span><span class="c1">// Record&lt;string, unknown&gt;</span>
+</code></pre></div>
+<h3 id="instance3d-and-predictedinstance3d"><code>Instance3D</code> and <code>PredictedInstance3D</code><a class="headerlink" href="#instance3d-and-predictedinstance3d" title="Permanent link">&para;</a></h3>
+<p>3D keypoint data from multi-camera triangulation.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// User-annotated 3D instance</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">inst3d</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Instance3D</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">points</span><span class="o">:</span><span class="w"> </span><span class="p">[[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">2.0</span><span class="p">,</span><span class="w"> </span><span class="mf">3.0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">4.0</span><span class="p">,</span><span class="w"> </span><span class="mf">5.0</span><span class="p">,</span><span class="w"> </span><span class="mf">6.0</span><span class="p">]],</span>
+<span class="w">  </span><span class="nx">skeleton</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.95</span><span class="p">,</span>
+<span class="p">});</span>
+
+<span class="nx">inst3d</span><span class="p">.</span><span class="nx">nVisible</span><span class="p">;</span><span class="w">  </span><span class="c1">// number of non-NaN keypoints</span>
+<span class="nx">inst3d</span><span class="p">.</span><span class="nx">isEmpty</span><span class="p">;</span><span class="w">   </span><span class="c1">// true if all keypoints are NaN/null</span>
+
+<span class="c1">// Predicted 3D instance (with per-keypoint scores)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">pred3d</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedInstance3D</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">points</span><span class="o">:</span><span class="w"> </span><span class="p">[[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">2.0</span><span class="p">,</span><span class="w"> </span><span class="mf">3.0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">4.0</span><span class="p">,</span><span class="w"> </span><span class="mf">5.0</span><span class="p">,</span><span class="w"> </span><span class="mf">6.0</span><span class="p">]],</span>
+<span class="w">  </span><span class="nx">skeleton</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.95</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">pointScores</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0.99</span><span class="p">,</span><span class="w"> </span><span class="mf">0.87</span><span class="p">],</span>
+<span class="p">});</span>
+</code></pre></div>
+<h3 id="3d-fields-on-existing-types">3D Fields on Existing Types<a class="headerlink" href="#3d-fields-on-existing-types" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="c1">// Labels.identities — all ground-truth identities</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">identities</span><span class="p">;</span><span class="w">  </span><span class="c1">// Identity[]</span>
+
+<span class="c1">// Camera.size — image dimensions</span>
+<span class="nx">camera</span><span class="p">.</span><span class="nx">size</span><span class="p">;</span><span class="w">  </span><span class="c1">// [width, height] | undefined</span>
+
+<span class="c1">// InstanceGroup — links identity and 3D data to multi-camera groups</span>
+<span class="nx">group</span><span class="p">.</span><span class="nx">identity</span><span class="p">;</span><span class="w">    </span><span class="c1">// Identity | undefined</span>
+<span class="nx">group</span><span class="p">.</span><span class="nx">instance3d</span><span class="p">;</span><span class="w">  </span><span class="c1">// Instance3D | undefined</span>
+<span class="nx">group</span><span class="p">.</span><span class="nx">points</span><span class="p">;</span><span class="w">      </span><span class="c1">// delegates to instance3d.points if available</span>
+</code></pre></div>
 <h2 id="geojson-io">GeoJSON I/O<a class="headerlink" href="#geojson-io" title="Permanent link">&para;</a></h2>
 <p>Convert ROIs to/from GeoJSON format.</p>
 <div class="highlight"><pre><span></span><code><span class="c1">// Convert ROIs to GeoJSON FeatureCollection</span>

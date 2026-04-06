@@ -408,6 +408,24 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#label-images-dense-segmentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Label Images (Dense Segmentation)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3d-pose-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      3D Pose Data
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#advanced-low-level-worker-apis" class="md-nav__link">
     <span class="md-ellipsis">
       Advanced: Low-Level Worker APIs
@@ -604,6 +622,24 @@
   <a href="#roi-segmentation-masks-bounding-boxes" class="md-nav__link">
     <span class="md-ellipsis">
       ROI, Segmentation Masks &amp; Bounding Boxes
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#label-images-dense-segmentation" class="md-nav__link">
+    <span class="md-ellipsis">
+      Label Images (Dense Segmentation)
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#3d-pose-data" class="md-nav__link">
+    <span class="md-ellipsis">
+      3D Pose Data
     </span>
   </a>
   
@@ -933,7 +969,7 @@
 <span class="k">await</span><span class="w"> </span><span class="nx">saveSlpSet</span><span class="p">(</span><span class="nx">set</span><span class="p">);</span>
 </code></pre></div>
 <h2 id="roi-segmentation-masks-bounding-boxes">ROI, Segmentation Masks &amp; Bounding Boxes<a class="headerlink" href="#roi-segmentation-masks-bounding-boxes" title="Permanent link">&para;</a></h2>
-<p>SLP format 1.5+ supports spatial annotations alongside pose data: ROIs (format 1.5), ROI-instance associations (format 1.6), and bounding boxes (format 1.7).</p>
+<p>SLP format 1.5+ supports spatial annotations alongside pose data.</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">ROI</span><span class="p">,</span><span class="w"> </span><span class="nx">SegmentationMask</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">UserBoundingBox</span><span class="p">,</span><span class="w"> </span><span class="nx">PredictedBoundingBox</span><span class="p">,</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">,</span>
@@ -942,24 +978,24 @@
 
 <span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;dataset.slp&quot;</span><span class="p">);</span>
 
-<span class="c1">// Access ROIs, masks, and bounding boxes</span>
+<span class="c1">// Access annotations</span>
 <span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="sb">`</span><span class="si">${</span><span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">.</span><span class="nx">length</span><span class="si">}</span><span class="sb"> ROIs, </span><span class="si">${</span><span class="nx">labels</span><span class="p">.</span><span class="nx">masks</span><span class="p">.</span><span class="nx">length</span><span class="si">}</span><span class="sb"> masks, </span><span class="si">${</span><span class="nx">labels</span><span class="p">.</span><span class="nx">bboxes</span><span class="p">.</span><span class="nx">length</span><span class="si">}</span><span class="sb"> bboxes`</span><span class="p">);</span>
 
-<span class="c1">// Query by video and frame</span>
+<span class="c1">// Query by video, frame, and predicted status</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">frameRois</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getRois</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">frameMasks</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">predMasks</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">frameBboxes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getBboxes</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
 
-<span class="c1">// Create new ROIs</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ROI</span><span class="p">.</span><span class="nx">fromBbox</span><span class="p">(</span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">200</span><span class="p">,</span><span class="w"> </span><span class="mf">50</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="c1">// Create ROIs</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ROI</span><span class="p">.</span><span class="nx">fromPolygon</span><span class="p">([[</span><span class="mf">0</span><span class="p">,</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">100</span><span class="p">,</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">100</span><span class="p">,</span><span class="mf">100</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">0</span><span class="p">,</span><span class="mf">100</span><span class="p">]],</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span>
 <span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">roi</span><span class="p">);</span>
 
-<span class="c1">// Create bounding boxes</span>
+<span class="c1">// Create bounding boxes (corner coordinates)</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserBoundingBox</span><span class="p">({</span>
-<span class="w">  </span><span class="nx">xCenter</span><span class="o">:</span><span class="w"> </span><span class="kt">150</span><span class="p">,</span><span class="w"> </span><span class="nx">yCenter</span><span class="o">:</span><span class="w"> </span><span class="kt">240</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">50</span><span class="p">,</span><span class="w"> </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">80</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">x1</span><span class="o">:</span><span class="w"> </span><span class="kt">125</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="o">:</span><span class="w"> </span><span class="kt">200</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="o">:</span><span class="w"> </span><span class="kt">175</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="o">:</span><span class="w"> </span><span class="kt">280</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;animal&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span>
 <span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">bboxes</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">bbox</span><span class="p">);</span>
@@ -970,6 +1006,89 @@
 
 <span class="c1">// Save — format version is set automatically based on content</span>
 <span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.slp&quot;</span><span class="p">);</span>
+</code></pre></div>
+<h2 id="label-images-dense-segmentation">Label Images (Dense Segmentation)<a class="headerlink" href="#label-images-dense-segmentation" title="Permanent link">&para;</a></h2>
+<p>For dense instance segmentation workflows (Cellpose, StarDist, SAM, Mask R-CNN), use <code>LabelImage</code> to store per-pixel object IDs alongside pose data.</p>
+<h3 id="from-segmentation-model-output">From Segmentation Model Output<a class="headerlink" href="#from-segmentation-model-output" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">,</span><span class="w"> </span><span class="nx">Track</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Create from per-object binary masks (e.g., SAM output)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">trackA</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Track</span><span class="p">({</span><span class="w"> </span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cell_1&quot;</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">trackB</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Track</span><span class="p">({</span><span class="w"> </span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cell_2&quot;</span><span class="w"> </span><span class="p">});</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">li</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromBinaryMasks</span><span class="p">(</span>
+<span class="w">  </span><span class="p">[</span><span class="nx">mask1</span><span class="p">,</span><span class="w"> </span><span class="nx">mask2</span><span class="p">],</span><span class="w">  </span><span class="c1">// 2D boolean/number arrays or Uint8Arrays</span>
+<span class="w">  </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="p">,</span><span class="w"> </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span><span class="w">  </span><span class="c1">// required for Uint8Array input</span>
+<span class="w">    </span><span class="nx">tracks</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">trackA</span><span class="p">,</span><span class="w"> </span><span class="nx">trackB</span><span class="p">],</span>
+<span class="w">    </span><span class="nx">categories</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;cell&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;cell&quot;</span><span class="p">],</span>
+<span class="w">    </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="p">);</span>
+
+<span class="c1">// Extract individual masks</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">cellMask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">getTrackMask</span><span class="p">(</span><span class="nx">trackA</span><span class="p">);</span><span class="w">  </span><span class="c1">// Uint8Array</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">allCells</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">getCategoryMask</span><span class="p">(</span><span class="s2">&quot;cell&quot;</span><span class="p">);</span>
+</code></pre></div>
+<h3 id="batch-processing-video-frames">Batch Processing Video Frames<a class="headerlink" href="#batch-processing-video-frames" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">,</span><span class="w"> </span><span class="nx">normalizeLabelIds</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Create label images for each frame from a stack of 2D arrays</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labelImages</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromStack</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">data</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">frame0</span><span class="p">,</span><span class="w"> </span><span class="nx">frame1</span><span class="p">,</span><span class="w"> </span><span class="nx">frame2</span><span class="p">],</span><span class="w">  </span><span class="c1">// number[][][] (per-frame 2D label arrays)</span>
+<span class="w">  </span><span class="nx">createTracks</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span><span class="w">  </span><span class="c1">// auto-create Track objects from label IDs</span>
+<span class="w">  </span><span class="nx">video</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">],</span>
+<span class="p">});</span>
+
+<span class="c1">// Normalize IDs so the same track gets the same label ID across all frames</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">trackMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">normalizeLabelIds</span><span class="p">(</span><span class="nx">labelImages</span><span class="p">);</span>
+
+<span class="c1">// Add to labels</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">labelImages</span><span class="p">.</span><span class="nx">push</span><span class="p">(...</span><span class="nx">labelImages</span><span class="p">);</span>
+</code></pre></div>
+<h3 id="spatial-transforms">Spatial Transforms<a class="headerlink" href="#spatial-transforms" title="Permanent link">&para;</a></h3>
+<p>When predictions are at a different resolution than the source video:</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Create a downsampled label image</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">li</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromArray</span><span class="p">(</span><span class="nx">data</span><span class="p">,</span><span class="w"> </span><span class="mf">120</span><span class="p">,</span><span class="w"> </span><span class="mf">160</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">scale</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0.25</span><span class="p">,</span><span class="w"> </span><span class="mf">0.25</span><span class="p">],</span><span class="w">   </span><span class="c1">// 4x downsampled</span>
+<span class="w">  </span><span class="nx">offset</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">],</span>
+<span class="p">});</span>
+
+<span class="nx">li</span><span class="p">.</span><span class="nx">imageExtent</span><span class="p">;</span><span class="w">  </span><span class="c1">// { height: 480, width: 640 }</span>
+
+<span class="c1">// Resample to full resolution</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">fullRes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">resampled</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span>
+</code></pre></div>
+<h2 id="3d-pose-data">3D Pose Data<a class="headerlink" href="#3d-pose-data" title="Permanent link">&para;</a></h2>
+<p>Multi-camera 3D pose estimation with cross-library interop (Python sleap-io, luc3d).</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">Identity</span><span class="p">,</span><span class="w"> </span><span class="nx">Instance3D</span><span class="p">,</span><span class="w"> </span><span class="nx">PredictedInstance3D</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Ground-truth identity (persists across sessions)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">animal</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Identity</span><span class="p">({</span><span class="w"> </span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;mouse_A&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">color</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;#ff0000&quot;</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// 3D instance from triangulation</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">inst3d</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Instance3D</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">points</span><span class="o">:</span><span class="w"> </span><span class="p">[[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">2.0</span><span class="p">,</span><span class="w"> </span><span class="mf">3.0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">4.0</span><span class="p">,</span><span class="w"> </span><span class="mf">5.0</span><span class="p">,</span><span class="w"> </span><span class="mf">6.0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="kc">NaN</span><span class="p">,</span><span class="w"> </span><span class="kc">NaN</span><span class="p">,</span><span class="w"> </span><span class="kc">NaN</span><span class="p">]],</span>
+<span class="w">  </span><span class="nx">skeleton</span><span class="p">,</span>
+<span class="p">});</span>
+<span class="nx">inst3d</span><span class="p">.</span><span class="nx">nVisible</span><span class="p">;</span><span class="w">  </span><span class="c1">// 2</span>
+<span class="nx">inst3d</span><span class="p">.</span><span class="nx">isEmpty</span><span class="p">;</span><span class="w">   </span><span class="c1">// false</span>
+
+<span class="c1">// Predicted 3D instance with per-keypoint confidence</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">pred3d</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedInstance3D</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">points</span><span class="o">:</span><span class="w"> </span><span class="p">[[</span><span class="mf">1.0</span><span class="p">,</span><span class="w"> </span><span class="mf">2.0</span><span class="p">,</span><span class="w"> </span><span class="mf">3.0</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">4.0</span><span class="p">,</span><span class="w"> </span><span class="mf">5.0</span><span class="p">,</span><span class="w"> </span><span class="mf">6.0</span><span class="p">]],</span>
+<span class="w">  </span><span class="nx">skeleton</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.95</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">pointScores</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0.99</span><span class="p">,</span><span class="w"> </span><span class="mf">0.87</span><span class="p">],</span>
+<span class="p">});</span>
+
+<span class="c1">// Link to an instance group</span>
+<span class="nx">group</span><span class="p">.</span><span class="nx">identity</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">animal</span><span class="p">;</span>
+<span class="nx">group</span><span class="p">.</span><span class="nx">instance3d</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">inst3d</span><span class="p">;</span>
+
+<span class="c1">// Identities are stored on Labels</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">identities</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">animal</span><span class="p">);</span>
 </code></pre></div>
 <h2 id="advanced-low-level-worker-apis">Advanced: Low-Level Worker APIs<a class="headerlink" href="#advanced-low-level-worker-apis" title="Permanent link">&para;</a></h2>
 <p>For fine-grained control over HDF5 file access, you can use the streaming APIs directly:</p>
