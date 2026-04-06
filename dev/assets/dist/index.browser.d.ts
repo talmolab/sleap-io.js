@@ -660,6 +660,43 @@ declare class LabelImage {
         video?: Video | null;
         source?: string;
     }): UserLabelImage[];
+    /**
+     * Create a LabelImage from per-object binary mask arrays.
+     *
+     * This is a convenience factory for workflows that produce per-object boolean
+     * masks (e.g., SAM, Mask R-CNN) without going through SegmentationMask/RLE.
+     *
+     * Overlapping pixels are assigned to the last mask (same as fromMasks).
+     *
+     * @param masks - Binary masks as:
+     *   - `number[][]` — single 2D mask (rows of pixel values)
+     *   - `number[][][]` — array of 2D masks
+     *   - `(Uint8Array | number[][])[]` — array of flat or 2D masks
+     * @param options.height - Required when masks are flat Uint8Array.
+     * @param options.width - Required when masks are flat Uint8Array.
+     * @param options.labelIds - Explicit pixel values per mask. Must be positive and unique.
+     *   Defaults to sequential [1, 2, ..., N].
+     * @param options.tracks - Track objects per mask (positional).
+     * @param options.categories - Category strings per mask (positional).
+     * @param options.names - Name strings per mask (positional).
+     * @param options.scores - Confidence scores per mask (positional).
+     * @param options.createTracks - Auto-create Track objects named by label ID.
+     */
+    static fromBinaryMasks(masks: number[][] | number[][][] | (Uint8Array | number[][])[], options?: {
+        height?: number;
+        width?: number;
+        labelIds?: number[] | null;
+        tracks?: Track[] | null;
+        categories?: string[] | null;
+        names?: string[] | null;
+        scores?: number[] | null;
+        createTracks?: boolean;
+        video?: Video | null;
+        frameIdx?: number | null;
+        source?: string;
+        scale?: [number, number];
+        offset?: [number, number];
+    }): UserLabelImage;
     /** Decompose this LabelImage into individual SegmentationMask objects. */
     toMasks(): SegmentationMask[];
 }
@@ -682,6 +719,24 @@ declare class PredictedLabelImage extends LabelImage {
     });
     get isPredicted(): boolean;
 }
+/**
+ * Normalize label IDs across a list of LabelImages so that each Track (or
+ * category) gets a globally consistent label ID.
+ *
+ * IDs are assigned in first-appearance order (frame-by-frame, sorted within
+ * each frame). The label images are mutated in place.
+ *
+ * @param labelImages - Array of LabelImage objects to normalize.
+ * @param options.by - Group by "track" (default, reference equality) or
+ *   "category" (string equality; same-category objects within a frame merge).
+ * @returns Map from Track (or category string) to assigned label ID.
+ */
+declare function normalizeLabelIds(labelImages: LabelImage[], options?: {
+    by?: "track";
+}): Map<Track, number>;
+declare function normalizeLabelIds(labelImages: LabelImage[], options: {
+    by: "category";
+}): Map<string, number>;
 
 declare class Labels {
     labeledFrames: LabeledFrame[];
@@ -1560,4 +1615,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AnnotationType, BoundingBox, type BoundingBoxOptions, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, type SegmentationMaskOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };
+export { AnnotationType, BoundingBox, type BoundingBoxOptions, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, type SegmentationMaskOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };

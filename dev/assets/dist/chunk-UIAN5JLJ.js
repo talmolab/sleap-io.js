@@ -2888,6 +2888,169 @@ var LabelImage = class _LabelImage {
     }
     return result;
   }
+  /**
+   * Create a LabelImage from per-object binary mask arrays.
+   *
+   * This is a convenience factory for workflows that produce per-object boolean
+   * masks (e.g., SAM, Mask R-CNN) without going through SegmentationMask/RLE.
+   *
+   * Overlapping pixels are assigned to the last mask (same as fromMasks).
+   *
+   * @param masks - Binary masks as:
+   *   - `number[][]` — single 2D mask (rows of pixel values)
+   *   - `number[][][]` — array of 2D masks
+   *   - `(Uint8Array | number[][])[]` — array of flat or 2D masks
+   * @param options.height - Required when masks are flat Uint8Array.
+   * @param options.width - Required when masks are flat Uint8Array.
+   * @param options.labelIds - Explicit pixel values per mask. Must be positive and unique.
+   *   Defaults to sequential [1, 2, ..., N].
+   * @param options.tracks - Track objects per mask (positional).
+   * @param options.categories - Category strings per mask (positional).
+   * @param options.names - Name strings per mask (positional).
+   * @param options.scores - Confidence scores per mask (positional).
+   * @param options.createTracks - Auto-create Track objects named by label ID.
+   */
+  static fromBinaryMasks(masks, options) {
+    let maskList;
+    if (masks.length === 0) {
+      throw new Error("Cannot create LabelImage from empty mask list.");
+    }
+    const first = masks[0];
+    if (first instanceof Uint8Array) {
+      maskList = masks;
+    } else if (Array.isArray(first)) {
+      if (first.length > 0 && typeof first[0] === "number") {
+        maskList = [masks];
+      } else if (first.length > 0 && Array.isArray(first[0])) {
+        maskList = masks;
+      } else {
+        maskList = [masks];
+      }
+    } else {
+      throw new Error("Unsupported mask format.");
+    }
+    const n = maskList.length;
+    let height = options?.height;
+    let width = options?.width;
+    for (const m of maskList) {
+      if (Array.isArray(m)) {
+        height = height ?? m.length;
+        width = width ?? m[0]?.length ?? 0;
+        break;
+      }
+    }
+    if (height === void 0 || width === void 0) {
+      throw new Error(
+        "Cannot determine mask dimensions. Provide height and width in options when using flat Uint8Array masks."
+      );
+    }
+    const pixelCount = height * width;
+    const flatMasks = [];
+    for (let i = 0; i < n; i++) {
+      const m = maskList[i];
+      if (m instanceof Uint8Array) {
+        if (m.length !== pixelCount) {
+          throw new Error(
+            `Mask ${i} has length ${m.length}, expected ${pixelCount} (${height}x${width}).`
+          );
+        }
+        flatMasks.push(m);
+      } else {
+        if (m.length !== height || (m[0]?.length ?? 0) !== width) {
+          throw new Error(
+            `Mask ${i} has shape (${m.length}, ${m[0]?.length ?? 0}), expected (${height}, ${width}).`
+          );
+        }
+        const flat = new Uint8Array(pixelCount);
+        for (let r = 0; r < height; r++) {
+          for (let c = 0; c < width; c++) {
+            if (m[r][c]) flat[r * width + c] = 1;
+          }
+        }
+        flatMasks.push(flat);
+      }
+    }
+    const labelIds = [];
+    if (options?.labelIds != null) {
+      if (options.labelIds.length !== n) {
+        throw new Error(
+          `labelIds length (${options.labelIds.length}) must match number of masks (${n}).`
+        );
+      }
+      const seen = /* @__PURE__ */ new Set();
+      for (const id of options.labelIds) {
+        if (id <= 0) {
+          throw new Error(
+            `All labelIds must be positive, got ${id}.`
+          );
+        }
+        if (seen.has(id)) {
+          throw new Error(`Duplicate labelId: ${id}.`);
+        }
+        seen.add(id);
+        labelIds.push(id);
+      }
+    } else {
+      for (let i = 0; i < n; i++) {
+        labelIds.push(i + 1);
+      }
+    }
+    if (options?.tracks != null && options.tracks.length !== n) {
+      throw new Error(
+        `tracks length (${options.tracks.length}) must match number of masks (${n}).`
+      );
+    }
+    if (options?.categories != null && options.categories.length !== n) {
+      throw new Error(
+        `categories length (${options.categories.length}) must match number of masks (${n}).`
+      );
+    }
+    if (options?.names != null && options.names.length !== n) {
+      throw new Error(
+        `names length (${options.names.length}) must match number of masks (${n}).`
+      );
+    }
+    if (options?.scores != null && options.scores.length !== n) {
+      throw new Error(
+        `scores length (${options.scores.length}) must match number of masks (${n}).`
+      );
+    }
+    let trackList;
+    if (options?.tracks != null) {
+      trackList = options.tracks;
+    } else if (options?.createTracks) {
+      trackList = labelIds.map((id) => new Track(String(id)));
+    } else {
+      trackList = new Array(n).fill(null);
+    }
+    const data = new Int32Array(pixelCount);
+    const objects = /* @__PURE__ */ new Map();
+    for (let i = 0; i < n; i++) {
+      const labelId = labelIds[i];
+      const maskData = flatMasks[i];
+      for (let j = 0; j < maskData.length; j++) {
+        if (maskData[j]) data[j] = labelId;
+      }
+      objects.set(labelId, {
+        track: trackList[i],
+        category: options?.categories?.[i] ?? "",
+        name: options?.names?.[i] ?? "",
+        instance: null,
+        score: options?.scores?.[i] ?? void 0
+      });
+    }
+    return new UserLabelImage({
+      data,
+      height,
+      width,
+      objects,
+      video: options?.video ?? null,
+      frameIdx: options?.frameIdx ?? null,
+      source: options?.source ?? "",
+      scale: options?.scale,
+      offset: options?.offset
+    });
+  }
   // --- Conversion ---
   /** Decompose this LabelImage into individual SegmentationMask objects. */
   toMasks() {
@@ -2956,6 +3119,95 @@ var PredictedLabelImage = class extends LabelImage {
     return true;
   }
 };
+function normalizeLabelIds(labelImages, options) {
+  const by = options?.by ?? "track";
+  if (by === "track") {
+    return normalizeLabelIdsByTrack(labelImages);
+  } else {
+    return normalizeLabelIdsByCategory(labelImages);
+  }
+}
+function normalizeLabelIdsByTrack(labelImages) {
+  const trackToId = /* @__PURE__ */ new Map();
+  let nextId = 1;
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId);
+      if (info.track !== null && !trackToId.has(info.track)) {
+        trackToId.set(info.track, nextId++);
+      }
+    }
+  }
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+    let maxOld = 0;
+    for (const k of sortedKeys) {
+      if (k > maxOld) maxOld = k;
+    }
+    const lut = new Int32Array(maxOld + 1);
+    const newObjects = /* @__PURE__ */ new Map();
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId);
+      let newId;
+      if (info.track !== null) {
+        newId = trackToId.get(info.track);
+      } else {
+        newId = nextId++;
+      }
+      lut[oldId] = newId;
+      newObjects.set(newId, info);
+    }
+    const newData = new Int32Array(li.data.length);
+    for (let j = 0; j < li.data.length; j++) {
+      const v = li.data[j];
+      newData[j] = v > 0 && v <= maxOld ? lut[v] : 0;
+    }
+    li.data = newData;
+    li.objects = newObjects;
+  }
+  return trackToId;
+}
+function normalizeLabelIdsByCategory(labelImages) {
+  const categoryToId = /* @__PURE__ */ new Map();
+  let nextId = 1;
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId);
+      const cat = info.category ?? "";
+      if (!categoryToId.has(cat)) {
+        categoryToId.set(cat, nextId++);
+      }
+    }
+  }
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+    let maxOld = 0;
+    for (const k of sortedKeys) {
+      if (k > maxOld) maxOld = k;
+    }
+    const lut = new Int32Array(maxOld + 1);
+    const newObjects = /* @__PURE__ */ new Map();
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId);
+      const cat = info.category ?? "";
+      const newId = categoryToId.get(cat);
+      lut[oldId] = newId;
+      if (!newObjects.has(newId)) {
+        newObjects.set(newId, info);
+      }
+    }
+    const newData = new Int32Array(li.data.length);
+    for (let j = 0; j < li.data.length; j++) {
+      const v = li.data[j];
+      newData[j] = v > 0 && v <= maxOld ? lut[v] : 0;
+    }
+    li.data = newData;
+    li.objects = newObjects;
+  }
+  return categoryToId;
+}
 
 // src/video/mp4box-video.ts
 var isBrowser2 = typeof window !== "undefined" && typeof document !== "undefined";
@@ -7686,6 +7938,7 @@ export {
   LabelImage,
   UserLabelImage,
   PredictedLabelImage,
+  normalizeLabelIds,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
   StreamingH5File,

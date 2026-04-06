@@ -59,6 +59,7 @@ import {
   loadSlpSet,
   loadVideo,
   makeCameraFromDict,
+  normalizeLabelIds,
   openH5Worker,
   openStreamingH5,
   rasterizeGeometry,
@@ -79,7 +80,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-XRL5DBU7.js";
+} from "./chunk-UIAN5JLJ.js";
 import {
   Edge,
   Instance,
@@ -167,6 +168,7 @@ export {
   loadSlpSet,
   loadVideo,
   makeCameraFromDict,
+  normalizeLabelIds,
   openH5Worker,
   openStreamingH5,
   pointsEmpty,
