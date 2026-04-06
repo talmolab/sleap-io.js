@@ -11,11 +11,12 @@ JavaScript/TypeScript utilities for reading and writing SLEAP `.slp` files with 
 
 ## Features
 
-- SLP read/write with format compatibility (format 1.0–1.7, including embedded frames via HDF5 video datasets).
+- SLP read/write with format compatibility (format 1.0–2.2, including embedded frames via HDF5 video datasets).
 - Browser-compatible SLP writing via `saveSlpToBytes()`.
 - Streaming-friendly file access (URL, `File`, `FileSystemFileHandle`, `Blob`).
-- Core data model (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`, etc.).
-- ROI, segmentation mask, and bounding box annotations with GeoJSON I/O.
+- Core data model (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`, `Identity`, `Instance3D`, etc.).
+- ROI, segmentation mask, bounding box, and label image annotations with GeoJSON I/O.
+- 3D pose data structures with cross-library interop (Python sleap-io, luc3d).
 - Video backends accept `string`, `File`, or `Blob` sources.
 - Browser-safe: Node.js-only dependencies (`skia-canvas`, `child_process`) are dynamically imported, so bundlers can tree-shake them.
 - Dictionary and numpy codecs for interchange.
