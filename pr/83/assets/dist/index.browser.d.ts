@@ -694,6 +694,8 @@ declare class LabelImage {
         video?: Video | null;
         frameIdx?: number | null;
         source?: string;
+        scale?: [number, number];
+        offset?: [number, number];
     }): UserLabelImage;
     /** Decompose this LabelImage into individual SegmentationMask objects. */
     toMasks(): SegmentationMask[];

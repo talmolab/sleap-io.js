@@ -3046,7 +3046,9 @@ var LabelImage = class _LabelImage {
       objects,
       video: options?.video ?? null,
       frameIdx: options?.frameIdx ?? null,
-      source: options?.source ?? ""
+      source: options?.source ?? "",
+      scale: options?.scale,
+      offset: options?.offset
     });
   }
   // --- Conversion ---
