@@ -334,7 +334,6 @@ declare class SegmentationMask {
 }
 /** User-annotated segmentation mask (no prediction score). */
 declare class UserSegmentationMask extends SegmentationMask {
-    get isPredicted(): boolean;
 }
 /** Predicted segmentation mask with a confidence score and optional score map. */
 declare class PredictedSegmentationMask extends SegmentationMask {
@@ -438,7 +437,6 @@ declare function encodeWkb(geometry: Geometry): Uint8Array;
 declare function decodeWkb(bytes: Uint8Array): Geometry;
 /** User-annotated region of interest (no prediction score). */
 declare class UserROI extends ROI {
-    get isPredicted(): boolean;
 }
 /** Predicted region of interest with a confidence score. */
 declare class PredictedROI extends ROI {
@@ -531,7 +529,6 @@ declare class BoundingBox {
 }
 /** User-annotated bounding box (no prediction score). */
 declare class UserBoundingBox extends BoundingBox {
-    get isPredicted(): boolean;
 }
 /** Predicted bounding box with a confidence score. */
 declare class PredictedBoundingBox extends BoundingBox {
@@ -655,7 +652,7 @@ declare class LabelImage {
      * @param options.source - Source string shared across all frames.
      */
     static fromStack(options: {
-        data: Int32Array[] | number[][][];
+        data: number[][][];
         tracks?: Map<number, Track> | Track[] | null;
         categories?: Map<number, string> | string[] | null;
         createTracks?: boolean;
@@ -668,7 +665,6 @@ declare class LabelImage {
 }
 /** User-annotated label image (no prediction score). */
 declare class UserLabelImage extends LabelImage {
-    get isPredicted(): boolean;
 }
 /** Predicted label image with a confidence score and optional score map. */
 declare class PredictedLabelImage extends LabelImage {

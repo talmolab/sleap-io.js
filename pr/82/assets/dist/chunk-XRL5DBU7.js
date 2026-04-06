@@ -2073,9 +2073,6 @@ function decodeWkbPolygon(view, offset, le) {
   return { rings, bytesRead: pos - offset };
 }
 var UserROI = class extends ROI {
-  get isPredicted() {
-    return false;
-  }
 };
 var PredictedROI = class extends ROI {
   score;
@@ -2325,9 +2322,6 @@ var SegmentationMask = class _SegmentationMask {
   }
 };
 var UserSegmentationMask = class extends SegmentationMask {
-  get isPredicted() {
-    return false;
-  }
 };
 var PredictedSegmentationMask = class extends SegmentationMask {
   score;
@@ -2492,9 +2486,6 @@ var BoundingBox = class _BoundingBox {
   }
 };
 var UserBoundingBox = class extends BoundingBox {
-  get isPredicted() {
-    return false;
-  }
 };
 var PredictedBoundingBox = class extends BoundingBox {
   score;
@@ -2837,12 +2828,8 @@ var LabelImage = class _LabelImage {
     const { data, video, source } = options;
     if (data.length === 0) return [];
     const first = data[0];
-    let height, width;
-    if (first instanceof Int32Array) {
-      throw new Error("fromStack with flat Int32Arrays requires 2D number[][] input. Use number[][] instead.");
-    }
-    height = first.length;
-    width = first[0]?.length ?? 0;
+    const height = first.length;
+    const width = first[0]?.length ?? 0;
     const allIds = /* @__PURE__ */ new Set();
     for (const frame of data) {
       if (Array.isArray(frame)) {
@@ -2921,27 +2908,35 @@ var LabelImage = class _LabelImage {
         name: "",
         instance: null
       };
-      result.push(
-        SegmentationMask.fromArray(maskMap.get(lid), this.height, this.width, {
-          track: info.track,
-          category: info.category,
-          name: info.name,
-          instance: info.instance,
-          video: this.video,
-          frameIdx: this.frameIdx,
-          source: this.source,
-          scale: [...this.scale],
-          offset: [...this.offset]
-        })
-      );
+      const rleCounts = encodeRle(maskMap.get(lid), this.height, this.width);
+      const baseOpts = {
+        rleCounts,
+        height: this.height,
+        width: this.width,
+        track: info.track,
+        category: info.category,
+        name: info.name,
+        instance: info.instance,
+        video: this.video,
+        frameIdx: this.frameIdx,
+        source: this.source,
+        scale: [...this.scale],
+        offset: [...this.offset]
+      };
+      if (this instanceof PredictedLabelImage) {
+        const pli = this;
+        result.push(new PredictedSegmentationMask({
+          ...baseOpts,
+          score: info.score ?? pli.score
+        }));
+      } else {
+        result.push(new UserSegmentationMask(baseOpts));
+      }
     }
     return result;
   }
 };
 var UserLabelImage = class extends LabelImage {
-  get isPredicted() {
-    return false;
-  }
 };
 var PredictedLabelImage = class extends LabelImage {
   score;
@@ -5664,7 +5659,11 @@ function writeMasks(file, masks, videos, tracks, instances) {
       if (pm.scoreMap) {
         const smBytes = new Uint8Array(pm.scoreMap.buffer, pm.scoreMap.byteOffset, pm.scoreMap.byteLength);
         const compressed = deflate(smBytes);
-        scoreMapIndexRows.push([i, smOffset, smOffset + compressed.length, pm.scoreMap.length / pm.width, pm.width]);
+        const smH = pm.scoreMap.length / mask.width;
+        if (!Number.isInteger(smH)) {
+          throw new Error(`Score map size ${pm.scoreMap.length} not divisible by width ${mask.width}`);
+        }
+        scoreMapIndexRows.push([i, smOffset, smOffset + compressed.length, smH, mask.width]);
         scoreMapChunks.push(compressed);
         smOffset += compressed.length;
       }
@@ -5741,10 +5740,9 @@ function writeBboxes(file, bboxes, videos, tracks, instances) {
     ["x1", "y1", "x2", "y2", "angle", "video", "frame_idx", "track", "score", "instance"],
     "<f8"
   );
-  const bboxesDs = file.get("bboxes");
-  setStringAttr(bboxesDs, "categories", JSON.stringify(categories));
-  setStringAttr(bboxesDs, "names", JSON.stringify(names));
-  setStringAttr(bboxesDs, "sources", JSON.stringify(sources));
+  writeStringDataset(file, "bbox_categories", categories);
+  writeStringDataset(file, "bbox_names", names);
+  writeStringDataset(file, "bbox_sources", sources);
 }
 function writeLabelImages(file, labelImages, videos, tracks, instances) {
   if (!labelImages.length) return;
@@ -5813,7 +5811,11 @@ function writeLabelImages(file, labelImages, videos, tracks, instances) {
       if (pli.scoreMap) {
         const smBytes = new Uint8Array(pli.scoreMap.buffer, pli.scoreMap.byteOffset, pli.scoreMap.byteLength);
         const smCompressed = deflate(smBytes);
-        smIndexRows.push([liIdx, smOffset, smOffset + smCompressed.length, pli.scoreMap.length / li.width, li.width]);
+        const smH = pli.scoreMap.length / li.width;
+        if (!Number.isInteger(smH)) {
+          throw new Error(`Score map size ${pli.scoreMap.length} not divisible by width ${li.width}`);
+        }
+        smIndexRows.push([liIdx, smOffset, smOffset + smCompressed.length, smH, li.width]);
         smChunks.push(smCompressed);
         smOffset += smCompressed.length;
       }
@@ -6427,9 +6429,9 @@ function readBboxes(file, videos, tracks) {
   const x1s = bboxesData.x1 ?? [];
   const count = isLegacy ? xCenters.length : x1s.length;
   if (!count) return [];
-  const categories = readAttrString(bboxesDs, "categories");
-  const names = readAttrString(bboxesDs, "names");
-  const sources = readAttrString(bboxesDs, "sources");
+  const categories = readStringMetadata(file, "bbox_categories", bboxesDs, "categories");
+  const names = readStringMetadata(file, "bbox_names", bboxesDs, "names");
+  const sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
   const yCenters = bboxesData.y_center ?? [];
   const widths = bboxesData.width ?? [];
   const heights = bboxesData.height ?? [];
@@ -6526,6 +6528,12 @@ function readScoreMaps(file, indexPath, dataPath) {
     const w = Number(smWidths[i]);
     const compressed = dataFlat.slice(start, end);
     const decompressed = inflate(compressed);
+    const expectedBytes = h * w * 4;
+    if (decompressed.byteLength !== expectedBytes) {
+      throw new Error(
+        `Score map decompression size mismatch: expected ${expectedBytes} bytes, got ${decompressed.byteLength}`
+      );
+    }
     const scoreMap = new Float32Array(
       decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
     );
