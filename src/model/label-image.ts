@@ -510,6 +510,209 @@ export class LabelImage {
     return result;
   }
 
+  /**
+   * Create a LabelImage from per-object binary mask arrays.
+   *
+   * This is a convenience factory for workflows that produce per-object boolean
+   * masks (e.g., SAM, Mask R-CNN) without going through SegmentationMask/RLE.
+   *
+   * Overlapping pixels are assigned to the last mask (same as fromMasks).
+   *
+   * @param masks - Binary masks as:
+   *   - `number[][]` — single 2D mask (rows of pixel values)
+   *   - `number[][][]` — array of 2D masks
+   *   - `(Uint8Array | number[][])[]` — array of flat or 2D masks
+   * @param options.height - Required when masks are flat Uint8Array.
+   * @param options.width - Required when masks are flat Uint8Array.
+   * @param options.labelIds - Explicit pixel values per mask. Must be positive and unique.
+   *   Defaults to sequential [1, 2, ..., N].
+   * @param options.tracks - Track objects per mask (positional).
+   * @param options.categories - Category strings per mask (positional).
+   * @param options.names - Name strings per mask (positional).
+   * @param options.scores - Confidence scores per mask (positional).
+   * @param options.createTracks - Auto-create Track objects named by label ID.
+   */
+  static fromBinaryMasks(
+    masks: number[][] | number[][][] | (Uint8Array | number[][])[],
+    options?: {
+      height?: number;
+      width?: number;
+      labelIds?: number[] | null;
+      tracks?: Track[] | null;
+      categories?: string[] | null;
+      names?: string[] | null;
+      scores?: number[] | null;
+      createTracks?: boolean;
+      video?: Video | null;
+      frameIdx?: number | null;
+      source?: string;
+    },
+  ): UserLabelImage {
+    // --- Normalize input to a list of individual masks ---
+    let maskList: (Uint8Array | number[][])[];
+
+    if (masks.length === 0) {
+      throw new Error("Cannot create LabelImage from empty mask list.");
+    }
+
+    const first = masks[0];
+    if (first instanceof Uint8Array) {
+      // List of Uint8Array
+      maskList = masks as Uint8Array[];
+    } else if (Array.isArray(first)) {
+      if (first.length > 0 && typeof first[0] === "number") {
+        // number[][] — single 2D mask
+        maskList = [masks as number[][]];
+      } else if (first.length > 0 && Array.isArray(first[0])) {
+        // number[][][] — list of 2D masks
+        maskList = masks as number[][][];
+      } else {
+        // Empty inner array — treat as single mask
+        maskList = [masks as number[][]];
+      }
+    } else {
+      throw new Error("Unsupported mask format.");
+    }
+
+    const n = maskList.length;
+
+    // --- Determine height and width ---
+    let height = options?.height;
+    let width = options?.width;
+
+    for (const m of maskList) {
+      if (Array.isArray(m)) {
+        height = height ?? m.length;
+        width = width ?? m[0]?.length ?? 0;
+        break;
+      }
+    }
+
+    if (height === undefined || width === undefined) {
+      throw new Error(
+        "Cannot determine mask dimensions. Provide height and width in options when using flat Uint8Array masks.",
+      );
+    }
+
+    const pixelCount = height * width;
+
+    // --- Flatten each mask to Uint8Array ---
+    const flatMasks: Uint8Array[] = [];
+    for (let i = 0; i < n; i++) {
+      const m = maskList[i];
+      if (m instanceof Uint8Array) {
+        if (m.length !== pixelCount) {
+          throw new Error(
+            `Mask ${i} has length ${m.length}, expected ${pixelCount} (${height}x${width}).`,
+          );
+        }
+        flatMasks.push(m);
+      } else {
+        // number[][] — flatten to Uint8Array
+        if (m.length !== height || (m[0]?.length ?? 0) !== width) {
+          throw new Error(
+            `Mask ${i} has shape (${m.length}, ${m[0]?.length ?? 0}), expected (${height}, ${width}).`,
+          );
+        }
+        const flat = new Uint8Array(pixelCount);
+        for (let r = 0; r < height; r++) {
+          for (let c = 0; c < width; c++) {
+            if (m[r][c]) flat[r * width + c] = 1;
+          }
+        }
+        flatMasks.push(flat);
+      }
+    }
+
+    // --- Validate and determine label IDs ---
+    const labelIds: number[] = [];
+    if (options?.labelIds != null) {
+      if (options.labelIds.length !== n) {
+        throw new Error(
+          `labelIds length (${options.labelIds.length}) must match number of masks (${n}).`,
+        );
+      }
+      const seen = new Set<number>();
+      for (const id of options.labelIds) {
+        if (id <= 0) {
+          throw new Error(
+            `All labelIds must be positive, got ${id}.`,
+          );
+        }
+        if (seen.has(id)) {
+          throw new Error(`Duplicate labelId: ${id}.`);
+        }
+        seen.add(id);
+        labelIds.push(id);
+      }
+    } else {
+      for (let i = 0; i < n; i++) {
+        labelIds.push(i + 1);
+      }
+    }
+
+    // --- Validate parallel arrays ---
+    if (options?.tracks != null && options.tracks.length !== n) {
+      throw new Error(
+        `tracks length (${options.tracks.length}) must match number of masks (${n}).`,
+      );
+    }
+    if (options?.categories != null && options.categories.length !== n) {
+      throw new Error(
+        `categories length (${options.categories.length}) must match number of masks (${n}).`,
+      );
+    }
+    if (options?.names != null && options.names.length !== n) {
+      throw new Error(
+        `names length (${options.names.length}) must match number of masks (${n}).`,
+      );
+    }
+    if (options?.scores != null && options.scores.length !== n) {
+      throw new Error(
+        `scores length (${options.scores.length}) must match number of masks (${n}).`,
+      );
+    }
+
+    // --- Build tracks ---
+    let trackList: (Track | null)[];
+    if (options?.tracks != null) {
+      trackList = options.tracks;
+    } else if (options?.createTracks) {
+      trackList = labelIds.map((id) => new Track(String(id)));
+    } else {
+      trackList = new Array(n).fill(null);
+    }
+
+    // --- Composite masks into label image ---
+    const data = new Int32Array(pixelCount);
+    const objects = new Map<number, LabelImageObjectInfo>();
+
+    for (let i = 0; i < n; i++) {
+      const labelId = labelIds[i];
+      const maskData = flatMasks[i];
+      for (let j = 0; j < maskData.length; j++) {
+        if (maskData[j]) data[j] = labelId;
+      }
+      objects.set(labelId, {
+        track: trackList[i],
+        category: options?.categories?.[i] ?? "",
+        name: options?.names?.[i] ?? "",
+        instance: null,
+        score: options?.scores?.[i] ?? undefined,
+      });
+    }
+
+    return new UserLabelImage({
+      data,
+      height,
+      width,
+      objects,
+      video: options?.video ?? null,
+      frameIdx: options?.frameIdx ?? null,
+      source: options?.source ?? "",
+    });
+  }
+
   // --- Conversion ---
 
   /** Decompose this LabelImage into individual SegmentationMask objects. */
@@ -590,4 +793,148 @@ export class PredictedLabelImage extends LabelImage {
   get isPredicted(): boolean {
     return true;
   }
+}
+
+/**
+ * Normalize label IDs across a list of LabelImages so that each Track (or
+ * category) gets a globally consistent label ID.
+ *
+ * IDs are assigned in first-appearance order (frame-by-frame, sorted within
+ * each frame). The label images are mutated in place.
+ *
+ * @param labelImages - Array of LabelImage objects to normalize.
+ * @param options.by - Group by "track" (default, reference equality) or
+ *   "category" (string equality; same-category objects within a frame merge).
+ * @returns Map from Track (or category string) to assigned label ID.
+ */
+export function normalizeLabelIds(
+  labelImages: LabelImage[],
+  options?: { by?: "track" },
+): Map<Track, number>;
+export function normalizeLabelIds(
+  labelImages: LabelImage[],
+  options: { by: "category" },
+): Map<string, number>;
+export function normalizeLabelIds(
+  labelImages: LabelImage[],
+  options?: { by?: "track" | "category" },
+): Map<Track, number> | Map<string, number> {
+  const by = options?.by ?? "track";
+
+  if (by === "track") {
+    return normalizeLabelIdsByTrack(labelImages);
+  } else {
+    return normalizeLabelIdsByCategory(labelImages);
+  }
+}
+
+function normalizeLabelIdsByTrack(
+  labelImages: LabelImage[],
+): Map<Track, number> {
+  // Phase 1: Assign new sequential IDs by first appearance of each Track.
+  const trackToId = new Map<Track, number>();
+  let nextId = 1;
+
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId)!;
+      if (info.track !== null && !trackToId.has(info.track)) {
+        trackToId.set(info.track, nextId++);
+      }
+    }
+  }
+
+  // Phase 2: Remap each frame.
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+
+    // Build LUT: oldId -> newId
+    let maxOld = 0;
+    for (const k of sortedKeys) {
+      if (k > maxOld) maxOld = k;
+    }
+    const lut = new Int32Array(maxOld + 1); // lut[0] = 0 (background stays 0)
+
+    const newObjects = new Map<number, LabelImageObjectInfo>();
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId)!;
+      let newId: number;
+      if (info.track !== null) {
+        newId = trackToId.get(info.track)!;
+      } else {
+        // Null tracks each get a unique ID
+        newId = nextId++;
+      }
+      lut[oldId] = newId;
+      newObjects.set(newId, info);
+    }
+
+    // Remap pixel data
+    const newData = new Int32Array(li.data.length);
+    for (let j = 0; j < li.data.length; j++) {
+      const v = li.data[j];
+      newData[j] = v > 0 && v <= maxOld ? lut[v] : 0;
+    }
+
+    li.data = newData;
+    li.objects = newObjects;
+  }
+
+  return trackToId;
+}
+
+function normalizeLabelIdsByCategory(
+  labelImages: LabelImage[],
+): Map<string, number> {
+  // Phase 1: Assign new sequential IDs by first appearance of each category.
+  const categoryToId = new Map<string, number>();
+  let nextId = 1;
+
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId)!;
+      const cat = info.category ?? "";
+      if (!categoryToId.has(cat)) {
+        categoryToId.set(cat, nextId++);
+      }
+    }
+  }
+
+  // Phase 2: Remap each frame.
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+
+    // Build LUT: oldId -> newId
+    let maxOld = 0;
+    for (const k of sortedKeys) {
+      if (k > maxOld) maxOld = k;
+    }
+    const lut = new Int32Array(maxOld + 1);
+
+    const newObjects = new Map<number, LabelImageObjectInfo>();
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId)!;
+      const cat = info.category ?? "";
+      const newId = categoryToId.get(cat)!;
+      lut[oldId] = newId;
+      // For category merge: keep first occurrence's metadata per newId
+      if (!newObjects.has(newId)) {
+        newObjects.set(newId, info);
+      }
+    }
+
+    // Remap pixel data
+    const newData = new Int32Array(li.data.length);
+    for (let j = 0; j < li.data.length; j++) {
+      const v = li.data[j];
+      newData[j] = v > 0 && v <= maxOld ? lut[v] : 0;
+    }
+
+    li.data = newData;
+    li.objects = newObjects;
+  }
+
+  return categoryToId;
 }

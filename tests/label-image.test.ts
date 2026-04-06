@@ -5,6 +5,7 @@ import {
   UserLabelImage,
   PredictedLabelImage,
   type LabelImageObjectInfo,
+  normalizeLabelIds,
 } from "../src/model/label-image.js";
 import { Track } from "../src/model/instance.js";
 import { SegmentationMask, PredictedSegmentationMask } from "../src/model/mask.js";
@@ -781,5 +782,587 @@ describe("LabelImage scale/offset", () => {
   it("scale must be positive", () => {
     const { data, height, width } = makeLabelData([[0]]);
     expect(() => new UserLabelImage({ data, height, width, scale: [-1, 1] })).toThrow("Scale must be positive");
+  });
+});
+
+// --- fromBinaryMasks tests ---
+
+describe("LabelImage.fromBinaryMasks", () => {
+  it("creates from a single 2D mask", () => {
+    const li = LabelImage.fromBinaryMasks([
+      [1, 0],
+      [0, 1],
+    ]);
+    expect(li).toBeInstanceOf(UserLabelImage);
+    expect(li.height).toBe(2);
+    expect(li.width).toBe(2);
+    expect(li.labelIds).toEqual([1]);
+    expect(li.data[0]).toBe(1); // top-left
+    expect(li.data[1]).toBe(0);
+    expect(li.data[2]).toBe(0);
+    expect(li.data[3]).toBe(1); // bottom-right
+  });
+
+  it("creates from multiple 2D masks (number[][][])", () => {
+    const li = LabelImage.fromBinaryMasks([
+      [
+        [1, 0],
+        [0, 0],
+      ],
+      [
+        [0, 1],
+        [1, 0],
+      ],
+    ]);
+    expect(li.labelIds).toEqual([1, 2]);
+    expect(li.data[0]).toBe(1);
+    expect(li.data[1]).toBe(2);
+    expect(li.data[2]).toBe(2);
+    expect(li.data[3]).toBe(0);
+    expect(li.nObjects).toBe(2);
+  });
+
+  it("creates from a list of Uint8Array masks", () => {
+    const m1 = new Uint8Array([1, 0, 0, 0]);
+    const m2 = new Uint8Array([0, 0, 1, 1]);
+    const li = LabelImage.fromBinaryMasks([m1, m2], {
+      height: 2,
+      width: 2,
+    });
+    expect(li.labelIds).toEqual([1, 2]);
+    expect(li.data[0]).toBe(1);
+    expect(li.data[2]).toBe(2);
+    expect(li.data[3]).toBe(2);
+  });
+
+  it("last mask wins on overlap", () => {
+    const li = LabelImage.fromBinaryMasks([
+      [
+        [1, 1],
+        [0, 0],
+      ],
+      [
+        [1, 0],
+        [0, 0],
+      ],
+    ]);
+    // Pixel (0,0) is set by both masks; mask 2 (labelId=2) wins
+    expect(li.data[0]).toBe(2);
+    expect(li.data[1]).toBe(1);
+  });
+
+  it("assigns tracks from options", () => {
+    const tA = new Track("A");
+    const tB = new Track("B");
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      { tracks: [tA, tB] },
+    );
+    expect(li.objects.get(1)!.track).toBe(tA);
+    expect(li.objects.get(2)!.track).toBe(tB);
+  });
+
+  it("auto-creates tracks with createTracks", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      { createTracks: true },
+    );
+    const tracks = li.tracks;
+    expect(tracks).toHaveLength(2);
+    expect(tracks[0].name).toBe("1");
+    expect(tracks[1].name).toBe("2");
+  });
+
+  it("auto-creates tracks named by custom labelIds", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      { createTracks: true, labelIds: [5, 10] },
+    );
+    const tracks = li.tracks;
+    expect(tracks[0].name).toBe("5");
+    expect(tracks[1].name).toBe("10");
+  });
+
+  it("assigns categories", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      { categories: ["cell", "nucleus"] },
+    );
+    expect(li.objects.get(1)!.category).toBe("cell");
+    expect(li.objects.get(2)!.category).toBe("nucleus");
+  });
+
+  it("assigns names", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      { names: ["obj1", "obj2"] },
+    );
+    expect(li.objects.get(1)!.name).toBe("obj1");
+    expect(li.objects.get(2)!.name).toBe("obj2");
+  });
+
+  it("assigns scores", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      { scores: [0.9, 0.8] },
+    );
+    expect(li.objects.get(1)!.score).toBe(0.9);
+    expect(li.objects.get(2)!.score).toBe(0.8);
+  });
+
+  it("uses custom labelIds for pixel values", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      { labelIds: [5, 10] },
+    );
+    expect(li.labelIds).toEqual([5, 10]);
+    expect(li.data[0]).toBe(5);
+    expect(li.data[1]).toBe(10);
+    expect(li.objects.has(5)).toBe(true);
+    expect(li.objects.has(10)).toBe(true);
+  });
+
+  it("passes through video, frameIdx, source", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [1, 0],
+        [0, 1],
+      ],
+      { frameIdx: 42, source: "test.png" },
+    );
+    expect(li.frameIdx).toBe(42);
+    expect(li.source).toBe("test.png");
+  });
+
+  it("throws on empty mask list", () => {
+    expect(() =>
+      LabelImage.fromBinaryMasks([] as number[][][]),
+    ).toThrow("empty mask list");
+  });
+
+  it("throws on mismatched mask dimensions", () => {
+    expect(() =>
+      LabelImage.fromBinaryMasks([
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [[1, 0, 0]],
+      ]),
+    ).toThrow("shape");
+  });
+
+  it("throws on mismatched tracks length", () => {
+    expect(() =>
+      LabelImage.fromBinaryMasks(
+        [
+          [
+            [1, 0],
+            [0, 0],
+          ],
+        ],
+        { tracks: [new Track("A"), new Track("B")] },
+      ),
+    ).toThrow("tracks length");
+  });
+
+  it("throws on mismatched categories length", () => {
+    expect(() =>
+      LabelImage.fromBinaryMasks(
+        [
+          [
+            [1, 0],
+            [0, 0],
+          ],
+        ],
+        { categories: ["a", "b"] },
+      ),
+    ).toThrow("categories length");
+  });
+
+  it("throws on non-positive labelIds", () => {
+    expect(() =>
+      LabelImage.fromBinaryMasks(
+        [
+          [
+            [1, 0],
+            [0, 0],
+          ],
+        ],
+        { labelIds: [0] },
+      ),
+    ).toThrow("positive");
+  });
+
+  it("throws on duplicate labelIds", () => {
+    expect(() =>
+      LabelImage.fromBinaryMasks(
+        [
+          [
+            [1, 0],
+            [0, 0],
+          ],
+          [
+            [0, 1],
+            [0, 0],
+          ],
+        ],
+        { labelIds: [3, 3] },
+      ),
+    ).toThrow("Duplicate");
+  });
+
+  it("null tracks by default", () => {
+    const li = LabelImage.fromBinaryMasks([
+      [
+        [1, 0],
+        [0, 0],
+      ],
+    ]);
+    expect(li.objects.get(1)!.track).toBeNull();
+  });
+
+  it("handles uint8 0/1 values in 2D arrays", () => {
+    // Simulates SAM-style output with 0/255 values
+    const li = LabelImage.fromBinaryMasks([
+      [
+        [255, 0],
+        [0, 255],
+      ],
+    ]);
+    expect(li.labelIds).toEqual([1]);
+    expect(li.data[0]).toBe(1);
+    expect(li.data[3]).toBe(1);
+  });
+});
+
+// --- normalizeLabelIds tests ---
+
+describe("normalizeLabelIds", () => {
+  it("assigns consistent IDs by track across frames", () => {
+    const tA = new Track("A");
+    const tB = new Track("B");
+
+    const li1 = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      { tracks: [tA, tB], labelIds: [3, 7] },
+    );
+    const li2 = LabelImage.fromBinaryMasks(
+      [
+        [
+          [0, 0],
+          [1, 0],
+        ],
+        [
+          [0, 0],
+          [0, 1],
+        ],
+      ],
+      { tracks: [tB, tA], labelIds: [10, 20] },
+    );
+
+    const mapping = normalizeLabelIds([li1, li2]);
+
+    // Track A appeared first (labelId=3 in frame 1), Track B second (labelId=7)
+    expect(mapping.get(tA)).toBe(1);
+    expect(mapping.get(tB)).toBe(2);
+
+    // Frame 1: was [3,7] -> now [1,2]
+    expect(li1.data[0]).toBe(1);
+    expect(li1.data[1]).toBe(2);
+
+    // Frame 2: tB had labelId=10 -> now 2, tA had labelId=20 -> now 1
+    expect(li2.data[2]).toBe(2);
+    expect(li2.data[3]).toBe(1);
+  });
+
+  it("uses first-appearance order", () => {
+    const tX = new Track("X");
+    const tY = new Track("Y");
+
+    // Y appears before X in frame 0
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [0, 1],
+          [0, 0],
+        ],
+        [
+          [0, 0],
+          [1, 0],
+        ],
+      ],
+      { tracks: [tY, tX], labelIds: [1, 2] },
+    );
+
+    const mapping = normalizeLabelIds([li]);
+
+    // Y was label ID 1 (lower), so it appears first
+    expect(mapping.get(tY)).toBe(1);
+    expect(mapping.get(tX)).toBe(2);
+  });
+
+  it("null tracks each get unique IDs", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      // No tracks → both null
+    );
+
+    normalizeLabelIds([li]);
+
+    // Both should have unique IDs
+    const ids = li.labelIds;
+    expect(ids).toHaveLength(2);
+    expect(ids[0]).not.toBe(ids[1]);
+  });
+
+  it("returns Map<Track, number>", () => {
+    const t = new Track("T");
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+      ],
+      { tracks: [t] },
+    );
+    const mapping = normalizeLabelIds([li]);
+    expect(mapping).toBeInstanceOf(Map);
+    expect(mapping.has(t)).toBe(true);
+  });
+
+  it("normalizes by category", () => {
+    const li1 = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      { categories: ["cell", "nucleus"], labelIds: [5, 10] },
+    );
+    const li2 = LabelImage.fromBinaryMasks(
+      [
+        [
+          [0, 0],
+          [0, 1],
+        ],
+      ],
+      { categories: ["nucleus"], labelIds: [3] },
+    );
+
+    const mapping = normalizeLabelIds([li1, li2], {
+      by: "category",
+    }) as Map<string, number>;
+
+    // "cell" appeared first (lower labelId=5), "nucleus" second
+    expect(mapping.get("cell")).toBe(1);
+    expect(mapping.get("nucleus")).toBe(2);
+    expect(li1.data[0]).toBe(1);
+    expect(li1.data[1]).toBe(2);
+    expect(li2.data[3]).toBe(2);
+  });
+
+  it("merges same-category objects within a frame", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+        [
+          [0, 1],
+          [0, 0],
+        ],
+      ],
+      { categories: ["cell", "cell"], labelIds: [1, 2] },
+    );
+
+    normalizeLabelIds([li], { by: "category" });
+
+    // Both objects share category "cell", so they merge to same ID
+    expect(li.data[0]).toBe(1);
+    expect(li.data[1]).toBe(1);
+    expect(li.nObjects).toBe(1);
+  });
+
+  it("returns Map<string, number> for category mode", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+      ],
+      { categories: ["cell"] },
+    );
+    const mapping = normalizeLabelIds([li], { by: "category" });
+    expect(mapping).toBeInstanceOf(Map);
+    expect((mapping as Map<string, number>).has("cell")).toBe(true);
+  });
+
+  it("handles empty input", () => {
+    const mapping = normalizeLabelIds([]);
+    expect(mapping.size).toBe(0);
+  });
+
+  it("single frame already normalized is a no-op", () => {
+    const t = new Track("T");
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+      ],
+      { tracks: [t] },
+    );
+    normalizeLabelIds([li]);
+    expect(li.labelIds).toEqual([1]);
+    expect(li.objects.get(1)!.track).toBe(t);
+  });
+
+  it("mutates data and objects in place", () => {
+    const t = new Track("T");
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+      ],
+      { tracks: [t], labelIds: [5] },
+    );
+
+    expect(li.data[0]).toBe(5);
+    normalizeLabelIds([li]);
+    expect(li.data[0]).toBe(1);
+    expect(li.objects.has(1)).toBe(true);
+    expect(li.objects.has(5)).toBe(false);
+  });
+
+  it("preserves video/frameIdx/source metadata", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [
+          [1, 0],
+          [0, 0],
+        ],
+      ],
+      { frameIdx: 7, source: "test.png" },
+    );
+    normalizeLabelIds([li]);
+    expect(li.frameIdx).toBe(7);
+    expect(li.source).toBe("test.png");
+  });
+
+  it("works with PredictedLabelImage", () => {
+    const t = new Track("T");
+    const { data, height, width } = makeLabelData([
+      [5, 0],
+      [0, 0],
+    ]);
+    const objects = new Map<number, LabelImageObjectInfo>([
+      [5, { track: t, category: "cell", name: "", instance: null }],
+    ]);
+    const pli = new PredictedLabelImage({
+      data,
+      height,
+      width,
+      objects,
+      score: 0.95,
+    });
+
+    const mapping = normalizeLabelIds([pli]);
+    expect(mapping.get(t)).toBe(1);
+    expect(pli.data[0]).toBe(1);
+    expect(pli.score).toBe(0.95); // score preserved
+    expect(pli).toBeInstanceOf(PredictedLabelImage);
   });
 });
