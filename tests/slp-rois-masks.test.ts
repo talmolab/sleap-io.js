@@ -272,11 +272,11 @@ describe("SLP BoundingBox I/O", () => {
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
     const bb1 = new UserBoundingBox({
-      xCenter: 50, yCenter: 60, width: 100, height: 80,
+      x1: 0, y1: 20, x2: 100, y2: 100,
       video, frameIdx: 3, track, category: "animal", name: "bb1", source: "manual",
     });
     const bb2 = new PredictedBoundingBox({
-      xCenter: 20, yCenter: 30, width: 40, height: 50,
+      x1: 0, y1: 5, x2: 40, y2: 55,
       score: 0.95, video, frameIdx: 1,
     });
 
@@ -293,6 +293,10 @@ describe("SLP BoundingBox I/O", () => {
     expect(loaded.bboxes.length).toBe(2);
 
     const loadedBb1 = loaded.bboxes[0];
+    expect(loadedBb1.x1).toBeCloseTo(0);
+    expect(loadedBb1.y1).toBeCloseTo(20);
+    expect(loadedBb1.x2).toBeCloseTo(100);
+    expect(loadedBb1.y2).toBeCloseTo(100);
     expect(loadedBb1.xCenter).toBeCloseTo(50);
     expect(loadedBb1.yCenter).toBeCloseTo(60);
     expect(loadedBb1.width).toBeCloseTo(100);
@@ -307,6 +311,10 @@ describe("SLP BoundingBox I/O", () => {
     expect(loadedBb1.track!.name).toBe("track0");
 
     const loadedBb2 = loaded.bboxes[1];
+    expect(loadedBb2.x1).toBeCloseTo(0);
+    expect(loadedBb2.y1).toBeCloseTo(5);
+    expect(loadedBb2.x2).toBeCloseTo(40);
+    expect(loadedBb2.y2).toBeCloseTo(55);
     expect(loadedBb2.xCenter).toBeCloseTo(20);
     expect(loadedBb2.yCenter).toBeCloseTo(30);
     expect(loadedBb2.width).toBeCloseTo(40);

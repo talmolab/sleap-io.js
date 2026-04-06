@@ -49,7 +49,7 @@ describe("Python compatibility (#76)", () => {
     });
 
     const bbox = new UserBoundingBox({
-      xCenter: 50, yCenter: 60, width: 100, height: 80,
+      x1: 0, y1: 20, x2: 100, y2: 100,
       video, frameIdx: 0, track, category: "animal", name: "bb1", source: "manual",
     });
 
@@ -85,14 +85,15 @@ describe("Python compatibility (#76)", () => {
       expectFixedString(file.get("instances"), "field_names");
       expectFixedString(file.get("points"), "field_names");
 
-      expectFixedString(file.get("rois"), "categories");
-      expectFixedString(file.get("rois"), "names");
-      expectFixedString(file.get("rois"), "sources");
       expectFixedString(file.get("rois"), "field_names");
 
-      expectFixedString(file.get("masks"), "categories");
-      expectFixedString(file.get("masks"), "names");
-      expectFixedString(file.get("masks"), "sources");
+      // v1.9+: string metadata stored as root-level datasets with "json" attribute
+      expectFixedString(file.get("roi_categories"), "json");
+      expectFixedString(file.get("roi_names"), "json");
+      expectFixedString(file.get("roi_sources"), "json");
+      expectFixedString(file.get("mask_categories"), "json");
+      expectFixedString(file.get("mask_names"), "json");
+      expectFixedString(file.get("mask_sources"), "json");
 
       expectFixedString(file.get("bboxes"), "categories");
       expectFixedString(file.get("bboxes"), "names");

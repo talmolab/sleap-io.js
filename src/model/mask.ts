@@ -54,6 +54,44 @@ export function decodeRle(
   return flat;
 }
 
+/**
+ * Resize a typed array using nearest-neighbor interpolation.
+ * The input is a flat (H*W) array and the output is a flat (dstH*dstW) array.
+ */
+export function resizeNearest<T extends Uint8Array | Int32Array | Float32Array>(
+  data: T,
+  srcH: number,
+  srcW: number,
+  dstH: number,
+  dstW: number,
+): T {
+  const Ctor = data.constructor as new (len: number) => T;
+  const result = new Ctor(dstH * dstW);
+  for (let r = 0; r < dstH; r++) {
+    const srcR = Math.min(Math.floor((r * srcH) / dstH), srcH - 1);
+    for (let c = 0; c < dstW; c++) {
+      const srcC = Math.min(Math.floor((c * srcW) / dstW), srcW - 1);
+      result[r * dstW + c] = data[srcR * srcW + srcC];
+    }
+  }
+  return result;
+}
+
+export interface SegmentationMaskOptions {
+  rleCounts: Uint32Array;
+  height: number;
+  width: number;
+  name?: string;
+  category?: string;
+  source?: string;
+  video?: Video | null;
+  frameIdx?: number | null;
+  track?: Track | null;
+  instance?: Instance | null;
+  scale?: [number, number];
+  offset?: [number, number];
+}
+
 export class SegmentationMask {
   rleCounts: Uint32Array;
   height: number;
@@ -65,19 +103,23 @@ export class SegmentationMask {
   frameIdx: number | null;
   track: Track | null;
   instance: Instance | null;
+  /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
+  scale: [number, number];
+  /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
+  offset: [number, number];
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx: number | null = null;
 
-  constructor(options: {
-    rleCounts: Uint32Array;
-    height: number;
-    width: number;
-    name?: string;
-    category?: string;
-    source?: string;
-    video?: Video | null;
-    frameIdx?: number | null;
-    track?: Track | null;
-    instance?: Instance | null;
-  }) {
+  constructor(options: SegmentationMaskOptions) {
+    if (new.target === SegmentationMask) {
+      throw new TypeError(
+        "SegmentationMask is abstract. Use UserSegmentationMask or PredictedSegmentationMask.",
+      );
+    }
+    const scale = options.scale ?? [1, 1];
+    if (scale[0] <= 0 || scale[1] <= 0) {
+      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
+    }
     this.rleCounts = options.rleCounts;
     this.height = options.height;
     this.width = options.width;
@@ -88,14 +130,16 @@ export class SegmentationMask {
     this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
     this.instance = options.instance ?? null;
+    this.scale = scale;
+    this.offset = options.offset ?? [0, 0];
   }
 
   static fromArray(
     mask: Uint8Array | boolean[][],
     height: number,
     width: number,
-    options?: Omit<ConstructorParameters<typeof SegmentationMask>[0], "rleCounts" | "height" | "width">,
-  ): SegmentationMask {
+    options?: Omit<SegmentationMaskOptions, "rleCounts" | "height" | "width"> & { stride?: number },
+  ): UserSegmentationMask {
     let flat: Uint8Array;
     if (mask instanceof Uint8Array) {
       flat = mask;
@@ -108,11 +152,15 @@ export class SegmentationMask {
       }
     }
     const rleCounts = encodeRle(flat, height, width);
-    return new SegmentationMask({
+    const stride = options?.stride;
+    const scaleFromStride: [number, number] | undefined =
+      stride != null ? [1 / stride, 1 / stride] : undefined;
+    return new UserSegmentationMask({
       rleCounts,
       height,
       width,
       ...options,
+      scale: options?.scale ?? scaleFromStride,
     });
   }
 
@@ -126,6 +174,74 @@ export class SegmentationMask {
       total += this.rleCounts[i];
     }
     return total;
+  }
+
+  /** Whether scale != [1,1] or offset != [0,0]. */
+  get hasSpatialTransform(): boolean {
+    return (
+      this.scale[0] !== 1 ||
+      this.scale[1] !== 1 ||
+      this.offset[0] !== 0 ||
+      this.offset[1] !== 0
+    );
+  }
+
+  /** The image-space extent of this mask (accounting for scale). */
+  get imageExtent(): { height: number; width: number } {
+    return {
+      height: Math.floor(this.height / this.scale[1]),
+      width: Math.floor(this.width / this.scale[0]),
+    };
+  }
+
+  get isPredicted(): boolean {
+    return false;
+  }
+
+  /**
+   * Create a resampled copy of this mask at the target dimensions.
+   * The returned mask has scale=[1,1] and offset=[0,0].
+   */
+  resampled(targetHeight: number, targetWidth: number): SegmentationMask {
+    const srcData = this.data;
+    const resized = resizeNearest(srcData, this.height, this.width, targetHeight, targetWidth);
+    const rleCounts = encodeRle(resized, targetHeight, targetWidth);
+
+    const baseOpts: SegmentationMaskOptions = {
+      rleCounts,
+      height: targetHeight,
+      width: targetWidth,
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance,
+      scale: [1, 1],
+      offset: [0, 0],
+    };
+
+    if (this instanceof PredictedSegmentationMask) {
+      const pm = this as PredictedSegmentationMask;
+      let resampledScoreMap: Float32Array | null = null;
+      if (pm.scoreMap) {
+        resampledScoreMap = resizeNearest(
+          pm.scoreMap,
+          this.height,
+          this.width,
+          targetHeight,
+          targetWidth,
+        );
+      }
+      return new PredictedSegmentationMask({
+        ...baseOpts,
+        score: pm.score,
+        scoreMap: resampledScoreMap,
+      });
+    }
+
+    return new UserSegmentationMask(baseOpts);
   }
 
   get bbox(): { x: number; y: number; width: number; height: number } {
@@ -148,11 +264,13 @@ export class SegmentationMask {
 
     if (maxR === -1) return { x: 0, y: 0, width: 0, height: 0 };
 
+    const [sx, sy] = this.scale;
+    const [ox, oy] = this.offset;
     return {
-      x: minC,
-      y: minR,
-      width: maxC - minC + 1,
-      height: maxR - minR + 1,
+      x: minC / sx + ox,
+      y: minR / sy + oy,
+      width: (maxC - minC + 1) / sx,
+      height: (maxR - minR + 1) / sy,
     };
   }
 
@@ -178,16 +296,54 @@ export class SegmentationMask {
       };
     }
 
-    return new ROI({
-      geometry,
-      name: this.name,
-      category: this.category,
-      source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
-      track: this.track,
-      instance: this.instance,
-    });
+    return ROI.fromPolygon(
+      (geometry as { type: "Polygon"; coordinates: number[][][] }).coordinates[0],
+      {
+        name: this.name,
+        category: this.category,
+        source: this.source,
+        video: this.video,
+        frameIdx: this.frameIdx,
+        track: this.track,
+        instance: this.instance,
+      },
+    );
+  }
+}
+
+/** User-annotated segmentation mask (no prediction score). */
+export class UserSegmentationMask extends SegmentationMask {
+  get isPredicted(): boolean {
+    return false;
+  }
+}
+
+/** Predicted segmentation mask with a confidence score and optional score map. */
+export class PredictedSegmentationMask extends SegmentationMask {
+  score: number;
+  scoreMap: Float32Array | null;
+  /** Spatial scale for the score map. Default [1, 1]. */
+  scoreMapScale: [number, number];
+  /** Spatial offset for the score map. Default [0, 0]. */
+  scoreMapOffset: [number, number];
+
+  constructor(
+    options: SegmentationMaskOptions & {
+      score: number;
+      scoreMap?: Float32Array | null;
+      scoreMapScale?: [number, number];
+      scoreMapOffset?: [number, number];
+    },
+  ) {
+    super(options);
+    this.score = options.score;
+    this.scoreMap = options.scoreMap ?? null;
+    this.scoreMapScale = options.scoreMapScale ?? [1, 1];
+    this.scoreMapOffset = options.scoreMapOffset ?? [0, 0];
+  }
+
+  get isPredicted(): boolean {
+    return true;
   }
 }
 
@@ -195,7 +351,7 @@ export class SegmentationMask {
 _registerMaskFactory(
   (mask: Uint8Array, height: number, width: number, options: Record<string, unknown>) => {
     return SegmentationMask.fromArray(mask, height, width, options as Omit<
-      ConstructorParameters<typeof SegmentationMask>[0],
+      SegmentationMaskOptions,
       "rleCounts" | "height" | "width"
     >);
   },

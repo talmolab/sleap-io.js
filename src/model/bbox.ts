@@ -5,10 +5,10 @@ import { ROI } from "./roi.js";
 
 /** Options for constructing a BoundingBox. */
 export interface BoundingBoxOptions {
-  xCenter: number;
-  yCenter: number;
-  width: number;
-  height: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
   angle?: number;
   video?: Video | null;
   frameIdx?: number | null;
@@ -21,10 +21,10 @@ export interface BoundingBoxOptions {
 
 /** Base bounding box class for detection/tracking workflows. */
 export class BoundingBox {
-  xCenter: number;
-  yCenter: number;
-  width: number;
-  height: number;
+  x1: number;
+  y1: number;
+  x2: number;
+  y2: number;
   angle: number;
   video: Video | null;
   frameIdx: number | null;
@@ -37,10 +37,15 @@ export class BoundingBox {
   _instanceIdx: number | null = null;
 
   constructor(options: BoundingBoxOptions) {
-    this.xCenter = options.xCenter;
-    this.yCenter = options.yCenter;
-    this.width = options.width;
-    this.height = options.height;
+    if (new.target === BoundingBox) {
+      throw new TypeError(
+        "BoundingBox is abstract. Use UserBoundingBox or PredictedBoundingBox.",
+      );
+    }
+    this.x1 = options.x1;
+    this.y1 = options.y1;
+    this.x2 = options.x2;
+    this.y2 = options.y2;
     this.angle = options.angle ?? 0;
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
@@ -57,15 +62,9 @@ export class BoundingBox {
     y1: number,
     x2: number,
     y2: number,
-    options?: Omit<BoundingBoxOptions, "xCenter" | "yCenter" | "width" | "height">,
+    options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">,
   ): UserBoundingBox {
-    return new UserBoundingBox({
-      xCenter: (x1 + x2) / 2,
-      yCenter: (y1 + y2) / 2,
-      width: Math.abs(x2 - x1),
-      height: Math.abs(y2 - y1),
-      ...options,
-    });
+    return new UserBoundingBox({ x1, y1, x2, y2, ...options });
   }
 
   /** Create from top-left corner + size [x, y, w, h]. */
@@ -74,26 +73,35 @@ export class BoundingBox {
     y: number,
     w: number,
     h: number,
-    options?: Omit<BoundingBoxOptions, "xCenter" | "yCenter" | "width" | "height">,
+    options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">,
   ): UserBoundingBox {
-    return new UserBoundingBox({
-      xCenter: x + w / 2,
-      yCenter: y + h / 2,
-      width: w,
-      height: h,
-      ...options,
-    });
+    return new UserBoundingBox({ x1: x, y1: y, x2: x + w, y2: y + h, ...options });
+  }
+
+  /** Center X coordinate (computed from x1, x2). */
+  get xCenter(): number {
+    return (this.x1 + this.x2) / 2;
+  }
+
+  /** Center Y coordinate (computed from y1, y2). */
+  get yCenter(): number {
+    return (this.y1 + this.y2) / 2;
+  }
+
+  /** Width of the bbox (computed from x1, x2). */
+  get width(): number {
+    return Math.abs(this.x2 - this.x1);
+  }
+
+  /** Height of the bbox (computed from y1, y2). */
+  get height(): number {
+    return Math.abs(this.y2 - this.y1);
   }
 
   /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
   get xyxy(): [number, number, number, number] {
     if (!this.isRotated) {
-      return [
-        this.xCenter - this.width / 2,
-        this.yCenter - this.height / 2,
-        this.xCenter + this.width / 2,
-        this.yCenter + this.height / 2,
-      ];
+      return [this.x1, this.y1, this.x2, this.y2];
     }
     // For rotated bboxes, compute AABB of the rotated corners
     const c = this.corners;

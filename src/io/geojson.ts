@@ -1,4 +1,4 @@
-import { ROI, type Geometry } from "../model/roi.js";
+import { ROI, UserROI, type Geometry } from "../model/roi.js";
 
 /** GeoJSON Feature type */
 export interface GeoJSONFeature {
@@ -35,7 +35,7 @@ export function roisFromGeoJSON(
 
   return features.map((feature) => {
     const props = feature.properties ?? {};
-    return new ROI({
+    return new UserROI({
       geometry: feature.geometry as Geometry,
       name: String(props.name ?? ""),
       category: String(props.category ?? ""),

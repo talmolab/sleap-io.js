@@ -32,6 +32,17 @@ export type Geometry =
   | { type: "LineString"; coordinates: number[][] }
   | { type: "GeometryCollection"; geometries: Geometry[] };
 
+export interface ROIOptions {
+  geometry: Geometry;
+  name?: string;
+  category?: string;
+  source?: string;
+  video?: Video | null;
+  frameIdx?: number | null;
+  track?: Track | null;
+  instance?: Instance | null;
+}
+
 export class ROI {
   geometry: Geometry;
   name: string;
@@ -44,16 +55,12 @@ export class ROI {
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx: number | null = null;
 
-  constructor(options: {
-    geometry: Geometry;
-    name?: string;
-    category?: string;
-    source?: string;
-    video?: Video | null;
-    frameIdx?: number | null;
-    track?: Track | null;
-    instance?: Instance | null;
-  }) {
+  constructor(options: ROIOptions) {
+    if (new.target === ROI) {
+      throw new TypeError(
+        "ROI is abstract. Use UserROI or PredictedROI.",
+      );
+    }
     this.geometry = options.geometry;
     this.name = options.name ?? "";
     this.category = options.category ?? "";
@@ -64,13 +71,14 @@ export class ROI {
     this.instance = options.instance ?? null;
   }
 
+  /** @deprecated Use BoundingBox.fromXywh() instead. */
   static fromBbox(
     x: number,
     y: number,
     width: number,
     height: number,
-    options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">,
-  ): ROI {
+    options?: Omit<ROIOptions, "geometry">,
+  ): UserROI {
     const geometry: Geometry = {
       type: "Polygon",
       coordinates: [
@@ -83,19 +91,20 @@ export class ROI {
         ],
       ],
     };
-    return new ROI({
+    return new UserROI({
       geometry,
       ...options,
     });
   }
 
+  /** @deprecated Use BoundingBox.fromXyxy() instead. */
   static fromXyxy(
     x1: number,
     y1: number,
     x2: number,
     y2: number,
-    options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">,
-  ): ROI {
+    options?: Omit<ROIOptions, "geometry">,
+  ): UserROI {
     const geometry: Geometry = {
       type: "Polygon",
       coordinates: [
@@ -108,7 +117,7 @@ export class ROI {
         ],
       ],
     };
-    return new ROI({
+    return new UserROI({
       geometry,
       ...options,
     });
@@ -116,8 +125,8 @@ export class ROI {
 
   static fromPolygon(
     coords: number[][],
-    options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">,
-  ): ROI {
+    options?: Omit<ROIOptions, "geometry">,
+  ): UserROI {
     const ring = [...coords];
     if (
       ring.length > 0 &&
@@ -127,7 +136,7 @@ export class ROI {
       ring.push([ring[0][0], ring[0][1]]);
     }
     const geometry: Geometry = { type: "Polygon", coordinates: [ring] };
-    return new ROI({
+    return new UserROI({
       geometry,
       ...options,
     });
@@ -135,16 +144,22 @@ export class ROI {
 
   static fromMultiPolygon(
     polygons: number[][][][],
-    options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">,
-  ): ROI {
-    return new ROI({
+    options?: Omit<ROIOptions, "geometry">,
+  ): UserROI {
+    return new UserROI({
       geometry: { type: "MultiPolygon", coordinates: polygons },
       ...options,
     });
   }
 
+  /** Whether this is a predicted ROI (has a score). */
+  get isPredicted(): boolean {
+    return false;
+  }
+
   explode(): ROI[] {
-    const copyFields = {
+    const Ctor = this.constructor as new (options: any) => ROI;
+    const copyFields: Record<string, unknown> = {
       name: this.name,
       category: this.category,
       source: this.source,
@@ -153,9 +168,12 @@ export class ROI {
       track: this.track,
       instance: this.instance,
     };
+    if (this.isPredicted && "score" in this) {
+      copyFields.score = (this as any).score;
+    }
     if (this.geometry.type === "MultiPolygon") {
       return this.geometry.coordinates.map((coords) =>
-        new ROI({
+        new Ctor({
           geometry: { type: "Polygon", coordinates: coords },
           ...copyFields,
         })
@@ -163,14 +181,14 @@ export class ROI {
     }
     if (this.geometry.type === "GeometryCollection") {
       return this.geometry.geometries.map((geom) =>
-        new ROI({
+        new Ctor({
           geometry: geom,
           ...copyFields,
         })
       );
     }
     // Single geometry, return copy
-    return [new ROI({
+    return [new Ctor({
       geometry: this.geometry,
       ...copyFields,
     })];
@@ -242,7 +260,7 @@ export class ROI {
     if (this.geometry.type === "GeometryCollection") {
       let total = 0;
       for (const geom of this.geometry.geometries) {
-        const sub = new ROI({ geometry: geom });
+        const sub = new UserROI({ geometry: geom });
         total += sub.area;
       }
       return total;
@@ -295,7 +313,7 @@ export class ROI {
     if (this.geometry.type === "GeometryCollection") {
       const pts: number[][] = [];
       for (const geom of this.geometry.geometries) {
-        const sub = new ROI({ geometry: geom });
+        const sub = new UserROI({ geometry: geom });
         pts.push(...sub._allPoints());
       }
       return pts;
@@ -632,4 +650,25 @@ function decodeWkbPolygon(
     rings.push(ring);
   }
   return { rings, bytesRead: pos - offset };
+}
+
+/** User-annotated region of interest (no prediction score). */
+export class UserROI extends ROI {
+  get isPredicted(): boolean {
+    return false;
+  }
+}
+
+/** Predicted region of interest with a confidence score. */
+export class PredictedROI extends ROI {
+  score: number;
+
+  constructor(options: ROIOptions & { score: number }) {
+    super(options);
+    this.score = options.score;
+  }
+
+  get isPredicted(): boolean {
+    return true;
+  }
 }

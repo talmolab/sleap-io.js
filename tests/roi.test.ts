@@ -2,6 +2,7 @@
 import { describe, it, expect } from "vitest";
 import {
   ROI,
+  UserROI,
   AnnotationType,
   rasterizeGeometry,
   encodeWkb,
@@ -96,7 +97,7 @@ describe("ROI", () => {
   });
 
   it("isBbox false for point geometry", () => {
-    const roi = new ROI({
+    const roi = new UserROI({
       geometry: { type: "Point", coordinates: [0, 0] },
     });
     expect(roi.isBbox).toBe(false);
@@ -222,7 +223,7 @@ describe("ROI", () => {
 
 describe("New geometry types", () => {
   it("LineString ROI has correct bounds and zero area", () => {
-    const roi = new ROI({
+    const roi = new UserROI({
       geometry: { type: "LineString", coordinates: [[0, 0], [10, 5], [20, 0]] },
     });
     expect(roi.area).toBe(0);
@@ -234,7 +235,7 @@ describe("New geometry types", () => {
   });
 
   it("MultiPoint ROI has correct bounds and zero area", () => {
-    const roi = new ROI({
+    const roi = new UserROI({
       geometry: { type: "MultiPoint", coordinates: [[1, 2], [3, 4], [5, 6]] },
     });
     expect(roi.area).toBe(0);
@@ -246,7 +247,7 @@ describe("New geometry types", () => {
   });
 
   it("GeometryCollection ROI has correct bounds and summed area", () => {
-    const roi = new ROI({
+    const roi = new UserROI({
       geometry: {
         type: "GeometryCollection",
         geometries: [
@@ -315,7 +316,7 @@ describe("fromMultiPolygon and explode", () => {
   });
 
   it("explode GeometryCollection splits into individual ROIs", () => {
-    const roi = new ROI({
+    const roi = new UserROI({
       geometry: {
         type: "GeometryCollection",
         geometries: [

@@ -2,6 +2,7 @@
 import { describe, it, expect } from "vitest";
 import {
   LabelImage,
+  UserLabelImage,
   type LabelImageObjectInfo,
 } from "../src/model/label-image.js";
 import { Track } from "../src/model/instance.js";
@@ -52,7 +53,7 @@ describe("LabelImage", () => {
         [0, 1],
         [2, 0],
       ]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       expect(li.data).toBe(data);
       expect(li.height).toBe(2);
       expect(li.width).toBe(2);
@@ -72,7 +73,7 @@ describe("LabelImage", () => {
         { id: 1, track: trackA, category: "cell" },
         { id: 2, category: "nucleus" },
       ]);
-      const li = new LabelImage({
+      const li = new UserLabelImage({
         data,
         height,
         width,
@@ -97,7 +98,7 @@ describe("LabelImage", () => {
         { id: 2, category: "cell" },
         { id: 3, category: "cell" },
       ]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
       expect(li.nObjects).toBe(3);
     });
   });
@@ -109,7 +110,7 @@ describe("LabelImage", () => {
         [3, 0, 2],
         [1, 3, 0],
       ]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       expect(li.labelIds).toEqual([1, 2, 3]);
     });
 
@@ -118,7 +119,7 @@ describe("LabelImage", () => {
         [0, 0],
         [0, 0],
       ]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       expect(li.labelIds).toEqual([]);
     });
 
@@ -127,7 +128,7 @@ describe("LabelImage", () => {
         [0, 3, 0],
         [15, 0, 7],
       ]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       expect(li.labelIds).toEqual([3, 7, 15]);
     });
   });
@@ -142,14 +143,14 @@ describe("LabelImage", () => {
         { id: 2 }, // null track
         { id: 3, track: trackB },
       ]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
       expect(li.tracks).toEqual([trackA, trackB]);
     });
 
     it("returns empty array when no tracks", () => {
       const { data, height, width } = makeLabelData([[1, 2]]);
       const objects = makeObjects([{ id: 1 }, { id: 2 }]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
       expect(li.tracks).toEqual([]);
     });
   });
@@ -162,7 +163,7 @@ describe("LabelImage", () => {
         { id: 2, category: "nucleus" },
         { id: 3, category: "cell" }, // duplicate
       ]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
       const cats = li.categories;
       expect(cats.size).toBe(2);
       expect(cats.has("cell")).toBe(true);
@@ -175,7 +176,7 @@ describe("LabelImage", () => {
         { id: 1, category: "cell" },
         { id: 2, category: "" },
       ]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
       expect(li.categories.size).toBe(1);
     });
   });
@@ -183,13 +184,13 @@ describe("LabelImage", () => {
   describe("isStatic", () => {
     it("is true when frameIdx is null", () => {
       const { data, height, width } = makeLabelData([[0]]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       expect(li.isStatic).toBe(true);
     });
 
     it("is false when frameIdx is set", () => {
       const { data, height, width } = makeLabelData([[0]]);
-      const li = new LabelImage({ data, height, width, frameIdx: 0 });
+      const li = new UserLabelImage({ data, height, width, frameIdx: 0 });
       expect(li.isStatic).toBe(false);
     });
   });
@@ -201,7 +202,7 @@ describe("LabelImage", () => {
         [2, 1, 2],
         [0, 0, 0],
       ]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
 
       const mask1 = li.getObjectMask(1);
       expect(mask1).toEqual(
@@ -219,7 +220,7 @@ describe("LabelImage", () => {
         [0, 1],
         [2, 0],
       ]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       const mask = li.getObjectMask(99);
       expect(mask).toEqual(new Uint8Array(4));
     });
@@ -236,7 +237,7 @@ describe("LabelImage", () => {
         { id: 1, track: trackA },
         { id: 2, track: trackA },
       ]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
       const mask = li.getTrackMask(trackA);
       expect(mask).toEqual(new Uint8Array([0, 1, 0, 1, 0, 1]));
     });
@@ -244,7 +245,7 @@ describe("LabelImage", () => {
     it("throws for unknown track", () => {
       const { data, height, width } = makeLabelData([[1, 2]]);
       const objects = makeObjects([{ id: 1 }, { id: 2 }]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
       const unknownTrack = new Track("unknown");
       expect(() => li.getTrackMask(unknownTrack)).toThrow(
         'Track "unknown" not found',
@@ -263,7 +264,7 @@ describe("LabelImage", () => {
         { id: 2, category: "nucleus" },
         { id: 3, category: "cell" },
       ]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
       const mask = li.getCategoryMask("cell");
       // IDs 1 and 3 are "cell"
       expect(mask).toEqual(new Uint8Array([0, 1, 0, 1, 0, 1]));
@@ -278,7 +279,7 @@ describe("LabelImage", () => {
         { id: 1, category: "cell" },
         { id: 2, category: "cell" },
       ]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
       expect(() => li.getCategoryMask("nonexistent")).toThrow(
         'Category "nonexistent" not found in this LabelImage.',
       );
@@ -297,7 +298,7 @@ describe("LabelImage", () => {
         { id: 1, track: trackA, category: "cell" },
         { id: 2, track: trackB, category: "nucleus" },
       ]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
 
       const results = Array.from(li.items());
       expect(results).toHaveLength(2);
@@ -318,13 +319,13 @@ describe("LabelImage", () => {
         [0, 0],
         [0, 0],
       ]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       expect(Array.from(li.items())).toEqual([]);
     });
 
     it("uses default info for labels without objects entry", () => {
       const { data, height, width } = makeLabelData([[1]]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       const results = Array.from(li.items());
       expect(results).toHaveLength(1);
       expect(results[0][0]).toBeNull(); // track
@@ -478,7 +479,7 @@ describe("LabelImage", () => {
         { id: 1, track: trackA, category: "cell", name: "obj1" },
         { id: 2, category: "nucleus", name: "obj2" },
       ]);
-      const li = new LabelImage({
+      const li = new UserLabelImage({
         data,
         height,
         width,
@@ -508,7 +509,7 @@ describe("LabelImage", () => {
         [0, 0],
         [0, 0],
       ]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       expect(li.toMasks()).toEqual([]);
     });
   });
@@ -556,7 +557,7 @@ describe("LabelImage", () => {
         [0, 0, 0],
         [0, 0, 0],
       ]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       expect(li.nObjects).toBe(0);
       expect(li.labelIds).toEqual([]);
       expect(li.tracks).toEqual([]);
@@ -571,7 +572,7 @@ describe("LabelImage", () => {
       ]);
       const track = new Track("only");
       const objects = makeObjects([{ id: 1, track, category: "cell" }]);
-      const li = new LabelImage({ data, height, width, objects });
+      const li = new UserLabelImage({ data, height, width, objects });
       expect(li.nObjects).toBe(1);
       expect(li.labelIds).toEqual([1]);
       expect(li.tracks).toEqual([track]);
@@ -585,7 +586,7 @@ describe("LabelImage", () => {
         [0, 15, 3],
         [7, 0, 15],
       ]);
-      const li = new LabelImage({ data, height, width });
+      const li = new UserLabelImage({ data, height, width });
       expect(li.labelIds).toEqual([3, 7, 15]);
     });
 

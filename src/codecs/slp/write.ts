@@ -7,10 +7,10 @@ import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
 import { getH5Module, getH5FileSystem } from "./h5.js";
-import { ROI, encodeWkb } from "../../model/roi.js";
-import { SegmentationMask } from "../../model/mask.js";
+import { ROI, PredictedROI, encodeWkb } from "../../model/roi.js";
+import { SegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
 import { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
-import { LabelImage } from "../../model/label-image.js";
+import { LabelImage, PredictedLabelImage } from "../../model/label-image.js";
 import { deflate } from "pako";
 import { Identity } from "../../model/identity.js";
 import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
@@ -40,6 +40,16 @@ function setStringAttr(target: any, name: string, value: string): void {
   const byteLength = textEncoder.encode(value).length;
   target.create_attribute(name, value, null, `S${byteLength}`);
 }
+
+/** Write a string array as a JSON-encoded string attribute dataset at root level. */
+function writeStringDataset(file: any, name: string, values: string[]): void {
+  const json = JSON.stringify(values);
+  const bytes = textEncoder.encode(json);
+  file.create_dataset({ name, data: bytes, shape: [bytes.length], dtype: "<B" });
+  const ds = file.get(name);
+  setStringAttr(ds, "json", json);
+}
+
 const SPAWNED_ON = 0;
 
 export type SlpWriteOptions = {
@@ -78,7 +88,7 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   writeNegativeFrames(file, labels);
   const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
   writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
-  writeMasks(file, labels.masks, labels.videos, labels.tracks);
+  writeMasks(file, labels.masks, labels.videos, labels.tracks, allInstances);
   writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
   writeLabelImages(file, labels.labelImages, labels.videos, labels.tracks, allInstances);
 }
@@ -185,17 +195,32 @@ function writeMetadata(file: any, labels: Labels): void {
 
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
   const hasIdentities = (labels.identities?.length ?? 0) > 0;
-  let formatId = (labels.labelImages?.length ?? 0) > 0
-    ? 1.8
-    : (labels.bboxes?.length ?? 0) > 0
-      ? 1.7
-      : hasRoiInstance
-        ? 1.6
-        : (labels.rois.length > 0 || labels.masks.length > 0)
-          ? 1.5
-          : FORMAT_ID;
+  const hasPredicted =
+    labels.rois.some((r) => r.isPredicted) ||
+    labels.masks.some((m) => m.isPredicted) ||
+    (labels.labelImages ?? []).some((li) => li.isPredicted);
+  const hasMaskInstances = labels.masks.some((m) => m.instance !== null || (m._instanceIdx != null && m._instanceIdx >= 0));
+  let formatId = (labels.bboxes?.length ?? 0) > 0
+    ? 2.0
+    : (hasPredicted || hasMaskInstances)
+      ? 1.9
+      : (labels.labelImages?.length ?? 0) > 0
+        ? 1.8
+        : hasRoiInstance
+          ? 1.6
+          : (labels.rois.length > 0 || labels.masks.length > 0)
+            ? 1.5
+            : FORMAT_ID;
   if (hasIdentities) {
     formatId = Math.max(formatId, 1.9);
+  }
+
+  // v2.1: spatial transform metadata on masks or label images
+  const hasSpatialTransform =
+    labels.masks.some((m) => m.hasSpatialTransform) ||
+    (labels.labelImages ?? []).some((li) => li.hasSpatialTransform);
+  if (hasSpatialTransform) {
+    formatId = Math.max(formatId, 2.1);
   }
 
   file.create_group("metadata");
@@ -834,22 +859,22 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
     const frameIdx = roi.frameIdx ?? -1;
     const trackIdx = roi.track ? tracks.indexOf(roi.track as any) : -1;
     const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : -1;
+    const score = roi.isPredicted ? (roi as PredictedROI).score : Number.NaN;
+    const isPredicted = roi.isPredicted ? 1 : 0;
 
-    // Hardcode annotation_type=0 (DEFAULT) and score=NaN for backward compat
-    rows.push([0, videoIdx, frameIdx, trackIdx, Number.NaN, wkbStart, wkbEnd, instanceIdx]);
+    rows.push([0, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd, instanceIdx, isPredicted]);
     categories.push(roi.category);
     names.push(roi.name);
     sources.push(roi.source);
   }
 
   createMatrixDataset(file, "rois", rows,
-    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end", "instance"], "<f8");
+    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end", "instance", "is_predicted"], "<f8");
 
-  // Set string metadata as attributes
-  const roisDs = file.get("rois");
-  setStringAttr(roisDs, "categories", JSON.stringify(categories));
-  setStringAttr(roisDs, "names", JSON.stringify(names));
-  setStringAttr(roisDs, "sources", JSON.stringify(sources));
+  // Write string metadata as datasets at root level (v1.9+)
+  writeStringDataset(file, "roi_categories", categories);
+  writeStringDataset(file, "roi_names", names);
+  writeStringDataset(file, "roi_sources", sources);
 
   // Write concatenated WKB bytes
   const totalWkb = wkbChunks.reduce((sum, c) => sum + c.length, 0);
@@ -862,7 +887,13 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
   file.create_dataset({ name: "roi_wkb", data: wkbFlat, shape: [wkbFlat.length], dtype: "<B" });
 }
 
-function writeMasks(file: any, masks: SegmentationMask[], videos: Video[], tracks: Array<{ name: string }>): void {
+function writeMasks(
+  file: any,
+  masks: SegmentationMask[],
+  videos: Video[],
+  tracks: Array<{ name: string }>,
+  instances: (Instance | PredictedInstance)[],
+): void {
   if (!masks.length) return;
 
   const rows: number[][] = [];
@@ -872,7 +903,13 @@ function writeMasks(file: any, masks: SegmentationMask[], videos: Video[], track
   const names: string[] = [];
   const sources: string[] = [];
 
-  for (const mask of masks) {
+  // Score map collection
+  const scoreMapIndexRows: number[][] = [];
+  const scoreMapChunks: Uint8Array[] = [];
+  let smOffset = 0;
+
+  for (let i = 0; i < masks.length; i++) {
+    const mask = masks[i];
     // Convert Uint32Array RLE counts to bytes (little-endian)
     const rleBytes = new Uint8Array(mask.rleCounts.length * 4);
     const view = new DataView(rleBytes.buffer);
@@ -887,22 +924,39 @@ function writeMasks(file: any, masks: SegmentationMask[], videos: Video[], track
     const videoIdx = mask.video ? videos.indexOf(mask.video) : -1;
     const frameIdx = mask.frameIdx ?? -1;
     const trackIdx = mask.track ? tracks.indexOf(mask.track as any) : -1;
+    const score = mask.isPredicted ? (mask as PredictedSegmentationMask).score : Number.NaN;
+    const isPredicted = mask.isPredicted ? 1 : 0;
+    const instanceIdx = mask.instance ? instances.indexOf(mask.instance as Instance) : (mask._instanceIdx ?? -1);
 
-    // Hardcode annotation_type=2 (SEGMENTATION) and score=NaN for backward compat
-    rows.push([mask.height, mask.width, 2, videoIdx, frameIdx, trackIdx, Number.NaN, rleStart, rleEnd]);
+    rows.push([
+      mask.height, mask.width, 2, videoIdx, frameIdx, trackIdx,
+      score, rleStart, rleEnd, isPredicted, instanceIdx,
+      mask.scale[0], mask.scale[1], mask.offset[0], mask.offset[1],
+    ]);
     categories.push(mask.category);
     names.push(mask.name);
     sources.push(mask.source);
+
+    // Collect score maps for predicted masks
+    if (mask.isPredicted) {
+      const pm = mask as PredictedSegmentationMask;
+      if (pm.scoreMap) {
+        const smBytes = new Uint8Array(pm.scoreMap.buffer, pm.scoreMap.byteOffset, pm.scoreMap.byteLength);
+        const compressed = deflate(smBytes);
+        scoreMapIndexRows.push([i, smOffset, smOffset + compressed.length, pm.scoreMap.length / pm.width, pm.width]);
+        scoreMapChunks.push(compressed);
+        smOffset += compressed.length;
+      }
+    }
   }
 
   createMatrixDataset(file, "masks", rows,
-    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end"], "<f8");
+    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "scale_x", "scale_y", "offset_x", "offset_y"], "<f8");
 
-  // Set string metadata as attributes
-  const masksDs = file.get("masks");
-  setStringAttr(masksDs, "categories", JSON.stringify(categories));
-  setStringAttr(masksDs, "names", JSON.stringify(names));
-  setStringAttr(masksDs, "sources", JSON.stringify(sources));
+  // Write string metadata as datasets at root level (v1.9+)
+  writeStringDataset(file, "mask_categories", categories);
+  writeStringDataset(file, "mask_names", names);
+  writeStringDataset(file, "mask_sources", sources);
 
   // Write concatenated RLE bytes
   const totalRle = rleChunks.reduce((sum, c) => sum + c.length, 0);
@@ -913,6 +967,20 @@ function writeMasks(file: any, masks: SegmentationMask[], videos: Video[], track
     offset += chunk.length;
   }
   file.create_dataset({ name: "mask_rle", data: rleFlat, shape: [rleFlat.length], dtype: "<B" });
+
+  // Write score maps
+  if (scoreMapIndexRows.length > 0) {
+    createMatrixDataset(file, "mask_score_map_index", scoreMapIndexRows,
+      ["mask_idx", "data_start", "data_end", "height", "width"], "<f8");
+    const totalSm = scoreMapChunks.reduce((sum, c) => sum + c.length, 0);
+    const smFlat = new Uint8Array(totalSm);
+    let smOff = 0;
+    for (const chunk of scoreMapChunks) {
+      smFlat.set(chunk, smOff);
+      smOff += chunk.length;
+    }
+    file.create_dataset({ name: "mask_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
+  }
 }
 
 function writeBboxes(
@@ -937,10 +1005,10 @@ function writeBboxes(
     const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance as Instance) : -1;
 
     rows.push([
-      bbox.xCenter,
-      bbox.yCenter,
-      bbox.width,
-      bbox.height,
+      bbox.x1,
+      bbox.y1,
+      bbox.x2,
+      bbox.y2,
       bbox.angle,
       videoIdx,
       frameIdx,
@@ -954,7 +1022,7 @@ function writeBboxes(
   }
 
   createMatrixDataset(file, "bboxes", rows,
-    ["x_center", "y_center", "width", "height", "angle", "video", "frame_idx", "track", "score", "instance"], "<f8");
+    ["x1", "y1", "x2", "y2", "angle", "video", "frame_idx", "track", "score", "instance"], "<f8");
 
   // Set string metadata as attributes
   const bboxesDs = file.get("bboxes");
@@ -987,7 +1055,13 @@ function writeLabelImages(
   const sources: string[] = [];
   let objectsOffset = 0;
 
-  for (const li of labelImages) {
+  // Score map collection
+  const smIndexRows: number[][] = [];
+  const smChunks: Uint8Array[] = [];
+  let smOffset = 0;
+
+  for (let liIdx = 0; liIdx < labelImages.length; liIdx++) {
+    const li = labelImages[liIdx];
     const videoIdx = li.video ? videos.indexOf(li.video) : -1;
     const frameIdx = li.frameIdx ?? -1;
 
@@ -999,36 +1073,60 @@ function writeLabelImages(
     compressedChunks.push(compressed);
     dataOffset = dataEnd;
 
+    const isPredicted = li.isPredicted ? 1 : 0;
+    const liScore = li.isPredicted ? (li as PredictedLabelImage).score : Number.NaN;
+
     // Per-object entries
     const objectsStart = objectsOffset;
     for (const [labelId, info] of li.objects) {
       const trackIdx = info.track ? tracks.indexOf(info.track as Track) : -1;
-      const instanceIdx = info.instance ? instances.indexOf(info.instance as Instance) : -1;
-      objectRows.push([labelId, trackIdx, instanceIdx]);
+      // PR #386: fall back to _instanceIdx when instance is null
+      let instanceIdx = li._objectInstanceIdxs?.get(labelId) ?? -1;
+      if (info.instance) {
+        const found = instances.indexOf(info.instance as Instance);
+        if (found >= 0) instanceIdx = found;
+      } else if (info._instanceIdx != null && info._instanceIdx >= 0) {
+        instanceIdx = info._instanceIdx;
+      }
+      const objScore = info.score != null ? info.score : Number.NaN;
+      objectRows.push([labelId, trackIdx, instanceIdx, objScore]);
       objectCategories.push(info.category);
       objectNames.push(info.name);
       objectsOffset++;
     }
 
-    rows.push([videoIdx, frameIdx, li.height, li.width, li.nObjects, objectsStart, dataStart, dataEnd]);
+    rows.push([videoIdx, frameIdx, li.height, li.width, li.nObjects, objectsStart, dataStart, dataEnd, isPredicted, liScore,
+      li.scale[0], li.scale[1], li.offset[0], li.offset[1]]);
     sources.push(li.source);
+
+    // Collect score maps for predicted label images
+    if (li.isPredicted) {
+      const pli = li as PredictedLabelImage;
+      if (pli.scoreMap) {
+        const smBytes = new Uint8Array(pli.scoreMap.buffer, pli.scoreMap.byteOffset, pli.scoreMap.byteLength);
+        const smCompressed = deflate(smBytes);
+        smIndexRows.push([liIdx, smOffset, smOffset + smCompressed.length, pli.scoreMap.length / li.width, li.width]);
+        smChunks.push(smCompressed);
+        smOffset += smCompressed.length;
+      }
+    }
   }
 
   // Write main metadata table
   createMatrixDataset(file, "label_images", rows,
-    ["video", "frame_idx", "height", "width", "n_objects", "objects_start", "data_start", "data_end"], "<f8");
+    ["video", "frame_idx", "height", "width", "n_objects", "objects_start", "data_start", "data_end", "is_predicted", "score",
+     "scale_x", "scale_y", "offset_x", "offset_y"], "<f8");
 
-  // Set sources as JSON attribute
-  const liDs = file.get("label_images");
-  setStringAttr(liDs, "sources", JSON.stringify(sources));
+  // Write string metadata as datasets at root level (v1.9+)
+  writeStringDataset(file, "label_image_sources", sources);
 
   // Write objects table (if any objects exist)
   if (objectRows.length > 0) {
     createMatrixDataset(file, "label_image_objects", objectRows,
-      ["label_id", "track", "instance"], "<f8");
-    const objDs = file.get("label_image_objects");
-    setStringAttr(objDs, "categories", JSON.stringify(objectCategories));
-    setStringAttr(objDs, "names", JSON.stringify(objectNames));
+      ["label_id", "track", "instance", "score"], "<f8");
+    // Write string metadata as datasets at root level (v1.9+)
+    writeStringDataset(file, "label_image_obj_categories", objectCategories);
+    writeStringDataset(file, "label_image_obj_names", objectNames);
   }
 
   // Write concatenated compressed pixel data
@@ -1040,4 +1138,18 @@ function writeLabelImages(
     offset += chunk.length;
   }
   file.create_dataset({ name: "label_image_data", data: dataFlat, shape: [dataFlat.length], dtype: "<B" });
+
+  // Write score maps
+  if (smIndexRows.length > 0) {
+    createMatrixDataset(file, "label_image_score_map_index", smIndexRows,
+      ["li_idx", "data_start", "data_end", "height", "width"], "<f8");
+    const totalSm = smChunks.reduce((sum, c) => sum + c.length, 0);
+    const smFlat = new Uint8Array(totalSm);
+    let smOff = 0;
+    for (const chunk of smChunks) {
+      smFlat.set(chunk, smOff);
+      smOff += chunk.length;
+    }
+    file.create_dataset({ name: "label_image_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
+  }
 }

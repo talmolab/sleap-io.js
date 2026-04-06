@@ -136,8 +136,8 @@ describe("Labels ROI and Mask integration", () => {
 
 describe("getBboxes", () => {
   it("returns all bboxes without filters", () => {
-    const bb1 = new UserBoundingBox({ xCenter: 50, yCenter: 50, width: 100, height: 80 });
-    const bb2 = new PredictedBoundingBox({ xCenter: 20, yCenter: 20, width: 40, height: 30, score: 0.9 });
+    const bb1 = new UserBoundingBox({ x1: 0, y1: 10, x2: 100, y2: 90 });
+    const bb2 = new PredictedBoundingBox({ x1: 0, y1: 5, x2: 40, y2: 35, score: 0.9 });
     const labels = new Labels({ bboxes: [bb1, bb2] });
     expect(labels.getBboxes()).toHaveLength(2);
   });
@@ -145,24 +145,24 @@ describe("getBboxes", () => {
   it("filters by video", () => {
     const v1 = new Video({ filename: "a.mp4" });
     const v2 = new Video({ filename: "b.mp4" });
-    const bb1 = new UserBoundingBox({ xCenter: 50, yCenter: 50, width: 100, height: 80, video: v1 });
-    const bb2 = new UserBoundingBox({ xCenter: 20, yCenter: 20, width: 40, height: 30, video: v2 });
+    const bb1 = new UserBoundingBox({ x1: 0, y1: 10, x2: 100, y2: 90, video: v1 });
+    const bb2 = new UserBoundingBox({ x1: 0, y1: 5, x2: 40, y2: 35, video: v2 });
     const labels = new Labels({ bboxes: [bb1, bb2] });
     expect(labels.getBboxes({ video: v1 })).toEqual([bb1]);
     expect(labels.getBboxes({ video: v2 })).toEqual([bb2]);
   });
 
   it("filters by predicted", () => {
-    const bb1 = new UserBoundingBox({ xCenter: 50, yCenter: 50, width: 100, height: 80 });
-    const bb2 = new PredictedBoundingBox({ xCenter: 20, yCenter: 20, width: 40, height: 30, score: 0.9 });
+    const bb1 = new UserBoundingBox({ x1: 0, y1: 10, x2: 100, y2: 90 });
+    const bb2 = new PredictedBoundingBox({ x1: 0, y1: 5, x2: 40, y2: 35, score: 0.9 });
     const labels = new Labels({ bboxes: [bb1, bb2] });
     expect(labels.getBboxes({ predicted: false })).toEqual([bb1]);
     expect(labels.getBboxes({ predicted: true })).toEqual([bb2]);
   });
 
   it("staticBboxes and temporalBboxes", () => {
-    const bb1 = new UserBoundingBox({ xCenter: 50, yCenter: 50, width: 100, height: 80 });
-    const bb2 = new UserBoundingBox({ xCenter: 20, yCenter: 20, width: 40, height: 30, frameIdx: 5 });
+    const bb1 = new UserBoundingBox({ x1: 0, y1: 10, x2: 100, y2: 90 });
+    const bb2 = new UserBoundingBox({ x1: 0, y1: 5, x2: 40, y2: 35, frameIdx: 5 });
     const labels = new Labels({ bboxes: [bb1, bb2] });
     expect(labels.staticBboxes).toEqual([bb1]);
     expect(labels.temporalBboxes).toEqual([bb2]);
