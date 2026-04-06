@@ -18,10 +18,24 @@ import {
   LabelsSet,
   SuggestionFrame,
   ROI,
+  UserROI,
+  PredictedROI,
   SegmentationMask,
+  UserSegmentationMask,
+  PredictedSegmentationMask,
   BoundingBox,
   UserBoundingBox,
   PredictedBoundingBox,
+  LabelImage,
+  UserLabelImage,
+  PredictedLabelImage,
+  normalizeLabelIds,
+  Identity,
+  Instance3D,
+  PredictedInstance3D,
+  Camera,
+  CameraGroup,
+  RecordingSession,
   toDict,
   fromDict,
   toNumpy,
@@ -75,17 +89,23 @@ const bytes: Uint8Array = await saveSlpToBytes(labels, { embed: false });
 - `options.embed`: embed frames (`true`, `false`, or dataset name).
 - Returns `Promise<Uint8Array>`.
 
-### `loadVideo(filename, options)`
+### `loadVideo(source, options)`
 Open a `Video` with an appropriate backend.
 
 ```ts
+// From file path (Node.js) or URL (browser)
 const video = await loadVideo("/data/movie.mp4", { openBackend: true });
 const frame0 = await video.getFrame(0);
 video.close();
+
+// From File object (browser)
+const video = await loadVideo(fileInput.files[0]);
 ```
 
+- `source`: `string` (path or URL) or `File` (browser).
 - `options.dataset`: dataset path for embedded HDF5 sources.
 - `options.openBackend` (default `true`): set `false` for deferred open.
+- `options.backend`: explicit backend type (`"mp4box"`, `"mediabunny"`, `"media"`, `"hdf5"`).
 
 ## Video Backends
 
@@ -146,10 +166,14 @@ Key types:
 - `Labels`, `LabeledFrame`, `Instance`, `PredictedInstance`
 - `Skeleton`, `Track`
 - `Video`, `SuggestionFrame`, `LabelsSet`
-- `Camera`, `CameraGroup`, `RecordingSession` (camera utilities)
+- `Camera`, `CameraGroup`, `RecordingSession`, `InstanceGroup` (camera/3D utilities)
+- `Identity` (ground-truth animal identity across sessions)
+- `Instance3D`, `PredictedInstance3D` (3D keypoint data)
 - `LazyDataStore`, `LazyFrameList` (lazy loading)
-- `ROI`, `SegmentationMask` (spatial annotations)
+- `ROI`, `UserROI`, `PredictedROI` (spatial annotations)
+- `SegmentationMask`, `UserSegmentationMask`, `PredictedSegmentationMask` (binary masks)
 - `BoundingBox`, `UserBoundingBox`, `PredictedBoundingBox` (detection/tracking)
+- `LabelImage`, `UserLabelImage`, `PredictedLabelImage` (dense instance segmentation)
 - `Point` has fields `{ xy, visible, complete, score? }` where `score` is an optional confidence value.
 - `LabeledFrame.isNegative` (`boolean`, default `false`): marks negative-annotated frames.
 - `SuggestionFrame.group` (`string`, default `"default"`): the suggestion group name.
@@ -160,6 +184,9 @@ const inst = Instance.fromArray([[10, 20], [30, 40]], skeleton);
 const video = new Video({ filename: "/data/movie.mp4" });
 const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 const labels = new Labels({ labeledFrames: [frame], skeletons: [skeleton], videos: [video] });
+
+// Add a video with deduplication
+labels.addVideo(video); // no-op if already present
 ```
 
 ## Lazy Loading
@@ -189,15 +216,9 @@ Key classes:
 Spatial annotations stored alongside pose data (SLP format 1.5+).
 
 ### `ROI`
-Region of interest with GeoJSON-like geometry. Supports `Polygon`, `Point`, `MultiPolygon`, `MultiPoint`, `LineString`, and `GeometryCollection` types.
+Region of interest with GeoJSON-like geometry. `ROI` is abstract; use `UserROI` or `PredictedROI` for construction, or use the static factory methods which return `UserROI`.
 
 ```ts
-// Create from bounding box
-const roi = ROI.fromBbox(100, 200, 50, 80, {
-  category: "arena",
-  video: labels.videos[0],
-});
-
 // Create from polygon vertices
 const roi = ROI.fromPolygon([[0,0], [100,0], [100,100], [0,100]], {
   category: "region",
@@ -209,13 +230,20 @@ const roi = ROI.fromMultiPolygon([
   [[[20,20], [30,20], [30,30], [20,30], [20,20]]],
 ]);
 
-// Properties
-roi.bounds;    // { minX, minY, maxX, maxY }
-roi.area;      // polygon area
-roi.centroid;  // { x, y }
-roi.isBbox;    // true if axis-aligned rectangle
+// Predicted ROI with confidence score
+const pred = new PredictedROI({
+  geometry: { type: "Polygon", coordinates: [[[0,0],[10,0],[10,10],[0,10],[0,0]]] },
+  score: 0.95,
+});
 
-// Explode multi-geometries into individual ROIs
+// Properties
+roi.bounds;       // { minX, minY, maxX, maxY }
+roi.area;         // polygon area
+roi.centroid;     // { x, y }
+roi.isBbox;       // true if axis-aligned rectangle
+roi.isPredicted;  // false for UserROI, true for PredictedROI
+
+// Explode multi-geometries into individual ROIs (preserves subclass)
 const parts = roi.explode();  // ROI[]
 
 // Convert to GeoJSON Feature
@@ -225,8 +253,10 @@ const feature = roi.toGeoJSON();
 const mask = roi.toMask(480, 640);
 ```
 
+> **Note:** `ROI.fromBbox()` and `ROI.fromXyxy()` are deprecated. Use `BoundingBox.fromXywh()` or `BoundingBox.fromXyxy()` instead.
+
 ### `SegmentationMask`
-RLE-encoded binary mask.
+RLE-encoded binary mask. `SegmentationMask` is abstract; use `UserSegmentationMask` or `PredictedSegmentationMask` for direct construction. The `fromArray()` factory returns `UserSegmentationMask`.
 
 ```ts
 // Create from 2D boolean array
@@ -234,37 +264,67 @@ const mask = SegmentationMask.fromArray(boolArray, 480, 640, {
   category: "segmentation",
 });
 
+// Create from array with stride (downsampled prediction)
+const mask = SegmentationMask.fromArray(data, 120, 160, {
+  stride: 4,  // sets scale to [0.25, 0.25]
+});
+
+// Predicted mask with score and optional score map
+const pred = new PredictedSegmentationMask({
+  rleCounts, height: 480, width: 640,
+  score: 0.92,
+  scoreMap: new Float32Array(480 * 640),  // optional per-pixel confidence
+});
+
 // Properties
-mask.data;  // Uint8Array (decoded)
-mask.area;  // pixel count
-mask.bbox;  // { x, y, width, height }
+mask.data;                // Uint8Array (decoded)
+mask.area;                // pixel count
+mask.bbox;                // { x, y, width, height }
+mask.isPredicted;         // false for User, true for Predicted
+mask.scale;               // [number, number] spatial scale (default [1, 1])
+mask.offset;              // [number, number] spatial offset (default [0, 0])
+mask.hasSpatialTransform; // true if scale != [1,1] or offset != [0,0]
+mask.imageExtent;         // { height, width } in image coordinates
+
+// Resample to target size (removes spatial transform)
+const fullRes = mask.resampled(480, 640);
 
 // Convert to polygon ROI
 const roi = mask.toPolygon();
 ```
 
 ### `BoundingBox`
-Axis-aligned or rotated bounding box for detection/tracking workflows (SLP format 1.7).
+Axis-aligned or rotated bounding box for detection/tracking workflows. `BoundingBox` is abstract; use `UserBoundingBox` or `PredictedBoundingBox` for direct construction.
+
+Bounding boxes use corner coordinates (`x1`, `y1`, `x2`, `y2`) as their primary storage. Center-based properties (`xCenter`, `yCenter`, `width`, `height`) are available as computed getters.
 
 ```ts
-// Create user-annotated bbox
+// Create user-annotated bbox from corners
 const bbox = new UserBoundingBox({
-  xCenter: 50, yCenter: 60, width: 100, height: 80,
+  x1: 0, y1: 20, x2: 100, y2: 100,
   video: labels.videos[0], frameIdx: 3, category: "animal",
 });
 
 // Create predicted bbox with confidence score
 const bbox = new PredictedBoundingBox({
-  xCenter: 50, yCenter: 60, width: 100, height: 80,
+  x1: 0, y1: 20, x2: 100, y2: 100,
   score: 0.95,
 });
 
-// Factory methods
+// Factory methods (return UserBoundingBox)
 const bbox = BoundingBox.fromXyxy(10, 20, 110, 100);  // corner coords
 const bbox = BoundingBox.fromXywh(10, 20, 100, 80);   // top-left + size
 
-// Properties
-bbox.xyxy;       // [x1, y1, x2, y2] (axis-aligned)
+// Stored properties
+bbox.x1; bbox.y1; bbox.x2; bbox.y2;  // corner coordinates
+bbox.angle;      // rotation in radians (default 0)
+
+// Computed properties
+bbox.xCenter;    // (x1 + x2) / 2
+bbox.yCenter;    // (y1 + y2) / 2
+bbox.width;      // abs(x2 - x1)
+bbox.height;     // abs(y2 - y1)
+bbox.xyxy;       // [x1, y1, x2, y2] (axis-aligned bounding box)
 bbox.xywh;       // { x, y, width, height }
 bbox.corners;    // number[][] (4 corner points, respects rotation)
 bbox.bounds;     // { minX, minY, maxX, maxY }
@@ -279,25 +339,198 @@ const roi = bbox.toRoi();              // Polygon ROI
 const mask = bbox.toMask(480, 640);    // SegmentationMask
 ```
 
-### `Labels` ROI/Mask/BBox Access
+### `Labels` Annotation Access
 
 ```ts
 // Direct access
-labels.rois;         // ROI[]
-labels.masks;        // SegmentationMask[]
-labels.bboxes;       // BoundingBox[]
-labels.staticRois;   // ROIs without frame index
-labels.temporalRois; // ROIs with frame index
-labels.staticBboxes; // BBoxes without frame index
+labels.rois;           // ROI[]
+labels.masks;          // SegmentationMask[]
+labels.bboxes;         // BoundingBox[]
+labels.labelImages;    // LabelImage[]
+labels.identities;     // Identity[]
+labels.staticRois;     // ROIs without frame index
+labels.temporalRois;   // ROIs with frame index
+labels.staticBboxes;   // BBoxes without frame index
 labels.temporalBboxes; // BBoxes with frame index
 
-// Filtered queries
-labels.getRois({ video, frameIdx: 0, category: "arena" });
-labels.getMasks({ video, category: "segmentation" });
+// Filtered queries (all support `predicted` filter)
+labels.getRois({ video, frameIdx: 0, category: "arena", predicted: false });
+labels.getMasks({ video, category: "segmentation", predicted: true });
 labels.getBboxes({ video, frameIdx: 0, predicted: true });
+labels.getLabelImages({ video, frameIdx: 0, track, category: "cell" });
+
+// Add a video (deduplicates automatically)
+labels.addVideo(video);
 ```
 
-The format ID is set automatically: 1.5 for ROIs/masks, 1.6 for ROIs with instance associations, 1.7 when bounding boxes are present.
+The SLP format version is set automatically based on content:
+
+| Version | Trigger |
+|---------|---------|
+| 1.5 | ROIs or masks present |
+| 1.6 | ROIs with instance associations |
+| 1.7 | Bounding boxes |
+| 1.8 | Label images |
+| 1.9 | Identities or predicted annotations |
+| 2.0 | BBox corner-based format |
+| 2.1 | Spatial metadata (scale/offset) |
+| 2.2 | Chunked label image storage |
+
+## Label Images (Dense Segmentation)
+
+Dense integer label images for instance segmentation workflows (Cellpose, StarDist, SAM, Mask R-CNN output). Each pixel stores an object ID (0 = background, positive integers = objects) with per-object metadata (track, category, name).
+
+`LabelImage` is abstract; use `UserLabelImage` or `PredictedLabelImage`, or use the static factory methods which return `UserLabelImage`.
+
+### Creating Label Images
+
+```ts
+// From a 2D integer array
+const li = LabelImage.fromArray(
+  new Int32Array([0, 0, 1, 1, 0, 2, 2, 0, 0]),
+  3, 3,  // height, width
+  { tracks: [trackA, trackB], video, frameIdx: 0 },
+);
+
+// From segmentation masks (composites multiple binary masks)
+const li = LabelImage.fromMasks(masks, { video, frameIdx: 0 });
+
+// From per-object binary masks (SAM / Mask R-CNN output)
+const li = LabelImage.fromBinaryMasks(
+  [mask1_2d, mask2_2d, mask3_2d],
+  {
+    tracks: [trackA, trackB, trackC],
+    categories: ["cell", "cell", "debris"],
+    scores: [0.95, 0.88, 0.72],  // creates PredictedLabelImage if provided
+  },
+);
+
+// Batch creation from a stack of 2D arrays (one per frame)
+const labelImages = LabelImage.fromStack({
+  data: [frame0_2d, frame1_2d, frame2_2d],
+  tracks: new Map([[1, trackA], [2, trackB]]),
+  createTracks: true,  // auto-create Track objects from label IDs
+  video,
+  frameIdx: [0, 1, 2],
+});
+```
+
+### Properties and Methods
+
+```ts
+// Data access
+li.data;       // Int32Array (flat, row-major)
+li.height;     // number
+li.width;      // number
+li.objects;    // Map<number, LabelImageObjectInfo>
+li.nObjects;   // number of objects
+li.labelIds;   // sorted unique non-zero label IDs in data
+li.tracks;     // Track[] from object metadata
+li.categories; // Set<string> from object metadata
+
+// Spatial transforms (for downsampled predictions)
+li.scale;               // [number, number] (default [1, 1])
+li.offset;              // [number, number] (default [0, 0])
+li.hasSpatialTransform; // boolean
+li.imageExtent;         // { height, width } in image coordinates
+
+// Mask extraction
+const mask = li.getObjectMask(1);         // Uint8Array for label ID 1
+const mask = li.getTrackMask(trackA);     // Uint8Array for all objects with trackA
+const mask = li.getCategoryMask("cell");  // Uint8Array for all "cell" objects
+
+// Iteration over objects
+for (const [track, category, binaryMask] of li.items()) {
+  console.log(track?.name, category, binaryMask.length);
+}
+
+// Conversion
+const masks = li.toMasks();                       // SegmentationMask[]
+const fullRes = li.resampled(480, 640);           // new LabelImage at full resolution
+
+// Predicted label image
+li.isPredicted;  // false for UserLabelImage, true for PredictedLabelImage
+// PredictedLabelImage also has: score, scoreMap, scoreMapScale, scoreMapOffset
+```
+
+### `LabelImageObjectInfo`
+
+Per-object metadata stored in `LabelImage.objects`:
+
+```ts
+interface LabelImageObjectInfo {
+  track: Track | null;
+  category: string;
+  name: string;
+  instance: Instance | null;
+  score?: number | null;  // per-object confidence (PredictedLabelImage)
+}
+```
+
+### `normalizeLabelIds()`
+
+Normalize label IDs across multiple frames so each Track or category gets a globally consistent ID. Mutates label images in place.
+
+```ts
+// Normalize by track (default) — each Track gets a unique, consistent ID
+const trackMap: Map<Track, number> = normalizeLabelIds(labelImages);
+
+// Normalize by category — same category string gets the same ID
+const catMap: Map<string, number> = normalizeLabelIds(labelImages, { by: "category" });
+```
+
+## Identity & 3D Data Structures
+
+### `Identity`
+
+Ground-truth animal identity that persists across videos, sessions, and experiments. Unlike `Track` (which represents a temporal trajectory within a single video), `Identity` represents the actual animal.
+
+```ts
+const id = new Identity({ name: "mouse_A", color: "#ff0000" });
+
+id.name;      // "mouse_A"
+id.color;     // "#ff0000"
+id.metadata;  // Record<string, unknown>
+```
+
+### `Instance3D` and `PredictedInstance3D`
+
+3D keypoint data from multi-camera triangulation.
+
+```ts
+// User-annotated 3D instance
+const inst3d = new Instance3D({
+  points: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+  skeleton,
+  score: 0.95,
+});
+
+inst3d.nVisible;  // number of non-NaN keypoints
+inst3d.isEmpty;   // true if all keypoints are NaN/null
+
+// Predicted 3D instance (with per-keypoint scores)
+const pred3d = new PredictedInstance3D({
+  points: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+  skeleton,
+  score: 0.95,
+  pointScores: [0.99, 0.87],
+});
+```
+
+### 3D Fields on Existing Types
+
+```ts
+// Labels.identities — all ground-truth identities
+labels.identities;  // Identity[]
+
+// Camera.size — image dimensions
+camera.size;  // [width, height] | undefined
+
+// InstanceGroup — links identity and 3D data to multi-camera groups
+group.identity;    // Identity | undefined
+group.instance3d;  // Instance3D | undefined
+group.points;      // delegates to instance3d.points if available
+```
 
 ## GeoJSON I/O
 

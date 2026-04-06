@@ -303,7 +303,7 @@ await saveSlpSet(set);
 
 ## ROI, Segmentation Masks & Bounding Boxes
 
-SLP format 1.5+ supports spatial annotations alongside pose data: ROIs (format 1.5), ROI-instance associations (format 1.6), and bounding boxes (format 1.7).
+SLP format 1.5+ supports spatial annotations alongside pose data.
 
 ```ts
 import {
@@ -314,24 +314,24 @@ import {
 
 const labels = await loadSlp("dataset.slp");
 
-// Access ROIs, masks, and bounding boxes
+// Access annotations
 console.log(`${labels.rois.length} ROIs, ${labels.masks.length} masks, ${labels.bboxes.length} bboxes`);
 
-// Query by video and frame
+// Query by video, frame, and predicted status
 const frameRois = labels.getRois({ video: labels.videos[0], frameIdx: 0 });
-const frameMasks = labels.getMasks({ video: labels.videos[0], frameIdx: 0 });
+const predMasks = labels.getMasks({ predicted: true });
 const frameBboxes = labels.getBboxes({ video: labels.videos[0], frameIdx: 0 });
 
-// Create new ROIs
-const roi = ROI.fromBbox(100, 200, 50, 80, {
+// Create ROIs
+const roi = ROI.fromPolygon([[0,0], [100,0], [100,100], [0,100]], {
   category: "arena",
   video: labels.videos[0],
 });
 labels.rois.push(roi);
 
-// Create bounding boxes
+// Create bounding boxes (corner coordinates)
 const bbox = new UserBoundingBox({
-  xCenter: 150, yCenter: 240, width: 50, height: 80,
+  x1: 125, y1: 200, x2: 175, y2: 280,
   category: "animal", video: labels.videos[0], frameIdx: 0,
 });
 labels.bboxes.push(bbox);
@@ -342,6 +342,105 @@ const restoredRois = readGeoJSON(geojsonStr);
 
 // Save — format version is set automatically based on content
 await saveSlp(labels, "output.slp");
+```
+
+## Label Images (Dense Segmentation)
+
+For dense instance segmentation workflows (Cellpose, StarDist, SAM, Mask R-CNN), use `LabelImage` to store per-pixel object IDs alongside pose data.
+
+### From Segmentation Model Output
+
+```ts
+import { LabelImage, Track } from "@talmolab/sleap-io.js";
+
+// Create from per-object binary masks (e.g., SAM output)
+const trackA = new Track({ name: "cell_1" });
+const trackB = new Track({ name: "cell_2" });
+
+const li = LabelImage.fromBinaryMasks(
+  [mask1, mask2],  // 2D boolean/number arrays or Uint8Arrays
+  {
+    height: 480, width: 640,  // required for Uint8Array input
+    tracks: [trackA, trackB],
+    categories: ["cell", "cell"],
+    video, frameIdx: 0,
+  },
+);
+
+// Extract individual masks
+const cellMask = li.getTrackMask(trackA);  // Uint8Array
+const allCells = li.getCategoryMask("cell");
+```
+
+### Batch Processing Video Frames
+
+```ts
+import { LabelImage, normalizeLabelIds } from "@talmolab/sleap-io.js";
+
+// Create label images for each frame from a stack of 2D arrays
+const labelImages = LabelImage.fromStack({
+  data: [frame0, frame1, frame2],  // number[][][] (per-frame 2D label arrays)
+  createTracks: true,  // auto-create Track objects from label IDs
+  video,
+  frameIdx: [0, 1, 2],
+});
+
+// Normalize IDs so the same track gets the same label ID across all frames
+const trackMap = normalizeLabelIds(labelImages);
+
+// Add to labels
+labels.labelImages.push(...labelImages);
+```
+
+### Spatial Transforms
+
+When predictions are at a different resolution than the source video:
+
+```ts
+// Create a downsampled label image
+const li = LabelImage.fromArray(data, 120, 160, {
+  scale: [0.25, 0.25],   // 4x downsampled
+  offset: [0, 0],
+});
+
+li.imageExtent;  // { height: 480, width: 640 }
+
+// Resample to full resolution
+const fullRes = li.resampled(480, 640);
+```
+
+## 3D Pose Data
+
+Multi-camera 3D pose estimation with cross-library interop (Python sleap-io, luc3d).
+
+```ts
+import { Identity, Instance3D, PredictedInstance3D } from "@talmolab/sleap-io.js";
+
+// Ground-truth identity (persists across sessions)
+const animal = new Identity({ name: "mouse_A", color: "#ff0000" });
+
+// 3D instance from triangulation
+const inst3d = new Instance3D({
+  points: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0], [NaN, NaN, NaN]],
+  skeleton,
+});
+inst3d.nVisible;  // 2
+inst3d.isEmpty;   // false
+
+// Predicted 3D instance with per-keypoint confidence
+const pred3d = new PredictedInstance3D({
+  points: [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]],
+  skeleton,
+  score: 0.95,
+  pointScores: [0.99, 0.87],
+});
+
+// Link to an instance group
+group.identity = animal;
+group.instance3d = inst3d;
+
+// Identities are stored on Labels
+labels.identities.push(animal);
 ```
 
 ## Advanced: Low-Level Worker APIs
