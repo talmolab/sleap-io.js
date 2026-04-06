@@ -632,6 +632,17 @@ function readRoisWithMigration(
       } else {
         migratedBboxes.push(new UserBoundingBox(bboxOptions));
       }
+
+      // Format >= 1.6: resolve instance references for migrated bboxes
+      if (instanceIndices.length > 0) {
+        const instIdx = Number(instanceIndices[i]);
+        const bbox = migratedBboxes[migratedBboxes.length - 1];
+        if (instances && instIdx >= 0 && instIdx < instances.length) {
+          bbox.instance = instances[instIdx];
+        } else if (instIdx >= 0) {
+          bbox._instanceIdx = instIdx;
+        }
+      }
     } else {
       const roiOptions = {
         geometry,
