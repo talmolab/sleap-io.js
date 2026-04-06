@@ -1,7 +1,13 @@
 import type { Video } from "./video.js";
 import type { Instance } from "./instance.js";
 import { Track } from "./instance.js";
-import { SegmentationMask, resizeNearest } from "./mask.js";
+import {
+  SegmentationMask,
+  UserSegmentationMask,
+  PredictedSegmentationMask,
+  encodeRle,
+  resizeNearest,
+} from "./mask.js";
 
 /** Per-object metadata in a LabelImage. */
 export interface LabelImageObjectInfo {
@@ -422,7 +428,7 @@ export class LabelImage {
    * @param options.source - Source string shared across all frames.
    */
   static fromStack(options: {
-    data: Int32Array[] | number[][][];
+    data: number[][][];
     tracks?: Map<number, Track> | Track[] | null;
     categories?: Map<number, string> | string[] | null;
     createTracks?: boolean;
@@ -435,14 +441,8 @@ export class LabelImage {
 
     // Determine height/width from first frame
     const first = data[0];
-    let height: number, width: number;
-    if (first instanceof Int32Array) {
-      // Assume square-ish — need explicit height/width
-      // Infer from all frames having same length
-      throw new Error("fromStack with flat Int32Arrays requires 2D number[][] input. Use number[][] instead.");
-    }
-    height = first.length;
-    width = first[0]?.length ?? 0;
+    const height = first.length;
+    const width = first[0]?.length ?? 0;
 
     // Collect all unique label IDs across all frames
     const allIds = new Set<number>();
@@ -531,30 +531,37 @@ export class LabelImage {
         name: "",
         instance: null,
       };
-      result.push(
-        SegmentationMask.fromArray(maskMap.get(lid)!, this.height, this.width, {
-          track: info.track,
-          category: info.category,
-          name: info.name,
-          instance: info.instance,
-          video: this.video,
-          frameIdx: this.frameIdx,
-          source: this.source,
-          scale: [...this.scale],
-          offset: [...this.offset],
-        }),
-      );
+      const rleCounts = encodeRle(maskMap.get(lid)!, this.height, this.width);
+      const baseOpts = {
+        rleCounts,
+        height: this.height,
+        width: this.width,
+        track: info.track,
+        category: info.category,
+        name: info.name,
+        instance: info.instance,
+        video: this.video,
+        frameIdx: this.frameIdx,
+        source: this.source,
+        scale: [...this.scale] as [number, number],
+        offset: [...this.offset] as [number, number],
+      };
+      if (this instanceof PredictedLabelImage) {
+        const pli = this as PredictedLabelImage;
+        result.push(new PredictedSegmentationMask({
+          ...baseOpts,
+          score: info.score ?? pli.score,
+        }));
+      } else {
+        result.push(new UserSegmentationMask(baseOpts));
+      }
     }
     return result;
   }
 }
 
 /** User-annotated label image (no prediction score). */
-export class UserLabelImage extends LabelImage {
-  get isPredicted(): boolean {
-    return false;
-  }
-}
+export class UserLabelImage extends LabelImage {}
 
 /** Predicted label image with a confidence score and optional score map. */
 export class PredictedLabelImage extends LabelImage {

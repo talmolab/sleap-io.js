@@ -192,11 +192,7 @@ export class BoundingBox {
 }
 
 /** User-annotated bounding box (no prediction score). */
-export class UserBoundingBox extends BoundingBox {
-  get isPredicted(): boolean {
-    return false;
-  }
-}
+export class UserBoundingBox extends BoundingBox {}
 
 /** Predicted bounding box with a confidence score. */
 export class PredictedBoundingBox extends BoundingBox {

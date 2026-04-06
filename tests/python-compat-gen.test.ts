@@ -95,9 +95,9 @@ describe("Python compatibility (#76)", () => {
       expectFixedString(file.get("mask_names"), "json");
       expectFixedString(file.get("mask_sources"), "json");
 
-      expectFixedString(file.get("bboxes"), "categories");
-      expectFixedString(file.get("bboxes"), "names");
-      expectFixedString(file.get("bboxes"), "sources");
+      expectFixedString(file.get("bbox_categories"), "json");
+      expectFixedString(file.get("bbox_names"), "json");
+      expectFixedString(file.get("bbox_sources"), "json");
     } finally {
       file.close();
       module.FS.unlink(memPath);

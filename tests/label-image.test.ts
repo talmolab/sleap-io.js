@@ -3,10 +3,11 @@ import { describe, it, expect } from "vitest";
 import {
   LabelImage,
   UserLabelImage,
+  PredictedLabelImage,
   type LabelImageObjectInfo,
 } from "../src/model/label-image.js";
 import { Track } from "../src/model/instance.js";
-import { SegmentationMask } from "../src/model/mask.js";
+import { SegmentationMask, PredictedSegmentationMask } from "../src/model/mask.js";
 
 /** Helper: create a flat Int32Array label image from a 2D number array. */
 function makeLabelData(arr: number[][]): {
@@ -600,5 +601,185 @@ describe("LabelImage", () => {
       expect(tracks[1].name).toBe("7");
       expect(tracks[2].name).toBe("15");
     });
+  });
+});
+
+describe("LabelImage abstract base and subclasses", () => {
+  it("LabelImage cannot be instantiated directly", () => {
+    const data = new Int32Array(4);
+    expect(() => new (LabelImage as any)({ data, height: 2, width: 2 })).toThrow(TypeError);
+  });
+
+  it("UserLabelImage isPredicted is false", () => {
+    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const li = new UserLabelImage({ data, height, width });
+    expect(li.isPredicted).toBe(false);
+    expect(li).toBeInstanceOf(UserLabelImage);
+  });
+
+  it("PredictedLabelImage has score, scoreMap, isPredicted", () => {
+    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const sm = new Float32Array(4).fill(0.5);
+    const li = new PredictedLabelImage({
+      data, height, width, score: 0.88, scoreMap: sm,
+      scoreMapScale: [2, 2], scoreMapOffset: [1, 1],
+    });
+    expect(li.isPredicted).toBe(true);
+    expect(li.score).toBe(0.88);
+    expect(li.scoreMap).toBe(sm);
+    expect(li.scoreMapScale).toEqual([2, 2]);
+    expect(li.scoreMapOffset).toEqual([1, 1]);
+  });
+
+  it("PredictedLabelImage defaults scoreMap to null", () => {
+    const { data, height, width } = makeLabelData([[0]]);
+    const li = new PredictedLabelImage({ data, height, width, score: 0.5 });
+    expect(li.scoreMap).toBeNull();
+    expect(li.scoreMapScale).toEqual([1, 1]);
+    expect(li.scoreMapOffset).toEqual([0, 0]);
+  });
+});
+
+describe("LabelImage.fromStack", () => {
+  it("creates label images from 2D array stack", () => {
+    const frame1 = [[1, 0], [0, 2]];
+    const frame2 = [[0, 1], [2, 0]];
+    const result = LabelImage.fromStack({ data: [frame1, frame2] });
+    expect(result).toHaveLength(2);
+    expect(result[0].frameIdx).toBe(0);
+    expect(result[1].frameIdx).toBe(1);
+    expect(result[0].height).toBe(2);
+    expect(result[0].width).toBe(2);
+  });
+
+  it("createTracks auto-creates shared Track objects", () => {
+    const frame1 = [[1, 0], [0, 2]];
+    const frame2 = [[0, 1], [2, 0]];
+    const result = LabelImage.fromStack({ data: [frame1, frame2], createTracks: true });
+    // Both frames should share the same Track references
+    const tracks1 = result[0].tracks;
+    const tracks2 = result[1].tracks;
+    expect(tracks1).toHaveLength(2);
+    expect(tracks2).toHaveLength(2);
+    expect(tracks1[0]).toBe(tracks2[0]); // Same Track object reference
+    expect(tracks1[1]).toBe(tracks2[1]);
+  });
+
+  it("accepts custom categories as Map", () => {
+    const frame = [[1, 2], [0, 0]];
+    const cats = new Map<number, string>([[1, "cell"], [2, "nucleus"]]);
+    const result = LabelImage.fromStack({ data: [frame], categories: cats });
+    expect(result[0].objects.get(1)?.category).toBe("cell");
+    expect(result[0].objects.get(2)?.category).toBe("nucleus");
+  });
+
+  it("accepts custom categories as Array (1-indexed)", () => {
+    const frame = [[1, 2], [0, 0]];
+    const result = LabelImage.fromStack({ data: [frame], categories: ["cell", "nucleus"] });
+    expect(result[0].objects.get(1)?.category).toBe("cell");
+    expect(result[0].objects.get(2)?.category).toBe("nucleus");
+  });
+
+  it("uses custom frameIdx", () => {
+    const result = LabelImage.fromStack({
+      data: [[[1]], [[2]]],
+      frameIdx: [10, 20],
+    });
+    expect(result[0].frameIdx).toBe(10);
+    expect(result[1].frameIdx).toBe(20);
+  });
+
+  it("returns empty array for empty data", () => {
+    expect(LabelImage.fromStack({ data: [] })).toEqual([]);
+  });
+});
+
+describe("LabelImage scale/offset", () => {
+  it("default scale/offset is identity", () => {
+    const { data, height, width } = makeLabelData([[1]]);
+    const li = new UserLabelImage({ data, height, width });
+    expect(li.scale).toEqual([1, 1]);
+    expect(li.offset).toEqual([0, 0]);
+    expect(li.hasSpatialTransform).toBe(false);
+  });
+
+  it("hasSpatialTransform detects non-identity", () => {
+    const { data, height, width } = makeLabelData([[1]]);
+    const li = new UserLabelImage({ data, height, width, scale: [2, 2] });
+    expect(li.hasSpatialTransform).toBe(true);
+  });
+
+  it("imageExtent accounts for scale", () => {
+    const { data, height, width } = makeLabelData([[1, 0], [0, 1]]);
+    const li = new UserLabelImage({ data, height, width, scale: [2, 2] });
+    expect(li.imageExtent).toEqual({ height: 1, width: 1 });
+  });
+
+  it("resampled returns identity scale/offset", () => {
+    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const li = new UserLabelImage({ data, height, width, scale: [2, 2], offset: [5, 5] });
+    const resampled = li.resampled(1, 1);
+    expect(resampled.scale).toEqual([1, 1]);
+    expect(resampled.offset).toEqual([0, 0]);
+    expect(resampled.height).toBe(1);
+    expect(resampled.width).toBe(1);
+    expect(resampled).toBeInstanceOf(UserLabelImage);
+  });
+
+  it("resampled preserves PredictedLabelImage", () => {
+    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const sm = new Float32Array(4).fill(0.5);
+    const li = new PredictedLabelImage({ data, height, width, score: 0.9, scoreMap: sm });
+    const resampled = li.resampled(1, 1);
+    expect(resampled).toBeInstanceOf(PredictedLabelImage);
+    const pli = resampled as PredictedLabelImage;
+    expect(pli.score).toBe(0.9);
+    expect(pli.scoreMap).not.toBeNull();
+    expect(pli.scoreMap!.length).toBe(1); // 1*1
+  });
+
+  it("fromMasks validates consistent scale/offset", () => {
+    const m1 = SegmentationMask.fromArray(new Uint8Array([1, 0, 0, 0]), 2, 2, { scale: [2, 2] });
+    const m2 = SegmentationMask.fromArray(new Uint8Array([0, 1, 0, 0]), 2, 2, { scale: [3, 3] });
+    expect(() => LabelImage.fromMasks([m1, m2])).toThrow("same scale");
+  });
+
+  it("toMasks propagates scale/offset", () => {
+    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const li = new UserLabelImage({ data, height, width, scale: [2, 2], offset: [5, 5] });
+    const masks = li.toMasks();
+    for (const mask of masks) {
+      expect(mask.scale).toEqual([2, 2]);
+      expect(mask.offset).toEqual([5, 5]);
+    }
+  });
+
+  it("toMasks creates PredictedSegmentationMask from PredictedLabelImage", () => {
+    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const li = new PredictedLabelImage({ data, height, width, score: 0.9 });
+    const masks = li.toMasks();
+    expect(masks).toHaveLength(2);
+    for (const mask of masks) {
+      expect(mask).toBeInstanceOf(PredictedSegmentationMask);
+      expect(mask.isPredicted).toBe(true);
+      expect((mask as PredictedSegmentationMask).score).toBe(0.9);
+    }
+  });
+
+  it("toMasks uses per-object score when available", () => {
+    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const objects = new Map<number, LabelImageObjectInfo>([
+      [1, { track: null, category: "", name: "", instance: null, score: 0.7 }],
+      [2, { track: null, category: "", name: "", instance: null, score: 0.3 }],
+    ]);
+    const li = new PredictedLabelImage({ data, height, width, objects, score: 0.5 });
+    const masks = li.toMasks();
+    expect((masks[0] as PredictedSegmentationMask).score).toBe(0.7);
+    expect((masks[1] as PredictedSegmentationMask).score).toBe(0.3);
+  });
+
+  it("scale must be positive", () => {
+    const { data, height, width } = makeLabelData([[0]]);
+    expect(() => new UserLabelImage({ data, height, width, scale: [-1, 1] })).toThrow("Scale must be positive");
   });
 });

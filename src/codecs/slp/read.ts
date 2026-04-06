@@ -693,9 +693,10 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
   const count = isLegacy ? xCenters.length : x1s.length;
   if (!count) return [];
 
-  const categories = readAttrString(bboxesDs, "categories");
-  const names = readAttrString(bboxesDs, "names");
-  const sources = readAttrString(bboxesDs, "sources");
+  // v1.9+: string datasets at root level; fallback to JSON attrs on dataset
+  const categories = readStringMetadata(file, "bbox_categories", bboxesDs, "categories");
+  const names = readStringMetadata(file, "bbox_names", bboxesDs, "names");
+  const sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
 
   const yCenters = bboxesData.y_center ?? [];
   const widths = bboxesData.width ?? [];
@@ -820,6 +821,12 @@ function readScoreMaps(file: any, indexPath: string, dataPath: string): Map<numb
 
     const compressed = dataFlat.slice(start, end);
     const decompressed = inflate(compressed);
+    const expectedBytes = h * w * 4; // Float32 = 4 bytes per element
+    if (decompressed.byteLength !== expectedBytes) {
+      throw new Error(
+        `Score map decompression size mismatch: expected ${expectedBytes} bytes, got ${decompressed.byteLength}`,
+      );
+    }
     const scoreMap = new Float32Array(
       decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength),
     );
@@ -1020,7 +1027,8 @@ function readLabelImages(
     // Extract pixel data from blob or chunked format
     let pixelData: Int32Array;
     if (isChunked && dataChunked) {
-      // v2.2+: 3D chunked dataset — extract frame slice
+      // v2.2+: 3D chunked dataset [T, H, W] — frames stored sequentially by the
+      // Python writer, so loop index i maps directly to the i-th frame slice.
       const frameSize = height * width;
       if (dataChunked instanceof Int32Array) {
         // Flat typed array with shape [T, H, W] — slice by frame index

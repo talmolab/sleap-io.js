@@ -158,6 +158,8 @@ export class ROI {
   }
 
   explode(): ROI[] {
+    // Use runtime constructor to preserve subclass (UserROI vs PredictedROI).
+    // The any cast is safe because copyFields dynamically includes score for predicted.
     const Ctor = this.constructor as new (options: any) => ROI;
     const copyFields: Record<string, unknown> = {
       name: this.name,
@@ -653,11 +655,7 @@ function decodeWkbPolygon(
 }
 
 /** User-annotated region of interest (no prediction score). */
-export class UserROI extends ROI {
-  get isPredicted(): boolean {
-    return false;
-  }
-}
+export class UserROI extends ROI {}
 
 /** Predicted region of interest with a confidence score. */
 export class PredictedROI extends ROI {

@@ -152,6 +152,7 @@ export class SegmentationMask {
       }
     }
     const rleCounts = encodeRle(flat, height, width);
+    // If stride is specified, derive scale as 1/stride. Explicit scale takes precedence.
     const stride = options?.stride;
     const scaleFromStride: [number, number] | undefined =
       stride != null ? [1 / stride, 1 / stride] : undefined;
@@ -312,11 +313,7 @@ export class SegmentationMask {
 }
 
 /** User-annotated segmentation mask (no prediction score). */
-export class UserSegmentationMask extends SegmentationMask {
-  get isPredicted(): boolean {
-    return false;
-  }
-}
+export class UserSegmentationMask extends SegmentationMask {}
 
 /** Predicted segmentation mask with a confidence score and optional score map. */
 export class PredictedSegmentationMask extends SegmentationMask {

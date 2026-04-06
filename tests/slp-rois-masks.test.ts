@@ -1,12 +1,13 @@
 /* @vitest-environment node */
 import { describe, it, expect } from "vitest";
 import { Labels } from "../src/model/labels.js";
-import { ROI } from "../src/model/roi.js";
-import { SegmentationMask } from "../src/model/mask.js";
+import { ROI, PredictedROI } from "../src/model/roi.js";
+import { SegmentationMask, UserSegmentationMask, PredictedSegmentationMask } from "../src/model/mask.js";
 import { Video } from "../src/model/video.js";
 import { Track } from "../src/model/instance.js";
 import { Skeleton, Instance } from "../src/index.js";
 import { UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
+import { UserLabelImage, PredictedLabelImage } from "../src/model/label-image.js";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
 import { readSlp } from "../src/codecs/slp/read.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
@@ -388,5 +389,131 @@ describe("SLP ROI instance association (format 1.6)", () => {
     const loaded = await roundTrip(labels);
     expect(loaded.rois.length).toBe(1);
     expect(loaded.rois[0].instance).toBeNull();
+  });
+});
+
+describe("SLP Predicted Variant Roundtrips", () => {
+  it("round-trips PredictedROI with score", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [1, 2] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const roi = new PredictedROI({
+      geometry: { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] },
+      score: 0.75, name: "pred", category: "obj",
+    });
+
+    const labels = new Labels({
+      labeledFrames: [frame], videos: [video], skeletons: [skeleton], rois: [roi],
+    });
+
+    const loaded = await roundTrip(labels);
+    expect(loaded.rois).toHaveLength(1);
+    expect(loaded.rois[0].isPredicted).toBe(true);
+    expect(loaded.rois[0]).toBeInstanceOf(PredictedROI);
+    expect((loaded.rois[0] as PredictedROI).score).toBeCloseTo(0.75);
+    expect(loaded.rois[0].name).toBe("pred");
+  });
+
+  it("round-trips PredictedSegmentationMask with score", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [1, 2] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const data = new Uint8Array(25);
+    data[12] = 1; // single pixel
+    const rle = (await import("../src/model/mask.js")).encodeRle(data, 5, 5);
+    const mask = new PredictedSegmentationMask({
+      rleCounts: rle, height: 5, width: 5, score: 0.92,
+      name: "pmask", category: "seg", instance: inst,
+    });
+
+    const labels = new Labels({
+      labeledFrames: [frame], videos: [video], skeletons: [skeleton], masks: [mask],
+    });
+
+    const loaded = await roundTrip(labels);
+    loaded.materialize();
+    expect(loaded.masks).toHaveLength(1);
+    expect(loaded.masks[0].isPredicted).toBe(true);
+    expect(loaded.masks[0]).toBeInstanceOf(PredictedSegmentationMask);
+    expect((loaded.masks[0] as PredictedSegmentationMask).score).toBeCloseTo(0.92);
+    expect(loaded.masks[0].name).toBe("pmask");
+  });
+
+  it("round-trips PredictedLabelImage with score", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [1, 2] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const data = new Int32Array(9);
+    data[0] = 1;
+    data[4] = 2;
+    const li = new PredictedLabelImage({
+      data, height: 3, width: 3, video, frameIdx: 0, score: 0.85,
+    });
+
+    const labels = new Labels({
+      labeledFrames: [frame], videos: [video], skeletons: [skeleton], labelImages: [li],
+    });
+
+    const loaded = await roundTrip(labels);
+    expect(loaded.labelImages).toHaveLength(1);
+    expect(loaded.labelImages[0].isPredicted).toBe(true);
+    expect(loaded.labelImages[0]).toBeInstanceOf(PredictedLabelImage);
+    expect((loaded.labelImages[0] as PredictedLabelImage).score).toBeCloseTo(0.85);
+  });
+});
+
+describe("SLP Scale/Offset Roundtrips", () => {
+  it("round-trips mask scale/offset", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [1, 2] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const mask = SegmentationMask.fromArray(
+      new Uint8Array([1, 0, 0, 1, 0, 0, 1, 0, 0]), 3, 3,
+      { video, frameIdx: 0, scale: [2, 3], offset: [10, 20] },
+    );
+
+    const labels = new Labels({
+      labeledFrames: [frame], videos: [video], skeletons: [skeleton], masks: [mask],
+    });
+
+    const loaded = await roundTrip(labels);
+    expect(loaded.masks).toHaveLength(1);
+    expect(loaded.masks[0].scale[0]).toBeCloseTo(2);
+    expect(loaded.masks[0].scale[1]).toBeCloseTo(3);
+    expect(loaded.masks[0].offset[0]).toBeCloseTo(10);
+    expect(loaded.masks[0].offset[1]).toBeCloseTo(20);
+  });
+
+  it("round-trips label image scale/offset", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [1, 2] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const data = new Int32Array(4);
+    data[0] = 1;
+    const li = new UserLabelImage({
+      data, height: 2, width: 2, video, frameIdx: 0,
+      scale: [0.5, 0.5], offset: [3, 7],
+    });
+
+    const labels = new Labels({
+      labeledFrames: [frame], videos: [video], skeletons: [skeleton], labelImages: [li],
+    });
+
+    const loaded = await roundTrip(labels);
+    expect(loaded.labelImages).toHaveLength(1);
+    expect(loaded.labelImages[0].scale[0]).toBeCloseTo(0.5);
+    expect(loaded.labelImages[0].scale[1]).toBeCloseTo(0.5);
+    expect(loaded.labelImages[0].offset[0]).toBeCloseTo(3);
+    expect(loaded.labelImages[0].offset[1]).toBeCloseTo(7);
   });
 });

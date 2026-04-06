@@ -943,7 +943,11 @@ function writeMasks(
       if (pm.scoreMap) {
         const smBytes = new Uint8Array(pm.scoreMap.buffer, pm.scoreMap.byteOffset, pm.scoreMap.byteLength);
         const compressed = deflate(smBytes);
-        scoreMapIndexRows.push([i, smOffset, smOffset + compressed.length, pm.scoreMap.length / pm.width, pm.width]);
+        const smH = pm.scoreMap.length / mask.width;
+        if (!Number.isInteger(smH)) {
+          throw new Error(`Score map size ${pm.scoreMap.length} not divisible by width ${mask.width}`);
+        }
+        scoreMapIndexRows.push([i, smOffset, smOffset + compressed.length, smH, mask.width]);
         scoreMapChunks.push(compressed);
         smOffset += compressed.length;
       }
@@ -1024,11 +1028,10 @@ function writeBboxes(
   createMatrixDataset(file, "bboxes", rows,
     ["x1", "y1", "x2", "y2", "angle", "video", "frame_idx", "track", "score", "instance"], "<f8");
 
-  // Set string metadata as attributes
-  const bboxesDs = file.get("bboxes");
-  setStringAttr(bboxesDs, "categories", JSON.stringify(categories));
-  setStringAttr(bboxesDs, "names", JSON.stringify(names));
-  setStringAttr(bboxesDs, "sources", JSON.stringify(sources));
+  // Write string metadata as datasets at root level (v1.9+)
+  writeStringDataset(file, "bbox_categories", categories);
+  writeStringDataset(file, "bbox_names", names);
+  writeStringDataset(file, "bbox_sources", sources);
 }
 
 function writeLabelImages(
@@ -1105,7 +1108,11 @@ function writeLabelImages(
       if (pli.scoreMap) {
         const smBytes = new Uint8Array(pli.scoreMap.buffer, pli.scoreMap.byteOffset, pli.scoreMap.byteLength);
         const smCompressed = deflate(smBytes);
-        smIndexRows.push([liIdx, smOffset, smOffset + smCompressed.length, pli.scoreMap.length / li.width, li.width]);
+        const smH = pli.scoreMap.length / li.width;
+        if (!Number.isInteger(smH)) {
+          throw new Error(`Score map size ${pli.scoreMap.length} not divisible by width ${li.width}`);
+        }
+        smIndexRows.push([liIdx, smOffset, smOffset + smCompressed.length, smH, li.width]);
         smChunks.push(smCompressed);
         smOffset += smCompressed.length;
       }
