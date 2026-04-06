@@ -2,6 +2,7 @@ import type { Video } from "./video.js";
 import type { Track, Instance } from "./instance.js";
 import { ROI, _registerMaskFactory } from "./roi.js";
 import type { Geometry } from "./roi.js";
+import { type BoundingBox, UserBoundingBox, PredictedBoundingBox } from "./bbox.js";
 
 export function encodeRle(
   mask: Uint8Array,
@@ -273,6 +274,36 @@ export class SegmentationMask {
       width: (maxC - minC + 1) / sx,
       height: (maxR - minR + 1) / sy,
     };
+  }
+
+  /** Convert to a `BoundingBox` object with metadata.
+   *
+   * Returns a `UserBoundingBox` or `PredictedBoundingBox` depending on whether
+   * this mask is predicted. Coordinates are in image space (respecting
+   * scale/offset).
+   */
+  toBbox(): BoundingBox {
+    const { x, y, width, height } = this.bbox;
+    const opts = {
+      x1: x,
+      y1: y,
+      x2: x + width,
+      y2: y + height,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance,
+      category: this.category,
+      name: this.name,
+      source: this.source,
+    };
+    if (this instanceof PredictedSegmentationMask) {
+      return new PredictedBoundingBox({
+        ...opts,
+        score: this.score,
+      });
+    }
+    return new UserBoundingBox(opts);
   }
 
   /** Convert the mask to a bounding-box polygon ROI. */

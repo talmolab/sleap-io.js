@@ -9,6 +9,8 @@ import {
 } from "../src/model/label-image.js";
 import { Track } from "../src/model/instance.js";
 import { SegmentationMask, PredictedSegmentationMask } from "../src/model/mask.js";
+import { UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
+import { Video } from "../src/model/video.js";
 
 /** Helper: create a flat Int32Array label image from a 2D number array. */
 function makeLabelData(arr: number[][]): {
@@ -1388,5 +1390,189 @@ describe("normalizeLabelIds", () => {
     expect(pli.data[0]).toBe(1);
     expect(pli.score).toBe(0.95); // score preserved
     expect(pli).toBeInstanceOf(PredictedLabelImage);
+  });
+});
+
+describe("LabelImage.toBboxes", () => {
+  it("single object produces one bbox with correct coords", () => {
+    // rows 2-4, cols 3-7 → x1=3, y1=2, x2=8, y2=5
+    const { data } = makeLabelData([
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 1, 1, 1, 1, 1, 0, 0],
+      [0, 0, 0, 1, 1, 1, 1, 1, 0, 0],
+      [0, 0, 0, 1, 1, 1, 1, 1, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ]);
+    const li = new UserLabelImage({
+      data,
+      height: 10,
+      width: 10,
+      objects: new Map([[1, { track: null, category: "", name: "", instance: null }]]),
+    });
+    const bboxes = li.toBboxes();
+    expect(bboxes).toHaveLength(1);
+    expect(bboxes[0]).toBeInstanceOf(UserBoundingBox);
+    expect(bboxes[0].xyxy).toEqual([3, 2, 8, 5]);
+  });
+
+  it("multiple objects produce one bbox per object", () => {
+    const { data } = makeLabelData([
+      [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 2, 2, 2, 2, 2],
+    ]);
+    const li = new UserLabelImage({
+      data,
+      height: 10,
+      width: 20,
+      objects: new Map([
+        [1, { track: null, category: "", name: "a", instance: null }],
+        [2, { track: null, category: "", name: "b", instance: null }],
+      ]),
+    });
+    const bboxes = li.toBboxes();
+    expect(bboxes).toHaveLength(2);
+    const byName = new Map(bboxes.map((bb) => [bb.name, bb]));
+    expect(byName.get("a")!.xyxy).toEqual([0, 0, 5, 3]);
+    expect(byName.get("b")!.xyxy).toEqual([14, 7, 20, 10]);
+  });
+
+  it("bboxes inherit metadata from objects and label image", () => {
+    const { data } = makeLabelData([
+      [0, 0, 0],
+      [0, 1, 0],
+      [0, 1, 0],
+    ]);
+    const track = new Track("t1");
+    const video = new Video({ filename: "test.mp4" });
+    const li = new UserLabelImage({
+      data,
+      height: 3,
+      width: 3,
+      objects: new Map([
+        [1, { track, category: "cell", name: "obj1", instance: null }],
+      ]),
+      video,
+      frameIdx: 5,
+      source: "cellpose",
+    });
+    const bboxes = li.toBboxes();
+    const bb = bboxes[0];
+    expect(bb.track).toBe(track);
+    expect(bb.video).toBe(video);
+    expect(bb.frameIdx).toBe(5);
+    expect(bb.category).toBe("cell");
+    expect(bb.name).toBe("obj1");
+    expect(bb.source).toBe("cellpose");
+  });
+
+  it("PredictedLabelImage produces PredictedBoundingBox with scores", () => {
+    const { data } = makeLabelData([
+      [1, 1, 0, 0, 0],
+      [1, 1, 0, 0, 0],
+      [0, 0, 0, 0, 0],
+      [0, 0, 0, 2, 2],
+      [0, 0, 0, 2, 2],
+    ]);
+    const li = new PredictedLabelImage({
+      data,
+      height: 5,
+      width: 5,
+      objects: new Map([
+        [1, { track: null, category: "", name: "", instance: null, score: 0.9 }],
+        [2, { track: null, category: "", name: "", instance: null, score: 0.8 }],
+      ]),
+      score: 0.5,
+    });
+    const bboxes = li.toBboxes();
+    expect(bboxes).toHaveLength(2);
+    expect(bboxes.every((bb) => bb instanceof PredictedBoundingBox)).toBe(true);
+    const scores = new Set(bboxes.map((bb) => (bb as PredictedBoundingBox).score));
+    expect(scores).toEqual(new Set([0.9, 0.8]));
+  });
+
+  it("PredictedBoundingBox falls back to image-level score when per-object is null", () => {
+    const { data } = makeLabelData([
+      [1, 1],
+      [1, 1],
+    ]);
+    const li = new PredictedLabelImage({
+      data,
+      height: 2,
+      width: 2,
+      objects: new Map([
+        [1, { track: null, category: "", name: "", instance: null, score: null }],
+      ]),
+      score: 0.75,
+    });
+    const bboxes = li.toBboxes();
+    expect((bboxes[0] as PredictedBoundingBox).score).toBeCloseTo(0.75);
+  });
+
+  it("bboxes respect scale and offset", () => {
+    // rows 2-3, cols 3-5
+    const { data } = makeLabelData([
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
+      [0, 0, 0, 1, 1, 1, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+      [0, 0, 0, 0, 0, 0, 0, 0, 0, 0],
+    ]);
+    const li = new UserLabelImage({
+      data,
+      height: 10,
+      width: 10,
+      objects: new Map([[1, { track: null, category: "", name: "", instance: null }]]),
+      scale: [0.5, 0.5],
+      offset: [10, 20],
+    });
+    const bboxes = li.toBboxes();
+    const bb = bboxes[0];
+    // x1 = 3/0.5 + 10 = 16, y1 = 2/0.5 + 20 = 24
+    // x2 = 6/0.5 + 10 = 22, y2 = 4/0.5 + 20 = 28
+    expect(bb.xyxy).toEqual([16, 24, 22, 28]);
+  });
+
+  it("empty label image returns empty list", () => {
+    const data = new Int32Array(100);
+    const li = new UserLabelImage({ data, height: 10, width: 10 });
+    expect(li.toBboxes()).toEqual([]);
+  });
+
+  it("object in dict with no pixels in data is skipped", () => {
+    const { data } = makeLabelData([
+      [1, 1, 0],
+      [1, 1, 0],
+      [0, 0, 0],
+    ]);
+    const li = new UserLabelImage({
+      data,
+      height: 3,
+      width: 3,
+      objects: new Map([
+        [1, { track: null, category: "", name: "present", instance: null }],
+        [2, { track: null, category: "", name: "absent", instance: null }],
+      ]),
+    });
+    const bboxes = li.toBboxes();
+    expect(bboxes).toHaveLength(1);
+    expect(bboxes[0].name).toBe("present");
   });
 });

@@ -8,6 +8,9 @@ import {
   decodeRle,
   resizeNearest,
 } from "../src/model/mask.js";
+import { UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
+import { Track } from "../src/model/instance.js";
+import { Video } from "../src/model/video.js";
 
 function makeMask2D(height: number, width: number, fill?: (r: number, c: number) => boolean): Uint8Array {
   const flat = new Uint8Array(height * width);
@@ -317,5 +320,79 @@ describe("resizeNearest", () => {
     const dst = resizeNearest(src, 2, 2, 2, 2);
     expect(dst).toBeInstanceOf(Float32Array);
     expect(dst.length).toBe(4);
+  });
+});
+
+describe("SegmentationMask.toBbox", () => {
+  it("basic toBbox matches bbox property", () => {
+    const mask = makeMask2D(10, 10, (r, c) => r >= 5 && c >= 3 && c < 8);
+    const sm = SegmentationMask.fromArray(mask, 10, 10);
+    const bb = sm.toBbox();
+    expect(bb).toBeInstanceOf(UserBoundingBox);
+    const bboxProp = sm.bbox;
+    expect(bb.x1).toBeCloseTo(bboxProp.x);
+    expect(bb.y1).toBeCloseTo(bboxProp.y);
+    expect(bb.width).toBeCloseTo(bboxProp.width);
+    expect(bb.height).toBeCloseTo(bboxProp.height);
+  });
+
+  it("propagates metadata", () => {
+    const track = new Track("t1");
+    const video = new Video({ filename: "test.mp4" });
+    const mask = makeMask2D(10, 10, (r, c) => r >= 2 && r < 5 && c >= 1 && c < 4);
+    const sm = SegmentationMask.fromArray(mask, 10, 10, {
+      track,
+      video,
+      frameIdx: 3,
+      category: "cell",
+      name: "obj1",
+      source: "manual",
+    });
+    const bb = sm.toBbox();
+    expect(bb.track).toBe(track);
+    expect(bb.video).toBe(video);
+    expect(bb.frameIdx).toBe(3);
+    expect(bb.category).toBe("cell");
+    expect(bb.name).toBe("obj1");
+    expect(bb.source).toBe("manual");
+  });
+
+  it("returns PredictedBoundingBox for predicted mask", () => {
+    const mask = makeMask2D(10, 10, (r, c) => r < 3 && c < 3);
+    const sm = new PredictedSegmentationMask({
+      rleCounts: encodeRle(mask, 10, 10),
+      height: 10,
+      width: 10,
+      score: 0.95,
+    });
+    const bb = sm.toBbox();
+    expect(bb).toBeInstanceOf(PredictedBoundingBox);
+    expect((bb as PredictedBoundingBox).score).toBeCloseTo(0.95);
+  });
+
+  it("respects scale", () => {
+    const mask = makeMask2D(10, 10, (r, c) => r >= 2 && r < 4 && c >= 3 && c < 6);
+    const sm = SegmentationMask.fromArray(mask, 10, 10, {
+      scale: [0.5, 0.5],
+    });
+    const bb = sm.toBbox();
+    // mask coords: x=3, y=2, w=3, h=2 -> image: x=6, y=4, w=6, h=4
+    expect(bb.xywh).toEqual({ x: 6, y: 4, width: 6, height: 4 });
+  });
+
+  it("respects offset", () => {
+    const mask = makeMask2D(10, 10, (r, c) => r >= 2 && r < 4 && c >= 3 && c < 6);
+    const sm = SegmentationMask.fromArray(mask, 10, 10, {
+      offset: [10, 20],
+    });
+    const bb = sm.toBbox();
+    expect(bb.xywh).toEqual({ x: 13, y: 22, width: 3, height: 2 });
+  });
+
+  it("handles empty mask", () => {
+    const mask = new Uint8Array(100); // all zeros
+    const sm = SegmentationMask.fromArray(mask, 10, 10);
+    const bb = sm.toBbox();
+    expect(bb.xywh).toEqual({ x: 0, y: 0, width: 0, height: 0 });
   });
 });
