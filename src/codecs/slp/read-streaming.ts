@@ -9,7 +9,7 @@
  */
 
 import { openH5Worker, StreamingH5File, isStreamingSupported, type StreamingH5Source } from "./h5-streaming.js";
-import { parseJsonAttr, parseJsonEntry, parseSkeletons, parseTracks, parseVideosMetadata, parseSuggestions } from "./parsers.js";
+import { parseJsonAttr, parseJsonEntry, parseSkeletons, parseTracks, parseVideosMetadata, parseSuggestions, resolveCameraKey, reconstructInstance3D, resolveIdentity } from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../../model/instance.js";
@@ -17,6 +17,7 @@ import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
 import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
+import { Identity } from "../../model/identity.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 
 /**
@@ -145,8 +146,11 @@ async function readFromStreamingFile(
     formatId,
   });
 
+  // Read identities
+  const identities = await readIdentitiesStreaming(file);
+
   // Read sessions
-  const sessions = await readSessionsStreaming(file, videos, skeletons, labeledFrames);
+  const sessions = await readSessionsStreaming(file, videos, skeletons, labeledFrames, identities);
 
   return new Labels({
     labeledFrames,
@@ -155,6 +159,7 @@ async function readFromStreamingFile(
     tracks,
     suggestions,
     sessions,
+    identities,
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
   });
 }
@@ -400,13 +405,40 @@ async function readSuggestionsStreaming(file: StreamingH5File, videos: Video[]):
 }
 
 /**
+ * Read identities from identities_json dataset.
+ */
+async function readIdentitiesStreaming(file: StreamingH5File): Promise<Identity[]> {
+  try {
+    const keys = file.keys();
+    if (!keys.includes("identities_json")) return [];
+
+    const data = await file.getDatasetValue("identities_json");
+    const values = normalizeDatasetArray(data.value);
+    const identities: Identity[] = [];
+    for (const entry of values) {
+      const parsed = parseJsonEntry(entry) as Record<string, unknown>;
+      const { name, color, ...rest } = parsed;
+      identities.push(new Identity({
+        name: (name as string) ?? "",
+        color: color as string | undefined,
+        metadata: rest,
+      }));
+    }
+    return identities;
+  } catch {
+    return [];
+  }
+}
+
+/**
  * Read recording sessions from sessions_json dataset.
  */
 async function readSessionsStreaming(
   file: StreamingH5File,
   videos: Video[],
   skeletons: Skeleton[],
-  labeledFrames: LabeledFrame[]
+  labeledFrames: LabeledFrame[],
+  identities?: Identity[]
 ): Promise<RecordingSession[]> {
   try {
     const keys = file.keys();
@@ -432,6 +464,7 @@ async function readSessionsStreaming(
           tvec: (cameraData.translation as number[] | undefined) ?? [0, 0, 0],
           matrix: cameraData.matrix as number[][] | undefined,
           distortions: cameraData.distortions as number[] | undefined,
+          size: cameraData.size as [number, number] | undefined,
         });
         cameraGroup.cameras.push(camera);
         cameraMap.set(String(key), camera);
@@ -441,7 +474,7 @@ async function readSessionsStreaming(
 
       const map = (parsed.camcorder_to_video_idx_map ?? {}) as Record<string, unknown>;
       for (const [cameraKey, videoIdx] of Object.entries(map)) {
-        const camera = cameraMap.get(cameraKey);
+        const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
         const video = videos[Number(videoIdx)];
         if (camera && video) {
           session.addVideo(video, camera);
@@ -457,20 +490,43 @@ async function readSessionsStreaming(
         for (const instanceGroup of instanceGroupList) {
           const instanceGroupRecord = instanceGroup as Record<string, unknown>;
           const instanceByCamera = new Map<Camera, Instance>();
+
+          // Read JS-format instances (camera key -> point data)
           const instancesRecord = (instanceGroupRecord.instances ?? {}) as Record<string, unknown>;
           for (const [cameraKey, points] of Object.entries(instancesRecord)) {
-            const camera = cameraMap.get(cameraKey);
-            if (!camera) continue;
+            const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+            if (!camera) {
+              console.warn(`Camera key "${cameraKey}" not found in session calibration — skipping 2D instance data for this camera.`);
+              continue;
+            }
             const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
             instanceByCamera.set(camera, new Instance({ points: points as Record<string, number[]>, skeleton }));
           }
-          const rawPoints = instanceGroupRecord.points;
-          const pointsValue = Array.isArray(rawPoints) ? (rawPoints as number[][]) : undefined;
+
+          // Fall back to Python-format camcorder_to_lf_and_inst_idx_map
+          if (instanceByCamera.size === 0) {
+            const lfInstMap = (instanceGroupRecord.camcorder_to_lf_and_inst_idx_map ?? {}) as Record<string, unknown>;
+            for (const [camIdx, value] of Object.entries(lfInstMap)) {
+              const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+              if (!camera) continue;
+              const pair = value as unknown as [number, number];
+              const lf = labeledFrames[Number(pair[0])];
+              if (lf) {
+                const inst = lf.instances[Number(pair[1])];
+                if (inst) instanceByCamera.set(camera, inst as Instance);
+              }
+            }
+          }
+
+          const instance3d = reconstructInstance3D(instanceGroupRecord, skeletons);
+          const identity = resolveIdentity(instanceGroupRecord, identities);
+
           instanceGroups.push(
             new InstanceGroup({
               instanceByCamera,
               score: instanceGroupRecord.score as number | undefined,
-              points: pointsValue,
+              instance3d,
+              identity,
               metadata: (instanceGroupRecord.metadata as Record<string, unknown> | undefined) ?? {},
             })
           );
@@ -479,10 +535,29 @@ async function readSessionsStreaming(
         const labeledFrameByCamera = new Map<Camera, LabeledFrame>();
         const labeledFrameMap = (groupRecord.labeled_frame_by_camera ?? {}) as Record<string, unknown>;
         for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
-          const camera = cameraMap.get(cameraKey);
+          const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+          if (!camera) {
+            console.warn(`Camera key "${cameraKey}" not found in session calibration — skipping labeled frame mapping.`);
+            continue;
+          }
           const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
-          if (camera && labeledFrame) {
+          if (labeledFrame) {
             labeledFrameByCamera.set(camera, labeledFrame);
+          }
+        }
+
+        // If no labeled_frame_by_camera, reconstruct from camcorder_to_lf_and_inst_idx_map
+        if (labeledFrameByCamera.size === 0) {
+          for (const instanceGroup of instanceGroupList) {
+            const igRecord = instanceGroup as Record<string, unknown>;
+            const lfInstMap = (igRecord.camcorder_to_lf_and_inst_idx_map ?? {}) as Record<string, unknown>;
+            for (const [camIdx, value] of Object.entries(lfInstMap)) {
+              const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+              if (!camera) continue;
+              const pair = value as unknown as [number, number];
+              const lf = labeledFrames[Number(pair[0])];
+              if (lf) labeledFrameByCamera.set(camera, lf);
+            }
           }
         }
 

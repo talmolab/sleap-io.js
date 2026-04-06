@@ -5,6 +5,9 @@
 
 import { Skeleton, Node } from "../../model/skeleton.js";
 import { Track } from "../../model/instance.js";
+import { Camera } from "../../model/camera.js";
+import { Identity } from "../../model/identity.js";
+import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
 
 const textDecoder = new TextDecoder();
 
@@ -370,4 +373,62 @@ export function parseSessionsMetadata(values: unknown[]): SessionMetadata[] {
   }
 
   return sessions;
+}
+
+/**
+ * Resolve a camera key from a map lookup, falling back to numeric index.
+ * Camera keys may be camera names (JS format) or numeric indices (Python format).
+ */
+export function resolveCameraKey(
+  cameraKey: string,
+  cameraMap: Map<string, Camera>,
+  cameras: Camera[],
+): Camera | undefined {
+  let camera = cameraMap.get(cameraKey);
+  if (!camera) {
+    const idx = Number(cameraKey);
+    if (!isNaN(idx) && idx >= 0 && idx < cameras.length) {
+      camera = cameras[idx];
+    }
+  }
+  return camera;
+}
+
+/**
+ * Reconstruct an Instance3D or PredictedInstance3D from a session record.
+ */
+export function reconstructInstance3D(
+  record: Record<string, unknown>,
+  skeletons: Skeleton[],
+): Instance3D | undefined {
+  const rawPoints = record.points;
+  const pointsValue = Array.isArray(rawPoints) ? (rawPoints as number[][]) : undefined;
+  if (!pointsValue) return undefined;
+
+  const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+  const score = record.instance_3d_score as number | undefined;
+  const pointScores = record.instance_3d_point_scores as number[] | undefined;
+
+  if (pointScores) {
+    return new PredictedInstance3D({ points: pointsValue, skeleton, score, pointScores });
+  }
+  return new Instance3D({ points: pointsValue, skeleton, score });
+}
+
+/**
+ * Resolve an Identity from an identity_idx field in a session record.
+ */
+export function resolveIdentity(
+  record: Record<string, unknown>,
+  identities?: Identity[],
+): Identity | undefined {
+  const identityIdx = record.identity_idx;
+  if (identityIdx == null || !identities) return undefined;
+
+  const idx = Number(identityIdx);
+  if (idx >= 0 && idx < identities.length) {
+    return identities[idx];
+  }
+  console.warn(`identity_idx ${idx} is out of bounds (${identities.length} identities available) — skipping identity for this instance group.`);
+  return undefined;
 }

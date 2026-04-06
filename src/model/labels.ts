@@ -4,6 +4,7 @@ import { Skeleton } from "./skeleton.js";
 import { SuggestionFrame } from "./suggestions.js";
 import { Video } from "./video.js";
 import { RecordingSession } from "./camera.js";
+import { Identity } from "./identity.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
 import type { LazyDataStore, LazyFrameList } from "./lazy.js";
@@ -24,6 +25,7 @@ export class Labels {
   masks: SegmentationMask[];
   bboxes: BoundingBox[];
   labelImages: LabelImage[];
+  identities: Identity[];
 
   /** @internal Lazy frame list for on-demand materialization. */
   _lazyFrameList: LazyFrameList | null = null;
@@ -42,6 +44,7 @@ export class Labels {
     masks?: SegmentationMask[];
     bboxes?: BoundingBox[];
     labelImages?: LabelImage[];
+    identities?: Identity[];
   }) {
     this.labeledFrames = options?.labeledFrames ?? [];
     this.videos = options?.videos ?? [];
@@ -54,6 +57,7 @@ export class Labels {
     this.masks = options?.masks ?? [];
     this.bboxes = options?.bboxes ?? [];
     this.labelImages = options?.labelImages ?? [];
+    this.identities = options?.identities ?? [];
 
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = new Map<string | Video, Video>();

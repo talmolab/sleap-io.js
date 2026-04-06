@@ -11,6 +11,8 @@ export * from "./model/video.js";
 export * from "./model/suggestions.js";
 export * from "./model/labels-set.js";
 export * from "./model/camera.js";
+export * from "./model/identity.js";
+export * from "./model/instance3d.js";
 export * from "./model/lazy.js";
 export * from "./model/roi.js";
 export * from "./model/mask.js";
