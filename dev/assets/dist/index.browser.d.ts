@@ -268,6 +268,25 @@ declare class LazyFrameList {
 
 declare function encodeRle(mask: Uint8Array, height: number, width: number): Uint32Array;
 declare function decodeRle(rleCounts: Uint32Array, height: number, width: number): Uint8Array;
+/**
+ * Resize a typed array using nearest-neighbor interpolation.
+ * The input is a flat (H*W) array and the output is a flat (dstH*dstW) array.
+ */
+declare function resizeNearest<T extends Uint8Array | Int32Array | Float32Array>(data: T, srcH: number, srcW: number, dstH: number, dstW: number): T;
+interface SegmentationMaskOptions {
+    rleCounts: Uint32Array;
+    height: number;
+    width: number;
+    name?: string;
+    category?: string;
+    source?: string;
+    video?: Video | null;
+    frameIdx?: number | null;
+    track?: Track | null;
+    instance?: Instance | null;
+    scale?: [number, number];
+    offset?: [number, number];
+}
 declare class SegmentationMask {
     rleCounts: Uint32Array;
     height: number;
@@ -279,21 +298,31 @@ declare class SegmentationMask {
     frameIdx: number | null;
     track: Track | null;
     instance: Instance | null;
-    constructor(options: {
-        rleCounts: Uint32Array;
-        height: number;
-        width: number;
-        name?: string;
-        category?: string;
-        source?: string;
-        video?: Video | null;
-        frameIdx?: number | null;
-        track?: Track | null;
-        instance?: Instance | null;
-    });
-    static fromArray(mask: Uint8Array | boolean[][], height: number, width: number, options?: Omit<ConstructorParameters<typeof SegmentationMask>[0], "rleCounts" | "height" | "width">): SegmentationMask;
+    /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
+    scale: [number, number];
+    /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
+    offset: [number, number];
+    /** @internal Deferred instance index for lazy resolution. */
+    _instanceIdx: number | null;
+    constructor(options: SegmentationMaskOptions);
+    static fromArray(mask: Uint8Array | boolean[][], height: number, width: number, options?: Omit<SegmentationMaskOptions, "rleCounts" | "height" | "width"> & {
+        stride?: number;
+    }): UserSegmentationMask;
     get data(): Uint8Array;
     get area(): number;
+    /** Whether scale != [1,1] or offset != [0,0]. */
+    get hasSpatialTransform(): boolean;
+    /** The image-space extent of this mask (accounting for scale). */
+    get imageExtent(): {
+        height: number;
+        width: number;
+    };
+    get isPredicted(): boolean;
+    /**
+     * Create a resampled copy of this mask at the target dimensions.
+     * The returned mask has scale=[1,1] and offset=[0,0].
+     */
+    resampled(targetHeight: number, targetWidth: number): SegmentationMask;
     get bbox(): {
         x: number;
         y: number;
@@ -302,6 +331,25 @@ declare class SegmentationMask {
     };
     /** Convert the mask to a bounding-box polygon ROI. */
     toPolygon(): ROI;
+}
+/** User-annotated segmentation mask (no prediction score). */
+declare class UserSegmentationMask extends SegmentationMask {
+}
+/** Predicted segmentation mask with a confidence score and optional score map. */
+declare class PredictedSegmentationMask extends SegmentationMask {
+    score: number;
+    scoreMap: Float32Array | null;
+    /** Spatial scale for the score map. Default [1, 1]. */
+    scoreMapScale: [number, number];
+    /** Spatial offset for the score map. Default [0, 0]. */
+    scoreMapOffset: [number, number];
+    constructor(options: SegmentationMaskOptions & {
+        score: number;
+        scoreMap?: Float32Array | null;
+        scoreMapScale?: [number, number];
+        scoreMapOffset?: [number, number];
+    });
+    get isPredicted(): boolean;
 }
 
 type MaskFactory = (mask: Uint8Array, height: number, width: number, options: Record<string, unknown>) => SegmentationMask;
@@ -332,6 +380,16 @@ type Geometry = {
     type: "GeometryCollection";
     geometries: Geometry[];
 };
+interface ROIOptions {
+    geometry: Geometry;
+    name?: string;
+    category?: string;
+    source?: string;
+    video?: Video | null;
+    frameIdx?: number | null;
+    track?: Track | null;
+    instance?: Instance | null;
+}
 declare class ROI {
     geometry: Geometry;
     name: string;
@@ -343,20 +401,15 @@ declare class ROI {
     instance: Instance | null;
     /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx: number | null;
-    constructor(options: {
-        geometry: Geometry;
-        name?: string;
-        category?: string;
-        source?: string;
-        video?: Video | null;
-        frameIdx?: number | null;
-        track?: Track | null;
-        instance?: Instance | null;
-    });
-    static fromBbox(x: number, y: number, width: number, height: number, options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">): ROI;
-    static fromXyxy(x1: number, y1: number, x2: number, y2: number, options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">): ROI;
-    static fromPolygon(coords: number[][], options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">): ROI;
-    static fromMultiPolygon(polygons: number[][][][], options?: Omit<ConstructorParameters<typeof ROI>[0], "geometry">): ROI;
+    constructor(options: ROIOptions);
+    /** @deprecated Use BoundingBox.fromXywh() instead. */
+    static fromBbox(x: number, y: number, width: number, height: number, options?: Omit<ROIOptions, "geometry">): UserROI;
+    /** @deprecated Use BoundingBox.fromXyxy() instead. */
+    static fromXyxy(x1: number, y1: number, x2: number, y2: number, options?: Omit<ROIOptions, "geometry">): UserROI;
+    static fromPolygon(coords: number[][], options?: Omit<ROIOptions, "geometry">): UserROI;
+    static fromMultiPolygon(polygons: number[][][][], options?: Omit<ROIOptions, "geometry">): UserROI;
+    /** Whether this is a predicted ROI (has a score). */
+    get isPredicted(): boolean;
     explode(): ROI[];
     toGeoJSON(): {
         type: "Feature";
@@ -382,13 +435,24 @@ declare class ROI {
 declare function rasterizeGeometry(geometry: Geometry, height: number, width: number): Uint8Array;
 declare function encodeWkb(geometry: Geometry): Uint8Array;
 declare function decodeWkb(bytes: Uint8Array): Geometry;
+/** User-annotated region of interest (no prediction score). */
+declare class UserROI extends ROI {
+}
+/** Predicted region of interest with a confidence score. */
+declare class PredictedROI extends ROI {
+    score: number;
+    constructor(options: ROIOptions & {
+        score: number;
+    });
+    get isPredicted(): boolean;
+}
 
 /** Options for constructing a BoundingBox. */
 interface BoundingBoxOptions {
-    xCenter: number;
-    yCenter: number;
-    width: number;
-    height: number;
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
     angle?: number;
     video?: Video | null;
     frameIdx?: number | null;
@@ -400,10 +464,10 @@ interface BoundingBoxOptions {
 }
 /** Base bounding box class for detection/tracking workflows. */
 declare class BoundingBox {
-    xCenter: number;
-    yCenter: number;
-    width: number;
-    height: number;
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
     angle: number;
     video: Video | null;
     frameIdx: number | null;
@@ -416,9 +480,17 @@ declare class BoundingBox {
     _instanceIdx: number | null;
     constructor(options: BoundingBoxOptions);
     /** Create from corner coordinates [x1, y1, x2, y2]. */
-    static fromXyxy(x1: number, y1: number, x2: number, y2: number, options?: Omit<BoundingBoxOptions, "xCenter" | "yCenter" | "width" | "height">): UserBoundingBox;
+    static fromXyxy(x1: number, y1: number, x2: number, y2: number, options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">): UserBoundingBox;
     /** Create from top-left corner + size [x, y, w, h]. */
-    static fromXywh(x: number, y: number, w: number, h: number, options?: Omit<BoundingBoxOptions, "xCenter" | "yCenter" | "width" | "height">): UserBoundingBox;
+    static fromXywh(x: number, y: number, w: number, h: number, options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">): UserBoundingBox;
+    /** Center X coordinate (computed from x1, x2). */
+    get xCenter(): number;
+    /** Center Y coordinate (computed from y1, y2). */
+    get yCenter(): number;
+    /** Width of the bbox (computed from x1, x2). */
+    get width(): number;
+    /** Height of the bbox (computed from y1, y2). */
+    get height(): number;
     /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
     get xyxy(): [number, number, number, number];
     /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
@@ -457,7 +529,6 @@ declare class BoundingBox {
 }
 /** User-annotated bounding box (no prediction score). */
 declare class UserBoundingBox extends BoundingBox {
-    get isPredicted(): boolean;
 }
 /** Predicted bounding box with a confidence score. */
 declare class PredictedBoundingBox extends BoundingBox {
@@ -474,6 +545,20 @@ interface LabelImageObjectInfo {
     category: string;
     name: string;
     instance: Instance | null;
+    score?: number | null;
+    /** @internal Deferred instance index for lazy resolution. */
+    _instanceIdx?: number;
+}
+interface LabelImageOptions {
+    data: Int32Array;
+    height: number;
+    width: number;
+    objects?: Map<number, LabelImageObjectInfo>;
+    video?: Video | null;
+    frameIdx?: number | null;
+    source?: string;
+    scale?: [number, number];
+    offset?: [number, number];
 }
 /**
  * Dense integer label image for instance segmentation.
@@ -493,17 +578,13 @@ declare class LabelImage {
     video: Video | null;
     frameIdx: number | null;
     source: string;
+    /** Spatial scale factor: image_coord = li_coord / scale + offset. Default [1, 1]. */
+    scale: [number, number];
+    /** Spatial offset: image_coord = li_coord / scale + offset. Default [0, 0]. */
+    offset: [number, number];
     /** @internal Deferred instance indices for lazy resolution. Map<label_id, instance_idx> */
     _objectInstanceIdxs: Map<number, number> | null;
-    constructor(options: {
-        data: Int32Array;
-        height: number;
-        width: number;
-        objects?: Map<number, LabelImageObjectInfo>;
-        video?: Video | null;
-        frameIdx?: number | null;
-        source?: string;
-    });
+    constructor(options: LabelImageOptions);
     /** Number of objects in the label image metadata. */
     get nObjects(): number;
     /** Sorted unique non-zero label IDs present in the data.
@@ -515,6 +596,20 @@ declare class LabelImage {
     get categories(): Set<string>;
     /** Whether this label image has no temporal association (frameIdx is null). */
     get isStatic(): boolean;
+    /** Whether this is a predicted label image (has a score). */
+    get isPredicted(): boolean;
+    /** Whether scale != [1,1] or offset != [0,0]. */
+    get hasSpatialTransform(): boolean;
+    /** The image-space extent of this label image (accounting for scale). */
+    get imageExtent(): {
+        height: number;
+        width: number;
+    };
+    /**
+     * Create a resampled copy of this label image at the target dimensions.
+     * The returned label image has scale=[1,1] and offset=[0,0].
+     */
+    resampled(targetHeight: number, targetWidth: number): LabelImage;
     /** Get a binary mask (Uint8Array) for a specific label ID. */
     getObjectMask(labelId: number): Uint8Array;
     /** Get a binary mask for all objects associated with a given track. */
@@ -535,15 +630,57 @@ declare class LabelImage {
         video?: Video | null;
         frameIdx?: number | null;
         source?: string;
-    }): LabelImage;
+    }): UserLabelImage;
     /** Create a LabelImage by compositing an array of SegmentationMasks. */
     static fromMasks(masks: SegmentationMask[], options?: {
         video?: Video | null;
         frameIdx?: number | null;
         source?: string;
-    }): LabelImage;
+    }): UserLabelImage;
+    /**
+     * Create a list of LabelImages from a stack of 2D arrays (one per frame).
+     *
+     * Shared Track objects are created once and reused across frames.
+     *
+     * @param options.data - Array of flat Int32Arrays or 2D number arrays, one per frame.
+     * @param options.tracks - Track objects to assign. Array (1-indexed) or Map<labelId, Track>.
+     * @param options.categories - Category strings. Array (1-indexed) or Map<labelId, string>.
+     * @param options.createTracks - If true and tracks is not provided, auto-create one Track
+     *   per unique non-zero label ID found across ALL frames.
+     * @param options.frameIdx - Custom frame indices. Defaults to [0, 1, ..., T-1].
+     * @param options.video - Video reference shared across all frames.
+     * @param options.source - Source string shared across all frames.
+     */
+    static fromStack(options: {
+        data: number[][][];
+        tracks?: Map<number, Track> | Track[] | null;
+        categories?: Map<number, string> | string[] | null;
+        createTracks?: boolean;
+        frameIdx?: number[] | null;
+        video?: Video | null;
+        source?: string;
+    }): UserLabelImage[];
     /** Decompose this LabelImage into individual SegmentationMask objects. */
     toMasks(): SegmentationMask[];
+}
+/** User-annotated label image (no prediction score). */
+declare class UserLabelImage extends LabelImage {
+}
+/** Predicted label image with a confidence score and optional score map. */
+declare class PredictedLabelImage extends LabelImage {
+    score: number;
+    scoreMap: Float32Array | null;
+    /** Spatial scale for the score map. Default [1, 1]. */
+    scoreMapScale: [number, number];
+    /** Spatial offset for the score map. Default [0, 0]. */
+    scoreMapOffset: [number, number];
+    constructor(options: LabelImageOptions & {
+        score: number;
+        scoreMap?: Float32Array | null;
+        scoreMapScale?: [number, number];
+        scoreMapOffset?: [number, number];
+    });
+    get isPredicted(): boolean;
 }
 
 declare class Labels {
@@ -607,6 +744,7 @@ declare class Labels {
         category?: string;
         track?: Track;
         instance?: Instance | PredictedInstance;
+        predicted?: boolean;
     }): ROI[];
     getMasks(filters?: {
         video?: Video;
@@ -614,6 +752,7 @@ declare class Labels {
         category?: string;
         track?: Track;
         instance?: Instance | PredictedInstance;
+        predicted?: boolean;
     }): SegmentationMask[];
     get staticBboxes(): BoundingBox[];
     get temporalBboxes(): BoundingBox[];
@@ -632,6 +771,7 @@ declare class Labels {
         frameIdx?: number;
         track?: Track;
         category?: string;
+        predicted?: boolean;
     }): LabelImage[];
     static fromNumpy(data: number[][][][], options: {
         videos?: Video[];
@@ -1420,4 +1560,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AnnotationType, BoundingBox, type BoundingBoxOptions, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedInstance, PredictedInstance3D, type RGB, type RGBA, ROI, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };
+export { AnnotationType, BoundingBox, type BoundingBoxOptions, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, type SegmentationMaskOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };

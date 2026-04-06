@@ -525,6 +525,12 @@ var Labels = class {
         bbox._instanceIdx = null;
       }
     }
+    for (const mask of this.masks) {
+      if (mask._instanceIdx !== null && mask._instanceIdx >= 0 && mask._instanceIdx < allInstances.length) {
+        mask.instance = allInstances[mask._instanceIdx];
+        mask._instanceIdx = null;
+      }
+    }
     for (const li of this.labelImages) {
       if (li._objectInstanceIdxs) {
         for (const [labelId, instIdx] of li._objectInstanceIdxs) {
@@ -609,6 +615,9 @@ var Labels = class {
     if (filters.instance !== void 0) {
       results = results.filter((r) => r.instance === filters.instance);
     }
+    if (filters.predicted !== void 0) {
+      results = results.filter((r) => r.isPredicted === filters.predicted);
+    }
     return results;
   }
   getMasks(filters) {
@@ -628,6 +637,9 @@ var Labels = class {
     }
     if (filters.instance !== void 0) {
       results = results.filter((m) => m.instance === filters.instance);
+    }
+    if (filters.predicted !== void 0) {
+      results = results.filter((m) => m.isPredicted === filters.predicted);
     }
     return results;
   }
@@ -684,6 +696,9 @@ var Labels = class {
       results = results.filter(
         (li) => Array.from(li.objects.values()).some((info) => info.category === filters.category)
       );
+    }
+    if (filters.predicted !== void 0) {
+      results = results.filter((li) => li.isPredicted === filters.predicted);
     }
     return results;
   }
@@ -1560,6 +1575,11 @@ var ROI = class _ROI {
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx = null;
   constructor(options) {
+    if (new.target === _ROI) {
+      throw new TypeError(
+        "ROI is abstract. Use UserROI or PredictedROI."
+      );
+    }
     this.geometry = options.geometry;
     this.name = options.name ?? "";
     this.category = options.category ?? "";
@@ -1569,6 +1589,7 @@ var ROI = class _ROI {
     this.track = options.track ?? null;
     this.instance = options.instance ?? null;
   }
+  /** @deprecated Use BoundingBox.fromXywh() instead. */
   static fromBbox(x, y, width, height, options) {
     const geometry = {
       type: "Polygon",
@@ -1582,11 +1603,12 @@ var ROI = class _ROI {
         ]
       ]
     };
-    return new _ROI({
+    return new UserROI({
       geometry,
       ...options
     });
   }
+  /** @deprecated Use BoundingBox.fromXyxy() instead. */
   static fromXyxy(x1, y1, x2, y2, options) {
     const geometry = {
       type: "Polygon",
@@ -1600,7 +1622,7 @@ var ROI = class _ROI {
         ]
       ]
     };
-    return new _ROI({
+    return new UserROI({
       geometry,
       ...options
     });
@@ -1611,18 +1633,23 @@ var ROI = class _ROI {
       ring.push([ring[0][0], ring[0][1]]);
     }
     const geometry = { type: "Polygon", coordinates: [ring] };
-    return new _ROI({
+    return new UserROI({
       geometry,
       ...options
     });
   }
   static fromMultiPolygon(polygons, options) {
-    return new _ROI({
+    return new UserROI({
       geometry: { type: "MultiPolygon", coordinates: polygons },
       ...options
     });
   }
+  /** Whether this is a predicted ROI (has a score). */
+  get isPredicted() {
+    return false;
+  }
   explode() {
+    const Ctor = this.constructor;
     const copyFields = {
       name: this.name,
       category: this.category,
@@ -1632,9 +1659,12 @@ var ROI = class _ROI {
       track: this.track,
       instance: this.instance
     };
+    if (this.isPredicted && "score" in this) {
+      copyFields.score = this.score;
+    }
     if (this.geometry.type === "MultiPolygon") {
       return this.geometry.coordinates.map(
-        (coords) => new _ROI({
+        (coords) => new Ctor({
           geometry: { type: "Polygon", coordinates: coords },
           ...copyFields
         })
@@ -1642,13 +1672,13 @@ var ROI = class _ROI {
     }
     if (this.geometry.type === "GeometryCollection") {
       return this.geometry.geometries.map(
-        (geom) => new _ROI({
+        (geom) => new Ctor({
           geometry: geom,
           ...copyFields
         })
       );
     }
-    return [new _ROI({
+    return [new Ctor({
       geometry: this.geometry,
       ...copyFields
     })];
@@ -1708,7 +1738,7 @@ var ROI = class _ROI {
     if (this.geometry.type === "GeometryCollection") {
       let total = 0;
       for (const geom of this.geometry.geometries) {
-        const sub = new _ROI({ geometry: geom });
+        const sub = new UserROI({ geometry: geom });
         total += sub.area;
       }
       return total;
@@ -1758,7 +1788,7 @@ var ROI = class _ROI {
     if (this.geometry.type === "GeometryCollection") {
       const pts = [];
       for (const geom of this.geometry.geometries) {
-        const sub = new _ROI({ geometry: geom });
+        const sub = new UserROI({ geometry: geom });
         pts.push(...sub._allPoints());
       }
       return pts;
@@ -2042,6 +2072,18 @@ function decodeWkbPolygon(view, offset, le) {
   }
   return { rings, bytesRead: pos - offset };
 }
+var UserROI = class extends ROI {
+};
+var PredictedROI = class extends ROI {
+  score;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+  }
+  get isPredicted() {
+    return true;
+  }
+};
 
 // src/model/mask.ts
 function encodeRle(mask, height, width) {
@@ -2080,6 +2122,18 @@ function decodeRle(rleCounts, height, width) {
   }
   return flat;
 }
+function resizeNearest(data, srcH, srcW, dstH, dstW) {
+  const Ctor = data.constructor;
+  const result = new Ctor(dstH * dstW);
+  for (let r = 0; r < dstH; r++) {
+    const srcR = Math.min(Math.floor(r * srcH / dstH), srcH - 1);
+    for (let c = 0; c < dstW; c++) {
+      const srcC = Math.min(Math.floor(c * srcW / dstW), srcW - 1);
+      result[r * dstW + c] = data[srcR * srcW + srcC];
+    }
+  }
+  return result;
+}
 var SegmentationMask = class _SegmentationMask {
   rleCounts;
   height;
@@ -2091,7 +2145,22 @@ var SegmentationMask = class _SegmentationMask {
   frameIdx;
   track;
   instance;
+  /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
+  scale;
+  /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
+  offset;
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx = null;
   constructor(options) {
+    if (new.target === _SegmentationMask) {
+      throw new TypeError(
+        "SegmentationMask is abstract. Use UserSegmentationMask or PredictedSegmentationMask."
+      );
+    }
+    const scale = options.scale ?? [1, 1];
+    if (scale[0] <= 0 || scale[1] <= 0) {
+      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
+    }
     this.rleCounts = options.rleCounts;
     this.height = options.height;
     this.width = options.width;
@@ -2102,6 +2171,8 @@ var SegmentationMask = class _SegmentationMask {
     this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
     this.instance = options.instance ?? null;
+    this.scale = scale;
+    this.offset = options.offset ?? [0, 0];
   }
   static fromArray(mask, height, width, options) {
     let flat;
@@ -2116,11 +2187,14 @@ var SegmentationMask = class _SegmentationMask {
       }
     }
     const rleCounts = encodeRle(flat, height, width);
-    return new _SegmentationMask({
+    const stride = options?.stride;
+    const scaleFromStride = stride != null ? [1 / stride, 1 / stride] : void 0;
+    return new UserSegmentationMask({
       rleCounts,
       height,
       width,
-      ...options
+      ...options,
+      scale: options?.scale ?? scaleFromStride
     });
   }
   get data() {
@@ -2132,6 +2206,62 @@ var SegmentationMask = class _SegmentationMask {
       total += this.rleCounts[i];
     }
     return total;
+  }
+  /** Whether scale != [1,1] or offset != [0,0]. */
+  get hasSpatialTransform() {
+    return this.scale[0] !== 1 || this.scale[1] !== 1 || this.offset[0] !== 0 || this.offset[1] !== 0;
+  }
+  /** The image-space extent of this mask (accounting for scale). */
+  get imageExtent() {
+    return {
+      height: Math.floor(this.height / this.scale[1]),
+      width: Math.floor(this.width / this.scale[0])
+    };
+  }
+  get isPredicted() {
+    return false;
+  }
+  /**
+   * Create a resampled copy of this mask at the target dimensions.
+   * The returned mask has scale=[1,1] and offset=[0,0].
+   */
+  resampled(targetHeight, targetWidth) {
+    const srcData = this.data;
+    const resized = resizeNearest(srcData, this.height, this.width, targetHeight, targetWidth);
+    const rleCounts = encodeRle(resized, targetHeight, targetWidth);
+    const baseOpts = {
+      rleCounts,
+      height: targetHeight,
+      width: targetWidth,
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance,
+      scale: [1, 1],
+      offset: [0, 0]
+    };
+    if (this instanceof PredictedSegmentationMask) {
+      const pm = this;
+      let resampledScoreMap = null;
+      if (pm.scoreMap) {
+        resampledScoreMap = resizeNearest(
+          pm.scoreMap,
+          this.height,
+          this.width,
+          targetHeight,
+          targetWidth
+        );
+      }
+      return new PredictedSegmentationMask({
+        ...baseOpts,
+        score: pm.score,
+        scoreMap: resampledScoreMap
+      });
+    }
+    return new UserSegmentationMask(baseOpts);
   }
   get bbox() {
     const flat = this.data;
@@ -2147,11 +2277,13 @@ var SegmentationMask = class _SegmentationMask {
       }
     }
     if (maxR === -1) return { x: 0, y: 0, width: 0, height: 0 };
+    const [sx, sy] = this.scale;
+    const [ox, oy] = this.offset;
     return {
-      x: minC,
-      y: minR,
-      width: maxC - minC + 1,
-      height: maxR - minR + 1
+      x: minC / sx + ox,
+      y: minR / sy + oy,
+      width: (maxC - minC + 1) / sx,
+      height: (maxR - minR + 1) / sy
     };
   }
   /** Convert the mask to a bounding-box polygon ROI. */
@@ -2175,16 +2307,38 @@ var SegmentationMask = class _SegmentationMask {
         ]
       };
     }
-    return new ROI({
-      geometry,
-      name: this.name,
-      category: this.category,
-      source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
-      track: this.track,
-      instance: this.instance
-    });
+    return ROI.fromPolygon(
+      geometry.coordinates[0],
+      {
+        name: this.name,
+        category: this.category,
+        source: this.source,
+        video: this.video,
+        frameIdx: this.frameIdx,
+        track: this.track,
+        instance: this.instance
+      }
+    );
+  }
+};
+var UserSegmentationMask = class extends SegmentationMask {
+};
+var PredictedSegmentationMask = class extends SegmentationMask {
+  score;
+  scoreMap;
+  /** Spatial scale for the score map. Default [1, 1]. */
+  scoreMapScale;
+  /** Spatial offset for the score map. Default [0, 0]. */
+  scoreMapOffset;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+    this.scoreMap = options.scoreMap ?? null;
+    this.scoreMapScale = options.scoreMapScale ?? [1, 1];
+    this.scoreMapOffset = options.scoreMapOffset ?? [0, 0];
+  }
+  get isPredicted() {
+    return true;
   }
 };
 _registerMaskFactory(
@@ -2194,11 +2348,11 @@ _registerMaskFactory(
 );
 
 // src/model/bbox.ts
-var BoundingBox = class {
-  xCenter;
-  yCenter;
-  width;
-  height;
+var BoundingBox = class _BoundingBox {
+  x1;
+  y1;
+  x2;
+  y2;
   angle;
   video;
   frameIdx;
@@ -2210,10 +2364,15 @@ var BoundingBox = class {
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx = null;
   constructor(options) {
-    this.xCenter = options.xCenter;
-    this.yCenter = options.yCenter;
-    this.width = options.width;
-    this.height = options.height;
+    if (new.target === _BoundingBox) {
+      throw new TypeError(
+        "BoundingBox is abstract. Use UserBoundingBox or PredictedBoundingBox."
+      );
+    }
+    this.x1 = options.x1;
+    this.y1 = options.y1;
+    this.x2 = options.x2;
+    this.y2 = options.y2;
     this.angle = options.angle ?? 0;
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
@@ -2225,33 +2384,32 @@ var BoundingBox = class {
   }
   /** Create from corner coordinates [x1, y1, x2, y2]. */
   static fromXyxy(x1, y1, x2, y2, options) {
-    return new UserBoundingBox({
-      xCenter: (x1 + x2) / 2,
-      yCenter: (y1 + y2) / 2,
-      width: Math.abs(x2 - x1),
-      height: Math.abs(y2 - y1),
-      ...options
-    });
+    return new UserBoundingBox({ x1, y1, x2, y2, ...options });
   }
   /** Create from top-left corner + size [x, y, w, h]. */
   static fromXywh(x, y, w, h, options) {
-    return new UserBoundingBox({
-      xCenter: x + w / 2,
-      yCenter: y + h / 2,
-      width: w,
-      height: h,
-      ...options
-    });
+    return new UserBoundingBox({ x1: x, y1: y, x2: x + w, y2: y + h, ...options });
+  }
+  /** Center X coordinate (computed from x1, x2). */
+  get xCenter() {
+    return (this.x1 + this.x2) / 2;
+  }
+  /** Center Y coordinate (computed from y1, y2). */
+  get yCenter() {
+    return (this.y1 + this.y2) / 2;
+  }
+  /** Width of the bbox (computed from x1, x2). */
+  get width() {
+    return Math.abs(this.x2 - this.x1);
+  }
+  /** Height of the bbox (computed from y1, y2). */
+  get height() {
+    return Math.abs(this.y2 - this.y1);
   }
   /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
   get xyxy() {
     if (!this.isRotated) {
-      return [
-        this.xCenter - this.width / 2,
-        this.yCenter - this.height / 2,
-        this.xCenter + this.width / 2,
-        this.yCenter + this.height / 2
-      ];
+      return [this.x1, this.y1, this.x2, this.y2];
     }
     const c = this.corners;
     const xs = c.map((p) => p[0]);
@@ -2328,9 +2486,6 @@ var BoundingBox = class {
   }
 };
 var UserBoundingBox = class extends BoundingBox {
-  get isPredicted() {
-    return false;
-  }
 };
 var PredictedBoundingBox = class extends BoundingBox {
   score;
@@ -2354,9 +2509,22 @@ var LabelImage = class _LabelImage {
   video;
   frameIdx;
   source;
+  /** Spatial scale factor: image_coord = li_coord / scale + offset. Default [1, 1]. */
+  scale;
+  /** Spatial offset: image_coord = li_coord / scale + offset. Default [0, 0]. */
+  offset;
   /** @internal Deferred instance indices for lazy resolution. Map<label_id, instance_idx> */
   _objectInstanceIdxs = null;
   constructor(options) {
+    if (new.target === _LabelImage) {
+      throw new TypeError(
+        "LabelImage is abstract. Use UserLabelImage or PredictedLabelImage."
+      );
+    }
+    const scale = options.scale ?? [1, 1];
+    if (scale[0] <= 0 || scale[1] <= 0) {
+      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
+    }
     this.data = options.data;
     this.height = options.height;
     this.width = options.width;
@@ -2364,6 +2532,8 @@ var LabelImage = class _LabelImage {
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
     this.source = options.source ?? "";
+    this.scale = scale;
+    this.offset = options.offset ?? [0, 0];
   }
   // --- Computed properties ---
   /** Number of objects in the label image metadata. */
@@ -2399,6 +2569,58 @@ var LabelImage = class _LabelImage {
   /** Whether this label image has no temporal association (frameIdx is null). */
   get isStatic() {
     return this.frameIdx === null;
+  }
+  /** Whether this is a predicted label image (has a score). */
+  get isPredicted() {
+    return false;
+  }
+  /** Whether scale != [1,1] or offset != [0,0]. */
+  get hasSpatialTransform() {
+    return this.scale[0] !== 1 || this.scale[1] !== 1 || this.offset[0] !== 0 || this.offset[1] !== 0;
+  }
+  /** The image-space extent of this label image (accounting for scale). */
+  get imageExtent() {
+    return {
+      height: Math.floor(this.height / this.scale[1]),
+      width: Math.floor(this.width / this.scale[0])
+    };
+  }
+  /**
+   * Create a resampled copy of this label image at the target dimensions.
+   * The returned label image has scale=[1,1] and offset=[0,0].
+   */
+  resampled(targetHeight, targetWidth) {
+    const resizedData = resizeNearest(this.data, this.height, this.width, targetHeight, targetWidth);
+    const baseOpts = {
+      data: resizedData,
+      height: targetHeight,
+      width: targetWidth,
+      objects: new Map(this.objects),
+      video: this.video,
+      frameIdx: this.frameIdx,
+      source: this.source,
+      scale: [1, 1],
+      offset: [0, 0]
+    };
+    if (this instanceof PredictedLabelImage) {
+      const pli = this;
+      let resampledScoreMap = null;
+      if (pli.scoreMap) {
+        resampledScoreMap = resizeNearest(
+          pli.scoreMap,
+          this.height,
+          this.width,
+          targetHeight,
+          targetWidth
+        );
+      }
+      return new PredictedLabelImage({
+        ...baseOpts,
+        score: pli.score,
+        scoreMap: resampledScoreMap
+      });
+    }
+    return new UserLabelImage(baseOpts);
   }
   // --- Mask extraction ---
   /** Get a binary mask (Uint8Array) for a specific label ID. */
@@ -2525,7 +2747,7 @@ var LabelImage = class _LabelImage {
         instance: null
       });
     }
-    return new _LabelImage({
+    return new UserLabelImage({
       data: flat,
       height,
       width,
@@ -2542,10 +2764,22 @@ var LabelImage = class _LabelImage {
     }
     const height = masks[0].height;
     const width = masks[0].width;
+    const scale = [...masks[0].scale];
+    const offset = [...masks[0].offset];
     for (const m of masks.slice(1)) {
       if (m.height !== height || m.width !== width) {
         throw new Error(
           `All masks must have the same shape. Expected (${height}, ${width}), got (${m.height}, ${m.width}).`
+        );
+      }
+      if (m.scale[0] !== scale[0] || m.scale[1] !== scale[1]) {
+        throw new Error(
+          `All masks must have the same scale. Expected [${scale[0]}, ${scale[1]}], got [${m.scale[0]}, ${m.scale[1]}].`
+        );
+      }
+      if (m.offset[0] !== offset[0] || m.offset[1] !== offset[1]) {
+        throw new Error(
+          `All masks must have the same offset. Expected [${offset[0]}, ${offset[1]}], got [${m.offset[0]}, ${m.offset[1]}].`
         );
       }
     }
@@ -2564,15 +2798,95 @@ var LabelImage = class _LabelImage {
         instance: masks[i].instance
       });
     }
-    return new _LabelImage({
+    return new UserLabelImage({
       data,
       height,
       width,
       objects,
       video: options?.video ?? null,
       frameIdx: options?.frameIdx ?? null,
-      source: options?.source ?? ""
+      source: options?.source ?? "",
+      scale,
+      offset
     });
+  }
+  /**
+   * Create a list of LabelImages from a stack of 2D arrays (one per frame).
+   *
+   * Shared Track objects are created once and reused across frames.
+   *
+   * @param options.data - Array of flat Int32Arrays or 2D number arrays, one per frame.
+   * @param options.tracks - Track objects to assign. Array (1-indexed) or Map<labelId, Track>.
+   * @param options.categories - Category strings. Array (1-indexed) or Map<labelId, string>.
+   * @param options.createTracks - If true and tracks is not provided, auto-create one Track
+   *   per unique non-zero label ID found across ALL frames.
+   * @param options.frameIdx - Custom frame indices. Defaults to [0, 1, ..., T-1].
+   * @param options.video - Video reference shared across all frames.
+   * @param options.source - Source string shared across all frames.
+   */
+  static fromStack(options) {
+    const { data, video, source } = options;
+    if (data.length === 0) return [];
+    const first = data[0];
+    const height = first.length;
+    const width = first[0]?.length ?? 0;
+    const allIds = /* @__PURE__ */ new Set();
+    for (const frame of data) {
+      if (Array.isArray(frame)) {
+        for (const row of frame) {
+          for (const val of row) {
+            if (val > 0) allIds.add(val);
+          }
+        }
+      }
+    }
+    const sortedIds = Array.from(allIds).sort((a, b) => a - b);
+    let trackMap;
+    if (options.tracks != null) {
+      trackMap = /* @__PURE__ */ new Map();
+      if (Array.isArray(options.tracks)) {
+        for (let i = 0; i < options.tracks.length; i++) {
+          trackMap.set(i + 1, options.tracks[i]);
+        }
+      } else {
+        for (const [k, v] of options.tracks) {
+          trackMap.set(k, v);
+        }
+      }
+    } else if (options.createTracks) {
+      trackMap = /* @__PURE__ */ new Map();
+      for (const lid of sortedIds) {
+        trackMap.set(lid, new Track(String(lid)));
+      }
+    }
+    let catMap;
+    if (options.categories != null) {
+      catMap = /* @__PURE__ */ new Map();
+      if (Array.isArray(options.categories)) {
+        for (let i = 0; i < options.categories.length; i++) {
+          catMap.set(i + 1, options.categories[i]);
+        }
+      } else {
+        for (const [k, v] of options.categories) {
+          catMap.set(k, v);
+        }
+      }
+    }
+    const result = [];
+    for (let t = 0; t < data.length; t++) {
+      const frameData = data[t];
+      const frameIdx = options.frameIdx ? options.frameIdx[t] : t;
+      result.push(
+        _LabelImage.fromArray(frameData, height, width, {
+          tracks: trackMap,
+          categories: catMap,
+          video,
+          frameIdx,
+          source
+        })
+      );
+    }
+    return result;
   }
   // --- Conversion ---
   /** Decompose this LabelImage into individual SegmentationMask objects. */
@@ -2594,19 +2908,52 @@ var LabelImage = class _LabelImage {
         name: "",
         instance: null
       };
-      result.push(
-        SegmentationMask.fromArray(maskMap.get(lid), this.height, this.width, {
-          track: info.track,
-          category: info.category,
-          name: info.name,
-          instance: info.instance,
-          video: this.video,
-          frameIdx: this.frameIdx,
-          source: this.source
-        })
-      );
+      const rleCounts = encodeRle(maskMap.get(lid), this.height, this.width);
+      const baseOpts = {
+        rleCounts,
+        height: this.height,
+        width: this.width,
+        track: info.track,
+        category: info.category,
+        name: info.name,
+        instance: info.instance,
+        video: this.video,
+        frameIdx: this.frameIdx,
+        source: this.source,
+        scale: [...this.scale],
+        offset: [...this.offset]
+      };
+      if (this instanceof PredictedLabelImage) {
+        const pli = this;
+        result.push(new PredictedSegmentationMask({
+          ...baseOpts,
+          score: info.score ?? pli.score
+        }));
+      } else {
+        result.push(new UserSegmentationMask(baseOpts));
+      }
     }
     return result;
+  }
+};
+var UserLabelImage = class extends LabelImage {
+};
+var PredictedLabelImage = class extends LabelImage {
+  score;
+  scoreMap;
+  /** Spatial scale for the score map. Default [1, 1]. */
+  scoreMapScale;
+  /** Spatial offset for the score map. Default [0, 0]. */
+  scoreMapOffset;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+    this.scoreMap = options.scoreMap ?? null;
+    this.scoreMapScale = options.scoreMapScale ?? [1, 1];
+    this.scoreMapOffset = options.scoreMapOffset ?? [0, 0];
+  }
+  get isPredicted() {
+    return true;
   }
 };
 
@@ -4614,6 +4961,13 @@ function setStringAttr(target, name, value) {
   const byteLength = textEncoder.encode(value).length;
   target.create_attribute(name, value, null, `S${byteLength}`);
 }
+function writeStringDataset(file, name, values) {
+  const json = JSON.stringify(values);
+  const bytes = textEncoder.encode(json);
+  file.create_dataset({ name, data: bytes, shape: [bytes.length], dtype: "<B" });
+  const ds = file.get(name);
+  setStringAttr(ds, "json", json);
+}
 var SPAWNED_ON = 0;
 function writeSlpToFile(file, labels, embeddedVideoData) {
   writeMetadata(file, labels);
@@ -4630,7 +4984,7 @@ function writeSlpToFile(file, labels, embeddedVideoData) {
   writeNegativeFrames(file, labels);
   const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
   writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
-  writeMasks(file, labels.masks, labels.videos, labels.tracks);
+  writeMasks(file, labels.masks, labels.videos, labels.tracks, allInstances);
   writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
   writeLabelImages(file, labels.labelImages, labels.videos, labels.tracks, allInstances);
 }
@@ -4702,9 +5056,15 @@ function writeMetadata(file, labels) {
   };
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
   const hasIdentities = (labels.identities?.length ?? 0) > 0;
-  let formatId = (labels.labelImages?.length ?? 0) > 0 ? 1.8 : (labels.bboxes?.length ?? 0) > 0 ? 1.7 : hasRoiInstance ? 1.6 : labels.rois.length > 0 || labels.masks.length > 0 ? 1.5 : FORMAT_ID;
+  const hasPredicted = labels.rois.some((r) => r.isPredicted) || labels.masks.some((m) => m.isPredicted) || (labels.labelImages ?? []).some((li) => li.isPredicted);
+  const hasMaskInstances = labels.masks.some((m) => m.instance !== null || m._instanceIdx != null && m._instanceIdx >= 0);
+  let formatId = (labels.bboxes?.length ?? 0) > 0 ? 2 : hasPredicted || hasMaskInstances ? 1.9 : (labels.labelImages?.length ?? 0) > 0 ? 1.8 : hasRoiInstance ? 1.6 : labels.rois.length > 0 || labels.masks.length > 0 ? 1.5 : FORMAT_ID;
   if (hasIdentities) {
     formatId = Math.max(formatId, 1.9);
+  }
+  const hasSpatialTransform = labels.masks.some((m) => m.hasSpatialTransform) || (labels.labelImages ?? []).some((li) => li.hasSpatialTransform);
+  if (hasSpatialTransform) {
+    formatId = Math.max(formatId, 2.1);
   }
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
@@ -5220,7 +5580,9 @@ function writeRois(file, rois, videos, tracks, instances) {
     const frameIdx = roi.frameIdx ?? -1;
     const trackIdx = roi.track ? tracks.indexOf(roi.track) : -1;
     const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : -1;
-    rows.push([0, videoIdx, frameIdx, trackIdx, Number.NaN, wkbStart, wkbEnd, instanceIdx]);
+    const score = roi.isPredicted ? roi.score : Number.NaN;
+    const isPredicted = roi.isPredicted ? 1 : 0;
+    rows.push([0, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd, instanceIdx, isPredicted]);
     categories.push(roi.category);
     names.push(roi.name);
     sources.push(roi.source);
@@ -5229,13 +5591,12 @@ function writeRois(file, rois, videos, tracks, instances) {
     file,
     "rois",
     rows,
-    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end", "instance"],
+    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end", "instance", "is_predicted"],
     "<f8"
   );
-  const roisDs = file.get("rois");
-  setStringAttr(roisDs, "categories", JSON.stringify(categories));
-  setStringAttr(roisDs, "names", JSON.stringify(names));
-  setStringAttr(roisDs, "sources", JSON.stringify(sources));
+  writeStringDataset(file, "roi_categories", categories);
+  writeStringDataset(file, "roi_names", names);
+  writeStringDataset(file, "roi_sources", sources);
   const totalWkb = wkbChunks.reduce((sum, c) => sum + c.length, 0);
   const wkbFlat = new Uint8Array(totalWkb);
   let offset = 0;
@@ -5245,7 +5606,7 @@ function writeRois(file, rois, videos, tracks, instances) {
   }
   file.create_dataset({ name: "roi_wkb", data: wkbFlat, shape: [wkbFlat.length], dtype: "<B" });
 }
-function writeMasks(file, masks, videos, tracks) {
+function writeMasks(file, masks, videos, tracks, instances) {
   if (!masks.length) return;
   const rows = [];
   const rleChunks = [];
@@ -5253,7 +5614,11 @@ function writeMasks(file, masks, videos, tracks) {
   const categories = [];
   const names = [];
   const sources = [];
-  for (const mask of masks) {
+  const scoreMapIndexRows = [];
+  const scoreMapChunks = [];
+  let smOffset = 0;
+  for (let i = 0; i < masks.length; i++) {
+    const mask = masks[i];
     const rleBytes = new Uint8Array(mask.rleCounts.length * 4);
     const view = new DataView(rleBytes.buffer);
     for (let j = 0; j < mask.rleCounts.length; j++) {
@@ -5266,22 +5631,54 @@ function writeMasks(file, masks, videos, tracks) {
     const videoIdx = mask.video ? videos.indexOf(mask.video) : -1;
     const frameIdx = mask.frameIdx ?? -1;
     const trackIdx = mask.track ? tracks.indexOf(mask.track) : -1;
-    rows.push([mask.height, mask.width, 2, videoIdx, frameIdx, trackIdx, Number.NaN, rleStart, rleEnd]);
+    const score = mask.isPredicted ? mask.score : Number.NaN;
+    const isPredicted = mask.isPredicted ? 1 : 0;
+    const instanceIdx = mask.instance ? instances.indexOf(mask.instance) : mask._instanceIdx ?? -1;
+    rows.push([
+      mask.height,
+      mask.width,
+      2,
+      videoIdx,
+      frameIdx,
+      trackIdx,
+      score,
+      rleStart,
+      rleEnd,
+      isPredicted,
+      instanceIdx,
+      mask.scale[0],
+      mask.scale[1],
+      mask.offset[0],
+      mask.offset[1]
+    ]);
     categories.push(mask.category);
     names.push(mask.name);
     sources.push(mask.source);
+    if (mask.isPredicted) {
+      const pm = mask;
+      if (pm.scoreMap) {
+        const smBytes = new Uint8Array(pm.scoreMap.buffer, pm.scoreMap.byteOffset, pm.scoreMap.byteLength);
+        const compressed = deflate(smBytes);
+        const smH = pm.scoreMap.length / mask.width;
+        if (!Number.isInteger(smH)) {
+          throw new Error(`Score map size ${pm.scoreMap.length} not divisible by width ${mask.width}`);
+        }
+        scoreMapIndexRows.push([i, smOffset, smOffset + compressed.length, smH, mask.width]);
+        scoreMapChunks.push(compressed);
+        smOffset += compressed.length;
+      }
+    }
   }
   createMatrixDataset(
     file,
     "masks",
     rows,
-    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end"],
+    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "scale_x", "scale_y", "offset_x", "offset_y"],
     "<f8"
   );
-  const masksDs = file.get("masks");
-  setStringAttr(masksDs, "categories", JSON.stringify(categories));
-  setStringAttr(masksDs, "names", JSON.stringify(names));
-  setStringAttr(masksDs, "sources", JSON.stringify(sources));
+  writeStringDataset(file, "mask_categories", categories);
+  writeStringDataset(file, "mask_names", names);
+  writeStringDataset(file, "mask_sources", sources);
   const totalRle = rleChunks.reduce((sum, c) => sum + c.length, 0);
   const rleFlat = new Uint8Array(totalRle);
   let offset = 0;
@@ -5290,6 +5687,23 @@ function writeMasks(file, masks, videos, tracks) {
     offset += chunk.length;
   }
   file.create_dataset({ name: "mask_rle", data: rleFlat, shape: [rleFlat.length], dtype: "<B" });
+  if (scoreMapIndexRows.length > 0) {
+    createMatrixDataset(
+      file,
+      "mask_score_map_index",
+      scoreMapIndexRows,
+      ["mask_idx", "data_start", "data_end", "height", "width"],
+      "<f8"
+    );
+    const totalSm = scoreMapChunks.reduce((sum, c) => sum + c.length, 0);
+    const smFlat = new Uint8Array(totalSm);
+    let smOff = 0;
+    for (const chunk of scoreMapChunks) {
+      smFlat.set(chunk, smOff);
+      smOff += chunk.length;
+    }
+    file.create_dataset({ name: "mask_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
+  }
 }
 function writeBboxes(file, bboxes, videos, tracks, instances) {
   if (!bboxes.length) return;
@@ -5304,10 +5718,10 @@ function writeBboxes(file, bboxes, videos, tracks, instances) {
     const score = bbox.isPredicted ? bbox.score : Number.NaN;
     const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance) : -1;
     rows.push([
-      bbox.xCenter,
-      bbox.yCenter,
-      bbox.width,
-      bbox.height,
+      bbox.x1,
+      bbox.y1,
+      bbox.x2,
+      bbox.y2,
       bbox.angle,
       videoIdx,
       frameIdx,
@@ -5323,13 +5737,12 @@ function writeBboxes(file, bboxes, videos, tracks, instances) {
     file,
     "bboxes",
     rows,
-    ["x_center", "y_center", "width", "height", "angle", "video", "frame_idx", "track", "score", "instance"],
+    ["x1", "y1", "x2", "y2", "angle", "video", "frame_idx", "track", "score", "instance"],
     "<f8"
   );
-  const bboxesDs = file.get("bboxes");
-  setStringAttr(bboxesDs, "categories", JSON.stringify(categories));
-  setStringAttr(bboxesDs, "names", JSON.stringify(names));
-  setStringAttr(bboxesDs, "sources", JSON.stringify(sources));
+  writeStringDataset(file, "bbox_categories", categories);
+  writeStringDataset(file, "bbox_names", names);
+  writeStringDataset(file, "bbox_sources", sources);
 }
 function writeLabelImages(file, labelImages, videos, tracks, instances) {
   if (!labelImages.length) return;
@@ -5345,7 +5758,11 @@ function writeLabelImages(file, labelImages, videos, tracks, instances) {
   const objectNames = [];
   const sources = [];
   let objectsOffset = 0;
-  for (const li of labelImages) {
+  const smIndexRows = [];
+  const smChunks = [];
+  let smOffset = 0;
+  for (let liIdx = 0; liIdx < labelImages.length; liIdx++) {
+    const li = labelImages[liIdx];
     const videoIdx = li.video ? videos.indexOf(li.video) : -1;
     const frameIdx = li.frameIdx ?? -1;
     const pixelBytes = new Uint8Array(li.data.buffer, li.data.byteOffset, li.data.byteLength);
@@ -5354,38 +5771,89 @@ function writeLabelImages(file, labelImages, videos, tracks, instances) {
     const dataEnd = dataOffset + compressed.length;
     compressedChunks.push(compressed);
     dataOffset = dataEnd;
+    const isPredicted = li.isPredicted ? 1 : 0;
+    const liScore = li.isPredicted ? li.score : Number.NaN;
     const objectsStart = objectsOffset;
     for (const [labelId, info] of li.objects) {
       const trackIdx = info.track ? tracks.indexOf(info.track) : -1;
-      const instanceIdx = info.instance ? instances.indexOf(info.instance) : -1;
-      objectRows.push([labelId, trackIdx, instanceIdx]);
+      let instanceIdx = li._objectInstanceIdxs?.get(labelId) ?? -1;
+      if (info.instance) {
+        const found = instances.indexOf(info.instance);
+        if (found >= 0) instanceIdx = found;
+      } else if (info._instanceIdx != null && info._instanceIdx >= 0) {
+        instanceIdx = info._instanceIdx;
+      }
+      const objScore = info.score != null ? info.score : Number.NaN;
+      objectRows.push([labelId, trackIdx, instanceIdx, objScore]);
       objectCategories.push(info.category);
       objectNames.push(info.name);
       objectsOffset++;
     }
-    rows.push([videoIdx, frameIdx, li.height, li.width, li.nObjects, objectsStart, dataStart, dataEnd]);
+    rows.push([
+      videoIdx,
+      frameIdx,
+      li.height,
+      li.width,
+      li.nObjects,
+      objectsStart,
+      dataStart,
+      dataEnd,
+      isPredicted,
+      liScore,
+      li.scale[0],
+      li.scale[1],
+      li.offset[0],
+      li.offset[1]
+    ]);
     sources.push(li.source);
+    if (li.isPredicted) {
+      const pli = li;
+      if (pli.scoreMap) {
+        const smBytes = new Uint8Array(pli.scoreMap.buffer, pli.scoreMap.byteOffset, pli.scoreMap.byteLength);
+        const smCompressed = deflate(smBytes);
+        const smH = pli.scoreMap.length / li.width;
+        if (!Number.isInteger(smH)) {
+          throw new Error(`Score map size ${pli.scoreMap.length} not divisible by width ${li.width}`);
+        }
+        smIndexRows.push([liIdx, smOffset, smOffset + smCompressed.length, smH, li.width]);
+        smChunks.push(smCompressed);
+        smOffset += smCompressed.length;
+      }
+    }
   }
   createMatrixDataset(
     file,
     "label_images",
     rows,
-    ["video", "frame_idx", "height", "width", "n_objects", "objects_start", "data_start", "data_end"],
+    [
+      "video",
+      "frame_idx",
+      "height",
+      "width",
+      "n_objects",
+      "objects_start",
+      "data_start",
+      "data_end",
+      "is_predicted",
+      "score",
+      "scale_x",
+      "scale_y",
+      "offset_x",
+      "offset_y"
+    ],
     "<f8"
   );
-  const liDs = file.get("label_images");
-  setStringAttr(liDs, "sources", JSON.stringify(sources));
+  writeStringDataset(file, "label_image_sources", sources);
   if (objectRows.length > 0) {
     createMatrixDataset(
       file,
       "label_image_objects",
       objectRows,
-      ["label_id", "track", "instance"],
+      ["label_id", "track", "instance", "score"],
       "<f8"
     );
-    const objDs = file.get("label_image_objects");
-    setStringAttr(objDs, "categories", JSON.stringify(objectCategories));
-    setStringAttr(objDs, "names", JSON.stringify(objectNames));
+    writeStringDataset(file, "label_image_obj_categories", objectCategories);
+    writeStringDataset(file, "label_image_obj_names", objectNames);
   }
   const totalData = compressedChunks.reduce((sum, c) => sum + c.length, 0);
   const dataFlat = new Uint8Array(totalData);
@@ -5395,6 +5863,23 @@ function writeLabelImages(file, labelImages, videos, tracks, instances) {
     offset += chunk.length;
   }
   file.create_dataset({ name: "label_image_data", data: dataFlat, shape: [dataFlat.length], dtype: "<B" });
+  if (smIndexRows.length > 0) {
+    createMatrixDataset(
+      file,
+      "label_image_score_map_index",
+      smIndexRows,
+      ["li_idx", "data_start", "data_end", "height", "width"],
+      "<f8"
+    );
+    const totalSm = smChunks.reduce((sum, c) => sum + c.length, 0);
+    const smFlat = new Uint8Array(totalSm);
+    let smOff = 0;
+    for (const chunk of smChunks) {
+      smFlat.set(chunk, smOff);
+      smOff += chunk.length;
+    }
+    file.create_dataset({ name: "label_image_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
+  }
 }
 
 // src/codecs/slp/read.ts
@@ -5848,9 +6333,9 @@ function readRoisWithMigration(file, videos, tracks, instances) {
   const wkbDs = file.get("roi_wkb");
   if (!wkbDs) return { rois: [], migratedBboxes: [] };
   const wkbFlat = wkbDs.value instanceof Uint8Array ? wkbDs.value : new Uint8Array(wkbDs.value ?? []);
-  const categories = readAttrString(roisDs, "categories");
-  const names = readAttrString(roisDs, "names");
-  const sources = readAttrString(roisDs, "sources");
+  const categories = readStringMetadata(file, "roi_categories", roisDs, "categories");
+  const names = readStringMetadata(file, "roi_names", roisDs, "names");
+  const sources = readStringMetadata(file, "roi_sources", roisDs, "sources");
   const videoIndices = roisData.video ?? [];
   const frameIndices = roisData.frame_idx ?? [];
   const trackIndices = roisData.track ?? [];
@@ -5858,6 +6343,7 @@ function readRoisWithMigration(file, videos, tracks, instances) {
   const wkbStarts = roisData.wkb_start ?? [];
   const wkbEnds = roisData.wkb_end ?? [];
   const instanceIndices = roisData.instance ?? [];
+  const isPredictedCol = roisData.is_predicted ?? [];
   const rois = [];
   const migratedBboxes = [];
   for (let i = 0; i < annotationTypes.length; i++) {
@@ -5872,16 +6358,17 @@ function readRoisWithMigration(file, videos, tracks, instances) {
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
     const annotType = Number(annotationTypes[i]);
-    if (annotType === 1 /* BOUNDING_BOX */) {
-      const tmpRoi = new ROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, frameIdx, track });
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    if (annotType === 1 /* BOUNDING_BOX */ && !isPred) {
+      const tmpRoi = new UserROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, frameIdx, track });
       const b = tmpRoi.bounds;
       const scoreVal = Number(scores[i]);
       const bboxScore = Number.isNaN(scoreVal) ? null : scoreVal;
       const bboxOptions = {
-        xCenter: (b.minX + b.maxX) / 2,
-        yCenter: (b.minY + b.maxY) / 2,
-        width: b.maxX - b.minX,
-        height: b.maxY - b.minY,
+        x1: b.minX,
+        y1: b.minY,
+        x2: b.maxX,
+        y2: b.maxY,
         video,
         frameIdx,
         track,
@@ -5894,8 +6381,17 @@ function readRoisWithMigration(file, videos, tracks, instances) {
       } else {
         migratedBboxes.push(new UserBoundingBox(bboxOptions));
       }
+      if (instanceIndices.length > 0) {
+        const instIdx = Number(instanceIndices[i]);
+        const bbox = migratedBboxes[migratedBboxes.length - 1];
+        if (instances && instIdx >= 0 && instIdx < instances.length) {
+          bbox.instance = instances[instIdx];
+        } else if (instIdx >= 0) {
+          bbox._instanceIdx = instIdx;
+        }
+      }
     } else {
-      const roi = new ROI({
+      const roiOptions = {
         geometry,
         name: names[i] ?? "",
         category: categories[i] ?? "",
@@ -5903,7 +6399,14 @@ function readRoisWithMigration(file, videos, tracks, instances) {
         video,
         frameIdx,
         track
-      });
+      };
+      let roi;
+      if (isPred) {
+        const scoreVal = Number(scores[i]);
+        roi = new PredictedROI({ ...roiOptions, score: Number.isNaN(scoreVal) ? 0 : scoreVal });
+      } else {
+        roi = new UserROI(roiOptions);
+      }
       if (instanceIndices.length > 0) {
         const instIdx = Number(instanceIndices[i]);
         if (instances && instIdx >= 0 && instIdx < instances.length) {
@@ -5922,13 +6425,19 @@ function readBboxes(file, videos, tracks) {
   if (!bboxesDs) return [];
   const bboxesData = normalizeStructDataset(bboxesDs);
   const xCenters = bboxesData.x_center ?? [];
-  if (!xCenters.length) return [];
-  const categories = readAttrString(bboxesDs, "categories");
-  const names = readAttrString(bboxesDs, "names");
-  const sources = readAttrString(bboxesDs, "sources");
+  const isLegacy = xCenters.length > 0;
+  const x1s = bboxesData.x1 ?? [];
+  const count = isLegacy ? xCenters.length : x1s.length;
+  if (!count) return [];
+  const categories = readStringMetadata(file, "bbox_categories", bboxesDs, "categories");
+  const names = readStringMetadata(file, "bbox_names", bboxesDs, "names");
+  const sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
   const yCenters = bboxesData.y_center ?? [];
   const widths = bboxesData.width ?? [];
   const heights = bboxesData.height ?? [];
+  const y1s = bboxesData.y1 ?? [];
+  const x2s = bboxesData.x2 ?? [];
+  const y2s = bboxesData.y2 ?? [];
   const angles = bboxesData.angle ?? [];
   const videoIndices = bboxesData.video ?? [];
   const frameIndices = bboxesData.frame_idx ?? [];
@@ -5936,7 +6445,7 @@ function readBboxes(file, videos, tracks) {
   const bboxScores = bboxesData.score ?? [];
   const instanceIndices = bboxesData.instance ?? [];
   const bboxes = [];
-  for (let i = 0; i < xCenters.length; i++) {
+  for (let i = 0; i < count; i++) {
     const videoIdx = Number(videoIndices[i]);
     const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
     const frameIdxVal = Number(frameIndices[i]);
@@ -5945,11 +6454,27 @@ function readBboxes(file, videos, tracks) {
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
     const scoreVal = Number(bboxScores[i]);
     const instanceIdx = Number(instanceIndices[i]);
+    let bx1, by1, bx2, by2;
+    if (isLegacy) {
+      const cx = Number(xCenters[i]);
+      const cy = Number(yCenters[i]);
+      const w = Number(widths[i]);
+      const h = Number(heights[i]);
+      bx1 = cx - w / 2;
+      by1 = cy - h / 2;
+      bx2 = cx + w / 2;
+      by2 = cy + h / 2;
+    } else {
+      bx1 = Number(x1s[i]);
+      by1 = Number(y1s[i]);
+      bx2 = Number(x2s[i]);
+      by2 = Number(y2s[i]);
+    }
     const options = {
-      xCenter: Number(xCenters[i]),
-      yCenter: Number(yCenters[i]),
-      width: Number(widths[i]),
-      height: Number(heights[i]),
+      x1: bx1,
+      y1: by1,
+      x2: bx2,
+      y2: by2,
       angle: Number(angles[i]),
       video,
       frameIdx,
@@ -5971,6 +6496,51 @@ function readBboxes(file, videos, tracks) {
   }
   return bboxes;
 }
+function readStringMetadata(file, datasetPath, dataset, attrName) {
+  const ds = file.get(datasetPath);
+  if (ds) {
+    const jsonAttr = readAttrString(ds, "json");
+    if (jsonAttr.length > 0) return jsonAttr;
+    const val = ds.value;
+    if (Array.isArray(val)) {
+      return val.map((v) => typeof v === "string" ? v : String(v ?? ""));
+    }
+  }
+  return readAttrString(dataset, attrName);
+}
+function readScoreMaps(file, indexPath, dataPath) {
+  const result = /* @__PURE__ */ new Map();
+  const indexDs = file.get(indexPath);
+  const dataDs = file.get(dataPath);
+  if (!indexDs || !dataDs) return result;
+  const indexData = normalizeStructDataset(indexDs);
+  const idxCol = indexData.mask_idx ?? indexData.li_idx ?? [];
+  const starts = indexData.data_start ?? [];
+  const ends = indexData.data_end ?? [];
+  const smHeights = indexData.height ?? [];
+  const smWidths = indexData.width ?? [];
+  const dataFlat = dataDs.value instanceof Uint8Array ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+  for (let i = 0; i < idxCol.length; i++) {
+    const annotIdx = Number(idxCol[i]);
+    const start = Number(starts[i]);
+    const end = Number(ends[i]);
+    const h = Number(smHeights[i]);
+    const w = Number(smWidths[i]);
+    const compressed = dataFlat.slice(start, end);
+    const decompressed = inflate(compressed);
+    const expectedBytes = h * w * 4;
+    if (decompressed.byteLength !== expectedBytes) {
+      throw new Error(
+        `Score map decompression size mismatch: expected ${expectedBytes} bytes, got ${decompressed.byteLength}`
+      );
+    }
+    const scoreMap = new Float32Array(
+      decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
+    );
+    result.set(annotIdx, { scoreMap, height: h, width: w });
+  }
+  return result;
+}
 function readMasks(file, videos, tracks) {
   const masksDs = file.get("masks");
   if (!masksDs) return [];
@@ -5980,15 +6550,23 @@ function readMasks(file, videos, tracks) {
   const rleDs = file.get("mask_rle");
   if (!rleDs) return [];
   const rleFlat = rleDs.value instanceof Uint8Array ? rleDs.value : new Uint8Array(rleDs.value ?? []);
-  const categories = readAttrString(masksDs, "categories");
-  const names = readAttrString(masksDs, "names");
-  const sources = readAttrString(masksDs, "sources");
+  const categories = readStringMetadata(file, "mask_categories", masksDs, "categories");
+  const names = readStringMetadata(file, "mask_names", masksDs, "names");
+  const sources = readStringMetadata(file, "mask_sources", masksDs, "sources");
   const widths = masksData.width ?? [];
   const videoIndices = masksData.video ?? [];
   const frameIndices = masksData.frame_idx ?? [];
   const trackIndices = masksData.track ?? [];
   const rleStarts = masksData.rle_start ?? [];
   const rleEnds = masksData.rle_end ?? [];
+  const isPredictedCol = masksData.is_predicted ?? [];
+  const scoreCol = masksData.score ?? [];
+  const instanceCol = masksData.instance ?? [];
+  const scaleXCol = masksData.scale_x ?? [];
+  const scaleYCol = masksData.scale_y ?? [];
+  const offsetXCol = masksData.offset_x ?? [];
+  const offsetYCol = masksData.offset_y ?? [];
+  const scoreMaps = readScoreMaps(file, "mask_score_map_index", "mask_score_maps");
   const masks = [];
   for (let i = 0; i < heights.length; i++) {
     const rleStart = Number(rleStarts[i]);
@@ -6006,7 +6584,11 @@ function readMasks(file, videos, tracks) {
     const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-    masks.push(new SegmentationMask({
+    const scaleX = scaleXCol.length > i ? Number(scaleXCol[i]) : 1;
+    const scaleY = scaleYCol.length > i ? Number(scaleYCol[i]) : 1;
+    const offsetX = offsetXCol.length > i ? Number(offsetXCol[i]) : 0;
+    const offsetY = offsetYCol.length > i ? Number(offsetYCol[i]) : 0;
+    const baseOptions = {
       rleCounts,
       height: Number(heights[i]),
       width: Number(widths[i]),
@@ -6015,8 +6597,28 @@ function readMasks(file, videos, tracks) {
       source: sources[i] ?? "",
       video,
       frameIdx,
-      track
-    }));
+      track,
+      scale: [scaleX, scaleY],
+      offset: [offsetX, offsetY]
+    };
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    let mask;
+    if (isPred) {
+      const scoreVal = scoreCol.length > i ? Number(scoreCol[i]) : 0;
+      const sm = scoreMaps.get(i);
+      mask = new PredictedSegmentationMask({
+        ...baseOptions,
+        score: scoreVal,
+        scoreMap: sm?.scoreMap ?? null
+      });
+    } else {
+      mask = new UserSegmentationMask(baseOptions);
+    }
+    const instIdx = instanceCol.length > i ? Number(instanceCol[i]) : -1;
+    if (instIdx >= 0) {
+      mask._instanceIdx = instIdx;
+    }
+    masks.push(mask);
   }
   return masks;
 }
@@ -6033,24 +6635,41 @@ function readLabelImages(file, videos, tracks, instances) {
   const objectsStarts = liData.objects_start ?? [];
   const dataStarts = liData.data_start ?? [];
   const dataEnds = liData.data_end ?? [];
-  const sources = readAttrString(liDs, "sources");
+  const sources = readStringMetadata(file, "label_image_sources", liDs, "sources");
+  const isPredictedCol = liData.is_predicted ?? [];
+  const liScoreCol = liData.score ?? [];
+  const liScaleXCol = liData.scale_x ?? [];
+  const liScaleYCol = liData.scale_y ?? [];
+  const liOffsetXCol = liData.offset_x ?? [];
+  const liOffsetYCol = liData.offset_y ?? [];
   const dataDs = file.get("label_image_data");
   if (!dataDs) return [];
-  const dataFlat = dataDs.value instanceof Uint8Array ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+  const dataShape = dataDs.shape ?? [];
+  const isChunked = dataShape.length === 3;
+  let dataFlat = new Uint8Array(0);
+  let dataChunked = null;
+  if (isChunked) {
+    dataChunked = dataDs.value;
+  } else {
+    dataFlat = dataDs.value instanceof Uint8Array ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+  }
   let objLabelIds = [];
   let objTrackIndices = [];
   let objInstanceIndices = [];
   let objCategories = [];
   let objNames = [];
+  let objScoreCol = [];
   const objDs = file.get("label_image_objects");
   if (objDs) {
     const objData = normalizeStructDataset(objDs);
     objLabelIds = objData.label_id ?? [];
     objTrackIndices = objData.track ?? [];
     objInstanceIndices = objData.instance ?? [];
-    objCategories = readAttrString(objDs, "categories");
-    objNames = readAttrString(objDs, "names");
+    objCategories = readStringMetadata(file, "label_image_obj_categories", objDs, "categories");
+    objNames = readStringMetadata(file, "label_image_obj_names", objDs, "names");
+    objScoreCol = objData.score ?? [];
   }
+  const liScoreMaps = readScoreMaps(file, "label_image_score_map_index", "label_image_score_maps");
   const labelImages = [];
   for (let i = 0; i < videoIndices.length; i++) {
     const videoIdx = Number(videoIndices[i]);
@@ -6059,13 +6678,29 @@ function readLabelImages(file, videos, tracks, instances) {
     const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
     const height = Number(heights[i]);
     const width = Number(widths[i]);
-    const dataStart = Number(dataStarts[i]);
-    const dataEnd = Number(dataEnds[i]);
-    const compressed = dataFlat.slice(dataStart, dataEnd);
-    const decompressed = inflate(compressed);
-    const pixelData = new Int32Array(
-      decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
-    );
+    let pixelData;
+    if (isChunked && dataChunked) {
+      const frameSize = height * width;
+      if (dataChunked instanceof Int32Array) {
+        pixelData = new Int32Array(dataChunked.buffer, dataChunked.byteOffset + i * frameSize * 4, frameSize);
+      } else if (ArrayBuffer.isView(dataChunked)) {
+        const offset = i * frameSize;
+        pixelData = new Int32Array(frameSize);
+        for (let p = 0; p < frameSize; p++) {
+          pixelData[p] = dataChunked[offset + p];
+        }
+      } else {
+        pixelData = new Int32Array(frameSize);
+      }
+    } else {
+      const dataStart = Number(dataStarts[i]);
+      const dataEnd = Number(dataEnds[i]);
+      const compressed = dataFlat.slice(dataStart, dataEnd);
+      const decompressed = inflate(compressed);
+      pixelData = new Int32Array(
+        decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
+      );
+    }
     const nObj = Number(nObjectsList[i]);
     const objStart = Number(objectsStarts[i]);
     const objects = /* @__PURE__ */ new Map();
@@ -6081,22 +6716,53 @@ function readLabelImages(file, videos, tracks, instances) {
       } else if (instIdx >= 0) {
         deferredInstances.set(labelId, instIdx);
       }
+      const objScore = objScoreCol.length > j ? Number(objScoreCol[j]) : null;
       objects.set(labelId, {
         track,
         category: objCategories[j] ?? "",
         name: objNames[j] ?? "",
-        instance
+        instance,
+        score: objScore !== null && !Number.isNaN(objScore) ? objScore : null,
+        _instanceIdx: instIdx >= 0 ? instIdx : -1
       });
     }
-    const li = new LabelImage({
-      data: pixelData,
-      height,
-      width,
-      objects,
-      video,
-      frameIdx,
-      source: sources[i] ?? ""
-    });
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const liScaleX = liScaleXCol.length > i ? Number(liScaleXCol[i]) : 1;
+    const liScaleY = liScaleYCol.length > i ? Number(liScaleYCol[i]) : 1;
+    const liOffsetX = liOffsetXCol.length > i ? Number(liOffsetXCol[i]) : 0;
+    const liOffsetY = liOffsetYCol.length > i ? Number(liOffsetYCol[i]) : 0;
+    const liScale = [liScaleX, liScaleY];
+    const liOffset = [liOffsetX, liOffsetY];
+    let li;
+    if (isPred) {
+      const liScore = liScoreCol.length > i ? Number(liScoreCol[i]) : 0;
+      const sm = liScoreMaps.get(i);
+      li = new PredictedLabelImage({
+        data: pixelData,
+        height,
+        width,
+        objects,
+        video,
+        frameIdx,
+        source: sources[i] ?? "",
+        score: liScore,
+        scoreMap: sm?.scoreMap ?? null,
+        scale: liScale,
+        offset: liOffset
+      });
+    } else {
+      li = new UserLabelImage({
+        data: pixelData,
+        height,
+        width,
+        objects,
+        video,
+        frameIdx,
+        source: sources[i] ?? "",
+        scale: liScale,
+        offset: liOffset
+      });
+    }
     if (deferredInstances.size > 0) {
       li._objectInstanceIdxs = deferredInstances;
     }
@@ -6376,7 +7042,7 @@ function roisFromGeoJSON(geojson) {
   const features = geojson.type === "FeatureCollection" ? geojson.features : [geojson];
   return features.map((feature) => {
     const props = feature.properties ?? {};
-    return new ROI({
+    return new UserROI({
       geometry: feature.geometry,
       name: String(props.name ?? ""),
       category: String(props.category ?? ""),
@@ -7006,13 +7672,20 @@ export {
   rasterizeGeometry,
   encodeWkb,
   decodeWkb,
+  UserROI,
+  PredictedROI,
   encodeRle,
   decodeRle,
+  resizeNearest,
   SegmentationMask,
+  UserSegmentationMask,
+  PredictedSegmentationMask,
   BoundingBox,
   UserBoundingBox,
   PredictedBoundingBox,
   LabelImage,
+  UserLabelImage,
+  PredictedLabelImage,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
   StreamingH5File,
