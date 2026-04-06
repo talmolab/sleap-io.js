@@ -1085,6 +1085,30 @@ describe("LabelImage.fromBinaryMasks", () => {
     expect(li.objects.get(1)!.track).toBeNull();
   });
 
+  it("passes through scale and offset", () => {
+    const li = LabelImage.fromBinaryMasks(
+      [
+        [1, 0],
+        [0, 1],
+      ],
+      { scale: [0.5, 0.25], offset: [10, 20] },
+    );
+    expect(li.scale).toEqual([0.5, 0.25]);
+    expect(li.offset).toEqual([10, 20]);
+  });
+
+  it("throws on invalid scale via constructor", () => {
+    expect(() =>
+      LabelImage.fromBinaryMasks(
+        [
+          [1, 0],
+          [0, 1],
+        ],
+        { scale: [0, 1] },
+      ),
+    ).toThrow("Scale must be positive");
+  });
+
   it("handles uint8 0/1 values in 2D arrays", () => {
     // Simulates SAM-style output with 0/255 values
     const li = LabelImage.fromBinaryMasks([

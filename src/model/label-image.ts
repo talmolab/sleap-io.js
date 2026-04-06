@@ -546,6 +546,8 @@ export class LabelImage {
       video?: Video | null;
       frameIdx?: number | null;
       source?: string;
+      scale?: [number, number];
+      offset?: [number, number];
     },
   ): UserLabelImage {
     // --- Normalize input to a list of individual masks ---
@@ -710,6 +712,8 @@ export class LabelImage {
       video: options?.video ?? null,
       frameIdx: options?.frameIdx ?? null,
       source: options?.source ?? "",
+      scale: options?.scale,
+      offset: options?.offset,
     });
   }
 
