@@ -38,6 +38,7 @@
     "jsfive": "^0.3.10",
     "mediabunny": "^1.30.0",
     "mp4box": "^0.5.4",
+    "pako": "^2.1.0",
     "yaml": "^2.6.1"
   },
   "optionalDependencies": {
@@ -45,6 +46,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.10.5",
+    "@types/pako": "^2.0.4",
     "@vitest/coverage-v8": "^2.1.8",
     "tsup": "^8.3.5",
     "typescript": "^5.6.3",
