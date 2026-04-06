@@ -79,6 +79,42 @@ declare class SuggestionFrame {
     });
 }
 
+declare class Identity {
+    name: string;
+    color?: string;
+    metadata: Record<string, unknown>;
+    constructor(options?: {
+        name?: string;
+        color?: string;
+        metadata?: Record<string, unknown>;
+    });
+}
+
+declare class Instance3D {
+    points: number[][] | null;
+    skeleton: Skeleton;
+    score?: number;
+    metadata: Record<string, unknown>;
+    constructor(options: {
+        points: number[][] | null;
+        skeleton: Skeleton;
+        score?: number;
+        metadata?: Record<string, unknown>;
+    });
+    get nVisible(): number;
+    get isEmpty(): boolean;
+}
+declare class PredictedInstance3D extends Instance3D {
+    pointScores?: number[];
+    constructor(options: {
+        points: number[][] | null;
+        skeleton: Skeleton;
+        score?: number;
+        pointScores?: number[];
+        metadata?: Record<string, unknown>;
+    });
+}
+
 declare function rodriguesTransformation(input: number[][] | number[]): {
     matrix: number[][];
     vector: number[];
@@ -89,12 +125,14 @@ declare class Camera {
     tvec: number[];
     matrix?: number[][];
     distortions?: number[];
+    size?: [number, number];
     constructor(options: {
         name?: string;
         rvec: number[];
         tvec: number[];
         matrix?: number[][];
         distortions?: number[];
+        size?: [number, number];
     });
 }
 declare class CameraGroup {
@@ -108,14 +146,20 @@ declare class CameraGroup {
 declare class InstanceGroup {
     instanceByCamera: Map<Camera, Instance>;
     score?: number;
-    points?: number[][];
+    identity?: Identity;
+    instance3d?: Instance3D;
     metadata: Record<string, unknown>;
+    private _points?;
     constructor(options: {
         instanceByCamera: Map<Camera, Instance> | Record<string, Instance>;
         score?: number;
         points?: number[][];
+        identity?: Identity;
+        instance3d?: Instance3D;
         metadata?: Record<string, unknown>;
     });
+    get points(): number[][] | undefined;
+    set points(value: number[][] | undefined);
     get instances(): Instance[];
 }
 declare class FrameGroup {
@@ -462,7 +506,8 @@ declare class LabelImage {
     });
     /** Number of objects in the label image metadata. */
     get nObjects(): number;
-    /** Sorted unique non-zero label IDs present in the data. */
+    /** Sorted unique non-zero label IDs present in the data.
+     *  Note: Scans the full pixel array on every call. Cache the result if needed multiple times. */
     get labelIds(): number[];
     /** Non-null tracks from objects, sorted by label ID. */
     get tracks(): Track[];
@@ -474,7 +519,7 @@ declare class LabelImage {
     getObjectMask(labelId: number): Uint8Array;
     /** Get a binary mask for all objects associated with a given track. */
     getTrackMask(track: Track): Uint8Array;
-    /** Get a binary mask for all objects with a given category. Returns zeros if category not found. */
+    /** Get a binary mask for all objects with a given category. Throws if category not found. */
     getCategoryMask(category: string): Uint8Array;
     /** Iterate over objects as [track, category, binaryMask] tuples in sorted label ID order. */
     items(): IterableIterator<[Track | null, string, Uint8Array]>;
@@ -513,6 +558,7 @@ declare class Labels {
     masks: SegmentationMask[];
     bboxes: BoundingBox[];
     labelImages: LabelImage[];
+    identities: Identity[];
     /** @internal Lazy frame list for on-demand materialization. */
     _lazyFrameList: LazyFrameList | null;
     /** @internal Lazy data store holding raw HDF5 data. */
@@ -529,6 +575,7 @@ declare class Labels {
         masks?: SegmentationMask[];
         bboxes?: BoundingBox[];
         labelImages?: LabelImage[];
+        identities?: Identity[];
     });
     /** Whether this Labels instance is in lazy mode. */
     get isLazy(): boolean;
@@ -1373,4 +1420,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AnnotationType, BoundingBox, type BoundingBoxOptions, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Instance, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedInstance, type RGB, type RGBA, ROI, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };
+export { AnnotationType, BoundingBox, type BoundingBoxOptions, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedInstance, PredictedInstance3D, type RGB, type RGBA, ROI, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };

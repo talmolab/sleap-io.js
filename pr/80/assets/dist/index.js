@@ -4,6 +4,7 @@ import {
   Camera,
   CameraGroup,
   FrameGroup,
+  Identity,
   InstanceContext,
   InstanceGroup,
   LabelImage,
@@ -73,12 +74,14 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-NG77VJKJ.js";
+} from "./chunk-VYEQGZB4.js";
 import {
   Edge,
   Instance,
+  Instance3D,
   Node,
   PredictedInstance,
+  PredictedInstance3D,
   Skeleton,
   Symmetry,
   Track,
@@ -88,7 +91,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-NWJVKWIL.js";
+} from "./chunk-BEDAHJBO.js";
 
 // src/codecs/slp/h5-node.ts
 var modulePromise = null;
@@ -526,7 +529,9 @@ export {
   CameraGroup,
   Edge,
   FrameGroup,
+  Identity,
   Instance,
+  Instance3D,
   InstanceContext,
   InstanceGroup,
   LabelImage,
@@ -543,6 +548,7 @@ export {
   PALETTES,
   PredictedBoundingBox,
   PredictedInstance,
+  PredictedInstance3D,
   ROI,
   RecordingSession,
   RenderContext,
