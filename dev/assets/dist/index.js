@@ -7,6 +7,7 @@ import {
   Identity,
   InstanceContext,
   InstanceGroup,
+  LabelImage,
   LabeledFrame,
   Labels,
   LabelsSet,
@@ -73,7 +74,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-LWRZJXMZ.js";
+} from "./chunk-VYEQGZB4.js";
 import {
   Edge,
   Instance,
@@ -533,6 +534,7 @@ export {
   Instance3D,
   InstanceContext,
   InstanceGroup,
+  LabelImage,
   LabeledFrame,
   Labels,
   LabelsSet,

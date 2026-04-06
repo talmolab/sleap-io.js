@@ -454,6 +454,7 @@ var Labels = class {
   rois;
   masks;
   bboxes;
+  labelImages;
   identities;
   /** @internal Lazy frame list for on-demand materialization. */
   _lazyFrameList = null;
@@ -470,6 +471,7 @@ var Labels = class {
     this.rois = options?.rois ?? [];
     this.masks = options?.masks ?? [];
     this.bboxes = options?.bboxes ?? [];
+    this.labelImages = options?.labelImages ?? [];
     this.identities = options?.identities ?? [];
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = /* @__PURE__ */ new Map();
@@ -521,6 +523,17 @@ var Labels = class {
       if (bbox._instanceIdx !== null && bbox._instanceIdx >= 0 && bbox._instanceIdx < allInstances.length) {
         bbox.instance = allInstances[bbox._instanceIdx];
         bbox._instanceIdx = null;
+      }
+    }
+    for (const li of this.labelImages) {
+      if (li._objectInstanceIdxs) {
+        for (const [labelId, instIdx] of li._objectInstanceIdxs) {
+          const obj = li.objects.get(labelId);
+          if (obj && instIdx >= 0 && instIdx < allInstances.length) {
+            obj.instance = allInstances[instIdx];
+          }
+        }
+        li._objectInstanceIdxs = null;
       }
     }
   }
@@ -644,6 +657,33 @@ var Labels = class {
     }
     if (filters.predicted !== void 0) {
       results = results.filter((b) => b.isPredicted === filters.predicted);
+    }
+    return results;
+  }
+  get staticLabelImages() {
+    return this.labelImages.filter((li) => li.isStatic);
+  }
+  get temporalLabelImages() {
+    return this.labelImages.filter((li) => !li.isStatic);
+  }
+  getLabelImages(filters) {
+    if (!filters) return [...this.labelImages];
+    let results = this.labelImages;
+    if (filters.video !== void 0) {
+      results = results.filter((li) => li.video === filters.video);
+    }
+    if (filters.frameIdx !== void 0) {
+      results = results.filter((li) => li.frameIdx === filters.frameIdx);
+    }
+    if (filters.track !== void 0) {
+      results = results.filter(
+        (li) => Array.from(li.objects.values()).some((info) => info.track === filters.track)
+      );
+    }
+    if (filters.category !== void 0) {
+      results = results.filter(
+        (li) => Array.from(li.objects.values()).some((info) => info.category === filters.category)
+      );
     }
     return results;
   }
@@ -2300,6 +2340,273 @@ var PredictedBoundingBox = class extends BoundingBox {
   }
   get isPredicted() {
     return true;
+  }
+};
+
+// src/model/label-image.ts
+var LabelImage = class _LabelImage {
+  /** Flat (H*W) Int32Array, row-major. 0 = background, positive = object ID. */
+  data;
+  height;
+  width;
+  /** Map from label ID (positive int) to object metadata. */
+  objects;
+  video;
+  frameIdx;
+  source;
+  /** @internal Deferred instance indices for lazy resolution. Map<label_id, instance_idx> */
+  _objectInstanceIdxs = null;
+  constructor(options) {
+    this.data = options.data;
+    this.height = options.height;
+    this.width = options.width;
+    this.objects = options.objects ?? /* @__PURE__ */ new Map();
+    this.video = options.video ?? null;
+    this.frameIdx = options.frameIdx ?? null;
+    this.source = options.source ?? "";
+  }
+  // --- Computed properties ---
+  /** Number of objects in the label image metadata. */
+  get nObjects() {
+    return this.objects.size;
+  }
+  /** Sorted unique non-zero label IDs present in the data.
+   *  Note: Scans the full pixel array on every call. Cache the result if needed multiple times. */
+  get labelIds() {
+    const ids = /* @__PURE__ */ new Set();
+    for (let i = 0; i < this.data.length; i++) {
+      if (this.data[i] > 0) ids.add(this.data[i]);
+    }
+    return Array.from(ids).sort((a, b) => a - b);
+  }
+  /** Non-null tracks from objects, sorted by label ID. */
+  get tracks() {
+    const result = [];
+    for (const lid of Array.from(this.objects.keys()).sort((a, b) => a - b)) {
+      const info = this.objects.get(lid);
+      if (info.track !== null) result.push(info.track);
+    }
+    return result;
+  }
+  /** Unique non-empty category strings across all objects. */
+  get categories() {
+    const cats = /* @__PURE__ */ new Set();
+    for (const info of this.objects.values()) {
+      if (info.category !== "") cats.add(info.category);
+    }
+    return cats;
+  }
+  /** Whether this label image has no temporal association (frameIdx is null). */
+  get isStatic() {
+    return this.frameIdx === null;
+  }
+  // --- Mask extraction ---
+  /** Get a binary mask (Uint8Array) for a specific label ID. */
+  getObjectMask(labelId) {
+    const mask = new Uint8Array(this.height * this.width);
+    for (let i = 0; i < this.data.length; i++) {
+      if (this.data[i] === labelId) mask[i] = 1;
+    }
+    return mask;
+  }
+  /** Get a binary mask for all objects associated with a given track. */
+  getTrackMask(track) {
+    const matchingIds = [];
+    for (const [lid, info] of this.objects) {
+      if (info.track === track) matchingIds.push(lid);
+    }
+    if (matchingIds.length === 0) {
+      throw new Error(`Track "${track.name}" not found in this LabelImage.`);
+    }
+    const idSet = new Set(matchingIds);
+    const mask = new Uint8Array(this.height * this.width);
+    for (let i = 0; i < this.data.length; i++) {
+      if (idSet.has(this.data[i])) mask[i] = 1;
+    }
+    return mask;
+  }
+  /** Get a binary mask for all objects with a given category. Throws if category not found. */
+  getCategoryMask(category) {
+    const matchingIds = [];
+    for (const [lid, info] of this.objects) {
+      if (info.category === category) matchingIds.push(lid);
+    }
+    if (matchingIds.length === 0) {
+      throw new Error(`Category "${category}" not found in this LabelImage.`);
+    }
+    const idSet = new Set(matchingIds);
+    const mask = new Uint8Array(this.height * this.width);
+    for (let i = 0; i < this.data.length; i++) {
+      if (idSet.has(this.data[i])) mask[i] = 1;
+    }
+    return mask;
+  }
+  // --- Iterator ---
+  /** Iterate over objects as [track, category, binaryMask] tuples in sorted label ID order. */
+  *items() {
+    const ids = this.labelIds;
+    const maskMap = /* @__PURE__ */ new Map();
+    for (const lid of ids) {
+      maskMap.set(lid, new Uint8Array(this.height * this.width));
+    }
+    for (let i = 0; i < this.data.length; i++) {
+      const mask = maskMap.get(this.data[i]);
+      if (mask) mask[i] = 1;
+    }
+    for (const lid of ids) {
+      const info = this.objects.get(lid) ?? {
+        track: null,
+        category: "",
+        name: "",
+        instance: null
+      };
+      yield [info.track, info.category, maskMap.get(lid)];
+    }
+  }
+  // --- Factories ---
+  /**
+   * Create a LabelImage from a flat Int32Array or 2D number array.
+   *
+   * Tracks are auto-created when not provided. When provided as an array,
+   * they are assigned positionally starting at label ID 1.
+   */
+  static fromArray(data, height, width, options) {
+    let flat;
+    if (data instanceof Int32Array) {
+      flat = data;
+    } else {
+      flat = new Int32Array(height * width);
+      for (let r = 0; r < height; r++) {
+        for (let c = 0; c < width; c++) {
+          flat[r * width + c] = data[r][c];
+        }
+      }
+    }
+    const uniqueIds = /* @__PURE__ */ new Set();
+    for (let i = 0; i < flat.length; i++) {
+      if (flat[i] > 0) uniqueIds.add(flat[i]);
+    }
+    const sortedIds = Array.from(uniqueIds).sort((a, b) => a - b);
+    const trackMap = /* @__PURE__ */ new Map();
+    const tracks = options?.tracks;
+    if (tracks === void 0) {
+      for (const lid of sortedIds) {
+        trackMap.set(lid, new Track(String(lid)));
+      }
+    } else if (Array.isArray(tracks)) {
+      for (let i = 0; i < tracks.length; i++) {
+        trackMap.set(i + 1, tracks[i]);
+      }
+    } else {
+      for (const [k, v] of tracks) {
+        trackMap.set(k, v);
+      }
+    }
+    const catMap = /* @__PURE__ */ new Map();
+    const cats = options?.categories;
+    if (cats !== void 0) {
+      if (Array.isArray(cats)) {
+        for (let i = 0; i < cats.length; i++) {
+          catMap.set(i + 1, cats[i]);
+        }
+      } else {
+        for (const [k, v] of cats) {
+          catMap.set(k, v);
+        }
+      }
+    }
+    const allIds = /* @__PURE__ */ new Set([...sortedIds, ...trackMap.keys(), ...catMap.keys()]);
+    const objects = /* @__PURE__ */ new Map();
+    for (const lid of Array.from(allIds).sort((a, b) => a - b)) {
+      objects.set(lid, {
+        track: trackMap.get(lid) ?? null,
+        category: catMap.get(lid) ?? "",
+        name: "",
+        instance: null
+      });
+    }
+    return new _LabelImage({
+      data: flat,
+      height,
+      width,
+      objects,
+      video: options?.video ?? null,
+      frameIdx: options?.frameIdx ?? null,
+      source: options?.source ?? ""
+    });
+  }
+  /** Create a LabelImage by compositing an array of SegmentationMasks. */
+  static fromMasks(masks, options) {
+    if (masks.length === 0) {
+      throw new Error("Cannot create LabelImage from empty mask list.");
+    }
+    const height = masks[0].height;
+    const width = masks[0].width;
+    for (const m of masks.slice(1)) {
+      if (m.height !== height || m.width !== width) {
+        throw new Error(
+          `All masks must have the same shape. Expected (${height}, ${width}), got (${m.height}, ${m.width}).`
+        );
+      }
+    }
+    const data = new Int32Array(height * width);
+    const objects = /* @__PURE__ */ new Map();
+    for (let i = 0; i < masks.length; i++) {
+      const labelId = i + 1;
+      const maskData = masks[i].data;
+      for (let j = 0; j < maskData.length; j++) {
+        if (maskData[j]) data[j] = labelId;
+      }
+      objects.set(labelId, {
+        track: masks[i].track,
+        category: masks[i].category,
+        name: masks[i].name,
+        instance: masks[i].instance
+      });
+    }
+    return new _LabelImage({
+      data,
+      height,
+      width,
+      objects,
+      video: options?.video ?? null,
+      frameIdx: options?.frameIdx ?? null,
+      source: options?.source ?? ""
+    });
+  }
+  // --- Conversion ---
+  /** Decompose this LabelImage into individual SegmentationMask objects. */
+  toMasks() {
+    const ids = this.labelIds;
+    const maskMap = /* @__PURE__ */ new Map();
+    for (const lid of ids) {
+      maskMap.set(lid, new Uint8Array(this.height * this.width));
+    }
+    for (let i = 0; i < this.data.length; i++) {
+      const mask = maskMap.get(this.data[i]);
+      if (mask) mask[i] = 1;
+    }
+    const result = [];
+    for (const lid of ids) {
+      const info = this.objects.get(lid) ?? {
+        track: null,
+        category: "",
+        name: "",
+        instance: null
+      };
+      result.push(
+        SegmentationMask.fromArray(maskMap.get(lid), this.height, this.width, {
+          track: info.track,
+          category: info.category,
+          name: info.name,
+          instance: info.instance,
+          video: this.video,
+          frameIdx: this.frameIdx,
+          source: this.source
+        })
+      );
+    }
+    return result;
   }
 };
 
@@ -4296,6 +4603,7 @@ function slicePoints(data, start, end, predicted = false) {
 }
 
 // src/codecs/slp/write.ts
+import { deflate } from "pako";
 var _writeToFile = null;
 function _registerFileWriter(writer) {
   _writeToFile = writer;
@@ -4324,6 +4632,7 @@ function writeSlpToFile(file, labels, embeddedVideoData) {
   writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
   writeMasks(file, labels.masks, labels.videos, labels.tracks);
   writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
+  writeLabelImages(file, labels.labelImages, labels.videos, labels.tracks, allInstances);
 }
 async function saveSlpToBytes(labels, options) {
   const embedMode = options?.embed ?? false;
@@ -4345,6 +4654,10 @@ async function saveSlpToBytes(labels, options) {
       suggestions: labels.suggestions,
       sessions: labels.sessions,
       provenance: labels.provenance,
+      rois: labels.rois,
+      masks: labels.masks,
+      bboxes: labels.bboxes,
+      labelImages: labels.labelImages,
       identities: labels.identities
     });
   }
@@ -4389,7 +4702,7 @@ function writeMetadata(file, labels) {
   };
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
   const hasIdentities = (labels.identities?.length ?? 0) > 0;
-  let formatId = (labels.bboxes?.length ?? 0) > 0 ? 1.7 : hasRoiInstance ? 1.6 : labels.rois.length > 0 || labels.masks.length > 0 ? 1.5 : FORMAT_ID;
+  let formatId = (labels.labelImages?.length ?? 0) > 0 ? 1.8 : (labels.bboxes?.length ?? 0) > 0 ? 1.7 : hasRoiInstance ? 1.6 : labels.rois.length > 0 || labels.masks.length > 0 ? 1.5 : FORMAT_ID;
   if (hasIdentities) {
     formatId = Math.max(formatId, 1.9);
   }
@@ -5018,8 +5331,74 @@ function writeBboxes(file, bboxes, videos, tracks, instances) {
   setStringAttr(bboxesDs, "names", JSON.stringify(names));
   setStringAttr(bboxesDs, "sources", JSON.stringify(sources));
 }
+function writeLabelImages(file, labelImages, videos, tracks, instances) {
+  if (!labelImages.length) return;
+  const endianCheck = new Uint8Array(new Uint16Array([258]).buffer);
+  if (endianCheck[0] !== 2) {
+    throw new Error("LabelImage I/O requires a little-endian platform.");
+  }
+  const rows = [];
+  const compressedChunks = [];
+  let dataOffset = 0;
+  const objectRows = [];
+  const objectCategories = [];
+  const objectNames = [];
+  const sources = [];
+  let objectsOffset = 0;
+  for (const li of labelImages) {
+    const videoIdx = li.video ? videos.indexOf(li.video) : -1;
+    const frameIdx = li.frameIdx ?? -1;
+    const pixelBytes = new Uint8Array(li.data.buffer, li.data.byteOffset, li.data.byteLength);
+    const compressed = deflate(pixelBytes);
+    const dataStart = dataOffset;
+    const dataEnd = dataOffset + compressed.length;
+    compressedChunks.push(compressed);
+    dataOffset = dataEnd;
+    const objectsStart = objectsOffset;
+    for (const [labelId, info] of li.objects) {
+      const trackIdx = info.track ? tracks.indexOf(info.track) : -1;
+      const instanceIdx = info.instance ? instances.indexOf(info.instance) : -1;
+      objectRows.push([labelId, trackIdx, instanceIdx]);
+      objectCategories.push(info.category);
+      objectNames.push(info.name);
+      objectsOffset++;
+    }
+    rows.push([videoIdx, frameIdx, li.height, li.width, li.nObjects, objectsStart, dataStart, dataEnd]);
+    sources.push(li.source);
+  }
+  createMatrixDataset(
+    file,
+    "label_images",
+    rows,
+    ["video", "frame_idx", "height", "width", "n_objects", "objects_start", "data_start", "data_end"],
+    "<f8"
+  );
+  const liDs = file.get("label_images");
+  setStringAttr(liDs, "sources", JSON.stringify(sources));
+  if (objectRows.length > 0) {
+    createMatrixDataset(
+      file,
+      "label_image_objects",
+      objectRows,
+      ["label_id", "track", "instance"],
+      "<f8"
+    );
+    const objDs = file.get("label_image_objects");
+    setStringAttr(objDs, "categories", JSON.stringify(objectCategories));
+    setStringAttr(objDs, "names", JSON.stringify(objectNames));
+  }
+  const totalData = compressedChunks.reduce((sum, c) => sum + c.length, 0);
+  const dataFlat = new Uint8Array(totalData);
+  let offset = 0;
+  for (const chunk of compressedChunks) {
+    dataFlat.set(chunk, offset);
+    offset += chunk.length;
+  }
+  file.create_dataset({ name: "label_image_data", data: dataFlat, shape: [dataFlat.length], dtype: "<B" });
+}
 
 // src/codecs/slp/read.ts
+import { inflate } from "pako";
 var textDecoder = new TextDecoder();
 async function readSlp(source, options) {
   const { file, close } = await openH5File(source, options?.h5);
@@ -5071,6 +5450,7 @@ async function readSlp(source, options) {
     const allInstances = labeledFrames.flatMap((f) => f.instances);
     const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks, allInstances);
     const masks = readMasks(file, videos, tracks);
+    const labelImages = readLabelImages(file, videos, tracks, allInstances);
     return new Labels({
       labeledFrames,
       videos,
@@ -5082,7 +5462,8 @@ async function readSlp(source, options) {
       provenance: metadataJson?.provenance ?? {},
       rois,
       masks,
-      bboxes
+      bboxes,
+      labelImages
     });
   } finally {
     close();
@@ -5133,6 +5514,7 @@ async function readSlpLazy(source, options) {
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, [], identities);
     const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks);
     const masks = readMasks(file, videos, tracks);
+    const labelImages = readLabelImages(file, videos, tracks);
     const labels = new Labels({
       videos,
       skeletons,
@@ -5143,7 +5525,8 @@ async function readSlpLazy(source, options) {
       provenance: metadataJson?.provenance ?? {},
       rois,
       masks,
-      bboxes
+      bboxes,
+      labelImages
     });
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;
@@ -5636,6 +6019,90 @@ function readMasks(file, videos, tracks) {
     }));
   }
   return masks;
+}
+function readLabelImages(file, videos, tracks, instances) {
+  const liDs = file.get("label_images");
+  if (!liDs) return [];
+  const liData = normalizeStructDataset(liDs);
+  const videoIndices = liData.video ?? [];
+  if (!videoIndices.length) return [];
+  const frameIndices = liData.frame_idx ?? [];
+  const heights = liData.height ?? [];
+  const widths = liData.width ?? [];
+  const nObjectsList = liData.n_objects ?? [];
+  const objectsStarts = liData.objects_start ?? [];
+  const dataStarts = liData.data_start ?? [];
+  const dataEnds = liData.data_end ?? [];
+  const sources = readAttrString(liDs, "sources");
+  const dataDs = file.get("label_image_data");
+  if (!dataDs) return [];
+  const dataFlat = dataDs.value instanceof Uint8Array ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+  let objLabelIds = [];
+  let objTrackIndices = [];
+  let objInstanceIndices = [];
+  let objCategories = [];
+  let objNames = [];
+  const objDs = file.get("label_image_objects");
+  if (objDs) {
+    const objData = normalizeStructDataset(objDs);
+    objLabelIds = objData.label_id ?? [];
+    objTrackIndices = objData.track ?? [];
+    objInstanceIndices = objData.instance ?? [];
+    objCategories = readAttrString(objDs, "categories");
+    objNames = readAttrString(objDs, "names");
+  }
+  const labelImages = [];
+  for (let i = 0; i < videoIndices.length; i++) {
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+    const frameIdxVal = Number(frameIndices[i]);
+    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
+    const height = Number(heights[i]);
+    const width = Number(widths[i]);
+    const dataStart = Number(dataStarts[i]);
+    const dataEnd = Number(dataEnds[i]);
+    const compressed = dataFlat.slice(dataStart, dataEnd);
+    const decompressed = inflate(compressed);
+    const pixelData = new Int32Array(
+      decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
+    );
+    const nObj = Number(nObjectsList[i]);
+    const objStart = Number(objectsStarts[i]);
+    const objects = /* @__PURE__ */ new Map();
+    const deferredInstances = /* @__PURE__ */ new Map();
+    for (let j = objStart; j < objStart + nObj; j++) {
+      const labelId = Number(objLabelIds[j]);
+      const trackIdx = Number(objTrackIndices[j]);
+      const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+      const instIdx = Number(objInstanceIndices[j]);
+      let instance = null;
+      if (instances && instIdx >= 0 && instIdx < instances.length) {
+        instance = instances[instIdx];
+      } else if (instIdx >= 0) {
+        deferredInstances.set(labelId, instIdx);
+      }
+      objects.set(labelId, {
+        track,
+        category: objCategories[j] ?? "",
+        name: objNames[j] ?? "",
+        instance
+      });
+    }
+    const li = new LabelImage({
+      data: pixelData,
+      height,
+      width,
+      objects,
+      video,
+      frameIdx,
+      source: sources[i] ?? ""
+    });
+    if (deferredInstances.size > 0) {
+      li._objectInstanceIdxs = deferredInstances;
+    }
+    labelImages.push(li);
+  }
+  return labelImages;
 }
 function normalizeStructDataset(dataset) {
   if (!dataset) return {};
@@ -6545,6 +7012,7 @@ export {
   BoundingBox,
   UserBoundingBox,
   PredictedBoundingBox,
+  LabelImage,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
   StreamingH5File,

@@ -468,6 +468,84 @@ declare class PredictedBoundingBox extends BoundingBox {
     get isPredicted(): boolean;
 }
 
+/** Per-object metadata in a LabelImage. */
+interface LabelImageObjectInfo {
+    track: Track | null;
+    category: string;
+    name: string;
+    instance: Instance | null;
+}
+/**
+ * Dense integer label image for instance segmentation.
+ *
+ * Each pixel value encodes which object occupies that pixel:
+ * 0 = background, positive integers = object IDs.
+ *
+ * This is the typical output format of tools like Cellpose, StarDist, etc.
+ */
+declare class LabelImage {
+    /** Flat (H*W) Int32Array, row-major. 0 = background, positive = object ID. */
+    data: Int32Array;
+    height: number;
+    width: number;
+    /** Map from label ID (positive int) to object metadata. */
+    objects: Map<number, LabelImageObjectInfo>;
+    video: Video | null;
+    frameIdx: number | null;
+    source: string;
+    /** @internal Deferred instance indices for lazy resolution. Map<label_id, instance_idx> */
+    _objectInstanceIdxs: Map<number, number> | null;
+    constructor(options: {
+        data: Int32Array;
+        height: number;
+        width: number;
+        objects?: Map<number, LabelImageObjectInfo>;
+        video?: Video | null;
+        frameIdx?: number | null;
+        source?: string;
+    });
+    /** Number of objects in the label image metadata. */
+    get nObjects(): number;
+    /** Sorted unique non-zero label IDs present in the data.
+     *  Note: Scans the full pixel array on every call. Cache the result if needed multiple times. */
+    get labelIds(): number[];
+    /** Non-null tracks from objects, sorted by label ID. */
+    get tracks(): Track[];
+    /** Unique non-empty category strings across all objects. */
+    get categories(): Set<string>;
+    /** Whether this label image has no temporal association (frameIdx is null). */
+    get isStatic(): boolean;
+    /** Get a binary mask (Uint8Array) for a specific label ID. */
+    getObjectMask(labelId: number): Uint8Array;
+    /** Get a binary mask for all objects associated with a given track. */
+    getTrackMask(track: Track): Uint8Array;
+    /** Get a binary mask for all objects with a given category. Throws if category not found. */
+    getCategoryMask(category: string): Uint8Array;
+    /** Iterate over objects as [track, category, binaryMask] tuples in sorted label ID order. */
+    items(): IterableIterator<[Track | null, string, Uint8Array]>;
+    /**
+     * Create a LabelImage from a flat Int32Array or 2D number array.
+     *
+     * Tracks are auto-created when not provided. When provided as an array,
+     * they are assigned positionally starting at label ID 1.
+     */
+    static fromArray(data: Int32Array | number[][], height: number, width: number, options?: {
+        tracks?: Track[] | Map<number, Track>;
+        categories?: string[] | Map<number, string>;
+        video?: Video | null;
+        frameIdx?: number | null;
+        source?: string;
+    }): LabelImage;
+    /** Create a LabelImage by compositing an array of SegmentationMasks. */
+    static fromMasks(masks: SegmentationMask[], options?: {
+        video?: Video | null;
+        frameIdx?: number | null;
+        source?: string;
+    }): LabelImage;
+    /** Decompose this LabelImage into individual SegmentationMask objects. */
+    toMasks(): SegmentationMask[];
+}
+
 declare class Labels {
     labeledFrames: LabeledFrame[];
     videos: Video[];
@@ -479,6 +557,7 @@ declare class Labels {
     rois: ROI[];
     masks: SegmentationMask[];
     bboxes: BoundingBox[];
+    labelImages: LabelImage[];
     identities: Identity[];
     /** @internal Lazy frame list for on-demand materialization. */
     _lazyFrameList: LazyFrameList | null;
@@ -495,6 +574,7 @@ declare class Labels {
         rois?: ROI[];
         masks?: SegmentationMask[];
         bboxes?: BoundingBox[];
+        labelImages?: LabelImage[];
         identities?: Identity[];
     });
     /** Whether this Labels instance is in lazy mode. */
@@ -545,6 +625,14 @@ declare class Labels {
         instance?: Instance;
         predicted?: boolean;
     }): BoundingBox[];
+    get staticLabelImages(): LabelImage[];
+    get temporalLabelImages(): LabelImage[];
+    getLabelImages(filters?: {
+        video?: Video;
+        frameIdx?: number;
+        track?: Track;
+        category?: string;
+    }): LabelImage[];
     static fromNumpy(data: number[][][][], options: {
         videos?: Video[];
         video?: Video;
@@ -1332,4 +1420,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AnnotationType, BoundingBox, type BoundingBoxOptions, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedInstance, PredictedInstance3D, type RGB, type RGBA, ROI, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };
+export { AnnotationType, BoundingBox, type BoundingBoxOptions, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedInstance, PredictedInstance3D, type RGB, type RGBA, ROI, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };
