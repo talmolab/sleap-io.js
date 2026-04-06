@@ -2,6 +2,8 @@
 import { describe, it, expect } from "vitest";
 import {
   ROI,
+  UserROI,
+  PredictedROI,
   AnnotationType,
   rasterizeGeometry,
   encodeWkb,
@@ -96,7 +98,7 @@ describe("ROI", () => {
   });
 
   it("isBbox false for point geometry", () => {
-    const roi = new ROI({
+    const roi = new UserROI({
       geometry: { type: "Point", coordinates: [0, 0] },
     });
     expect(roi.isBbox).toBe(false);
@@ -222,7 +224,7 @@ describe("ROI", () => {
 
 describe("New geometry types", () => {
   it("LineString ROI has correct bounds and zero area", () => {
-    const roi = new ROI({
+    const roi = new UserROI({
       geometry: { type: "LineString", coordinates: [[0, 0], [10, 5], [20, 0]] },
     });
     expect(roi.area).toBe(0);
@@ -234,7 +236,7 @@ describe("New geometry types", () => {
   });
 
   it("MultiPoint ROI has correct bounds and zero area", () => {
-    const roi = new ROI({
+    const roi = new UserROI({
       geometry: { type: "MultiPoint", coordinates: [[1, 2], [3, 4], [5, 6]] },
     });
     expect(roi.area).toBe(0);
@@ -246,7 +248,7 @@ describe("New geometry types", () => {
   });
 
   it("GeometryCollection ROI has correct bounds and summed area", () => {
-    const roi = new ROI({
+    const roi = new UserROI({
       geometry: {
         type: "GeometryCollection",
         geometries: [
@@ -315,7 +317,7 @@ describe("fromMultiPolygon and explode", () => {
   });
 
   it("explode GeometryCollection splits into individual ROIs", () => {
-    const roi = new ROI({
+    const roi = new UserROI({
       geometry: {
         type: "GeometryCollection",
         geometries: [
@@ -470,6 +472,47 @@ describe("WKB", () => {
       if (decoded.geometries[1].type === "LineString") {
         expect(decoded.geometries[1].coordinates).toEqual([[0, 0], [10, 10]]);
       }
+    }
+  });
+});
+
+describe("ROI abstract base and subclasses", () => {
+  it("ROI cannot be instantiated directly", () => {
+    expect(() => new (ROI as any)({
+      geometry: { type: "Point", coordinates: [0, 0] },
+    })).toThrow(TypeError);
+  });
+
+  it("PredictedROI has score and isPredicted", () => {
+    const roi = new PredictedROI({
+      geometry: { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] },
+      score: 0.75,
+    });
+    expect(roi.isPredicted).toBe(true);
+    expect(roi.score).toBe(0.75);
+  });
+
+  it("PredictedROI.explode() preserves score and subclass", () => {
+    const roi = ROI.fromMultiPolygon(
+      [
+        [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]],
+        [[[10, 10], [15, 10], [15, 15], [10, 15], [10, 10]]],
+      ],
+      { name: "multi" },
+    );
+    // Create a predicted version manually
+    const pred = new PredictedROI({
+      geometry: roi.geometry,
+      name: "pred_multi",
+      score: 0.8,
+    });
+    const exploded = pred.explode();
+    expect(exploded).toHaveLength(2);
+    for (const r of exploded) {
+      expect(r).toBeInstanceOf(PredictedROI);
+      expect(r.isPredicted).toBe(true);
+      expect((r as PredictedROI).score).toBe(0.8);
+      expect(r.name).toBe("pred_multi");
     }
   });
 });

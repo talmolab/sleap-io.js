@@ -5,7 +5,7 @@ import { Video } from "../src/model/video.js";
 import { Skeleton } from "../src/model/skeleton.js";
 import { Instance, Track } from "../src/model/instance.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
-import { LabelImage } from "../src/model/label-image.js";
+import { LabelImage, UserLabelImage } from "../src/model/label-image.js";
 import type { LabelImageObjectInfo } from "../src/model/label-image.js";
 import { UserBoundingBox } from "../src/model/bbox.js";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
@@ -29,7 +29,7 @@ describe("LabelImage SLP I/O", () => {
     // Object 2: bottom-right area
     data[98] = 2; data[99] = 2; data[89] = 2;
 
-    const li = new LabelImage({
+    const li = new UserLabelImage({
       data,
       height: 10,
       width: 10,
@@ -100,7 +100,7 @@ describe("LabelImage SLP I/O", () => {
       }
     }
 
-    const li = new LabelImage({
+    const li = new UserLabelImage({
       data,
       height: 20,
       width: 20,
@@ -128,7 +128,7 @@ describe("LabelImage SLP I/O", () => {
     }
   });
 
-  it("uses format version 1.8 for labelImages, 1.7 for bboxes only", async () => {
+  it("uses format version 1.8 for labelImages, 2.0 for bboxes only", async () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["a"] });
     const inst = new Instance({ points: { a: [1, 2] }, skeleton });
@@ -137,7 +137,7 @@ describe("LabelImage SLP I/O", () => {
     // Labels with labelImages should round-trip successfully (format 1.8)
     const data = new Int32Array(5 * 5);
     data[0] = 1;
-    const li = new LabelImage({
+    const li = new UserLabelImage({
       data,
       height: 5,
       width: 5,
@@ -159,9 +159,9 @@ describe("LabelImage SLP I/O", () => {
     expect(loadedWithLI.labelImages).toHaveLength(1);
     expect(loadedWithLI.labelImages[0].data[0]).toBe(1);
 
-    // Labels with bboxes but no labelImages (format 1.7) should also round-trip
+    // Labels with bboxes but no labelImages (format 2.0) should also round-trip
     const bb = new UserBoundingBox({
-      xCenter: 50, yCenter: 50, width: 100, height: 80,
+      x1: 0, y1: 10, x2: 100, y2: 90,
       video, frameIdx: 0,
     });
 
@@ -191,7 +191,7 @@ describe("LabelImage SLP I/O", () => {
       }
 
       labelImages.push(
-        new LabelImage({
+        new UserLabelImage({
           data,
           height: 8,
           width: 8,
@@ -253,7 +253,7 @@ describe("LabelImage SLP I/O", () => {
       return d;
     };
 
-    const li1 = new LabelImage({
+    const li1 = new UserLabelImage({
       data: makeData(),
       height: 4,
       width: 4,
@@ -265,7 +265,7 @@ describe("LabelImage SLP I/O", () => {
       source: "model",
     });
 
-    const li2 = new LabelImage({
+    const li2 = new UserLabelImage({
       data: makeData(),
       height: 4,
       width: 4,
@@ -277,7 +277,7 @@ describe("LabelImage SLP I/O", () => {
       source: "model",
     });
 
-    const li3 = new LabelImage({
+    const li3 = new UserLabelImage({
       data: makeData(),
       height: 4,
       width: 4,
@@ -337,7 +337,7 @@ describe("LabelImage SLP I/O", () => {
 
     const data = new Int32Array(6 * 6); // all zeros
 
-    const li = new LabelImage({
+    const li = new UserLabelImage({
       data,
       height: 6,
       width: 6,
@@ -384,7 +384,7 @@ describe("LabelImage SLP I/O", () => {
     data[1] = 1;
     data[5] = 1;
 
-    const li = new LabelImage({
+    const li = new UserLabelImage({
       data,
       height: 5,
       width: 5,
@@ -423,7 +423,7 @@ describe("LabelImage SLP I/O", () => {
     const data = new Int32Array(4 * 4);
     data[0] = 1;
 
-    const li = new LabelImage({
+    const li = new UserLabelImage({
       data,
       height: 4,
       width: 4,

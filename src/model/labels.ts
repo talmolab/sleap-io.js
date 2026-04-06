@@ -120,6 +120,14 @@ export class Labels {
       }
     }
 
+    // Resolve mask instance references
+    for (const mask of this.masks) {
+      if (mask._instanceIdx !== null && mask._instanceIdx >= 0 && mask._instanceIdx < allInstances.length) {
+        mask.instance = allInstances[mask._instanceIdx];
+        mask._instanceIdx = null;
+      }
+    }
+
     // Resolve label image object instance references
     for (const li of this.labelImages) {
       if (li._objectInstanceIdxs) {
@@ -205,6 +213,7 @@ export class Labels {
     category?: string;
     track?: Track;
     instance?: Instance | PredictedInstance;
+    predicted?: boolean;
   }): ROI[] {
     if (!filters) return [...this.rois];
     let results = this.rois;
@@ -223,6 +232,9 @@ export class Labels {
     if (filters.instance !== undefined) {
       results = results.filter((r) => r.instance === filters.instance);
     }
+    if (filters.predicted !== undefined) {
+      results = results.filter((r) => r.isPredicted === filters.predicted);
+    }
     return results;
   }
 
@@ -232,6 +244,7 @@ export class Labels {
     category?: string;
     track?: Track;
     instance?: Instance | PredictedInstance;
+    predicted?: boolean;
   }): SegmentationMask[] {
     if (!filters) return [...this.masks];
     let results = this.masks;
@@ -249,6 +262,9 @@ export class Labels {
     }
     if (filters.instance !== undefined) {
       results = results.filter((m) => m.instance === filters.instance);
+    }
+    if (filters.predicted !== undefined) {
+      results = results.filter((m) => m.isPredicted === filters.predicted);
     }
     return results;
   }
@@ -305,6 +321,7 @@ export class Labels {
     frameIdx?: number;
     track?: Track;
     category?: string;
+    predicted?: boolean;
   }): LabelImage[] {
     if (!filters) return [...this.labelImages];
     let results = this.labelImages;
@@ -323,6 +340,9 @@ export class Labels {
       results = results.filter((li) =>
         Array.from(li.objects.values()).some((info) => info.category === filters.category)
       );
+    }
+    if (filters.predicted !== undefined) {
+      results = results.filter((li) => li.isPredicted === filters.predicted);
     }
     return results;
   }

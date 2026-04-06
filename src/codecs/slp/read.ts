@@ -10,10 +10,10 @@ import { createVideoBackend } from "../../video/factory.js";
 import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
-import { ROI, AnnotationType, decodeWkb } from "../../model/roi.js";
-import { SegmentationMask } from "../../model/mask.js";
+import { ROI, UserROI, PredictedROI, AnnotationType, decodeWkb } from "../../model/roi.js";
+import { SegmentationMask, UserSegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
 import { BoundingBox, UserBoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
-import { LabelImage } from "../../model/label-image.js";
+import { LabelImage, UserLabelImage, PredictedLabelImage } from "../../model/label-image.js";
 import type { LabelImageObjectInfo } from "../../model/label-image.js";
 import { inflate } from "pako";
 
@@ -569,9 +569,10 @@ function readRoisWithMigration(
     ? wkbDs.value
     : new Uint8Array(wkbDs.value ?? []);
 
-  const categories = readAttrString(roisDs, "categories");
-  const names = readAttrString(roisDs, "names");
-  const sources = readAttrString(roisDs, "sources");
+  // v1.9+: string datasets; fallback to JSON attrs
+  const categories = readStringMetadata(file, "roi_categories", roisDs, "categories");
+  const names = readStringMetadata(file, "roi_names", roisDs, "names");
+  const sources = readStringMetadata(file, "roi_sources", roisDs, "sources");
 
   const videoIndices = roisData.video ?? [];
   const frameIndices = roisData.frame_idx ?? [];
@@ -580,6 +581,8 @@ function readRoisWithMigration(
   const wkbStarts = roisData.wkb_start ?? [];
   const wkbEnds = roisData.wkb_end ?? [];
   const instanceIndices = roisData.instance ?? [];
+  // v1.9+ column (may not exist in older files)
+  const isPredictedCol = roisData.is_predicted ?? [];
 
   const rois: ROI[] = [];
   const migratedBboxes: BoundingBox[] = [];
@@ -601,18 +604,21 @@ function readRoisWithMigration(
 
     const annotType = Number(annotationTypes[i]);
 
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+
     // Migration: annotation_type === 1 (BOUNDING_BOX) -> BoundingBox object
-    if (annotType === AnnotationType.BOUNDING_BOX) {
-      const tmpRoi = new ROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, frameIdx, track });
+    // Skip predicted ROIs during bbox migration (only migrate user-type box-shaped ROIs)
+    if (annotType === AnnotationType.BOUNDING_BOX && !isPred) {
+      const tmpRoi = new UserROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, frameIdx, track });
       const b = tmpRoi.bounds;
       const scoreVal = Number(scores[i]);
       const bboxScore = Number.isNaN(scoreVal) ? null : scoreVal;
 
       const bboxOptions = {
-        xCenter: (b.minX + b.maxX) / 2,
-        yCenter: (b.minY + b.maxY) / 2,
-        width: b.maxX - b.minX,
-        height: b.maxY - b.minY,
+        x1: b.minX,
+        y1: b.minY,
+        x2: b.maxX,
+        y2: b.maxY,
         video,
         frameIdx,
         track,
@@ -626,8 +632,19 @@ function readRoisWithMigration(
       } else {
         migratedBboxes.push(new UserBoundingBox(bboxOptions));
       }
+
+      // Format >= 1.6: resolve instance references for migrated bboxes
+      if (instanceIndices.length > 0) {
+        const instIdx = Number(instanceIndices[i]);
+        const bbox = migratedBboxes[migratedBboxes.length - 1];
+        if (instances && instIdx >= 0 && instIdx < instances.length) {
+          bbox.instance = instances[instIdx];
+        } else if (instIdx >= 0) {
+          bbox._instanceIdx = instIdx;
+        }
+      }
     } else {
-      const roi = new ROI({
+      const roiOptions = {
         geometry,
         name: names[i] ?? "",
         category: categories[i] ?? "",
@@ -635,7 +652,15 @@ function readRoisWithMigration(
         video,
         frameIdx,
         track,
-      });
+      };
+
+      let roi: ROI;
+      if (isPred) {
+        const scoreVal = Number(scores[i]);
+        roi = new PredictedROI({ ...roiOptions, score: Number.isNaN(scoreVal) ? 0 : scoreVal });
+      } else {
+        roi = new UserROI(roiOptions);
+      }
 
       // Format >= 1.6: resolve instance references
       if (instanceIndices.length > 0) {
@@ -658,16 +683,27 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
   const bboxesDs = file.get("bboxes");
   if (!bboxesDs) return [];
   const bboxesData = normalizeStructDataset(bboxesDs);
-  const xCenters = bboxesData.x_center ?? [];
-  if (!xCenters.length) return [];
 
-  const categories = readAttrString(bboxesDs, "categories");
-  const names = readAttrString(bboxesDs, "names");
-  const sources = readAttrString(bboxesDs, "sources");
+  // Legacy format: center-based columns (x_center, y_center, width, height)
+  const xCenters = bboxesData.x_center ?? [];
+  const isLegacy = xCenters.length > 0;
+
+  // New format: corner-based columns (x1, y1, x2, y2)
+  const x1s = bboxesData.x1 ?? [];
+  const count = isLegacy ? xCenters.length : x1s.length;
+  if (!count) return [];
+
+  // v1.9+: string datasets at root level; fallback to JSON attrs on dataset
+  const categories = readStringMetadata(file, "bbox_categories", bboxesDs, "categories");
+  const names = readStringMetadata(file, "bbox_names", bboxesDs, "names");
+  const sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
 
   const yCenters = bboxesData.y_center ?? [];
   const widths = bboxesData.width ?? [];
   const heights = bboxesData.height ?? [];
+  const y1s = bboxesData.y1 ?? [];
+  const x2s = bboxesData.x2 ?? [];
+  const y2s = bboxesData.y2 ?? [];
   const angles = bboxesData.angle ?? [];
   const videoIndices = bboxesData.video ?? [];
   const frameIndices = bboxesData.frame_idx ?? [];
@@ -676,7 +712,7 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
   const instanceIndices = bboxesData.instance ?? [];
 
   const bboxes: BoundingBox[] = [];
-  for (let i = 0; i < xCenters.length; i++) {
+  for (let i = 0; i < count; i++) {
     const videoIdx = Number(videoIndices[i]);
     const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
 
@@ -689,11 +725,29 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
     const scoreVal = Number(bboxScores[i]);
     const instanceIdx = Number(instanceIndices[i]);
 
+    // Convert legacy center-based to corner-based
+    let bx1: number, by1: number, bx2: number, by2: number;
+    if (isLegacy) {
+      const cx = Number(xCenters[i]);
+      const cy = Number(yCenters[i]);
+      const w = Number(widths[i]);
+      const h = Number(heights[i]);
+      bx1 = cx - w / 2;
+      by1 = cy - h / 2;
+      bx2 = cx + w / 2;
+      by2 = cy + h / 2;
+    } else {
+      bx1 = Number(x1s[i]);
+      by1 = Number(y1s[i]);
+      bx2 = Number(x2s[i]);
+      by2 = Number(y2s[i]);
+    }
+
     const options = {
-      xCenter: Number(xCenters[i]),
-      yCenter: Number(yCenters[i]),
-      width: Number(widths[i]),
-      height: Number(heights[i]),
+      x1: bx1,
+      y1: by1,
+      x2: bx2,
+      y2: by2,
       angle: Number(angles[i]),
       video,
       frameIdx,
@@ -719,6 +773,69 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
   return bboxes;
 }
 
+/**
+ * Read string metadata from a root-level dataset or fall back to a JSON attribute.
+ * v1.9+ writes string datasets; older files use JSON-encoded attrs.
+ */
+function readStringMetadata(file: any, datasetPath: string, dataset: any, attrName: string): string[] {
+  const ds = file.get(datasetPath);
+  if (ds) {
+    // Try the "json" attribute on the string dataset first
+    const jsonAttr = readAttrString(ds, "json");
+    if (jsonAttr.length > 0) return jsonAttr;
+    // Fall back to raw value
+    const val = ds.value;
+    if (Array.isArray(val)) {
+      return val.map((v: any) => typeof v === "string" ? v : String(v ?? ""));
+    }
+  }
+  return readAttrString(dataset, attrName);
+}
+
+/**
+ * Read score maps from index + data datasets.
+ * Returns a Map from annotation index to { scoreMap, height, width }.
+ */
+function readScoreMaps(file: any, indexPath: string, dataPath: string): Map<number, { scoreMap: Float32Array; height: number; width: number }> {
+  const result = new Map<number, { scoreMap: Float32Array; height: number; width: number }>();
+  const indexDs = file.get(indexPath);
+  const dataDs = file.get(dataPath);
+  if (!indexDs || !dataDs) return result;
+
+  const indexData = normalizeStructDataset(indexDs);
+  const idxCol = indexData.mask_idx ?? indexData.li_idx ?? [];
+  const starts = indexData.data_start ?? [];
+  const ends = indexData.data_end ?? [];
+  const smHeights = indexData.height ?? [];
+  const smWidths = indexData.width ?? [];
+
+  const dataFlat: Uint8Array = dataDs.value instanceof Uint8Array
+    ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+
+  for (let i = 0; i < idxCol.length; i++) {
+    const annotIdx = Number(idxCol[i]);
+    const start = Number(starts[i]);
+    const end = Number(ends[i]);
+    const h = Number(smHeights[i]);
+    const w = Number(smWidths[i]);
+
+    const compressed = dataFlat.slice(start, end);
+    const decompressed = inflate(compressed);
+    const expectedBytes = h * w * 4; // Float32 = 4 bytes per element
+    if (decompressed.byteLength !== expectedBytes) {
+      throw new Error(
+        `Score map decompression size mismatch: expected ${expectedBytes} bytes, got ${decompressed.byteLength}`,
+      );
+    }
+    const scoreMap = new Float32Array(
+      decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength),
+    );
+
+    result.set(annotIdx, { scoreMap, height: h, width: w });
+  }
+  return result;
+}
+
 function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMask[] {
   const masksDs = file.get("masks");
   if (!masksDs) return [];
@@ -732,17 +849,30 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
     ? rleDs.value
     : new Uint8Array(rleDs.value ?? []);
 
-  const categories = readAttrString(masksDs, "categories");
-  const names = readAttrString(masksDs, "names");
-  const sources = readAttrString(masksDs, "sources");
+  // v1.9+: string datasets at root level; fallback to JSON attrs on mask dataset
+  const categories = readStringMetadata(file, "mask_categories", masksDs, "categories");
+  const names = readStringMetadata(file, "mask_names", masksDs, "names");
+  const sources = readStringMetadata(file, "mask_sources", masksDs, "sources");
 
   const widths = masksData.width ?? [];
-  // annotation_type and score columns are read for backward compat but not used
   const videoIndices = masksData.video ?? [];
   const frameIndices = masksData.frame_idx ?? [];
   const trackIndices = masksData.track ?? [];
   const rleStarts = masksData.rle_start ?? [];
   const rleEnds = masksData.rle_end ?? [];
+  // v1.9+ columns (may not exist in older files)
+  const isPredictedCol = masksData.is_predicted ?? [];
+  const scoreCol = masksData.score ?? [];
+  const instanceCol = masksData.instance ?? [];
+
+  // v2.1+: spatial metadata columns (default to 1.0/0.0 for old files)
+  const scaleXCol = masksData.scale_x ?? [];
+  const scaleYCol = masksData.scale_y ?? [];
+  const offsetXCol = masksData.offset_x ?? [];
+  const offsetYCol = masksData.offset_y ?? [];
+
+  // Read score maps if present
+  const scoreMaps = readScoreMaps(file, "mask_score_map_index", "mask_score_maps");
 
   const masks: SegmentationMask[] = [];
   for (let i = 0; i < heights.length; i++) {
@@ -767,7 +897,12 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
 
-    masks.push(new SegmentationMask({
+    const scaleX = scaleXCol.length > i ? Number(scaleXCol[i]) : 1;
+    const scaleY = scaleYCol.length > i ? Number(scaleYCol[i]) : 1;
+    const offsetX = offsetXCol.length > i ? Number(offsetXCol[i]) : 0;
+    const offsetY = offsetYCol.length > i ? Number(offsetYCol[i]) : 0;
+
+    const baseOptions = {
       rleCounts,
       height: Number(heights[i]),
       width: Number(widths[i]),
@@ -777,7 +912,33 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
       video,
       frameIdx,
       track,
-    }));
+      scale: [scaleX, scaleY] as [number, number],
+      offset: [offsetX, offsetY] as [number, number],
+    };
+
+    // Determine if predicted based on is_predicted column or NaN score fallback
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    let mask: SegmentationMask;
+
+    if (isPred) {
+      const scoreVal = scoreCol.length > i ? Number(scoreCol[i]) : 0;
+      const sm = scoreMaps.get(i);
+      mask = new PredictedSegmentationMask({
+        ...baseOptions,
+        score: scoreVal,
+        scoreMap: sm?.scoreMap ?? null,
+      });
+    } else {
+      mask = new UserSegmentationMask(baseOptions);
+    }
+
+    // Resolve instance reference
+    const instIdx = instanceCol.length > i ? Number(instanceCol[i]) : -1;
+    if (instIdx >= 0) {
+      mask._instanceIdx = instIdx;
+    }
+
+    masks.push(mask);
   }
   return masks;
 }
@@ -802,13 +963,34 @@ function readLabelImages(
   const dataStarts = liData.data_start ?? [];
   const dataEnds = liData.data_end ?? [];
 
-  const sources = readAttrString(liDs, "sources");
+  // v1.9+: string datasets; fallback to JSON attrs
+  const sources = readStringMetadata(file, "label_image_sources", liDs, "sources");
 
-  // Read compressed pixel data blob
+  // v1.9+ columns (may not exist in older files)
+  const isPredictedCol = liData.is_predicted ?? [];
+  const liScoreCol = liData.score ?? [];
+
+  // v2.1+: spatial metadata columns (default to 1.0/0.0 for old files)
+  const liScaleXCol = liData.scale_x ?? [];
+  const liScaleYCol = liData.scale_y ?? [];
+  const liOffsetXCol = liData.offset_x ?? [];
+  const liOffsetYCol = liData.offset_y ?? [];
+
+  // Read pixel data: either blob (1D, v1.8-v2.1) or chunked (3D, v2.2+)
   const dataDs = file.get("label_image_data");
   if (!dataDs) return [];
-  const dataFlat: Uint8Array = dataDs.value instanceof Uint8Array
-    ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+  const dataShape = dataDs.shape ?? [];
+  const isChunked = dataShape.length === 3;
+  // For blob format: flat Uint8Array of concatenated zlib-compressed frames
+  // For chunked format: 3D Int32Array [T, H, W] (decompression handled by HDF5 lib)
+  let dataFlat: Uint8Array = new Uint8Array(0);
+  let dataChunked: any = null;
+  if (isChunked) {
+    dataChunked = dataDs.value; // 3D array or flat typed array with shape metadata
+  } else {
+    dataFlat = dataDs.value instanceof Uint8Array
+      ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+  }
 
   // Read objects table (may not exist if all label images have 0 objects)
   let objLabelIds: any[] = [];
@@ -816,6 +998,7 @@ function readLabelImages(
   let objInstanceIndices: any[] = [];
   let objCategories: string[] = [];
   let objNames: string[] = [];
+  let objScoreCol: any[] = [];
 
   const objDs = file.get("label_image_objects");
   if (objDs) {
@@ -823,9 +1006,14 @@ function readLabelImages(
     objLabelIds = objData.label_id ?? [];
     objTrackIndices = objData.track ?? [];
     objInstanceIndices = objData.instance ?? [];
-    objCategories = readAttrString(objDs, "categories");
-    objNames = readAttrString(objDs, "names");
+    // v1.9+: string datasets at root level
+    objCategories = readStringMetadata(file, "label_image_obj_categories", objDs, "categories");
+    objNames = readStringMetadata(file, "label_image_obj_names", objDs, "names");
+    objScoreCol = objData.score ?? [];
   }
+
+  // Read score maps if present
+  const liScoreMaps = readScoreMaps(file, "label_image_score_map_index", "label_image_score_maps");
 
   const labelImages: LabelImage[] = [];
   for (let i = 0; i < videoIndices.length; i++) {
@@ -836,16 +1024,38 @@ function readLabelImages(
     const height = Number(heights[i]);
     const width = Number(widths[i]);
 
-    // Decompress pixel data
-    const dataStart = Number(dataStarts[i]);
-    const dataEnd = Number(dataEnds[i]);
-    const compressed = dataFlat.slice(dataStart, dataEnd);
-    const decompressed = inflate(compressed);
-    // Convert bytes back to Int32Array (little-endian, matches native).
-    // Use buffer.slice() to guarantee 4-byte alignment for Int32Array.
-    const pixelData = new Int32Array(
-      decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
-    );
+    // Extract pixel data from blob or chunked format
+    let pixelData: Int32Array;
+    if (isChunked && dataChunked) {
+      // v2.2+: 3D chunked dataset [T, H, W] — frames stored sequentially by the
+      // Python writer, so loop index i maps directly to the i-th frame slice.
+      const frameSize = height * width;
+      if (dataChunked instanceof Int32Array) {
+        // Flat typed array with shape [T, H, W] — slice by frame index
+        pixelData = new Int32Array(dataChunked.buffer, dataChunked.byteOffset + i * frameSize * 4, frameSize);
+      } else if (ArrayBuffer.isView(dataChunked)) {
+        // Other typed array — convert to Int32Array
+        const offset = i * frameSize;
+        pixelData = new Int32Array(frameSize);
+        for (let p = 0; p < frameSize; p++) {
+          pixelData[p] = (dataChunked as any)[offset + p];
+        }
+      } else {
+        // Fallback: array of arrays or similar
+        pixelData = new Int32Array(frameSize);
+      }
+    } else {
+      // v1.8-v2.1: blob format — decompress from flat byte array
+      const dataStart = Number(dataStarts[i]);
+      const dataEnd = Number(dataEnds[i]);
+      const compressed = dataFlat.slice(dataStart, dataEnd);
+      const decompressed = inflate(compressed);
+      // Convert bytes back to Int32Array (little-endian, matches native).
+      // Use buffer.slice() to guarantee 4-byte alignment for Int32Array.
+      pixelData = new Int32Array(
+        decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
+      );
+    }
 
     // Build objects map
     const nObj = Number(nObjectsList[i]);
@@ -866,23 +1076,59 @@ function readLabelImages(
         deferredInstances.set(labelId, instIdx);
       }
 
+      const objScore = objScoreCol.length > j ? Number(objScoreCol[j]) : null;
+
       objects.set(labelId, {
         track,
         category: objCategories[j] ?? "",
         name: objNames[j] ?? "",
         instance,
+        score: (objScore !== null && !Number.isNaN(objScore)) ? objScore : null,
+        _instanceIdx: instIdx >= 0 ? instIdx : -1,
       });
     }
 
-    const li = new LabelImage({
-      data: pixelData,
-      height,
-      width,
-      objects,
-      video,
-      frameIdx,
-      source: sources[i] ?? "",
-    });
+    // Determine if predicted
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+
+    // v2.1+: spatial metadata
+    const liScaleX = liScaleXCol.length > i ? Number(liScaleXCol[i]) : 1;
+    const liScaleY = liScaleYCol.length > i ? Number(liScaleYCol[i]) : 1;
+    const liOffsetX = liOffsetXCol.length > i ? Number(liOffsetXCol[i]) : 0;
+    const liOffsetY = liOffsetYCol.length > i ? Number(liOffsetYCol[i]) : 0;
+    const liScale: [number, number] = [liScaleX, liScaleY];
+    const liOffset: [number, number] = [liOffsetX, liOffsetY];
+
+    let li: LabelImage;
+    if (isPred) {
+      const liScore = liScoreCol.length > i ? Number(liScoreCol[i]) : 0;
+      const sm = liScoreMaps.get(i);
+      li = new PredictedLabelImage({
+        data: pixelData,
+        height,
+        width,
+        objects,
+        video,
+        frameIdx,
+        source: sources[i] ?? "",
+        score: liScore,
+        scoreMap: sm?.scoreMap ?? null,
+        scale: liScale,
+        offset: liOffset,
+      });
+    } else {
+      li = new UserLabelImage({
+        data: pixelData,
+        height,
+        width,
+        objects,
+        video,
+        frameIdx,
+        source: sources[i] ?? "",
+        scale: liScale,
+        offset: liOffset,
+      });
+    }
 
     if (deferredInstances.size > 0) {
       li._objectInstanceIdxs = deferredInstances;
