@@ -95,7 +95,7 @@ var LabeledFrame = class {
   /** Merge annotation lists from another frame, deduplicating by identity. */
   _mergeAnnotations(other) {
     for (const attr of ["centroids", "bboxes", "masks", "labelImages", "rois"]) {
-      const existing = new Set(this[attr].map((x) => x));
+      const existing = new Set(this[attr]);
       for (const item of other[attr]) {
         if (!existing.has(item)) {
           this[attr].push(item);
@@ -886,21 +886,26 @@ var Labels = class _Labels {
   _distributeAnnotations() {
     const frameMap = /* @__PURE__ */ new Map();
     for (const lf of this.labeledFrames) {
-      frameMap.set(`${lf.video}:${lf.frameIdx}`, lf);
+      let byIdx = frameMap.get(lf.video);
+      if (!byIdx) {
+        byIdx = /* @__PURE__ */ new Map();
+        frameMap.set(lf.video, byIdx);
+      }
+      byIdx.set(lf.frameIdx, lf);
     }
     const getOrCreate = (video, frameIdx) => {
-      let found;
-      for (const lf of this.labeledFrames) {
-        if (lf.video === video && lf.frameIdx === frameIdx) {
-          found = lf;
-          break;
-        }
+      let byIdx = frameMap.get(video);
+      if (byIdx) {
+        const existing = byIdx.get(frameIdx);
+        if (existing) return existing;
+      } else {
+        byIdx = /* @__PURE__ */ new Map();
+        frameMap.set(video, byIdx);
       }
-      if (!found) {
-        found = new LabeledFrame({ video, frameIdx });
-        this.labeledFrames.push(found);
-      }
-      return found;
+      const lf = new LabeledFrame({ video, frameIdx });
+      byIdx.set(frameIdx, lf);
+      this.labeledFrames.push(lf);
+      return lf;
     };
     const distribute = (items, attr) => {
       const remaining = [];
@@ -922,22 +927,19 @@ var Labels = class _Labels {
   }
   /** Collect tracks from annotations on a frame into this.tracks. */
   _collectAnnotationTracks(lf) {
-    for (const c of lf.centroids) {
-      if (c.track && !this.tracks.includes(c.track)) this.tracks.push(c.track);
-    }
-    for (const b of lf.bboxes) {
-      if (b.track && !this.tracks.includes(b.track)) this.tracks.push(b.track);
-    }
-    for (const m of lf.masks) {
-      if (m.track && !this.tracks.includes(m.track)) this.tracks.push(m.track);
-    }
-    for (const r of lf.rois) {
-      if (r.track && !this.tracks.includes(r.track)) this.tracks.push(r.track);
-    }
-    for (const li of lf.labelImages) {
-      for (const info of li.objects.values()) {
-        if (info.track && !this.tracks.includes(info.track)) this.tracks.push(info.track);
+    const existing = new Set(this.tracks);
+    const add = (track) => {
+      if (track && !existing.has(track)) {
+        existing.add(track);
+        this.tracks.push(track);
       }
+    };
+    for (const c of lf.centroids) add(c.track);
+    for (const b of lf.bboxes) add(b.track);
+    for (const m of lf.masks) add(m.track);
+    for (const r of lf.rois) add(r.track);
+    for (const li of lf.labelImages) {
+      for (const info of li.objects.values()) add(info.track);
     }
   }
   /** Find an existing LabeledFrame or create a new one. */
@@ -7179,12 +7181,14 @@ async function readSlpLazy(source, options) {
     const masks = readMasks(file, videos, tracks);
     const centroids = readCentroids(file, videos, tracks);
     const labelImages = readLabelImages(file, videos, tracks);
+    const videoIndexMap = /* @__PURE__ */ new Map();
+    for (let i = 0; i < videos.length; i++) videoIndexMap.set(videos[i], i);
     const buildAnnByFrame = (annotations) => {
       const byFrame = /* @__PURE__ */ new Map();
       const undistributed = [];
       for (const ann of annotations) {
         if (ann.video !== null && ann.frameIdx !== null) {
-          const vidIdx = videos.indexOf(ann.video);
+          const vidIdx = videoIndexMap.get(ann.video) ?? -1;
           const key = `${vidIdx}:${ann.frameIdx}`;
           const list = byFrame.get(key);
           if (list) list.push(ann);

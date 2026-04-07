@@ -1047,7 +1047,7 @@
 <span class="nx">CENTROID_SKELETON</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="nx">getCentroidSkeleton</span><span class="p">();</span><span class="w">  </span><span class="c1">// true (singleton)</span>
 </code></pre></div>
 <h3 id="labels-annotation-access"><code>Labels</code> Annotation Access<a class="headerlink" href="#labels-annotation-access" title="Permanent link">&para;</a></h3>
-<div class="highlight"><pre><span></span><code><span class="c1">// Direct access</span>
+<div class="highlight"><pre><span></span><code><span class="c1">// Read-only property getters (flat views across all frames)</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">;</span><span class="w">           </span><span class="c1">// ROI[]</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">masks</span><span class="p">;</span><span class="w">          </span><span class="c1">// SegmentationMask[]</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">bboxes</span><span class="p">;</span><span class="w">         </span><span class="c1">// BoundingBox[]</span>
@@ -1059,6 +1059,13 @@
 <span class="nx">labels</span><span class="p">.</span><span class="nx">staticBboxes</span><span class="p">;</span><span class="w">   </span><span class="c1">// BBoxes without frame index</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">temporalBboxes</span><span class="p">;</span><span class="w"> </span><span class="c1">// BBoxes with frame index</span>
 
+<span class="c1">// Mutation (adds to the appropriate LabeledFrame)</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">addRoi</span><span class="p">(</span><span class="nx">roi</span><span class="p">);</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">addMask</span><span class="p">(</span><span class="nx">mask</span><span class="p">);</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">addBbox</span><span class="p">(</span><span class="nx">bbox</span><span class="p">);</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">addCentroid</span><span class="p">(</span><span class="nx">centroid</span><span class="p">);</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">addLabelImage</span><span class="p">(</span><span class="nx">labelImage</span><span class="p">);</span>
+
 <span class="c1">// Filtered queries (all support `predicted` filter)</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getRois</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="w"> </span><span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;segmentation&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
@@ -1069,6 +1076,9 @@
 <span class="c1">// Add a video (deduplicates automatically)</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">addVideo</span><span class="p">(</span><span class="nx">video</span><span class="p">);</span>
 </code></pre></div>
+<p>Annotations are stored per-frame on <code>LabeledFrame</code>. The <code>Labels</code> property getters return
+flattened views across all frames. When constructing <code>Labels</code> with flat annotation lists,
+they are automatically distributed to matching frames.</p>
 <p>The SLP format version is set automatically based on content:</p>
 <table>
 <thead>

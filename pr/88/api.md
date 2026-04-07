@@ -400,7 +400,7 @@ CENTROID_SKELETON === getCentroidSkeleton();  // true (singleton)
 ### `Labels` Annotation Access
 
 ```ts
-// Direct access
+// Read-only property getters (flat views across all frames)
 labels.rois;           // ROI[]
 labels.masks;          // SegmentationMask[]
 labels.bboxes;         // BoundingBox[]
@@ -412,6 +412,13 @@ labels.temporalRois;   // ROIs with frame index
 labels.staticBboxes;   // BBoxes without frame index
 labels.temporalBboxes; // BBoxes with frame index
 
+// Mutation (adds to the appropriate LabeledFrame)
+labels.addRoi(roi);
+labels.addMask(mask);
+labels.addBbox(bbox);
+labels.addCentroid(centroid);
+labels.addLabelImage(labelImage);
+
 // Filtered queries (all support `predicted` filter)
 labels.getRois({ video, frameIdx: 0, category: "arena", predicted: false });
 labels.getMasks({ video, category: "segmentation", predicted: true });
@@ -422,6 +429,10 @@ labels.getLabelImages({ video, frameIdx: 0, track, category: "cell" });
 // Add a video (deduplicates automatically)
 labels.addVideo(video);
 ```
+
+Annotations are stored per-frame on `LabeledFrame`. The `Labels` property getters return
+flattened views across all frames. When constructing `Labels` with flat annotation lists,
+they are automatically distributed to matching frames.
 
 The SLP format version is set automatically based on content:
 

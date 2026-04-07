@@ -1009,14 +1009,14 @@
 <span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span>
 <span class="p">});</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">roi</span><span class="p">);</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">addRoi</span><span class="p">(</span><span class="nx">roi</span><span class="p">);</span>
 
 <span class="c1">// Create bounding boxes (corner coordinates)</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserBoundingBox</span><span class="p">({</span>
 <span class="w">  </span><span class="nx">x1</span><span class="o">:</span><span class="w"> </span><span class="kt">125</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="o">:</span><span class="w"> </span><span class="kt">200</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="o">:</span><span class="w"> </span><span class="kt">175</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="o">:</span><span class="w"> </span><span class="kt">280</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;animal&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span>
 <span class="p">});</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">bboxes</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">bbox</span><span class="p">);</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">addBbox</span><span class="p">(</span><span class="nx">bbox</span><span class="p">);</span>
 
 <span class="c1">// Query centroids</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">frameCentroids</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getCentroids</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
@@ -1066,7 +1066,9 @@
 <span class="kd">const</span><span class="w"> </span><span class="nx">trackMap</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">normalizeLabelIds</span><span class="p">(</span><span class="nx">labelImages</span><span class="p">);</span>
 
 <span class="c1">// Add to labels</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">labelImages</span><span class="p">.</span><span class="nx">push</span><span class="p">(...</span><span class="nx">labelImages</span><span class="p">);</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">const</span><span class="w"> </span><span class="nx">li</span><span class="w"> </span><span class="k">of</span><span class="w"> </span><span class="nx">labelImages</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">addLabelImage</span><span class="p">(</span><span class="nx">li</span><span class="p">);</span>
+<span class="p">}</span>
 </code></pre></div>
 <h3 id="spatial-transforms">Spatial Transforms<a class="headerlink" href="#spatial-transforms" title="Permanent link">&para;</a></h3>
 <p>When predictions are at a different resolution than the source video:</p>

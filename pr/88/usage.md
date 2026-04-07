@@ -327,14 +327,14 @@ const roi = ROI.fromPolygon([[0,0], [100,0], [100,100], [0,100]], {
   category: "arena",
   video: labels.videos[0],
 });
-labels.rois.push(roi);
+labels.addRoi(roi);
 
 // Create bounding boxes (corner coordinates)
 const bbox = new UserBoundingBox({
   x1: 125, y1: 200, x2: 175, y2: 280,
   category: "animal", video: labels.videos[0], frameIdx: 0,
 });
-labels.bboxes.push(bbox);
+labels.addBbox(bbox);
 
 // Query centroids
 const frameCentroids = labels.getCentroids({ video: labels.videos[0], frameIdx: 0 });
@@ -392,7 +392,9 @@ const labelImages = LabelImage.fromStack({
 const trackMap = normalizeLabelIds(labelImages);
 
 // Add to labels
-labels.labelImages.push(...labelImages);
+for (const li of labelImages) {
+  labels.addLabelImage(li);
+}
 ```
 
 ### Spatial Transforms
