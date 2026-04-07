@@ -149,7 +149,12 @@ export class BoundingBox {
     return this.width * this.height;
   }
 
-  /** Center point. */
+  /** Center point as `[x, y]`. */
+  get centroidXy(): [number, number] {
+    return [this.xCenter, this.yCenter];
+  }
+
+  /** @deprecated Use `centroidXy` instead. */
   get centroid(): { x: number; y: number } {
     return { x: this.xCenter, y: this.yCenter };
   }

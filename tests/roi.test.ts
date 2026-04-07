@@ -124,11 +124,18 @@ describe("ROI", () => {
     expect(b.maxY).toBe(40);
   });
 
-  it("centroid", () => {
+  it("centroid (deprecated)", () => {
     const roi = ROI.fromBbox(0, 0, 10, 10);
     const c = roi.centroid;
     expect(c.x).toBeCloseTo(5);
     expect(c.y).toBeCloseTo(5);
+  });
+
+  it("centroidXy returns [x, y] tuple", () => {
+    const roi = ROI.fromBbox(0, 0, 10, 10);
+    const [cx, cy] = roi.centroidXy;
+    expect(cx).toBeCloseTo(5);
+    expect(cy).toBeCloseTo(5);
   });
 
   it("toMask rasterizes correctly", () => {

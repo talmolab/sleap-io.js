@@ -270,6 +270,16 @@ export class ROI {
     return 0;
   }
 
+  /** Centroid of the geometry as `[x, y]`. */
+  get centroidXy(): [number, number] {
+    if (this.geometry.type === "Point") {
+      return [this.geometry.coordinates[0], this.geometry.coordinates[1]];
+    }
+    const b = this.bounds;
+    return [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2];
+  }
+
+  /** @deprecated Use `centroidXy` instead. */
   get centroid(): { x: number; y: number } {
     if (this.geometry.type === "Point") {
       return { x: this.geometry.coordinates[0], y: this.geometry.coordinates[1] };

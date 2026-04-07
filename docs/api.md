@@ -239,7 +239,7 @@ const pred = new PredictedROI({
 // Properties
 roi.bounds;       // { minX, minY, maxX, maxY }
 roi.area;         // polygon area
-roi.centroid;     // { x, y }
+roi.centroidXy;   // [x, y]
 roi.isBbox;       // true if axis-aligned rectangle
 roi.isPredicted;  // false for UserROI, true for PredictedROI
 
@@ -291,6 +291,9 @@ const fullRes = mask.resampled(480, 640);
 
 // Convert to polygon ROI
 const roi = mask.toPolygon();
+
+// Convert to BoundingBox object (with metadata)
+const bb = mask.toBbox();
 ```
 
 ### `BoundingBox`
@@ -329,7 +332,7 @@ bbox.xywh;       // { x, y, width, height }
 bbox.corners;    // number[][] (4 corner points, respects rotation)
 bbox.bounds;     // { minX, minY, maxX, maxY }
 bbox.area;       // width * height
-bbox.centroid;   // { x, y }
+bbox.centroidXy; // [x, y]
 bbox.isPredicted; // true for PredictedBoundingBox
 bbox.isStatic;   // true if no frameIdx
 bbox.isRotated;  // true if angle != 0
@@ -446,6 +449,7 @@ for (const [track, category, binaryMask] of li.items()) {
 
 // Conversion
 const masks = li.toMasks();                       // SegmentationMask[]
+const bboxes = li.toBboxes();                     // BoundingBox[]
 const fullRes = li.resampled(480, 640);           // new LabelImage at full resolution
 
 // Predicted label image

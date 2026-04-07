@@ -106,6 +106,16 @@ describe("BoundingBox", () => {
     const bb = new UserBoundingBox({ x1: 0, y1: 10, x2: 100, y2: 90, frameIdx: 5 });
     expect(bb.isStatic).toBe(false);
   });
+
+  it("centroidXy returns [x, y] tuple", () => {
+    const bb = new UserBoundingBox({ x1: 0, y1: 10, x2: 100, y2: 90 });
+    expect(bb.centroidXy).toEqual([50, 50]);
+  });
+
+  it("centroidXy on non-square bbox", () => {
+    const bb = new UserBoundingBox({ x1: 10, y1: 20, x2: 50, y2: 30 });
+    expect(bb.centroidXy).toEqual([30, 25]);
+  });
 });
 
 describe("PredictedBoundingBox", () => {

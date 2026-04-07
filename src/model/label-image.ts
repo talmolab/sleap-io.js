@@ -1,6 +1,7 @@
 import type { Video } from "./video.js";
 import type { Instance } from "./instance.js";
 import { Track } from "./instance.js";
+import { type BoundingBox, UserBoundingBox, PredictedBoundingBox } from "./bbox.js";
 import {
   SegmentationMask,
   UserSegmentationMask,
@@ -764,6 +765,89 @@ export class LabelImage {
       }
     }
     return result;
+  }
+
+  /** Extract tight bounding boxes for each object in the label image.
+   *
+   * Returns `UserBoundingBox` or `PredictedBoundingBox` objects depending on
+   * whether this label image is predicted. Each bounding box inherits track,
+   * category, name, instance, and score from the corresponding object entry.
+   *
+   * Bounding boxes are in image coordinates (respecting scale/offset).
+   * Label IDs present in `objects` but with no pixels in the data are skipped.
+   */
+  toBboxes(): BoundingBox[] {
+    const data = this.data;
+    const h = this.height;
+    const w = this.width;
+
+    // Single pass: compute per-label bounds.
+    const labelBounds = new Map<
+      number,
+      { minR: number; maxR: number; minC: number; maxC: number }
+    >();
+
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        const v = data[r * w + c];
+        if (v <= 0) continue;
+
+        const bounds = labelBounds.get(v);
+        if (!bounds) {
+          labelBounds.set(v, { minR: r, maxR: r, minC: c, maxC: c });
+        } else {
+          if (r < bounds.minR) bounds.minR = r;
+          if (r > bounds.maxR) bounds.maxR = r;
+          if (c < bounds.minC) bounds.minC = c;
+          if (c > bounds.maxC) bounds.maxC = c;
+        }
+      }
+    }
+
+    if (labelBounds.size === 0) return [];
+
+    const [sx, sy] = this.scale;
+    const [ox, oy] = this.offset;
+    const isPredicted = this instanceof PredictedLabelImage;
+
+    const bboxes: BoundingBox[] = [];
+    for (const [lid, info] of this.objects) {
+      const bounds = labelBounds.get(lid);
+      if (!bounds) continue;
+
+      const x1 = bounds.minC / sx + ox;
+      const y1 = bounds.minR / sy + oy;
+      const x2 = (bounds.maxC + 1) / sx + ox;
+      const y2 = (bounds.maxR + 1) / sy + oy;
+
+      const opts = {
+        x1,
+        y1,
+        x2,
+        y2,
+        video: this.video,
+        frameIdx: this.frameIdx,
+        track: info.track,
+        instance: info.instance,
+        category: info.category,
+        name: info.name,
+        source: this.source,
+      };
+
+      if (isPredicted) {
+        const pli = this as PredictedLabelImage;
+        bboxes.push(
+          new PredictedBoundingBox({
+            ...opts,
+            score: info.score ?? pli.score,
+          }),
+        );
+      } else {
+        bboxes.push(new UserBoundingBox(opts));
+      }
+    }
+
+    return bboxes;
   }
 }
 
