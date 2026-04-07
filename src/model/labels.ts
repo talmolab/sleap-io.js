@@ -390,6 +390,79 @@ export class Labels {
     return results;
   }
 
+  /**
+   * Replace videos and update all references across the Labels object.
+   *
+   * Provide either `oldVideos`/`newVideos` arrays or a `videoMap`.
+   * If only `newVideos` is provided and its length matches `this.videos`,
+   * the current videos are used as `oldVideos`.
+   */
+  replaceVideos(options: {
+    oldVideos?: Video[];
+    newVideos?: Video[];
+    videoMap?: Map<Video, Video>;
+  }): void {
+    if (this._lazyFrameList) this.materialize();
+
+    let { oldVideos, newVideos, videoMap } = options;
+
+    if (!oldVideos && newVideos && newVideos.length === this.videos.length) {
+      oldVideos = this.videos;
+    }
+
+    if (!videoMap) {
+      if (!oldVideos || !newVideos) {
+        throw new Error("Must provide oldVideos/newVideos or videoMap.");
+      }
+      videoMap = new Map<Video, Video>();
+      for (let i = 0; i < oldVideos.length; i++) {
+        videoMap.set(oldVideos[i], newVideos[i]);
+      }
+    }
+
+    for (const frame of this.labeledFrames) {
+      const mapped = videoMap.get(frame.video);
+      if (mapped) frame.video = mapped;
+    }
+
+    for (const suggestion of this.suggestions) {
+      const mapped = videoMap.get(suggestion.video);
+      if (mapped) suggestion.video = mapped;
+    }
+
+    for (const roi of this.rois) {
+      if (roi.video && videoMap.has(roi.video)) {
+        roi.video = videoMap.get(roi.video)!;
+      }
+    }
+
+    for (const mask of this.masks) {
+      if (mask.video && videoMap.has(mask.video)) {
+        mask.video = videoMap.get(mask.video)!;
+      }
+    }
+
+    for (const bbox of this.bboxes) {
+      if (bbox.video && videoMap.has(bbox.video)) {
+        bbox.video = videoMap.get(bbox.video)!;
+      }
+    }
+
+    for (const centroid of this.centroids) {
+      if (centroid.video && videoMap.has(centroid.video)) {
+        centroid.video = videoMap.get(centroid.video)!;
+      }
+    }
+
+    for (const labelImage of this.labelImages) {
+      if (labelImage.video && videoMap.has(labelImage.video)) {
+        labelImage.video = videoMap.get(labelImage.video)!;
+      }
+    }
+
+    this.videos = this.videos.map((v) => videoMap!.get(v) ?? v);
+  }
+
   static fromNumpy(
     data: number[][][][],
     options: { videos?: Video[]; video?: Video; skeletons?: Skeleton[] | Skeleton; skeleton?: Skeleton; trackNames?: string[]; firstFrame?: number; returnConfidence?: boolean }
