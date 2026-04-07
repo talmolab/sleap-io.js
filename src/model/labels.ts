@@ -1,13 +1,13 @@
 import { LabeledFrame } from "./labeled-frame.js";
 import { Instance, PredictedInstance, Track } from "./instance.js";
-import { Skeleton } from "./skeleton.js";
+import { Skeleton, Node, Edge, Symmetry } from "./skeleton.js";
 import { SuggestionFrame } from "./suggestions.js";
 import { Video } from "./video.js";
 import { RecordingSession } from "./camera.js";
 import { Identity } from "./identity.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
-import type { LazyDataStore, LazyFrameList } from "./lazy.js";
+import { LazyDataStore, LazyFrameList } from "./lazy.js";
 import type { ROI } from "./roi.js";
 import type { SegmentationMask } from "./mask.js";
 import type { BoundingBox } from "./bbox.js";
@@ -461,6 +461,223 @@ export class Labels {
     }
 
     this.videos = this.videos.map((v) => videoMap!.get(v) ?? v);
+  }
+
+  /**
+   * Create a deep copy of this Labels object.
+   *
+   * @param options.openVideos - Controls video backend behavior in the copy:
+   *   - `undefined` (default): Preserve each video's current `openBackend` setting.
+   *   - `true`: Enable auto-opening for all videos.
+   *   - `false`: Disable auto-opening and close any open backends.
+   * @returns A new Labels with deep-copied data. Video backends (file handles)
+   *   are not copied — they will be re-opened on demand if `openBackend` is true.
+   */
+  copy(options?: { openVideos?: boolean }): Labels {
+    // 1. Clone videos (without backends — file handles can't be copied)
+    const videoMap = new Map<Video, Video>();
+    const newVideos = this.videos.map((v) => {
+      const nv = new Video({
+        filename: Array.isArray(v.filename) ? [...v.filename] : v.filename,
+        backendMetadata: { ...v.backendMetadata },
+        openBackend: v.openBackend,
+        embedded: v.hasEmbeddedImages,
+      });
+      nv.shape = v.shape;
+      nv.fps = v.fps;
+      videoMap.set(v, nv);
+      return nv;
+    });
+
+    // 2. Clone skeletons (rebuild from constructors so internal maps are correct)
+    const skeletonMap = new Map<Skeleton, Skeleton>();
+    const newSkeletons = this.skeletons.map((s) => {
+      const nodeMap = new Map<Node, Node>();
+      const newNodes = s.nodes.map((n) => {
+        const nn = new Node(n.name);
+        nodeMap.set(n, nn);
+        return nn;
+      });
+      const newEdges = s.edges.map(
+        (e) => new Edge(nodeMap.get(e.source)!, nodeMap.get(e.destination)!),
+      );
+      const newSymmetries = s.symmetries.map((sym) => {
+        const nodes = [...sym.nodes];
+        return new Symmetry([nodeMap.get(nodes[0])!, nodeMap.get(nodes[1])!]);
+      });
+      const ns = new Skeleton({ nodes: newNodes, edges: newEdges, symmetries: newSymmetries, name: s.name });
+      skeletonMap.set(s, ns);
+      return ns;
+    });
+
+    // 3. Clone tracks
+    const trackMap = new Map<Track, Track>();
+    const newTracks = this.tracks.map((t) => {
+      const nt = new Track(t.name);
+      trackMap.set(t, nt);
+      return nt;
+    });
+
+    // Helper: clone an instance with remapped skeleton/track
+    const cloneInstance = (inst: Instance | PredictedInstance): Instance | PredictedInstance => {
+      const newPoints = inst.points.map((p) => ({
+        ...p,
+        xy: [...p.xy] as [number, number],
+      }));
+      const newSkeleton = skeletonMap.get(inst.skeleton) ?? inst.skeleton;
+      const newTrack = inst.track ? (trackMap.get(inst.track) ?? inst.track) : null;
+      if (inst instanceof PredictedInstance) {
+        return new PredictedInstance({
+          points: newPoints as any,
+          skeleton: newSkeleton,
+          track: newTrack,
+          score: inst.score,
+          trackingScore: inst.trackingScore,
+        });
+      }
+      const ni = new Instance({
+        points: newPoints,
+        skeleton: newSkeleton,
+        track: newTrack,
+        trackingScore: inst.trackingScore,
+      });
+      // fromPredicted can't be fully remapped (would need global instance identity),
+      // so we leave it null on the copy.
+      return ni;
+    };
+
+    // Helper: clone ancillary items by stripping object refs, structuredClone, then remap
+    const cloneAncillary = <T extends object>(items: T[]): T[] =>
+      items.map((item) => {
+        const saved: [string, any][] = [];
+        for (const key of ["video", "track", "instance"] as const) {
+          if (key in item && (item as any)[key] != null) {
+            saved.push([key, (item as any)[key]]);
+            (item as any)[key] = null;
+          }
+        }
+        // For LabelImage: also strip track/instance refs inside objects Map
+        let objectRefs: Map<number, [any, any]> | null = null;
+        if ("objects" in item && (item as any).objects instanceof Map) {
+          objectRefs = new Map();
+          for (const [id, info] of (item as any).objects as Map<number, any>) {
+            if (info.track || info.instance) {
+              objectRefs.set(id, [info.track, info.instance]);
+              info.track = null;
+              info.instance = null;
+            }
+          }
+        }
+
+        const clone = structuredClone(item);
+        Object.setPrototypeOf(clone, Object.getPrototypeOf(item));
+
+        // Restore original
+        for (const [key, val] of saved) (item as any)[key] = val;
+        if (objectRefs) {
+          for (const [id, [track, inst]] of objectRefs) {
+            const info = (item as any).objects.get(id);
+            if (info) { info.track = track; info.instance = inst; }
+          }
+        }
+
+        // Remap refs on clone
+        for (const [key, val] of saved) {
+          if (key === "video") (clone as any).video = videoMap.get(val) ?? val;
+          else if (key === "track") (clone as any).track = trackMap.get(val) ?? val;
+          else if (key === "instance") (clone as any).instance = null;
+        }
+        if (objectRefs) {
+          for (const [id, [track]] of objectRefs) {
+            const info = (clone as any).objects.get(id);
+            if (info) {
+              info.track = track ? (trackMap.get(track) ?? track) : null;
+              info.instance = null;
+            }
+          }
+        }
+        return clone;
+      });
+
+    let labelsCopy: Labels;
+
+    if (this.isLazy) {
+      // Lazy-aware copy: deep copy the store with independent arrays
+      const newStore = this._lazyDataStore!.copy();
+      newStore.videos = newVideos;
+      newStore.skeletons = newSkeletons;
+      newStore.tracks = newTracks;
+
+      labelsCopy = new Labels({
+        videos: newVideos,
+        skeletons: newSkeletons,
+        tracks: newTracks,
+        suggestions: this.suggestions.map((s) => {
+          const newVideo = videoMap.get(s.video) ?? s.video;
+          return new SuggestionFrame({
+            video: newVideo,
+            frameIdx: s.frameIdx,
+            group: s.group,
+            metadata: { ...s.metadata },
+          });
+        }),
+        sessions: structuredClone(this.sessions),
+        provenance: { ...this.provenance },
+        rois: cloneAncillary(this.rois),
+        masks: cloneAncillary(this.masks),
+        bboxes: cloneAncillary(this.bboxes),
+        centroids: cloneAncillary(this.centroids),
+        labelImages: cloneAncillary(this.labelImages),
+        identities: structuredClone(this.identities),
+      });
+
+      labelsCopy._lazyDataStore = newStore;
+      labelsCopy._lazyFrameList = new LazyFrameList(newStore);
+    } else {
+      // Eager deep copy: rebuild from constructors
+      const newFrames = this.labeledFrames.map((f) => {
+        const newInstances = f.instances.map(cloneInstance);
+        return new LabeledFrame({
+          video: videoMap.get(f.video) ?? f.video,
+          frameIdx: f.frameIdx,
+          instances: newInstances,
+          isNegative: f.isNegative,
+        });
+      });
+
+      labelsCopy = new Labels({
+        labeledFrames: newFrames,
+        videos: newVideos,
+        skeletons: newSkeletons,
+        tracks: newTracks,
+        suggestions: this.suggestions.map((s) => {
+          const newVideo = videoMap.get(s.video) ?? s.video;
+          return new SuggestionFrame({
+            video: newVideo,
+            frameIdx: s.frameIdx,
+            group: s.group,
+            metadata: { ...s.metadata },
+          });
+        }),
+        sessions: structuredClone(this.sessions),
+        provenance: { ...this.provenance },
+        rois: cloneAncillary(this.rois),
+        masks: cloneAncillary(this.masks),
+        bboxes: cloneAncillary(this.bboxes),
+        centroids: cloneAncillary(this.centroids),
+        labelImages: cloneAncillary(this.labelImages),
+        identities: structuredClone(this.identities),
+      });
+    }
+
+    if (options?.openVideos !== undefined) {
+      for (const video of labelsCopy.videos) {
+        video.openBackend = options.openVideos;
+        if (!options.openVideos) video.close();
+      }
+    }
+
+    return labelsCopy;
   }
 
   static fromNumpy(
