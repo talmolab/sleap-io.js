@@ -37,8 +37,11 @@ export interface TrackMateOptions {
  */
 export function isTrackMateFile(filePath: string): boolean {
   try {
-    const content = fs.readFileSync(filePath, "utf-8");
-    const firstLine = content.split("\n")[0]?.trim() ?? "";
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(1024);
+    const bytesRead = fs.readSync(fd, buf, 0, 1024, 0);
+    fs.closeSync(fd);
+    const firstLine = buf.toString("utf-8", 0, bytesRead).split("\n")[0]?.trim() ?? "";
     const cols = firstLine.split(",");
     return SPOTS_SIGNATURE.every((sig, i) => cols[i] === sig);
   } catch {

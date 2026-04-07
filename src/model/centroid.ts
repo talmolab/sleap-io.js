@@ -210,7 +210,7 @@ export class Centroid {
       x,
       y,
       track: instance.track ?? null,
-      trackingScore: instance.trackingScore || null,
+      trackingScore: instance.trackingScore ?? null,
       instance,
       source: method === "anchor" ? `anchor:${options?.node}` : method,
       ...extraOptions,
