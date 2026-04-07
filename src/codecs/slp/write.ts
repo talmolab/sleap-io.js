@@ -127,7 +127,16 @@ export async function saveSlpToBytes(
       labeledFrames: labels.labeledFrames.map((frame) => {
         const videoIdx = labels.videos.indexOf(frame.video);
         const restoredVideo = videoIdx >= 0 ? restoredVideos[videoIdx] : frame.video;
-        return new LabeledFrame({ video: restoredVideo, frameIdx: frame.frameIdx, instances: frame.instances });
+        return new LabeledFrame({
+          video: restoredVideo,
+          frameIdx: frame.frameIdx,
+          instances: frame.instances,
+          centroids: frame.centroids,
+          bboxes: frame.bboxes,
+          masks: frame.masks,
+          labelImages: frame.labelImages,
+          rois: frame.rois,
+        });
       }),
       videos: restoredVideos,
       skeletons: labels.skeletons,

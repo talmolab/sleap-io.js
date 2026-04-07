@@ -57,9 +57,12 @@ describe("SLP ROI/Mask I/O", () => {
 
     expect(loaded.rois.length).toBe(2);
 
+    // Find ROIs by name (ordering may differ after distribution)
+    const loadedBbox = loaded.rois.find((r) => r.name === "roi1")!;
+    const loadedPoly = loaded.rois.find((r) => r.name === "roi2")!;
+
     // Check bbox ROI
-    const loadedBbox = loaded.rois[0];
-    expect(loadedBbox.name).toBe("roi1");
+    expect(loadedBbox).toBeDefined();
     expect(loadedBbox.category).toBe("arena");
     expect(loadedBbox.source).toBe("manual");
     expect(loadedBbox.frameIdx).toBe(5);
@@ -75,8 +78,7 @@ describe("SLP ROI/Mask I/O", () => {
     expect(bboxBounds.maxY).toBeCloseTo(220);
 
     // Check polygon ROI
-    const loadedPoly = loaded.rois[1];
-    expect(loadedPoly.name).toBe("roi2");
+    expect(loadedPoly).toBeDefined();
     expect(loadedPoly.category).toBe("region");
     expect(loadedPoly.source).toBe("auto");
     expect(loadedPoly.frameIdx).toBeNull(); // static ROI

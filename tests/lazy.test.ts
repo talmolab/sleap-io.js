@@ -185,8 +185,11 @@ describe("LazyDataStore", () => {
 describe("LazyFrameList", () => {
   it("at() returns undefined for out-of-bounds", async () => {
     const lazy = await loadFixtureLazy("typical.slp");
-    expect(lazy._lazyFrameList!.at(-1)).toBeUndefined();
+    // Negative indexing now works (returns last frame)
+    expect(lazy._lazyFrameList!.at(-1)).toBeDefined();
     expect(lazy._lazyFrameList!.at(999999)).toBeUndefined();
+    // Truly out-of-bounds negative index
+    expect(lazy._lazyFrameList!.at(-999999)).toBeUndefined();
   });
 
   it("toArray() returns all frames as regular array", async () => {

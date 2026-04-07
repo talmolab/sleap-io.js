@@ -172,6 +172,85 @@ export async function readSlpLazy(
     const centroids = readCentroids(file, videos, tracks);
     const labelImages = readLabelImages(file, videos, tracks);
 
+    // Build per-frame annotation dicts for lazy materialization
+    const buildAnnByFrame = <T extends { video: any; frameIdx: number | null }>(
+      annotations: T[],
+    ): { byFrame: Map<string, T[]>; undistributed: T[] } => {
+      const byFrame = new Map<string, T[]>();
+      const undistributed: T[] = [];
+      for (const ann of annotations) {
+        if (ann.video !== null && ann.frameIdx !== null) {
+          const vidIdx = videos.indexOf(ann.video);
+          const key = `${vidIdx}:${ann.frameIdx}`;
+          const list = byFrame.get(key);
+          if (list) list.push(ann);
+          else byFrame.set(key, [ann]);
+        } else {
+          undistributed.push(ann);
+        }
+      }
+      return { byFrame, undistributed };
+    };
+
+    const cResult = buildAnnByFrame(centroids);
+    const bResult = buildAnnByFrame(bboxes);
+    const mResult = buildAnnByFrame(masks);
+    const rResult = buildAnnByFrame(rois);
+    const liResult = buildAnnByFrame(labelImages);
+
+    store._centroidByFrame = cResult.byFrame;
+    store._bboxByFrame = bResult.byFrame;
+    store._maskByFrame = mResult.byFrame;
+    store._roiByFrame = rResult.byFrame;
+    store._labelImageByFrame = liResult.byFrame;
+
+    store._undistributedCentroids = cResult.undistributed;
+    store._undistributedBboxes = bResult.undistributed;
+    store._undistributedMasks = mResult.undistributed;
+    store._undistributedRois = rResult.undistributed;
+    store._undistributedLabelImages = liResult.undistributed;
+
+    // Check for annotation-only frames not in /frames (e.g., TrackMate SLPs)
+    const frameKeys = new Set<string>();
+    const frameVideoIds = framesData.video ?? [];
+    const frameFrameIdxs = framesData.frame_idx ?? [];
+    for (let i = 0; i < (framesData.frame_id ?? []).length; i++) {
+      frameKeys.add(`${Number(frameVideoIds[i])}:${Number(frameFrameIdxs[i])}`);
+    }
+
+    const allAnnKeys = new Set<string>();
+    for (const dict of [
+      store._centroidByFrame,
+      store._bboxByFrame,
+      store._maskByFrame,
+      store._labelImageByFrame,
+      store._roiByFrame,
+    ]) {
+      for (const key of dict.keys()) allAnnKeys.add(key);
+    }
+
+    // Create non-lazy frames for annotations without matching /frames entries
+    for (const key of [...allAnnKeys].sort()) {
+      if (frameKeys.has(key)) continue;
+      const [vidIdxStr, fidxStr] = key.split(":");
+      const vidIdx = Number(vidIdxStr);
+      const fidx = Number(fidxStr);
+      if (vidIdx >= 0 && vidIdx < videos.length) {
+        lazyFrames._supplementary.push(
+          new LabeledFrame({
+            video: videos[vidIdx],
+            frameIdx: fidx,
+            centroids: store._centroidByFrame.get(key) ?? [],
+            bboxes: store._bboxByFrame.get(key) ?? [],
+            masks: store._maskByFrame.get(key) ?? [],
+            labelImages: store._labelImageByFrame.get(key) ?? [],
+            rois: store._roiByFrame.get(key) ?? [],
+          }),
+        );
+      }
+    }
+
+    // Don't pass annotations to Labels — they live on the store
     const labels = new Labels({
       videos,
       skeletons,
@@ -180,11 +259,6 @@ export async function readSlpLazy(
       sessions,
       identities,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
-      rois,
-      masks,
-      bboxes,
-      centroids,
-      labelImages,
     });
 
     // Replace the eager labeledFrames with lazy proxy

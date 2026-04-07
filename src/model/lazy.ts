@@ -2,6 +2,11 @@ import { LabeledFrame } from "./labeled-frame.js";
 import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "./instance.js";
 import { Skeleton } from "./skeleton.js";
 import { Video } from "./video.js";
+import type { Centroid } from "./centroid.js";
+import type { BoundingBox } from "./bbox.js";
+import type { SegmentationMask } from "./mask.js";
+import type { LabelImage } from "./label-image.js";
+import type { ROI } from "./roi.js";
 
 /**
  * Raw data store holding HDF5 dataset arrays for lazy materialization.
@@ -18,6 +23,20 @@ export class LazyDataStore {
   videos: Video[];
   formatId: number;
   negativeFrames: Set<string>;
+
+  // Per-frame annotation lookups: "videoIdx:frameIdx" -> annotation[]
+  _centroidByFrame: Map<string, Centroid[]> = new Map();
+  _bboxByFrame: Map<string, BoundingBox[]> = new Map();
+  _maskByFrame: Map<string, SegmentationMask[]> = new Map();
+  _labelImageByFrame: Map<string, LabelImage[]> = new Map();
+  _roiByFrame: Map<string, ROI[]> = new Map();
+
+  // Undistributed annotations (video=null or frameIdx=null, e.g. static ROIs)
+  _undistributedCentroids: Centroid[] = [];
+  _undistributedBboxes: BoundingBox[] = [];
+  _undistributedMasks: SegmentationMask[] = [];
+  _undistributedLabelImages: LabelImage[] = [];
+  _undistributedRois: ROI[] = [];
 
   constructor(options: {
     framesData: Record<string, any[]>;
@@ -55,7 +74,15 @@ export class LazyDataStore {
       return out;
     };
 
-    return new LazyDataStore({
+    const copyAnnMap = <T>(map: Map<string, T[]>): Map<string, T[]> => {
+      const out = new Map<string, T[]>();
+      for (const [key, list] of map) {
+        out.set(key, [...list]);
+      }
+      return out;
+    };
+
+    const newStore = new LazyDataStore({
       framesData: copyRecord(this.framesData),
       instancesData: copyRecord(this.instancesData),
       pointsData: copyRecord(this.pointsData),
@@ -66,6 +93,22 @@ export class LazyDataStore {
       formatId: this.formatId,
       negativeFrames: new Set(this.negativeFrames),
     });
+
+    // Copy per-frame annotation dicts
+    newStore._centroidByFrame = copyAnnMap(this._centroidByFrame);
+    newStore._bboxByFrame = copyAnnMap(this._bboxByFrame);
+    newStore._maskByFrame = copyAnnMap(this._maskByFrame);
+    newStore._labelImageByFrame = copyAnnMap(this._labelImageByFrame);
+    newStore._roiByFrame = copyAnnMap(this._roiByFrame);
+
+    // Copy undistributed annotations
+    newStore._undistributedCentroids = [...this._undistributedCentroids];
+    newStore._undistributedBboxes = [...this._undistributedBboxes];
+    newStore._undistributedMasks = [...this._undistributedMasks];
+    newStore._undistributedLabelImages = [...this._undistributedLabelImages];
+    newStore._undistributedRois = [...this._undistributedRois];
+
+    return newStore;
   }
 
   /** Total number of frames in the store. */
@@ -140,8 +183,25 @@ export class LazyDataStore {
       }
     }
 
-    const frame = new LabeledFrame({ video, frameIdx: frameIndex, instances });
-    const negKey = `${videoIndex}:${frameIndex}`;
+    // Attach per-frame annotations from eagerly-loaded dicts
+    const annKey = `${videoIndex}:${frameIndex}`;
+    const centroids = this._centroidByFrame.get(annKey) ?? [];
+    const bboxes = this._bboxByFrame.get(annKey) ?? [];
+    const masks = this._maskByFrame.get(annKey) ?? [];
+    const labelImages = this._labelImageByFrame.get(annKey) ?? [];
+    const rois = this._roiByFrame.get(annKey) ?? [];
+
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: frameIndex,
+      instances,
+      centroids,
+      bboxes,
+      masks,
+      labelImages,
+      rois,
+    });
+    const negKey = annKey;
     if (this.negativeFrames.has(negKey)) {
       frame.isNegative = true;
     }
@@ -308,6 +368,7 @@ export class LazyDataStore {
 export class LazyFrameList {
   private store: LazyDataStore;
   private cache: Map<number, LabeledFrame>;
+  _supplementary: LabeledFrame[] = [];
 
   constructor(store: LazyDataStore) {
     this.store = store;
@@ -315,12 +376,23 @@ export class LazyFrameList {
   }
 
   get length(): number {
-    return this.store.frameCount;
+    return this.store.frameCount + this._supplementary.length;
   }
 
   /** Get a frame by index, materializing it if needed. */
   at(index: number): LabeledFrame | undefined {
-    if (index < 0 || index >= this.length) return undefined;
+    const n = this.length;
+    const nStore = this.store.frameCount;
+
+    // Handle negative indexing
+    if (index < 0) index += n;
+    if (index < 0 || index >= n) return undefined;
+
+    // Supplementary frames
+    if (index >= nStore) {
+      return this._supplementary[index - nStore];
+    }
+
     if (this.cache.has(index)) return this.cache.get(index)!;
     const frame = this.store.materializeFrame(index);
     if (frame) {

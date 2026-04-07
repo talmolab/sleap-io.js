@@ -1,17 +1,42 @@
 import { Instance, PredictedInstance } from "./instance.js";
 import { Video } from "./video.js";
+import type { Centroid } from "./centroid.js";
+import type { BoundingBox } from "./bbox.js";
+import type { SegmentationMask } from "./mask.js";
+import type { LabelImage } from "./label-image.js";
+import type { ROI } from "./roi.js";
 
 export class LabeledFrame {
   video: Video;
   frameIdx: number;
   instances: Array<Instance | PredictedInstance>;
   isNegative: boolean;
+  centroids: Centroid[];
+  bboxes: BoundingBox[];
+  masks: SegmentationMask[];
+  labelImages: LabelImage[];
+  rois: ROI[];
 
-  constructor(options: { video: Video; frameIdx: number; instances?: Array<Instance | PredictedInstance>; isNegative?: boolean }) {
+  constructor(options: {
+    video: Video;
+    frameIdx: number;
+    instances?: Array<Instance | PredictedInstance>;
+    isNegative?: boolean;
+    centroids?: Centroid[];
+    bboxes?: BoundingBox[];
+    masks?: SegmentationMask[];
+    labelImages?: LabelImage[];
+    rois?: ROI[];
+  }) {
     this.video = options.video;
     this.frameIdx = options.frameIdx;
     this.instances = options.instances ?? [];
     this.isNegative = options.isNegative ?? false;
+    this.centroids = options.centroids ?? [];
+    this.bboxes = options.bboxes ?? [];
+    this.masks = options.masks ?? [];
+    this.labelImages = options.labelImages ?? [];
+    this.rois = options.rois ?? [];
   }
 
   get length(): number {
@@ -69,6 +94,23 @@ export class LabeledFrame {
 
   removePredictions(): void {
     this.instances = this.instances.filter((inst) => inst instanceof Instance);
+    this.centroids = this.centroids.filter((c) => !c.isPredicted);
+    this.bboxes = this.bboxes.filter((b) => !b.isPredicted);
+    this.masks = this.masks.filter((m) => !m.isPredicted);
+    this.labelImages = this.labelImages.filter((li) => !li.isPredicted);
+    this.rois = this.rois.filter((r) => !r.isPredicted);
+  }
+
+  /** Merge annotation lists from another frame, deduplicating by identity. */
+  _mergeAnnotations(other: LabeledFrame): void {
+    for (const attr of ["centroids", "bboxes", "masks", "labelImages", "rois"] as const) {
+      const existing = new Set((this[attr] as unknown[]).map((x) => x));
+      for (const item of other[attr] as unknown[]) {
+        if (!existing.has(item)) {
+          (this[attr] as unknown[]).push(item);
+        }
+      }
+    }
   }
 
   removeEmptyInstances(): void {

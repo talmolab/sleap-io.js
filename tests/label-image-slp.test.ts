@@ -160,13 +160,16 @@ describe("LabelImage SLP I/O", () => {
     expect(loadedWithLI.labelImages[0].data[0]).toBe(1);
 
     // Labels with bboxes but no labelImages (format 2.0) should also round-trip
+    // Use a fresh frame to avoid shared mutation from the previous Labels
+    const inst2 = new Instance({ points: { a: [1, 2] }, skeleton });
+    const frame2 = new LabeledFrame({ video, frameIdx: 0, instances: [inst2] });
     const bb = new UserBoundingBox({
       x1: 0, y1: 10, x2: 100, y2: 90,
       video, frameIdx: 0,
     });
 
     const labelsWithBbox = new Labels({
-      labeledFrames: [frame],
+      labeledFrames: [frame2],
       videos: [video],
       skeletons: [skeleton],
       bboxes: [bb],
