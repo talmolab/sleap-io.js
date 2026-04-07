@@ -87,7 +87,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-73ZECCEX.js";
+} from "./chunk-T5BZCRS2.js";
 import {
   Edge,
   Instance,
@@ -105,7 +105,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-TLSPHN6I.js";
+} from "./chunk-RVNDZMON.js";
 
 // src/codecs/slp/h5-node.ts
 var modulePromise = null;
@@ -155,8 +155,11 @@ var HEADER_ROWS = 4;
 var SPOTS_SIGNATURE = ["LABEL", "ID", "TRACK_ID", "QUALITY", "POSITION_X", "POSITION_Y"];
 function isTrackMateFile(filePath) {
   try {
-    const content = fs.readFileSync(filePath, "utf-8");
-    const firstLine = content.split("\n")[0]?.trim() ?? "";
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(1024);
+    const bytesRead = fs.readSync(fd, buf, 0, 1024, 0);
+    fs.closeSync(fd);
+    const firstLine = buf.toString("utf-8", 0, bytesRead).split("\n")[0]?.trim() ?? "";
     const cols = firstLine.split(",");
     return SPOTS_SIGNATURE.every((sig, i) => cols[i] === sig);
   } catch {

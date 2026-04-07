@@ -143,13 +143,6 @@ var Instance = class _Instance {
    * @param node - Node specification for "anchor" method.
    * @returns UserCentroid or PredictedCentroid depending on instance type.
    */
-  /**
-   * Create a Centroid from this instance.
-   *
-   * @param method - "centerOfMass" (default), "bboxCenter", or "anchor".
-   * @param node - Node specification for "anchor" method.
-   * @returns UserCentroid or PredictedCentroid depending on instance type.
-   */
   toCentroid(method, node) {
     if (!_centroidFactory) {
       throw new Error(

@@ -19,7 +19,7 @@ import {
   reconstructInstance3D,
   resolveCameraKey,
   resolveIdentity
-} from "./chunk-TLSPHN6I.js";
+} from "./chunk-RVNDZMON.js";
 
 // src/model/labeled-frame.ts
 var LabeledFrame = class {
@@ -2736,7 +2736,7 @@ var Centroid = class _Centroid {
       x,
       y,
       track: instance.track ?? null,
-      trackingScore: instance.trackingScore || null,
+      trackingScore: instance.trackingScore ?? null,
       instance,
       source: method === "anchor" ? `anchor:${options?.node}` : method,
       ...extraOptions

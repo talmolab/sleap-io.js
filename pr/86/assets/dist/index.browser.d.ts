@@ -1,5 +1,5 @@
-import { I as Instance, P as PredictedInstance, k as Skeleton, T as Track } from './instance-CncrKCU9.js';
-export { E as Edge, N as Node, j as NodeOrIndex, a as Point, c as PointsArray, b as PredictedPoint, d as PredictedPointsArray, S as Symmetry, _ as _registerCentroidFactory, p as pointsEmpty, f as pointsFromArray, h as pointsFromDict, e as predictedPointsEmpty, g as predictedPointsFromArray, i as predictedPointsFromDict } from './instance-CncrKCU9.js';
+import { I as Instance, P as PredictedInstance, k as Skeleton, T as Track } from './instance-CrKeNF4a.js';
+export { E as Edge, N as Node, j as NodeOrIndex, a as Point, c as PointsArray, b as PredictedPoint, d as PredictedPointsArray, S as Symmetry, _ as _registerCentroidFactory, p as pointsEmpty, f as pointsFromArray, h as pointsFromDict, e as predictedPointsEmpty, g as predictedPointsFromArray, i as predictedPointsFromDict } from './instance-CrKeNF4a.js';
 
 type VideoFrame = ImageData | ImageBitmap | Uint8Array | ArrayBuffer;
 interface VideoBackend {

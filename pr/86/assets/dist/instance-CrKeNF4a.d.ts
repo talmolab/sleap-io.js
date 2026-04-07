@@ -105,13 +105,6 @@ declare class Instance {
      * @param node - Node specification for "anchor" method.
      * @returns UserCentroid or PredictedCentroid depending on instance type.
      */
-    /**
-     * Create a Centroid from this instance.
-     *
-     * @param method - "centerOfMass" (default), "bboxCenter", or "anchor".
-     * @param node - Node specification for "anchor" method.
-     * @returns UserCentroid or PredictedCentroid depending on instance type.
-     */
     toCentroid(method?: string, node?: string | number): any;
     get isEmpty(): boolean;
     overlapsWith(other: Instance, iouThreshold?: number): boolean;
