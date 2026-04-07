@@ -135,6 +135,34 @@ describe("Lazy Loading", () => {
   });
 });
 
+describe("LazyDataStore.copy", () => {
+  it("creates an independent copy with shared videos/skeletons/tracks by default", async () => {
+    const lazy = await loadFixtureLazy("typical.slp");
+    const store = lazy._lazyDataStore!;
+    const copy = store.copy();
+
+    // Column arrays are independent copies
+    expect(copy.framesData.frame_id).toEqual(store.framesData.frame_id);
+    copy.framesData.frame_id![0] = 999999;
+    expect(store.framesData.frame_id![0]).not.toBe(999999);
+
+    // Negative frames are independent
+    copy.negativeFrames.add("99:99");
+    expect(store.negativeFrames.has("99:99")).toBe(false);
+
+    // References are shared by default (caller replaces them)
+    expect(copy.videos).toBe(store.videos);
+    expect(copy.skeletons).toBe(store.skeletons);
+    expect(copy.tracks).toBe(store.tracks);
+
+    // Format ID preserved
+    expect(copy.formatId).toBe(store.formatId);
+
+    // Frame count matches
+    expect(copy.frameCount).toBe(store.frameCount);
+  });
+});
+
 describe("LazyDataStore", () => {
   it("frameCount matches actual frame count", async () => {
     const lazy = await loadFixtureLazy("typical.slp");
