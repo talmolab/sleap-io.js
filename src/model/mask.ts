@@ -88,6 +88,7 @@ export interface SegmentationMaskOptions {
   video?: Video | null;
   frameIdx?: number | null;
   track?: Track | null;
+  trackingScore?: number | null;
   instance?: Instance | null;
   scale?: [number, number];
   offset?: [number, number];
@@ -103,6 +104,7 @@ export class SegmentationMask {
   video: Video | null;
   frameIdx: number | null;
   track: Track | null;
+  trackingScore: number | null = null;
   instance: Instance | null;
   /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
   scale: [number, number];
@@ -130,6 +132,7 @@ export class SegmentationMask {
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
     this.instance = options.instance ?? null;
     this.scale = scale;
     this.offset = options.offset ?? [0, 0];

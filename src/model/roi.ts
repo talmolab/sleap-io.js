@@ -40,6 +40,7 @@ export interface ROIOptions {
   video?: Video | null;
   frameIdx?: number | null;
   track?: Track | null;
+  trackingScore?: number | null;
   instance?: Instance | null;
 }
 
@@ -51,6 +52,7 @@ export class ROI {
   video: Video | null;
   frameIdx: number | null;
   track: Track | null;
+  trackingScore: number | null = null;
   instance: Instance | null;
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx: number | null = null;
@@ -68,6 +70,7 @@ export class ROI {
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
     this.instance = options.instance ?? null;
   }
 
@@ -168,6 +171,7 @@ export class ROI {
       video: this.video,
       frameIdx: this.frameIdx,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance,
     };
     if (this.isPredicted && "score" in this) {

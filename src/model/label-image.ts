@@ -17,6 +17,7 @@ export interface LabelImageObjectInfo {
   name: string;
   instance: Instance | null;
   score?: number | null;
+  trackingScore?: number | null;
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx?: number;
 }

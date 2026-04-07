@@ -17,6 +17,7 @@ export * from "./model/lazy.js";
 export * from "./model/roi.js";
 export * from "./model/mask.js";
 export * from "./model/bbox.js";
+export * from "./model/centroid.js";
 export * from "./model/label-image.js";
 export * from "./video/backend.js";
 export * from "./video/mp4box-video.js";
