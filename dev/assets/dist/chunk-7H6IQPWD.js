@@ -82,6 +82,20 @@ var LabeledFrame = class {
   }
 };
 
+// src/model/suggestions.ts
+var SuggestionFrame = class {
+  video;
+  frameIdx;
+  group;
+  metadata;
+  constructor(options) {
+    this.video = options.video;
+    this.frameIdx = options.frameIdx;
+    this.group = options.group ?? (options.metadata?.group != null ? String(options.metadata.group) : "default");
+    this.metadata = options.metadata ?? {};
+  }
+};
+
 // src/model/video.ts
 var Video = class {
   filename;
@@ -142,20 +156,6 @@ var Video = class {
     const basenameA = this.filename.split(/[/\\]/).pop();
     const basenameB = other.filename.split(/[/\\]/).pop();
     return basenameA === basenameB;
-  }
-};
-
-// src/model/suggestions.ts
-var SuggestionFrame = class {
-  video;
-  frameIdx;
-  group;
-  metadata;
-  constructor(options) {
-    this.video = options.video;
-    this.frameIdx = options.frameIdx;
-    this.group = options.group ?? (options.metadata?.group != null ? String(options.metadata.group) : "default");
-    this.metadata = options.metadata ?? {};
   }
 };
 
@@ -443,8 +443,301 @@ function resolveSkeleton(options) {
   throw new Error("fromNumpy requires a skeleton.");
 }
 
+// src/model/lazy.ts
+var LazyDataStore = class _LazyDataStore {
+  framesData;
+  instancesData;
+  pointsData;
+  predPointsData;
+  skeletons;
+  tracks;
+  videos;
+  formatId;
+  negativeFrames;
+  constructor(options) {
+    this.framesData = options.framesData;
+    this.instancesData = options.instancesData;
+    this.pointsData = options.pointsData;
+    this.predPointsData = options.predPointsData;
+    this.skeletons = options.skeletons;
+    this.tracks = options.tracks;
+    this.videos = options.videos;
+    this.formatId = options.formatId;
+    this.negativeFrames = options.negativeFrames ?? /* @__PURE__ */ new Set();
+  }
+  /**
+   * Create an independent copy of this store's raw column data.
+   * Videos, skeletons, and tracks arrays are shared (not cloned) —
+   * the caller is expected to replace them with new references.
+   */
+  copy() {
+    const copyRecord = (rec) => {
+      const out = {};
+      for (const key of Object.keys(rec)) {
+        out[key] = rec[key].slice();
+      }
+      return out;
+    };
+    return new _LazyDataStore({
+      framesData: copyRecord(this.framesData),
+      instancesData: copyRecord(this.instancesData),
+      pointsData: copyRecord(this.pointsData),
+      predPointsData: copyRecord(this.predPointsData),
+      skeletons: this.skeletons,
+      tracks: this.tracks,
+      videos: this.videos,
+      formatId: this.formatId,
+      negativeFrames: new Set(this.negativeFrames)
+    });
+  }
+  /** Total number of frames in the store. */
+  get frameCount() {
+    return (this.framesData.frame_id ?? []).length;
+  }
+  /**
+   * Materialize a single LabeledFrame by index.
+   */
+  materializeFrame(frameIdx) {
+    const frameIds = this.framesData.frame_id ?? [];
+    if (frameIdx < 0 || frameIdx >= frameIds.length) return null;
+    const rawVideoId = Number(this.framesData.video?.[frameIdx] ?? 0);
+    const videoIndex = rawVideoId;
+    const frameIndex = Number(this.framesData.frame_idx?.[frameIdx] ?? 0);
+    const instStart = Number(this.framesData.instance_id_start?.[frameIdx] ?? 0);
+    const instEnd = Number(this.framesData.instance_id_end?.[frameIdx] ?? 0);
+    const video = this.videos[videoIndex];
+    if (!video) return null;
+    const instances = [];
+    const instanceById = /* @__PURE__ */ new Map();
+    const fromPredictedPairs = [];
+    for (let instIdx = instStart; instIdx < instEnd; instIdx++) {
+      const instanceType = Number(this.instancesData.instance_type?.[instIdx] ?? 0);
+      const skeletonId = Number(this.instancesData.skeleton?.[instIdx] ?? 0);
+      const trackId = Number(this.instancesData.track?.[instIdx] ?? -1);
+      const pointStart = Number(this.instancesData.point_id_start?.[instIdx] ?? 0);
+      const pointEnd = Number(this.instancesData.point_id_end?.[instIdx] ?? 0);
+      const score = Number(this.instancesData.score?.[instIdx] ?? 0);
+      const rawTrackingScore = this.formatId < 1.2 ? 0 : Number(this.instancesData.tracking_score?.[instIdx] ?? 0);
+      const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
+      const fromPredicted = Number(this.instancesData.from_predicted?.[instIdx] ?? -1);
+      const skeleton = this.skeletons[skeletonId] ?? this.skeletons[0];
+      const track = trackId >= 0 ? this.tracks[trackId] : null;
+      let instance;
+      if (instanceType === 0) {
+        const points = this.slicePoints(this.pointsData, pointStart, pointEnd);
+        instance = new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton, track, trackingScore });
+        if (this.formatId < 1.1) {
+          instance.points.forEach((point) => {
+            point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
+          });
+        }
+        if (fromPredicted >= 0) {
+          fromPredictedPairs.push([instIdx, fromPredicted]);
+        }
+      } else {
+        const points = this.slicePoints(this.predPointsData, pointStart, pointEnd, true);
+        instance = new PredictedInstance({ points: predictedPointsFromArray(points, skeleton.nodeNames), skeleton, track, score, trackingScore });
+        if (this.formatId < 1.1) {
+          instance.points.forEach((point) => {
+            point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
+          });
+        }
+      }
+      instanceById.set(instIdx, instance);
+      instances.push(instance);
+    }
+    for (const [instanceId, fromPredictedId] of fromPredictedPairs) {
+      const instance = instanceById.get(instanceId);
+      const predicted = instanceById.get(fromPredictedId);
+      if (instance && predicted instanceof PredictedInstance && instance instanceof Instance) {
+        instance.fromPredicted = predicted;
+      }
+    }
+    const frame = new LabeledFrame({ video, frameIdx: frameIndex, instances });
+    const negKey = `${videoIndex}:${frameIndex}`;
+    if (this.negativeFrames.has(negKey)) {
+      frame.isNegative = true;
+    }
+    return frame;
+  }
+  /**
+   * Build a 4D numpy-like array directly from raw column data without
+   * materializing any LabeledFrame or Instance objects.
+   *
+   * Returns [frames, tracks/instances, nodes, coords] where coords is
+   * [x, y] or [x, y, score] when returnConfidence is true.
+   */
+  toNumpy(options) {
+    const targetVideo = options?.video ?? this.videos[0];
+    if (!targetVideo) return [];
+    const targetVideoIdx = this.videos.indexOf(targetVideo);
+    if (targetVideoIdx < 0) return [];
+    const frameIds = this.framesData.frame_id ?? [];
+    const frameVideos = this.framesData.video ?? [];
+    const frameIndices = this.framesData.frame_idx ?? [];
+    const instStarts = this.framesData.instance_id_start ?? [];
+    const instEnds = this.framesData.instance_id_end ?? [];
+    let maxFrameIdx = 0;
+    const trackCount = this.tracks.length ? this.tracks.length : (() => {
+      let maxInst = 1;
+      for (let i = 0; i < frameIds.length; i++) {
+        if (Number(frameVideos[i]) !== targetVideoIdx) continue;
+        const count = Number(instEnds[i]) - Number(instStarts[i]);
+        if (count > maxInst) maxInst = count;
+      }
+      return maxInst;
+    })();
+    const matchingFrames = [];
+    for (let i = 0; i < frameIds.length; i++) {
+      if (Number(frameVideos[i]) !== targetVideoIdx) continue;
+      const fi = Number(frameIndices[i]);
+      if (fi > maxFrameIdx) maxFrameIdx = fi;
+      matchingFrames.push(i);
+    }
+    if (!matchingFrames.length) return [];
+    const videoLength = targetVideo.shape?.[0] ?? 0;
+    if (videoLength > 0) {
+      maxFrameIdx = Math.max(maxFrameIdx, videoLength - 1);
+    }
+    const nodeCount = this.skeletons[0]?.nodes.length ?? 0;
+    const channelCount = options?.returnConfidence ? 3 : 2;
+    const output = Array.from(
+      { length: maxFrameIdx + 1 },
+      () => Array.from(
+        { length: trackCount },
+        () => Array.from({ length: nodeCount }, () => Array.from({ length: channelCount }, () => Number.NaN))
+      )
+    );
+    const instTypes = this.instancesData.instance_type ?? [];
+    const instTracks = this.instancesData.track ?? [];
+    const instPointStarts = this.instancesData.point_id_start ?? [];
+    const instPointEnds = this.instancesData.point_id_end ?? [];
+    const instScores = this.instancesData.score ?? [];
+    const px = this.pointsData.x ?? [];
+    const py = this.pointsData.y ?? [];
+    const ppx = this.predPointsData.x ?? [];
+    const ppy = this.predPointsData.y ?? [];
+    const ppScores = this.predPointsData.score ?? [];
+    const coordOffset = this.formatId < 1.1 ? -0.5 : 0;
+    for (const fi of matchingFrames) {
+      const frameSlotIdx = Number(frameIndices[fi]);
+      const frameSlot = output[frameSlotIdx];
+      if (!frameSlot) continue;
+      const iStart = Number(instStarts[fi]);
+      const iEnd = Number(instEnds[fi]);
+      let localIdx = 0;
+      for (let instIdx = iStart; instIdx < iEnd; instIdx++) {
+        const isPredicted = Number(instTypes[instIdx]) === 1;
+        const trackId = Number(instTracks[instIdx]);
+        const trackIndex = trackId >= 0 && this.tracks.length ? trackId : localIdx;
+        localIdx++;
+        const trackSlot = frameSlot[trackIndex];
+        if (!trackSlot) continue;
+        const pStart = Number(instPointStarts[instIdx]);
+        const pEnd = Number(instPointEnds[instIdx]);
+        const pointCount = Math.min(pEnd - pStart, nodeCount);
+        if (isPredicted) {
+          for (let p = 0; p < pointCount; p++) {
+            const row = trackSlot[p];
+            if (!row) continue;
+            row[0] = Number(ppx[pStart + p]) + coordOffset;
+            row[1] = Number(ppy[pStart + p]) + coordOffset;
+            if (channelCount === 3) {
+              row[2] = Number(ppScores[pStart + p] ?? Number.NaN);
+            }
+          }
+        } else {
+          for (let p = 0; p < pointCount; p++) {
+            const row = trackSlot[p];
+            if (!row) continue;
+            row[0] = Number(px[pStart + p]) + coordOffset;
+            row[1] = Number(py[pStart + p]) + coordOffset;
+            if (channelCount === 3) {
+              row[2] = Number.NaN;
+            }
+          }
+        }
+      }
+    }
+    return output;
+  }
+  /** Materialize all frames at once. */
+  materializeAll() {
+    const frames = [];
+    for (let i = 0; i < this.frameCount; i++) {
+      const frame = this.materializeFrame(i);
+      if (frame) frames.push(frame);
+    }
+    return frames;
+  }
+  slicePoints(data, start, end, predicted = false) {
+    const xs = data.x ?? [];
+    const ys = data.y ?? [];
+    const visible = data.visible ?? [];
+    const complete = data.complete ?? [];
+    const scores = data.score ?? [];
+    const points = [];
+    for (let i = start; i < end; i++) {
+      if (predicted) {
+        points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
+      } else {
+        points.push([xs[i], ys[i], visible[i], complete[i]]);
+      }
+    }
+    return points;
+  }
+};
+var LazyFrameList = class {
+  store;
+  cache;
+  constructor(store) {
+    this.store = store;
+    this.cache = /* @__PURE__ */ new Map();
+  }
+  get length() {
+    return this.store.frameCount;
+  }
+  /** Get a frame by index, materializing it if needed. */
+  at(index) {
+    if (index < 0 || index >= this.length) return void 0;
+    if (this.cache.has(index)) return this.cache.get(index);
+    const frame = this.store.materializeFrame(index);
+    if (frame) {
+      this.cache.set(index, frame);
+    }
+    return frame ?? void 0;
+  }
+  /** Materialize all frames and return as a regular array. */
+  toArray() {
+    const result = [];
+    for (let i = 0; i < this.length; i++) {
+      const frame = this.at(i);
+      if (frame) result.push(frame);
+    }
+    return result;
+  }
+  /** Iterator support. Skips null frames instead of stopping early. */
+  [Symbol.iterator]() {
+    let index = 0;
+    const self = this;
+    return {
+      next() {
+        while (index < self.length) {
+          const frame = self.at(index++);
+          if (frame) return { value: frame, done: false };
+        }
+        return { value: void 0, done: true };
+      }
+    };
+  }
+  /** Number of frames that have been materialized. */
+  get materializedCount() {
+    return this.cache.size;
+  }
+};
+
 // src/model/labels.ts
-var Labels = class {
+var Labels = class _Labels {
   labeledFrames;
   videos;
   skeletons;
@@ -733,6 +1026,255 @@ var Labels = class {
       results = results.filter((li) => li.isPredicted === filters.predicted);
     }
     return results;
+  }
+  /**
+   * Replace videos and update all references across the Labels object.
+   *
+   * Provide either `oldVideos`/`newVideos` arrays or a `videoMap`.
+   * If only `newVideos` is provided and its length matches `this.videos`,
+   * the current videos are used as `oldVideos`.
+   */
+  replaceVideos(options) {
+    if (this._lazyFrameList) this.materialize();
+    let { oldVideos, newVideos, videoMap } = options;
+    if (!oldVideos && newVideos && newVideos.length === this.videos.length) {
+      oldVideos = this.videos;
+    }
+    if (!videoMap) {
+      if (!oldVideos || !newVideos) {
+        throw new Error("Must provide oldVideos/newVideos or videoMap.");
+      }
+      videoMap = /* @__PURE__ */ new Map();
+      for (let i = 0; i < oldVideos.length; i++) {
+        videoMap.set(oldVideos[i], newVideos[i]);
+      }
+    }
+    for (const frame of this.labeledFrames) {
+      const mapped = videoMap.get(frame.video);
+      if (mapped) frame.video = mapped;
+    }
+    for (const suggestion of this.suggestions) {
+      const mapped = videoMap.get(suggestion.video);
+      if (mapped) suggestion.video = mapped;
+    }
+    for (const roi of this.rois) {
+      if (roi.video && videoMap.has(roi.video)) {
+        roi.video = videoMap.get(roi.video);
+      }
+    }
+    for (const mask of this.masks) {
+      if (mask.video && videoMap.has(mask.video)) {
+        mask.video = videoMap.get(mask.video);
+      }
+    }
+    for (const bbox of this.bboxes) {
+      if (bbox.video && videoMap.has(bbox.video)) {
+        bbox.video = videoMap.get(bbox.video);
+      }
+    }
+    for (const centroid of this.centroids) {
+      if (centroid.video && videoMap.has(centroid.video)) {
+        centroid.video = videoMap.get(centroid.video);
+      }
+    }
+    for (const labelImage of this.labelImages) {
+      if (labelImage.video && videoMap.has(labelImage.video)) {
+        labelImage.video = videoMap.get(labelImage.video);
+      }
+    }
+    this.videos = this.videos.map((v) => videoMap.get(v) ?? v);
+  }
+  /**
+   * Create a deep copy of this Labels object.
+   *
+   * @param options.openVideos - Controls video backend behavior in the copy:
+   *   - `undefined` (default): Preserve each video's current `openBackend` setting.
+   *   - `true`: Enable auto-opening for all videos.
+   *   - `false`: Disable auto-opening and close any open backends.
+   * @returns A new Labels with deep-copied data. Video backends (file handles)
+   *   are not copied — they will be re-opened on demand if `openBackend` is true.
+   */
+  copy(options) {
+    const videoMap = /* @__PURE__ */ new Map();
+    const newVideos = this.videos.map((v) => {
+      const nv = new Video({
+        filename: Array.isArray(v.filename) ? [...v.filename] : v.filename,
+        backendMetadata: { ...v.backendMetadata },
+        openBackend: v.openBackend,
+        embedded: v.hasEmbeddedImages
+      });
+      nv.shape = v.shape;
+      nv.fps = v.fps;
+      videoMap.set(v, nv);
+      return nv;
+    });
+    const skeletonMap = /* @__PURE__ */ new Map();
+    const newSkeletons = this.skeletons.map((s) => {
+      const nodeMap = /* @__PURE__ */ new Map();
+      const newNodes = s.nodes.map((n) => {
+        const nn = new Node(n.name);
+        nodeMap.set(n, nn);
+        return nn;
+      });
+      const newEdges = s.edges.map(
+        (e) => new Edge(nodeMap.get(e.source), nodeMap.get(e.destination))
+      );
+      const newSymmetries = s.symmetries.map((sym) => {
+        const nodes = [...sym.nodes];
+        return new Symmetry([nodeMap.get(nodes[0]), nodeMap.get(nodes[1])]);
+      });
+      const ns = new Skeleton({ nodes: newNodes, edges: newEdges, symmetries: newSymmetries, name: s.name });
+      skeletonMap.set(s, ns);
+      return ns;
+    });
+    const trackMap = /* @__PURE__ */ new Map();
+    const newTracks = this.tracks.map((t) => {
+      const nt = new Track(t.name);
+      trackMap.set(t, nt);
+      return nt;
+    });
+    const cloneInstance = (inst) => {
+      const newPoints = inst.points.map((p) => ({
+        ...p,
+        xy: [...p.xy]
+      }));
+      const newSkeleton = skeletonMap.get(inst.skeleton) ?? inst.skeleton;
+      const newTrack = inst.track ? trackMap.get(inst.track) ?? inst.track : null;
+      if (inst instanceof PredictedInstance) {
+        return new PredictedInstance({
+          points: newPoints,
+          skeleton: newSkeleton,
+          track: newTrack,
+          score: inst.score,
+          trackingScore: inst.trackingScore
+        });
+      }
+      const ni = new Instance({
+        points: newPoints,
+        skeleton: newSkeleton,
+        track: newTrack,
+        trackingScore: inst.trackingScore
+      });
+      return ni;
+    };
+    const cloneAncillary = (items) => items.map((item) => {
+      const saved = [];
+      for (const key of ["video", "track", "instance"]) {
+        if (key in item && item[key] != null) {
+          saved.push([key, item[key]]);
+          item[key] = null;
+        }
+      }
+      let objectRefs = null;
+      if ("objects" in item && item.objects instanceof Map) {
+        objectRefs = /* @__PURE__ */ new Map();
+        for (const [id, info] of item.objects) {
+          if (info.track || info.instance) {
+            objectRefs.set(id, [info.track, info.instance]);
+            info.track = null;
+            info.instance = null;
+          }
+        }
+      }
+      const clone = structuredClone(item);
+      Object.setPrototypeOf(clone, Object.getPrototypeOf(item));
+      for (const [key, val] of saved) item[key] = val;
+      if (objectRefs) {
+        for (const [id, [track, inst]] of objectRefs) {
+          const info = item.objects.get(id);
+          if (info) {
+            info.track = track;
+            info.instance = inst;
+          }
+        }
+      }
+      for (const [key, val] of saved) {
+        if (key === "video") clone.video = videoMap.get(val) ?? val;
+        else if (key === "track") clone.track = trackMap.get(val) ?? val;
+        else if (key === "instance") clone.instance = null;
+      }
+      if (objectRefs) {
+        for (const [id, [track]] of objectRefs) {
+          const info = clone.objects.get(id);
+          if (info) {
+            info.track = track ? trackMap.get(track) ?? track : null;
+            info.instance = null;
+          }
+        }
+      }
+      return clone;
+    });
+    let labelsCopy;
+    if (this.isLazy) {
+      const newStore = this._lazyDataStore.copy();
+      newStore.videos = newVideos;
+      newStore.skeletons = newSkeletons;
+      newStore.tracks = newTracks;
+      labelsCopy = new _Labels({
+        videos: newVideos,
+        skeletons: newSkeletons,
+        tracks: newTracks,
+        suggestions: this.suggestions.map((s) => {
+          const newVideo = videoMap.get(s.video) ?? s.video;
+          return new SuggestionFrame({
+            video: newVideo,
+            frameIdx: s.frameIdx,
+            group: s.group,
+            metadata: { ...s.metadata }
+          });
+        }),
+        sessions: structuredClone(this.sessions),
+        provenance: { ...this.provenance },
+        rois: cloneAncillary(this.rois),
+        masks: cloneAncillary(this.masks),
+        bboxes: cloneAncillary(this.bboxes),
+        centroids: cloneAncillary(this.centroids),
+        labelImages: cloneAncillary(this.labelImages),
+        identities: structuredClone(this.identities)
+      });
+      labelsCopy._lazyDataStore = newStore;
+      labelsCopy._lazyFrameList = new LazyFrameList(newStore);
+    } else {
+      const newFrames = this.labeledFrames.map((f) => {
+        const newInstances = f.instances.map(cloneInstance);
+        return new LabeledFrame({
+          video: videoMap.get(f.video) ?? f.video,
+          frameIdx: f.frameIdx,
+          instances: newInstances,
+          isNegative: f.isNegative
+        });
+      });
+      labelsCopy = new _Labels({
+        labeledFrames: newFrames,
+        videos: newVideos,
+        skeletons: newSkeletons,
+        tracks: newTracks,
+        suggestions: this.suggestions.map((s) => {
+          const newVideo = videoMap.get(s.video) ?? s.video;
+          return new SuggestionFrame({
+            video: newVideo,
+            frameIdx: s.frameIdx,
+            group: s.group,
+            metadata: { ...s.metadata }
+          });
+        }),
+        sessions: structuredClone(this.sessions),
+        provenance: { ...this.provenance },
+        rois: cloneAncillary(this.rois),
+        masks: cloneAncillary(this.masks),
+        bboxes: cloneAncillary(this.bboxes),
+        centroids: cloneAncillary(this.centroids),
+        labelImages: cloneAncillary(this.labelImages),
+        identities: structuredClone(this.identities)
+      });
+    }
+    if (options?.openVideos !== void 0) {
+      for (const video of labelsCopy.videos) {
+        video.openBackend = options.openVideos;
+        if (!options.openVideos) video.close();
+      }
+    }
+    return labelsCopy;
   }
   static fromNumpy(data, options) {
     const video = options.video ?? options.videos?.[0];
@@ -1311,274 +1853,6 @@ var Identity = class {
     this.name = options?.name ?? "";
     this.color = options?.color;
     this.metadata = options?.metadata ?? {};
-  }
-};
-
-// src/model/lazy.ts
-var LazyDataStore = class {
-  framesData;
-  instancesData;
-  pointsData;
-  predPointsData;
-  skeletons;
-  tracks;
-  videos;
-  formatId;
-  negativeFrames;
-  constructor(options) {
-    this.framesData = options.framesData;
-    this.instancesData = options.instancesData;
-    this.pointsData = options.pointsData;
-    this.predPointsData = options.predPointsData;
-    this.skeletons = options.skeletons;
-    this.tracks = options.tracks;
-    this.videos = options.videos;
-    this.formatId = options.formatId;
-    this.negativeFrames = options.negativeFrames ?? /* @__PURE__ */ new Set();
-  }
-  /** Total number of frames in the store. */
-  get frameCount() {
-    return (this.framesData.frame_id ?? []).length;
-  }
-  /**
-   * Materialize a single LabeledFrame by index.
-   */
-  materializeFrame(frameIdx) {
-    const frameIds = this.framesData.frame_id ?? [];
-    if (frameIdx < 0 || frameIdx >= frameIds.length) return null;
-    const rawVideoId = Number(this.framesData.video?.[frameIdx] ?? 0);
-    const videoIndex = rawVideoId;
-    const frameIndex = Number(this.framesData.frame_idx?.[frameIdx] ?? 0);
-    const instStart = Number(this.framesData.instance_id_start?.[frameIdx] ?? 0);
-    const instEnd = Number(this.framesData.instance_id_end?.[frameIdx] ?? 0);
-    const video = this.videos[videoIndex];
-    if (!video) return null;
-    const instances = [];
-    const instanceById = /* @__PURE__ */ new Map();
-    const fromPredictedPairs = [];
-    for (let instIdx = instStart; instIdx < instEnd; instIdx++) {
-      const instanceType = Number(this.instancesData.instance_type?.[instIdx] ?? 0);
-      const skeletonId = Number(this.instancesData.skeleton?.[instIdx] ?? 0);
-      const trackId = Number(this.instancesData.track?.[instIdx] ?? -1);
-      const pointStart = Number(this.instancesData.point_id_start?.[instIdx] ?? 0);
-      const pointEnd = Number(this.instancesData.point_id_end?.[instIdx] ?? 0);
-      const score = Number(this.instancesData.score?.[instIdx] ?? 0);
-      const rawTrackingScore = this.formatId < 1.2 ? 0 : Number(this.instancesData.tracking_score?.[instIdx] ?? 0);
-      const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
-      const fromPredicted = Number(this.instancesData.from_predicted?.[instIdx] ?? -1);
-      const skeleton = this.skeletons[skeletonId] ?? this.skeletons[0];
-      const track = trackId >= 0 ? this.tracks[trackId] : null;
-      let instance;
-      if (instanceType === 0) {
-        const points = this.slicePoints(this.pointsData, pointStart, pointEnd);
-        instance = new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton, track, trackingScore });
-        if (this.formatId < 1.1) {
-          instance.points.forEach((point) => {
-            point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
-          });
-        }
-        if (fromPredicted >= 0) {
-          fromPredictedPairs.push([instIdx, fromPredicted]);
-        }
-      } else {
-        const points = this.slicePoints(this.predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({ points: predictedPointsFromArray(points, skeleton.nodeNames), skeleton, track, score, trackingScore });
-        if (this.formatId < 1.1) {
-          instance.points.forEach((point) => {
-            point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
-          });
-        }
-      }
-      instanceById.set(instIdx, instance);
-      instances.push(instance);
-    }
-    for (const [instanceId, fromPredictedId] of fromPredictedPairs) {
-      const instance = instanceById.get(instanceId);
-      const predicted = instanceById.get(fromPredictedId);
-      if (instance && predicted instanceof PredictedInstance && instance instanceof Instance) {
-        instance.fromPredicted = predicted;
-      }
-    }
-    const frame = new LabeledFrame({ video, frameIdx: frameIndex, instances });
-    const negKey = `${videoIndex}:${frameIndex}`;
-    if (this.negativeFrames.has(negKey)) {
-      frame.isNegative = true;
-    }
-    return frame;
-  }
-  /**
-   * Build a 4D numpy-like array directly from raw column data without
-   * materializing any LabeledFrame or Instance objects.
-   *
-   * Returns [frames, tracks/instances, nodes, coords] where coords is
-   * [x, y] or [x, y, score] when returnConfidence is true.
-   */
-  toNumpy(options) {
-    const targetVideo = options?.video ?? this.videos[0];
-    if (!targetVideo) return [];
-    const targetVideoIdx = this.videos.indexOf(targetVideo);
-    if (targetVideoIdx < 0) return [];
-    const frameIds = this.framesData.frame_id ?? [];
-    const frameVideos = this.framesData.video ?? [];
-    const frameIndices = this.framesData.frame_idx ?? [];
-    const instStarts = this.framesData.instance_id_start ?? [];
-    const instEnds = this.framesData.instance_id_end ?? [];
-    let maxFrameIdx = 0;
-    const trackCount = this.tracks.length ? this.tracks.length : (() => {
-      let maxInst = 1;
-      for (let i = 0; i < frameIds.length; i++) {
-        if (Number(frameVideos[i]) !== targetVideoIdx) continue;
-        const count = Number(instEnds[i]) - Number(instStarts[i]);
-        if (count > maxInst) maxInst = count;
-      }
-      return maxInst;
-    })();
-    const matchingFrames = [];
-    for (let i = 0; i < frameIds.length; i++) {
-      if (Number(frameVideos[i]) !== targetVideoIdx) continue;
-      const fi = Number(frameIndices[i]);
-      if (fi > maxFrameIdx) maxFrameIdx = fi;
-      matchingFrames.push(i);
-    }
-    if (!matchingFrames.length) return [];
-    const videoLength = targetVideo.shape?.[0] ?? 0;
-    if (videoLength > 0) {
-      maxFrameIdx = Math.max(maxFrameIdx, videoLength - 1);
-    }
-    const nodeCount = this.skeletons[0]?.nodes.length ?? 0;
-    const channelCount = options?.returnConfidence ? 3 : 2;
-    const output = Array.from(
-      { length: maxFrameIdx + 1 },
-      () => Array.from(
-        { length: trackCount },
-        () => Array.from({ length: nodeCount }, () => Array.from({ length: channelCount }, () => Number.NaN))
-      )
-    );
-    const instTypes = this.instancesData.instance_type ?? [];
-    const instTracks = this.instancesData.track ?? [];
-    const instPointStarts = this.instancesData.point_id_start ?? [];
-    const instPointEnds = this.instancesData.point_id_end ?? [];
-    const instScores = this.instancesData.score ?? [];
-    const px = this.pointsData.x ?? [];
-    const py = this.pointsData.y ?? [];
-    const ppx = this.predPointsData.x ?? [];
-    const ppy = this.predPointsData.y ?? [];
-    const ppScores = this.predPointsData.score ?? [];
-    const coordOffset = this.formatId < 1.1 ? -0.5 : 0;
-    for (const fi of matchingFrames) {
-      const frameSlotIdx = Number(frameIndices[fi]);
-      const frameSlot = output[frameSlotIdx];
-      if (!frameSlot) continue;
-      const iStart = Number(instStarts[fi]);
-      const iEnd = Number(instEnds[fi]);
-      let localIdx = 0;
-      for (let instIdx = iStart; instIdx < iEnd; instIdx++) {
-        const isPredicted = Number(instTypes[instIdx]) === 1;
-        const trackId = Number(instTracks[instIdx]);
-        const trackIndex = trackId >= 0 && this.tracks.length ? trackId : localIdx;
-        localIdx++;
-        const trackSlot = frameSlot[trackIndex];
-        if (!trackSlot) continue;
-        const pStart = Number(instPointStarts[instIdx]);
-        const pEnd = Number(instPointEnds[instIdx]);
-        const pointCount = Math.min(pEnd - pStart, nodeCount);
-        if (isPredicted) {
-          for (let p = 0; p < pointCount; p++) {
-            const row = trackSlot[p];
-            if (!row) continue;
-            row[0] = Number(ppx[pStart + p]) + coordOffset;
-            row[1] = Number(ppy[pStart + p]) + coordOffset;
-            if (channelCount === 3) {
-              row[2] = Number(ppScores[pStart + p] ?? Number.NaN);
-            }
-          }
-        } else {
-          for (let p = 0; p < pointCount; p++) {
-            const row = trackSlot[p];
-            if (!row) continue;
-            row[0] = Number(px[pStart + p]) + coordOffset;
-            row[1] = Number(py[pStart + p]) + coordOffset;
-            if (channelCount === 3) {
-              row[2] = Number.NaN;
-            }
-          }
-        }
-      }
-    }
-    return output;
-  }
-  /** Materialize all frames at once. */
-  materializeAll() {
-    const frames = [];
-    for (let i = 0; i < this.frameCount; i++) {
-      const frame = this.materializeFrame(i);
-      if (frame) frames.push(frame);
-    }
-    return frames;
-  }
-  slicePoints(data, start, end, predicted = false) {
-    const xs = data.x ?? [];
-    const ys = data.y ?? [];
-    const visible = data.visible ?? [];
-    const complete = data.complete ?? [];
-    const scores = data.score ?? [];
-    const points = [];
-    for (let i = start; i < end; i++) {
-      if (predicted) {
-        points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
-      } else {
-        points.push([xs[i], ys[i], visible[i], complete[i]]);
-      }
-    }
-    return points;
-  }
-};
-var LazyFrameList = class {
-  store;
-  cache;
-  constructor(store) {
-    this.store = store;
-    this.cache = /* @__PURE__ */ new Map();
-  }
-  get length() {
-    return this.store.frameCount;
-  }
-  /** Get a frame by index, materializing it if needed. */
-  at(index) {
-    if (index < 0 || index >= this.length) return void 0;
-    if (this.cache.has(index)) return this.cache.get(index);
-    const frame = this.store.materializeFrame(index);
-    if (frame) {
-      this.cache.set(index, frame);
-    }
-    return frame ?? void 0;
-  }
-  /** Materialize all frames and return as a regular array. */
-  toArray() {
-    const result = [];
-    for (let i = 0; i < this.length; i++) {
-      const frame = this.at(i);
-      if (frame) result.push(frame);
-    }
-    return result;
-  }
-  /** Iterator support. Skips null frames instead of stopping early. */
-  [Symbol.iterator]() {
-    let index = 0;
-    const self = this;
-    return {
-      next() {
-        while (index < self.length) {
-          const frame = self.at(index++);
-          if (frame) return { value: frame, done: false };
-        }
-        return { value: void 0, done: true };
-      }
-    };
-  }
-  /** Number of frames that have been materialized. */
-  get materializedCount() {
-    return this.cache.size;
   }
 };
 
@@ -8363,14 +8637,16 @@ var InstanceContext = class {
 
 export {
   LabeledFrame,
-  Video,
   SuggestionFrame,
+  Video,
   MediaBunnyVideoBackend,
   toDict,
   fromDict,
   toNumpy,
   fromNumpy,
   labelsFromNumpy,
+  LazyDataStore,
+  LazyFrameList,
   Labels,
   LabelsSet,
   rodriguesTransformation,
@@ -8381,8 +8657,6 @@ export {
   RecordingSession,
   makeCameraFromDict,
   Identity,
-  LazyDataStore,
-  LazyFrameList,
   _registerMaskFactory,
   AnnotationType,
   ROI,

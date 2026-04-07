@@ -225,6 +225,12 @@ declare class LazyDataStore {
         formatId: number;
         negativeFrames?: Set<string>;
     });
+    /**
+     * Create an independent copy of this store's raw column data.
+     * Videos, skeletons, and tracks arrays are shared (not cloned) —
+     * the caller is expected to replace them with new references.
+     */
+    copy(): LazyDataStore;
     /** Total number of frames in the store. */
     get frameCount(): number;
     /**
@@ -956,6 +962,31 @@ declare class Labels {
         category?: string;
         predicted?: boolean;
     }): LabelImage[];
+    /**
+     * Replace videos and update all references across the Labels object.
+     *
+     * Provide either `oldVideos`/`newVideos` arrays or a `videoMap`.
+     * If only `newVideos` is provided and its length matches `this.videos`,
+     * the current videos are used as `oldVideos`.
+     */
+    replaceVideos(options: {
+        oldVideos?: Video[];
+        newVideos?: Video[];
+        videoMap?: Map<Video, Video>;
+    }): void;
+    /**
+     * Create a deep copy of this Labels object.
+     *
+     * @param options.openVideos - Controls video backend behavior in the copy:
+     *   - `undefined` (default): Preserve each video's current `openBackend` setting.
+     *   - `true`: Enable auto-opening for all videos.
+     *   - `false`: Disable auto-opening and close any open backends.
+     * @returns A new Labels with deep-copied data. Video backends (file handles)
+     *   are not copied — they will be re-opened on demand if `openBackend` is true.
+     */
+    copy(options?: {
+        openVideos?: boolean;
+    }): Labels;
     static fromNumpy(data: number[][][][], options: {
         videos?: Video[];
         video?: Video;
