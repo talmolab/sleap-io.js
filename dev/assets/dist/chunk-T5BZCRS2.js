@@ -7,6 +7,7 @@ import {
   Skeleton,
   Symmetry,
   Track,
+  _registerCentroidFactory,
   parseJsonAttr,
   parseJsonEntry,
   parseSkeletons,
@@ -18,7 +19,7 @@ import {
   reconstructInstance3D,
   resolveCameraKey,
   resolveIdentity
-} from "./chunk-BEDAHJBO.js";
+} from "./chunk-RVNDZMON.js";
 
 // src/model/labeled-frame.ts
 var LabeledFrame = class {
@@ -454,6 +455,7 @@ var Labels = class {
   rois;
   masks;
   bboxes;
+  centroids = [];
   labelImages;
   identities;
   /** @internal Lazy frame list for on-demand materialization. */
@@ -471,6 +473,7 @@ var Labels = class {
     this.rois = options?.rois ?? [];
     this.masks = options?.masks ?? [];
     this.bboxes = options?.bboxes ?? [];
+    this.centroids = options?.centroids ?? [];
     this.labelImages = options?.labelImages ?? [];
     this.identities = options?.identities ?? [];
     if (!this.videos.length && this.labeledFrames.length) {
@@ -529,6 +532,12 @@ var Labels = class {
       if (mask._instanceIdx !== null && mask._instanceIdx >= 0 && mask._instanceIdx < allInstances.length) {
         mask.instance = allInstances[mask._instanceIdx];
         mask._instanceIdx = null;
+      }
+    }
+    for (const centroid of this.centroids) {
+      if (centroid._instanceIdx !== null && centroid._instanceIdx >= 0 && centroid._instanceIdx < allInstances.length) {
+        centroid.instance = allInstances[centroid._instanceIdx];
+        centroid._instanceIdx = null;
       }
     }
     for (const li of this.labelImages) {
@@ -669,6 +678,29 @@ var Labels = class {
     }
     if (filters.predicted !== void 0) {
       results = results.filter((b) => b.isPredicted === filters.predicted);
+    }
+    return results;
+  }
+  getCentroids(filters) {
+    if (!filters) return [...this.centroids];
+    let results = this.centroids;
+    if (filters.video !== void 0) {
+      results = results.filter((c) => c.video === filters.video);
+    }
+    if (filters.frameIdx !== void 0) {
+      results = results.filter((c) => c.frameIdx === filters.frameIdx);
+    }
+    if (filters.category !== void 0) {
+      results = results.filter((c) => c.category === filters.category);
+    }
+    if (filters.track !== void 0) {
+      results = results.filter((c) => c.track === filters.track);
+    }
+    if (filters.instance !== void 0) {
+      results = results.filter((c) => c.instance === filters.instance);
+    }
+    if (filters.predicted !== void 0) {
+      results = results.filter((c) => c.isPredicted === filters.predicted);
     }
     return results;
   }
@@ -1571,6 +1603,7 @@ var ROI = class _ROI {
   video;
   frameIdx;
   track;
+  trackingScore = null;
   instance;
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx = null;
@@ -1587,6 +1620,7 @@ var ROI = class _ROI {
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
     this.instance = options.instance ?? null;
   }
   /** @deprecated Use BoundingBox.fromXywh() instead. */
@@ -1657,6 +1691,7 @@ var ROI = class _ROI {
       video: this.video,
       frameIdx: this.frameIdx,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance
     };
     if (this.isPredicted && "score" in this) {
@@ -2104,6 +2139,7 @@ var BoundingBox = class _BoundingBox {
   video;
   frameIdx;
   track;
+  trackingScore;
   instance;
   category;
   name;
@@ -2124,6 +2160,7 @@ var BoundingBox = class _BoundingBox {
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
     this.instance = options.instance ?? null;
     this.category = options.category ?? "";
     this.name = options.name ?? "";
@@ -2308,6 +2345,7 @@ var SegmentationMask = class _SegmentationMask {
   video;
   frameIdx;
   track;
+  trackingScore = null;
   instance;
   /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
   scale;
@@ -2334,6 +2372,7 @@ var SegmentationMask = class _SegmentationMask {
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
     this.instance = options.instance ?? null;
     this.scale = scale;
     this.offset = options.offset ?? [0, 0];
@@ -2538,6 +2577,193 @@ _registerMaskFactory(
   (mask, height, width, options) => {
     return SegmentationMask.fromArray(mask, height, width, options);
   }
+);
+
+// src/model/centroid.ts
+var _centroidSkeleton = null;
+function getCentroidSkeleton() {
+  if (!_centroidSkeleton) {
+    _centroidSkeleton = new Skeleton({ nodes: ["centroid"], name: "centroid" });
+  }
+  return _centroidSkeleton;
+}
+var CENTROID_SKELETON = /* @__PURE__ */ (() => getCentroidSkeleton())();
+var Centroid = class _Centroid {
+  x;
+  y;
+  z;
+  video;
+  frameIdx;
+  track;
+  trackingScore;
+  instance;
+  category;
+  name;
+  source;
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx = null;
+  constructor(options) {
+    if (new.target === _Centroid) {
+      throw new TypeError(
+        "Centroid is abstract. Use UserCentroid or PredictedCentroid."
+      );
+    }
+    this.x = options.x;
+    this.y = options.y;
+    this.z = options.z ?? null;
+    this.video = options.video ?? null;
+    this.frameIdx = options.frameIdx ?? null;
+    this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
+    this.instance = options.instance ?? null;
+    this.category = options.category ?? "";
+    this.name = options.name ?? "";
+    this.source = options.source ?? "";
+  }
+  /** Coordinates as `[x, y]`. */
+  get xy() {
+    return [this.x, this.y];
+  }
+  /** Coordinates as `[y, x]` (row, col order). */
+  get yx() {
+    return [this.y, this.x];
+  }
+  /** Coordinates as `[x, y, z]`. */
+  get xyz() {
+    return [this.x, this.y, this.z];
+  }
+  /** Whether this is a predicted centroid (has a score). */
+  get isPredicted() {
+    return false;
+  }
+  /** Whether the centroid has no temporal association. */
+  get isStatic() {
+    return this.frameIdx === null;
+  }
+  /**
+   * Convert this centroid to a single-node Instance.
+   *
+   * @param skeleton - Skeleton to use. Must have exactly one node.
+   *   Defaults to the shared CENTROID_SKELETON.
+   * @returns Instance or PredictedInstance depending on this centroid's type.
+   */
+  toInstance(skeleton) {
+    const skel = skeleton ?? getCentroidSkeleton();
+    if (skel.nodes.length > 1) {
+      throw new Error(
+        `Skeleton must have exactly 1 node for centroid conversion, got ${skel.nodes.length}.`
+      );
+    }
+    const point = {
+      xy: [this.x, this.y],
+      visible: true,
+      complete: true,
+      name: skel.nodeNames[0]
+    };
+    if (this instanceof PredictedCentroid) {
+      return new PredictedInstance({
+        points: [{ ...point, score: this.score }],
+        skeleton: skel,
+        track: this.track,
+        score: this.score,
+        trackingScore: this.trackingScore ?? void 0
+      });
+    }
+    return new Instance({
+      points: [point],
+      skeleton: skel,
+      track: this.track,
+      trackingScore: this.trackingScore ?? void 0
+    });
+  }
+  /**
+   * Create a centroid from an Instance.
+   *
+   * @param instance - Source instance.
+   * @param options - Options for centroid extraction.
+   * @param options.method - "centerOfMass" (default), "bboxCenter", or "anchor".
+   * @param options.node - Node name or index for "anchor" method.
+   * @returns UserCentroid or PredictedCentroid depending on instance type.
+   */
+  static fromInstance(instance, options) {
+    const method = options?.method ?? "centerOfMass";
+    const visiblePoints = [];
+    for (const point of instance.points) {
+      if (point.visible && !Number.isNaN(point.xy[0]) && !Number.isNaN(point.xy[1])) {
+        visiblePoints.push(point.xy);
+      }
+    }
+    let x;
+    let y;
+    if (method === "centerOfMass") {
+      if (!visiblePoints.length) {
+        throw new Error("No visible points for centerOfMass.");
+      }
+      x = visiblePoints.reduce((sum, p) => sum + p[0], 0) / visiblePoints.length;
+      y = visiblePoints.reduce((sum, p) => sum + p[1], 0) / visiblePoints.length;
+    } else if (method === "bboxCenter") {
+      if (!visiblePoints.length) {
+        throw new Error("No visible points for bboxCenter.");
+      }
+      const xs = visiblePoints.map((p) => p[0]);
+      const ys = visiblePoints.map((p) => p[1]);
+      x = (Math.min(...xs) + Math.max(...xs)) / 2;
+      y = (Math.min(...ys) + Math.max(...ys)) / 2;
+    } else if (method === "anchor") {
+      const node = options?.node;
+      if (node === void 0 || node === null) {
+        throw new Error("Must specify 'node' for anchor method.");
+      }
+      let nodeIdx;
+      if (typeof node === "string") {
+        nodeIdx = instance.skeleton.index(node);
+      } else {
+        nodeIdx = node;
+      }
+      const pt = instance.points[nodeIdx];
+      if (!pt || Number.isNaN(pt.xy[0])) {
+        throw new Error(`Anchor node ${JSON.stringify(node)} is not visible in this instance.`);
+      }
+      x = pt.xy[0];
+      y = pt.xy[1];
+    } else {
+      throw new Error(
+        `Unknown method ${JSON.stringify(method)}. Expected 'centerOfMass', 'bboxCenter', or 'anchor'.`
+      );
+    }
+    const { method: _, node: __, ...extraOptions } = options ?? {};
+    const centroidOptions = {
+      x,
+      y,
+      track: instance.track ?? null,
+      trackingScore: instance.trackingScore ?? null,
+      instance,
+      source: method === "anchor" ? `anchor:${options?.node}` : method,
+      ...extraOptions
+    };
+    if ("score" in instance && typeof instance.score === "number") {
+      return new PredictedCentroid({
+        ...centroidOptions,
+        score: instance.score
+      });
+    }
+    return new UserCentroid(centroidOptions);
+  }
+};
+var UserCentroid = class extends Centroid {
+};
+var PredictedCentroid = class extends Centroid {
+  score;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+  }
+  get isPredicted() {
+    return true;
+  }
+};
+_registerCentroidFactory(
+  (instance, options) => Centroid.fromInstance(instance, options)
 );
 
 // src/model/label-image.ts
@@ -5348,6 +5574,7 @@ function writeSlpToFile(file, labels, embeddedVideoData) {
   writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
   writeMasks(file, labels.masks, labels.videos, labels.tracks, allInstances);
   writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
+  writeCentroids(file, labels.centroids, labels.videos, labels.tracks, allInstances);
   writeLabelImages(file, labels.labelImages, labels.videos, labels.tracks, allInstances);
 }
 async function saveSlpToBytes(labels, options) {
@@ -5373,6 +5600,7 @@ async function saveSlpToBytes(labels, options) {
       rois: labels.rois,
       masks: labels.masks,
       bboxes: labels.bboxes,
+      centroids: labels.centroids,
       labelImages: labels.labelImages,
       identities: labels.identities
     });
@@ -5944,7 +6172,8 @@ function writeRois(file, rois, videos, tracks, instances) {
     const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : -1;
     const score = roi.isPredicted ? roi.score : Number.NaN;
     const isPredicted = roi.isPredicted ? 1 : 0;
-    rows.push([0, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd, instanceIdx, isPredicted]);
+    const trackingScore = roi.trackingScore ?? Number.NaN;
+    rows.push([0, videoIdx, frameIdx, trackIdx, score, trackingScore, wkbStart, wkbEnd, instanceIdx, isPredicted]);
     categories.push(roi.category);
     names.push(roi.name);
     sources.push(roi.source);
@@ -5953,7 +6182,7 @@ function writeRois(file, rois, videos, tracks, instances) {
     file,
     "rois",
     rows,
-    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end", "instance", "is_predicted"],
+    ["annotation_type", "video", "frame_idx", "track", "score", "tracking_score", "wkb_start", "wkb_end", "instance", "is_predicted"],
     "<f8"
   );
   writeStringDataset(file, "roi_categories", categories);
@@ -5996,6 +6225,7 @@ function writeMasks(file, masks, videos, tracks, instances) {
     const score = mask.isPredicted ? mask.score : Number.NaN;
     const isPredicted = mask.isPredicted ? 1 : 0;
     const instanceIdx = mask.instance ? instances.indexOf(mask.instance) : mask._instanceIdx ?? -1;
+    const maskTrackingScore = mask.trackingScore ?? Number.NaN;
     rows.push([
       mask.height,
       mask.width,
@@ -6008,6 +6238,7 @@ function writeMasks(file, masks, videos, tracks, instances) {
       rleEnd,
       isPredicted,
       instanceIdx,
+      maskTrackingScore,
       mask.scale[0],
       mask.scale[1],
       mask.offset[0],
@@ -6035,7 +6266,7 @@ function writeMasks(file, masks, videos, tracks, instances) {
     file,
     "masks",
     rows,
-    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "scale_x", "scale_y", "offset_x", "offset_y"],
+    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "tracking_score", "scale_x", "scale_y", "offset_x", "offset_y"],
     "<f8"
   );
   writeStringDataset(file, "mask_categories", categories);
@@ -6079,6 +6310,7 @@ function writeBboxes(file, bboxes, videos, tracks, instances) {
     const trackIdx = bbox.track ? tracks.indexOf(bbox.track) : -1;
     const score = bbox.isPredicted ? bbox.score : Number.NaN;
     const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance) : -1;
+    const trackingScore = bbox.trackingScore ?? Number.NaN;
     rows.push([
       bbox.x1,
       bbox.y1,
@@ -6089,7 +6321,8 @@ function writeBboxes(file, bboxes, videos, tracks, instances) {
       frameIdx,
       trackIdx,
       score,
-      instanceIdx
+      instanceIdx,
+      trackingScore
     ]);
     categories.push(bbox.category);
     names.push(bbox.name);
@@ -6099,7 +6332,7 @@ function writeBboxes(file, bboxes, videos, tracks, instances) {
     file,
     "bboxes",
     rows,
-    ["x1", "y1", "x2", "y2", "angle", "video", "frame_idx", "track", "score", "instance"],
+    ["x1", "y1", "x2", "y2", "angle", "video", "frame_idx", "track", "score", "instance", "tracking_score"],
     "<f8"
   );
   writeStringDataset(file, "bbox_categories", categories);
@@ -6146,7 +6379,8 @@ function writeLabelImages(file, labelImages, videos, tracks, instances) {
         instanceIdx = info._instanceIdx;
       }
       const objScore = info.score != null ? info.score : Number.NaN;
-      objectRows.push([labelId, trackIdx, instanceIdx, objScore]);
+      const objTrackingScore = info.trackingScore != null ? info.trackingScore : Number.NaN;
+      objectRows.push([labelId, trackIdx, instanceIdx, objScore, objTrackingScore]);
       objectCategories.push(info.category);
       objectNames.push(info.name);
       objectsOffset++;
@@ -6211,7 +6445,7 @@ function writeLabelImages(file, labelImages, videos, tracks, instances) {
       file,
       "label_image_objects",
       objectRows,
-      ["label_id", "track", "instance", "score"],
+      ["label_id", "track", "instance", "score", "tracking_score"],
       "<f8"
     );
     writeStringDataset(file, "label_image_obj_categories", objectCategories);
@@ -6242,6 +6476,47 @@ function writeLabelImages(file, labelImages, videos, tracks, instances) {
     }
     file.create_dataset({ name: "label_image_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
   }
+}
+function writeCentroids(file, centroids, videos, tracks, instances) {
+  if (!centroids.length) return;
+  const rows = [];
+  const categories = [];
+  const names = [];
+  const sources = [];
+  for (const c of centroids) {
+    const videoIdx = c.video ? videos.indexOf(c.video) : -1;
+    const frameIdx = c.frameIdx ?? -1;
+    const trackIdx = c.track ? tracks.indexOf(c.track) : -1;
+    const score = c.isPredicted ? c.score : Number.NaN;
+    const instanceIdx = c.instance ? instances.indexOf(c.instance) : -1;
+    const isPredicted = c.isPredicted ? 1 : 0;
+    const trackingScore = c.trackingScore ?? Number.NaN;
+    rows.push([
+      c.x,
+      c.y,
+      c.z ?? Number.NaN,
+      videoIdx,
+      frameIdx,
+      trackIdx,
+      instanceIdx,
+      isPredicted,
+      score,
+      trackingScore
+    ]);
+    categories.push(c.category);
+    names.push(c.name);
+    sources.push(c.source);
+  }
+  createMatrixDataset(
+    file,
+    "centroids",
+    rows,
+    ["x", "y", "z", "video", "frame_idx", "track", "instance", "is_predicted", "score", "tracking_score"],
+    "<f8"
+  );
+  writeStringDataset(file, "centroid_categories", categories);
+  writeStringDataset(file, "centroid_names", names);
+  writeStringDataset(file, "centroid_sources", sources);
 }
 
 // src/codecs/slp/read.ts
@@ -6297,6 +6572,7 @@ async function readSlp(source, options) {
     const allInstances = labeledFrames.flatMap((f) => f.instances);
     const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks, allInstances);
     const masks = readMasks(file, videos, tracks);
+    const centroids = readCentroids(file, videos, tracks);
     const labelImages = readLabelImages(file, videos, tracks, allInstances);
     return new Labels({
       labeledFrames,
@@ -6310,6 +6586,7 @@ async function readSlp(source, options) {
       rois,
       masks,
       bboxes,
+      centroids,
       labelImages
     });
   } finally {
@@ -6361,6 +6638,7 @@ async function readSlpLazy(source, options) {
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, [], identities);
     const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks);
     const masks = readMasks(file, videos, tracks);
+    const centroids = readCentroids(file, videos, tracks);
     const labelImages = readLabelImages(file, videos, tracks);
     const labels = new Labels({
       videos,
@@ -6373,6 +6651,7 @@ async function readSlpLazy(source, options) {
       rois,
       masks,
       bboxes,
+      centroids,
       labelImages
     });
     labels._lazyFrameList = lazyFrames;
@@ -6706,6 +6985,7 @@ function readRoisWithMigration(file, videos, tracks, instances) {
   const wkbEnds = roisData.wkb_end ?? [];
   const instanceIndices = roisData.instance ?? [];
   const isPredictedCol = roisData.is_predicted ?? [];
+  const trackingScoresCol = roisData.tracking_score ?? [];
   const rois = [];
   const migratedBboxes = [];
   for (let i = 0; i < annotationTypes.length; i++) {
@@ -6721,6 +7001,8 @@ function readRoisWithMigration(file, videos, tracks, instances) {
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
     const annotType = Number(annotationTypes[i]);
     const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const roiTsVal = trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
+    const roiTrackingScore = Number.isNaN(roiTsVal) ? null : roiTsVal;
     if (annotType === 1 /* BOUNDING_BOX */ && !isPred) {
       const tmpRoi = new UserROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, frameIdx, track });
       const b = tmpRoi.bounds;
@@ -6734,6 +7016,7 @@ function readRoisWithMigration(file, videos, tracks, instances) {
         video,
         frameIdx,
         track,
+        trackingScore: roiTrackingScore,
         category: categories[i] ?? "",
         name: names[i] ?? "",
         source: sources[i] ?? ""
@@ -6760,7 +7043,8 @@ function readRoisWithMigration(file, videos, tracks, instances) {
         source: sources[i] ?? "",
         video,
         frameIdx,
-        track
+        track,
+        trackingScore: roiTrackingScore
       };
       let roi;
       if (isPred) {
@@ -6806,6 +7090,7 @@ function readBboxes(file, videos, tracks) {
   const trackIndices = bboxesData.track ?? [];
   const bboxScores = bboxesData.score ?? [];
   const instanceIndices = bboxesData.instance ?? [];
+  const trackingScores = bboxesData.tracking_score ?? [];
   const bboxes = [];
   for (let i = 0; i < count; i++) {
     const videoIdx = Number(videoIndices[i]);
@@ -6832,6 +7117,8 @@ function readBboxes(file, videos, tracks) {
       bx2 = Number(x2s[i]);
       by2 = Number(y2s[i]);
     }
+    const tsVal = trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
+    const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
     const options = {
       x1: bx1,
       y1: by1,
@@ -6841,6 +7128,7 @@ function readBboxes(file, videos, tracks) {
       video,
       frameIdx,
       track,
+      trackingScore,
       category: categories[i] ?? "",
       name: names[i] ?? "",
       source: sources[i] ?? ""
@@ -6924,6 +7212,7 @@ function readMasks(file, videos, tracks) {
   const isPredictedCol = masksData.is_predicted ?? [];
   const scoreCol = masksData.score ?? [];
   const instanceCol = masksData.instance ?? [];
+  const maskTrackingScoreCol = masksData.tracking_score ?? [];
   const scaleXCol = masksData.scale_x ?? [];
   const scaleYCol = masksData.scale_y ?? [];
   const offsetXCol = masksData.offset_x ?? [];
@@ -6950,6 +7239,8 @@ function readMasks(file, videos, tracks) {
     const scaleY = scaleYCol.length > i ? Number(scaleYCol[i]) : 1;
     const offsetX = offsetXCol.length > i ? Number(offsetXCol[i]) : 0;
     const offsetY = offsetYCol.length > i ? Number(offsetYCol[i]) : 0;
+    const maskTsVal = maskTrackingScoreCol.length > i ? Number(maskTrackingScoreCol[i]) : Number.NaN;
+    const maskTrackingScore = Number.isNaN(maskTsVal) ? null : maskTsVal;
     const baseOptions = {
       rleCounts,
       height: Number(heights[i]),
@@ -6960,6 +7251,7 @@ function readMasks(file, videos, tracks) {
       video,
       frameIdx,
       track,
+      trackingScore: maskTrackingScore,
       scale: [scaleX, scaleY],
       offset: [offsetX, offsetY]
     };
@@ -7021,6 +7313,7 @@ function readLabelImages(file, videos, tracks, instances) {
   let objCategories = [];
   let objNames = [];
   let objScoreCol = [];
+  let objTrackingScoreCol = [];
   const objDs = file.get("label_image_objects");
   if (objDs) {
     const objData = normalizeStructDataset(objDs);
@@ -7030,6 +7323,7 @@ function readLabelImages(file, videos, tracks, instances) {
     objCategories = readStringMetadata(file, "label_image_obj_categories", objDs, "categories");
     objNames = readStringMetadata(file, "label_image_obj_names", objDs, "names");
     objScoreCol = objData.score ?? [];
+    objTrackingScoreCol = objData.tracking_score ?? [];
   }
   const liScoreMaps = readScoreMaps(file, "label_image_score_map_index", "label_image_score_maps");
   const labelImages = [];
@@ -7079,12 +7373,14 @@ function readLabelImages(file, videos, tracks, instances) {
         deferredInstances.set(labelId, instIdx);
       }
       const objScore = objScoreCol.length > j ? Number(objScoreCol[j]) : null;
+      const objTsVal = objTrackingScoreCol.length > j ? Number(objTrackingScoreCol[j]) : null;
       objects.set(labelId, {
         track,
         category: objCategories[j] ?? "",
         name: objNames[j] ?? "",
         instance,
         score: objScore !== null && !Number.isNaN(objScore) ? objScore : null,
+        trackingScore: objTsVal !== null && !Number.isNaN(objTsVal) ? objTsVal : null,
         _instanceIdx: instIdx >= 0 ? instIdx : -1
       });
     }
@@ -7293,6 +7589,65 @@ function parseVideoIdFromDataset2(dataset) {
   if (!group.startsWith("video")) return null;
   const id = Number(group.slice(5));
   return Number.isNaN(id) ? null : id;
+}
+function readCentroids(file, videos, tracks) {
+  const centroidsDs = file.get("centroids");
+  if (!centroidsDs) return [];
+  const data = normalizeStructDataset(centroidsDs);
+  const xs = data.x ?? [];
+  const count = xs.length;
+  if (!count) return [];
+  const categories = readStringMetadata(file, "centroid_categories", centroidsDs, "categories");
+  const names = readStringMetadata(file, "centroid_names", centroidsDs, "names");
+  const sources = readStringMetadata(file, "centroid_sources", centroidsDs, "sources");
+  const ys = data.y ?? [];
+  const zs = data.z ?? [];
+  const videoIndices = data.video ?? [];
+  const frameIndices = data.frame_idx ?? [];
+  const trackIndices = data.track ?? [];
+  const instanceIndices = data.instance ?? [];
+  const isPredictedCol = data.is_predicted ?? [];
+  const scores = data.score ?? [];
+  const trackingScores = data.tracking_score ?? [];
+  const centroids = [];
+  for (let i = 0; i < count; i++) {
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+    const frameIdxVal = Number(frameIndices[i]);
+    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const zVal = zs.length > i ? Number(zs[i]) : Number.NaN;
+    const z = Number.isNaN(zVal) ? null : zVal;
+    const tsVal = trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
+    const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
+    const instanceIdx = Number(instanceIndices[i]);
+    const options = {
+      x: Number(xs[i]),
+      y: Number(ys[i]),
+      z,
+      video,
+      frameIdx,
+      track,
+      trackingScore,
+      category: categories[i] ?? "",
+      name: names[i] ?? "",
+      source: sources[i] ?? ""
+    };
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    let centroid;
+    if (isPred) {
+      const scoreVal = Number(scores[i]);
+      centroid = new PredictedCentroid({ ...options, score: Number.isNaN(scoreVal) ? 0 : scoreVal });
+    } else {
+      centroid = new UserCentroid(options);
+    }
+    if (instanceIdx >= 0) {
+      centroid._instanceIdx = instanceIdx;
+    }
+    centroids.push(centroid);
+  }
+  return centroids;
 }
 function slicePoints2(data, start, end, predicted = false) {
   const xs = data.x ?? [];
@@ -8045,6 +8400,11 @@ export {
   SegmentationMask,
   UserSegmentationMask,
   PredictedSegmentationMask,
+  getCentroidSkeleton,
+  CENTROID_SKELETON,
+  Centroid,
+  UserCentroid,
+  PredictedCentroid,
   LabelImage,
   UserLabelImage,
   PredictedLabelImage,

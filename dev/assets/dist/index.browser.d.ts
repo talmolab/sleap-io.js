@@ -1,5 +1,5 @@
-import { I as Instance, P as PredictedInstance, k as Skeleton, T as Track } from './instance-BmOdR704.js';
-export { E as Edge, N as Node, j as NodeOrIndex, a as Point, c as PointsArray, b as PredictedPoint, d as PredictedPointsArray, S as Symmetry, p as pointsEmpty, f as pointsFromArray, h as pointsFromDict, e as predictedPointsEmpty, g as predictedPointsFromArray, i as predictedPointsFromDict } from './instance-BmOdR704.js';
+import { I as Instance, P as PredictedInstance, k as Skeleton, T as Track } from './instance-CrKeNF4a.js';
+export { E as Edge, N as Node, j as NodeOrIndex, a as Point, c as PointsArray, b as PredictedPoint, d as PredictedPointsArray, S as Symmetry, _ as _registerCentroidFactory, p as pointsEmpty, f as pointsFromArray, h as pointsFromDict, e as predictedPointsEmpty, g as predictedPointsFromArray, i as predictedPointsFromDict } from './instance-CrKeNF4a.js';
 
 type VideoFrame = ImageData | ImageBitmap | Uint8Array | ArrayBuffer;
 interface VideoBackend {
@@ -277,6 +277,7 @@ interface BoundingBoxOptions {
     frameIdx?: number | null;
     track?: Track | null;
     instance?: Instance | null;
+    trackingScore?: number | null;
     category?: string;
     name?: string;
     source?: string;
@@ -291,6 +292,7 @@ declare class BoundingBox {
     video: Video | null;
     frameIdx: number | null;
     track: Track | null;
+    trackingScore: number | null;
     instance: Instance | null;
     category: string;
     name: string;
@@ -377,6 +379,7 @@ interface SegmentationMaskOptions {
     video?: Video | null;
     frameIdx?: number | null;
     track?: Track | null;
+    trackingScore?: number | null;
     instance?: Instance | null;
     scale?: [number, number];
     offset?: [number, number];
@@ -391,6 +394,7 @@ declare class SegmentationMask {
     video: Video | null;
     frameIdx: number | null;
     track: Track | null;
+    trackingScore: number | null;
     instance: Instance | null;
     /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
     scale: [number, number];
@@ -489,6 +493,7 @@ interface ROIOptions {
     video?: Video | null;
     frameIdx?: number | null;
     track?: Track | null;
+    trackingScore?: number | null;
     instance?: Instance | null;
 }
 declare class ROI {
@@ -499,6 +504,7 @@ declare class ROI {
     video: Video | null;
     frameIdx: number | null;
     track: Track | null;
+    trackingScore: number | null;
     instance: Instance | null;
     /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx: number | null;
@@ -551,6 +557,95 @@ declare class PredictedROI extends ROI {
     get isPredicted(): boolean;
 }
 
+/** Return the shared single-node `Skeleton(["centroid"])` instance. */
+declare function getCentroidSkeleton(): Skeleton;
+/**
+ * Module-level constant for the centroid skeleton.
+ * Lazily initialized on first access.
+ */
+declare const CENTROID_SKELETON: Skeleton;
+/** Options for constructing a Centroid. */
+interface CentroidOptions {
+    x: number;
+    y: number;
+    z?: number | null;
+    video?: Video | null;
+    frameIdx?: number | null;
+    track?: Track | null;
+    trackingScore?: number | null;
+    instance?: Instance | null;
+    category?: string;
+    name?: string;
+    source?: string;
+}
+/**
+ * A point representing the center of an object.
+ *
+ * Supports optional 3D coordinates, video/frame/track/instance metadata,
+ * and interconversion with single-node Instance objects.
+ *
+ * This class is abstract. Use UserCentroid or PredictedCentroid.
+ */
+declare class Centroid {
+    x: number;
+    y: number;
+    z: number | null;
+    video: Video | null;
+    frameIdx: number | null;
+    track: Track | null;
+    trackingScore: number | null;
+    instance: Instance | null;
+    category: string;
+    name: string;
+    source: string;
+    /** @internal Deferred instance index for lazy resolution. */
+    _instanceIdx: number | null;
+    constructor(options: CentroidOptions);
+    /** Coordinates as `[x, y]`. */
+    get xy(): [number, number];
+    /** Coordinates as `[y, x]` (row, col order). */
+    get yx(): [number, number];
+    /** Coordinates as `[x, y, z]`. */
+    get xyz(): [number, number, number | null];
+    /** Whether this is a predicted centroid (has a score). */
+    get isPredicted(): boolean;
+    /** Whether the centroid has no temporal association. */
+    get isStatic(): boolean;
+    /**
+     * Convert this centroid to a single-node Instance.
+     *
+     * @param skeleton - Skeleton to use. Must have exactly one node.
+     *   Defaults to the shared CENTROID_SKELETON.
+     * @returns Instance or PredictedInstance depending on this centroid's type.
+     */
+    toInstance(skeleton?: Skeleton): Instance | PredictedInstance;
+    /**
+     * Create a centroid from an Instance.
+     *
+     * @param instance - Source instance.
+     * @param options - Options for centroid extraction.
+     * @param options.method - "centerOfMass" (default), "bboxCenter", or "anchor".
+     * @param options.node - Node name or index for "anchor" method.
+     * @returns UserCentroid or PredictedCentroid depending on instance type.
+     */
+    static fromInstance(instance: Instance | PredictedInstance, options?: {
+        method?: string;
+        node?: string | number;
+        [key: string]: unknown;
+    }): Centroid;
+}
+/** User-annotated or derived centroid (no prediction score). */
+declare class UserCentroid extends Centroid {
+}
+/** Predicted centroid with a confidence score. */
+declare class PredictedCentroid extends Centroid {
+    score: number;
+    constructor(options: CentroidOptions & {
+        score: number;
+    });
+    get isPredicted(): boolean;
+}
+
 /** Per-object metadata in a LabelImage. */
 interface LabelImageObjectInfo {
     track: Track | null;
@@ -558,6 +653,7 @@ interface LabelImageObjectInfo {
     name: string;
     instance: Instance | null;
     score?: number | null;
+    trackingScore?: number | null;
     /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx?: number;
 }
@@ -771,6 +867,7 @@ declare class Labels {
     rois: ROI[];
     masks: SegmentationMask[];
     bboxes: BoundingBox[];
+    centroids: Centroid[];
     labelImages: LabelImage[];
     identities: Identity[];
     /** @internal Lazy frame list for on-demand materialization. */
@@ -788,6 +885,7 @@ declare class Labels {
         rois?: ROI[];
         masks?: SegmentationMask[];
         bboxes?: BoundingBox[];
+        centroids?: Centroid[];
         labelImages?: LabelImage[];
         identities?: Identity[];
     });
@@ -841,6 +939,14 @@ declare class Labels {
         instance?: Instance;
         predicted?: boolean;
     }): BoundingBox[];
+    getCentroids(filters?: {
+        video?: Video;
+        frameIdx?: number;
+        category?: string;
+        track?: Track;
+        instance?: Instance | PredictedInstance;
+        predicted?: boolean;
+    }): Centroid[];
     get staticLabelImages(): LabelImage[];
     get temporalLabelImages(): LabelImage[];
     getLabelImages(filters?: {
@@ -1637,4 +1743,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AnnotationType, BoundingBox, type BoundingBoxOptions, Camera, CameraGroup, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, type SegmentationMaskOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };
+export { AnnotationType, BoundingBox, type BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, type SegmentationMaskOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };

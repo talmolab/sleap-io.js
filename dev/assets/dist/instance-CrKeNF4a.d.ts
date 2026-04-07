@@ -40,6 +40,11 @@ declare class Skeleton {
     private symmetryFrom;
 }
 
+type CentroidFactory = (instance: Instance | PredictedInstance, options?: {
+    method?: string;
+    node?: string | number;
+}) => any;
+declare function _registerCentroidFactory(factory: CentroidFactory): void;
 declare class Track {
     name: string;
     constructor(name: string);
@@ -91,6 +96,16 @@ declare class Instance {
         invisibleAsNaN?: boolean;
     }): number[][];
     toString(): string;
+    /** Mean of visible point coordinates as `[x, y]`, or `null` if no points visible. */
+    get centroidXy(): [number, number] | null;
+    /**
+     * Create a Centroid from this instance.
+     *
+     * @param method - "centerOfMass" (default), "bboxCenter", or "anchor".
+     * @param node - Node specification for "anchor" method.
+     * @returns UserCentroid or PredictedCentroid depending on instance type.
+     */
+    toCentroid(method?: string, node?: string | number): any;
     get isEmpty(): boolean;
     overlapsWith(other: Instance, iouThreshold?: number): boolean;
     boundingBox(): [number, number, number, number] | null;
@@ -124,4 +139,4 @@ declare class PredictedInstance extends Instance {
 declare function pointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PointsArray;
 declare function predictedPointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PredictedPointsArray;
 
-export { Edge as E, Instance as I, Node as N, PredictedInstance as P, Symmetry as S, Track as T, type Point as a, type PredictedPoint as b, type PointsArray as c, type PredictedPointsArray as d, predictedPointsEmpty as e, pointsFromArray as f, predictedPointsFromArray as g, pointsFromDict as h, predictedPointsFromDict as i, type NodeOrIndex as j, Skeleton as k, pointsEmpty as p };
+export { Edge as E, Instance as I, Node as N, PredictedInstance as P, Symmetry as S, Track as T, _registerCentroidFactory as _, type Point as a, type PredictedPoint as b, type PointsArray as c, type PredictedPointsArray as d, predictedPointsEmpty as e, pointsFromArray as f, predictedPointsFromArray as g, pointsFromDict as h, predictedPointsFromDict as i, type NodeOrIndex as j, Skeleton as k, pointsEmpty as p };

@@ -1,4 +1,8 @@
 // src/model/instance.ts
+var _centroidFactory = null;
+function _registerCentroidFactory(factory) {
+  _centroidFactory = factory;
+}
 var Track = class {
   name;
   constructor(name) {
@@ -118,6 +122,34 @@ var Instance = class _Instance {
   toString() {
     const trackName = this.track ? `"${this.track.name}"` : "None";
     return `Instance(points=${JSON.stringify(this.numpy({ invisibleAsNaN: false }))}, track=${trackName})`;
+  }
+  /** Mean of visible point coordinates as `[x, y]`, or `null` if no points visible. */
+  get centroidXy() {
+    let sumX = 0, sumY = 0, count = 0;
+    for (const point of this.points) {
+      if (point.visible && !Number.isNaN(point.xy[0]) && !Number.isNaN(point.xy[1])) {
+        sumX += point.xy[0];
+        sumY += point.xy[1];
+        count++;
+      }
+    }
+    if (count === 0) return null;
+    return [sumX / count, sumY / count];
+  }
+  /**
+   * Create a Centroid from this instance.
+   *
+   * @param method - "centerOfMass" (default), "bboxCenter", or "anchor".
+   * @param node - Node specification for "anchor" method.
+   * @returns UserCentroid or PredictedCentroid depending on instance type.
+   */
+  toCentroid(method, node) {
+    if (!_centroidFactory) {
+      throw new Error(
+        "Centroid not available. Import centroid.ts before calling toCentroid()."
+      );
+    }
+    return _centroidFactory(this, { method, node });
   }
   get isEmpty() {
     return this.points.every((point) => !point.visible || Number.isNaN(point.xy[0]));
@@ -631,6 +663,7 @@ function resolveIdentity(record, identities) {
 }
 
 export {
+  _registerCentroidFactory,
   Track,
   pointsEmpty,
   predictedPointsEmpty,

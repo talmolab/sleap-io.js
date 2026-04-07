@@ -1,8 +1,10 @@
 import {
   AnnotationType,
   BoundingBox,
+  CENTROID_SKELETON,
   Camera,
   CameraGroup,
+  Centroid,
   FrameGroup,
   Identity,
   InstanceContext,
@@ -19,6 +21,7 @@ import {
   NAMED_COLORS,
   PALETTES,
   PredictedBoundingBox,
+  PredictedCentroid,
   PredictedLabelImage,
   PredictedROI,
   PredictedSegmentationMask,
@@ -30,6 +33,7 @@ import {
   StreamingHdf5VideoBackend,
   SuggestionFrame,
   UserBoundingBox,
+  UserCentroid,
   UserLabelImage,
   UserROI,
   UserSegmentationMask,
@@ -52,6 +56,7 @@ import {
   encodeYamlSkeleton,
   fromDict,
   fromNumpy,
+  getCentroidSkeleton,
   getMarkerFunction,
   getPalette,
   isStreamingSupported,
@@ -82,7 +87,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-NUVKYZDX.js";
+} from "./chunk-T5BZCRS2.js";
 import {
   Edge,
   Instance,
@@ -93,13 +98,14 @@ import {
   Skeleton,
   Symmetry,
   Track,
+  _registerCentroidFactory,
   pointsEmpty,
   pointsFromArray,
   pointsFromDict,
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-BEDAHJBO.js";
+} from "./chunk-RVNDZMON.js";
 
 // src/codecs/slp/h5-node.ts
 var modulePromise = null;
@@ -121,9 +127,9 @@ async function openH5FileNode(module, source) {
   if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
     const { writeFileSync, unlinkSync } = await import("fs");
     const { tmpdir } = await import("os");
-    const { join } = await import("path");
+    const { join: join2 } = await import("path");
     const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join(tmpdir(), `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
+    const tempPath = join2(tmpdir(), `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
     writeFileSync(tempPath, data);
     const file = new module.File(tempPath, "r");
     return {
@@ -141,6 +147,146 @@ _registerFileWriter(async (filename, bytes) => {
   const { writeFile } = await import("fs/promises");
   await writeFile(filename, bytes);
 });
+
+// src/io/trackmate.ts
+import * as fs from "fs";
+import * as path from "path";
+var HEADER_ROWS = 4;
+var SPOTS_SIGNATURE = ["LABEL", "ID", "TRACK_ID", "QUALITY", "POSITION_X", "POSITION_Y"];
+function isTrackMateFile(filePath) {
+  try {
+    const fd = fs.openSync(filePath, "r");
+    const buf = Buffer.alloc(1024);
+    const bytesRead = fs.readSync(fd, buf, 0, 1024, 0);
+    fs.closeSync(fd);
+    const firstLine = buf.toString("utf-8", 0, bytesRead).split("\n")[0]?.trim() ?? "";
+    const cols = firstLine.split(",");
+    return SPOTS_SIGNATURE.every((sig, i) => cols[i] === sig);
+  } catch {
+    return false;
+  }
+}
+function findSibling(spotsPath, suffix) {
+  const dir = path.dirname(spotsPath);
+  const base = path.basename(spotsPath, path.extname(spotsPath));
+  if (!base.includes("_spots")) return null;
+  const stem = base.replace("_spots", "");
+  if (suffix.startsWith(".")) {
+    for (const ext of [suffix, suffix + "f"]) {
+      const candidate = path.join(dir, stem + ext);
+      if (fs.existsSync(candidate)) return candidate;
+    }
+  } else {
+    const candidate = path.join(dir, stem + suffix + ".csv");
+    if (fs.existsSync(candidate)) return candidate;
+  }
+  return null;
+}
+function parseEdges(edgesPath) {
+  const targetToCost = /* @__PURE__ */ new Map();
+  const content = fs.readFileSync(edgesPath, "utf-8");
+  const lines = content.split("\n");
+  if (lines.length <= HEADER_ROWS) return targetToCost;
+  const header = lines[0].split(",");
+  const targetCol = header.indexOf("SPOT_TARGET_ID");
+  const costCol = header.indexOf("LINK_COST");
+  if (targetCol === -1 || costCol === -1) return targetToCost;
+  for (let i = HEADER_ROWS; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(",");
+    const targetId = parseInt(cols[targetCol], 10);
+    const cost = parseFloat(cols[costCol]);
+    if (!isNaN(targetId) && !isNaN(cost)) {
+      targetToCost.set(targetId, cost);
+    }
+  }
+  return targetToCost;
+}
+function readTrackMateCsv(spotsPath, options) {
+  if (!fs.existsSync(spotsPath)) {
+    throw new Error(`Spots CSV not found: ${spotsPath}`);
+  }
+  const edgesPath = options?.edgesPath ?? findSibling(spotsPath, "_edges");
+  let videoObj = null;
+  if (options?.video) {
+    if (typeof options.video === "string") {
+      videoObj = new Video({ filename: options.video });
+    } else {
+      videoObj = options.video;
+    }
+  } else {
+    const tifPath = findSibling(spotsPath, ".tif");
+    if (tifPath) {
+      videoObj = new Video({ filename: tifPath });
+    }
+  }
+  const targetToCost = edgesPath ? parseEdges(edgesPath) : /* @__PURE__ */ new Map();
+  const content = fs.readFileSync(spotsPath, "utf-8");
+  const lines = content.split("\n");
+  const header = lines[0]?.split(",") ?? [];
+  if (header.length < SPOTS_SIGNATURE.length || !SPOTS_SIGNATURE.every((sig, i) => header[i] === sig)) {
+    throw new Error(
+      `Not a TrackMate spots CSV. Expected columns starting with ${SPOTS_SIGNATURE.join(", ")}.`
+    );
+  }
+  const col = {};
+  for (let i = 0; i < header.length; i++) {
+    col[header[i]] = i;
+  }
+  const dataRows = [];
+  const trackIds = /* @__PURE__ */ new Set();
+  for (let i = HEADER_ROWS; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (!line) continue;
+    const cols = line.split(",");
+    dataRows.push(cols);
+    const tid = cols[col["TRACK_ID"]];
+    if (tid) {
+      trackIds.add(parseInt(tid, 10));
+    }
+  }
+  const trackMap = /* @__PURE__ */ new Map();
+  for (const tid of [...trackIds].sort((a, b) => a - b)) {
+    trackMap.set(tid, new Track(`Track_${tid}`));
+  }
+  const tracks = [...trackMap.values()];
+  const centroids = [];
+  for (const row of dataRows) {
+    const spotId = parseInt(row[col["ID"]], 10);
+    const tidStr = row[col["TRACK_ID"]];
+    const x = parseFloat(row[col["POSITION_X"]]);
+    const y = parseFloat(row[col["POSITION_Y"]]);
+    const zVal = col["POSITION_Z"] !== void 0 ? parseFloat(row[col["POSITION_Z"]]) : 0;
+    const z = zVal !== 0 ? zVal : null;
+    const frameIdx = parseInt(row[col["FRAME"]], 10);
+    const score = parseFloat(row[col["QUALITY"]]);
+    const track = tidStr ? trackMap.get(parseInt(tidStr, 10)) ?? null : null;
+    const trackingScore = targetToCost.get(spotId) ?? null;
+    const label = col["LABEL"] !== void 0 ? row[col["LABEL"]] : `ID${spotId}`;
+    centroids.push(
+      new PredictedCentroid({
+        x,
+        y,
+        z,
+        video: videoObj,
+        frameIdx,
+        track,
+        trackingScore,
+        score,
+        name: label,
+        source: "trackmate"
+      })
+    );
+  }
+  const videos = videoObj ? [videoObj] : [];
+  const labels = new Labels({ videos, tracks, centroids });
+  labels.provenance["filename"] = spotsPath;
+  return labels;
+}
+function loadTrackMate(filename, options) {
+  return readTrackMateCsv(filename, options);
+}
 
 // src/rendering/render.ts
 var DEFAULT_OPTIONS = {
@@ -417,12 +563,12 @@ async function toDataURL(imageData, format = "png") {
   ctx.putImageData(imageData, 0, 0);
   return canvas.toDataURL(`image/${format}`);
 }
-async function saveImage(imageData, path) {
+async function saveImage(imageData, path2) {
   const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   ctx.putImageData(imageData, 0, 0);
-  await canvas.saveAs(path);
+  await canvas.saveAs(path2);
 }
 
 // src/rendering/video.ts
@@ -533,8 +679,10 @@ async function renderVideo(source, outputPath, options = {}) {
 export {
   AnnotationType,
   BoundingBox,
+  CENTROID_SKELETON,
   Camera,
   CameraGroup,
+  Centroid,
   Edge,
   FrameGroup,
   Identity,
@@ -555,6 +703,7 @@ export {
   Node,
   PALETTES,
   PredictedBoundingBox,
+  PredictedCentroid,
   PredictedInstance,
   PredictedInstance3D,
   PredictedLabelImage,
@@ -571,10 +720,12 @@ export {
   Symmetry,
   Track,
   UserBoundingBox,
+  UserCentroid,
   UserLabelImage,
   UserROI,
   UserSegmentationMask,
   Video,
+  _registerCentroidFactory,
   _registerMaskFactory,
   checkFfmpeg,
   createVideoBackend,
@@ -592,13 +743,16 @@ export {
   encodeYamlSkeleton,
   fromDict,
   fromNumpy,
+  getCentroidSkeleton,
   getMarkerFunction,
   getPalette,
   isStreamingSupported,
+  isTrackMateFile,
   isTrainingConfig,
   labelsFromNumpy,
   loadSlp,
   loadSlpSet,
+  loadTrackMate,
   loadVideo,
   makeCameraFromDict,
   normalizeLabelIds,
@@ -614,6 +768,7 @@ export {
   readGeoJSON,
   readSkeletonJson,
   readSlpStreaming,
+  readTrackMateCsv,
   readTrainingConfigSkeleton,
   readTrainingConfigSkeletons,
   renderImage,
