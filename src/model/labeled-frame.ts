@@ -104,7 +104,7 @@ export class LabeledFrame {
   /** Merge annotation lists from another frame, deduplicating by identity. */
   _mergeAnnotations(other: LabeledFrame): void {
     for (const attr of ["centroids", "bboxes", "masks", "labelImages", "rois"] as const) {
-      const existing = new Set((this[attr] as unknown[]).map((x) => x));
+      const existing = new Set(this[attr] as unknown[]);
       for (const item of other[attr] as unknown[]) {
         if (!existing.has(item)) {
           (this[attr] as unknown[]).push(item);

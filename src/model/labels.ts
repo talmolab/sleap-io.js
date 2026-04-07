@@ -107,11 +107,6 @@ export class Labels {
 
   /** Distribute flat annotation lists into their corresponding LabeledFrames. */
   private _distributeAnnotations(): void {
-    const frameMap = new Map<string, LabeledFrame>();
-    for (const lf of this.labeledFrames) {
-      frameMap.set(`${lf.video}:${lf.frameIdx}`, lf);
-    }
-
     const getOrCreate = (video: Video, frameIdx: number): LabeledFrame => {
       // Use object identity for video key
       let found: LabeledFrame | undefined;
@@ -153,22 +148,19 @@ export class Labels {
 
   /** Collect tracks from annotations on a frame into this.tracks. */
   private _collectAnnotationTracks(lf: LabeledFrame): void {
-    for (const c of lf.centroids) {
-      if (c.track && !this.tracks.includes(c.track)) this.tracks.push(c.track);
-    }
-    for (const b of lf.bboxes) {
-      if (b.track && !this.tracks.includes(b.track)) this.tracks.push(b.track);
-    }
-    for (const m of lf.masks) {
-      if (m.track && !this.tracks.includes(m.track)) this.tracks.push(m.track);
-    }
-    for (const r of lf.rois) {
-      if (r.track && !this.tracks.includes(r.track)) this.tracks.push(r.track);
-    }
-    for (const li of lf.labelImages) {
-      for (const info of li.objects.values()) {
-        if (info.track && !this.tracks.includes(info.track)) this.tracks.push(info.track);
+    const existing = new Set(this.tracks);
+    const add = (track: Track | null | undefined) => {
+      if (track && !existing.has(track)) {
+        existing.add(track);
+        this.tracks.push(track);
       }
+    };
+    for (const c of lf.centroids) add(c.track);
+    for (const b of lf.bboxes) add(b.track);
+    for (const m of lf.masks) add(m.track);
+    for (const r of lf.rois) add(r.track);
+    for (const li of lf.labelImages) {
+      for (const info of li.objects.values()) add(info.track);
     }
   }
 
