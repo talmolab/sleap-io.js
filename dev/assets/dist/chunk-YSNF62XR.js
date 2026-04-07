@@ -27,11 +27,21 @@ var LabeledFrame = class {
   frameIdx;
   instances;
   isNegative;
+  centroids;
+  bboxes;
+  masks;
+  labelImages;
+  rois;
   constructor(options) {
     this.video = options.video;
     this.frameIdx = options.frameIdx;
     this.instances = options.instances ?? [];
     this.isNegative = options.isNegative ?? false;
+    this.centroids = options.centroids ?? [];
+    this.bboxes = options.bboxes ?? [];
+    this.masks = options.masks ?? [];
+    this.labelImages = options.labelImages ?? [];
+    this.rois = options.rois ?? [];
   }
   get length() {
     return this.instances.length;
@@ -76,6 +86,22 @@ var LabeledFrame = class {
   }
   removePredictions() {
     this.instances = this.instances.filter((inst) => inst instanceof Instance);
+    this.centroids = this.centroids.filter((c) => !c.isPredicted);
+    this.bboxes = this.bboxes.filter((b) => !b.isPredicted);
+    this.masks = this.masks.filter((m) => !m.isPredicted);
+    this.labelImages = this.labelImages.filter((li) => !li.isPredicted);
+    this.rois = this.rois.filter((r) => !r.isPredicted);
+  }
+  /** Merge annotation lists from another frame, deduplicating by identity. */
+  _mergeAnnotations(other) {
+    for (const attr of ["centroids", "bboxes", "masks", "labelImages", "rois"]) {
+      const existing = new Set(this[attr]);
+      for (const item of other[attr]) {
+        if (!existing.has(item)) {
+          this[attr].push(item);
+        }
+      }
+    }
   }
   removeEmptyInstances() {
     this.instances = this.instances.filter((inst) => !inst.isEmpty);
@@ -454,6 +480,18 @@ var LazyDataStore = class _LazyDataStore {
   videos;
   formatId;
   negativeFrames;
+  // Per-frame annotation lookups: "videoIdx:frameIdx" -> annotation[]
+  _centroidByFrame = /* @__PURE__ */ new Map();
+  _bboxByFrame = /* @__PURE__ */ new Map();
+  _maskByFrame = /* @__PURE__ */ new Map();
+  _labelImageByFrame = /* @__PURE__ */ new Map();
+  _roiByFrame = /* @__PURE__ */ new Map();
+  // Undistributed annotations (video=null or frameIdx=null, e.g. static ROIs)
+  _undistributedCentroids = [];
+  _undistributedBboxes = [];
+  _undistributedMasks = [];
+  _undistributedLabelImages = [];
+  _undistributedRois = [];
   constructor(options) {
     this.framesData = options.framesData;
     this.instancesData = options.instancesData;
@@ -478,7 +516,14 @@ var LazyDataStore = class _LazyDataStore {
       }
       return out;
     };
-    return new _LazyDataStore({
+    const copyAnnMap = (map) => {
+      const out = /* @__PURE__ */ new Map();
+      for (const [key, list] of map) {
+        out.set(key, [...list]);
+      }
+      return out;
+    };
+    const newStore = new _LazyDataStore({
       framesData: copyRecord(this.framesData),
       instancesData: copyRecord(this.instancesData),
       pointsData: copyRecord(this.pointsData),
@@ -489,6 +534,17 @@ var LazyDataStore = class _LazyDataStore {
       formatId: this.formatId,
       negativeFrames: new Set(this.negativeFrames)
     });
+    newStore._centroidByFrame = copyAnnMap(this._centroidByFrame);
+    newStore._bboxByFrame = copyAnnMap(this._bboxByFrame);
+    newStore._maskByFrame = copyAnnMap(this._maskByFrame);
+    newStore._labelImageByFrame = copyAnnMap(this._labelImageByFrame);
+    newStore._roiByFrame = copyAnnMap(this._roiByFrame);
+    newStore._undistributedCentroids = [...this._undistributedCentroids];
+    newStore._undistributedBboxes = [...this._undistributedBboxes];
+    newStore._undistributedMasks = [...this._undistributedMasks];
+    newStore._undistributedLabelImages = [...this._undistributedLabelImages];
+    newStore._undistributedRois = [...this._undistributedRois];
+    return newStore;
   }
   /** Total number of frames in the store. */
   get frameCount() {
@@ -553,8 +609,23 @@ var LazyDataStore = class _LazyDataStore {
         instance.fromPredicted = predicted;
       }
     }
-    const frame = new LabeledFrame({ video, frameIdx: frameIndex, instances });
-    const negKey = `${videoIndex}:${frameIndex}`;
+    const annKey = `${videoIndex}:${frameIndex}`;
+    const centroids = this._centroidByFrame.get(annKey) ?? [];
+    const bboxes = this._bboxByFrame.get(annKey) ?? [];
+    const masks = this._maskByFrame.get(annKey) ?? [];
+    const labelImages = this._labelImageByFrame.get(annKey) ?? [];
+    const rois = this._roiByFrame.get(annKey) ?? [];
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: frameIndex,
+      instances,
+      centroids,
+      bboxes,
+      masks,
+      labelImages,
+      rois
+    });
+    const negKey = annKey;
     if (this.negativeFrames.has(negKey)) {
       frame.isNegative = true;
     }
@@ -690,16 +761,23 @@ var LazyDataStore = class _LazyDataStore {
 var LazyFrameList = class {
   store;
   cache;
+  _supplementary = [];
   constructor(store) {
     this.store = store;
     this.cache = /* @__PURE__ */ new Map();
   }
   get length() {
-    return this.store.frameCount;
+    return this.store.frameCount + this._supplementary.length;
   }
   /** Get a frame by index, materializing it if needed. */
   at(index) {
-    if (index < 0 || index >= this.length) return void 0;
+    const n = this.length;
+    const nStore = this.store.frameCount;
+    if (index < 0) index += n;
+    if (index < 0 || index >= n) return void 0;
+    if (index >= nStore) {
+      return this._supplementary[index - nStore];
+    }
     if (this.cache.has(index)) return this.cache.get(index);
     const frame = this.store.materializeFrame(index);
     if (frame) {
@@ -745,12 +823,15 @@ var Labels = class _Labels {
   suggestions;
   sessions;
   provenance;
-  rois;
-  masks;
-  bboxes;
-  centroids = [];
-  labelImages;
   identities;
+  // Annotation fields: accepted as constructor kwargs, distributed into
+  // LabeledFrames at init time. Undistributed annotations (video=null or
+  // frameIdx=null) are kept here. Access via property getters.
+  _initRois;
+  _initMasks;
+  _initBboxes;
+  _initCentroids;
+  _initLabelImages;
   /** @internal Lazy frame list for on-demand materialization. */
   _lazyFrameList = null;
   /** @internal Lazy data store holding raw HDF5 data. */
@@ -763,11 +844,11 @@ var Labels = class _Labels {
     this.suggestions = options?.suggestions ?? [];
     this.sessions = options?.sessions ?? [];
     this.provenance = options?.provenance ?? {};
-    this.rois = options?.rois ?? [];
-    this.masks = options?.masks ?? [];
-    this.bboxes = options?.bboxes ?? [];
-    this.centroids = options?.centroids ?? [];
-    this.labelImages = options?.labelImages ?? [];
+    this._initRois = options?.rois ?? [];
+    this._initMasks = options?.masks ?? [];
+    this._initBboxes = options?.bboxes ?? [];
+    this._initCentroids = options?.centroids ?? [];
+    this._initLabelImages = options?.labelImages ?? [];
     this.identities = options?.identities ?? [];
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = /* @__PURE__ */ new Map();
@@ -794,6 +875,173 @@ var Labels = class _Labels {
       }
       this.tracks = Array.from(uniqueTracks.values());
     }
+    if (!this._lazyFrameList) {
+      this._distributeAnnotations();
+      for (const lf of this.labeledFrames) {
+        this._collectAnnotationTracks(lf);
+      }
+    }
+  }
+  /** Distribute flat annotation lists into their corresponding LabeledFrames. */
+  _distributeAnnotations() {
+    const frameMap = /* @__PURE__ */ new Map();
+    for (const lf of this.labeledFrames) {
+      let byIdx = frameMap.get(lf.video);
+      if (!byIdx) {
+        byIdx = /* @__PURE__ */ new Map();
+        frameMap.set(lf.video, byIdx);
+      }
+      byIdx.set(lf.frameIdx, lf);
+    }
+    const getOrCreate = (video, frameIdx) => {
+      let byIdx = frameMap.get(video);
+      if (byIdx) {
+        const existing = byIdx.get(frameIdx);
+        if (existing) return existing;
+      } else {
+        byIdx = /* @__PURE__ */ new Map();
+        frameMap.set(video, byIdx);
+      }
+      const lf = new LabeledFrame({ video, frameIdx });
+      byIdx.set(frameIdx, lf);
+      this.labeledFrames.push(lf);
+      return lf;
+    };
+    const distribute = (items, attr) => {
+      const remaining = [];
+      for (const ann of items) {
+        if (ann.video !== null && ann.frameIdx !== null) {
+          const lf = getOrCreate(ann.video, ann.frameIdx);
+          lf[attr].push(ann);
+        } else {
+          remaining.push(ann);
+        }
+      }
+      return remaining;
+    };
+    this._initCentroids = distribute(this._initCentroids, "centroids");
+    this._initBboxes = distribute(this._initBboxes, "bboxes");
+    this._initMasks = distribute(this._initMasks, "masks");
+    this._initLabelImages = distribute(this._initLabelImages, "labelImages");
+    this._initRois = distribute(this._initRois, "rois");
+  }
+  /** Collect tracks from annotations on a frame into this.tracks. */
+  _collectAnnotationTracks(lf) {
+    const existing = new Set(this.tracks);
+    const add = (track) => {
+      if (track && !existing.has(track)) {
+        existing.add(track);
+        this.tracks.push(track);
+      }
+    };
+    for (const c of lf.centroids) add(c.track);
+    for (const b of lf.bboxes) add(b.track);
+    for (const m of lf.masks) add(m.track);
+    for (const r of lf.rois) add(r.track);
+    for (const li of lf.labelImages) {
+      for (const info of li.objects.values()) add(info.track);
+    }
+  }
+  /** Find an existing LabeledFrame or create a new one. */
+  _findOrCreateFrame(video, frameIdx) {
+    for (const lf2 of this.labeledFrames) {
+      if (lf2.video === video && lf2.frameIdx === frameIdx) return lf2;
+    }
+    const lf = new LabeledFrame({ video, frameIdx });
+    this.labeledFrames.push(lf);
+    return lf;
+  }
+  /** Add an annotation to the appropriate LabeledFrame. */
+  _addAnnotation(annotation, attr) {
+    if (annotation.video === null || annotation.frameIdx === null) {
+      throw new Error(`Annotation must have video and frameIdx set.`);
+    }
+    const lf = this._findOrCreateFrame(annotation.video, annotation.frameIdx);
+    lf[attr].push(annotation);
+    if (!this.videos.includes(annotation.video)) this.videos.push(annotation.video);
+    if (annotation.track && !this.tracks.includes(annotation.track)) {
+      this.tracks.push(annotation.track);
+    }
+  }
+  addCentroid(centroid) {
+    this._addAnnotation(centroid, "centroids");
+  }
+  addBbox(bbox) {
+    this._addAnnotation(bbox, "bboxes");
+  }
+  addMask(mask) {
+    this._addAnnotation(mask, "masks");
+  }
+  addLabelImage(labelImage) {
+    this._addAnnotation(labelImage, "labelImages");
+    for (const info of labelImage.objects.values()) {
+      if (info.track && !this.tracks.includes(info.track)) {
+        this.tracks.push(info.track);
+      }
+    }
+  }
+  addRoi(roi) {
+    this._addAnnotation(roi, "rois");
+  }
+  /** Flat view of all centroids across all frames. */
+  get centroids() {
+    if (this._lazyFrameList && this._lazyDataStore) {
+      const byFrame = this._lazyDataStore._centroidByFrame;
+      const undist = this._lazyDataStore._undistributedCentroids;
+      return [...undist, ...[...byFrame.values()].flat()];
+    }
+    return [
+      ...this._initCentroids,
+      ...this.labeledFrames.flatMap((lf) => lf.centroids)
+    ];
+  }
+  /** Flat view of all bounding boxes across all frames. */
+  get bboxes() {
+    if (this._lazyFrameList && this._lazyDataStore) {
+      const byFrame = this._lazyDataStore._bboxByFrame;
+      const undist = this._lazyDataStore._undistributedBboxes;
+      return [...undist, ...[...byFrame.values()].flat()];
+    }
+    return [
+      ...this._initBboxes,
+      ...this.labeledFrames.flatMap((lf) => lf.bboxes)
+    ];
+  }
+  /** Flat view of all segmentation masks across all frames. */
+  get masks() {
+    if (this._lazyFrameList && this._lazyDataStore) {
+      const byFrame = this._lazyDataStore._maskByFrame;
+      const undist = this._lazyDataStore._undistributedMasks;
+      return [...undist, ...[...byFrame.values()].flat()];
+    }
+    return [
+      ...this._initMasks,
+      ...this.labeledFrames.flatMap((lf) => lf.masks)
+    ];
+  }
+  /** Flat view of all label images across all frames. */
+  get labelImages() {
+    if (this._lazyFrameList && this._lazyDataStore) {
+      const byFrame = this._lazyDataStore._labelImageByFrame;
+      const undist = this._lazyDataStore._undistributedLabelImages;
+      return [...undist, ...[...byFrame.values()].flat()];
+    }
+    return [
+      ...this._initLabelImages,
+      ...this.labeledFrames.flatMap((lf) => lf.labelImages)
+    ];
+  }
+  /** Flat view of all ROIs across all frames. */
+  get rois() {
+    if (this._lazyFrameList && this._lazyDataStore) {
+      const byFrame = this._lazyDataStore._roiByFrame;
+      const undist = this._lazyDataStore._undistributedRois;
+      return [...undist, ...[...byFrame.values()].flat()];
+    }
+    return [
+      ...this._initRois,
+      ...this.labeledFrames.flatMap((lf) => lf.rois)
+    ];
   }
   /** Whether this Labels instance is in lazy mode. */
   get isLazy() {
@@ -805,44 +1053,36 @@ var Labels = class _Labels {
    */
   materialize() {
     if (!this._lazyFrameList) return;
+    const store = this._lazyDataStore;
     this.labeledFrames = this._lazyFrameList.toArray();
     this._lazyFrameList = null;
     this._lazyDataStore = null;
     const allInstances = this.labeledFrames.flatMap((f) => f.instances);
-    for (const roi of this.rois) {
-      if (roi._instanceIdx !== null && roi._instanceIdx >= 0 && roi._instanceIdx < allInstances.length) {
-        roi.instance = allInstances[roi._instanceIdx];
-        roi._instanceIdx = null;
-      }
-    }
-    for (const bbox of this.bboxes) {
-      if (bbox._instanceIdx !== null && bbox._instanceIdx >= 0 && bbox._instanceIdx < allInstances.length) {
-        bbox.instance = allInstances[bbox._instanceIdx];
-        bbox._instanceIdx = null;
-      }
-    }
-    for (const mask of this.masks) {
-      if (mask._instanceIdx !== null && mask._instanceIdx >= 0 && mask._instanceIdx < allInstances.length) {
-        mask.instance = allInstances[mask._instanceIdx];
-        mask._instanceIdx = null;
-      }
-    }
-    for (const centroid of this.centroids) {
-      if (centroid._instanceIdx !== null && centroid._instanceIdx >= 0 && centroid._instanceIdx < allInstances.length) {
-        centroid.instance = allInstances[centroid._instanceIdx];
-        centroid._instanceIdx = null;
-      }
-    }
-    for (const li of this.labelImages) {
-      if (li._objectInstanceIdxs) {
-        for (const [labelId, instIdx] of li._objectInstanceIdxs) {
-          const obj = li.objects.get(labelId);
-          if (obj && instIdx >= 0 && instIdx < allInstances.length) {
-            obj.instance = allInstances[instIdx];
-          }
+    for (const lf of this.labeledFrames) {
+      for (const ann of [...lf.centroids, ...lf.bboxes, ...lf.masks, ...lf.rois]) {
+        if (ann._instanceIdx !== null && ann._instanceIdx >= 0 && ann._instanceIdx < allInstances.length) {
+          ann.instance = allInstances[ann._instanceIdx];
+          ann._instanceIdx = null;
         }
-        li._objectInstanceIdxs = null;
       }
+      for (const li of lf.labelImages) {
+        if (li._objectInstanceIdxs) {
+          for (const [labelId, instIdx] of li._objectInstanceIdxs) {
+            const obj = li.objects.get(labelId);
+            if (obj && instIdx >= 0 && instIdx < allInstances.length) {
+              obj.instance = allInstances[instIdx];
+            }
+          }
+          li._objectInstanceIdxs = null;
+        }
+      }
+    }
+    if (store) {
+      this._initRois = store._undistributedRois;
+      this._initMasks = store._undistributedMasks;
+      this._initBboxes = store._undistributedBboxes;
+      this._initCentroids = store._undistributedCentroids;
+      this._initLabelImages = store._undistributedLabelImages;
     }
   }
   get negativeFrames() {
@@ -888,6 +1128,7 @@ var Labels = class _Labels {
     if (this._lazyFrameList) this.materialize();
     this.labeledFrames.push(frame);
     this.addVideo(frame.video);
+    this._collectAnnotationTracks(frame);
   }
   toDict(options) {
     if (this._lazyFrameList) this.materialize();
@@ -1052,35 +1293,36 @@ var Labels = class _Labels {
     for (const frame of this.labeledFrames) {
       const mapped = videoMap.get(frame.video);
       if (mapped) frame.video = mapped;
+      for (const c of frame.centroids) {
+        if (c.video && videoMap.has(c.video)) c.video = videoMap.get(c.video);
+      }
+      for (const b of frame.bboxes) {
+        if (b.video && videoMap.has(b.video)) b.video = videoMap.get(b.video);
+      }
+      for (const m of frame.masks) {
+        if (m.video && videoMap.has(m.video)) m.video = videoMap.get(m.video);
+      }
+      for (const r of frame.rois) {
+        if (r.video && videoMap.has(r.video)) r.video = videoMap.get(r.video);
+      }
+      for (const li of frame.labelImages) {
+        if (li.video && videoMap.has(li.video)) li.video = videoMap.get(li.video);
+      }
     }
     for (const suggestion of this.suggestions) {
       const mapped = videoMap.get(suggestion.video);
       if (mapped) suggestion.video = mapped;
     }
-    for (const roi of this.rois) {
-      if (roi.video && videoMap.has(roi.video)) {
-        roi.video = videoMap.get(roi.video);
-      }
+    for (const ann of [
+      ...this._initCentroids,
+      ...this._initBboxes,
+      ...this._initMasks,
+      ...this._initRois
+    ]) {
+      if (ann.video && videoMap.has(ann.video)) ann.video = videoMap.get(ann.video);
     }
-    for (const mask of this.masks) {
-      if (mask.video && videoMap.has(mask.video)) {
-        mask.video = videoMap.get(mask.video);
-      }
-    }
-    for (const bbox of this.bboxes) {
-      if (bbox.video && videoMap.has(bbox.video)) {
-        bbox.video = videoMap.get(bbox.video);
-      }
-    }
-    for (const centroid of this.centroids) {
-      if (centroid.video && videoMap.has(centroid.video)) {
-        centroid.video = videoMap.get(centroid.video);
-      }
-    }
-    for (const labelImage of this.labelImages) {
-      if (labelImage.video && videoMap.has(labelImage.video)) {
-        labelImage.video = videoMap.get(labelImage.video);
-      }
+    for (const li of this._initLabelImages) {
+      if (li.video && videoMap.has(li.video)) li.video = videoMap.get(li.video);
     }
     this.videos = this.videos.map((v) => videoMap.get(v) ?? v);
   }
@@ -1210,6 +1452,22 @@ var Labels = class _Labels {
       newStore.videos = newVideos;
       newStore.skeletons = newSkeletons;
       newStore.tracks = newTracks;
+      const newLazyFrames = new LazyFrameList(newStore);
+      if (this._lazyFrameList?._supplementary.length) {
+        newLazyFrames._supplementary = this._lazyFrameList._supplementary.map((lf) => {
+          return new LabeledFrame({
+            video: videoMap.get(lf.video) ?? lf.video,
+            frameIdx: lf.frameIdx,
+            instances: lf.instances.map(cloneInstance),
+            isNegative: lf.isNegative,
+            centroids: cloneAncillary(lf.centroids),
+            bboxes: cloneAncillary(lf.bboxes),
+            masks: cloneAncillary(lf.masks),
+            labelImages: cloneAncillary(lf.labelImages),
+            rois: cloneAncillary(lf.rois)
+          });
+        });
+      }
       labelsCopy = new _Labels({
         videos: newVideos,
         skeletons: newSkeletons,
@@ -1225,15 +1483,10 @@ var Labels = class _Labels {
         }),
         sessions: structuredClone(this.sessions),
         provenance: { ...this.provenance },
-        rois: cloneAncillary(this.rois),
-        masks: cloneAncillary(this.masks),
-        bboxes: cloneAncillary(this.bboxes),
-        centroids: cloneAncillary(this.centroids),
-        labelImages: cloneAncillary(this.labelImages),
         identities: structuredClone(this.identities)
       });
       labelsCopy._lazyDataStore = newStore;
-      labelsCopy._lazyFrameList = new LazyFrameList(newStore);
+      labelsCopy._lazyFrameList = newLazyFrames;
     } else {
       const newFrames = this.labeledFrames.map((f) => {
         const newInstances = f.instances.map(cloneInstance);
@@ -1241,7 +1494,12 @@ var Labels = class _Labels {
           video: videoMap.get(f.video) ?? f.video,
           frameIdx: f.frameIdx,
           instances: newInstances,
-          isNegative: f.isNegative
+          isNegative: f.isNegative,
+          centroids: cloneAncillary(f.centroids),
+          bboxes: cloneAncillary(f.bboxes),
+          masks: cloneAncillary(f.masks),
+          labelImages: cloneAncillary(f.labelImages),
+          rois: cloneAncillary(f.rois)
         });
       });
       labelsCopy = new _Labels({
@@ -1260,11 +1518,11 @@ var Labels = class _Labels {
         }),
         sessions: structuredClone(this.sessions),
         provenance: { ...this.provenance },
-        rois: cloneAncillary(this.rois),
-        masks: cloneAncillary(this.masks),
-        bboxes: cloneAncillary(this.bboxes),
-        centroids: cloneAncillary(this.centroids),
-        labelImages: cloneAncillary(this.labelImages),
+        rois: cloneAncillary(this._initRois),
+        masks: cloneAncillary(this._initMasks),
+        bboxes: cloneAncillary(this._initBboxes),
+        centroids: cloneAncillary(this._initCentroids),
+        labelImages: cloneAncillary(this._initLabelImages),
         identities: structuredClone(this.identities)
       });
     }
@@ -5863,7 +6121,16 @@ async function saveSlpToBytes(labels, options) {
       labeledFrames: labels.labeledFrames.map((frame) => {
         const videoIdx = labels.videos.indexOf(frame.video);
         const restoredVideo = videoIdx >= 0 ? restoredVideos[videoIdx] : frame.video;
-        return new LabeledFrame({ video: restoredVideo, frameIdx: frame.frameIdx, instances: frame.instances });
+        return new LabeledFrame({
+          video: restoredVideo,
+          frameIdx: frame.frameIdx,
+          instances: frame.instances,
+          centroids: frame.centroids,
+          bboxes: frame.bboxes,
+          masks: frame.masks,
+          labelImages: frame.labelImages,
+          rois: frame.rois
+        });
       }),
       videos: restoredVideos,
       skeletons: labels.skeletons,
@@ -6914,6 +7181,74 @@ async function readSlpLazy(source, options) {
     const masks = readMasks(file, videos, tracks);
     const centroids = readCentroids(file, videos, tracks);
     const labelImages = readLabelImages(file, videos, tracks);
+    const videoIndexMap = /* @__PURE__ */ new Map();
+    for (let i = 0; i < videos.length; i++) videoIndexMap.set(videos[i], i);
+    const buildAnnByFrame = (annotations) => {
+      const byFrame = /* @__PURE__ */ new Map();
+      const undistributed = [];
+      for (const ann of annotations) {
+        if (ann.video !== null && ann.frameIdx !== null) {
+          const vidIdx = videoIndexMap.get(ann.video) ?? -1;
+          const key = `${vidIdx}:${ann.frameIdx}`;
+          const list = byFrame.get(key);
+          if (list) list.push(ann);
+          else byFrame.set(key, [ann]);
+        } else {
+          undistributed.push(ann);
+        }
+      }
+      return { byFrame, undistributed };
+    };
+    const cResult = buildAnnByFrame(centroids);
+    const bResult = buildAnnByFrame(bboxes);
+    const mResult = buildAnnByFrame(masks);
+    const rResult = buildAnnByFrame(rois);
+    const liResult = buildAnnByFrame(labelImages);
+    store._centroidByFrame = cResult.byFrame;
+    store._bboxByFrame = bResult.byFrame;
+    store._maskByFrame = mResult.byFrame;
+    store._roiByFrame = rResult.byFrame;
+    store._labelImageByFrame = liResult.byFrame;
+    store._undistributedCentroids = cResult.undistributed;
+    store._undistributedBboxes = bResult.undistributed;
+    store._undistributedMasks = mResult.undistributed;
+    store._undistributedRois = rResult.undistributed;
+    store._undistributedLabelImages = liResult.undistributed;
+    const frameKeys = /* @__PURE__ */ new Set();
+    const frameVideoIds = framesData.video ?? [];
+    const frameFrameIdxs = framesData.frame_idx ?? [];
+    for (let i = 0; i < (framesData.frame_id ?? []).length; i++) {
+      frameKeys.add(`${Number(frameVideoIds[i])}:${Number(frameFrameIdxs[i])}`);
+    }
+    const allAnnKeys = /* @__PURE__ */ new Set();
+    for (const dict of [
+      store._centroidByFrame,
+      store._bboxByFrame,
+      store._maskByFrame,
+      store._labelImageByFrame,
+      store._roiByFrame
+    ]) {
+      for (const key of dict.keys()) allAnnKeys.add(key);
+    }
+    for (const key of [...allAnnKeys].sort()) {
+      if (frameKeys.has(key)) continue;
+      const [vidIdxStr, fidxStr] = key.split(":");
+      const vidIdx = Number(vidIdxStr);
+      const fidx = Number(fidxStr);
+      if (vidIdx >= 0 && vidIdx < videos.length) {
+        lazyFrames._supplementary.push(
+          new LabeledFrame({
+            video: videos[vidIdx],
+            frameIdx: fidx,
+            centroids: store._centroidByFrame.get(key) ?? [],
+            bboxes: store._bboxByFrame.get(key) ?? [],
+            masks: store._maskByFrame.get(key) ?? [],
+            labelImages: store._labelImageByFrame.get(key) ?? [],
+            rois: store._roiByFrame.get(key) ?? []
+          })
+        );
+      }
+    }
     const labels = new Labels({
       videos,
       skeletons,
@@ -6921,12 +7256,7 @@ async function readSlpLazy(source, options) {
       suggestions,
       sessions,
       identities,
-      provenance: metadataJson?.provenance ?? {},
-      rois,
-      masks,
-      bboxes,
-      centroids,
-      labelImages
+      provenance: metadataJson?.provenance ?? {}
     });
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;

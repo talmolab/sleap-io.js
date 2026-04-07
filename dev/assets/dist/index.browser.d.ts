@@ -1,4 +1,4 @@
-import { I as Instance, P as PredictedInstance, k as Skeleton, T as Track } from './instance-CrKeNF4a.js';
+import { T as Track, I as Instance, k as Skeleton, P as PredictedInstance } from './instance-CrKeNF4a.js';
 export { E as Edge, N as Node, j as NodeOrIndex, a as Point, c as PointsArray, b as PredictedPoint, d as PredictedPointsArray, S as Symmetry, _ as _registerCentroidFactory, p as pointsEmpty, f as pointsFromArray, h as pointsFromDict, e as predictedPointsEmpty, g as predictedPointsFromArray, i as predictedPointsFromDict } from './instance-CrKeNF4a.js';
 
 type VideoFrame = ImageData | ImageBitmap | Uint8Array | ArrayBuffer;
@@ -41,260 +41,39 @@ declare class Video {
     matchesPath(other: Video, strict?: boolean): boolean;
 }
 
-declare class LabeledFrame {
-    video: Video;
-    frameIdx: number;
-    instances: Array<Instance | PredictedInstance>;
-    isNegative: boolean;
-    constructor(options: {
-        video: Video;
-        frameIdx: number;
-        instances?: Array<Instance | PredictedInstance>;
-        isNegative?: boolean;
-    });
-    get length(): number;
-    [Symbol.iterator](): Iterator<Instance | PredictedInstance>;
-    at(index: number): Instance | PredictedInstance | undefined;
-    get userInstances(): Instance[];
-    get predictedInstances(): PredictedInstance[];
-    get hasUserInstances(): boolean;
-    get hasPredictedInstances(): boolean;
-    numpy(): number[][][];
-    get image(): Promise<ImageData | ImageBitmap | ArrayBuffer | Uint8Array | null>;
-    get unusedPredictions(): PredictedInstance[];
-    removePredictions(): void;
-    removeEmptyInstances(): void;
-}
-
-declare class SuggestionFrame {
-    video: Video;
-    frameIdx: number;
-    group: string;
-    metadata: Record<string, unknown>;
-    constructor(options: {
-        video: Video;
-        frameIdx: number;
-        group?: string;
-        metadata?: Record<string, unknown>;
-    });
-}
-
-declare class Identity {
-    name: string;
-    color?: string;
-    metadata: Record<string, unknown>;
-    constructor(options?: {
-        name?: string;
-        color?: string;
-        metadata?: Record<string, unknown>;
-    });
-}
-
-declare class Instance3D {
-    points: number[][] | null;
-    skeleton: Skeleton;
-    score?: number;
-    metadata: Record<string, unknown>;
-    constructor(options: {
-        points: number[][] | null;
-        skeleton: Skeleton;
-        score?: number;
-        metadata?: Record<string, unknown>;
-    });
-    get nVisible(): number;
-    get isEmpty(): boolean;
-}
-declare class PredictedInstance3D extends Instance3D {
-    pointScores?: number[];
-    constructor(options: {
-        points: number[][] | null;
-        skeleton: Skeleton;
-        score?: number;
-        pointScores?: number[];
-        metadata?: Record<string, unknown>;
-    });
-}
-
-declare function rodriguesTransformation(input: number[][] | number[]): {
-    matrix: number[][];
-    vector: number[];
-};
-declare class Camera {
-    name?: string;
-    rvec: number[];
-    tvec: number[];
-    matrix?: number[][];
-    distortions?: number[];
-    size?: [number, number];
-    constructor(options: {
-        name?: string;
-        rvec: number[];
-        tvec: number[];
-        matrix?: number[][];
-        distortions?: number[];
-        size?: [number, number];
-    });
-}
-declare class CameraGroup {
-    cameras: Camera[];
-    metadata: Record<string, unknown>;
-    constructor(options?: {
-        cameras?: Camera[];
-        metadata?: Record<string, unknown>;
-    });
-}
-declare class InstanceGroup {
-    instanceByCamera: Map<Camera, Instance>;
-    score?: number;
-    identity?: Identity;
-    instance3d?: Instance3D;
-    metadata: Record<string, unknown>;
-    private _points?;
-    constructor(options: {
-        instanceByCamera: Map<Camera, Instance> | Record<string, Instance>;
-        score?: number;
-        points?: number[][];
-        identity?: Identity;
-        instance3d?: Instance3D;
-        metadata?: Record<string, unknown>;
-    });
-    get points(): number[][] | undefined;
-    set points(value: number[][] | undefined);
-    get instances(): Instance[];
-}
-declare class FrameGroup {
-    frameIdx: number;
-    instanceGroups: InstanceGroup[];
-    labeledFrameByCamera: Map<Camera, LabeledFrame>;
-    metadata: Record<string, unknown>;
-    constructor(options: {
-        frameIdx: number;
-        instanceGroups: InstanceGroup[];
-        labeledFrameByCamera: Map<Camera, LabeledFrame> | Record<string, LabeledFrame>;
-        metadata?: Record<string, unknown>;
-    });
-    get cameras(): Camera[];
-    get labeledFrames(): LabeledFrame[];
-    getFrame(camera: Camera): LabeledFrame | undefined;
-}
-declare class RecordingSession {
-    cameraGroup: CameraGroup;
-    frameGroupByFrameIdx: Map<number, FrameGroup>;
-    videoByCamera: Map<Camera, Video>;
-    cameraByVideo: Map<Video, Camera>;
-    metadata: Record<string, unknown>;
-    constructor(options?: {
-        cameraGroup?: CameraGroup;
-        frameGroupByFrameIdx?: Map<number, FrameGroup>;
-        videoByCamera?: Map<Camera, Video>;
-        cameraByVideo?: Map<Video, Camera>;
-        metadata?: Record<string, unknown>;
-    });
-    get frameGroups(): Map<number, FrameGroup>;
-    get videos(): Video[];
-    get cameras(): Camera[];
-    addVideo(video: Video, camera: Camera): void;
-    getCamera(video: Video): Camera | undefined;
-    getVideo(camera: Camera): Video | undefined;
-}
-declare function makeCameraFromDict(data: Record<string, unknown>): Camera;
-
+/** Return the shared single-node `Skeleton(["centroid"])` instance. */
+declare function getCentroidSkeleton(): Skeleton;
 /**
- * Raw data store holding HDF5 dataset arrays for lazy materialization.
- * Keeps the parsed column data from frames/instances/points datasets
- * so individual frames can be materialized on demand.
+ * Module-level constant for the centroid skeleton.
+ * Lazily initialized on first access.
  */
-declare class LazyDataStore {
-    framesData: Record<string, any[]>;
-    instancesData: Record<string, any[]>;
-    pointsData: Record<string, any[]>;
-    predPointsData: Record<string, any[]>;
-    skeletons: Skeleton[];
-    tracks: Track[];
-    videos: Video[];
-    formatId: number;
-    negativeFrames: Set<string>;
-    constructor(options: {
-        framesData: Record<string, any[]>;
-        instancesData: Record<string, any[]>;
-        pointsData: Record<string, any[]>;
-        predPointsData: Record<string, any[]>;
-        skeletons: Skeleton[];
-        tracks: Track[];
-        videos: Video[];
-        formatId: number;
-        negativeFrames?: Set<string>;
-    });
-    /**
-     * Create an independent copy of this store's raw column data.
-     * Videos, skeletons, and tracks arrays are shared (not cloned) —
-     * the caller is expected to replace them with new references.
-     */
-    copy(): LazyDataStore;
-    /** Total number of frames in the store. */
-    get frameCount(): number;
-    /**
-     * Materialize a single LabeledFrame by index.
-     */
-    materializeFrame(frameIdx: number): LabeledFrame | null;
-    /**
-     * Build a 4D numpy-like array directly from raw column data without
-     * materializing any LabeledFrame or Instance objects.
-     *
-     * Returns [frames, tracks/instances, nodes, coords] where coords is
-     * [x, y] or [x, y, score] when returnConfidence is true.
-     */
-    toNumpy(options?: {
-        video?: Video;
-        returnConfidence?: boolean;
-    }): number[][][][];
-    /** Materialize all frames at once. */
-    materializeAll(): LabeledFrame[];
-    private slicePoints;
-}
-/**
- * A lazy array-like container for LabeledFrames.
- * Frames are materialized from the LazyDataStore only when accessed.
- * Supports indexing, iteration, length, and conversion to a real array.
- */
-declare class LazyFrameList {
-    private store;
-    private cache;
-    constructor(store: LazyDataStore);
-    get length(): number;
-    /** Get a frame by index, materializing it if needed. */
-    at(index: number): LabeledFrame | undefined;
-    /** Materialize all frames and return as a regular array. */
-    toArray(): LabeledFrame[];
-    /** Iterator support. Skips null frames instead of stopping early. */
-    [Symbol.iterator](): Iterator<LabeledFrame>;
-    /** Number of frames that have been materialized. */
-    get materializedCount(): number;
-}
-
-/** Options for constructing a BoundingBox. */
-interface BoundingBoxOptions {
-    x1: number;
-    y1: number;
-    x2: number;
-    y2: number;
-    angle?: number;
+declare const CENTROID_SKELETON: Skeleton;
+/** Options for constructing a Centroid. */
+interface CentroidOptions {
+    x: number;
+    y: number;
+    z?: number | null;
     video?: Video | null;
     frameIdx?: number | null;
     track?: Track | null;
-    instance?: Instance | null;
     trackingScore?: number | null;
+    instance?: Instance | null;
     category?: string;
     name?: string;
     source?: string;
 }
-/** Base bounding box class for detection/tracking workflows. */
-declare class BoundingBox {
-    x1: number;
-    y1: number;
-    x2: number;
-    y2: number;
-    angle: number;
+/**
+ * A point representing the center of an object.
+ *
+ * Supports optional 3D coordinates, video/frame/track/instance metadata,
+ * and interconversion with single-node Instance objects.
+ *
+ * This class is abstract. Use UserCentroid or PredictedCentroid.
+ */
+declare class Centroid {
+    x: number;
+    y: number;
+    z: number | null;
     video: Video | null;
     frameIdx: number | null;
     track: Track | null;
@@ -305,160 +84,48 @@ declare class BoundingBox {
     source: string;
     /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx: number | null;
-    constructor(options: BoundingBoxOptions);
-    /** Create from corner coordinates [x1, y1, x2, y2]. */
-    static fromXyxy(x1: number, y1: number, x2: number, y2: number, options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">): UserBoundingBox;
-    /** Create from top-left corner + size [x, y, w, h]. */
-    static fromXywh(x: number, y: number, w: number, h: number, options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">): UserBoundingBox;
-    /** Center X coordinate (computed from x1, x2). */
-    get xCenter(): number;
-    /** Center Y coordinate (computed from y1, y2). */
-    get yCenter(): number;
-    /** Width of the bbox (computed from x1, x2). */
-    get width(): number;
-    /** Height of the bbox (computed from y1, y2). */
-    get height(): number;
-    /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
-    get xyxy(): [number, number, number, number];
-    /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
-    get xywh(): {
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-    };
-    /** Four corner points of the (possibly rotated) bbox. */
-    get corners(): number[][];
-    /** Axis-aligned bounds. */
-    get bounds(): {
-        minX: number;
-        minY: number;
-        maxX: number;
-        maxY: number;
-    };
-    /** Area of the bbox (width * height). */
-    get area(): number;
-    /** Center point as `[x, y]`. */
-    get centroidXy(): [number, number];
-    /** @deprecated Use `centroidXy` instead. */
-    get centroid(): {
-        x: number;
-        y: number;
-    };
-    /** Whether this is a predicted bbox (has a score). */
+    constructor(options: CentroidOptions);
+    /** Coordinates as `[x, y]`. */
+    get xy(): [number, number];
+    /** Coordinates as `[y, x]` (row, col order). */
+    get yx(): [number, number];
+    /** Coordinates as `[x, y, z]`. */
+    get xyz(): [number, number, number | null];
+    /** Whether this is a predicted centroid (has a score). */
     get isPredicted(): boolean;
-    /** Whether the bbox has no temporal association. */
+    /** Whether the centroid has no temporal association. */
     get isStatic(): boolean;
-    /** Whether the bbox is rotated (angle != 0). */
-    get isRotated(): boolean;
-    /** Convert to a Polygon ROI. */
-    toRoi(): ROI;
-    /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
-    toMask(height: number, width: number): SegmentationMask;
-}
-/** User-annotated bounding box (no prediction score). */
-declare class UserBoundingBox extends BoundingBox {
-}
-/** Predicted bounding box with a confidence score. */
-declare class PredictedBoundingBox extends BoundingBox {
-    score: number;
-    constructor(options: BoundingBoxOptions & {
-        score: number;
-    });
-    get isPredicted(): boolean;
-}
-
-declare function encodeRle(mask: Uint8Array, height: number, width: number): Uint32Array;
-declare function decodeRle(rleCounts: Uint32Array, height: number, width: number): Uint8Array;
-/**
- * Resize a typed array using nearest-neighbor interpolation.
- * The input is a flat (H*W) array and the output is a flat (dstH*dstW) array.
- */
-declare function resizeNearest<T extends Uint8Array | Int32Array | Float32Array>(data: T, srcH: number, srcW: number, dstH: number, dstW: number): T;
-interface SegmentationMaskOptions {
-    rleCounts: Uint32Array;
-    height: number;
-    width: number;
-    name?: string;
-    category?: string;
-    source?: string;
-    video?: Video | null;
-    frameIdx?: number | null;
-    track?: Track | null;
-    trackingScore?: number | null;
-    instance?: Instance | null;
-    scale?: [number, number];
-    offset?: [number, number];
-}
-declare class SegmentationMask {
-    rleCounts: Uint32Array;
-    height: number;
-    width: number;
-    name: string;
-    category: string;
-    source: string;
-    video: Video | null;
-    frameIdx: number | null;
-    track: Track | null;
-    trackingScore: number | null;
-    instance: Instance | null;
-    /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
-    scale: [number, number];
-    /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
-    offset: [number, number];
-    /** @internal Deferred instance index for lazy resolution. */
-    _instanceIdx: number | null;
-    constructor(options: SegmentationMaskOptions);
-    static fromArray(mask: Uint8Array | boolean[][], height: number, width: number, options?: Omit<SegmentationMaskOptions, "rleCounts" | "height" | "width"> & {
-        stride?: number;
-    }): UserSegmentationMask;
-    get data(): Uint8Array;
-    get area(): number;
-    /** Whether scale != [1,1] or offset != [0,0]. */
-    get hasSpatialTransform(): boolean;
-    /** The image-space extent of this mask (accounting for scale). */
-    get imageExtent(): {
-        height: number;
-        width: number;
-    };
-    get isPredicted(): boolean;
     /**
-     * Create a resampled copy of this mask at the target dimensions.
-     * The returned mask has scale=[1,1] and offset=[0,0].
-     */
-    resampled(targetHeight: number, targetWidth: number): SegmentationMask;
-    get bbox(): {
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-    };
-    /** Convert to a `BoundingBox` object with metadata.
+     * Convert this centroid to a single-node Instance.
      *
-     * Returns a `UserBoundingBox` or `PredictedBoundingBox` depending on whether
-     * this mask is predicted. Coordinates are in image space (respecting
-     * scale/offset).
+     * @param skeleton - Skeleton to use. Must have exactly one node.
+     *   Defaults to the shared CENTROID_SKELETON.
+     * @returns Instance or PredictedInstance depending on this centroid's type.
      */
-    toBbox(): BoundingBox;
-    /** Convert the mask to a bounding-box polygon ROI. */
-    toPolygon(): ROI;
+    toInstance(skeleton?: Skeleton): Instance | PredictedInstance;
+    /**
+     * Create a centroid from an Instance.
+     *
+     * @param instance - Source instance.
+     * @param options - Options for centroid extraction.
+     * @param options.method - "centerOfMass" (default), "bboxCenter", or "anchor".
+     * @param options.node - Node name or index for "anchor" method.
+     * @returns UserCentroid or PredictedCentroid depending on instance type.
+     */
+    static fromInstance(instance: Instance | PredictedInstance, options?: {
+        method?: string;
+        node?: string | number;
+        [key: string]: unknown;
+    }): Centroid;
 }
-/** User-annotated segmentation mask (no prediction score). */
-declare class UserSegmentationMask extends SegmentationMask {
+/** User-annotated or derived centroid (no prediction score). */
+declare class UserCentroid extends Centroid {
 }
-/** Predicted segmentation mask with a confidence score and optional score map. */
-declare class PredictedSegmentationMask extends SegmentationMask {
+/** Predicted centroid with a confidence score. */
+declare class PredictedCentroid extends Centroid {
     score: number;
-    scoreMap: Float32Array | null;
-    /** Spatial scale for the score map. Default [1, 1]. */
-    scoreMapScale: [number, number];
-    /** Spatial offset for the score map. Default [0, 0]. */
-    scoreMapOffset: [number, number];
-    constructor(options: SegmentationMaskOptions & {
+    constructor(options: CentroidOptions & {
         score: number;
-        scoreMap?: Float32Array | null;
-        scoreMapScale?: [number, number];
-        scoreMapOffset?: [number, number];
     });
     get isPredicted(): boolean;
 }
@@ -563,39 +230,124 @@ declare class PredictedROI extends ROI {
     get isPredicted(): boolean;
 }
 
-/** Return the shared single-node `Skeleton(["centroid"])` instance. */
-declare function getCentroidSkeleton(): Skeleton;
+declare function encodeRle(mask: Uint8Array, height: number, width: number): Uint32Array;
+declare function decodeRle(rleCounts: Uint32Array, height: number, width: number): Uint8Array;
 /**
- * Module-level constant for the centroid skeleton.
- * Lazily initialized on first access.
+ * Resize a typed array using nearest-neighbor interpolation.
+ * The input is a flat (H*W) array and the output is a flat (dstH*dstW) array.
  */
-declare const CENTROID_SKELETON: Skeleton;
-/** Options for constructing a Centroid. */
-interface CentroidOptions {
-    x: number;
-    y: number;
-    z?: number | null;
+declare function resizeNearest<T extends Uint8Array | Int32Array | Float32Array>(data: T, srcH: number, srcW: number, dstH: number, dstW: number): T;
+interface SegmentationMaskOptions {
+    rleCounts: Uint32Array;
+    height: number;
+    width: number;
+    name?: string;
+    category?: string;
+    source?: string;
     video?: Video | null;
     frameIdx?: number | null;
     track?: Track | null;
     trackingScore?: number | null;
     instance?: Instance | null;
+    scale?: [number, number];
+    offset?: [number, number];
+}
+declare class SegmentationMask {
+    rleCounts: Uint32Array;
+    height: number;
+    width: number;
+    name: string;
+    category: string;
+    source: string;
+    video: Video | null;
+    frameIdx: number | null;
+    track: Track | null;
+    trackingScore: number | null;
+    instance: Instance | null;
+    /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
+    scale: [number, number];
+    /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
+    offset: [number, number];
+    /** @internal Deferred instance index for lazy resolution. */
+    _instanceIdx: number | null;
+    constructor(options: SegmentationMaskOptions);
+    static fromArray(mask: Uint8Array | boolean[][], height: number, width: number, options?: Omit<SegmentationMaskOptions, "rleCounts" | "height" | "width"> & {
+        stride?: number;
+    }): UserSegmentationMask;
+    get data(): Uint8Array;
+    get area(): number;
+    /** Whether scale != [1,1] or offset != [0,0]. */
+    get hasSpatialTransform(): boolean;
+    /** The image-space extent of this mask (accounting for scale). */
+    get imageExtent(): {
+        height: number;
+        width: number;
+    };
+    get isPredicted(): boolean;
+    /**
+     * Create a resampled copy of this mask at the target dimensions.
+     * The returned mask has scale=[1,1] and offset=[0,0].
+     */
+    resampled(targetHeight: number, targetWidth: number): SegmentationMask;
+    get bbox(): {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    /** Convert to a `BoundingBox` object with metadata.
+     *
+     * Returns a `UserBoundingBox` or `PredictedBoundingBox` depending on whether
+     * this mask is predicted. Coordinates are in image space (respecting
+     * scale/offset).
+     */
+    toBbox(): BoundingBox;
+    /** Convert the mask to a bounding-box polygon ROI. */
+    toPolygon(): ROI;
+}
+/** User-annotated segmentation mask (no prediction score). */
+declare class UserSegmentationMask extends SegmentationMask {
+}
+/** Predicted segmentation mask with a confidence score and optional score map. */
+declare class PredictedSegmentationMask extends SegmentationMask {
+    score: number;
+    scoreMap: Float32Array | null;
+    /** Spatial scale for the score map. Default [1, 1]. */
+    scoreMapScale: [number, number];
+    /** Spatial offset for the score map. Default [0, 0]. */
+    scoreMapOffset: [number, number];
+    constructor(options: SegmentationMaskOptions & {
+        score: number;
+        scoreMap?: Float32Array | null;
+        scoreMapScale?: [number, number];
+        scoreMapOffset?: [number, number];
+    });
+    get isPredicted(): boolean;
+}
+
+/** Options for constructing a BoundingBox. */
+interface BoundingBoxOptions {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    angle?: number;
+    video?: Video | null;
+    frameIdx?: number | null;
+    track?: Track | null;
+    instance?: Instance | null;
+    trackingScore?: number | null;
     category?: string;
     name?: string;
     source?: string;
 }
-/**
- * A point representing the center of an object.
- *
- * Supports optional 3D coordinates, video/frame/track/instance metadata,
- * and interconversion with single-node Instance objects.
- *
- * This class is abstract. Use UserCentroid or PredictedCentroid.
- */
-declare class Centroid {
-    x: number;
-    y: number;
-    z: number | null;
+/** Base bounding box class for detection/tracking workflows. */
+declare class BoundingBox {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    angle: number;
     video: Video | null;
     frameIdx: number | null;
     track: Track | null;
@@ -606,47 +358,64 @@ declare class Centroid {
     source: string;
     /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx: number | null;
-    constructor(options: CentroidOptions);
-    /** Coordinates as `[x, y]`. */
-    get xy(): [number, number];
-    /** Coordinates as `[y, x]` (row, col order). */
-    get yx(): [number, number];
-    /** Coordinates as `[x, y, z]`. */
-    get xyz(): [number, number, number | null];
-    /** Whether this is a predicted centroid (has a score). */
+    constructor(options: BoundingBoxOptions);
+    /** Create from corner coordinates [x1, y1, x2, y2]. */
+    static fromXyxy(x1: number, y1: number, x2: number, y2: number, options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">): UserBoundingBox;
+    /** Create from top-left corner + size [x, y, w, h]. */
+    static fromXywh(x: number, y: number, w: number, h: number, options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">): UserBoundingBox;
+    /** Center X coordinate (computed from x1, x2). */
+    get xCenter(): number;
+    /** Center Y coordinate (computed from y1, y2). */
+    get yCenter(): number;
+    /** Width of the bbox (computed from x1, x2). */
+    get width(): number;
+    /** Height of the bbox (computed from y1, y2). */
+    get height(): number;
+    /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
+    get xyxy(): [number, number, number, number];
+    /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
+    get xywh(): {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    /** Four corner points of the (possibly rotated) bbox. */
+    get corners(): number[][];
+    /** Axis-aligned bounds. */
+    get bounds(): {
+        minX: number;
+        minY: number;
+        maxX: number;
+        maxY: number;
+    };
+    /** Area of the bbox (width * height). */
+    get area(): number;
+    /** Center point as `[x, y]`. */
+    get centroidXy(): [number, number];
+    /** @deprecated Use `centroidXy` instead. */
+    get centroid(): {
+        x: number;
+        y: number;
+    };
+    /** Whether this is a predicted bbox (has a score). */
     get isPredicted(): boolean;
-    /** Whether the centroid has no temporal association. */
+    /** Whether the bbox has no temporal association. */
     get isStatic(): boolean;
-    /**
-     * Convert this centroid to a single-node Instance.
-     *
-     * @param skeleton - Skeleton to use. Must have exactly one node.
-     *   Defaults to the shared CENTROID_SKELETON.
-     * @returns Instance or PredictedInstance depending on this centroid's type.
-     */
-    toInstance(skeleton?: Skeleton): Instance | PredictedInstance;
-    /**
-     * Create a centroid from an Instance.
-     *
-     * @param instance - Source instance.
-     * @param options - Options for centroid extraction.
-     * @param options.method - "centerOfMass" (default), "bboxCenter", or "anchor".
-     * @param options.node - Node name or index for "anchor" method.
-     * @returns UserCentroid or PredictedCentroid depending on instance type.
-     */
-    static fromInstance(instance: Instance | PredictedInstance, options?: {
-        method?: string;
-        node?: string | number;
-        [key: string]: unknown;
-    }): Centroid;
+    /** Whether the bbox is rotated (angle != 0). */
+    get isRotated(): boolean;
+    /** Convert to a Polygon ROI. */
+    toRoi(): ROI;
+    /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
+    toMask(height: number, width: number): SegmentationMask;
 }
-/** User-annotated or derived centroid (no prediction score). */
-declare class UserCentroid extends Centroid {
+/** User-annotated bounding box (no prediction score). */
+declare class UserBoundingBox extends BoundingBox {
 }
-/** Predicted centroid with a confidence score. */
-declare class PredictedCentroid extends Centroid {
+/** Predicted bounding box with a confidence score. */
+declare class PredictedBoundingBox extends BoundingBox {
     score: number;
-    constructor(options: CentroidOptions & {
+    constructor(options: BoundingBoxOptions & {
         score: number;
     });
     get isPredicted(): boolean;
@@ -862,6 +631,260 @@ declare function normalizeLabelIds(labelImages: LabelImage[], options: {
     by: "category";
 }): Map<string, number>;
 
+declare class LabeledFrame {
+    video: Video;
+    frameIdx: number;
+    instances: Array<Instance | PredictedInstance>;
+    isNegative: boolean;
+    centroids: Centroid[];
+    bboxes: BoundingBox[];
+    masks: SegmentationMask[];
+    labelImages: LabelImage[];
+    rois: ROI[];
+    constructor(options: {
+        video: Video;
+        frameIdx: number;
+        instances?: Array<Instance | PredictedInstance>;
+        isNegative?: boolean;
+        centroids?: Centroid[];
+        bboxes?: BoundingBox[];
+        masks?: SegmentationMask[];
+        labelImages?: LabelImage[];
+        rois?: ROI[];
+    });
+    get length(): number;
+    [Symbol.iterator](): Iterator<Instance | PredictedInstance>;
+    at(index: number): Instance | PredictedInstance | undefined;
+    get userInstances(): Instance[];
+    get predictedInstances(): PredictedInstance[];
+    get hasUserInstances(): boolean;
+    get hasPredictedInstances(): boolean;
+    numpy(): number[][][];
+    get image(): Promise<ImageData | ImageBitmap | ArrayBuffer | Uint8Array | null>;
+    get unusedPredictions(): PredictedInstance[];
+    removePredictions(): void;
+    /** Merge annotation lists from another frame, deduplicating by identity. */
+    _mergeAnnotations(other: LabeledFrame): void;
+    removeEmptyInstances(): void;
+}
+
+declare class SuggestionFrame {
+    video: Video;
+    frameIdx: number;
+    group: string;
+    metadata: Record<string, unknown>;
+    constructor(options: {
+        video: Video;
+        frameIdx: number;
+        group?: string;
+        metadata?: Record<string, unknown>;
+    });
+}
+
+declare class Identity {
+    name: string;
+    color?: string;
+    metadata: Record<string, unknown>;
+    constructor(options?: {
+        name?: string;
+        color?: string;
+        metadata?: Record<string, unknown>;
+    });
+}
+
+declare class Instance3D {
+    points: number[][] | null;
+    skeleton: Skeleton;
+    score?: number;
+    metadata: Record<string, unknown>;
+    constructor(options: {
+        points: number[][] | null;
+        skeleton: Skeleton;
+        score?: number;
+        metadata?: Record<string, unknown>;
+    });
+    get nVisible(): number;
+    get isEmpty(): boolean;
+}
+declare class PredictedInstance3D extends Instance3D {
+    pointScores?: number[];
+    constructor(options: {
+        points: number[][] | null;
+        skeleton: Skeleton;
+        score?: number;
+        pointScores?: number[];
+        metadata?: Record<string, unknown>;
+    });
+}
+
+declare function rodriguesTransformation(input: number[][] | number[]): {
+    matrix: number[][];
+    vector: number[];
+};
+declare class Camera {
+    name?: string;
+    rvec: number[];
+    tvec: number[];
+    matrix?: number[][];
+    distortions?: number[];
+    size?: [number, number];
+    constructor(options: {
+        name?: string;
+        rvec: number[];
+        tvec: number[];
+        matrix?: number[][];
+        distortions?: number[];
+        size?: [number, number];
+    });
+}
+declare class CameraGroup {
+    cameras: Camera[];
+    metadata: Record<string, unknown>;
+    constructor(options?: {
+        cameras?: Camera[];
+        metadata?: Record<string, unknown>;
+    });
+}
+declare class InstanceGroup {
+    instanceByCamera: Map<Camera, Instance>;
+    score?: number;
+    identity?: Identity;
+    instance3d?: Instance3D;
+    metadata: Record<string, unknown>;
+    private _points?;
+    constructor(options: {
+        instanceByCamera: Map<Camera, Instance> | Record<string, Instance>;
+        score?: number;
+        points?: number[][];
+        identity?: Identity;
+        instance3d?: Instance3D;
+        metadata?: Record<string, unknown>;
+    });
+    get points(): number[][] | undefined;
+    set points(value: number[][] | undefined);
+    get instances(): Instance[];
+}
+declare class FrameGroup {
+    frameIdx: number;
+    instanceGroups: InstanceGroup[];
+    labeledFrameByCamera: Map<Camera, LabeledFrame>;
+    metadata: Record<string, unknown>;
+    constructor(options: {
+        frameIdx: number;
+        instanceGroups: InstanceGroup[];
+        labeledFrameByCamera: Map<Camera, LabeledFrame> | Record<string, LabeledFrame>;
+        metadata?: Record<string, unknown>;
+    });
+    get cameras(): Camera[];
+    get labeledFrames(): LabeledFrame[];
+    getFrame(camera: Camera): LabeledFrame | undefined;
+}
+declare class RecordingSession {
+    cameraGroup: CameraGroup;
+    frameGroupByFrameIdx: Map<number, FrameGroup>;
+    videoByCamera: Map<Camera, Video>;
+    cameraByVideo: Map<Video, Camera>;
+    metadata: Record<string, unknown>;
+    constructor(options?: {
+        cameraGroup?: CameraGroup;
+        frameGroupByFrameIdx?: Map<number, FrameGroup>;
+        videoByCamera?: Map<Camera, Video>;
+        cameraByVideo?: Map<Video, Camera>;
+        metadata?: Record<string, unknown>;
+    });
+    get frameGroups(): Map<number, FrameGroup>;
+    get videos(): Video[];
+    get cameras(): Camera[];
+    addVideo(video: Video, camera: Camera): void;
+    getCamera(video: Video): Camera | undefined;
+    getVideo(camera: Camera): Video | undefined;
+}
+declare function makeCameraFromDict(data: Record<string, unknown>): Camera;
+
+/**
+ * Raw data store holding HDF5 dataset arrays for lazy materialization.
+ * Keeps the parsed column data from frames/instances/points datasets
+ * so individual frames can be materialized on demand.
+ */
+declare class LazyDataStore {
+    framesData: Record<string, any[]>;
+    instancesData: Record<string, any[]>;
+    pointsData: Record<string, any[]>;
+    predPointsData: Record<string, any[]>;
+    skeletons: Skeleton[];
+    tracks: Track[];
+    videos: Video[];
+    formatId: number;
+    negativeFrames: Set<string>;
+    _centroidByFrame: Map<string, Centroid[]>;
+    _bboxByFrame: Map<string, BoundingBox[]>;
+    _maskByFrame: Map<string, SegmentationMask[]>;
+    _labelImageByFrame: Map<string, LabelImage[]>;
+    _roiByFrame: Map<string, ROI[]>;
+    _undistributedCentroids: Centroid[];
+    _undistributedBboxes: BoundingBox[];
+    _undistributedMasks: SegmentationMask[];
+    _undistributedLabelImages: LabelImage[];
+    _undistributedRois: ROI[];
+    constructor(options: {
+        framesData: Record<string, any[]>;
+        instancesData: Record<string, any[]>;
+        pointsData: Record<string, any[]>;
+        predPointsData: Record<string, any[]>;
+        skeletons: Skeleton[];
+        tracks: Track[];
+        videos: Video[];
+        formatId: number;
+        negativeFrames?: Set<string>;
+    });
+    /**
+     * Create an independent copy of this store's raw column data.
+     * Videos, skeletons, and tracks arrays are shared (not cloned) —
+     * the caller is expected to replace them with new references.
+     */
+    copy(): LazyDataStore;
+    /** Total number of frames in the store. */
+    get frameCount(): number;
+    /**
+     * Materialize a single LabeledFrame by index.
+     */
+    materializeFrame(frameIdx: number): LabeledFrame | null;
+    /**
+     * Build a 4D numpy-like array directly from raw column data without
+     * materializing any LabeledFrame or Instance objects.
+     *
+     * Returns [frames, tracks/instances, nodes, coords] where coords is
+     * [x, y] or [x, y, score] when returnConfidence is true.
+     */
+    toNumpy(options?: {
+        video?: Video;
+        returnConfidence?: boolean;
+    }): number[][][][];
+    /** Materialize all frames at once. */
+    materializeAll(): LabeledFrame[];
+    private slicePoints;
+}
+/**
+ * A lazy array-like container for LabeledFrames.
+ * Frames are materialized from the LazyDataStore only when accessed.
+ * Supports indexing, iteration, length, and conversion to a real array.
+ */
+declare class LazyFrameList {
+    private store;
+    private cache;
+    _supplementary: LabeledFrame[];
+    constructor(store: LazyDataStore);
+    get length(): number;
+    /** Get a frame by index, materializing it if needed. */
+    at(index: number): LabeledFrame | undefined;
+    /** Materialize all frames and return as a regular array. */
+    toArray(): LabeledFrame[];
+    /** Iterator support. Skips null frames instead of stopping early. */
+    [Symbol.iterator](): Iterator<LabeledFrame>;
+    /** Number of frames that have been materialized. */
+    get materializedCount(): number;
+}
+
 declare class Labels {
     labeledFrames: LabeledFrame[];
     videos: Video[];
@@ -870,12 +893,12 @@ declare class Labels {
     suggestions: SuggestionFrame[];
     sessions: RecordingSession[];
     provenance: Record<string, unknown>;
-    rois: ROI[];
-    masks: SegmentationMask[];
-    bboxes: BoundingBox[];
-    centroids: Centroid[];
-    labelImages: LabelImage[];
     identities: Identity[];
+    _initRois: ROI[];
+    _initMasks: SegmentationMask[];
+    _initBboxes: BoundingBox[];
+    _initCentroids: Centroid[];
+    _initLabelImages: LabelImage[];
     /** @internal Lazy frame list for on-demand materialization. */
     _lazyFrameList: LazyFrameList | null;
     /** @internal Lazy data store holding raw HDF5 data. */
@@ -895,6 +918,29 @@ declare class Labels {
         labelImages?: LabelImage[];
         identities?: Identity[];
     });
+    /** Distribute flat annotation lists into their corresponding LabeledFrames. */
+    private _distributeAnnotations;
+    /** Collect tracks from annotations on a frame into this.tracks. */
+    private _collectAnnotationTracks;
+    /** Find an existing LabeledFrame or create a new one. */
+    private _findOrCreateFrame;
+    /** Add an annotation to the appropriate LabeledFrame. */
+    private _addAnnotation;
+    addCentroid(centroid: Centroid): void;
+    addBbox(bbox: BoundingBox): void;
+    addMask(mask: SegmentationMask): void;
+    addLabelImage(labelImage: LabelImage): void;
+    addRoi(roi: ROI): void;
+    /** Flat view of all centroids across all frames. */
+    get centroids(): Centroid[];
+    /** Flat view of all bounding boxes across all frames. */
+    get bboxes(): BoundingBox[];
+    /** Flat view of all segmentation masks across all frames. */
+    get masks(): SegmentationMask[];
+    /** Flat view of all label images across all frames. */
+    get labelImages(): LabelImage[];
+    /** Flat view of all ROIs across all frames. */
+    get rois(): ROI[];
     /** Whether this Labels instance is in lazy mode. */
     get isLazy(): boolean;
     /**
