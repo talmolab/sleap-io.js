@@ -14,6 +14,12 @@ import type { BoundingBox } from "./bbox.js";
 import type { Centroid } from "./centroid.js";
 import type { LabelImage } from "./label-image.js";
 
+/** Shared shape for annotations that support deferred instance resolution. */
+interface DeferredInstanceRef {
+  _instanceIdx: number | null;
+  instance: Instance | null;
+}
+
 export class Labels {
   labeledFrames: LabeledFrame[];
   videos: Video[];
@@ -107,20 +113,26 @@ export class Labels {
 
   /** Distribute flat annotation lists into their corresponding LabeledFrames. */
   private _distributeAnnotations(): void {
+    const frameMap = new Map<Video, Map<number, LabeledFrame>>();
+    for (const lf of this.labeledFrames) {
+      let byIdx = frameMap.get(lf.video);
+      if (!byIdx) { byIdx = new Map(); frameMap.set(lf.video, byIdx); }
+      byIdx.set(lf.frameIdx, lf);
+    }
+
     const getOrCreate = (video: Video, frameIdx: number): LabeledFrame => {
-      // Use object identity for video key
-      let found: LabeledFrame | undefined;
-      for (const lf of this.labeledFrames) {
-        if (lf.video === video && lf.frameIdx === frameIdx) {
-          found = lf;
-          break;
-        }
+      let byIdx = frameMap.get(video);
+      if (byIdx) {
+        const existing = byIdx.get(frameIdx);
+        if (existing) return existing;
+      } else {
+        byIdx = new Map();
+        frameMap.set(video, byIdx);
       }
-      if (!found) {
-        found = new LabeledFrame({ video, frameIdx });
-        this.labeledFrames.push(found);
-      }
-      return found;
+      const lf = new LabeledFrame({ video, frameIdx });
+      byIdx.set(frameIdx, lf);
+      this.labeledFrames.push(lf);
+      return lf;
     };
 
     const distribute = <T extends { video: Video | null; frameIdx: number | null }>(
@@ -299,7 +311,7 @@ export class Labels {
     // Resolve deferred instance references on per-frame annotations
     const allInstances = this.labeledFrames.flatMap((f) => f.instances);
     for (const lf of this.labeledFrames) {
-      for (const ann of [...lf.centroids, ...lf.bboxes, ...lf.masks, ...lf.rois] as any[]) {
+      for (const ann of [...lf.centroids, ...lf.bboxes, ...lf.masks, ...lf.rois] as DeferredInstanceRef[]) {
         if (ann._instanceIdx !== null && ann._instanceIdx >= 0 && ann._instanceIdx < allInstances.length) {
           ann.instance = allInstances[ann._instanceIdx];
           ann._instanceIdx = null;

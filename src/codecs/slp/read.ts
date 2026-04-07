@@ -173,6 +173,9 @@ export async function readSlpLazy(
     const labelImages = readLabelImages(file, videos, tracks);
 
     // Build per-frame annotation dicts for lazy materialization
+    const videoIndexMap = new Map<Video, number>();
+    for (let i = 0; i < videos.length; i++) videoIndexMap.set(videos[i], i);
+
     const buildAnnByFrame = <T extends { video: any; frameIdx: number | null }>(
       annotations: T[],
     ): { byFrame: Map<string, T[]>; undistributed: T[] } => {
@@ -180,7 +183,7 @@ export async function readSlpLazy(
       const undistributed: T[] = [];
       for (const ann of annotations) {
         if (ann.video !== null && ann.frameIdx !== null) {
-          const vidIdx = videos.indexOf(ann.video);
+          const vidIdx = videoIndexMap.get(ann.video) ?? -1;
           const key = `${vidIdx}:${ann.frameIdx}`;
           const list = byFrame.get(key);
           if (list) list.push(ann);

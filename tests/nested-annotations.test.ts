@@ -446,6 +446,32 @@ describe("Lazy read with annotations", () => {
     expect(copied.centroids[0].x).toBe(1);
   });
 
+  it("supplementary frames accessible via negative indexing", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const track = new Track("t1");
+    // Centroid-only data creates supplementary frames (no /frames entries)
+    const centroids = Array.from({ length: 3 }, (_, i) =>
+      new PredictedCentroid({ x: i, y: i, video, frameIdx: i, track, score: 0.9 }),
+    );
+
+    const labels = new Labels({ centroids, videos: [video], skeletons: [skeleton], tracks: [track] });
+    const lazy = await roundTripLazy(labels);
+
+    // at(-1) should return the last supplementary frame
+    const lastFrame = lazy._lazyFrameList!.at(-1)!;
+    expect(lastFrame).toBeDefined();
+    expect(lastFrame.video).toBeDefined();
+    expect(lastFrame.centroids.length).toBeGreaterThan(0);
+
+    // at(-length) should return the first frame
+    const firstFrame = lazy._lazyFrameList!.at(-lazy.length)!;
+    expect(firstFrame).toBeDefined();
+
+    // at(-(length+1)) should be undefined
+    expect(lazy._lazyFrameList!.at(-(lazy.length + 1))).toBeUndefined();
+  });
+
   it("lazy write round-trips correctly", async () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });
