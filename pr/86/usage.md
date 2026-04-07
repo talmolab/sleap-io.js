@@ -315,7 +315,7 @@ import {
 const labels = await loadSlp("dataset.slp");
 
 // Access annotations
-console.log(`${labels.rois.length} ROIs, ${labels.masks.length} masks, ${labels.bboxes.length} bboxes`);
+console.log(`${labels.rois.length} ROIs, ${labels.masks.length} masks, ${labels.bboxes.length} bboxes, ${labels.centroids.length} centroids`);
 
 // Query by video, frame, and predicted status
 const frameRois = labels.getRois({ video: labels.videos[0], frameIdx: 0 });
@@ -335,6 +335,9 @@ const bbox = new UserBoundingBox({
   category: "animal", video: labels.videos[0], frameIdx: 0,
 });
 labels.bboxes.push(bbox);
+
+// Query centroids
+const frameCentroids = labels.getCentroids({ video: labels.videos[0], frameIdx: 0 });
 
 // Export ROIs to GeoJSON
 const geojsonStr = writeGeoJSON(labels.rois);
@@ -441,6 +444,26 @@ group.instance3d = inst3d;
 
 // Identities are stored on Labels
 labels.identities.push(animal);
+```
+
+## TrackMate CSV Import
+
+Import tracking results from TrackMate (ImageJ/Fiji) CSV exports (Node.js only):
+
+```ts
+import { readTrackMateCsv, isTrackMateFile } from "@talmolab/sleap-io.js";
+
+// Check format before loading
+if (isTrackMateFile("experiment_spots.csv")) {
+  // Auto-detects sibling _edges.csv and .tif video
+  const labels = readTrackMateCsv("experiment_spots.csv");
+
+  console.log(`${labels.centroids.length} spots in ${labels.tracks.length} tracks`);
+
+  for (const c of labels.centroids) {
+    console.log(`Frame ${c.frameIdx}: (${c.x}, ${c.y}) score=${c.score} track=${c.track?.name}`);
+  }
+}
 ```
 
 ## Advanced: Low-Level Worker APIs

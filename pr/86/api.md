@@ -26,10 +26,18 @@ import {
   BoundingBox,
   UserBoundingBox,
   PredictedBoundingBox,
+  Centroid,
+  UserCentroid,
+  PredictedCentroid,
+  getCentroidSkeleton,
+  CENTROID_SKELETON,
   LabelImage,
   UserLabelImage,
   PredictedLabelImage,
   normalizeLabelIds,
+  readTrackMateCsv,
+  loadTrackMate,
+  isTrackMateFile,
   Identity,
   Instance3D,
   PredictedInstance3D,
@@ -173,6 +181,7 @@ Key types:
 - `ROI`, `UserROI`, `PredictedROI` (spatial annotations)
 - `SegmentationMask`, `UserSegmentationMask`, `PredictedSegmentationMask` (binary masks)
 - `BoundingBox`, `UserBoundingBox`, `PredictedBoundingBox` (detection/tracking)
+- `Centroid`, `UserCentroid`, `PredictedCentroid` (point detections/tracking)
 - `LabelImage`, `UserLabelImage`, `PredictedLabelImage` (dense instance segmentation)
 - `Point` has fields `{ xy, visible, complete, score? }` where `score` is an optional confidence value.
 - `LabeledFrame.isNegative` (`boolean`, default `false`): marks negative-annotated frames.
@@ -342,6 +351,52 @@ const roi = bbox.toRoi();              // Polygon ROI
 const mask = bbox.toMask(480, 640);    // SegmentationMask
 ```
 
+### `Centroid`
+Point representing the center of an object. `Centroid` is abstract; use `UserCentroid` or `PredictedCentroid`.
+
+```ts
+// Create user centroid
+const c = new UserCentroid({ x: 100, y: 200, video, frameIdx: 0, track });
+
+// Create predicted centroid with confidence
+const pc = new PredictedCentroid({
+  x: 50, y: 60, z: 3.5,
+  score: 0.95,
+  trackingScore: 0.8,
+  video, frameIdx: 1, track,
+  name: "spot1", source: "trackmate",
+});
+
+// Properties
+c.xy;           // [x, y]
+c.yx;           // [y, x] (row, col)
+c.xyz;          // [x, y, z | null]
+c.isPredicted;  // false for User, true for Predicted
+c.isStatic;     // true if no frameIdx
+
+// Convert to single-node Instance
+const inst = pc.toInstance();  // PredictedInstance with centroid skeleton
+
+// Create from Instance (center of mass, bbox center, or anchor node)
+const centroid = Centroid.fromInstance(instance);
+const centroid = Centroid.fromInstance(instance, { method: "bboxCenter" });
+const centroid = Centroid.fromInstance(instance, { method: "anchor", node: "head" });
+
+// Instance convenience method (requires centroid.ts import)
+const centroid = instance.toCentroid();
+const centroid = instance.toCentroid("anchor", "head");
+
+// Instance centroid shortcut (no Centroid object, just coordinates)
+instance.centroidXy;  // [x, y] | null (mean of visible points)
+```
+
+#### Centroid Skeleton
+```ts
+// Shared single-node skeleton for centroid conversions
+const skel = getCentroidSkeleton();  // Skeleton(["centroid"])
+CENTROID_SKELETON === getCentroidSkeleton();  // true (singleton)
+```
+
 ### `Labels` Annotation Access
 
 ```ts
@@ -349,6 +404,7 @@ const mask = bbox.toMask(480, 640);    // SegmentationMask
 labels.rois;           // ROI[]
 labels.masks;          // SegmentationMask[]
 labels.bboxes;         // BoundingBox[]
+labels.centroids;      // Centroid[]
 labels.labelImages;    // LabelImage[]
 labels.identities;     // Identity[]
 labels.staticRois;     // ROIs without frame index
@@ -360,6 +416,7 @@ labels.temporalBboxes; // BBoxes with frame index
 labels.getRois({ video, frameIdx: 0, category: "arena", predicted: false });
 labels.getMasks({ video, category: "segmentation", predicted: true });
 labels.getBboxes({ video, frameIdx: 0, predicted: true });
+labels.getCentroids({ video, frameIdx: 0, track, predicted: true });
 labels.getLabelImages({ video, frameIdx: 0, track, category: "cell" });
 
 // Add a video (deduplicates automatically)
@@ -467,7 +524,8 @@ interface LabelImageObjectInfo {
   category: string;
   name: string;
   instance: Instance | null;
-  score?: number | null;  // per-object confidence (PredictedLabelImage)
+  score?: number | null;           // per-object confidence (PredictedLabelImage)
+  trackingScore?: number | null;   // per-link tracking cost
 }
 ```
 
@@ -551,6 +609,35 @@ const json = writeGeoJSON(labels.rois);
 const rois = roisFromGeoJSON(geojson);
 const rois = readGeoJSON(jsonString);
 ```
+
+## TrackMate CSV I/O
+
+Import TrackMate (ImageJ/Fiji) CSV tracking exports as `PredictedCentroid` objects. Node.js only.
+
+```ts
+import { readTrackMateCsv, loadTrackMate, isTrackMateFile } from "@talmolab/sleap-io.js";
+
+// Check if a file is a TrackMate spots CSV
+isTrackMateFile("data_spots.csv");  // true/false
+
+// Load spots CSV (auto-detects sibling _edges.csv and .tif video)
+const labels = readTrackMateCsv("data_spots.csv");
+labels.centroids;  // PredictedCentroid[]
+labels.tracks;     // Track[] (from TRACK_ID column)
+
+// With explicit options
+const labels = readTrackMateCsv("data_spots.csv", {
+  edgesPath: "data_edges.csv",  // optional, auto-detected from _spots suffix
+  video: "data.tif",            // optional, auto-detected from _spots suffix
+});
+
+// Public API alias
+const labels = loadTrackMate("data_spots.csv");
+```
+
+TrackMate CSV format:
+- `*_spots.csv` — spot detections with `POSITION_X`, `POSITION_Y`, `POSITION_Z`, `FRAME`, `QUALITY`, `TRACK_ID`
+- `*_edges.csv` — frame-to-frame linkages; `LINK_COST` is stored as `trackingScore` on target centroids
 
 ## Skeleton Codecs
 

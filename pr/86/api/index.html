@@ -437,6 +437,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#trackmate-csv-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      TrackMate CSV I/O
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skeleton-codecs" class="md-nav__link">
     <span class="md-ellipsis">
       Skeleton Codecs
@@ -619,6 +628,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#trackmate-csv-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      TrackMate CSV I/O
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skeleton-codecs" class="md-nav__link">
     <span class="md-ellipsis">
       Skeleton Codecs
@@ -698,10 +716,18 @@
 <span class="w">  </span><span class="nx">BoundingBox</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">UserBoundingBox</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">PredictedBoundingBox</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">Centroid</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">UserCentroid</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">PredictedCentroid</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">getCentroidSkeleton</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">CENTROID_SKELETON</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">LabelImage</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">UserLabelImage</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">PredictedLabelImage</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">normalizeLabelIds</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">readTrackMateCsv</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">loadTrackMate</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">isTrackMateFile</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Identity</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Instance3D</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">PredictedInstance3D</span><span class="p">,</span>
@@ -826,6 +852,7 @@
 <li><code>ROI</code>, <code>UserROI</code>, <code>PredictedROI</code> (spatial annotations)</li>
 <li><code>SegmentationMask</code>, <code>UserSegmentationMask</code>, <code>PredictedSegmentationMask</code> (binary masks)</li>
 <li><code>BoundingBox</code>, <code>UserBoundingBox</code>, <code>PredictedBoundingBox</code> (detection/tracking)</li>
+<li><code>Centroid</code>, <code>UserCentroid</code>, <code>PredictedCentroid</code> (point detections/tracking)</li>
 <li><code>LabelImage</code>, <code>UserLabelImage</code>, <code>PredictedLabelImage</code> (dense instance segmentation)</li>
 <li><code>Point</code> has fields <code>{ xy, visible, complete, score? }</code> where <code>score</code> is an optional confidence value.</li>
 <li><code>LabeledFrame.isNegative</code> (<code>boolean</code>, default <code>false</code>): marks negative-annotated frames.</li>
@@ -978,11 +1005,53 @@
 <span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">toRoi</span><span class="p">();</span><span class="w">              </span><span class="c1">// Polygon ROI</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">toMask</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span><span class="w">    </span><span class="c1">// SegmentationMask</span>
 </code></pre></div>
+<h3 id="centroid"><code>Centroid</code><a class="headerlink" href="#centroid" title="Permanent link">&para;</a></h3>
+<p>Point representing the center of an object. <code>Centroid</code> is abstract; use <code>UserCentroid</code> or <code>PredictedCentroid</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Create user centroid</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserCentroid</span><span class="p">({</span><span class="w"> </span><span class="nx">x</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">y</span><span class="o">:</span><span class="w"> </span><span class="kt">200</span><span class="p">,</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Create predicted centroid with confidence</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">pc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedCentroid</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">x</span><span class="o">:</span><span class="w"> </span><span class="kt">50</span><span class="p">,</span><span class="w"> </span><span class="nx">y</span><span class="o">:</span><span class="w"> </span><span class="kt">60</span><span class="p">,</span><span class="w"> </span><span class="nx">z</span><span class="o">:</span><span class="w"> </span><span class="kt">3.5</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.95</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">trackingScore</span><span class="o">:</span><span class="w"> </span><span class="kt">0.8</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">1</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;spot1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">source</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;trackmate&quot;</span><span class="p">,</span>
+<span class="p">});</span>
+
+<span class="c1">// Properties</span>
+<span class="nx">c</span><span class="p">.</span><span class="nx">xy</span><span class="p">;</span><span class="w">           </span><span class="c1">// [x, y]</span>
+<span class="nx">c</span><span class="p">.</span><span class="nx">yx</span><span class="p">;</span><span class="w">           </span><span class="c1">// [y, x] (row, col)</span>
+<span class="nx">c</span><span class="p">.</span><span class="nx">xyz</span><span class="p">;</span><span class="w">          </span><span class="c1">// [x, y, z | null]</span>
+<span class="nx">c</span><span class="p">.</span><span class="nx">isPredicted</span><span class="p">;</span><span class="w">  </span><span class="c1">// false for User, true for Predicted</span>
+<span class="nx">c</span><span class="p">.</span><span class="nx">isStatic</span><span class="p">;</span><span class="w">     </span><span class="c1">// true if no frameIdx</span>
+
+<span class="c1">// Convert to single-node Instance</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">inst</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">pc</span><span class="p">.</span><span class="nx">toInstance</span><span class="p">();</span><span class="w">  </span><span class="c1">// PredictedInstance with centroid skeleton</span>
+
+<span class="c1">// Create from Instance (center of mass, bbox center, or anchor node)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">centroid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">Centroid</span><span class="p">.</span><span class="nx">fromInstance</span><span class="p">(</span><span class="nx">instance</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">centroid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">Centroid</span><span class="p">.</span><span class="nx">fromInstance</span><span class="p">(</span><span class="nx">instance</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">method</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;bboxCenter&quot;</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">centroid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">Centroid</span><span class="p">.</span><span class="nx">fromInstance</span><span class="p">(</span><span class="nx">instance</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">method</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;anchor&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">node</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;head&quot;</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Instance convenience method (requires centroid.ts import)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">centroid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">instance</span><span class="p">.</span><span class="nx">toCentroid</span><span class="p">();</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">centroid</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">instance</span><span class="p">.</span><span class="nx">toCentroid</span><span class="p">(</span><span class="s2">&quot;anchor&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;head&quot;</span><span class="p">);</span>
+
+<span class="c1">// Instance centroid shortcut (no Centroid object, just coordinates)</span>
+<span class="nx">instance</span><span class="p">.</span><span class="nx">centroidXy</span><span class="p">;</span><span class="w">  </span><span class="c1">// [x, y] | null (mean of visible points)</span>
+</code></pre></div>
+<h4 id="centroid-skeleton">Centroid Skeleton<a class="headerlink" href="#centroid-skeleton" title="Permanent link">&para;</a></h4>
+<div class="highlight"><pre><span></span><code><span class="c1">// Shared single-node skeleton for centroid conversions</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">skel</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">getCentroidSkeleton</span><span class="p">();</span><span class="w">  </span><span class="c1">// Skeleton([&quot;centroid&quot;])</span>
+<span class="nx">CENTROID_SKELETON</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="nx">getCentroidSkeleton</span><span class="p">();</span><span class="w">  </span><span class="c1">// true (singleton)</span>
+</code></pre></div>
 <h3 id="labels-annotation-access"><code>Labels</code> Annotation Access<a class="headerlink" href="#labels-annotation-access" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="c1">// Direct access</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">;</span><span class="w">           </span><span class="c1">// ROI[]</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">masks</span><span class="p">;</span><span class="w">          </span><span class="c1">// SegmentationMask[]</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">bboxes</span><span class="p">;</span><span class="w">         </span><span class="c1">// BoundingBox[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">centroids</span><span class="p">;</span><span class="w">      </span><span class="c1">// Centroid[]</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">labelImages</span><span class="p">;</span><span class="w">    </span><span class="c1">// LabelImage[]</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">identities</span><span class="p">;</span><span class="w">     </span><span class="c1">// Identity[]</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">staticRois</span><span class="p">;</span><span class="w">     </span><span class="c1">// ROIs without frame index</span>
@@ -994,6 +1063,7 @@
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getRois</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="w"> </span><span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;segmentation&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getBboxes</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">getCentroids</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getLabelImages</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cell&quot;</span><span class="w"> </span><span class="p">});</span>
 
 <span class="c1">// Add a video (deduplicates automatically)</span>
@@ -1118,7 +1188,8 @@
 <span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span>
 <span class="w">  </span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span>
 <span class="w">  </span><span class="nx">instance</span><span class="o">:</span><span class="w"> </span><span class="kt">Instance</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="kc">null</span><span class="p">;</span>
-<span class="w">  </span><span class="nx">score?</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="kc">null</span><span class="p">;</span><span class="w">  </span><span class="c1">// per-object confidence (PredictedLabelImage)</span>
+<span class="w">  </span><span class="nx">score?</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="kc">null</span><span class="p">;</span><span class="w">           </span><span class="c1">// per-object confidence (PredictedLabelImage)</span>
+<span class="w">  </span><span class="nx">trackingScore?</span><span class="o">:</span><span class="w"> </span><span class="kt">number</span><span class="w"> </span><span class="o">|</span><span class="w"> </span><span class="kc">null</span><span class="p">;</span><span class="w">   </span><span class="c1">// per-link tracking cost</span>
 <span class="p">}</span>
 </code></pre></div>
 <h3 id="normalizelabelids"><code>normalizeLabelIds()</code><a class="headerlink" href="#normalizelabelids" title="Permanent link">&para;</a></h3>
@@ -1182,6 +1253,30 @@
 <span class="kd">const</span><span class="w"> </span><span class="nx">rois</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">roisFromGeoJSON</span><span class="p">(</span><span class="nx">geojson</span><span class="p">);</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">rois</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">readGeoJSON</span><span class="p">(</span><span class="nx">jsonString</span><span class="p">);</span>
 </code></pre></div>
+<h2 id="trackmate-csv-io">TrackMate CSV I/O<a class="headerlink" href="#trackmate-csv-io" title="Permanent link">&para;</a></h2>
+<p>Import TrackMate (ImageJ/Fiji) CSV tracking exports as <code>PredictedCentroid</code> objects. Node.js only.</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">readTrackMateCsv</span><span class="p">,</span><span class="w"> </span><span class="nx">loadTrackMate</span><span class="p">,</span><span class="w"> </span><span class="nx">isTrackMateFile</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Check if a file is a TrackMate spots CSV</span>
+<span class="nx">isTrackMateFile</span><span class="p">(</span><span class="s2">&quot;data_spots.csv&quot;</span><span class="p">);</span><span class="w">  </span><span class="c1">// true/false</span>
+
+<span class="c1">// Load spots CSV (auto-detects sibling _edges.csv and .tif video)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">readTrackMateCsv</span><span class="p">(</span><span class="s2">&quot;data_spots.csv&quot;</span><span class="p">);</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">centroids</span><span class="p">;</span><span class="w">  </span><span class="c1">// PredictedCentroid[]</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">tracks</span><span class="p">;</span><span class="w">     </span><span class="c1">// Track[] (from TRACK_ID column)</span>
+
+<span class="c1">// With explicit options</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">readTrackMateCsv</span><span class="p">(</span><span class="s2">&quot;data_spots.csv&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">edgesPath</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;data_edges.csv&quot;</span><span class="p">,</span><span class="w">  </span><span class="c1">// optional, auto-detected from _spots suffix</span>
+<span class="w">  </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;data.tif&quot;</span><span class="p">,</span><span class="w">            </span><span class="c1">// optional, auto-detected from _spots suffix</span>
+<span class="p">});</span>
+
+<span class="c1">// Public API alias</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">loadTrackMate</span><span class="p">(</span><span class="s2">&quot;data_spots.csv&quot;</span><span class="p">);</span>
+</code></pre></div>
+<p>TrackMate CSV format:
+- <code>*_spots.csv</code> — spot detections with <code>POSITION_X</code>, <code>POSITION_Y</code>, <code>POSITION_Z</code>, <code>FRAME</code>, <code>QUALITY</code>, <code>TRACK_ID</code>
+- <code>*_edges.csv</code> — frame-to-frame linkages; <code>LINK_COST</code> is stored as <code>trackingScore</code> on target centroids</p>
 <h2 id="skeleton-codecs">Skeleton Codecs<a class="headerlink" href="#skeleton-codecs" title="Permanent link">&para;</a></h2>
 <h3 id="json-jsonpickle-format">JSON (jsonpickle format)<a class="headerlink" href="#json-jsonpickle-format" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">readSkeletonJson</span><span class="p">,</span><span class="w"> </span><span class="nx">isSkeletonJson</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
