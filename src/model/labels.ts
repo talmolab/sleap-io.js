@@ -44,6 +44,26 @@ export class Labels {
   /** @internal Lazy data store holding raw HDF5 data. */
   _lazyDataStore: LazyDataStore | null = null;
 
+  // Index caches (excluded from serialization, rebuilt on demand)
+  private _frameIndex: Map<Video, Map<number, LabeledFrame>> | null = null;
+  private _frameIndexLen: number = -1;
+  private _trackIndex: Map<
+    Video,
+    Map<
+      Track,
+      Array<
+        | Centroid
+        | BoundingBox
+        | SegmentationMask
+        | ROI
+        | LabelImage
+        | Instance
+        | PredictedInstance
+      >
+    >
+  > | null = null;
+  private _trackIndexLen: number = -1;
+
   constructor(options?: {
     labeledFrames?: LabeledFrame[];
     videos?: Video[];
@@ -176,13 +196,144 @@ export class Labels {
     }
   }
 
+  /** Clear all cached indices so they rebuild on next access. */
+  private _invalidateIndices(): void {
+    this._frameIndex = null;
+    this._frameIndexLen = -1;
+    this._trackIndex = null;
+    this._trackIndexLen = -1;
+  }
+
+  /** Build or return the frame index, rebuilding if stale. */
+  private _ensureFrameIndex(): Map<Video, Map<number, LabeledFrame>> {
+    if (this._lazyFrameList) this.materialize();
+    const n = this.labeledFrames.length;
+    if (this._frameIndex !== null && this._frameIndexLen === n) {
+      return this._frameIndex;
+    }
+    this._frameIndex = new Map();
+    for (const lf of this.labeledFrames) {
+      let videoMap = this._frameIndex.get(lf.video);
+      if (!videoMap) {
+        videoMap = new Map();
+        this._frameIndex.set(lf.video, videoMap);
+      }
+      if (videoMap.has(lf.frameIdx)) {
+        console.warn(
+          `Duplicate LabeledFrame for video=${lf.video}, frame_idx=${lf.frameIdx}. Using last occurrence.`,
+        );
+      }
+      videoMap.set(lf.frameIdx, lf);
+    }
+    this._frameIndexLen = n;
+    return this._frameIndex;
+  }
+
+  /** Build or return the track index, rebuilding if stale. */
+  private _ensureTrackIndex(): Map<
+    Video,
+    Map<
+      Track,
+      Array<
+        | Centroid
+        | BoundingBox
+        | SegmentationMask
+        | ROI
+        | LabelImage
+        | Instance
+        | PredictedInstance
+      >
+    >
+  > {
+    if (this._lazyFrameList) this.materialize();
+    const n = this.labeledFrames.length;
+    if (this._trackIndex !== null && this._trackIndexLen === n) {
+      return this._trackIndex;
+    }
+    this._trackIndex = new Map();
+    for (const lf of this.labeledFrames) {
+      let videoMap = this._trackIndex.get(lf.video);
+      if (!videoMap) {
+        videoMap = new Map();
+        this._trackIndex.set(lf.video, videoMap);
+      }
+      for (const ann of [
+        ...lf.centroids,
+        ...lf.bboxes,
+        ...lf.masks,
+        ...lf.rois,
+        ...lf.instances,
+      ]) {
+        const track = (ann as { track?: Track | null }).track;
+        if (track) {
+          let list = videoMap.get(track);
+          if (!list) {
+            list = [];
+            videoMap.set(track, list);
+          }
+          list.push(ann);
+        }
+      }
+      for (const li of lf.labelImages) {
+        for (const info of li.objects.values()) {
+          if (info.track) {
+            let list = videoMap.get(info.track);
+            if (!list) {
+              list = [];
+              videoMap.set(info.track, list);
+            }
+            list.push(li);
+          }
+        }
+      }
+    }
+    // Sort each list by frameIdx
+    for (const videoMap of this._trackIndex.values()) {
+      for (const list of videoMap.values()) {
+        list.sort(
+          (a, b) =>
+            ((a as { frameIdx?: number | null }).frameIdx ?? 0) -
+            ((b as { frameIdx?: number | null }).frameIdx ?? 0),
+        );
+      }
+    }
+    this._trackIndexLen = n;
+    return this._trackIndex;
+  }
+
+  /** O(1) lookup of a LabeledFrame by video and frame index. */
+  getFrame(video: Video, frameIdx: number): LabeledFrame | null {
+    return this._ensureFrameIndex().get(video)?.get(frameIdx) ?? null;
+  }
+
+  /** O(1) lookup of all annotations for a track in a video, sorted by frameIdx. */
+  getTrackAnnotations(
+    video: Video,
+    track: Track,
+  ): Array<
+    | Centroid
+    | BoundingBox
+    | SegmentationMask
+    | ROI
+    | LabelImage
+    | Instance
+    | PredictedInstance
+  > {
+    return this._ensureTrackIndex().get(video)?.get(track) ?? [];
+  }
+
+  /** Force rebuild of all indices on next access. */
+  reindex(): void {
+    this._invalidateIndices();
+  }
+
   /** Find an existing LabeledFrame or create a new one. */
   private _findOrCreateFrame(video: Video, frameIdx: number): LabeledFrame {
-    for (const lf of this.labeledFrames) {
-      if (lf.video === video && lf.frameIdx === frameIdx) return lf;
-    }
+    const existing = this.getFrame(video, frameIdx);
+    if (existing) return existing;
     const lf = new LabeledFrame({ video, frameIdx });
     this.labeledFrames.push(lf);
+    this._invalidateIndices();
     return lf;
   }
 
@@ -196,6 +347,7 @@ export class Labels {
     }
     const lf = this._findOrCreateFrame(annotation.video, annotation.frameIdx);
     (lf[attr] as unknown[]).push(annotation);
+    this._invalidateIndices();
     if (!this.videos.includes(annotation.video)) this.videos.push(annotation.video);
     if (annotation.track && !this.tracks.includes(annotation.track)) {
       this.tracks.push(annotation.track);
@@ -369,6 +521,11 @@ export class Labels {
 
   find(options: { video?: Video; frameIdx?: number }): LabeledFrame[] {
     if (this._lazyFrameList) this.materialize();
+    // Fast path: O(1) lookup when both video and frameIdx are specified
+    if (options.video !== undefined && options.frameIdx !== undefined) {
+      const frame = this.getFrame(options.video, options.frameIdx);
+      return frame ? [frame] : [];
+    }
     return this.labeledFrames.filter((frame) => {
       if (options.video && frame.video !== options.video) {
         return false;
@@ -389,6 +546,7 @@ export class Labels {
   append(frame: LabeledFrame): void {
     if (this._lazyFrameList) this.materialize();
     this.labeledFrames.push(frame);
+    this._invalidateIndices();
     this.addVideo(frame.video);
     this._collectAnnotationTracks(frame);
   }
@@ -415,12 +573,19 @@ export class Labels {
     predicted?: boolean;
   }): ROI[] {
     if (!filters) return [...this.rois];
-    let results = this.rois;
-    if (filters.video !== undefined) {
-      results = results.filter((r) => r.video === filters.video);
-    }
-    if (filters.frameIdx !== undefined) {
-      results = results.filter((r) => r.frameIdx === filters.frameIdx);
+    // Fast path: O(1) frame lookup when both video and frameIdx given
+    let results: ROI[];
+    if (filters.video !== undefined && filters.frameIdx !== undefined) {
+      const lf = this.getFrame(filters.video, filters.frameIdx);
+      results = lf ? lf.rois : [];
+    } else {
+      results = this.rois;
+      if (filters.video !== undefined) {
+        results = results.filter((r) => r.video === filters.video);
+      }
+      if (filters.frameIdx !== undefined) {
+        results = results.filter((r) => r.frameIdx === filters.frameIdx);
+      }
     }
     if (filters.category !== undefined) {
       results = results.filter((r) => r.category === filters.category);
@@ -446,12 +611,18 @@ export class Labels {
     predicted?: boolean;
   }): SegmentationMask[] {
     if (!filters) return [...this.masks];
-    let results = this.masks;
-    if (filters.video !== undefined) {
-      results = results.filter((m) => m.video === filters.video);
-    }
-    if (filters.frameIdx !== undefined) {
-      results = results.filter((m) => m.frameIdx === filters.frameIdx);
+    let results: SegmentationMask[];
+    if (filters.video !== undefined && filters.frameIdx !== undefined) {
+      const lf = this.getFrame(filters.video, filters.frameIdx);
+      results = lf ? lf.masks : [];
+    } else {
+      results = this.masks;
+      if (filters.video !== undefined) {
+        results = results.filter((m) => m.video === filters.video);
+      }
+      if (filters.frameIdx !== undefined) {
+        results = results.filter((m) => m.frameIdx === filters.frameIdx);
+      }
     }
     if (filters.category !== undefined) {
       results = results.filter((m) => m.category === filters.category);
@@ -485,12 +656,18 @@ export class Labels {
     predicted?: boolean;
   }): BoundingBox[] {
     if (!filters) return [...this.bboxes];
-    let results = this.bboxes;
-    if (filters.video !== undefined) {
-      results = results.filter((b) => b.video === filters.video);
-    }
-    if (filters.frameIdx !== undefined) {
-      results = results.filter((b) => b.frameIdx === filters.frameIdx);
+    let results: BoundingBox[];
+    if (filters.video !== undefined && filters.frameIdx !== undefined) {
+      const lf = this.getFrame(filters.video, filters.frameIdx);
+      results = lf ? lf.bboxes : [];
+    } else {
+      results = this.bboxes;
+      if (filters.video !== undefined) {
+        results = results.filter((b) => b.video === filters.video);
+      }
+      if (filters.frameIdx !== undefined) {
+        results = results.filter((b) => b.frameIdx === filters.frameIdx);
+      }
     }
     if (filters.category !== undefined) {
       results = results.filter((b) => b.category === filters.category);
@@ -516,12 +693,18 @@ export class Labels {
     predicted?: boolean;
   }): Centroid[] {
     if (!filters) return [...this.centroids];
-    let results = this.centroids;
-    if (filters.video !== undefined) {
-      results = results.filter((c) => c.video === filters.video);
-    }
-    if (filters.frameIdx !== undefined) {
-      results = results.filter((c) => c.frameIdx === filters.frameIdx);
+    let results: Centroid[];
+    if (filters.video !== undefined && filters.frameIdx !== undefined) {
+      const lf = this.getFrame(filters.video, filters.frameIdx);
+      results = lf ? lf.centroids : [];
+    } else {
+      results = this.centroids;
+      if (filters.video !== undefined) {
+        results = results.filter((c) => c.video === filters.video);
+      }
+      if (filters.frameIdx !== undefined) {
+        results = results.filter((c) => c.frameIdx === filters.frameIdx);
+      }
     }
     if (filters.category !== undefined) {
       results = results.filter((c) => c.category === filters.category);
@@ -554,21 +737,29 @@ export class Labels {
     predicted?: boolean;
   }): LabelImage[] {
     if (!filters) return [...this.labelImages];
-    let results = this.labelImages;
-    if (filters.video !== undefined) {
-      results = results.filter((li) => li.video === filters.video);
-    }
-    if (filters.frameIdx !== undefined) {
-      results = results.filter((li) => li.frameIdx === filters.frameIdx);
+    let results: LabelImage[];
+    if (filters.video !== undefined && filters.frameIdx !== undefined) {
+      const lf = this.getFrame(filters.video, filters.frameIdx);
+      results = lf ? lf.labelImages : [];
+    } else {
+      results = this.labelImages;
+      if (filters.video !== undefined) {
+        results = results.filter((li) => li.video === filters.video);
+      }
+      if (filters.frameIdx !== undefined) {
+        results = results.filter((li) => li.frameIdx === filters.frameIdx);
+      }
     }
     if (filters.track !== undefined) {
       results = results.filter((li) =>
-        Array.from(li.objects.values()).some((info) => info.track === filters.track)
+        Array.from(li.objects.values()).some((info) => info.track === filters.track),
       );
     }
     if (filters.category !== undefined) {
       results = results.filter((li) =>
-        Array.from(li.objects.values()).some((info) => info.category === filters.category)
+        Array.from(li.objects.values()).some(
+          (info) => info.category === filters.category,
+        ),
       );
     }
     if (filters.predicted !== undefined) {
@@ -648,6 +839,9 @@ export class Labels {
     }
 
     this.videos = this.videos.map((v) => videoMap!.get(v) ?? v);
+
+    // Frame index is keyed by video identity, so must be rebuilt
+    this._invalidateIndices();
   }
 
   /**
