@@ -903,6 +903,10 @@ declare class Labels {
     _lazyFrameList: LazyFrameList | null;
     /** @internal Lazy data store holding raw HDF5 data. */
     _lazyDataStore: LazyDataStore | null;
+    private _frameIndex;
+    private _frameIndexLen;
+    private _trackIndex;
+    private _trackIndexLen;
     constructor(options?: {
         labeledFrames?: LabeledFrame[];
         videos?: Video[];
@@ -922,6 +926,18 @@ declare class Labels {
     private _distributeAnnotations;
     /** Collect tracks from annotations on a frame into this.tracks. */
     private _collectAnnotationTracks;
+    /** Clear all cached indices so they rebuild on next access. */
+    private _invalidateIndices;
+    /** Build or return the frame index, rebuilding if stale. */
+    private _ensureFrameIndex;
+    /** Build or return the track index, rebuilding if stale. */
+    private _ensureTrackIndex;
+    /** O(1) lookup of a LabeledFrame by video and frame index. */
+    getFrame(video: Video, frameIdx: number): LabeledFrame | null;
+    /** O(1) lookup of all annotations for a track in a video, sorted by frameIdx. */
+    getTrackAnnotations(video: Video, track: Track): Array<Centroid | BoundingBox | SegmentationMask | ROI | LabelImage | Instance | PredictedInstance>;
+    /** Force rebuild of all indices on next access. */
+    reindex(): void;
     /** Find an existing LabeledFrame or create a new one. */
     private _findOrCreateFrame;
     /** Add an annotation to the appropriate LabeledFrame. */

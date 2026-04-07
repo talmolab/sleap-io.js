@@ -836,6 +836,11 @@ var Labels = class _Labels {
   _lazyFrameList = null;
   /** @internal Lazy data store holding raw HDF5 data. */
   _lazyDataStore = null;
+  // Index caches (excluded from serialization, rebuilt on demand)
+  _frameIndex = null;
+  _frameIndexLen = -1;
+  _trackIndex = null;
+  _trackIndexLen = -1;
   constructor(options) {
     this.labeledFrames = options?.labeledFrames ?? [];
     this.videos = options?.videos ?? [];
@@ -942,13 +947,110 @@ var Labels = class _Labels {
       for (const info of li.objects.values()) add(info.track);
     }
   }
+  /** Clear all cached indices so they rebuild on next access. */
+  _invalidateIndices() {
+    this._frameIndex = null;
+    this._frameIndexLen = -1;
+    this._trackIndex = null;
+    this._trackIndexLen = -1;
+  }
+  /** Build or return the frame index, rebuilding if stale. */
+  _ensureFrameIndex() {
+    if (this._lazyFrameList) this.materialize();
+    const n = this.labeledFrames.length;
+    if (this._frameIndex !== null && this._frameIndexLen === n) {
+      return this._frameIndex;
+    }
+    this._frameIndex = /* @__PURE__ */ new Map();
+    for (const lf of this.labeledFrames) {
+      let videoMap = this._frameIndex.get(lf.video);
+      if (!videoMap) {
+        videoMap = /* @__PURE__ */ new Map();
+        this._frameIndex.set(lf.video, videoMap);
+      }
+      if (videoMap.has(lf.frameIdx)) {
+        console.warn(
+          `Duplicate LabeledFrame for video=${lf.video}, frame_idx=${lf.frameIdx}. Using last occurrence.`
+        );
+      }
+      videoMap.set(lf.frameIdx, lf);
+    }
+    this._frameIndexLen = n;
+    return this._frameIndex;
+  }
+  /** Build or return the track index, rebuilding if stale. */
+  _ensureTrackIndex() {
+    if (this._lazyFrameList) this.materialize();
+    const n = this.labeledFrames.length;
+    if (this._trackIndex !== null && this._trackIndexLen === n) {
+      return this._trackIndex;
+    }
+    this._trackIndex = /* @__PURE__ */ new Map();
+    for (const lf of this.labeledFrames) {
+      let videoMap = this._trackIndex.get(lf.video);
+      if (!videoMap) {
+        videoMap = /* @__PURE__ */ new Map();
+        this._trackIndex.set(lf.video, videoMap);
+      }
+      for (const ann of [
+        ...lf.centroids,
+        ...lf.bboxes,
+        ...lf.masks,
+        ...lf.rois,
+        ...lf.instances
+      ]) {
+        const track = ann.track;
+        if (track) {
+          let list = videoMap.get(track);
+          if (!list) {
+            list = [];
+            videoMap.set(track, list);
+          }
+          list.push(ann);
+        }
+      }
+      for (const li of lf.labelImages) {
+        for (const info of li.objects.values()) {
+          if (info.track) {
+            let list = videoMap.get(info.track);
+            if (!list) {
+              list = [];
+              videoMap.set(info.track, list);
+            }
+            list.push(li);
+          }
+        }
+      }
+    }
+    for (const videoMap of this._trackIndex.values()) {
+      for (const list of videoMap.values()) {
+        list.sort(
+          (a, b) => (a.frameIdx ?? 0) - (b.frameIdx ?? 0)
+        );
+      }
+    }
+    this._trackIndexLen = n;
+    return this._trackIndex;
+  }
+  /** O(1) lookup of a LabeledFrame by video and frame index. */
+  getFrame(video, frameIdx) {
+    return this._ensureFrameIndex().get(video)?.get(frameIdx) ?? null;
+  }
+  /** O(1) lookup of all annotations for a track in a video, sorted by frameIdx. */
+  getTrackAnnotations(video, track) {
+    return this._ensureTrackIndex().get(video)?.get(track) ?? [];
+  }
+  /** Force rebuild of all indices on next access. */
+  reindex() {
+    this._invalidateIndices();
+  }
   /** Find an existing LabeledFrame or create a new one. */
   _findOrCreateFrame(video, frameIdx) {
-    for (const lf2 of this.labeledFrames) {
-      if (lf2.video === video && lf2.frameIdx === frameIdx) return lf2;
-    }
+    const existing = this.getFrame(video, frameIdx);
+    if (existing) return existing;
     const lf = new LabeledFrame({ video, frameIdx });
     this.labeledFrames.push(lf);
+    this._invalidateIndices();
     return lf;
   }
   /** Add an annotation to the appropriate LabeledFrame. */
@@ -958,6 +1060,7 @@ var Labels = class _Labels {
     }
     const lf = this._findOrCreateFrame(annotation.video, annotation.frameIdx);
     lf[attr].push(annotation);
+    this._invalidateIndices();
     if (!this.videos.includes(annotation.video)) this.videos.push(annotation.video);
     if (annotation.track && !this.tracks.includes(annotation.track)) {
       this.tracks.push(annotation.track);
@@ -1109,6 +1212,10 @@ var Labels = class _Labels {
   }
   find(options) {
     if (this._lazyFrameList) this.materialize();
+    if (options.video !== void 0 && options.frameIdx !== void 0) {
+      const frame = this.getFrame(options.video, options.frameIdx);
+      return frame ? [frame] : [];
+    }
     return this.labeledFrames.filter((frame) => {
       if (options.video && frame.video !== options.video) {
         return false;
@@ -1127,6 +1234,7 @@ var Labels = class _Labels {
   append(frame) {
     if (this._lazyFrameList) this.materialize();
     this.labeledFrames.push(frame);
+    this._invalidateIndices();
     this.addVideo(frame.video);
     this._collectAnnotationTracks(frame);
   }
@@ -1142,12 +1250,18 @@ var Labels = class _Labels {
   }
   getRois(filters) {
     if (!filters) return [...this.rois];
-    let results = this.rois;
-    if (filters.video !== void 0) {
-      results = results.filter((r) => r.video === filters.video);
-    }
-    if (filters.frameIdx !== void 0) {
-      results = results.filter((r) => r.frameIdx === filters.frameIdx);
+    let results;
+    if (filters.video !== void 0 && filters.frameIdx !== void 0) {
+      const lf = this.getFrame(filters.video, filters.frameIdx);
+      results = lf ? lf.rois : [];
+    } else {
+      results = this.rois;
+      if (filters.video !== void 0) {
+        results = results.filter((r) => r.video === filters.video);
+      }
+      if (filters.frameIdx !== void 0) {
+        results = results.filter((r) => r.frameIdx === filters.frameIdx);
+      }
     }
     if (filters.category !== void 0) {
       results = results.filter((r) => r.category === filters.category);
@@ -1165,12 +1279,18 @@ var Labels = class _Labels {
   }
   getMasks(filters) {
     if (!filters) return [...this.masks];
-    let results = this.masks;
-    if (filters.video !== void 0) {
-      results = results.filter((m) => m.video === filters.video);
-    }
-    if (filters.frameIdx !== void 0) {
-      results = results.filter((m) => m.frameIdx === filters.frameIdx);
+    let results;
+    if (filters.video !== void 0 && filters.frameIdx !== void 0) {
+      const lf = this.getFrame(filters.video, filters.frameIdx);
+      results = lf ? lf.masks : [];
+    } else {
+      results = this.masks;
+      if (filters.video !== void 0) {
+        results = results.filter((m) => m.video === filters.video);
+      }
+      if (filters.frameIdx !== void 0) {
+        results = results.filter((m) => m.frameIdx === filters.frameIdx);
+      }
     }
     if (filters.category !== void 0) {
       results = results.filter((m) => m.category === filters.category);
@@ -1194,12 +1314,18 @@ var Labels = class _Labels {
   }
   getBboxes(filters) {
     if (!filters) return [...this.bboxes];
-    let results = this.bboxes;
-    if (filters.video !== void 0) {
-      results = results.filter((b) => b.video === filters.video);
-    }
-    if (filters.frameIdx !== void 0) {
-      results = results.filter((b) => b.frameIdx === filters.frameIdx);
+    let results;
+    if (filters.video !== void 0 && filters.frameIdx !== void 0) {
+      const lf = this.getFrame(filters.video, filters.frameIdx);
+      results = lf ? lf.bboxes : [];
+    } else {
+      results = this.bboxes;
+      if (filters.video !== void 0) {
+        results = results.filter((b) => b.video === filters.video);
+      }
+      if (filters.frameIdx !== void 0) {
+        results = results.filter((b) => b.frameIdx === filters.frameIdx);
+      }
     }
     if (filters.category !== void 0) {
       results = results.filter((b) => b.category === filters.category);
@@ -1217,12 +1343,18 @@ var Labels = class _Labels {
   }
   getCentroids(filters) {
     if (!filters) return [...this.centroids];
-    let results = this.centroids;
-    if (filters.video !== void 0) {
-      results = results.filter((c) => c.video === filters.video);
-    }
-    if (filters.frameIdx !== void 0) {
-      results = results.filter((c) => c.frameIdx === filters.frameIdx);
+    let results;
+    if (filters.video !== void 0 && filters.frameIdx !== void 0) {
+      const lf = this.getFrame(filters.video, filters.frameIdx);
+      results = lf ? lf.centroids : [];
+    } else {
+      results = this.centroids;
+      if (filters.video !== void 0) {
+        results = results.filter((c) => c.video === filters.video);
+      }
+      if (filters.frameIdx !== void 0) {
+        results = results.filter((c) => c.frameIdx === filters.frameIdx);
+      }
     }
     if (filters.category !== void 0) {
       results = results.filter((c) => c.category === filters.category);
@@ -1246,12 +1378,18 @@ var Labels = class _Labels {
   }
   getLabelImages(filters) {
     if (!filters) return [...this.labelImages];
-    let results = this.labelImages;
-    if (filters.video !== void 0) {
-      results = results.filter((li) => li.video === filters.video);
-    }
-    if (filters.frameIdx !== void 0) {
-      results = results.filter((li) => li.frameIdx === filters.frameIdx);
+    let results;
+    if (filters.video !== void 0 && filters.frameIdx !== void 0) {
+      const lf = this.getFrame(filters.video, filters.frameIdx);
+      results = lf ? lf.labelImages : [];
+    } else {
+      results = this.labelImages;
+      if (filters.video !== void 0) {
+        results = results.filter((li) => li.video === filters.video);
+      }
+      if (filters.frameIdx !== void 0) {
+        results = results.filter((li) => li.frameIdx === filters.frameIdx);
+      }
     }
     if (filters.track !== void 0) {
       results = results.filter(
@@ -1260,7 +1398,9 @@ var Labels = class _Labels {
     }
     if (filters.category !== void 0) {
       results = results.filter(
-        (li) => Array.from(li.objects.values()).some((info) => info.category === filters.category)
+        (li) => Array.from(li.objects.values()).some(
+          (info) => info.category === filters.category
+        )
       );
     }
     if (filters.predicted !== void 0) {
@@ -1325,6 +1465,7 @@ var Labels = class _Labels {
       if (li.video && videoMap.has(li.video)) li.video = videoMap.get(li.video);
     }
     this.videos = this.videos.map((v) => videoMap.get(v) ?? v);
+    this._invalidateIndices();
   }
   /**
    * Create a deep copy of this Labels object.
