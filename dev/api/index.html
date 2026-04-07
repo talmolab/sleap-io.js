@@ -882,7 +882,7 @@
 <span class="c1">// Properties</span>
 <span class="nx">roi</span><span class="p">.</span><span class="nx">bounds</span><span class="p">;</span><span class="w">       </span><span class="c1">// { minX, minY, maxX, maxY }</span>
 <span class="nx">roi</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">         </span><span class="c1">// polygon area</span>
-<span class="nx">roi</span><span class="p">.</span><span class="nx">centroid</span><span class="p">;</span><span class="w">     </span><span class="c1">// { x, y }</span>
+<span class="nx">roi</span><span class="p">.</span><span class="nx">centroidXy</span><span class="p">;</span><span class="w">   </span><span class="c1">// [x, y]</span>
 <span class="nx">roi</span><span class="p">.</span><span class="nx">isBbox</span><span class="p">;</span><span class="w">       </span><span class="c1">// true if axis-aligned rectangle</span>
 <span class="nx">roi</span><span class="p">.</span><span class="nx">isPredicted</span><span class="p">;</span><span class="w">  </span><span class="c1">// false for UserROI, true for PredictedROI</span>
 
@@ -932,6 +932,9 @@
 
 <span class="c1">// Convert to polygon ROI</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">toPolygon</span><span class="p">();</span>
+
+<span class="c1">// Convert to BoundingBox object (with metadata)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">bb</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">toBbox</span><span class="p">();</span>
 </code></pre></div>
 <h3 id="boundingbox"><code>BoundingBox</code><a class="headerlink" href="#boundingbox" title="Permanent link">&para;</a></h3>
 <p>Axis-aligned or rotated bounding box for detection/tracking workflows. <code>BoundingBox</code> is abstract; use <code>UserBoundingBox</code> or <code>PredictedBoundingBox</code> for direct construction.</p>
@@ -966,7 +969,7 @@
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">corners</span><span class="p">;</span><span class="w">    </span><span class="c1">// number[][] (4 corner points, respects rotation)</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">bounds</span><span class="p">;</span><span class="w">     </span><span class="c1">// { minX, minY, maxX, maxY }</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">       </span><span class="c1">// width * height</span>
-<span class="nx">bbox</span><span class="p">.</span><span class="nx">centroid</span><span class="p">;</span><span class="w">   </span><span class="c1">// { x, y }</span>
+<span class="nx">bbox</span><span class="p">.</span><span class="nx">centroidXy</span><span class="p">;</span><span class="w"> </span><span class="c1">// [x, y]</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">isPredicted</span><span class="p">;</span><span class="w"> </span><span class="c1">// true for PredictedBoundingBox</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">isStatic</span><span class="p">;</span><span class="w">   </span><span class="c1">// true if no frameIdx</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">isRotated</span><span class="p">;</span><span class="w">  </span><span class="c1">// true if angle != 0</span>
@@ -1101,6 +1104,7 @@
 
 <span class="c1">// Conversion</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">masks</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">toMasks</span><span class="p">();</span><span class="w">                       </span><span class="c1">// SegmentationMask[]</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">bboxes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">toBboxes</span><span class="p">();</span><span class="w">                     </span><span class="c1">// BoundingBox[]</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">fullRes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">li</span><span class="p">.</span><span class="nx">resampled</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span><span class="w">           </span><span class="c1">// new LabelImage at full resolution</span>
 
 <span class="c1">// Predicted label image</span>

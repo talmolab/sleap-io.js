@@ -1745,6 +1745,15 @@ var ROI = class _ROI {
     }
     return 0;
   }
+  /** Centroid of the geometry as `[x, y]`. */
+  get centroidXy() {
+    if (this.geometry.type === "Point") {
+      return [this.geometry.coordinates[0], this.geometry.coordinates[1]];
+    }
+    const b = this.bounds;
+    return [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2];
+  }
+  /** @deprecated Use `centroidXy` instead. */
   get centroid() {
     if (this.geometry.type === "Point") {
       return { x: this.geometry.coordinates[0], y: this.geometry.coordinates[1] };
@@ -2085,6 +2094,161 @@ var PredictedROI = class extends ROI {
   }
 };
 
+// src/model/bbox.ts
+var BoundingBox = class _BoundingBox {
+  x1;
+  y1;
+  x2;
+  y2;
+  angle;
+  video;
+  frameIdx;
+  track;
+  instance;
+  category;
+  name;
+  source;
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx = null;
+  constructor(options) {
+    if (new.target === _BoundingBox) {
+      throw new TypeError(
+        "BoundingBox is abstract. Use UserBoundingBox or PredictedBoundingBox."
+      );
+    }
+    this.x1 = options.x1;
+    this.y1 = options.y1;
+    this.x2 = options.x2;
+    this.y2 = options.y2;
+    this.angle = options.angle ?? 0;
+    this.video = options.video ?? null;
+    this.frameIdx = options.frameIdx ?? null;
+    this.track = options.track ?? null;
+    this.instance = options.instance ?? null;
+    this.category = options.category ?? "";
+    this.name = options.name ?? "";
+    this.source = options.source ?? "";
+  }
+  /** Create from corner coordinates [x1, y1, x2, y2]. */
+  static fromXyxy(x1, y1, x2, y2, options) {
+    return new UserBoundingBox({ x1, y1, x2, y2, ...options });
+  }
+  /** Create from top-left corner + size [x, y, w, h]. */
+  static fromXywh(x, y, w, h, options) {
+    return new UserBoundingBox({ x1: x, y1: y, x2: x + w, y2: y + h, ...options });
+  }
+  /** Center X coordinate (computed from x1, x2). */
+  get xCenter() {
+    return (this.x1 + this.x2) / 2;
+  }
+  /** Center Y coordinate (computed from y1, y2). */
+  get yCenter() {
+    return (this.y1 + this.y2) / 2;
+  }
+  /** Width of the bbox (computed from x1, x2). */
+  get width() {
+    return Math.abs(this.x2 - this.x1);
+  }
+  /** Height of the bbox (computed from y1, y2). */
+  get height() {
+    return Math.abs(this.y2 - this.y1);
+  }
+  /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
+  get xyxy() {
+    if (!this.isRotated) {
+      return [this.x1, this.y1, this.x2, this.y2];
+    }
+    const c = this.corners;
+    const xs = c.map((p) => p[0]);
+    const ys = c.map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  }
+  /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
+  get xywh() {
+    const [x1, y1, x2, y2] = this.xyxy;
+    return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+  }
+  /** Four corner points of the (possibly rotated) bbox. */
+  get corners() {
+    const hw = this.width / 2;
+    const hh = this.height / 2;
+    const local = [
+      [-hw, -hh],
+      [hw, -hh],
+      [hw, hh],
+      [-hw, hh]
+    ];
+    if (!this.isRotated) {
+      return local.map(([dx, dy]) => [this.xCenter + dx, this.yCenter + dy]);
+    }
+    const cos = Math.cos(this.angle);
+    const sin = Math.sin(this.angle);
+    return local.map(([dx, dy]) => [
+      this.xCenter + dx * cos - dy * sin,
+      this.yCenter + dx * sin + dy * cos
+    ]);
+  }
+  /** Axis-aligned bounds. */
+  get bounds() {
+    const [x1, y1, x2, y2] = this.xyxy;
+    return { minX: x1, minY: y1, maxX: x2, maxY: y2 };
+  }
+  /** Area of the bbox (width * height). */
+  get area() {
+    return this.width * this.height;
+  }
+  /** Center point as `[x, y]`. */
+  get centroidXy() {
+    return [this.xCenter, this.yCenter];
+  }
+  /** @deprecated Use `centroidXy` instead. */
+  get centroid() {
+    return { x: this.xCenter, y: this.yCenter };
+  }
+  /** Whether this is a predicted bbox (has a score). */
+  get isPredicted() {
+    return false;
+  }
+  /** Whether the bbox has no temporal association. */
+  get isStatic() {
+    return this.frameIdx === null;
+  }
+  /** Whether the bbox is rotated (angle != 0). */
+  get isRotated() {
+    return this.angle !== 0;
+  }
+  /** Convert to a Polygon ROI. */
+  toRoi() {
+    const c = this.corners;
+    const ring = [...c, c[0]];
+    return ROI.fromPolygon(ring, {
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance
+    });
+  }
+  /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
+  toMask(height, width) {
+    return this.toRoi().toMask(height, width);
+  }
+};
+var UserBoundingBox = class extends BoundingBox {
+};
+var PredictedBoundingBox = class extends BoundingBox {
+  score;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+  }
+  get isPredicted() {
+    return true;
+  }
+};
+
 // src/model/mask.ts
 function encodeRle(mask, height, width) {
   const total = height * width;
@@ -2286,6 +2450,35 @@ var SegmentationMask = class _SegmentationMask {
       height: (maxR - minR + 1) / sy
     };
   }
+  /** Convert to a `BoundingBox` object with metadata.
+   *
+   * Returns a `UserBoundingBox` or `PredictedBoundingBox` depending on whether
+   * this mask is predicted. Coordinates are in image space (respecting
+   * scale/offset).
+   */
+  toBbox() {
+    const { x, y, width, height } = this.bbox;
+    const opts = {
+      x1: x,
+      y1: y,
+      x2: x + width,
+      y2: y + height,
+      video: this.video,
+      frameIdx: this.frameIdx,
+      track: this.track,
+      instance: this.instance,
+      category: this.category,
+      name: this.name,
+      source: this.source
+    };
+    if (this instanceof PredictedSegmentationMask) {
+      return new PredictedBoundingBox({
+        ...opts,
+        score: this.score
+      });
+    }
+    return new UserBoundingBox(opts);
+  }
   /** Convert the mask to a bounding-box polygon ROI. */
   toPolygon() {
     const bb = this.bbox;
@@ -2346,157 +2539,6 @@ _registerMaskFactory(
     return SegmentationMask.fromArray(mask, height, width, options);
   }
 );
-
-// src/model/bbox.ts
-var BoundingBox = class _BoundingBox {
-  x1;
-  y1;
-  x2;
-  y2;
-  angle;
-  video;
-  frameIdx;
-  track;
-  instance;
-  category;
-  name;
-  source;
-  /** @internal Deferred instance index for lazy resolution. */
-  _instanceIdx = null;
-  constructor(options) {
-    if (new.target === _BoundingBox) {
-      throw new TypeError(
-        "BoundingBox is abstract. Use UserBoundingBox or PredictedBoundingBox."
-      );
-    }
-    this.x1 = options.x1;
-    this.y1 = options.y1;
-    this.x2 = options.x2;
-    this.y2 = options.y2;
-    this.angle = options.angle ?? 0;
-    this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
-    this.track = options.track ?? null;
-    this.instance = options.instance ?? null;
-    this.category = options.category ?? "";
-    this.name = options.name ?? "";
-    this.source = options.source ?? "";
-  }
-  /** Create from corner coordinates [x1, y1, x2, y2]. */
-  static fromXyxy(x1, y1, x2, y2, options) {
-    return new UserBoundingBox({ x1, y1, x2, y2, ...options });
-  }
-  /** Create from top-left corner + size [x, y, w, h]. */
-  static fromXywh(x, y, w, h, options) {
-    return new UserBoundingBox({ x1: x, y1: y, x2: x + w, y2: y + h, ...options });
-  }
-  /** Center X coordinate (computed from x1, x2). */
-  get xCenter() {
-    return (this.x1 + this.x2) / 2;
-  }
-  /** Center Y coordinate (computed from y1, y2). */
-  get yCenter() {
-    return (this.y1 + this.y2) / 2;
-  }
-  /** Width of the bbox (computed from x1, x2). */
-  get width() {
-    return Math.abs(this.x2 - this.x1);
-  }
-  /** Height of the bbox (computed from y1, y2). */
-  get height() {
-    return Math.abs(this.y2 - this.y1);
-  }
-  /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
-  get xyxy() {
-    if (!this.isRotated) {
-      return [this.x1, this.y1, this.x2, this.y2];
-    }
-    const c = this.corners;
-    const xs = c.map((p) => p[0]);
-    const ys = c.map((p) => p[1]);
-    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-  }
-  /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
-  get xywh() {
-    const [x1, y1, x2, y2] = this.xyxy;
-    return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
-  }
-  /** Four corner points of the (possibly rotated) bbox. */
-  get corners() {
-    const hw = this.width / 2;
-    const hh = this.height / 2;
-    const local = [
-      [-hw, -hh],
-      [hw, -hh],
-      [hw, hh],
-      [-hw, hh]
-    ];
-    if (!this.isRotated) {
-      return local.map(([dx, dy]) => [this.xCenter + dx, this.yCenter + dy]);
-    }
-    const cos = Math.cos(this.angle);
-    const sin = Math.sin(this.angle);
-    return local.map(([dx, dy]) => [
-      this.xCenter + dx * cos - dy * sin,
-      this.yCenter + dx * sin + dy * cos
-    ]);
-  }
-  /** Axis-aligned bounds. */
-  get bounds() {
-    const [x1, y1, x2, y2] = this.xyxy;
-    return { minX: x1, minY: y1, maxX: x2, maxY: y2 };
-  }
-  /** Area of the bbox (width * height). */
-  get area() {
-    return this.width * this.height;
-  }
-  /** Center point. */
-  get centroid() {
-    return { x: this.xCenter, y: this.yCenter };
-  }
-  /** Whether this is a predicted bbox (has a score). */
-  get isPredicted() {
-    return false;
-  }
-  /** Whether the bbox has no temporal association. */
-  get isStatic() {
-    return this.frameIdx === null;
-  }
-  /** Whether the bbox is rotated (angle != 0). */
-  get isRotated() {
-    return this.angle !== 0;
-  }
-  /** Convert to a Polygon ROI. */
-  toRoi() {
-    const c = this.corners;
-    const ring = [...c, c[0]];
-    return ROI.fromPolygon(ring, {
-      name: this.name,
-      category: this.category,
-      source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
-      track: this.track,
-      instance: this.instance
-    });
-  }
-  /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
-  toMask(height, width) {
-    return this.toRoi().toMask(height, width);
-  }
-};
-var UserBoundingBox = class extends BoundingBox {
-};
-var PredictedBoundingBox = class extends BoundingBox {
-  score;
-  constructor(options) {
-    super(options);
-    this.score = options.score;
-  }
-  get isPredicted() {
-    return true;
-  }
-};
 
 // src/model/label-image.ts
 var LabelImage = class _LabelImage {
@@ -3097,6 +3139,74 @@ var LabelImage = class _LabelImage {
       }
     }
     return result;
+  }
+  /** Extract tight bounding boxes for each object in the label image.
+   *
+   * Returns `UserBoundingBox` or `PredictedBoundingBox` objects depending on
+   * whether this label image is predicted. Each bounding box inherits track,
+   * category, name, instance, and score from the corresponding object entry.
+   *
+   * Bounding boxes are in image coordinates (respecting scale/offset).
+   * Label IDs present in `objects` but with no pixels in the data are skipped.
+   */
+  toBboxes() {
+    const data = this.data;
+    const h = this.height;
+    const w = this.width;
+    const labelBounds = /* @__PURE__ */ new Map();
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        const v = data[r * w + c];
+        if (v <= 0) continue;
+        const bounds = labelBounds.get(v);
+        if (!bounds) {
+          labelBounds.set(v, { minR: r, maxR: r, minC: c, maxC: c });
+        } else {
+          if (r < bounds.minR) bounds.minR = r;
+          if (r > bounds.maxR) bounds.maxR = r;
+          if (c < bounds.minC) bounds.minC = c;
+          if (c > bounds.maxC) bounds.maxC = c;
+        }
+      }
+    }
+    if (labelBounds.size === 0) return [];
+    const [sx, sy] = this.scale;
+    const [ox, oy] = this.offset;
+    const isPredicted = this instanceof PredictedLabelImage;
+    const bboxes = [];
+    for (const [lid, info] of this.objects) {
+      const bounds = labelBounds.get(lid);
+      if (!bounds) continue;
+      const x1 = bounds.minC / sx + ox;
+      const y1 = bounds.minR / sy + oy;
+      const x2 = (bounds.maxC + 1) / sx + ox;
+      const y2 = (bounds.maxR + 1) / sy + oy;
+      const opts = {
+        x1,
+        y1,
+        x2,
+        y2,
+        video: this.video,
+        frameIdx: this.frameIdx,
+        track: info.track,
+        instance: info.instance,
+        category: info.category,
+        name: info.name,
+        source: this.source
+      };
+      if (isPredicted) {
+        const pli = this;
+        bboxes.push(
+          new PredictedBoundingBox({
+            ...opts,
+            score: info.score ?? pli.score
+          })
+        );
+      } else {
+        bboxes.push(new UserBoundingBox(opts));
+      }
+    }
+    return bboxes;
   }
 };
 var UserLabelImage = class extends LabelImage {
@@ -7926,15 +8036,15 @@ export {
   decodeWkb,
   UserROI,
   PredictedROI,
+  BoundingBox,
+  UserBoundingBox,
+  PredictedBoundingBox,
   encodeRle,
   decodeRle,
   resizeNearest,
   SegmentationMask,
   UserSegmentationMask,
   PredictedSegmentationMask,
-  BoundingBox,
-  UserBoundingBox,
-  PredictedBoundingBox,
   LabelImage,
   UserLabelImage,
   PredictedLabelImage,

@@ -266,6 +266,100 @@ declare class LazyFrameList {
     get materializedCount(): number;
 }
 
+/** Options for constructing a BoundingBox. */
+interface BoundingBoxOptions {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    angle?: number;
+    video?: Video | null;
+    frameIdx?: number | null;
+    track?: Track | null;
+    instance?: Instance | null;
+    category?: string;
+    name?: string;
+    source?: string;
+}
+/** Base bounding box class for detection/tracking workflows. */
+declare class BoundingBox {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    angle: number;
+    video: Video | null;
+    frameIdx: number | null;
+    track: Track | null;
+    instance: Instance | null;
+    category: string;
+    name: string;
+    source: string;
+    /** @internal Deferred instance index for lazy resolution. */
+    _instanceIdx: number | null;
+    constructor(options: BoundingBoxOptions);
+    /** Create from corner coordinates [x1, y1, x2, y2]. */
+    static fromXyxy(x1: number, y1: number, x2: number, y2: number, options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">): UserBoundingBox;
+    /** Create from top-left corner + size [x, y, w, h]. */
+    static fromXywh(x: number, y: number, w: number, h: number, options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">): UserBoundingBox;
+    /** Center X coordinate (computed from x1, x2). */
+    get xCenter(): number;
+    /** Center Y coordinate (computed from y1, y2). */
+    get yCenter(): number;
+    /** Width of the bbox (computed from x1, x2). */
+    get width(): number;
+    /** Height of the bbox (computed from y1, y2). */
+    get height(): number;
+    /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
+    get xyxy(): [number, number, number, number];
+    /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
+    get xywh(): {
+        x: number;
+        y: number;
+        width: number;
+        height: number;
+    };
+    /** Four corner points of the (possibly rotated) bbox. */
+    get corners(): number[][];
+    /** Axis-aligned bounds. */
+    get bounds(): {
+        minX: number;
+        minY: number;
+        maxX: number;
+        maxY: number;
+    };
+    /** Area of the bbox (width * height). */
+    get area(): number;
+    /** Center point as `[x, y]`. */
+    get centroidXy(): [number, number];
+    /** @deprecated Use `centroidXy` instead. */
+    get centroid(): {
+        x: number;
+        y: number;
+    };
+    /** Whether this is a predicted bbox (has a score). */
+    get isPredicted(): boolean;
+    /** Whether the bbox has no temporal association. */
+    get isStatic(): boolean;
+    /** Whether the bbox is rotated (angle != 0). */
+    get isRotated(): boolean;
+    /** Convert to a Polygon ROI. */
+    toRoi(): ROI;
+    /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
+    toMask(height: number, width: number): SegmentationMask;
+}
+/** User-annotated bounding box (no prediction score). */
+declare class UserBoundingBox extends BoundingBox {
+}
+/** Predicted bounding box with a confidence score. */
+declare class PredictedBoundingBox extends BoundingBox {
+    score: number;
+    constructor(options: BoundingBoxOptions & {
+        score: number;
+    });
+    get isPredicted(): boolean;
+}
+
 declare function encodeRle(mask: Uint8Array, height: number, width: number): Uint32Array;
 declare function decodeRle(rleCounts: Uint32Array, height: number, width: number): Uint8Array;
 /**
@@ -329,6 +423,13 @@ declare class SegmentationMask {
         width: number;
         height: number;
     };
+    /** Convert to a `BoundingBox` object with metadata.
+     *
+     * Returns a `UserBoundingBox` or `PredictedBoundingBox` depending on whether
+     * this mask is predicted. Coordinates are in image space (respecting
+     * scale/offset).
+     */
+    toBbox(): BoundingBox;
     /** Convert the mask to a bounding-box polygon ROI. */
     toPolygon(): ROI;
 }
@@ -425,6 +526,9 @@ declare class ROI {
         maxY: number;
     };
     get area(): number;
+    /** Centroid of the geometry as `[x, y]`. */
+    get centroidXy(): [number, number];
+    /** @deprecated Use `centroidXy` instead. */
     get centroid(): {
         x: number;
         y: number;
@@ -442,98 +546,6 @@ declare class UserROI extends ROI {
 declare class PredictedROI extends ROI {
     score: number;
     constructor(options: ROIOptions & {
-        score: number;
-    });
-    get isPredicted(): boolean;
-}
-
-/** Options for constructing a BoundingBox. */
-interface BoundingBoxOptions {
-    x1: number;
-    y1: number;
-    x2: number;
-    y2: number;
-    angle?: number;
-    video?: Video | null;
-    frameIdx?: number | null;
-    track?: Track | null;
-    instance?: Instance | null;
-    category?: string;
-    name?: string;
-    source?: string;
-}
-/** Base bounding box class for detection/tracking workflows. */
-declare class BoundingBox {
-    x1: number;
-    y1: number;
-    x2: number;
-    y2: number;
-    angle: number;
-    video: Video | null;
-    frameIdx: number | null;
-    track: Track | null;
-    instance: Instance | null;
-    category: string;
-    name: string;
-    source: string;
-    /** @internal Deferred instance index for lazy resolution. */
-    _instanceIdx: number | null;
-    constructor(options: BoundingBoxOptions);
-    /** Create from corner coordinates [x1, y1, x2, y2]. */
-    static fromXyxy(x1: number, y1: number, x2: number, y2: number, options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">): UserBoundingBox;
-    /** Create from top-left corner + size [x, y, w, h]. */
-    static fromXywh(x: number, y: number, w: number, h: number, options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">): UserBoundingBox;
-    /** Center X coordinate (computed from x1, x2). */
-    get xCenter(): number;
-    /** Center Y coordinate (computed from y1, y2). */
-    get yCenter(): number;
-    /** Width of the bbox (computed from x1, x2). */
-    get width(): number;
-    /** Height of the bbox (computed from y1, y2). */
-    get height(): number;
-    /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
-    get xyxy(): [number, number, number, number];
-    /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
-    get xywh(): {
-        x: number;
-        y: number;
-        width: number;
-        height: number;
-    };
-    /** Four corner points of the (possibly rotated) bbox. */
-    get corners(): number[][];
-    /** Axis-aligned bounds. */
-    get bounds(): {
-        minX: number;
-        minY: number;
-        maxX: number;
-        maxY: number;
-    };
-    /** Area of the bbox (width * height). */
-    get area(): number;
-    /** Center point. */
-    get centroid(): {
-        x: number;
-        y: number;
-    };
-    /** Whether this is a predicted bbox (has a score). */
-    get isPredicted(): boolean;
-    /** Whether the bbox has no temporal association. */
-    get isStatic(): boolean;
-    /** Whether the bbox is rotated (angle != 0). */
-    get isRotated(): boolean;
-    /** Convert to a Polygon ROI. */
-    toRoi(): ROI;
-    /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
-    toMask(height: number, width: number): SegmentationMask;
-}
-/** User-annotated bounding box (no prediction score). */
-declare class UserBoundingBox extends BoundingBox {
-}
-/** Predicted bounding box with a confidence score. */
-declare class PredictedBoundingBox extends BoundingBox {
-    score: number;
-    constructor(options: BoundingBoxOptions & {
         score: number;
     });
     get isPredicted(): boolean;
@@ -699,6 +711,16 @@ declare class LabelImage {
     }): UserLabelImage;
     /** Decompose this LabelImage into individual SegmentationMask objects. */
     toMasks(): SegmentationMask[];
+    /** Extract tight bounding boxes for each object in the label image.
+     *
+     * Returns `UserBoundingBox` or `PredictedBoundingBox` objects depending on
+     * whether this label image is predicted. Each bounding box inherits track,
+     * category, name, instance, and score from the corresponding object entry.
+     *
+     * Bounding boxes are in image coordinates (respecting scale/offset).
+     * Label IDs present in `objects` but with no pixels in the data are skipped.
+     */
+    toBboxes(): BoundingBox[];
 }
 /** User-annotated label image (no prediction score). */
 declare class UserLabelImage extends LabelImage {
