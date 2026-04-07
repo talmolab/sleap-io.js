@@ -41,6 +41,33 @@ export class LazyDataStore {
     this.negativeFrames = options.negativeFrames ?? new Set();
   }
 
+  /**
+   * Create an independent copy of this store's raw column data.
+   * Videos, skeletons, and tracks arrays are shared (not cloned) —
+   * the caller is expected to replace them with new references.
+   */
+  copy(): LazyDataStore {
+    const copyRecord = (rec: Record<string, any[]>): Record<string, any[]> => {
+      const out: Record<string, any[]> = {};
+      for (const key of Object.keys(rec)) {
+        out[key] = rec[key].slice();
+      }
+      return out;
+    };
+
+    return new LazyDataStore({
+      framesData: copyRecord(this.framesData),
+      instancesData: copyRecord(this.instancesData),
+      pointsData: copyRecord(this.pointsData),
+      predPointsData: copyRecord(this.predPointsData),
+      skeletons: this.skeletons,
+      tracks: this.tracks,
+      videos: this.videos,
+      formatId: this.formatId,
+      negativeFrames: new Set(this.negativeFrames),
+    });
+  }
+
   /** Total number of frames in the store. */
   get frameCount(): number {
     return (this.framesData.frame_id ?? []).length;
