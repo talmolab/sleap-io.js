@@ -11,6 +11,7 @@ import type { LazyDataStore, LazyFrameList } from "./lazy.js";
 import type { ROI } from "./roi.js";
 import type { SegmentationMask } from "./mask.js";
 import type { BoundingBox } from "./bbox.js";
+import type { Centroid } from "./centroid.js";
 import type { LabelImage } from "./label-image.js";
 
 export class Labels {
@@ -24,6 +25,7 @@ export class Labels {
   rois: ROI[];
   masks: SegmentationMask[];
   bboxes: BoundingBox[];
+  centroids: Centroid[] = [];
   labelImages: LabelImage[];
   identities: Identity[];
 
@@ -43,6 +45,7 @@ export class Labels {
     rois?: ROI[];
     masks?: SegmentationMask[];
     bboxes?: BoundingBox[];
+    centroids?: Centroid[];
     labelImages?: LabelImage[];
     identities?: Identity[];
   }) {
@@ -56,6 +59,7 @@ export class Labels {
     this.rois = options?.rois ?? [];
     this.masks = options?.masks ?? [];
     this.bboxes = options?.bboxes ?? [];
+    this.centroids = options?.centroids ?? [];
     this.labelImages = options?.labelImages ?? [];
     this.identities = options?.identities ?? [];
 
@@ -125,6 +129,14 @@ export class Labels {
       if (mask._instanceIdx !== null && mask._instanceIdx >= 0 && mask._instanceIdx < allInstances.length) {
         mask.instance = allInstances[mask._instanceIdx];
         mask._instanceIdx = null;
+      }
+    }
+
+    // Resolve centroid instance references
+    for (const centroid of this.centroids) {
+      if (centroid._instanceIdx !== null && centroid._instanceIdx >= 0 && centroid._instanceIdx < allInstances.length) {
+        centroid.instance = allInstances[centroid._instanceIdx];
+        centroid._instanceIdx = null;
       }
     }
 
@@ -304,6 +316,37 @@ export class Labels {
     }
     if (filters.predicted !== undefined) {
       results = results.filter((b) => b.isPredicted === filters.predicted);
+    }
+    return results;
+  }
+
+  getCentroids(filters?: {
+    video?: Video;
+    frameIdx?: number;
+    category?: string;
+    track?: Track;
+    instance?: Instance | PredictedInstance;
+    predicted?: boolean;
+  }): Centroid[] {
+    if (!filters) return [...this.centroids];
+    let results = this.centroids;
+    if (filters.video !== undefined) {
+      results = results.filter((c) => c.video === filters.video);
+    }
+    if (filters.frameIdx !== undefined) {
+      results = results.filter((c) => c.frameIdx === filters.frameIdx);
+    }
+    if (filters.category !== undefined) {
+      results = results.filter((c) => c.category === filters.category);
+    }
+    if (filters.track !== undefined) {
+      results = results.filter((c) => c.track === filters.track);
+    }
+    if (filters.instance !== undefined) {
+      results = results.filter((c) => c.instance === filters.instance);
+    }
+    if (filters.predicted !== undefined) {
+      results = results.filter((c) => c.isPredicted === filters.predicted);
     }
     return results;
   }

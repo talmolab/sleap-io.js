@@ -3,9 +3,11 @@ import { describe, it, expect } from "vitest";
 import { loadSlp, saveSlpToBytes } from "../src/io/main.js";
 import { Labels } from "../src/model/labels.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
-import { Instance, PredictedInstance } from "../src/model/instance.js";
+import { Instance, PredictedInstance, Track } from "../src/model/instance.js";
 import { Skeleton } from "../src/model/skeleton.js";
 import { Video } from "../src/model/video.js";
+import { UserCentroid, PredictedCentroid } from "../src/model/centroid.js";
+import { UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 import { ready, File as H5File } from "h5wasm/node";
@@ -170,5 +172,78 @@ describe("saveSlpToBytes", () => {
       file.close();
       module.FS.unlink(memPath);
     }
+  });
+
+  it("round-trips centroids through SLP", async () => {
+    const skeleton = new Skeleton({ name: "test", nodes: ["A"] });
+    const video = new Video({ filename: "test.mp4" });
+    const track = new Track("t1");
+
+    const centroids = [
+      new UserCentroid({ x: 10, y: 20, video, frameIdx: 0, track, category: "cell" }),
+      new PredictedCentroid({ x: 50, y: 60, z: 3.5, score: 0.95, video, frameIdx: 1, track, trackingScore: 0.8, name: "spot1", source: "trackmate" }),
+    ];
+
+    const labels = new Labels({
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [track],
+      centroids,
+    });
+
+    const bytes = await saveSlpToBytes(labels);
+    const loaded = await loadSlp(bytes, { openVideos: false });
+
+    expect(loaded.centroids).toHaveLength(2);
+
+    const c0 = loaded.centroids[0];
+    expect(c0).toBeInstanceOf(UserCentroid);
+    expect(c0.x).toBeCloseTo(10);
+    expect(c0.y).toBeCloseTo(20);
+    expect(c0.z).toBeNull();
+    expect(c0.frameIdx).toBe(0);
+    expect(c0.category).toBe("cell");
+    expect(c0.isPredicted).toBe(false);
+
+    const c1 = loaded.centroids[1] as PredictedCentroid;
+    expect(c1).toBeInstanceOf(PredictedCentroid);
+    expect(c1.x).toBeCloseTo(50);
+    expect(c1.y).toBeCloseTo(60);
+    expect(c1.z).toBeCloseTo(3.5);
+    expect(c1.score).toBeCloseTo(0.95);
+    expect(c1.frameIdx).toBe(1);
+    expect(c1.trackingScore).toBeCloseTo(0.8);
+    expect(c1.name).toBe("spot1");
+    expect(c1.source).toBe("trackmate");
+
+    // Tracks should be relinked
+    expect(loaded.tracks).toHaveLength(1);
+    expect(loaded.centroids[0].track).toBe(loaded.tracks[0]);
+    expect(loaded.centroids[1].track).toBe(loaded.tracks[0]);
+  });
+
+  it("round-trips bbox trackingScore through SLP", async () => {
+    const skeleton = new Skeleton({ name: "test", nodes: ["A"] });
+    const video = new Video({ filename: "test.mp4" });
+    const track = new Track("t1");
+
+    const bboxes = [
+      new UserBoundingBox({ x1: 0, y1: 0, x2: 100, y2: 100, video, frameIdx: 0, trackingScore: 0.75 }),
+      new PredictedBoundingBox({ x1: 10, y1: 10, x2: 50, y2: 50, score: 0.9, video, frameIdx: 0, track }),
+    ];
+
+    const labels = new Labels({
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [track],
+      bboxes,
+    });
+
+    const bytes = await saveSlpToBytes(labels);
+    const loaded = await loadSlp(bytes, { openVideos: false });
+
+    expect(loaded.bboxes).toHaveLength(2);
+    expect(loaded.bboxes[0].trackingScore).toBeCloseTo(0.75);
+    expect(loaded.bboxes[1].trackingScore).toBeNull(); // Not set
   });
 });

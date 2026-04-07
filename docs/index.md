@@ -28,7 +28,8 @@ await saveSlp(labels, "/tmp/session-roundtrip.slp", { embed: false });
 - ROI and segmentation mask annotations (format 1.5), ROI-instance associations (format 1.6), bounding boxes (format 1.7), label images (format 1.8), identities (format 1.9), spatial metadata (format 2.1).
 - Browser-compatible SLP writing via `saveSlpToBytes()`.
 - Streaming inputs (URL, `File`, `FileSystemFileHandle`, `Blob`).
-- Data model types (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`, `ROI`, `SegmentationMask`, `BoundingBox`, `LabelImage`, `Identity`, `Instance3D`).
+- Data model types (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`, `ROI`, `SegmentationMask`, `BoundingBox`, `Centroid`, `LabelImage`, `Identity`, `Instance3D`).
+- TrackMate CSV import (`readTrackMateCsv`, `loadTrackMate`).
 - Video backends accept `string`, `File`, or `Blob` sources.
 - Browser-safe: Node.js-only code is fully isolated from the browser bundle.
 - Dictionary and numpy codecs.

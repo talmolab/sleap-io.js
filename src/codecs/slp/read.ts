@@ -13,6 +13,7 @@ import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { ROI, UserROI, PredictedROI, AnnotationType, decodeWkb } from "../../model/roi.js";
 import { SegmentationMask, UserSegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
 import { BoundingBox, UserBoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
+import { Centroid, UserCentroid, PredictedCentroid } from "../../model/centroid.js";
 import { LabelImage, UserLabelImage, PredictedLabelImage } from "../../model/label-image.js";
 import type { LabelImageObjectInfo } from "../../model/label-image.js";
 import { inflate } from "pako";
@@ -80,6 +81,7 @@ export async function readSlp(
     const allInstances = labeledFrames.flatMap((f) => f.instances);
     const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks, allInstances);
     const masks = readMasks(file, videos, tracks);
+    const centroids = readCentroids(file, videos, tracks);
     const labelImages = readLabelImages(file, videos, tracks, allInstances);
 
     return new Labels({
@@ -94,6 +96,7 @@ export async function readSlp(
       rois,
       masks,
       bboxes,
+      centroids,
       labelImages,
     });
   } finally {
@@ -166,6 +169,7 @@ export async function readSlpLazy(
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, [], identities);
     const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks);
     const masks = readMasks(file, videos, tracks);
+    const centroids = readCentroids(file, videos, tracks);
     const labelImages = readLabelImages(file, videos, tracks);
 
     const labels = new Labels({
@@ -179,6 +183,7 @@ export async function readSlpLazy(
       rois,
       masks,
       bboxes,
+      centroids,
       labelImages,
     });
 
@@ -583,6 +588,7 @@ function readRoisWithMigration(
   const instanceIndices = roisData.instance ?? [];
   // v1.9+ column (may not exist in older files)
   const isPredictedCol = roisData.is_predicted ?? [];
+  const trackingScoresCol = roisData.tracking_score ?? [];
 
   const rois: ROI[] = [];
   const migratedBboxes: BoundingBox[] = [];
@@ -606,6 +612,9 @@ function readRoisWithMigration(
 
     const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
 
+    const roiTsVal = trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
+    const roiTrackingScore = Number.isNaN(roiTsVal) ? null : roiTsVal;
+
     // Migration: annotation_type === 1 (BOUNDING_BOX) -> BoundingBox object
     // Skip predicted ROIs during bbox migration (only migrate user-type box-shaped ROIs)
     if (annotType === AnnotationType.BOUNDING_BOX && !isPred) {
@@ -622,6 +631,7 @@ function readRoisWithMigration(
         video,
         frameIdx,
         track,
+        trackingScore: roiTrackingScore,
         category: categories[i] ?? "",
         name: names[i] ?? "",
         source: sources[i] ?? "",
@@ -652,6 +662,7 @@ function readRoisWithMigration(
         video,
         frameIdx,
         track,
+        trackingScore: roiTrackingScore,
       };
 
       let roi: ROI;
@@ -710,6 +721,7 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
   const trackIndices = bboxesData.track ?? [];
   const bboxScores = bboxesData.score ?? [];
   const instanceIndices = bboxesData.instance ?? [];
+  const trackingScores = bboxesData.tracking_score ?? [];
 
   const bboxes: BoundingBox[] = [];
   for (let i = 0; i < count; i++) {
@@ -743,6 +755,9 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
       by2 = Number(y2s[i]);
     }
 
+    const tsVal = trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
+    const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
+
     const options = {
       x1: bx1,
       y1: by1,
@@ -752,6 +767,7 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
       video,
       frameIdx,
       track,
+      trackingScore,
       category: categories[i] ?? "",
       name: names[i] ?? "",
       source: sources[i] ?? "",
@@ -864,6 +880,7 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
   const isPredictedCol = masksData.is_predicted ?? [];
   const scoreCol = masksData.score ?? [];
   const instanceCol = masksData.instance ?? [];
+  const maskTrackingScoreCol = masksData.tracking_score ?? [];
 
   // v2.1+: spatial metadata columns (default to 1.0/0.0 for old files)
   const scaleXCol = masksData.scale_x ?? [];
@@ -902,6 +919,9 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
     const offsetX = offsetXCol.length > i ? Number(offsetXCol[i]) : 0;
     const offsetY = offsetYCol.length > i ? Number(offsetYCol[i]) : 0;
 
+    const maskTsVal = maskTrackingScoreCol.length > i ? Number(maskTrackingScoreCol[i]) : Number.NaN;
+    const maskTrackingScore = Number.isNaN(maskTsVal) ? null : maskTsVal;
+
     const baseOptions = {
       rleCounts,
       height: Number(heights[i]),
@@ -912,6 +932,7 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
       video,
       frameIdx,
       track,
+      trackingScore: maskTrackingScore,
       scale: [scaleX, scaleY] as [number, number],
       offset: [offsetX, offsetY] as [number, number],
     };
@@ -999,6 +1020,7 @@ function readLabelImages(
   let objCategories: string[] = [];
   let objNames: string[] = [];
   let objScoreCol: any[] = [];
+  let objTrackingScoreCol: any[] = [];
 
   const objDs = file.get("label_image_objects");
   if (objDs) {
@@ -1010,6 +1032,7 @@ function readLabelImages(
     objCategories = readStringMetadata(file, "label_image_obj_categories", objDs, "categories");
     objNames = readStringMetadata(file, "label_image_obj_names", objDs, "names");
     objScoreCol = objData.score ?? [];
+    objTrackingScoreCol = objData.tracking_score ?? [];
   }
 
   // Read score maps if present
@@ -1077,6 +1100,7 @@ function readLabelImages(
       }
 
       const objScore = objScoreCol.length > j ? Number(objScoreCol[j]) : null;
+      const objTsVal = objTrackingScoreCol.length > j ? Number(objTrackingScoreCol[j]) : null;
 
       objects.set(labelId, {
         track,
@@ -1084,6 +1108,7 @@ function readLabelImages(
         name: objNames[j] ?? "",
         instance,
         score: (objScore !== null && !Number.isNaN(objScore)) ? objScore : null,
+        trackingScore: (objTsVal !== null && !Number.isNaN(objTsVal)) ? objTsVal : null,
         _instanceIdx: instIdx >= 0 ? instIdx : -1,
       });
     }
@@ -1328,6 +1353,79 @@ function parseVideoIdFromDataset(dataset: string): number | null {
   if (!group.startsWith("video")) return null;
   const id = Number(group.slice(5));
   return Number.isNaN(id) ? null : id;
+}
+
+function readCentroids(file: any, videos: Video[], tracks: Track[]): Centroid[] {
+  const centroidsDs = file.get("centroids");
+  if (!centroidsDs) return [];
+  const data = normalizeStructDataset(centroidsDs);
+  const xs = data.x ?? [];
+  const count = xs.length;
+  if (!count) return [];
+
+  const categories = readStringMetadata(file, "centroid_categories", centroidsDs, "categories");
+  const names = readStringMetadata(file, "centroid_names", centroidsDs, "names");
+  const sources = readStringMetadata(file, "centroid_sources", centroidsDs, "sources");
+
+  const ys = data.y ?? [];
+  const zs = data.z ?? [];
+  const videoIndices = data.video ?? [];
+  const frameIndices = data.frame_idx ?? [];
+  const trackIndices = data.track ?? [];
+  const instanceIndices = data.instance ?? [];
+  const isPredictedCol = data.is_predicted ?? [];
+  const scores = data.score ?? [];
+  const trackingScores = data.tracking_score ?? [];
+
+  const centroids: Centroid[] = [];
+  for (let i = 0; i < count; i++) {
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+
+    const frameIdxVal = Number(frameIndices[i]);
+    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
+
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+
+    const zVal = zs.length > i ? Number(zs[i]) : Number.NaN;
+    const z = Number.isNaN(zVal) ? null : zVal;
+
+    const tsVal = trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
+    const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
+
+    const instanceIdx = Number(instanceIndices[i]);
+
+    const options = {
+      x: Number(xs[i]),
+      y: Number(ys[i]),
+      z,
+      video,
+      frameIdx,
+      track,
+      trackingScore,
+      category: categories[i] ?? "",
+      name: names[i] ?? "",
+      source: sources[i] ?? "",
+    };
+
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+
+    let centroid: Centroid;
+    if (isPred) {
+      const scoreVal = Number(scores[i]);
+      centroid = new PredictedCentroid({ ...options, score: Number.isNaN(scoreVal) ? 0 : scoreVal });
+    } else {
+      centroid = new UserCentroid(options);
+    }
+
+    if (instanceIdx >= 0) {
+      centroid._instanceIdx = instanceIdx;
+    }
+
+    centroids.push(centroid);
+  }
+  return centroids;
 }
 
 function slicePoints(data: Record<string, any[]>, start: number, end: number, predicted = false): number[][] {

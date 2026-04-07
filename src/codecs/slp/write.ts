@@ -10,6 +10,7 @@ import { getH5Module, getH5FileSystem } from "./h5.js";
 import { ROI, PredictedROI, encodeWkb } from "../../model/roi.js";
 import { SegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
 import { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
+import { Centroid, PredictedCentroid } from "../../model/centroid.js";
 import { LabelImage, PredictedLabelImage } from "../../model/label-image.js";
 import { deflate } from "pako";
 import { Identity } from "../../model/identity.js";
@@ -90,6 +91,7 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
   writeMasks(file, labels.masks, labels.videos, labels.tracks, allInstances);
   writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
+  writeCentroids(file, labels.centroids, labels.videos, labels.tracks, allInstances);
   writeLabelImages(file, labels.labelImages, labels.videos, labels.tracks, allInstances);
 }
 
@@ -136,6 +138,7 @@ export async function saveSlpToBytes(
       rois: labels.rois,
       masks: labels.masks,
       bboxes: labels.bboxes,
+      centroids: labels.centroids,
       labelImages: labels.labelImages,
       identities: labels.identities,
     });
@@ -861,15 +864,16 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
     const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : -1;
     const score = roi.isPredicted ? (roi as PredictedROI).score : Number.NaN;
     const isPredicted = roi.isPredicted ? 1 : 0;
+    const trackingScore = roi.trackingScore ?? Number.NaN;
 
-    rows.push([0, videoIdx, frameIdx, trackIdx, score, wkbStart, wkbEnd, instanceIdx, isPredicted]);
+    rows.push([0, videoIdx, frameIdx, trackIdx, score, trackingScore, wkbStart, wkbEnd, instanceIdx, isPredicted]);
     categories.push(roi.category);
     names.push(roi.name);
     sources.push(roi.source);
   }
 
   createMatrixDataset(file, "rois", rows,
-    ["annotation_type", "video", "frame_idx", "track", "score", "wkb_start", "wkb_end", "instance", "is_predicted"], "<f8");
+    ["annotation_type", "video", "frame_idx", "track", "score", "tracking_score", "wkb_start", "wkb_end", "instance", "is_predicted"], "<f8");
 
   // Write string metadata as datasets at root level (v1.9+)
   writeStringDataset(file, "roi_categories", categories);
@@ -927,10 +931,11 @@ function writeMasks(
     const score = mask.isPredicted ? (mask as PredictedSegmentationMask).score : Number.NaN;
     const isPredicted = mask.isPredicted ? 1 : 0;
     const instanceIdx = mask.instance ? instances.indexOf(mask.instance as Instance) : (mask._instanceIdx ?? -1);
+    const maskTrackingScore = mask.trackingScore ?? Number.NaN;
 
     rows.push([
       mask.height, mask.width, 2, videoIdx, frameIdx, trackIdx,
-      score, rleStart, rleEnd, isPredicted, instanceIdx,
+      score, rleStart, rleEnd, isPredicted, instanceIdx, maskTrackingScore,
       mask.scale[0], mask.scale[1], mask.offset[0], mask.offset[1],
     ]);
     categories.push(mask.category);
@@ -955,7 +960,7 @@ function writeMasks(
   }
 
   createMatrixDataset(file, "masks", rows,
-    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "scale_x", "scale_y", "offset_x", "offset_y"], "<f8");
+    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "tracking_score", "scale_x", "scale_y", "offset_x", "offset_y"], "<f8");
 
   // Write string metadata as datasets at root level (v1.9+)
   writeStringDataset(file, "mask_categories", categories);
@@ -1008,6 +1013,8 @@ function writeBboxes(
     const score = bbox.isPredicted ? (bbox as PredictedBoundingBox).score : Number.NaN;
     const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance as Instance) : -1;
 
+    const trackingScore = bbox.trackingScore ?? Number.NaN;
+
     rows.push([
       bbox.x1,
       bbox.y1,
@@ -1019,6 +1026,7 @@ function writeBboxes(
       trackIdx,
       score,
       instanceIdx,
+      trackingScore,
     ]);
     categories.push(bbox.category);
     names.push(bbox.name);
@@ -1026,7 +1034,7 @@ function writeBboxes(
   }
 
   createMatrixDataset(file, "bboxes", rows,
-    ["x1", "y1", "x2", "y2", "angle", "video", "frame_idx", "track", "score", "instance"], "<f8");
+    ["x1", "y1", "x2", "y2", "angle", "video", "frame_idx", "track", "score", "instance", "tracking_score"], "<f8");
 
   // Write string metadata as datasets at root level (v1.9+)
   writeStringDataset(file, "bbox_categories", categories);
@@ -1092,7 +1100,8 @@ function writeLabelImages(
         instanceIdx = info._instanceIdx;
       }
       const objScore = info.score != null ? info.score : Number.NaN;
-      objectRows.push([labelId, trackIdx, instanceIdx, objScore]);
+      const objTrackingScore = info.trackingScore != null ? info.trackingScore : Number.NaN;
+      objectRows.push([labelId, trackIdx, instanceIdx, objScore, objTrackingScore]);
       objectCategories.push(info.category);
       objectNames.push(info.name);
       objectsOffset++;
@@ -1130,7 +1139,7 @@ function writeLabelImages(
   // Write objects table (if any objects exist)
   if (objectRows.length > 0) {
     createMatrixDataset(file, "label_image_objects", objectRows,
-      ["label_id", "track", "instance", "score"], "<f8");
+      ["label_id", "track", "instance", "score", "tracking_score"], "<f8");
     // Write string metadata as datasets at root level (v1.9+)
     writeStringDataset(file, "label_image_obj_categories", objectCategories);
     writeStringDataset(file, "label_image_obj_names", objectNames);
@@ -1159,4 +1168,45 @@ function writeLabelImages(
     }
     file.create_dataset({ name: "label_image_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
   }
+}
+
+function writeCentroids(
+  file: any,
+  centroids: Centroid[],
+  videos: Video[],
+  tracks: Array<{ name: string }>,
+  instances: (Instance | PredictedInstance)[],
+): void {
+  if (!centroids.length) return;
+
+  const rows: number[][] = [];
+  const categories: string[] = [];
+  const names: string[] = [];
+  const sources: string[] = [];
+
+  for (const c of centroids) {
+    const videoIdx = c.video ? videos.indexOf(c.video) : -1;
+    const frameIdx = c.frameIdx ?? -1;
+    const trackIdx = c.track ? tracks.indexOf(c.track as any) : -1;
+    const score = c.isPredicted ? (c as PredictedCentroid).score : Number.NaN;
+    const instanceIdx = c.instance ? instances.indexOf(c.instance as Instance) : -1;
+    const isPredicted = c.isPredicted ? 1 : 0;
+    const trackingScore = c.trackingScore ?? Number.NaN;
+
+    rows.push([
+      c.x, c.y, c.z ?? Number.NaN,
+      videoIdx, frameIdx, trackIdx, instanceIdx,
+      isPredicted, score, trackingScore,
+    ]);
+    categories.push(c.category);
+    names.push(c.name);
+    sources.push(c.source);
+  }
+
+  createMatrixDataset(file, "centroids", rows,
+    ["x", "y", "z", "video", "frame_idx", "track", "instance", "is_predicted", "score", "tracking_score"], "<f8");
+
+  writeStringDataset(file, "centroid_categories", categories);
+  writeStringDataset(file, "centroid_names", names);
+  writeStringDataset(file, "centroid_sources", sources);
 }

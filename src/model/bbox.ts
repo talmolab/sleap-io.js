@@ -14,6 +14,7 @@ export interface BoundingBoxOptions {
   frameIdx?: number | null;
   track?: Track | null;
   instance?: Instance | null;
+  trackingScore?: number | null;
   category?: string;
   name?: string;
   source?: string;
@@ -29,6 +30,7 @@ export class BoundingBox {
   video: Video | null;
   frameIdx: number | null;
   track: Track | null;
+  trackingScore: number | null;
   instance: Instance | null;
   category: string;
   name: string;
@@ -50,6 +52,7 @@ export class BoundingBox {
     this.video = options.video ?? null;
     this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
     this.instance = options.instance ?? null;
     this.category = options.category ?? "";
     this.name = options.name ?? "";

@@ -1,5 +1,13 @@
 import { Skeleton, Node } from "./skeleton.js";
 
+// Late-binding factory to avoid circular imports with centroid.ts.
+// Set by centroid.ts when it is imported.
+type CentroidFactory = (instance: Instance | PredictedInstance, options?: { method?: string; node?: string | number }) => any;
+let _centroidFactory: CentroidFactory | null = null;
+export function _registerCentroidFactory(factory: CentroidFactory): void {
+  _centroidFactory = factory;
+}
+
 export class Track {
   name: string;
 
@@ -159,6 +167,36 @@ export class Instance {
   toString(): string {
     const trackName = this.track ? `"${this.track.name}"` : "None";
     return `Instance(points=${JSON.stringify(this.numpy({ invisibleAsNaN: false }))}, track=${trackName})`;
+  }
+
+  /** Mean of visible point coordinates as `[x, y]`, or `null` if no points visible. */
+  get centroidXy(): [number, number] | null {
+    let sumX = 0, sumY = 0, count = 0;
+    for (const point of this.points) {
+      if (point.visible && !Number.isNaN(point.xy[0]) && !Number.isNaN(point.xy[1])) {
+        sumX += point.xy[0];
+        sumY += point.xy[1];
+        count++;
+      }
+    }
+    if (count === 0) return null;
+    return [sumX / count, sumY / count];
+  }
+
+  /**
+   * Create a Centroid from this instance.
+   *
+   * @param method - "centerOfMass" (default), "bboxCenter", or "anchor".
+   * @param node - Node specification for "anchor" method.
+   * @returns UserCentroid or PredictedCentroid depending on instance type.
+   */
+  toCentroid(method?: string, node?: string | number) {
+    if (!_centroidFactory) {
+      throw new Error(
+        "Centroid not available. Import centroid.ts before calling toCentroid().",
+      );
+    }
+    return _centroidFactory(this, { method, node });
   }
 
   get isEmpty(): boolean {
