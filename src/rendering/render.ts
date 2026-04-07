@@ -49,6 +49,7 @@ interface SourceData {
   frameSize: [number, number];
   frameIdx: number;
   tracks: Track[];
+  trackIndexMap: Map<Track, number>;
 }
 
 /**
@@ -66,7 +67,7 @@ export async function renderImage(
   const opts = { ...DEFAULT_OPTIONS, ...options };
 
   // Extract instances and metadata from source
-  const { instances, skeleton, frameSize, frameIdx, tracks } =
+  const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } =
     extractSourceData(source, opts);
 
   if (instances.length === 0 && !opts.image) {
@@ -128,7 +129,8 @@ export async function renderImage(
     instances,
     nodeNames.length,
     opts.palette,
-    tracks
+    tracks,
+    trackIndexMap
   );
 
   // Create render context for callbacks
@@ -225,7 +227,7 @@ export async function renderImage(
     // Per-instance callback
     if (opts.perInstanceCallback) {
       const trackIdx = instance.track
-        ? tracks.indexOf(instance.track)
+        ? (trackIndexMap.get(instance.track) ?? null)
         : null;
       const instCtx = new InstanceContext(
         ctx as unknown as CanvasRenderingContext2D,
@@ -233,7 +235,7 @@ export async function renderImage(
         points,
         edgeInds,
         nodeNames,
-        trackIdx !== -1 ? trackIdx : null,
+        trackIdx,
         instance.track?.name ?? null,
         "score" in instance ? (instance as PredictedInstance).score : null,
         opts.scale,
@@ -271,6 +273,8 @@ function extractSourceData(
       if (inst.track) trackSet.add(inst.track);
     }
     const tracks = Array.from(trackSet);
+    const trackIndexMap = new Map<Track, number>();
+    tracks.forEach((t, i) => trackIndexMap.set(t, i));
 
     return {
       instances,
@@ -278,6 +282,7 @@ function extractSourceData(
       frameSize: [options.width ?? 0, options.height ?? 0],
       frameIdx: 0,
       tracks,
+      trackIndexMap,
     };
   }
 
@@ -293,6 +298,8 @@ function extractSourceData(
       if (inst.track) trackSet.add(inst.track);
     }
     const tracks = Array.from(trackSet);
+    const trackIndexMap = new Map<Track, number>();
+    tracks.forEach((t, i) => trackIndexMap.set(t, i));
 
     // Try to get video dimensions
     let frameSize: [number, number] = [options.width ?? 0, options.height ?? 0];
@@ -313,18 +320,23 @@ function extractSourceData(
       frameSize,
       frameIdx: frame.frameIdx,
       tracks,
+      trackIndexMap,
     };
   }
 
   // Case 3: Labels - use first labeled frame
   const labels = source as Labels;
   if (labels.labeledFrames.length === 0) {
+    const tracks = labels.tracks ?? [];
+    const trackIndexMap = new Map<Track, number>();
+    tracks.forEach((t, i) => trackIndexMap.set(t, i));
     return {
       instances: [],
       skeleton: labels.skeletons?.[0] ?? null,
       frameSize: [options.width ?? 0, options.height ?? 0],
       frameIdx: 0,
-      tracks: labels.tracks ?? [],
+      tracks,
+      trackIndexMap,
     };
   }
 
@@ -348,12 +360,17 @@ function extractSourceData(
     }
   }
 
+  const tracks = labels.tracks ?? [];
+  const trackIndexMap = new Map<Track, number>();
+  tracks.forEach((t, i) => trackIndexMap.set(t, i));
+
   return {
     instances: firstFrame.instances,
     skeleton,
     frameSize,
     frameIdx: firstFrame.frameIdx,
-    tracks: labels.tracks ?? [],
+    tracks,
+    trackIndexMap,
   };
 }
 
@@ -373,7 +390,8 @@ function buildColorMap(
   instances: (Instance | PredictedInstance)[],
   nNodes: number,
   paletteName: string,
-  tracks: Track[]
+  tracks: Track[],
+  trackIndexMap: Map<Track, number>
 ): { instanceColors?: RGB[]; nodeColors?: RGB[] } {
   switch (scheme) {
     case "instance":
@@ -385,14 +403,14 @@ function buildColorMap(
       };
 
     case "track": {
-      // Assign colors based on track index
+      // Assign colors based on track index (O(1) Map lookup)
       const nTracks = Math.max(1, tracks.length);
       const trackPalette = getPalette(paletteName as PaletteName, nTracks);
 
       const instanceColors = instances.map((inst) => {
         if (inst.track) {
-          const trackIdx = tracks.indexOf(inst.track);
-          if (trackIdx >= 0) {
+          const trackIdx = trackIndexMap.get(inst.track);
+          if (trackIdx !== undefined) {
             return trackPalette[trackIdx % trackPalette.length];
           }
         }
