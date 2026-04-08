@@ -304,7 +304,7 @@ var DEFAULT_OPTIONS = {
 var DEFAULT_COLOR = PALETTES.standard[0];
 async function renderImage(source, options = {}) {
   const opts = { ...DEFAULT_OPTIONS, ...options };
-  const { instances, skeleton, frameSize, frameIdx, tracks } = extractSourceData(source, opts);
+  const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } = extractSourceData(source, opts);
   if (instances.length === 0 && !opts.image) {
     throw new Error(
       "No instances to render and no background image provided"
@@ -345,7 +345,8 @@ async function renderImage(source, options = {}) {
     instances,
     nodeNames.length,
     opts.palette,
-    tracks
+    tracks,
+    trackIndexMap
   );
   const renderCtx = new RenderContext(
     ctx,
@@ -406,14 +407,14 @@ async function renderImage(source, options = {}) {
       }
     }
     if (opts.perInstanceCallback) {
-      const trackIdx = instance.track ? tracks.indexOf(instance.track) : null;
+      const trackIdx = instance.track ? trackIndexMap.get(instance.track) ?? null : null;
       const instCtx = new InstanceContext(
         ctx,
         instIdx,
         points,
         edgeInds,
         nodeNames,
-        trackIdx !== -1 ? trackIdx : null,
+        trackIdx,
         instance.track?.name ?? null,
         "score" in instance ? instance.score : null,
         opts.scale,
@@ -435,13 +436,16 @@ function extractSourceData(source, options) {
     for (const inst of instances) {
       if (inst.track) trackSet.add(inst.track);
     }
-    const tracks = Array.from(trackSet);
+    const tracks2 = Array.from(trackSet);
+    const trackIndexMap2 = /* @__PURE__ */ new Map();
+    tracks2.forEach((t, i) => trackIndexMap2.set(t, i));
     return {
       instances,
       skeleton: skeleton2,
       frameSize: [options.width ?? 0, options.height ?? 0],
       frameIdx: 0,
-      tracks
+      tracks: tracks2,
+      trackIndexMap: trackIndexMap2
     };
   }
   if ("instances" in source && "frameIdx" in source && !("labeledFrames" in source)) {
@@ -451,7 +455,9 @@ function extractSourceData(source, options) {
     for (const inst of frame.instances) {
       if (inst.track) trackSet.add(inst.track);
     }
-    const tracks = Array.from(trackSet);
+    const tracks2 = Array.from(trackSet);
+    const trackIndexMap2 = /* @__PURE__ */ new Map();
+    tracks2.forEach((t, i) => trackIndexMap2.set(t, i));
     let frameSize2 = [options.width ?? 0, options.height ?? 0];
     if (frame.video) {
       const video = frame.video;
@@ -468,17 +474,22 @@ function extractSourceData(source, options) {
       skeleton: skeleton2,
       frameSize: frameSize2,
       frameIdx: frame.frameIdx,
-      tracks
+      tracks: tracks2,
+      trackIndexMap: trackIndexMap2
     };
   }
   const labels = source;
   if (labels.labeledFrames.length === 0) {
+    const tracks2 = labels.tracks ?? [];
+    const trackIndexMap2 = /* @__PURE__ */ new Map();
+    tracks2.forEach((t, i) => trackIndexMap2.set(t, i));
     return {
       instances: [],
       skeleton: labels.skeletons?.[0] ?? null,
       frameSize: [options.width ?? 0, options.height ?? 0],
       frameIdx: 0,
-      tracks: labels.tracks ?? []
+      tracks: tracks2,
+      trackIndexMap: trackIndexMap2
     };
   }
   const firstFrame = labels.labeledFrames[0];
@@ -494,18 +505,22 @@ function extractSourceData(source, options) {
       }
     }
   }
+  const tracks = labels.tracks ?? [];
+  const trackIndexMap = /* @__PURE__ */ new Map();
+  tracks.forEach((t, i) => trackIndexMap.set(t, i));
   return {
     instances: firstFrame.instances,
     skeleton,
     frameSize,
     frameIdx: firstFrame.frameIdx,
-    tracks: labels.tracks ?? []
+    tracks,
+    trackIndexMap
   };
 }
 function getInstancePoints(instance) {
   return instance.points.map((point) => [point.xy[0], point.xy[1]]);
 }
-function buildColorMap(scheme, instances, nNodes, paletteName, tracks) {
+function buildColorMap(scheme, instances, nNodes, paletteName, tracks, trackIndexMap) {
   switch (scheme) {
     case "instance":
       return {
@@ -519,8 +534,8 @@ function buildColorMap(scheme, instances, nNodes, paletteName, tracks) {
       const trackPalette = getPalette(paletteName, nTracks);
       const instanceColors = instances.map((inst) => {
         if (inst.track) {
-          const trackIdx = tracks.indexOf(inst.track);
-          if (trackIdx >= 0) {
+          const trackIdx = trackIndexMap.get(inst.track);
+          if (trackIdx !== void 0) {
             return trackPalette[trackIdx % trackPalette.length];
           }
         }
