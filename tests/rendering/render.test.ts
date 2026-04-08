@@ -350,6 +350,60 @@ describe("renderImage", () => {
 
       expect(imageData).toBeDefined();
     });
+
+    it("handles many tracks correctly with track-based coloring", async () => {
+      const tracks = Array.from({ length: 20 }, (_, i) => new Track(`track_${i}`));
+      const instances = tracks.map((track, i) => {
+        const inst = createTestInstance(skeleton, track);
+        inst.points[0].xy = [10 + i * 4, 30];
+        return inst;
+      });
+
+      const imageData = await renderImage(instances, {
+        width: 200,
+        height: 100,
+        colorBy: "track",
+      });
+
+      expect(imageData).toBeDefined();
+      expect(imageData.width).toBe(200);
+    });
+  });
+
+  describe("track index in callbacks", () => {
+    it("provides correct trackIdx in perInstanceCallback", async () => {
+      const track1 = new Track("first");
+      const track2 = new Track("second");
+      const inst1 = createTestInstance(skeleton, track1);
+      const inst2 = createTestInstance(skeleton, track2);
+      inst2.points[0].xy = [70, 30];
+
+      const trackIndices: (number | null)[] = [];
+      await renderImage([inst1, inst2], {
+        width: 100,
+        height: 100,
+        perInstanceCallback: (ctx) => {
+          trackIndices.push(ctx.trackIdx);
+        },
+      });
+
+      expect(trackIndices).toEqual([0, 1]);
+    });
+
+    it("provides null trackIdx for untracked instances", async () => {
+      const untrackedInst = createTestInstance(skeleton);
+
+      const trackIndices: (number | null)[] = [];
+      await renderImage([untrackedInst], {
+        width: 100,
+        height: 100,
+        perInstanceCallback: (ctx) => {
+          trackIndices.push(ctx.trackIdx);
+        },
+      });
+
+      expect(trackIndices).toEqual([null]);
+    });
   });
 
   describe("handles missing points", () => {
