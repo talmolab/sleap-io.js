@@ -1,13 +1,18 @@
 import { describe, it, expect } from "vitest";
 import { Labels } from "../src/model/labels.js";
-import { LabeledFrame } from "../src/model/labeled-frame.js";
+import {
+  LabeledFrame,
+  _annotationCentroidXy,
+  _findAnnotationMatches,
+} from "../src/model/labeled-frame.js";
 import { Instance, Track } from "../src/model/instance.js";
 import { Skeleton } from "../src/model/skeleton.js";
 import { Video } from "../src/model/video.js";
 import { UserCentroid, PredictedCentroid } from "../src/model/centroid.js";
 import { UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
-import { UserROI } from "../src/model/roi.js";
-import { UserLabelImage } from "../src/model/label-image.js";
+import { UserROI, PredictedROI } from "../src/model/roi.js";
+import { UserSegmentationMask, PredictedSegmentationMask } from "../src/model/mask.js";
+import { UserLabelImage, PredictedLabelImage } from "../src/model/label-image.js";
 import type { LabelImageObjectInfo } from "../src/model/label-image.js";
 import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
@@ -496,5 +501,472 @@ describe("Lazy read with annotations", () => {
     expect(loaded.centroids).toHaveLength(1);
     expect(loaded.centroids[0].x).toBe(1);
     expect(loaded.labeledFrames[0].centroids).toHaveLength(1);
+  });
+});
+
+describe("_mergeAnnotations strategies", () => {
+  it("keep_original keeps self's annotations and discards other's", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const selfC = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
+    const otherC = new UserCentroid({ x: 3, y: 4, video, frameIdx: 0 });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
+
+    lf1._mergeAnnotations(lf2, "keep_original");
+
+    expect(lf1.centroids).toHaveLength(1);
+    expect(lf1.centroids[0]).toBe(selfC);
+  });
+
+  it("keep_new replaces with copies of other's", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const selfC = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
+    const otherC = new UserCentroid({ x: 3, y: 4, video, frameIdx: 0 });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
+
+    lf1._mergeAnnotations(lf2, "keep_new");
+
+    expect(lf1.centroids).toHaveLength(1);
+    expect(lf1.centroids[0]).not.toBe(otherC); // copied, not same object
+    expect(lf1.centroids[0].x).toBe(3);
+    expect(lf1.centroids[0].y).toBe(4);
+  });
+
+  it("replace_predictions keeps user from self, replaces predicted with other's", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const selfUser = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
+    const selfPred = new PredictedCentroid({ x: 5, y: 6, video, frameIdx: 0, score: 0.9 });
+    const otherPred = new PredictedCentroid({ x: 7, y: 8, video, frameIdx: 0, score: 0.8 });
+    const otherUser = new UserCentroid({ x: 9, y: 10, video, frameIdx: 0 });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser, selfPred] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherPred, otherUser] });
+
+    lf1._mergeAnnotations(lf2, "replace_predictions");
+
+    // selfUser kept, selfPred removed, otherPred added (copied), otherUser ignored
+    expect(lf1.centroids).toHaveLength(2);
+    expect(lf1.centroids[0]).toBe(selfUser);
+    expect(lf1.centroids[1]).not.toBe(otherPred);
+    expect(lf1.centroids[1].x).toBe(7);
+    expect(lf1.centroids[1].isPredicted).toBe(true);
+  });
+
+  it("auto spatial matching resolves user-vs-predicted", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const selfUser = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
+    const selfPred = new PredictedCentroid({ x: 5, y: 6, video, frameIdx: 0, score: 0.9 });
+    const otherPred = new PredictedCentroid({ x: 7, y: 8, video, frameIdx: 0, score: 0.8 });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser, selfPred] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherPred] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    expect(lf1.centroids).toHaveLength(2);
+    expect(lf1.centroids[0]).toBe(selfUser);
+    expect(lf1.centroids[1].x).toBe(7);
+    expect(lf1.centroids[1].isPredicted).toBe(true);
+  });
+
+  it("auto adds unmatched user from other", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const selfUser = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
+    // Far away — won't match self_user (distance > 5.0)
+    const otherUser = new UserCentroid({ x: 50, y: 60, video, frameIdx: 0 });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    // Both should be present: self's user kept + other's user added (unmatched)
+    expect(lf1.centroids).toHaveLength(2);
+    expect(lf1.centroids[0]).toBe(selfUser);
+    expect(lf1.centroids[1]).not.toBe(otherUser); // copied
+    expect(lf1.centroids[1].x).toBe(50);
+  });
+
+  it("auto user replaces prediction when spatially matched", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const selfPred = new PredictedCentroid({ x: 10, y: 20, video, frameIdx: 0, score: 0.9 });
+    const otherUser = new UserCentroid({ x: 11, y: 20.5, video, frameIdx: 0 });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    // Prediction replaced by user
+    expect(lf1.centroids).toHaveLength(1);
+    expect(lf1.centroids[0].isPredicted).toBe(false);
+    expect(lf1.centroids[0].x).toBe(11);
+  });
+
+  it("auto keeps unmatched self prediction", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const selfPred = new PredictedCentroid({ x: 10, y: 20, video, frameIdx: 0, score: 0.9 });
+    // Far away — no match
+    const otherUser = new UserCentroid({ x: 80, y: 90, video, frameIdx: 0 });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    // Self's prediction kept (unmatched) + other's user added (unmatched)
+    expect(lf1.centroids).toHaveLength(2);
+    const xs = new Set(lf1.centroids.map((c) => c.x));
+    expect(xs).toEqual(new Set([10, 80]));
+  });
+
+  it("auto spatial matching works for bounding boxes", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const selfPred = new PredictedBoundingBox({
+      x1: 10, y1: 10, x2: 20, y2: 20, video, frameIdx: 0, score: 0.8,
+    });
+    const otherUser = new UserBoundingBox({
+      x1: 11, y1: 11, x2: 21, y2: 21, video, frameIdx: 0,
+    });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, bboxes: [selfPred] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, bboxes: [otherUser] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    // Centroid distance ~1.4px, well within threshold — prediction replaced by user
+    expect(lf1.bboxes).toHaveLength(1);
+    expect(lf1.bboxes[0].isPredicted).toBe(false);
+    expect(lf1.bboxes[0].x1).toBe(11);
+  });
+
+  it("auto spatial matching works for segmentation masks", () => {
+    const video = new Video({ filename: "test.mp4" });
+    // Create small masks at nearby locations (overlapping bbox centroids)
+    const selfPred = new PredictedSegmentationMask({
+      rleCounts: new Uint32Array([0, 100]),
+      height: 10,
+      width: 10,
+      video,
+      frameIdx: 0,
+      score: 0.7,
+      offset: [5, 5],
+    });
+    const otherUser = new UserSegmentationMask({
+      rleCounts: new Uint32Array([0, 100]),
+      height: 10,
+      width: 10,
+      video,
+      frameIdx: 0,
+      offset: [6, 6],
+    });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, masks: [selfPred] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, masks: [otherUser] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    // Bbox centroids are close — prediction replaced by user
+    expect(lf1.masks).toHaveLength(1);
+    expect(lf1.masks[0].isPredicted).toBe(false);
+  });
+
+  it("auto many-to-one uses one-to-one matching", () => {
+    const video = new Video({ filename: "test.mp4" });
+    // One prediction in self
+    const selfPred = new PredictedCentroid({ x: 10, y: 10, video, frameIdx: 0, score: 0.9 });
+    // Two users in other, both within threshold of selfPred
+    const otherUserA = new UserCentroid({ x: 11, y: 10, video, frameIdx: 0 }); // dist=1.0
+    const otherUserB = new UserCentroid({ x: 10, y: 11, video, frameIdx: 0 }); // dist=1.0
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUserA, otherUserB] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    // One replaces prediction via match, other added as unmatched — neither dropped
+    expect(lf1.centroids).toHaveLength(2);
+    const xs = new Set(lf1.centroids.map((c) => c.x));
+    expect(xs).toEqual(new Set([11, 10]));
+    expect(lf1.centroids.every((c) => !c.isPredicted)).toBe(true);
+  });
+
+  it("auto empty mask treated as unmatched", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const emptyMask = new UserSegmentationMask({
+      rleCounts: new Uint32Array([100]), // 100 zeros, no foreground
+      height: 10,
+      width: 10,
+      video,
+      frameIdx: 0,
+    });
+    const normalMask = new UserSegmentationMask({
+      rleCounts: new Uint32Array([0, 100]),
+      height: 10,
+      width: 10,
+      video,
+      frameIdx: 0,
+    });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, masks: [emptyMask] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, masks: [normalMask] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    // Both kept: empty mask has no centroid so it's unmatched
+    expect(lf1.masks).toHaveLength(2);
+  });
+
+  it("update_tracks cascades track from spatially matched other", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const trackA = new Track("a");
+    const trackB = new Track("b");
+
+    const selfC = new UserCentroid({ x: 10, y: 20, video, frameIdx: 0, track: trackA });
+    const otherC = new UserCentroid({ x: 11, y: 20.5, video, frameIdx: 0, track: trackB });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
+
+    lf1._mergeAnnotations(lf2, "update_tracks");
+
+    // Self's centroid track updated to other's track
+    expect(lf1.centroids).toHaveLength(1);
+    expect(lf1.centroids[0].track).toBe(trackB);
+  });
+
+  it("update_tracks leaves unmatched annotations unchanged", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const trackA = new Track("a");
+    const trackB = new Track("b");
+
+    const selfC = new UserCentroid({ x: 10, y: 20, video, frameIdx: 0, track: trackA });
+    // Far away — no match
+    const otherC = new UserCentroid({ x: 80, y: 90, video, frameIdx: 0, track: trackB });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
+
+    lf1._mergeAnnotations(lf2, "update_tracks");
+
+    expect(lf1.centroids[0].track).toBe(trackA); // unchanged
+  });
+
+  it("update_tracks skips labelImages", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const trackA = new Track("a");
+    const trackB = new Track("b");
+
+    const liSelf = new UserLabelImage({
+      data: new Int32Array([0, 1]),
+      height: 1,
+      width: 2,
+      objects: new Map([[1, { track: trackA, category: "cell", name: "", instance: null }]]),
+      video,
+      frameIdx: 0,
+    });
+    const liOther = new UserLabelImage({
+      data: new Int32Array([0, 2]),
+      height: 1,
+      width: 2,
+      objects: new Map([[2, { track: trackB, category: "cell", name: "", instance: null }]]),
+      video,
+      frameIdx: 0,
+    });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liSelf] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liOther] });
+
+    lf1._mergeAnnotations(lf2, "update_tracks");
+
+    // Label image track should be unchanged
+    expect(lf1.labelImages[0].objects.get(1)!.track).toBe(trackA);
+  });
+
+  it("auto spatial matching works for label images", () => {
+    const video = new Video({ filename: "test.mp4" });
+    const track = new Track("t");
+
+    const liSelf = new UserLabelImage({
+      data: new Int32Array([0, 1]),
+      height: 1,
+      width: 2,
+      objects: new Map([[1, { track, category: "cell", name: "", instance: null }]]),
+      video,
+      frameIdx: 0,
+    });
+    const liOther = new PredictedLabelImage({
+      data: new Int32Array([0, 2]),
+      height: 1,
+      width: 2,
+      objects: new Map([[2, { track, category: "cell", name: "", instance: null }]]),
+      video,
+      frameIdx: 0,
+      score: 0.9,
+    });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liSelf] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liOther] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    // User from self kept, prediction from other ignored (user beats predicted)
+    expect(lf1.labelImages).toHaveLength(1);
+    expect(lf1.labelImages[0].isPredicted).toBe(false);
+  });
+
+  it("auto spatial matching works for ROIs", () => {
+    const video = new Video({ filename: "test.mp4" });
+
+    const selfPred = new PredictedROI({
+      geometry: {
+        type: "Polygon",
+        coordinates: [[[10, 10], [20, 10], [20, 20], [10, 20], [10, 10]]],
+      },
+      video,
+      frameIdx: 0,
+      score: 0.8,
+    });
+    const otherUser = new UserROI({
+      geometry: {
+        type: "Polygon",
+        coordinates: [[[11, 11], [21, 11], [21, 21], [11, 21], [11, 11]]],
+      },
+      video,
+      frameIdx: 0,
+    });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, rois: [selfPred] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, rois: [otherUser] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    // Centroids are ~1.4px apart — prediction replaced by user
+    expect(lf1.rois).toHaveLength(1);
+    expect(lf1.rois[0].isPredicted).toBe(false);
+  });
+
+  it("auto empty ROI treated as unmatched", () => {
+    const video = new Video({ filename: "test.mp4" });
+    // Empty polygon (no area)
+    const emptyRoi = new UserROI({
+      geometry: { type: "Point", coordinates: [0, 0] },
+      video,
+      frameIdx: 0,
+    });
+    const normalRoi = new UserROI({
+      geometry: {
+        type: "Polygon",
+        coordinates: [[[10, 10], [20, 10], [20, 20], [10, 20], [10, 10]]],
+      },
+      video,
+      frameIdx: 0,
+    });
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, rois: [emptyRoi] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, rois: [normalRoi] });
+
+    lf1._mergeAnnotations(lf2, "auto");
+
+    // Both kept: empty ROI has no centroid so it's unmatched
+    expect(lf1.rois).toHaveLength(2);
+  });
+});
+
+describe("_annotationCentroidXy", () => {
+  it("returns [x, y] for centroids", () => {
+    const c = new UserCentroid({ x: 5, y: 10 });
+    expect(_annotationCentroidXy(c, "centroids")).toEqual([5, 10]);
+  });
+
+  it("returns centroidXy for bboxes", () => {
+    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 20 });
+    expect(_annotationCentroidXy(b, "bboxes")).toEqual([5, 10]);
+  });
+
+  it("returns centroidXy for ROIs with area", () => {
+    const roi = new UserROI({
+      geometry: {
+        type: "Polygon",
+        coordinates: [[[0, 0], [10, 0], [10, 20], [0, 20], [0, 0]]],
+      },
+    });
+    expect(_annotationCentroidXy(roi, "rois")).toEqual([5, 10]);
+  });
+
+  it("returns null for empty ROIs", () => {
+    const roi = new UserROI({
+      geometry: { type: "Point", coordinates: [5, 5] },
+    });
+    expect(_annotationCentroidXy(roi, "rois")).toBeNull();
+  });
+
+  it("returns bbox centroid for masks", () => {
+    // 10x10 mask, all foreground, at offset (5, 5)
+    const mask = new UserSegmentationMask({
+      rleCounts: new Uint32Array([0, 100]),
+      height: 10,
+      width: 10,
+      offset: [5, 5],
+    });
+    const result = _annotationCentroidXy(mask, "masks");
+    expect(result).not.toBeNull();
+    // bbox is {x: 5, y: 5, width: 10, height: 10} → centroid (10, 10)
+    expect(result![0]).toBe(10);
+    expect(result![1]).toBe(10);
+  });
+
+  it("returns null for empty masks", () => {
+    const mask = new UserSegmentationMask({
+      rleCounts: new Uint32Array([100]), // all zeros
+      height: 10,
+      width: 10,
+    });
+    expect(_annotationCentroidXy(mask, "masks")).toBeNull();
+  });
+
+  it("returns image extent center for label images", () => {
+    const li = new UserLabelImage({
+      data: new Int32Array([0, 1]),
+      height: 1,
+      width: 2,
+    });
+    // scale=[1,1], offset=[0,0] → center at (1, 0.5)
+    expect(_annotationCentroidXy(li, "labelImages")).toEqual([1, 0.5]);
+  });
+});
+
+describe("_findAnnotationMatches", () => {
+  it("finds matches within threshold", () => {
+    const c1 = new UserCentroid({ x: 10, y: 10 });
+    const c2 = new UserCentroid({ x: 11, y: 10 });
+    const matches = _findAnnotationMatches([c1], [c2], "centroids", 5.0);
+    expect(matches).toHaveLength(1);
+    expect(matches[0].selfIdx).toBe(0);
+    expect(matches[0].otherIdx).toBe(0);
+    expect(matches[0].score).toBeCloseTo(1 / (1 + 1)); // distance = 1
+  });
+
+  it("returns empty when distance exceeds threshold", () => {
+    const c1 = new UserCentroid({ x: 0, y: 0 });
+    const c2 = new UserCentroid({ x: 100, y: 100 });
+    const matches = _findAnnotationMatches([c1], [c2], "centroids", 5.0);
+    expect(matches).toHaveLength(0);
+  });
+
+  it("returns multiple matches for multiple items", () => {
+    const selfList = [
+      new UserCentroid({ x: 10, y: 10 }),
+      new UserCentroid({ x: 20, y: 20 }),
+    ];
+    const otherList = [
+      new UserCentroid({ x: 11, y: 10 }),
+      new UserCentroid({ x: 21, y: 20 }),
+    ];
+    const matches = _findAnnotationMatches(selfList, otherList, "centroids", 5.0);
+    expect(matches).toHaveLength(2);
   });
 });
