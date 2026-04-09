@@ -631,6 +631,33 @@ declare function normalizeLabelIds(labelImages: LabelImage[], options: {
     by: "category";
 }): Map<string, number>;
 
+/** Strategy for merging annotation lists between frames. */
+type MergeStrategy = "keep_both" | "keep_original" | "keep_new" | "replace_predictions" | "auto" | "update_tracks";
+/** Union of all annotation types stored on a LabeledFrame. */
+type Annotation = Centroid | BoundingBox | SegmentationMask | LabelImage | ROI;
+/** Annotation attribute names on LabeledFrame. */
+type AnnotationAttr = "centroids" | "bboxes" | "masks" | "labelImages" | "rois";
+/**
+ * Extract centroid (x, y) from an annotation based on its modality.
+ *
+ * @returns A tuple of [x, y] coordinates, or null if the centroid cannot be
+ *   computed (e.g., empty mask or empty ROI geometry).
+ */
+declare function _annotationCentroidXy(annotation: Annotation, attr: AnnotationAttr): [number, number] | null;
+/**
+ * Find matching annotations between two lists by centroid distance.
+ *
+ * @returns List of {selfIdx, otherIdx, score} where score = 1 / (1 + distance).
+ *
+ * NOTE: O(n*m) brute-force without bipartite assignment. Callers are
+ * responsible for resolving many-to-one conflicts (e.g., greedy 1:1 in
+ * _resolveAnnotationAuto). Fine for typical annotation counts per frame.
+ */
+declare function _findAnnotationMatches(selfList: Annotation[], otherList: Annotation[], attr: AnnotationAttr, threshold: number): Array<{
+    selfIdx: number;
+    otherIdx: number;
+    score: number;
+}>;
 declare class LabeledFrame {
     video: Video;
     frameIdx: number;
@@ -664,13 +691,24 @@ declare class LabeledFrame {
     get unusedPredictions(): PredictedInstance[];
     removePredictions(): void;
     /**
-     * Merge annotation lists from another frame, deduplicating by identity.
+     * Merge annotation lists from another frame into this frame.
      *
      * Shallow-copies annotations from the other frame to avoid mutating the
      * source when references are later remapped. Video and track references
      * are preserved so that remapping can find them in the mapping dicts.
+     *
+     * @param other - The frame to merge annotations from.
+     * @param strategy - The merge strategy. Controls which annotations are kept:
+     *   - "keep_original": Keep self only.
+     *   - "keep_new": Replace with other's annotations.
+     *   - "keep_both": Keep self + add other's (default).
+     *   - "replace_predictions": Keep user from self, add predicted from other.
+     *   - "auto": Spatial matching + user-vs-predicted resolution cascade.
+     *   - "update_tracks": Spatial matching, then update track assignments.
+     * @param threshold - Maximum centroid distance (pixels) for spatial matching
+     *   in "auto" and "update_tracks" strategies.
      */
-    _mergeAnnotations(other: LabeledFrame): void;
+    _mergeAnnotations(other: LabeledFrame, strategy?: MergeStrategy, threshold?: number): void;
     removeEmptyInstances(): void;
 }
 
@@ -1858,4 +1896,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AnnotationType, BoundingBox, type BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, type SegmentationMaskOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };
+export { AnnotationType, BoundingBox, type BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, type SegmentationMaskOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };

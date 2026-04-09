@@ -22,6 +22,117 @@ import {
 } from "./chunk-RVNDZMON.js";
 
 // src/model/labeled-frame.ts
+var ANNOTATION_ATTRS = [
+  "centroids",
+  "bboxes",
+  "masks",
+  "labelImages",
+  "rois"
+];
+function _shallowCopy(item) {
+  return Object.create(
+    Object.getPrototypeOf(item),
+    Object.getOwnPropertyDescriptors(item)
+  );
+}
+function _annotationCentroidXy(annotation, attr) {
+  if (attr === "centroids") {
+    const c = annotation;
+    return [c.x, c.y];
+  } else if (attr === "bboxes") {
+    return annotation.centroidXy;
+  } else if (attr === "rois") {
+    const roi = annotation;
+    if (roi.area === 0) return null;
+    return roi.centroidXy;
+  } else if (attr === "masks") {
+    const mask = annotation;
+    const bb = mask.bbox;
+    if (bb.width === 0 && bb.height === 0) return null;
+    return [bb.x + bb.width / 2, bb.y + bb.height / 2];
+  } else if (attr === "labelImages") {
+    const li = annotation;
+    const [sx, sy] = li.scale;
+    const [ox, oy] = li.offset;
+    return [li.width / 2 / sx + ox, li.height / 2 / sy + oy];
+  }
+  return null;
+}
+function _findAnnotationMatches(selfList, otherList, attr, threshold) {
+  const matches = [];
+  for (let i = 0; i < selfList.length; i++) {
+    const c1 = _annotationCentroidXy(selfList[i], attr);
+    if (c1 === null) continue;
+    for (let j = 0; j < otherList.length; j++) {
+      const c2 = _annotationCentroidXy(otherList[j], attr);
+      if (c2 === null) continue;
+      const dist = Math.hypot(c1[0] - c2[0], c1[1] - c2[1]);
+      if (dist <= threshold) {
+        matches.push({ selfIdx: i, otherIdx: j, score: 1 / (1 + dist) });
+      }
+    }
+  }
+  return matches;
+}
+function _resolveAnnotationAuto(selfList, otherList, attr, threshold) {
+  const merged = [];
+  const usedSelfIndices = /* @__PURE__ */ new Set();
+  for (const ann of selfList) {
+    if (!ann.isPredicted) {
+      merged.push(ann);
+    }
+  }
+  const matches = _findAnnotationMatches(selfList, otherList, attr, threshold);
+  matches.sort((a, b) => b.score - a.score);
+  const matchedSelf = /* @__PURE__ */ new Set();
+  const matchedOther = /* @__PURE__ */ new Set();
+  const otherToSelf = /* @__PURE__ */ new Map();
+  for (const { selfIdx, otherIdx } of matches) {
+    if (!matchedSelf.has(selfIdx) && !matchedOther.has(otherIdx)) {
+      otherToSelf.set(otherIdx, selfIdx);
+      matchedSelf.add(selfIdx);
+      matchedOther.add(otherIdx);
+    }
+  }
+  for (let otherIdx = 0; otherIdx < otherList.length; otherIdx++) {
+    const otherAnn = otherList[otherIdx];
+    if (otherToSelf.has(otherIdx)) {
+      const selfIdx = otherToSelf.get(otherIdx);
+      const selfAnn = selfList[selfIdx];
+      usedSelfIndices.add(selfIdx);
+      if (!selfAnn.isPredicted && !otherAnn.isPredicted) {
+      } else if (selfAnn.isPredicted && !otherAnn.isPredicted) {
+        merged.push(_shallowCopy(otherAnn));
+      } else if (!selfAnn.isPredicted && otherAnn.isPredicted) {
+      } else {
+        merged.push(_shallowCopy(otherAnn));
+      }
+    } else {
+      merged.push(_shallowCopy(otherAnn));
+    }
+  }
+  for (let selfIdx = 0; selfIdx < selfList.length; selfIdx++) {
+    if (selfList[selfIdx].isPredicted && !usedSelfIndices.has(selfIdx)) {
+      merged.push(selfList[selfIdx]);
+    }
+  }
+  return merged;
+}
+function _resolveAnnotationUpdateTracks(selfList, otherList, attr, threshold) {
+  if (attr === "labelImages") return;
+  const matches = _findAnnotationMatches(selfList, otherList, attr, threshold);
+  const selfToOther = /* @__PURE__ */ new Map();
+  for (const { selfIdx, otherIdx, score } of matches) {
+    const existing = selfToOther.get(selfIdx);
+    if (!existing || score > existing.score) {
+      selfToOther.set(selfIdx, { otherIdx, score });
+    }
+  }
+  selfToOther.forEach(({ otherIdx }, selfIdx) => {
+    selfList[selfIdx].track = otherList[otherIdx].track;
+    selfList[selfIdx].trackingScore = otherList[otherIdx].trackingScore;
+  });
+}
 var LabeledFrame = class {
   video;
   frameIdx;
@@ -93,19 +204,72 @@ var LabeledFrame = class {
     this.rois = this.rois.filter((r) => !r.isPredicted);
   }
   /**
-   * Merge annotation lists from another frame, deduplicating by identity.
+   * Merge annotation lists from another frame into this frame.
    *
    * Shallow-copies annotations from the other frame to avoid mutating the
    * source when references are later remapped. Video and track references
    * are preserved so that remapping can find them in the mapping dicts.
+   *
+   * @param other - The frame to merge annotations from.
+   * @param strategy - The merge strategy. Controls which annotations are kept:
+   *   - "keep_original": Keep self only.
+   *   - "keep_new": Replace with other's annotations.
+   *   - "keep_both": Keep self + add other's (default).
+   *   - "replace_predictions": Keep user from self, add predicted from other.
+   *   - "auto": Spatial matching + user-vs-predicted resolution cascade.
+   *   - "update_tracks": Spatial matching, then update track assignments.
+   * @param threshold - Maximum centroid distance (pixels) for spatial matching
+   *   in "auto" and "update_tracks" strategies.
    */
-  _mergeAnnotations(other) {
-    for (const attr of ["centroids", "bboxes", "masks", "labelImages", "rois"]) {
+  _mergeAnnotations(other, strategy = "keep_both", threshold = 5) {
+    if (strategy === "keep_original") {
+      return;
+    }
+    if (strategy === "keep_new") {
+      for (const attr of ANNOTATION_ATTRS) {
+        this[attr] = other[attr].map(_shallowCopy);
+      }
+      return;
+    }
+    if (strategy === "replace_predictions") {
+      for (const attr of ANNOTATION_ATTRS) {
+        const kept = this[attr].filter((a) => !a.isPredicted);
+        for (const item of other[attr]) {
+          if (item.isPredicted) {
+            kept.push(_shallowCopy(item));
+          }
+        }
+        this[attr] = kept;
+      }
+      return;
+    }
+    if (strategy === "auto") {
+      for (const attr of ANNOTATION_ATTRS) {
+        this[attr] = _resolveAnnotationAuto(
+          this[attr],
+          other[attr],
+          attr,
+          threshold
+        );
+      }
+      return;
+    }
+    if (strategy === "update_tracks") {
+      for (const attr of ANNOTATION_ATTRS) {
+        _resolveAnnotationUpdateTracks(
+          this[attr],
+          other[attr],
+          attr,
+          threshold
+        );
+      }
+      return;
+    }
+    for (const attr of ANNOTATION_ATTRS) {
       const existing = new Set(this[attr]);
       for (const item of other[attr]) {
         if (!existing.has(item)) {
-          const copy = Object.create(Object.getPrototypeOf(item), Object.getOwnPropertyDescriptors(item));
-          this[attr].push(copy);
+          this[attr].push(_shallowCopy(item));
         }
       }
     }
@@ -9148,6 +9312,8 @@ var InstanceContext = class {
 };
 
 export {
+  _annotationCentroidXy,
+  _findAnnotationMatches,
   LabeledFrame,
   SuggestionFrame,
   Video,

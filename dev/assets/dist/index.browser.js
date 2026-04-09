@@ -38,6 +38,8 @@ import {
   UserROI,
   UserSegmentationMask,
   Video,
+  _annotationCentroidXy,
+  _findAnnotationMatches,
   _registerMaskFactory,
   createVideoBackend,
   decodeRle,
@@ -85,7 +87,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-QQGQWKBG.js";
+} from "./chunk-T45RKCCC.js";
 import {
   Edge,
   Instance,
@@ -153,6 +155,8 @@ export {
   UserROI,
   UserSegmentationMask,
   Video,
+  _annotationCentroidXy,
+  _findAnnotationMatches,
   _registerCentroidFactory,
   _registerMaskFactory,
   createVideoBackend,
