@@ -663,7 +663,13 @@ declare class LabeledFrame {
     get image(): Promise<ImageData | ImageBitmap | ArrayBuffer | Uint8Array | null>;
     get unusedPredictions(): PredictedInstance[];
     removePredictions(): void;
-    /** Merge annotation lists from another frame, deduplicating by identity. */
+    /**
+     * Merge annotation lists from another frame, deduplicating by identity.
+     *
+     * Shallow-copies annotations from the other frame to avoid mutating the
+     * source when references are later remapped. Video and track references
+     * are preserved so that remapping can find them in the mapping dicts.
+     */
     _mergeAnnotations(other: LabeledFrame): void;
     removeEmptyInstances(): void;
 }
@@ -926,15 +932,29 @@ declare class Labels {
     private _distributeAnnotations;
     /** Collect tracks from annotations on a frame into this.tracks. */
     private _collectAnnotationTracks;
+    /** Raise if Labels is lazy-loaded. */
+    private _checkNotLazy;
     /** Clear all cached indices so they rebuild on next access. */
     private _invalidateIndices;
     /** Build or return the frame index, rebuilding if stale. */
     private _ensureFrameIndex;
     /** Build or return the track index, rebuilding if stale. */
     private _ensureTrackIndex;
-    /** O(1) lookup of a LabeledFrame by video and frame index. */
+    /**
+     * O(1) lookup of a LabeledFrame by video and frame index.
+     *
+     * The index is rebuilt lazily. If you mutate frames directly (e.g.,
+     * `lf.frameIdx = newIdx`) without calling `reindex()`, the lookup may
+     * return stale results.
+     */
     getFrame(video: Video, frameIdx: number): LabeledFrame | null;
-    /** O(1) lookup of all annotations for a track in a video, sorted by frameIdx. */
+    /**
+     * O(1) lookup of all annotations for a track in a video, sorted by frameIdx.
+     *
+     * The index is rebuilt lazily. If you mutate frames directly (e.g.,
+     * `lf.frameIdx = newIdx`) without calling `reindex()`, the lookup may
+     * return stale results.
+     */
     getTrackAnnotations(video: Video, track: Track): Array<Centroid | BoundingBox | SegmentationMask | ROI | LabelImage | Instance | PredictedInstance>;
     /** Force rebuild of all indices on next access. */
     reindex(): void;
@@ -947,6 +967,8 @@ declare class Labels {
     addMask(mask: SegmentationMask): void;
     addLabelImage(labelImage: LabelImage): void;
     addRoi(roi: ROI): void;
+    /** Remove all predicted instances and predicted annotations from all frames. */
+    removePredictions(): void;
     /** Flat view of all centroids across all frames. */
     get centroids(): Centroid[];
     /** Flat view of all bounding boxes across all frames. */

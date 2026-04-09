@@ -85,20 +85,27 @@ var LabeledFrame = class {
     return this.predictedInstances.filter((inst) => !usedPredicted.has(inst));
   }
   removePredictions() {
-    this.instances = this.instances.filter((inst) => inst instanceof Instance);
+    this.instances = this.instances.filter((inst) => !(inst instanceof PredictedInstance));
     this.centroids = this.centroids.filter((c) => !c.isPredicted);
     this.bboxes = this.bboxes.filter((b) => !b.isPredicted);
     this.masks = this.masks.filter((m) => !m.isPredicted);
     this.labelImages = this.labelImages.filter((li) => !li.isPredicted);
     this.rois = this.rois.filter((r) => !r.isPredicted);
   }
-  /** Merge annotation lists from another frame, deduplicating by identity. */
+  /**
+   * Merge annotation lists from another frame, deduplicating by identity.
+   *
+   * Shallow-copies annotations from the other frame to avoid mutating the
+   * source when references are later remapped. Video and track references
+   * are preserved so that remapping can find them in the mapping dicts.
+   */
   _mergeAnnotations(other) {
     for (const attr of ["centroids", "bboxes", "masks", "labelImages", "rois"]) {
       const existing = new Set(this[attr]);
       for (const item of other[attr]) {
         if (!existing.has(item)) {
-          this[attr].push(item);
+          const copy = Object.create(Object.getPrototypeOf(item), Object.getOwnPropertyDescriptors(item));
+          this[attr].push(copy);
         }
       }
     }
@@ -947,6 +954,18 @@ var Labels = class _Labels {
       for (const info of li.objects.values()) add(info.track);
     }
   }
+  /** Raise if Labels is lazy-loaded. */
+  _checkNotLazy(operation) {
+    if (this.isLazy) {
+      throw new Error(
+        `Cannot ${operation} on lazy-loaded Labels.
+
+To use, first materialize:
+    labels.materialize();
+    labels.${operation}(...);`
+      );
+    }
+  }
   /** Clear all cached indices so they rebuild on next access. */
   _invalidateIndices() {
     this._frameIndex = null;
@@ -1032,12 +1051,26 @@ var Labels = class _Labels {
     this._trackIndexLen = n;
     return this._trackIndex;
   }
-  /** O(1) lookup of a LabeledFrame by video and frame index. */
+  /**
+   * O(1) lookup of a LabeledFrame by video and frame index.
+   *
+   * The index is rebuilt lazily. If you mutate frames directly (e.g.,
+   * `lf.frameIdx = newIdx`) without calling `reindex()`, the lookup may
+   * return stale results.
+   */
   getFrame(video, frameIdx) {
+    this._checkNotLazy("getFrame");
     return this._ensureFrameIndex().get(video)?.get(frameIdx) ?? null;
   }
-  /** O(1) lookup of all annotations for a track in a video, sorted by frameIdx. */
+  /**
+   * O(1) lookup of all annotations for a track in a video, sorted by frameIdx.
+   *
+   * The index is rebuilt lazily. If you mutate frames directly (e.g.,
+   * `lf.frameIdx = newIdx`) without calling `reindex()`, the lookup may
+   * return stale results.
+   */
   getTrackAnnotations(video, track) {
+    this._checkNotLazy("getTrackAnnotations");
     return this._ensureTrackIndex().get(video)?.get(track) ?? [];
   }
   /** Force rebuild of all indices on next access. */
@@ -1085,6 +1118,14 @@ var Labels = class _Labels {
   }
   addRoi(roi) {
     this._addAnnotation(roi, "rois");
+  }
+  /** Remove all predicted instances and predicted annotations from all frames. */
+  removePredictions() {
+    if (this._lazyFrameList) this.materialize();
+    for (const lf of this.labeledFrames) {
+      lf.removePredictions();
+    }
+    this._invalidateIndices();
   }
   /** Flat view of all centroids across all frames. */
   get centroids() {
