@@ -59,7 +59,7 @@ describe("LabeledFrame annotation fields", () => {
     expect(lf.bboxes[0]).toBe(bUser);
   });
 
-  it("_mergeAnnotations merges and deduplicates", () => {
+  it("_mergeAnnotations merges, deduplicates, and copies new items", () => {
     const video = new Video({ filename: "test.mp4" });
     const shared = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
     const unique = new UserCentroid({ x: 3, y: 4, video, frameIdx: 0 });
@@ -69,9 +69,13 @@ describe("LabeledFrame annotation fields", () => {
 
     lf1._mergeAnnotations(lf2);
 
+    // shared should not be duplicated (same identity already in lf1)
     expect(lf1.centroids).toHaveLength(2);
-    expect(lf1.centroids.filter((c) => c === shared)).toHaveLength(1);
-    expect(lf1.centroids).toContain(unique);
+    expect(lf1.centroids[0]).toBe(shared);
+    // unique is copied, not the same object
+    expect(lf1.centroids[1]).not.toBe(unique);
+    expect(lf1.centroids[1].x).toBe(unique.x);
+    expect(lf1.centroids[1].y).toBe(unique.y);
   });
 });
 

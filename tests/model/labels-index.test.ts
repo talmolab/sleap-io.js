@@ -4,13 +4,16 @@ import { Labels } from "../../src/model/labels.js";
 import { LabeledFrame } from "../../src/model/labeled-frame.js";
 import { Video } from "../../src/model/video.js";
 import { Skeleton } from "../../src/model/skeleton.js";
-import { Instance, Track } from "../../src/model/instance.js";
+import { Instance, PredictedInstance, Track } from "../../src/model/instance.js";
 import { UserCentroid } from "../../src/model/centroid.js";
 import { UserBoundingBox } from "../../src/model/bbox.js";
 import { UserSegmentationMask } from "../../src/model/mask.js";
 import { UserROI } from "../../src/model/roi.js";
 import { UserLabelImage } from "../../src/model/label-image.js";
 import type { LabelImageObjectInfo } from "../../src/model/label-image.js";
+import { loadSlp } from "../../src/io/main.js";
+import { fileURLToPath } from "node:url";
+import path from "node:path";
 
 describe("Labels frame index", () => {
   it("builds on demand and provides O(1) lookups", () => {
@@ -406,5 +409,62 @@ describe("Index invalidation", () => {
     // Track index should be invalidated and rebuilt
     anns = labels.getTrackAnnotations(video, track);
     expect(anns).toHaveLength(2);
+  });
+});
+
+const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
+
+describe("Lazy guards", () => {
+  it("getFrame throws on lazy Labels", async () => {
+    const lazy = await loadSlp(path.join(fixtureRoot, "slp", "centered_pair_predictions.slp"), {
+      openVideos: false,
+      lazy: true,
+    });
+    const video = lazy.videos[0];
+    expect(() => lazy.getFrame(video, 0)).toThrow("getFrame");
+  });
+
+  it("getTrackAnnotations throws on lazy Labels", async () => {
+    const lazy = await loadSlp(path.join(fixtureRoot, "slp", "centered_pair_predictions.slp"), {
+      openVideos: false,
+      lazy: true,
+    });
+    const video = lazy.videos[0];
+    const track = lazy.tracks[0];
+    expect(() => lazy.getTrackAnnotations(video, track)).toThrow("getTrackAnnotations");
+  });
+});
+
+describe("Labels.removePredictions()", () => {
+  it("removes predictions and invalidates indices", () => {
+    const skel = new Skeleton({ nodes: ["head", "tail"] });
+    const video = new Video({ filename: "test.mp4" });
+    const track = new Track("t1");
+
+    const pred = PredictedInstance.fromArray([[1, 2], [3, 4]], skel, 0.9);
+    pred.track = track;
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [pred] });
+    const c = new UserCentroid({ x: 5, y: 6, video, frameIdx: 0, track });
+    lf.centroids.push(c);
+
+    const labels = new Labels({
+      labeledFrames: [lf],
+      videos: [video],
+      skeletons: [skel],
+      tracks: [track],
+    });
+
+    // Force index build — track index should include centroid + predicted instance
+    const result = labels.getTrackAnnotations(video, track);
+    expect(result).toHaveLength(2);
+
+    // Remove predictions
+    labels.removePredictions();
+
+    // Track index should be invalidated — only centroid remains
+    const after = labels.getTrackAnnotations(video, track);
+    expect(after).toHaveLength(1);
+    expect(lf.centroids[0]).toBe(c);
+    expect(lf.instances).toHaveLength(0);
   });
 });
