@@ -196,6 +196,18 @@ export class Labels {
     }
   }
 
+  /** Raise if Labels is lazy-loaded. */
+  private _checkNotLazy(operation: string): void {
+    if (this.isLazy) {
+      throw new Error(
+        `Cannot ${operation} on lazy-loaded Labels.\n\n` +
+          `To use, first materialize:\n` +
+          `    labels.materialize();\n` +
+          `    labels.${operation}(...);`,
+      );
+    }
+  }
+
   /** Clear all cached indices so they rebuild on next access. */
   private _invalidateIndices(): void {
     this._frameIndex = null;
@@ -301,12 +313,25 @@ export class Labels {
     return this._trackIndex;
   }
 
-  /** O(1) lookup of a LabeledFrame by video and frame index. */
+  /**
+   * O(1) lookup of a LabeledFrame by video and frame index.
+   *
+   * The index is rebuilt lazily. If you mutate frames directly (e.g.,
+   * `lf.frameIdx = newIdx`) without calling `reindex()`, the lookup may
+   * return stale results.
+   */
   getFrame(video: Video, frameIdx: number): LabeledFrame | null {
+    this._checkNotLazy("getFrame");
     return this._ensureFrameIndex().get(video)?.get(frameIdx) ?? null;
   }
 
-  /** O(1) lookup of all annotations for a track in a video, sorted by frameIdx. */
+  /**
+   * O(1) lookup of all annotations for a track in a video, sorted by frameIdx.
+   *
+   * The index is rebuilt lazily. If you mutate frames directly (e.g.,
+   * `lf.frameIdx = newIdx`) without calling `reindex()`, the lookup may
+   * return stale results.
+   */
   getTrackAnnotations(
     video: Video,
     track: Track,
@@ -319,6 +344,7 @@ export class Labels {
     | Instance
     | PredictedInstance
   > {
+    this._checkNotLazy("getTrackAnnotations");
     return this._ensureTrackIndex().get(video)?.get(track) ?? [];
   }
 
@@ -377,6 +403,15 @@ export class Labels {
 
   addRoi(roi: ROI): void {
     this._addAnnotation(roi, "rois");
+  }
+
+  /** Remove all predicted instances and predicted annotations from all frames. */
+  removePredictions(): void {
+    if (this._lazyFrameList) this.materialize();
+    for (const lf of this.labeledFrames) {
+      lf.removePredictions();
+    }
+    this._invalidateIndices();
   }
 
   /** Flat view of all centroids across all frames. */

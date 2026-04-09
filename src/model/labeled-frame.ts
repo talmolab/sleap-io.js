@@ -93,7 +93,7 @@ export class LabeledFrame {
   }
 
   removePredictions(): void {
-    this.instances = this.instances.filter((inst) => inst instanceof Instance);
+    this.instances = this.instances.filter((inst) => !(inst instanceof PredictedInstance));
     this.centroids = this.centroids.filter((c) => !c.isPredicted);
     this.bboxes = this.bboxes.filter((b) => !b.isPredicted);
     this.masks = this.masks.filter((m) => !m.isPredicted);
@@ -101,13 +101,20 @@ export class LabeledFrame {
     this.rois = this.rois.filter((r) => !r.isPredicted);
   }
 
-  /** Merge annotation lists from another frame, deduplicating by identity. */
+  /**
+   * Merge annotation lists from another frame, deduplicating by identity.
+   *
+   * Shallow-copies annotations from the other frame to avoid mutating the
+   * source when references are later remapped. Video and track references
+   * are preserved so that remapping can find them in the mapping dicts.
+   */
   _mergeAnnotations(other: LabeledFrame): void {
     for (const attr of ["centroids", "bboxes", "masks", "labelImages", "rois"] as const) {
       const existing = new Set(this[attr] as unknown[]);
       for (const item of other[attr] as unknown[]) {
         if (!existing.has(item)) {
-          (this[attr] as unknown[]).push(item);
+          const copy = Object.create(Object.getPrototypeOf(item), Object.getOwnPropertyDescriptors(item));
+          (this[attr] as unknown[]).push(copy);
         }
       }
     }
