@@ -30,8 +30,8 @@ async function roundTripLazy(labels: Labels): Promise<Labels> {
 describe("LabeledFrame annotation fields", () => {
   it("has centroids, bboxes, masks, labelImages, rois fields", () => {
     const video = new Video({ filename: "test.mp4" });
-    const c = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
-    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, video, frameIdx: 0 });
+    const c = new UserCentroid({ x: 1, y: 2});
+    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10});
 
     const lf = new LabeledFrame({ video, frameIdx: 0, centroids: [c], bboxes: [b] });
     expect(lf.centroids).toHaveLength(1);
@@ -45,10 +45,10 @@ describe("LabeledFrame annotation fields", () => {
 
   it("removePredictions removes predicted annotations", () => {
     const video = new Video({ filename: "test.mp4" });
-    const cUser = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
-    const cPred = new PredictedCentroid({ x: 3, y: 4, video, frameIdx: 0, score: 0.9 });
-    const bUser = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, video, frameIdx: 0 });
-    const bPred = new PredictedBoundingBox({ x1: 5, y1: 5, x2: 15, y2: 15, video, frameIdx: 0, score: 0.8 });
+    const cUser = new UserCentroid({ x: 1, y: 2});
+    const cPred = new PredictedCentroid({ x: 3, y: 4, score: 0.9 });
+    const bUser = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10});
+    const bPred = new PredictedBoundingBox({ x1: 5, y1: 5, x2: 15, y2: 15, score: 0.8 });
 
     const lf = new LabeledFrame({
       video,
@@ -66,8 +66,8 @@ describe("LabeledFrame annotation fields", () => {
 
   it("_mergeAnnotations merges, deduplicates, and copies new items", () => {
     const video = new Video({ filename: "test.mp4" });
-    const shared = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
-    const unique = new UserCentroid({ x: 3, y: 4, video, frameIdx: 0 });
+    const shared = new UserCentroid({ x: 1, y: 2});
+    const unique = new UserCentroid({ x: 3, y: 4});
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [shared] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [shared, unique] });
@@ -84,20 +84,19 @@ describe("LabeledFrame annotation fields", () => {
   });
 });
 
-describe("Labels annotation distribution", () => {
-  it("distributes flat annotation lists into LabeledFrames", () => {
+describe("Labels annotation on LabeledFrames", () => {
+  it("annotations are placed on LabeledFrames", () => {
     const video = new Video({ filename: "test.mp4" });
-    const c1 = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
-    const c2 = new UserCentroid({ x: 3, y: 4, video, frameIdx: 1 });
-    const b1 = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, video, frameIdx: 0 });
+    const c1 = new UserCentroid({ x: 1, y: 2 });
+    const c2 = new UserCentroid({ x: 3, y: 4 });
+    const b1 = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 });
 
-    const labels = new Labels({ centroids: [c1, c2], bboxes: [b1], videos: [video] });
+    const lf0 = new LabeledFrame({ video, frameIdx: 0, centroids: [c1], bboxes: [b1] });
+    const lf1 = new LabeledFrame({ video, frameIdx: 1, centroids: [c2] });
 
-    // Two frames created (one for each unique frameIdx)
+    const labels = new Labels({ labeledFrames: [lf0, lf1], videos: [video] });
+
     expect(labels.labeledFrames).toHaveLength(2);
-
-    const lf0 = labels.labeledFrames.find((lf) => lf.frameIdx === 0)!;
-    const lf1 = labels.labeledFrames.find((lf) => lf.frameIdx === 1)!;
     expect(lf0.centroids).toHaveLength(1);
     expect(lf0.centroids[0]).toBe(c1);
     expect(lf1.centroids).toHaveLength(1);
@@ -110,14 +109,14 @@ describe("Labels annotation distribution", () => {
     expect(labels.bboxes).toHaveLength(1);
   });
 
-  it("distributes to existing LabeledFrames", () => {
+  it("annotations on existing LabeledFrames", () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });
     const inst = new Instance({ points: { A: [10, 20] }, skeleton });
-    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
-    const c = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
+    const c = new UserCentroid({ x: 1, y: 2 });
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c] });
 
-    const labels = new Labels({ labeledFrames: [lf], centroids: [c] });
+    const labels = new Labels({ labeledFrames: [lf] });
 
     expect(labels.labeledFrames).toHaveLength(1);
     expect(labels.labeledFrames[0].centroids).toHaveLength(1);
@@ -125,76 +124,65 @@ describe("Labels annotation distribution", () => {
     expect(labels.labeledFrames[0].instances).toHaveLength(1);
   });
 
-  it("distributes across multiple videos", () => {
+  it("annotations across multiple videos via LabeledFrames", () => {
     const v1 = new Video({ filename: "v1.mp4" });
     const v2 = new Video({ filename: "v2.mp4" });
-    const c1 = new UserCentroid({ x: 1, y: 2, video: v1, frameIdx: 0 });
-    const c2 = new UserCentroid({ x: 3, y: 4, video: v2, frameIdx: 0 });
+    const c1 = new UserCentroid({ x: 1, y: 2 });
+    const c2 = new UserCentroid({ x: 3, y: 4 });
 
-    const labels = new Labels({ centroids: [c1, c2], videos: [v1, v2] });
+    const lfV1 = new LabeledFrame({ video: v1, frameIdx: 0, centroids: [c1] });
+    const lfV2 = new LabeledFrame({ video: v2, frameIdx: 0, centroids: [c2] });
+
+    const labels = new Labels({ labeledFrames: [lfV1, lfV2], videos: [v1, v2] });
 
     expect(labels.labeledFrames).toHaveLength(2);
-    const lfV1 = labels.labeledFrames.find((lf) => lf.video === v1)!;
-    const lfV2 = labels.labeledFrames.find((lf) => lf.video === v2)!;
     expect(lfV1.centroids[0]).toBe(c1);
     expect(lfV2.centroids[0]).toBe(c2);
   });
 
-  it("keeps undistributable annotations in _init fields", () => {
+  it("static ROIs stored on Labels._staticRois", () => {
     const video = new Video({ filename: "test.mp4" });
-    // Static ROI has no frameIdx
-    const roi = UserROI.fromBbox(0, 0, 10, 10, { video, frameIdx: null });
+    // Static ROI (not on any frame)
+    const roi = UserROI.fromBbox(0, 0, 10, 10, { video });
 
     const labels = new Labels({ rois: [roi], videos: [video] });
 
-    // Not distributed — stays in _init
-    expect(labels._initRois).toHaveLength(1);
-    // But accessible via property
+    expect(labels._staticRois).toHaveLength(1);
+    // Accessible via property
     expect(labels.rois).toHaveLength(1);
     expect(labels.rois[0]).toBe(roi);
   });
 });
 
-describe("Labels add_* methods", () => {
-  it("addCentroid finds-or-creates frame", () => {
+describe("LabeledFrame.append() routing", () => {
+  it("append routes centroids to centroids list", () => {
     const video = new Video({ filename: "test.mp4" });
     const track = new Track("t1");
-    const c = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0, track });
+    const c = new UserCentroid({ x: 1, y: 2, track });
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.append(c);
 
-    const labels = new Labels({ videos: [video] });
-    labels.addCentroid(c);
+    expect(lf.centroids).toHaveLength(1);
+    expect(lf.centroids[0]).toBe(c);
 
-    expect(labels.labeledFrames).toHaveLength(1);
-    expect(labels.labeledFrames[0].centroids[0]).toBe(c);
-    expect(labels.tracks).toContain(track);
-
-    // Adding to same frame reuses it
-    const c2 = new UserCentroid({ x: 3, y: 4, video, frameIdx: 0 });
-    labels.addCentroid(c2);
-    expect(labels.labeledFrames).toHaveLength(1);
-    expect(labels.labeledFrames[0].centroids).toHaveLength(2);
+    // Adding to same frame appends
+    const c2 = new UserCentroid({ x: 3, y: 4 });
+    lf.append(c2);
+    expect(lf.centroids).toHaveLength(2);
   });
 
-  it("addCentroid requires video and frameIdx", () => {
-    const labels = new Labels();
-    const c = new UserCentroid({ x: 1, y: 2 });
-    expect(() => labels.addCentroid(c)).toThrow("video and frameIdx");
-  });
-
-  it("addBbox auto-populates videos and tracks", () => {
+  it("append routes bboxes to bboxes list", () => {
     const video = new Video({ filename: "test.mp4" });
     const track = new Track("t1");
-    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, video, frameIdx: 0, track });
+    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, track });
+    const lf = new LabeledFrame({ video, frameIdx: 0 });
+    lf.append(b);
 
-    const labels = new Labels();
-    labels.addBbox(b);
-
-    expect(labels.videos).toContain(video);
-    expect(labels.tracks).toContain(track);
-    expect(labels.labeledFrames[0].bboxes[0]).toBe(b);
+    expect(lf.bboxes).toHaveLength(1);
+    expect(lf.bboxes[0]).toBe(b);
   });
 
-  it("addLabelImage collects tracks from objects", () => {
+  it("Labels collects tracks from annotations on frames", () => {
     const video = new Video({ filename: "test.mp4" });
     const track = new Track("t1");
     const li = new UserLabelImage({
@@ -204,12 +192,10 @@ describe("Labels add_* methods", () => {
       objects: new Map<number, LabelImageObjectInfo>([
         [1, { track, category: "cell", name: "", instance: null }],
       ]),
-      video,
-      frameIdx: 0,
     });
 
-    const labels = new Labels();
-    labels.addLabelImage(li);
+    const lf = new LabeledFrame({ video, frameIdx: 0, labelImages: [li] });
+    const labels = new Labels({ labeledFrames: [lf], videos: [video] });
 
     expect(labels.tracks).toContain(track);
     expect(labels.labeledFrames).toHaveLength(1);
@@ -219,11 +205,14 @@ describe("Labels add_* methods", () => {
 describe("Labels property getters", () => {
   it("centroids returns flat view across frames", () => {
     const video = new Video({ filename: "test.mp4" });
-    const c1 = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
-    const c2 = new UserCentroid({ x: 3, y: 4, video, frameIdx: 1 });
-    const c3 = new UserCentroid({ x: 5, y: 6, video, frameIdx: 0 });
+    const c1 = new UserCentroid({ x: 1, y: 2 });
+    const c2 = new UserCentroid({ x: 3, y: 4 });
+    const c3 = new UserCentroid({ x: 5, y: 6 });
 
-    const labels = new Labels({ centroids: [c1, c2, c3], videos: [video] });
+    const lf0 = new LabeledFrame({ video, frameIdx: 0, centroids: [c1, c3] });
+    const lf1 = new LabeledFrame({ video, frameIdx: 1, centroids: [c2] });
+
+    const labels = new Labels({ labeledFrames: [lf0, lf1], videos: [video] });
 
     const flat = labels.centroids;
     expect(flat).toHaveLength(3);
@@ -234,12 +223,13 @@ describe("Labels property getters", () => {
 });
 
 describe("Labels track collection from annotations", () => {
-  it("update collects tracks from nested annotations", () => {
+  it("collects tracks from nested annotations on frames", () => {
     const video = new Video({ filename: "test.mp4" });
     const track = new Track("t1");
-    const c = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0, track });
+    const c = new UserCentroid({ x: 1, y: 2, track });
+    const lf = new LabeledFrame({ video, frameIdx: 0, centroids: [c] });
 
-    const labels = new Labels({ centroids: [c], videos: [video] });
+    const labels = new Labels({ labeledFrames: [lf], videos: [video] });
 
     expect(labels.tracks).toContain(track);
   });
@@ -247,7 +237,7 @@ describe("Labels track collection from annotations", () => {
   it("append collects annotation tracks", () => {
     const video = new Video({ filename: "test.mp4" });
     const tBbox = new Track("t_bbox");
-    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, video, frameIdx: 0, track: tBbox });
+    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, track: tBbox });
     const lf = new LabeledFrame({ video, frameIdx: 0, bboxes: [b] });
 
     const labels = new Labels({ videos: [video] });
@@ -257,21 +247,17 @@ describe("Labels track collection from annotations", () => {
   });
 });
 
-describe("Labels _findOrCreateFrame", () => {
-  it("reuses existing frames", () => {
+describe("Labels.getFrame", () => {
+  it("finds existing frames by video and frameIdx", () => {
     const video = new Video({ filename: "test.mp4" });
+    const lf0 = new LabeledFrame({ video, frameIdx: 0 });
     const labels = new Labels({
-      labeledFrames: [new LabeledFrame({ video, frameIdx: 0 })],
+      labeledFrames: [lf0],
       videos: [video],
     });
 
-    const lf = (labels as any)._findOrCreateFrame(video, 0);
-    expect(lf).toBe(labels.labeledFrames[0]);
-    expect(labels.labeledFrames).toHaveLength(1);
-
-    const lf2 = (labels as any)._findOrCreateFrame(video, 1);
-    expect(labels.labeledFrames).toHaveLength(2);
-    expect(lf2.frameIdx).toBe(1);
+    expect(labels.getFrame(video, 0)).toBe(lf0);
+    expect(labels.getFrame(video, 1)).toBeNull();
   });
 });
 
@@ -281,11 +267,11 @@ describe("SLP round-trip with annotations", () => {
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track("t1");
     const inst = new Instance({ points: { A: [10, 20] }, skeleton, track });
-    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
-    const c = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0, track });
-    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, video, frameIdx: 0 });
+    const c = new UserCentroid({ x: 1, y: 2, track });
+    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 });
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c], bboxes: [b] });
 
-    const labels = new Labels({ labeledFrames: [lf], centroids: [c], bboxes: [b] });
+    const labels = new Labels({ labeledFrames: [lf] });
 
     const loaded = await roundTrip(labels);
 
@@ -308,15 +294,16 @@ describe("SLP round-trip with annotations", () => {
       new PredictedCentroid({
         x: i,
         y: i * 2,
-        video,
-        frameIdx: i,
         track,
         score: 0.9,
       }),
     );
 
+    const frames = centroids.map((c, i) =>
+      new LabeledFrame({ video, frameIdx: i, centroids: [c] })
+    );
     const labels = new Labels({
-      centroids,
+      labeledFrames: frames,
       videos: [video],
       skeletons: [skeleton],
       tracks: [track],
@@ -339,11 +326,11 @@ describe("Lazy read with annotations", () => {
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track("t1");
     const inst = new Instance({ points: { A: [10, 20] }, skeleton, track });
-    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
-    const c = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0, track });
-    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, video, frameIdx: 0 });
+    const c = new UserCentroid({ x: 1, y: 2, track });
+    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 });
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c], bboxes: [b] });
 
-    const labels = new Labels({ labeledFrames: [lf], centroids: [c], bboxes: [b] });
+    const labels = new Labels({ labeledFrames: [lf] });
 
     const lazy = await roundTripLazy(labels);
 
@@ -358,19 +345,13 @@ describe("Lazy read with annotations", () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track("t1");
-    const centroids = Array.from({ length: 3 }, (_, i) =>
-      new PredictedCentroid({
-        x: i,
-        y: i,
-        video,
-        frameIdx: i,
-        track,
-        score: 0.9,
-      }),
-    );
+    const frames = Array.from({ length: 3 }, (_, i) => {
+      const c = new PredictedCentroid({ x: i, y: i, track, score: 0.9 });
+      return new LabeledFrame({ video, frameIdx: i, centroids: [c] });
+    });
 
     const labels = new Labels({
-      centroids,
+      labeledFrames: frames,
       videos: [video],
       skeletons: [skeleton],
       tracks: [track],
@@ -394,11 +375,11 @@ describe("Lazy read with annotations", () => {
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track("t1");
     const inst = new Instance({ points: { A: [10, 20] }, skeleton, track });
-    const c = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0, track });
+    const c = new UserCentroid({ x: 1, y: 2, track });
 
+    const lf0 = new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c] });
     const labels = new Labels({
-      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst] })],
-      centroids: [c],
+      labeledFrames: [lf0],
     });
 
     const lazy = await roundTripLazy(labels);
@@ -414,13 +395,11 @@ describe("Lazy read with annotations", () => {
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track("t1");
     const inst = new Instance({ points: { A: [10, 20] }, skeleton, track });
-    const c = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0, track });
-    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, video, frameIdx: 0, track });
+    const c = new UserCentroid({ x: 1, y: 2, track });
+    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, track });
 
     const labels = new Labels({
-      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst] })],
-      centroids: [c],
-      bboxes: [b],
+      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c], bboxes: [b] })],
     });
 
     const lazy = await roundTripLazy(labels);
@@ -441,11 +420,10 @@ describe("Lazy read with annotations", () => {
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track("t1");
     const inst = new Instance({ points: { A: [10, 20] }, skeleton, track });
-    const c = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0, track });
+    const c = new UserCentroid({ x: 1, y: 2, track });
 
     const labels = new Labels({
-      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst] })],
-      centroids: [c],
+      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c] })],
     });
 
     const lazy = await roundTripLazy(labels);
@@ -459,12 +437,13 @@ describe("Lazy read with annotations", () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track("t1");
-    // Centroid-only data creates supplementary frames (no /frames entries)
-    const centroids = Array.from({ length: 3 }, (_, i) =>
-      new PredictedCentroid({ x: i, y: i, video, frameIdx: i, track, score: 0.9 }),
-    );
+    // Centroid-only data
+    const frames = Array.from({ length: 3 }, (_, i) => {
+      const c = new PredictedCentroid({ x: i, y: i, track, score: 0.9 });
+      return new LabeledFrame({ video, frameIdx: i, centroids: [c] });
+    });
 
-    const labels = new Labels({ centroids, videos: [video], skeletons: [skeleton], tracks: [track] });
+    const labels = new Labels({ labeledFrames: frames, videos: [video], skeletons: [skeleton], tracks: [track] });
     const lazy = await roundTripLazy(labels);
 
     // at(-1) should return the last supplementary frame
@@ -486,15 +465,15 @@ describe("Lazy read with annotations", () => {
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track("t1");
     const inst = new Instance({ points: { A: [10, 20] }, skeleton, track });
-    const c = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0, track });
+    const c = new UserCentroid({ x: 1, y: 2, track });
 
     const labels = new Labels({
-      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst] })],
-      centroids: [c],
+      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c] })],
     });
 
-    // Write -> lazy read -> write -> eager read
+    // Write -> lazy read -> materialize -> write -> eager read
     const lazy = await roundTripLazy(labels);
+    lazy.materialize();
     const bytes2 = await saveSlpToBytes(lazy);
     const loaded = await readSlp(new Uint8Array(bytes2).buffer, { openVideos: false });
 
@@ -507,8 +486,8 @@ describe("Lazy read with annotations", () => {
 describe("_mergeAnnotations strategies", () => {
   it("keep_original keeps self's annotations and discards other's", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfC = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
-    const otherC = new UserCentroid({ x: 3, y: 4, video, frameIdx: 0 });
+    const selfC = new UserCentroid({ x: 1, y: 2});
+    const otherC = new UserCentroid({ x: 3, y: 4});
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
@@ -521,8 +500,8 @@ describe("_mergeAnnotations strategies", () => {
 
   it("keep_new replaces with copies of other's", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfC = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
-    const otherC = new UserCentroid({ x: 3, y: 4, video, frameIdx: 0 });
+    const selfC = new UserCentroid({ x: 1, y: 2});
+    const otherC = new UserCentroid({ x: 3, y: 4});
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
@@ -537,10 +516,10 @@ describe("_mergeAnnotations strategies", () => {
 
   it("replace_predictions keeps user from self, replaces predicted with other's", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfUser = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
-    const selfPred = new PredictedCentroid({ x: 5, y: 6, video, frameIdx: 0, score: 0.9 });
-    const otherPred = new PredictedCentroid({ x: 7, y: 8, video, frameIdx: 0, score: 0.8 });
-    const otherUser = new UserCentroid({ x: 9, y: 10, video, frameIdx: 0 });
+    const selfUser = new UserCentroid({ x: 1, y: 2});
+    const selfPred = new PredictedCentroid({ x: 5, y: 6, score: 0.9 });
+    const otherPred = new PredictedCentroid({ x: 7, y: 8, score: 0.8 });
+    const otherUser = new UserCentroid({ x: 9, y: 10});
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser, selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherPred, otherUser] });
@@ -557,9 +536,9 @@ describe("_mergeAnnotations strategies", () => {
 
   it("auto spatial matching resolves user-vs-predicted", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfUser = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
-    const selfPred = new PredictedCentroid({ x: 5, y: 6, video, frameIdx: 0, score: 0.9 });
-    const otherPred = new PredictedCentroid({ x: 7, y: 8, video, frameIdx: 0, score: 0.8 });
+    const selfUser = new UserCentroid({ x: 1, y: 2});
+    const selfPred = new PredictedCentroid({ x: 5, y: 6, score: 0.9 });
+    const otherPred = new PredictedCentroid({ x: 7, y: 8, score: 0.8 });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser, selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherPred] });
@@ -574,9 +553,9 @@ describe("_mergeAnnotations strategies", () => {
 
   it("auto adds unmatched user from other", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfUser = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
+    const selfUser = new UserCentroid({ x: 1, y: 2});
     // Far away — won't match self_user (distance > 5.0)
-    const otherUser = new UserCentroid({ x: 50, y: 60, video, frameIdx: 0 });
+    const otherUser = new UserCentroid({ x: 50, y: 60});
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
@@ -592,8 +571,8 @@ describe("_mergeAnnotations strategies", () => {
 
   it("auto user replaces prediction when spatially matched", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfPred = new PredictedCentroid({ x: 10, y: 20, video, frameIdx: 0, score: 0.9 });
-    const otherUser = new UserCentroid({ x: 11, y: 20.5, video, frameIdx: 0 });
+    const selfPred = new PredictedCentroid({ x: 10, y: 20, score: 0.9 });
+    const otherUser = new UserCentroid({ x: 11, y: 20.5});
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
@@ -608,9 +587,9 @@ describe("_mergeAnnotations strategies", () => {
 
   it("auto keeps unmatched self prediction", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfPred = new PredictedCentroid({ x: 10, y: 20, video, frameIdx: 0, score: 0.9 });
+    const selfPred = new PredictedCentroid({ x: 10, y: 20, score: 0.9 });
     // Far away — no match
-    const otherUser = new UserCentroid({ x: 80, y: 90, video, frameIdx: 0 });
+    const otherUser = new UserCentroid({ x: 80, y: 90});
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
@@ -626,10 +605,10 @@ describe("_mergeAnnotations strategies", () => {
   it("auto spatial matching works for bounding boxes", () => {
     const video = new Video({ filename: "test.mp4" });
     const selfPred = new PredictedBoundingBox({
-      x1: 10, y1: 10, x2: 20, y2: 20, video, frameIdx: 0, score: 0.8,
+      x1: 10, y1: 10, x2: 20, y2: 20, score: 0.8,
     });
     const otherUser = new UserBoundingBox({
-      x1: 11, y1: 11, x2: 21, y2: 21, video, frameIdx: 0,
+      x1: 11, y1: 11, x2: 21, y2: 21,
     });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, bboxes: [selfPred] });
@@ -677,10 +656,10 @@ describe("_mergeAnnotations strategies", () => {
   it("auto many-to-one uses one-to-one matching", () => {
     const video = new Video({ filename: "test.mp4" });
     // One prediction in self
-    const selfPred = new PredictedCentroid({ x: 10, y: 10, video, frameIdx: 0, score: 0.9 });
+    const selfPred = new PredictedCentroid({ x: 10, y: 10, score: 0.9 });
     // Two users in other, both within threshold of selfPred
-    const otherUserA = new UserCentroid({ x: 11, y: 10, video, frameIdx: 0 }); // dist=1.0
-    const otherUserB = new UserCentroid({ x: 10, y: 11, video, frameIdx: 0 }); // dist=1.0
+    const otherUserA = new UserCentroid({ x: 11, y: 10}); // dist=1.0
+    const otherUserB = new UserCentroid({ x: 10, y: 11}); // dist=1.0
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUserA, otherUserB] });
@@ -725,8 +704,8 @@ describe("_mergeAnnotations strategies", () => {
     const trackA = new Track("a");
     const trackB = new Track("b");
 
-    const selfC = new UserCentroid({ x: 10, y: 20, video, frameIdx: 0, track: trackA });
-    const otherC = new UserCentroid({ x: 11, y: 20.5, video, frameIdx: 0, track: trackB });
+    const selfC = new UserCentroid({ x: 10, y: 20, track: trackA });
+    const otherC = new UserCentroid({ x: 11, y: 20.5, track: trackB });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
@@ -743,9 +722,9 @@ describe("_mergeAnnotations strategies", () => {
     const trackA = new Track("a");
     const trackB = new Track("b");
 
-    const selfC = new UserCentroid({ x: 10, y: 20, video, frameIdx: 0, track: trackA });
+    const selfC = new UserCentroid({ x: 10, y: 20, track: trackA });
     // Far away — no match
-    const otherC = new UserCentroid({ x: 80, y: 90, video, frameIdx: 0, track: trackB });
+    const otherC = new UserCentroid({ x: 80, y: 90, track: trackB });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });

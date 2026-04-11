@@ -79,10 +79,53 @@ export async function readSlp(
     const identities = readIdentities(file.get("identities_json"));
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames, identities);
     const allInstances = labeledFrames.flatMap((f) => f.instances);
-    const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks, allInstances);
-    const masks = readMasks(file, videos, tracks);
-    const centroids = readCentroids(file, videos, tracks);
-    const labelImages = readLabelImages(file, videos, tracks, allInstances);
+    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(file, videos, tracks, allInstances);
+    const maskTuples = readMasks(file, videos, tracks);
+    const centroidTuples = readCentroids(file, videos, tracks);
+    const labelImageTuples = readLabelImages(file, videos, tracks, allInstances);
+
+    // Distribute annotations into LabeledFrames using routing tuples
+    const frameMap = new Map<string, LabeledFrame>();
+    for (const lf of labeledFrames) {
+      const vidIdx = videos.indexOf(lf.video);
+      frameMap.set(`${vidIdx}:${lf.frameIdx}`, lf);
+    }
+    const getOrCreateFrame = (vidIdx: number, frameIdx: number): LabeledFrame => {
+      const key = `${vidIdx}:${frameIdx}`;
+      let lf = frameMap.get(key);
+      if (!lf) {
+        lf = new LabeledFrame({ video: videos[vidIdx], frameIdx });
+        frameMap.set(key, lf);
+        labeledFrames.push(lf);
+      }
+      return lf;
+    };
+
+    const staticRois: ROI[] = [];
+    const distributeTuples = <T>(
+      tuples: [T, number, number][],
+      push: (lf: LabeledFrame, ann: T) => void,
+    ): void => {
+      for (const [ann, vidIdx, frameIdx] of tuples) {
+        if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
+          push(getOrCreateFrame(vidIdx, frameIdx), ann);
+        }
+      }
+    };
+
+    // Distribute ROIs — undistributed ones are static ROIs
+    for (const [roi, vidIdx, frameIdx] of roiTuples) {
+      if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
+        getOrCreateFrame(vidIdx, frameIdx).rois.push(roi);
+      } else {
+        staticRois.push(roi);
+      }
+    }
+
+    distributeTuples(bboxTuples, (lf, b) => lf.bboxes.push(b));
+    distributeTuples(maskTuples, (lf, m) => lf.masks.push(m));
+    distributeTuples(centroidTuples, (lf, c) => lf.centroids.push(c));
+    distributeTuples(labelImageTuples, (lf, li) => lf.labelImages.push(li));
 
     return new Labels({
       labeledFrames,
@@ -93,11 +136,7 @@ export async function readSlp(
       sessions,
       identities,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
-      rois,
-      masks,
-      bboxes,
-      centroids,
-      labelImages,
+      rois: staticRois,
     });
   } finally {
     close();
@@ -167,24 +206,20 @@ export async function readSlpLazy(
     // Pass empty labeledFrames since frames aren't materialized yet.
     const identities = readIdentities(file.get("identities_json"));
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, [], identities);
-    const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks);
-    const masks = readMasks(file, videos, tracks);
-    const centroids = readCentroids(file, videos, tracks);
-    const labelImages = readLabelImages(file, videos, tracks);
+    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(file, videos, tracks);
+    const maskTuples = readMasks(file, videos, tracks);
+    const centroidTuples = readCentroids(file, videos, tracks);
+    const labelImageTuples = readLabelImages(file, videos, tracks);
 
     // Build per-frame annotation dicts for lazy materialization
-    const videoIndexMap = new Map<Video, number>();
-    for (let i = 0; i < videos.length; i++) videoIndexMap.set(videos[i], i);
-
-    const buildAnnByFrame = <T extends { video: any; frameIdx: number | null }>(
-      annotations: T[],
+    const buildAnnByFrame = <T>(
+      tuples: [T, number, number][],
     ): { byFrame: Map<string, T[]>; undistributed: T[] } => {
       const byFrame = new Map<string, T[]>();
       const undistributed: T[] = [];
-      for (const ann of annotations) {
-        if (ann.video !== null && ann.frameIdx !== null) {
-          const vidIdx = videoIndexMap.get(ann.video) ?? -1;
-          const key = `${vidIdx}:${ann.frameIdx}`;
+      for (const [ann, vidIdx, frameIdx] of tuples) {
+        if (vidIdx >= 0 && frameIdx >= 0) {
+          const key = `${vidIdx}:${frameIdx}`;
           const list = byFrame.get(key);
           if (list) list.push(ann);
           else byFrame.set(key, [ann]);
@@ -195,11 +230,11 @@ export async function readSlpLazy(
       return { byFrame, undistributed };
     };
 
-    const cResult = buildAnnByFrame(centroids);
-    const bResult = buildAnnByFrame(bboxes);
-    const mResult = buildAnnByFrame(masks);
-    const rResult = buildAnnByFrame(rois);
-    const liResult = buildAnnByFrame(labelImages);
+    const cResult = buildAnnByFrame(centroidTuples);
+    const bResult = buildAnnByFrame(bboxTuples);
+    const mResult = buildAnnByFrame(maskTuples);
+    const rResult = buildAnnByFrame(roiTuples);
+    const liResult = buildAnnByFrame(labelImageTuples);
 
     store._centroidByFrame = cResult.byFrame;
     store._bboxByFrame = bResult.byFrame;
@@ -624,7 +659,7 @@ function readRoisAndBboxes(
   videos: Video[],
   tracks: Track[],
   instances?: Array<Instance | PredictedInstance>,
-): { rois: ROI[]; bboxes: BoundingBox[] } {
+): { rois: [ROI, number, number][]; bboxes: [BoundingBox, number, number][] } {
   const { rois, migratedBboxes } = readRoisWithMigration(file, videos, tracks, instances);
   let bboxes = readBboxes(file, videos, tracks);
   if (bboxes.length === 0 && migratedBboxes.length > 0) {
@@ -638,7 +673,7 @@ function readRoisWithMigration(
   videos: Video[],
   tracks: Track[],
   instances?: Array<Instance | PredictedInstance>,
-): { rois: ROI[]; migratedBboxes: BoundingBox[] } {
+): { rois: [ROI, number, number][]; migratedBboxes: [BoundingBox, number, number][] } {
   const roisDs = file.get("rois");
   if (!roisDs) return { rois: [], migratedBboxes: [] };
   const roisData = normalizeStructDataset(roisDs);
@@ -667,8 +702,8 @@ function readRoisWithMigration(
   const isPredictedCol = roisData.is_predicted ?? [];
   const trackingScoresCol = roisData.tracking_score ?? [];
 
-  const rois: ROI[] = [];
-  const migratedBboxes: BoundingBox[] = [];
+  const rois: [ROI, number, number][] = [];
+  const migratedBboxes: [BoundingBox, number, number][] = [];
 
   for (let i = 0; i < annotationTypes.length; i++) {
     const wkbStart = Number(wkbStarts[i]);
@@ -680,7 +715,6 @@ function readRoisWithMigration(
     const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
 
     const frameIdxVal = Number(frameIndices[i]);
-    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
 
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
@@ -695,7 +729,7 @@ function readRoisWithMigration(
     // Migration: annotation_type === 1 (BOUNDING_BOX) -> BoundingBox object
     // Skip predicted ROIs during bbox migration (only migrate user-type box-shaped ROIs)
     if (annotType === AnnotationType.BOUNDING_BOX && !isPred) {
-      const tmpRoi = new UserROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, frameIdx, track });
+      const tmpRoi = new UserROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, track });
       const b = tmpRoi.bounds;
       const scoreVal = Number(scores[i]);
       const bboxScore = Number.isNaN(scoreVal) ? null : scoreVal;
@@ -705,8 +739,6 @@ function readRoisWithMigration(
         y1: b.minY,
         x2: b.maxX,
         y2: b.maxY,
-        video,
-        frameIdx,
         track,
         trackingScore: roiTrackingScore,
         category: categories[i] ?? "",
@@ -714,22 +746,24 @@ function readRoisWithMigration(
         source: sources[i] ?? "",
       };
 
+      let bbox: BoundingBox;
       if (bboxScore !== null) {
-        migratedBboxes.push(new PredictedBoundingBox({ ...bboxOptions, score: bboxScore }));
+        bbox = new PredictedBoundingBox({ ...bboxOptions, score: bboxScore });
       } else {
-        migratedBboxes.push(new UserBoundingBox(bboxOptions));
+        bbox = new UserBoundingBox(bboxOptions);
       }
 
       // Format >= 1.6: resolve instance references for migrated bboxes
       if (instanceIndices.length > 0) {
         const instIdx = Number(instanceIndices[i]);
-        const bbox = migratedBboxes[migratedBboxes.length - 1];
         if (instances && instIdx >= 0 && instIdx < instances.length) {
           bbox.instance = instances[instIdx];
         } else if (instIdx >= 0) {
           bbox._instanceIdx = instIdx;
         }
       }
+
+      migratedBboxes.push([bbox, videoIdx, frameIdxVal]);
     } else {
       const roiOptions = {
         geometry,
@@ -737,7 +771,6 @@ function readRoisWithMigration(
         category: categories[i] ?? "",
         source: sources[i] ?? "",
         video,
-        frameIdx,
         track,
         trackingScore: roiTrackingScore,
       };
@@ -760,14 +793,14 @@ function readRoisWithMigration(
         }
       }
 
-      rois.push(roi);
+      rois.push([roi, videoIdx, frameIdxVal]);
     }
   }
 
   return { rois, migratedBboxes };
 }
 
-function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] {
+function readBboxes(file: any, _videos: Video[], tracks: Track[]): [BoundingBox, number, number][] {
   const bboxesDs = file.get("bboxes");
   if (!bboxesDs) return [];
   const bboxesData = normalizeStructDataset(bboxesDs);
@@ -800,13 +833,11 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
   const instanceIndices = bboxesData.instance ?? [];
   const trackingScores = bboxesData.tracking_score ?? [];
 
-  const bboxes: BoundingBox[] = [];
+  const bboxes: [BoundingBox, number, number][] = [];
   for (let i = 0; i < count; i++) {
     const videoIdx = Number(videoIndices[i]);
-    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
 
     const frameIdxVal = Number(frameIndices[i]);
-    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
 
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
@@ -841,8 +872,6 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
       x2: bx2,
       y2: by2,
       angle: Number(angles[i]),
-      video,
-      frameIdx,
       track,
       trackingScore,
       category: categories[i] ?? "",
@@ -861,7 +890,7 @@ function readBboxes(file: any, videos: Video[], tracks: Track[]): BoundingBox[] 
       bbox._instanceIdx = instanceIdx;
     }
 
-    bboxes.push(bbox);
+    bboxes.push([bbox, videoIdx, frameIdxVal]);
   }
   return bboxes;
 }
@@ -929,7 +958,7 @@ function readScoreMaps(file: any, indexPath: string, dataPath: string): Map<numb
   return result;
 }
 
-function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMask[] {
+function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationMask, number, number][] {
   const masksDs = file.get("masks");
   if (!masksDs) return [];
   const masksData = normalizeStructDataset(masksDs);
@@ -968,7 +997,7 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
   // Read score maps if present
   const scoreMaps = readScoreMaps(file, "mask_score_map_index", "mask_score_maps");
 
-  const masks: SegmentationMask[] = [];
+  const masks: [SegmentationMask, number, number][] = [];
   for (let i = 0; i < heights.length; i++) {
     const rleStart = Number(rleStarts[i]);
     const rleEnd = Number(rleEnds[i]);
@@ -983,10 +1012,8 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
     }
 
     const videoIdx = Number(videoIndices[i]);
-    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
 
     const frameIdxVal = Number(frameIndices[i]);
-    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
 
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
@@ -1006,8 +1033,6 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
       name: names[i] ?? "",
       category: categories[i] ?? "",
       source: sources[i] ?? "",
-      video,
-      frameIdx,
       track,
       trackingScore: maskTrackingScore,
       scale: [scaleX, scaleY] as [number, number],
@@ -1036,17 +1061,17 @@ function readMasks(file: any, videos: Video[], tracks: Track[]): SegmentationMas
       mask._instanceIdx = instIdx;
     }
 
-    masks.push(mask);
+    masks.push([mask, videoIdx, frameIdxVal]);
   }
   return masks;
 }
 
 function readLabelImages(
   file: any,
-  videos: Video[],
+  _videos: Video[],
   tracks: Track[],
   instances?: Array<Instance | PredictedInstance>,
-): LabelImage[] {
+): [LabelImage, number, number][] {
   const liDs = file.get("label_images");
   if (!liDs) return [];
   const liData = normalizeStructDataset(liDs);
@@ -1115,12 +1140,10 @@ function readLabelImages(
   // Read score maps if present
   const liScoreMaps = readScoreMaps(file, "label_image_score_map_index", "label_image_score_maps");
 
-  const labelImages: LabelImage[] = [];
+  const labelImages: [LabelImage, number, number][] = [];
   for (let i = 0; i < videoIndices.length; i++) {
     const videoIdx = Number(videoIndices[i]);
-    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
     const frameIdxVal = Number(frameIndices[i]);
-    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
     const height = Number(heights[i]);
     const width = Number(widths[i]);
 
@@ -1210,8 +1233,6 @@ function readLabelImages(
         height,
         width,
         objects,
-        video,
-        frameIdx,
         source: sources[i] ?? "",
         score: liScore,
         scoreMap: sm?.scoreMap ?? null,
@@ -1224,8 +1245,6 @@ function readLabelImages(
         height,
         width,
         objects,
-        video,
-        frameIdx,
         source: sources[i] ?? "",
         scale: liScale,
         offset: liOffset,
@@ -1236,7 +1255,7 @@ function readLabelImages(
       li._objectInstanceIdxs = deferredInstances;
     }
 
-    labelImages.push(li);
+    labelImages.push([li, videoIdx, frameIdxVal]);
   }
   return labelImages;
 }
@@ -1432,7 +1451,7 @@ function parseVideoIdFromDataset(dataset: string): number | null {
   return Number.isNaN(id) ? null : id;
 }
 
-function readCentroids(file: any, videos: Video[], tracks: Track[]): Centroid[] {
+function readCentroids(file: any, _videos: Video[], tracks: Track[]): [Centroid, number, number][] {
   const centroidsDs = file.get("centroids");
   if (!centroidsDs) return [];
   const data = normalizeStructDataset(centroidsDs);
@@ -1454,13 +1473,11 @@ function readCentroids(file: any, videos: Video[], tracks: Track[]): Centroid[] 
   const scores = data.score ?? [];
   const trackingScores = data.tracking_score ?? [];
 
-  const centroids: Centroid[] = [];
+  const centroids: [Centroid, number, number][] = [];
   for (let i = 0; i < count; i++) {
     const videoIdx = Number(videoIndices[i]);
-    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
 
     const frameIdxVal = Number(frameIndices[i]);
-    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
 
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
@@ -1477,8 +1494,6 @@ function readCentroids(file: any, videos: Video[], tracks: Track[]): Centroid[] 
       x: Number(xs[i]),
       y: Number(ys[i]),
       z,
-      video,
-      frameIdx,
       track,
       trackingScore,
       category: categories[i] ?? "",
@@ -1500,7 +1515,7 @@ function readCentroids(file: any, videos: Video[], tracks: Track[]): Centroid[] 
       centroid._instanceIdx = instanceIdx;
     }
 
-    centroids.push(centroid);
+    centroids.push([centroid, videoIdx, frameIdxVal]);
   }
   return centroids;
 }

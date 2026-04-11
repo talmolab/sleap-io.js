@@ -37,16 +37,16 @@ describe("LabelImage SLP I/O", () => {
         [1, { track: track1, category: "neuron", name: "cell_A", instance: null }],
         [2, { track: track2, category: "glia", name: "cell_B", instance: null }],
       ]),
-      video,
-      frameIdx: 0,
       source: "cellpose",
     });
 
+    const lf = new LabeledFrame({ video, frameIdx: 0, labelImages: [li] });
+
     const labels = new Labels({
+      labeledFrames: [lf],
       videos: [video],
       skeletons: [skeleton],
       tracks: [track1, track2],
-      labelImages: [li],
     });
 
     const loaded = await roundTrip(labels);
@@ -56,10 +56,7 @@ describe("LabelImage SLP I/O", () => {
     expect(loadedLi.height).toBe(10);
     expect(loadedLi.width).toBe(10);
     expect(loadedLi.nObjects).toBe(2);
-    expect(loadedLi.frameIdx).toBe(0);
     expect(loadedLi.source).toBe("cellpose");
-    expect(loadedLi.video).not.toBeNull();
-    expect(loadedLi.video!.filename).toBe("test.mp4");
 
     const obj1 = loadedLi.objects.get(1);
     expect(obj1).toBeDefined();
@@ -109,14 +106,14 @@ describe("LabelImage SLP I/O", () => {
         [2, { track: null, category: "", name: "", instance: null }],
         [3, { track: null, category: "", name: "", instance: null }],
       ]),
-      video,
-      frameIdx: 0,
     });
 
+    const lf = new LabeledFrame({ video, frameIdx: 0, labelImages: [li] });
+
     const labels = new Labels({
+      labeledFrames: [lf],
       videos: [video],
       skeletons: [skeleton],
-      labelImages: [li],
     });
 
     const loaded = await roundTrip(labels);
@@ -144,15 +141,13 @@ describe("LabelImage SLP I/O", () => {
       objects: new Map<number, LabelImageObjectInfo>([
         [1, { track: null, category: "", name: "", instance: null }],
       ]),
-      video,
-      frameIdx: 0,
     });
+    frame.labelImages.push(li);
 
     const labelsWithLI = new Labels({
       labeledFrames: [frame],
       videos: [video],
       skeletons: [skeleton],
-      labelImages: [li],
     });
 
     const loadedWithLI = await roundTrip(labelsWithLI);
@@ -160,19 +155,17 @@ describe("LabelImage SLP I/O", () => {
     expect(loadedWithLI.labelImages[0].data[0]).toBe(1);
 
     // Labels with bboxes but no labelImages (format 2.0) should also round-trip
-    // Use a fresh frame to avoid shared mutation from the previous Labels
     const inst2 = new Instance({ points: { a: [1, 2] }, skeleton });
     const frame2 = new LabeledFrame({ video, frameIdx: 0, instances: [inst2] });
     const bb = new UserBoundingBox({
       x1: 0, y1: 10, x2: 100, y2: 90,
-      video, frameIdx: 0,
     });
+    frame2.bboxes.push(bb);
 
     const labelsWithBbox = new Labels({
       labeledFrames: [frame2],
       videos: [video],
       skeletons: [skeleton],
-      bboxes: [bb],
     });
 
     const loadedWithBbox = await roundTrip(labelsWithBbox);
@@ -185,7 +178,7 @@ describe("LabelImage SLP I/O", () => {
     const skeleton = new Skeleton({ nodes: ["a"] });
     const track = new Track("t1");
 
-    const labelImages: LabelImage[] = [];
+    const frames: LabeledFrame[] = [];
     for (const frameIdx of [0, 5, 10]) {
       const data = new Int32Array(8 * 8);
       // Each frame gets a unique pattern: fill first N pixels where N = frameIdx + 1
@@ -193,26 +186,24 @@ describe("LabelImage SLP I/O", () => {
         data[i] = 1;
       }
 
-      labelImages.push(
-        new UserLabelImage({
-          data,
-          height: 8,
-          width: 8,
-          objects: new Map<number, LabelImageObjectInfo>([
-            [1, { track, category: "cell", name: `frame_${frameIdx}`, instance: null }],
-          ]),
-          video,
-          frameIdx,
-          source: "auto",
-        }),
-      );
+      const li = new UserLabelImage({
+        data,
+        height: 8,
+        width: 8,
+        objects: new Map<number, LabelImageObjectInfo>([
+          [1, { track, category: "cell", name: `frame_${frameIdx}`, instance: null }],
+        ]),
+        source: "auto",
+      });
+
+      frames.push(new LabeledFrame({ video, frameIdx, labelImages: [li] }));
     }
 
     const labels = new Labels({
+      labeledFrames: frames,
       videos: [video],
       skeletons: [skeleton],
       tracks: [track],
-      labelImages,
     });
 
     const loaded = await roundTrip(labels);
@@ -222,8 +213,10 @@ describe("LabelImage SLP I/O", () => {
     // Verify each frame
     for (let i = 0; i < 3; i++) {
       const expectedFrameIdx = [0, 5, 10][i];
-      const loadedLi = loaded.labelImages[i];
-      expect(loadedLi.frameIdx).toBe(expectedFrameIdx);
+      const loadedLf = loaded.labeledFrames[i];
+      expect(loadedLf.frameIdx).toBe(expectedFrameIdx);
+      expect(loadedLf.labelImages).toHaveLength(1);
+      const loadedLi = loadedLf.labelImages[0];
       expect(loadedLi.height).toBe(8);
       expect(loadedLi.width).toBe(8);
       expect(loadedLi.source).toBe("auto");
@@ -256,47 +249,44 @@ describe("LabelImage SLP I/O", () => {
       return d;
     };
 
-    const li1 = new UserLabelImage({
+    const lf0 = new LabeledFrame({ video, frameIdx: 0 });
+    lf0.labelImages.push(new UserLabelImage({
       data: makeData(),
       height: 4,
       width: 4,
       objects: new Map<number, LabelImageObjectInfo>([
         [1, { track: trackA, category: "neuron", name: "", instance: null }],
       ]),
-      video,
-      frameIdx: 0,
       source: "model",
-    });
+    }));
 
-    const li2 = new UserLabelImage({
+    const lf5 = new LabeledFrame({ video, frameIdx: 5 });
+    lf5.labelImages.push(new UserLabelImage({
       data: makeData(),
       height: 4,
       width: 4,
       objects: new Map<number, LabelImageObjectInfo>([
         [1, { track: trackB, category: "glia", name: "", instance: null }],
       ]),
-      video,
-      frameIdx: 5,
       source: "model",
-    });
+    }));
 
-    const li3 = new UserLabelImage({
+    const lf10 = new LabeledFrame({ video, frameIdx: 10 });
+    lf10.labelImages.push(new UserLabelImage({
       data: makeData(),
       height: 4,
       width: 4,
       objects: new Map<number, LabelImageObjectInfo>([
         [1, { track: trackA, category: "neuron", name: "", instance: null }],
       ]),
-      video,
-      frameIdx: 10,
       source: "model",
-    });
+    }));
 
     const labels = new Labels({
+      labeledFrames: [lf0, lf5, lf10],
       videos: [video],
       skeletons: [skeleton],
       tracks: [trackA, trackB],
-      labelImages: [li1, li2, li3],
     });
 
     const loaded = await roundTrip(labels);
@@ -305,11 +295,9 @@ describe("LabelImage SLP I/O", () => {
     // Filter by frameIdx
     const atFrame0 = loaded.getLabelImages({ frameIdx: 0 });
     expect(atFrame0).toHaveLength(1);
-    expect(atFrame0[0].frameIdx).toBe(0);
 
     const atFrame5 = loaded.getLabelImages({ frameIdx: 5 });
     expect(atFrame5).toHaveLength(1);
-    expect(atFrame5[0].frameIdx).toBe(5);
 
     // Filter by track
     const loadedTrackA = loaded.tracks.find((t) => t.name === "trackA")!;
@@ -319,11 +307,9 @@ describe("LabelImage SLP I/O", () => {
 
     const withTrackA = loaded.getLabelImages({ track: loadedTrackA });
     expect(withTrackA).toHaveLength(2);
-    expect(withTrackA.map((li) => li.frameIdx).sort()).toEqual([0, 10]);
 
     const withTrackB = loaded.getLabelImages({ track: loadedTrackB });
     expect(withTrackB).toHaveLength(1);
-    expect(withTrackB[0].frameIdx).toBe(5);
 
     // Filter by category
     const neurons = loaded.getLabelImages({ category: "neuron" });
@@ -331,7 +317,6 @@ describe("LabelImage SLP I/O", () => {
 
     const glia = loaded.getLabelImages({ category: "glia" });
     expect(glia).toHaveLength(1);
-    expect(glia[0].frameIdx).toBe(5);
   });
 
   it("round-trips empty label image (all zeros, no objects)", async () => {
@@ -345,15 +330,15 @@ describe("LabelImage SLP I/O", () => {
       height: 6,
       width: 6,
       objects: new Map(),
-      video,
-      frameIdx: 3,
       source: "empty",
     });
 
+    const lf = new LabeledFrame({ video, frameIdx: 3, labelImages: [li] });
+
     const labels = new Labels({
+      labeledFrames: [lf],
       videos: [video],
       skeletons: [skeleton],
-      labelImages: [li],
     });
 
     const loaded = await roundTrip(labels);
@@ -363,8 +348,10 @@ describe("LabelImage SLP I/O", () => {
     expect(loadedLi.height).toBe(6);
     expect(loadedLi.width).toBe(6);
     expect(loadedLi.nObjects).toBe(0);
-    expect(loadedLi.frameIdx).toBe(3);
     expect(loadedLi.source).toBe("empty");
+
+    // Verify frame index
+    expect(loaded.labeledFrames[0].frameIdx).toBe(3);
 
     // All pixels should be zero
     for (let i = 0; i < loadedLi.data.length; i++) {
@@ -394,16 +381,14 @@ describe("LabelImage SLP I/O", () => {
       objects: new Map<number, LabelImageObjectInfo>([
         [1, { track, category: "cell", name: "inst_obj", instance }],
       ]),
-      video,
-      frameIdx: 0,
     });
+    frame.labelImages.push(li);
 
     const labels = new Labels({
       labeledFrames: [frame],
       videos: [video],
       skeletons: [skeleton],
       tracks: [track],
-      labelImages: [li],
     });
 
     const loaded = await roundTrip(labels);
@@ -433,16 +418,16 @@ describe("LabelImage SLP I/O", () => {
       objects: new Map<number, LabelImageObjectInfo>([
         [1, { track, category: "cell", name: "lazy_test", instance: null }],
       ]),
-      video,
-      frameIdx: 0,
       source: "test",
     });
 
+    const lf = new LabeledFrame({ video, frameIdx: 0, labelImages: [li] });
+
     const labels = new Labels({
+      labeledFrames: [lf],
       videos: [video],
       skeletons: [skeleton],
       tracks: [track],
-      labelImages: [li],
     });
 
     const bytes = await saveSlpToBytes(labels);

@@ -180,15 +180,18 @@ describe("saveSlpToBytes", () => {
     const track = new Track("t1");
 
     const centroids = [
-      new UserCentroid({ x: 10, y: 20, video, frameIdx: 0, track, category: "cell" }),
-      new PredictedCentroid({ x: 50, y: 60, z: 3.5, score: 0.95, video, frameIdx: 1, track, trackingScore: 0.8, name: "spot1", source: "trackmate" }),
+      new UserCentroid({ x: 10, y: 20, track, category: "cell" }),
+      new PredictedCentroid({ x: 50, y: 60, z: 3.5, score: 0.95, track, trackingScore: 0.8, name: "spot1", source: "trackmate" }),
     ];
 
+    const frames = centroids.map((cent, i) =>
+      new LabeledFrame({ video, frameIdx: i, centroids: [cent] })
+    );
     const labels = new Labels({
+      labeledFrames: frames,
       videos: [video],
       skeletons: [skeleton],
       tracks: [track],
-      centroids,
     });
 
     const bytes = await saveSlpToBytes(labels);
@@ -201,7 +204,6 @@ describe("saveSlpToBytes", () => {
     expect(c0.x).toBeCloseTo(10);
     expect(c0.y).toBeCloseTo(20);
     expect(c0.z).toBeNull();
-    expect(c0.frameIdx).toBe(0);
     expect(c0.category).toBe("cell");
     expect(c0.isPredicted).toBe(false);
 
@@ -211,7 +213,6 @@ describe("saveSlpToBytes", () => {
     expect(c1.y).toBeCloseTo(60);
     expect(c1.z).toBeCloseTo(3.5);
     expect(c1.score).toBeCloseTo(0.95);
-    expect(c1.frameIdx).toBe(1);
     expect(c1.trackingScore).toBeCloseTo(0.8);
     expect(c1.name).toBe("spot1");
     expect(c1.source).toBe("trackmate");
@@ -228,15 +229,16 @@ describe("saveSlpToBytes", () => {
     const track = new Track("t1");
 
     const bboxes = [
-      new UserBoundingBox({ x1: 0, y1: 0, x2: 100, y2: 100, video, frameIdx: 0, trackingScore: 0.75 }),
-      new PredictedBoundingBox({ x1: 10, y1: 10, x2: 50, y2: 50, score: 0.9, video, frameIdx: 0, track }),
+      new UserBoundingBox({ x1: 0, y1: 0, x2: 100, y2: 100, trackingScore: 0.75 }),
+      new PredictedBoundingBox({ x1: 10, y1: 10, x2: 50, y2: 50, score: 0.9, track }),
     ];
 
+    const lfBbox = new LabeledFrame({ video, frameIdx: 0, bboxes });
     const labels = new Labels({
+      labeledFrames: [lfBbox],
       videos: [video],
       skeletons: [skeleton],
       tracks: [track],
-      bboxes,
     });
 
     const bytes = await saveSlpToBytes(labels);

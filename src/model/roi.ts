@@ -38,7 +38,6 @@ export interface ROIOptions {
   category?: string;
   source?: string;
   video?: Video | null;
-  frameIdx?: number | null;
   track?: Track | null;
   trackingScore?: number | null;
   instance?: Instance | null;
@@ -50,7 +49,6 @@ export class ROI {
   category: string;
   source: string;
   video: Video | null;
-  frameIdx: number | null;
   track: Track | null;
   trackingScore: number | null = null;
   instance: Instance | null;
@@ -68,7 +66,6 @@ export class ROI {
     this.category = options.category ?? "";
     this.source = options.source ?? "";
     this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
     this.trackingScore = options.trackingScore ?? null;
     this.instance = options.instance ?? null;
@@ -169,7 +166,6 @@ export class ROI {
       category: this.category,
       source: this.source,
       video: this.video,
-      frameIdx: this.frameIdx,
       track: this.track,
       trackingScore: this.trackingScore,
       instance: this.instance,
@@ -212,14 +208,8 @@ export class ROI {
         name: this.name,
         category: this.category,
         source: this.source,
-        frame_idx: this.frameIdx,
-        roi_type: this.isStatic ? "static" : "temporal",
       },
     };
-  }
-
-  get isStatic(): boolean {
-    return this.frameIdx === null;
   }
 
   get isBbox(): boolean {
@@ -303,8 +293,6 @@ export class ROI {
       name: this.name,
       category: this.category,
       source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
       track: this.track,
       instance: this.instance,
     });

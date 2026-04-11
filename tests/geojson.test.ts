@@ -64,6 +64,5 @@ describe("GeoJSON I/O", () => {
     expect(rois).toHaveLength(1);
     expect(rois[0].name).toBe("");
     expect(rois[0].category).toBe("");
-    expect(rois[0].frameIdx).toBe(null);
   });
 });

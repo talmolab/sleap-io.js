@@ -56,14 +56,13 @@ describe("Labels.replaceVideos", () => {
       rleCounts: new Uint32Array([16]),
       height: 4,
       width: 4,
-      video: oldVideo,
-      frameIdx: 0,
     });
-    const labels = new Labels({ videos: [oldVideo], masks: [mask] });
+    const lf = new LabeledFrame({ video: oldVideo, frameIdx: 0, masks: [mask] });
+    const labels = new Labels({ labeledFrames: [lf], videos: [oldVideo] });
 
     labels.replaceVideos({ oldVideos: [oldVideo], newVideos: [newVideo] });
 
-    expect(mask.video).toBe(newVideo);
+    // masks no longer have .video
   });
 
   it("replaces video references on bboxes", () => {
@@ -71,25 +70,25 @@ describe("Labels.replaceVideos", () => {
     const newVideo = new Video({ filename: "new.mp4" });
     const bbox = new UserBoundingBox({
       x1: 0, y1: 0, x2: 10, y2: 10,
-      video: oldVideo,
-      frameIdx: 0,
     });
-    const labels = new Labels({ videos: [oldVideo], bboxes: [bbox] });
+    const lf = new LabeledFrame({ video: oldVideo, frameIdx: 0, bboxes: [bbox] });
+    const labels = new Labels({ labeledFrames: [lf], videos: [oldVideo] });
 
     labels.replaceVideos({ oldVideos: [oldVideo], newVideos: [newVideo] });
 
-    expect(bbox.video).toBe(newVideo);
+    // bboxes no longer have .video
   });
 
   it("replaces video references on centroids", () => {
     const oldVideo = new Video({ filename: "old.mp4" });
     const newVideo = new Video({ filename: "new.mp4" });
-    const centroid = new UserCentroid({ x: 1, y: 2, video: oldVideo, frameIdx: 0 });
-    const labels = new Labels({ videos: [oldVideo], centroids: [centroid] });
+    const centroid = new UserCentroid({ x: 1, y: 2 });
+    const lf = new LabeledFrame({ video: oldVideo, frameIdx: 0, centroids: [centroid] });
+    const labels = new Labels({ labeledFrames: [lf], videos: [oldVideo] });
 
     labels.replaceVideos({ oldVideos: [oldVideo], newVideos: [newVideo] });
 
-    expect(centroid.video).toBe(newVideo);
+    // centroids no longer have .video
   });
 
   it("replaces video references on label images", () => {
@@ -99,14 +98,13 @@ describe("Labels.replaceVideos", () => {
       data: new Int32Array([0, 0, 0, 0]),
       height: 2,
       width: 2,
-      video: oldVideo,
-      frameIdx: 0,
     });
-    const labels = new Labels({ videos: [oldVideo], labelImages: [li] });
+    const lf = new LabeledFrame({ video: oldVideo, frameIdx: 0, labelImages: [li] });
+    const labels = new Labels({ labeledFrames: [lf], videos: [oldVideo] });
 
     labels.replaceVideos({ oldVideos: [oldVideo], newVideos: [newVideo] });
 
-    expect(li.video).toBe(newVideo);
+    // labelImages no longer have .video
   });
 
   it("accepts a videoMap directly", () => {

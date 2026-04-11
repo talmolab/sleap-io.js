@@ -1,10 +1,10 @@
 import { Instance, PredictedInstance } from "./instance.js";
 import { Video } from "./video.js";
-import type { Centroid } from "./centroid.js";
-import type { BoundingBox } from "./bbox.js";
-import type { SegmentationMask } from "./mask.js";
-import type { LabelImage } from "./label-image.js";
-import type { ROI } from "./roi.js";
+import { Centroid } from "./centroid.js";
+import { BoundingBox } from "./bbox.js";
+import { SegmentationMask } from "./mask.js";
+import { LabelImage } from "./label-image.js";
+import { ROI } from "./roi.js";
 
 /** Strategy for merging annotation lists between frames. */
 export type MergeStrategy =
@@ -382,6 +382,42 @@ export class LabeledFrame {
           (this[attr] as unknown[]).push(_shallowCopy(item));
         }
       }
+    }
+  }
+
+  /**
+   * Append an annotation to this frame, routing to the correct list by type.
+   *
+   * @param annotation - Any annotation type: Instance, PredictedInstance,
+   *   Centroid, BoundingBox, SegmentationMask, LabelImage, or ROI.
+   * @throws TypeError if the annotation type is not recognized.
+   */
+  append(
+    annotation:
+      | Instance
+      | PredictedInstance
+      | Centroid
+      | BoundingBox
+      | SegmentationMask
+      | LabelImage
+      | ROI,
+  ): void {
+    if (annotation instanceof PredictedInstance || annotation instanceof Instance) {
+      this.instances.push(annotation);
+    } else if (annotation instanceof Centroid) {
+      this.centroids.push(annotation);
+    } else if (annotation instanceof BoundingBox) {
+      this.bboxes.push(annotation);
+    } else if (annotation instanceof SegmentationMask) {
+      this.masks.push(annotation);
+    } else if (annotation instanceof LabelImage) {
+      this.labelImages.push(annotation);
+    } else if (annotation instanceof ROI) {
+      this.rois.push(annotation);
+    } else {
+      throw new TypeError(
+        `Unknown annotation type: ${(annotation as object).constructor?.name ?? typeof annotation}`,
+      );
     }
   }
 

@@ -1,4 +1,3 @@
-import type { Video } from "./video.js";
 import type { Instance } from "./instance.js";
 import { Track } from "./instance.js";
 import { type BoundingBox, UserBoundingBox, PredictedBoundingBox } from "./bbox.js";
@@ -27,8 +26,6 @@ export interface LabelImageOptions {
   height: number;
   width: number;
   objects?: Map<number, LabelImageObjectInfo>;
-  video?: Video | null;
-  frameIdx?: number | null;
   source?: string;
   scale?: [number, number];
   offset?: [number, number];
@@ -49,8 +46,6 @@ export class LabelImage {
   width: number;
   /** Map from label ID (positive int) to object metadata. */
   objects: Map<number, LabelImageObjectInfo>;
-  video: Video | null;
-  frameIdx: number | null;
   source: string;
   /** Spatial scale factor: image_coord = li_coord / scale + offset. Default [1, 1]. */
   scale: [number, number];
@@ -74,8 +69,6 @@ export class LabelImage {
     this.height = options.height;
     this.width = options.width;
     this.objects = options.objects ?? new Map();
-    this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
     this.source = options.source ?? "";
     this.scale = scale;
     this.offset = options.offset ?? [0, 0];
@@ -117,11 +110,6 @@ export class LabelImage {
     return cats;
   }
 
-  /** Whether this label image has no temporal association (frameIdx is null). */
-  get isStatic(): boolean {
-    return this.frameIdx === null;
-  }
-
   /** Whether this is a predicted label image (has a score). */
   get isPredicted(): boolean {
     return false;
@@ -156,8 +144,6 @@ export class LabelImage {
       height: targetHeight,
       width: targetWidth,
       objects: new Map(this.objects),
-      video: this.video,
-      frameIdx: this.frameIdx,
       source: this.source,
       scale: [1, 1],
       offset: [0, 0],
@@ -269,8 +255,6 @@ export class LabelImage {
     options?: {
       tracks?: Track[] | Map<number, Track>;
       categories?: string[] | Map<number, string>;
-      video?: Video | null;
-      frameIdx?: number | null;
       source?: string;
     },
   ): UserLabelImage {
@@ -344,8 +328,6 @@ export class LabelImage {
       height,
       width,
       objects,
-      video: options?.video ?? null,
-      frameIdx: options?.frameIdx ?? null,
       source: options?.source ?? "",
     });
   }
@@ -354,8 +336,6 @@ export class LabelImage {
   static fromMasks(
     masks: SegmentationMask[],
     options?: {
-      video?: Video | null;
-      frameIdx?: number | null;
       source?: string;
     },
   ): UserLabelImage {
@@ -407,8 +387,6 @@ export class LabelImage {
       height,
       width,
       objects,
-      video: options?.video ?? null,
-      frameIdx: options?.frameIdx ?? null,
       source: options?.source ?? "",
       scale,
       offset,
@@ -425,8 +403,6 @@ export class LabelImage {
    * @param options.categories - Category strings. Array (1-indexed) or Map<labelId, string>.
    * @param options.createTracks - If true and tracks is not provided, auto-create one Track
    *   per unique non-zero label ID found across ALL frames.
-   * @param options.frameIdx - Custom frame indices. Defaults to [0, 1, ..., T-1].
-   * @param options.video - Video reference shared across all frames.
    * @param options.source - Source string shared across all frames.
    */
   static fromStack(options: {
@@ -434,11 +410,9 @@ export class LabelImage {
     tracks?: Map<number, Track> | Track[] | null;
     categories?: Map<number, string> | string[] | null;
     createTracks?: boolean;
-    frameIdx?: number[] | null;
-    video?: Video | null;
     source?: string;
   }): UserLabelImage[] {
-    const { data, video, source } = options;
+    const { data, source } = options;
     if (data.length === 0) return [];
 
     // Determine height/width from first frame
@@ -497,14 +471,11 @@ export class LabelImage {
     const result: UserLabelImage[] = [];
     for (let t = 0; t < data.length; t++) {
       const frameData = data[t];
-      const frameIdx = options.frameIdx ? options.frameIdx[t] : t;
 
       result.push(
         LabelImage.fromArray(frameData as number[][], height, width, {
           tracks: trackMap,
           categories: catMap,
-          video,
-          frameIdx,
           source,
         }),
       );
@@ -545,8 +516,6 @@ export class LabelImage {
       names?: string[] | null;
       scores?: number[] | null;
       createTracks?: boolean;
-      video?: Video | null;
-      frameIdx?: number | null;
       source?: string;
       scale?: [number, number];
       offset?: [number, number];
@@ -711,8 +680,6 @@ export class LabelImage {
       height,
       width,
       objects,
-      video: options?.video ?? null,
-      frameIdx: options?.frameIdx ?? null,
       source: options?.source ?? "",
       scale: options?.scale,
       offset: options?.offset,
@@ -749,8 +716,6 @@ export class LabelImage {
         category: info.category,
         name: info.name,
         instance: info.instance,
-        video: this.video,
-        frameIdx: this.frameIdx,
         source: this.source,
         scale: [...this.scale] as [number, number],
         offset: [...this.offset] as [number, number],
@@ -826,8 +791,6 @@ export class LabelImage {
         y1,
         x2,
         y2,
-        video: this.video,
-        frameIdx: this.frameIdx,
         track: info.track,
         instance: info.instance,
         category: info.category,

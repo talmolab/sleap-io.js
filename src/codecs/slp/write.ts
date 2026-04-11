@@ -88,11 +88,38 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   writeLabeledFrames(file, labels);
   writeNegativeFrames(file, labels);
   const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
-  writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
-  writeMasks(file, labels.masks, labels.videos, labels.tracks, allInstances);
-  writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
-  writeCentroids(file, labels.centroids, labels.videos, labels.tracks, allInstances);
-  writeLabelImages(file, labels.labelImages, labels.videos, labels.tracks, allInstances);
+
+  // Build flat annotation lists with routing contexts from parent LabeledFrames
+  const allRois: ROI[] = [];
+  const roiCtx: [number, number][] = [];
+  const allMasks: SegmentationMask[] = [];
+  const maskCtx: [number, number][] = [];
+  const allBboxes: BoundingBox[] = [];
+  const bboxCtx: [number, number][] = [];
+  const allCentroids: Centroid[] = [];
+  const centroidCtx: [number, number][] = [];
+  const allLabelImages: LabelImage[] = [];
+  const liCtx: [number, number][] = [];
+
+  for (const lf of labels.labeledFrames) {
+    const vidIdx = labels.videos.indexOf(lf.video);
+    for (const r of lf.rois) { allRois.push(r); roiCtx.push([vidIdx, lf.frameIdx]); }
+    for (const m of lf.masks) { allMasks.push(m); maskCtx.push([vidIdx, lf.frameIdx]); }
+    for (const b of lf.bboxes) { allBboxes.push(b); bboxCtx.push([vidIdx, lf.frameIdx]); }
+    for (const c of lf.centroids) { allCentroids.push(c); centroidCtx.push([vidIdx, lf.frameIdx]); }
+    for (const li of lf.labelImages) { allLabelImages.push(li); liCtx.push([vidIdx, lf.frameIdx]); }
+  }
+  // Static ROIs
+  for (const r of labels._staticRois) {
+    allRois.push(r);
+    roiCtx.push([r.video ? labels.videos.indexOf(r.video) : -1, -1]);
+  }
+
+  writeRois(file, allRois, labels.videos, labels.tracks, allInstances, roiCtx);
+  writeMasks(file, allMasks, labels.videos, labels.tracks, allInstances, maskCtx);
+  writeBboxes(file, allBboxes, labels.videos, labels.tracks, allInstances, bboxCtx);
+  writeCentroids(file, allCentroids, labels.videos, labels.tracks, allInstances, centroidCtx);
+  writeLabelImages(file, allLabelImages, labels.videos, labels.tracks, allInstances, liCtx);
 }
 
 /**
@@ -144,11 +171,7 @@ export async function saveSlpToBytes(
       suggestions: labels.suggestions,
       sessions: labels.sessions,
       provenance: labels.provenance,
-      rois: labels.rois,
-      masks: labels.masks,
-      bboxes: labels.bboxes,
-      centroids: labels.centroids,
-      labelImages: labels.labelImages,
+      rois: labels._staticRois,
       identities: labels.identities,
     });
   }
@@ -849,7 +872,7 @@ function createMatrixDataset(file: any, name: string, rows: number[][], fieldNam
   setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
 }
 
-function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name: string }>, instances?: Array<Instance | PredictedInstance>): void {
+function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name: string }>, instances?: Array<Instance | PredictedInstance>, contexts?: [number, number][]): void {
   if (!rois.length) return;
 
   const rows: number[][] = [];
@@ -860,15 +883,16 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
   const sources: string[] = [];
   const hasInstances = instances && instances.length > 0;
 
-  for (const roi of rois) {
+  for (let i = 0; i < rois.length; i++) {
+    const roi = rois[i];
     const wkb = encodeWkb(roi.geometry);
     const wkbStart = wkbOffset;
     const wkbEnd = wkbOffset + wkb.length;
     wkbChunks.push(wkb);
     wkbOffset = wkbEnd;
 
-    const videoIdx = roi.video ? videos.indexOf(roi.video) : -1;
-    const frameIdx = roi.frameIdx ?? -1;
+    const videoIdx = contexts ? contexts[i][0] : (roi.video ? videos.indexOf(roi.video) : -1);
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = roi.track ? tracks.indexOf(roi.track as any) : -1;
     const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : -1;
     const score = roi.isPredicted ? (roi as PredictedROI).score : Number.NaN;
@@ -906,6 +930,7 @@ function writeMasks(
   videos: Video[],
   tracks: Array<{ name: string }>,
   instances: (Instance | PredictedInstance)[],
+  contexts?: [number, number][],
 ): void {
   if (!masks.length) return;
 
@@ -934,8 +959,8 @@ function writeMasks(
     rleChunks.push(rleBytes);
     rleOffset = rleEnd;
 
-    const videoIdx = mask.video ? videos.indexOf(mask.video) : -1;
-    const frameIdx = mask.frameIdx ?? -1;
+    const videoIdx = contexts ? contexts[i][0] : -1;
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = mask.track ? tracks.indexOf(mask.track as any) : -1;
     const score = mask.isPredicted ? (mask as PredictedSegmentationMask).score : Number.NaN;
     const isPredicted = mask.isPredicted ? 1 : 0;
@@ -1004,9 +1029,10 @@ function writeMasks(
 function writeBboxes(
   file: any,
   bboxes: BoundingBox[],
-  videos: Video[],
+  _videos: Video[],
   tracks: Array<{ name: string }>,
   instances: (Instance | PredictedInstance)[],
+  contexts?: [number, number][],
 ): void {
   if (!bboxes.length) return;
 
@@ -1015,9 +1041,10 @@ function writeBboxes(
   const names: string[] = [];
   const sources: string[] = [];
 
-  for (const bbox of bboxes) {
-    const videoIdx = bbox.video ? videos.indexOf(bbox.video) : -1;
-    const frameIdx = bbox.frameIdx ?? -1;
+  for (let i = 0; i < bboxes.length; i++) {
+    const bbox = bboxes[i];
+    const videoIdx = contexts ? contexts[i][0] : -1;
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = bbox.track ? tracks.indexOf(bbox.track as any) : -1;
     const score = bbox.isPredicted ? (bbox as PredictedBoundingBox).score : Number.NaN;
     const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance as Instance) : -1;
@@ -1054,9 +1081,10 @@ function writeBboxes(
 function writeLabelImages(
   file: any,
   labelImages: LabelImage[],
-  videos: Video[],
+  _videos: Video[],
   tracks: Track[],
   instances: (Instance | PredictedInstance)[],
+  contexts?: [number, number][],
 ): void {
   if (!labelImages.length) return;
 
@@ -1082,8 +1110,8 @@ function writeLabelImages(
 
   for (let liIdx = 0; liIdx < labelImages.length; liIdx++) {
     const li = labelImages[liIdx];
-    const videoIdx = li.video ? videos.indexOf(li.video) : -1;
-    const frameIdx = li.frameIdx ?? -1;
+    const videoIdx = contexts ? contexts[liIdx][0] : -1;
+    const frameIdx = contexts ? contexts[liIdx][1] : -1;
 
     // Compress pixel data: Int32Array -> raw bytes -> zlib
     const pixelBytes = new Uint8Array(li.data.buffer, li.data.byteOffset, li.data.byteLength);
@@ -1182,9 +1210,10 @@ function writeLabelImages(
 function writeCentroids(
   file: any,
   centroids: Centroid[],
-  videos: Video[],
+  _videos: Video[],
   tracks: Array<{ name: string }>,
   instances: (Instance | PredictedInstance)[],
+  contexts?: [number, number][],
 ): void {
   if (!centroids.length) return;
 
@@ -1193,9 +1222,10 @@ function writeCentroids(
   const names: string[] = [];
   const sources: string[] = [];
 
-  for (const c of centroids) {
-    const videoIdx = c.video ? videos.indexOf(c.video) : -1;
-    const frameIdx = c.frameIdx ?? -1;
+  for (let i = 0; i < centroids.length; i++) {
+    const c = centroids[i];
+    const videoIdx = contexts ? contexts[i][0] : -1;
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = c.track ? tracks.indexOf(c.track as any) : -1;
     const score = c.isPredicted ? (c as PredictedCentroid).score : Number.NaN;
     const instanceIdx = c.instance ? instances.indexOf(c.instance as Instance) : -1;

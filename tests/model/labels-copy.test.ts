@@ -31,27 +31,24 @@ function makeLabels(): Labels {
   const roi = new UserROI({
     geometry: { type: "Point", coordinates: [1, 2] },
     video,
-    frameIdx: 0,
   });
-  const centroid = new UserCentroid({ x: 5, y: 6, video, frameIdx: 0 });
-  const bbox = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, video, frameIdx: 0 });
+  const centroid = new UserCentroid({ x: 5, y: 6 });
+  const bbox = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 });
   const li = new UserLabelImage({
     data: new Int32Array([0, 1, 0, 0]),
     height: 2,
     width: 2,
-    video,
-    frameIdx: 0,
   });
+  frame.centroids.push(centroid);
+  frame.bboxes.push(bbox);
+  frame.labelImages.push(li);
+  frame.rois.push(roi);
   return new Labels({
     labeledFrames: [frame],
     videos: [video],
     skeletons: [skeleton],
     tracks: [track],
     suggestions: [suggestion],
-    rois: [roi],
-    centroids: [centroid],
-    bboxes: [bbox],
-    labelImages: [li],
   });
 }
 
@@ -131,11 +128,11 @@ describe("Labels.copy (eager)", () => {
     // ROI's video should be the copy's video
     expect(copy.rois[0].video).toBe(copy.videos[0]);
     // Centroid's video should be the copy's video
-    expect(copy.centroids[0].video).toBe(copy.videos[0]);
+    // centroids no longer have .video
     // BBox's video should be the copy's video
-    expect(copy.bboxes[0].video).toBe(copy.videos[0]);
+    // bboxes no longer have .video
     // LabelImage's video should be the copy's video
-    expect(copy.labelImages[0].video).toBe(copy.videos[0]);
+    // labelImages no longer have .video
   });
 
   it("copy preserves skeleton structure", () => {
@@ -248,25 +245,21 @@ describe("Labels.copy + replaceVideos integration", () => {
     const skeleton = new Skeleton({ nodes: [nodeA] });
     const video = new Video({ filename: "original.mp4" });
     const track = new Track("t1");
-    const centroid = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
+    const centroid = new UserCentroid({ x: 1, y: 2 });
     const li = new UserLabelImage({
       data: new Int32Array([0, 1, 0, 0]),
       height: 2,
       width: 2,
-      video,
-      frameIdx: 0,
     });
     const instance = Instance.fromArray([[5, 10]], skeleton);
     instance.track = track;
-    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [instance] });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [instance], centroids: [centroid], labelImages: [li] });
 
     const labels = new Labels({
       labeledFrames: [frame],
       videos: [video],
       skeletons: [skeleton],
       tracks: [track],
-      centroids: [centroid],
-      labelImages: [li],
     });
 
     const copy = labels.copy();
@@ -276,13 +269,13 @@ describe("Labels.copy + replaceVideos integration", () => {
     // Original is untouched
     expect(labels.videos[0].filename).toBe("original.mp4");
     expect(labels.labeledFrames[0].video.filename).toBe("original.mp4");
-    expect(labels.centroids[0].video!.filename).toBe("original.mp4");
-    expect(labels.labelImages[0].video!.filename).toBe("original.mp4");
+    // centroids no longer have .video
+    // labelImages no longer have .video
 
     // Copy has the replacement
     expect(copy.videos[0].filename).toBe("replaced.mp4");
     expect(copy.labeledFrames[0].video.filename).toBe("replaced.mp4");
-    expect(copy.centroids[0].video!.filename).toBe("replaced.mp4");
-    expect(copy.labelImages[0].video!.filename).toBe("replaced.mp4");
+    // centroids no longer have .video
+    // labelImages no longer have .video
   });
 });

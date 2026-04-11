@@ -1,4 +1,3 @@
-import type { Video } from "./video.js";
 import type { Track } from "./instance.js";
 import { Instance, PredictedInstance, _registerCentroidFactory } from "./instance.js";
 import { Skeleton } from "./skeleton.js";
@@ -25,8 +24,6 @@ export interface CentroidOptions {
   x: number;
   y: number;
   z?: number | null;
-  video?: Video | null;
-  frameIdx?: number | null;
   track?: Track | null;
   trackingScore?: number | null;
   instance?: Instance | null;
@@ -38,8 +35,11 @@ export interface CentroidOptions {
 /**
  * A point representing the center of an object.
  *
- * Supports optional 3D coordinates, video/frame/track/instance metadata,
+ * Supports optional 3D coordinates, track/instance metadata,
  * and interconversion with single-node Instance objects.
+ *
+ * Spatial-temporal context (video, frame index) is derived from the parent
+ * LabeledFrame, matching how Instance/PredictedInstance work.
  *
  * This class is abstract. Use UserCentroid or PredictedCentroid.
  */
@@ -47,8 +47,6 @@ export class Centroid {
   x: number;
   y: number;
   z: number | null;
-  video: Video | null;
-  frameIdx: number | null;
   track: Track | null;
   trackingScore: number | null;
   instance: Instance | null;
@@ -67,8 +65,6 @@ export class Centroid {
     this.x = options.x;
     this.y = options.y;
     this.z = options.z ?? null;
-    this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
     this.trackingScore = options.trackingScore ?? null;
     this.instance = options.instance ?? null;
@@ -95,11 +91,6 @@ export class Centroid {
   /** Whether this is a predicted centroid (has a score). */
   get isPredicted(): boolean {
     return false;
-  }
-
-  /** Whether the centroid has no temporal association. */
-  get isStatic(): boolean {
-    return this.frameIdx === null;
   }
 
   /**

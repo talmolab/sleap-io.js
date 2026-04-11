@@ -75,12 +75,10 @@ describe("ROI", () => {
     expect(roi.category).toBe("cat1");
   });
 
-  it("isStatic", () => {
+  it("no longer has isStatic or frameIdx", () => {
     const roi1 = ROI.fromBbox(0, 0, 10, 10);
-    expect(roi1.isStatic).toBe(true);
-
-    const roi2 = ROI.fromBbox(0, 0, 10, 10, { frameIdx: 5 });
-    expect(roi2.isStatic).toBe(false);
+    expect((roi1 as any).isStatic).toBeUndefined();
+    expect((roi1 as any).frameIdx).toBeUndefined();
   });
 
   it("isBbox for axis-aligned rectangle", () => {
@@ -155,11 +153,10 @@ describe("ROI", () => {
     expect(data[0 * 20 + 0]).toBe(0);
   });
 
-  it("with video and frameIdx", () => {
+  it("with video", () => {
     const video = new Video({ filename: "test.mp4" });
-    const roi = ROI.fromBbox(0, 0, 10, 10, { video, frameIdx: 5 });
+    const roi = ROI.fromBbox(0, 0, 10, 10, { video });
     expect(roi.video).toBe(video);
-    expect(roi.frameIdx).toBe(5);
   });
 
   it("rasterize point geometry returns empty mask", () => {
@@ -353,21 +350,13 @@ describe("fromMultiPolygon and explode", () => {
 
 describe("toGeoJSON", () => {
   it("returns correct Feature structure", () => {
-    const roi = ROI.fromBbox(0, 0, 10, 10, { name: "test", category: "cat", source: "src", frameIdx: 5 });
+    const roi = ROI.fromBbox(0, 0, 10, 10, { name: "test", category: "cat", source: "src" });
     const feature = roi.toGeoJSON();
     expect(feature.type).toBe("Feature");
     expect(feature.geometry.type).toBe("Polygon");
     expect(feature.properties.name).toBe("test");
     expect(feature.properties.category).toBe("cat");
     expect(feature.properties.source).toBe("src");
-    expect(feature.properties.frame_idx).toBe(5);
-    expect(feature.properties.roi_type).toBe("temporal");
-  });
-
-  it("static ROI has roi_type static", () => {
-    const roi = ROI.fromBbox(0, 0, 10, 10);
-    const feature = roi.toGeoJSON();
-    expect(feature.properties.roi_type).toBe("static");
   });
 });
 

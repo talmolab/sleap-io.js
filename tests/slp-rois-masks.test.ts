@@ -30,7 +30,6 @@ describe("SLP ROI/Mask I/O", () => {
       category: "arena",
       source: "manual",
       video,
-      frameIdx: 5,
       track,
     });
 
@@ -45,12 +44,14 @@ describe("SLP ROI/Mask I/O", () => {
       },
     );
 
+    // Put temporal ROI on a frame, keep static ROI on Labels
+    const lfRoi = new LabeledFrame({ video, frameIdx: 5, rois: [bboxRoi] });
     const labels = new Labels({
-      labeledFrames: [frame],
+      labeledFrames: [frame, lfRoi],
       videos: [video],
       skeletons: [skeleton],
       tracks: [track],
-      rois: [bboxRoi, polyRoi],
+      rois: [polyRoi],
     });
 
     const loaded = await roundTrip(labels);
@@ -65,8 +66,6 @@ describe("SLP ROI/Mask I/O", () => {
     expect(loadedBbox).toBeDefined();
     expect(loadedBbox.category).toBe("arena");
     expect(loadedBbox.source).toBe("manual");
-    expect(loadedBbox.frameIdx).toBe(5);
-    expect(loadedBbox.video).not.toBeNull();
     expect(loadedBbox.track).not.toBeNull();
     expect(loadedBbox.track!.name).toBe("track0");
 
@@ -81,8 +80,6 @@ describe("SLP ROI/Mask I/O", () => {
     expect(loadedPoly).toBeDefined();
     expect(loadedPoly.category).toBe("region");
     expect(loadedPoly.source).toBe("auto");
-    expect(loadedPoly.frameIdx).toBeNull(); // static ROI
-    expect(loadedPoly.video).not.toBeNull();
     expect(loadedPoly.track).toBeNull();
   });
 
@@ -104,15 +101,13 @@ describe("SLP ROI/Mask I/O", () => {
       name: "mask1",
       category: "cell",
       source: "model",
-      video,
-      frameIdx: 3,
     });
 
+    const lfMask = new LabeledFrame({ video, frameIdx: 3, masks: [mask] });
     const labels = new Labels({
-      labeledFrames: [frame],
+      labeledFrames: [frame, lfMask],
       videos: [video],
       skeletons: [skeleton],
-      masks: [mask],
     });
 
     const loaded = await roundTrip(labels);
@@ -124,8 +119,6 @@ describe("SLP ROI/Mask I/O", () => {
     expect(loadedMask.name).toBe("mask1");
     expect(loadedMask.category).toBe("cell");
     expect(loadedMask.source).toBe("model");
-    expect(loadedMask.frameIdx).toBe(3);
-    expect(loadedMask.video).not.toBeNull();
 
     // Verify RLE round-trips correctly
     const originalData = mask.data;
@@ -216,7 +209,6 @@ describe("SLP ROI/Mask I/O", () => {
       name: "orphan",
       video: null,
       track: null,
-      frameIdx: null,
     });
 
     const labels = new Labels({
@@ -229,9 +221,7 @@ describe("SLP ROI/Mask I/O", () => {
     const loaded = await roundTrip(labels);
     expect(loaded.rois.length).toBe(1);
     const loadedRoi = loaded.rois[0];
-    expect(loadedRoi.video).toBeNull();
     expect(loadedRoi.track).toBeNull();
-    expect(loadedRoi.frameIdx).toBeNull();
     expect(loadedRoi.name).toBe("orphan");
   });
 
@@ -251,11 +241,11 @@ describe("SLP ROI/Mask I/O", () => {
       category: "obj",
     });
 
+    const lfMask = new LabeledFrame({ video, frameIdx: 3, masks: [mask] });
     const labels = new Labels({
-      labeledFrames: [frame],
+      labeledFrames: [frame, lfMask],
       videos: [video],
       skeletons: [skeleton],
-      masks: [mask],
     });
 
     const loaded = await roundTrip(labels);
@@ -275,20 +265,19 @@ describe("SLP BoundingBox I/O", () => {
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
     const bb1 = new UserBoundingBox({
-      x1: 0, y1: 20, x2: 100, y2: 100,
-      video, frameIdx: 3, track, category: "animal", name: "bb1", source: "manual",
+      x1: 0, y1: 20, x2: 100, y2: 100, track, category: "animal", name: "bb1", source: "manual",
     });
     const bb2 = new PredictedBoundingBox({
-      x1: 0, y1: 5, x2: 40, y2: 55,
-      score: 0.95, video, frameIdx: 1,
+      x1: 0, y1: 5, x2: 40, y2: 55, score: 0.95,
     });
 
+    const lfBb1 = new LabeledFrame({ video, frameIdx: 3, bboxes: [bb1] });
+    const lfBb2 = new LabeledFrame({ video, frameIdx: 1, bboxes: [bb2] });
     const labels = new Labels({
-      labeledFrames: [frame],
+      labeledFrames: [frame, lfBb1, lfBb2],
       videos: [video],
       skeletons: [skeleton],
       tracks: [track],
-      bboxes: [bb1, bb2],
     });
 
     const loaded = await roundTrip(labels);
@@ -308,8 +297,6 @@ describe("SLP BoundingBox I/O", () => {
     expect(loadedBb1.category).toBe("animal");
     expect(loadedBb1.name).toBe("bb1");
     expect(loadedBb1.source).toBe("manual");
-    expect(loadedBb1.frameIdx).toBe(3);
-    expect(loadedBb1.video).not.toBeNull();
     expect(loadedBb1.track).not.toBeNull();
     expect(loadedBb1.track!.name).toBe("track0");
 
@@ -324,7 +311,6 @@ describe("SLP BoundingBox I/O", () => {
     expect(loadedBb2.height).toBeCloseTo(50);
     expect(loadedBb2.isPredicted).toBe(true);
     expect((loadedBb2 as PredictedBoundingBox).score).toBeCloseTo(0.95);
-    expect(loadedBb2.frameIdx).toBe(1);
   });
 
   it("handles empty bboxes array", async () => {
@@ -337,7 +323,6 @@ describe("SLP BoundingBox I/O", () => {
       labeledFrames: [frame],
       videos: [video],
       skeletons: [skeleton],
-      bboxes: [],
     });
 
     const loaded = await roundTrip(labels);
@@ -355,14 +340,14 @@ describe("SLP ROI instance association (format 1.6)", () => {
 
     const roi = ROI.fromPolygon(
       [[0, 0], [100, 0], [100, 100], [0, 100]],
-      { name: "inst-roi", video, frameIdx: 0, instance: inst1 },
+      { name: "inst-roi", instance: inst1 },
     );
+    frame.rois.push(roi);
 
     const labels = new Labels({
       labeledFrames: [frame],
       videos: [video],
       skeletons: [skeleton],
-      rois: [roi],
     });
 
     const loaded = await roundTrip(labels);
@@ -381,11 +366,11 @@ describe("SLP ROI instance association (format 1.6)", () => {
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
     const roi = ROI.fromBbox(0, 0, 50, 50, { name: "no-inst" });
+    frame.rois.push(roi);
     const labels = new Labels({
       labeledFrames: [frame],
       videos: [video],
       skeletons: [skeleton],
-      rois: [roi],
     });
 
     const loaded = await roundTrip(labels);
@@ -432,8 +417,9 @@ describe("SLP Predicted Variant Roundtrips", () => {
       name: "pmask", category: "seg", instance: inst,
     });
 
+    frame.masks.push(mask);
     const labels = new Labels({
-      labeledFrames: [frame], videos: [video], skeletons: [skeleton], masks: [mask],
+      labeledFrames: [frame], videos: [video], skeletons: [skeleton],
     });
 
     const loaded = await roundTrip(labels);
@@ -455,11 +441,12 @@ describe("SLP Predicted Variant Roundtrips", () => {
     data[0] = 1;
     data[4] = 2;
     const li = new PredictedLabelImage({
-      data, height: 3, width: 3, video, frameIdx: 0, score: 0.85,
+      data, height: 3, width: 3, score: 0.85,
     });
 
+    frame.labelImages.push(li);
     const labels = new Labels({
-      labeledFrames: [frame], videos: [video], skeletons: [skeleton], labelImages: [li],
+      labeledFrames: [frame], videos: [video], skeletons: [skeleton],
     });
 
     const loaded = await roundTrip(labels);
@@ -482,8 +469,9 @@ describe("SLP Scale/Offset Roundtrips", () => {
       { video, frameIdx: 0, scale: [2, 3], offset: [10, 20] },
     );
 
+    frame.masks.push(mask);
     const labels = new Labels({
-      labeledFrames: [frame], videos: [video], skeletons: [skeleton], masks: [mask],
+      labeledFrames: [frame], videos: [video], skeletons: [skeleton],
     });
 
     const loaded = await roundTrip(labels);
@@ -503,12 +491,13 @@ describe("SLP Scale/Offset Roundtrips", () => {
     const data = new Int32Array(4);
     data[0] = 1;
     const li = new UserLabelImage({
-      data, height: 2, width: 2, video, frameIdx: 0,
+      data, height: 2, width: 2,
       scale: [0.5, 0.5], offset: [3, 7],
     });
 
+    frame.labelImages.push(li);
     const labels = new Labels({
-      labeledFrames: [frame], videos: [video], skeletons: [skeleton], labelImages: [li],
+      labeledFrames: [frame], videos: [video], skeletons: [skeleton],
     });
 
     const loaded = await roundTrip(labels);

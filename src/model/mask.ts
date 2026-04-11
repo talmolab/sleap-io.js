@@ -1,4 +1,3 @@
-import type { Video } from "./video.js";
 import type { Track, Instance } from "./instance.js";
 import { ROI, _registerMaskFactory } from "./roi.js";
 import type { Geometry } from "./roi.js";
@@ -85,8 +84,6 @@ export interface SegmentationMaskOptions {
   name?: string;
   category?: string;
   source?: string;
-  video?: Video | null;
-  frameIdx?: number | null;
   track?: Track | null;
   trackingScore?: number | null;
   instance?: Instance | null;
@@ -101,8 +98,6 @@ export class SegmentationMask {
   name: string;
   category: string;
   source: string;
-  video: Video | null;
-  frameIdx: number | null;
   track: Track | null;
   trackingScore: number | null = null;
   instance: Instance | null;
@@ -129,8 +124,6 @@ export class SegmentationMask {
     this.name = options.name ?? "";
     this.category = options.category ?? "";
     this.source = options.source ?? "";
-    this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
     this.trackingScore = options.trackingScore ?? null;
     this.instance = options.instance ?? null;
@@ -219,8 +212,6 @@ export class SegmentationMask {
       name: this.name,
       category: this.category,
       source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
       track: this.track,
       instance: this.instance,
       scale: [1, 1],
@@ -292,8 +283,6 @@ export class SegmentationMask {
       y1: y,
       x2: x + width,
       y2: y + height,
-      video: this.video,
-      frameIdx: this.frameIdx,
       track: this.track,
       instance: this.instance,
       category: this.category,
@@ -337,8 +326,6 @@ export class SegmentationMask {
         name: this.name,
         category: this.category,
         source: this.source,
-        video: this.video,
-        frameIdx: this.frameIdx,
         track: this.track,
         instance: this.instance,
       },
