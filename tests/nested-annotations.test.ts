@@ -460,7 +460,7 @@ describe("Lazy read with annotations", () => {
     expect(lazy._lazyFrameList!.at(-(lazy.length + 1))).toBeUndefined();
   });
 
-  it("lazy write round-trips correctly", async () => {
+  it("lazy write round-trips correctly without explicit materialize", async () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track("t1");
@@ -471,9 +471,10 @@ describe("Lazy read with annotations", () => {
       labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c] })],
     });
 
-    // Write -> lazy read -> materialize -> write -> eager read
+    // Write -> lazy read -> save lazy directly -> eager read.
+    // The lazy fast path in saveSlpToBytes handles this without materialize().
     const lazy = await roundTripLazy(labels);
-    lazy.materialize();
+    expect(lazy.isLazy).toBe(true);
     const bytes2 = await saveSlpToBytes(lazy);
     const loaded = await readSlp(new Uint8Array(bytes2).buffer, { openVideos: false });
 

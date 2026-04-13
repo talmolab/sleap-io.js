@@ -127,6 +127,35 @@ export async function readSlp(
     distributeTuples(centroidTuples, (lf, c) => lf.centroids.push(c));
     distributeTuples(labelImageTuples, (lf, li) => lf.labelImages.push(li));
 
+    // Resolve deferred instance references (_instanceIdx) to live instances.
+    // Mirrors Labels.materialize() for eager mode so bboxes/centroids/masks/
+    // labelImages get their .instance set on read (ROIs are already resolved
+    // in readRoisWithMigration since it receives `instances`).
+    const allInstancesFlat = labeledFrames.flatMap((lf) => lf.instances);
+    const resolveInstanceRef = (ann: { _instanceIdx: number | null; instance: Instance | null }): void => {
+      if (ann._instanceIdx !== null && ann._instanceIdx >= 0 && ann._instanceIdx < allInstancesFlat.length) {
+        ann.instance = allInstancesFlat[ann._instanceIdx];
+        ann._instanceIdx = null;
+      }
+    };
+    for (const lf of labeledFrames) {
+      for (const b of lf.bboxes) resolveInstanceRef(b);
+      for (const c of lf.centroids) resolveInstanceRef(c);
+      for (const m of lf.masks) resolveInstanceRef(m);
+      for (const r of lf.rois) resolveInstanceRef(r);
+      for (const li of lf.labelImages) {
+        if (li._objectInstanceIdxs) {
+          for (const [labelId, instIdx] of li._objectInstanceIdxs) {
+            const obj = li.objects.get(labelId);
+            if (obj && instIdx >= 0 && instIdx < allInstancesFlat.length) {
+              obj.instance = allInstancesFlat[instIdx];
+            }
+          }
+          li._objectInstanceIdxs = null;
+        }
+      }
+    }
+
     return new Labels({
       labeledFrames,
       videos,

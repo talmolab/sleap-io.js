@@ -58,6 +58,24 @@ describe("Labels ROI and Mask integration", () => {
     expect(labels.getRois({ video: v2 })).toEqual([roi2]);
   });
 
+  it("getRois({video}) returns frame-bound ROIs only, excluding static ROIs", () => {
+    // Frame-aware filters (video or frameIdx) walk only labeledFrames.
+    // Static ROIs are accessed via labels.staticRois directly.
+    const v = new Video({ filename: "v.mp4" });
+    const staticRoi = ROI.fromBbox(0, 0, 100, 100, { video: v });
+    const frameRoi = ROI.fromBbox(0, 0, 50, 50, { video: v });
+    const lf = new LabeledFrame({ video: v, frameIdx: 5, rois: [frameRoi] });
+    const labels = new Labels({ labeledFrames: [lf], rois: [staticRoi] });
+
+    // getRois({video}) returns only the frame-bound ROI, not the static one.
+    expect(labels.getRois({ video: v })).toEqual([frameRoi]);
+    // The static ROI is still accessible via staticRois.
+    expect(labels.staticRois).toEqual([staticRoi]);
+    // And via the union view.
+    expect(labels.rois).toContain(staticRoi);
+    expect(labels.rois).toContain(frameRoi);
+  });
+
   it("getRois filters by frameIdx", () => {
     const v = new Video({ filename: "test.mp4" });
     const roi1 = ROI.fromBbox(0, 0, 10, 10);

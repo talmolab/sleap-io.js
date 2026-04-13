@@ -487,6 +487,18 @@ export class Labels {
     return this.labeledFrames.flatMap((lf) => lf.rois);
   }
 
+  /**
+   * Filter ROIs across the Labels object.
+   *
+   * Filtering rule (matches sibling getters like `getMasks`/`getBboxes`):
+   *   - Frame-aware filters (`video` or `frameIdx`) walk only `labeledFrames`.
+   *     Static ROIs are excluded from these results.
+   *   - Otherwise (no filter, or only `category`/`track`/`instance`/`predicted`)
+   *     the search runs over `this.rois` — the union of static + frame-bound.
+   *
+   * To access static ROIs directly, use `staticRois`. To access only frame-bound
+   * ROIs across all frames, use `temporalRois`.
+   */
   getRois(filters?: {
     video?: Video;
     frameIdx?: number;
@@ -505,8 +517,6 @@ export class Labels {
       for (const lf of this.labeledFrames) {
         if (lf.video === filters.video) results.push(...lf.rois);
       }
-      // Also include static ROIs for the video
-      results.push(...this._staticRois.filter((r) => r.video === filters.video));
     } else if (filters.frameIdx !== undefined) {
       results = [];
       for (const lf of this.labeledFrames) {
