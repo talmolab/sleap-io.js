@@ -952,13 +952,13 @@
 <span class="nx">labels</span><span class="p">.</span><span class="nx">materialize</span><span class="p">();</span>
 </code></pre></div>
 <blockquote>
-<p><strong>Note:</strong> <code>labels.getFrame()</code> and <code>labels.getTrackAnnotations()</code> <strong>throw</strong> on lazy <code>Labels</code>. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale results. Use <code>labels.find({ video, frameIdx })</code> (which handles both modes and returns <code>LabeledFrame[]</code>) or call <code>labels.materialize()</code> before using <code>getFrame</code> / <code>getTrackAnnotations</code>.</p>
-<div class="highlight"><pre><span></span><code><span class="c1">// Works for both lazy and eager Labels</span>
-<span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">frame</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">find</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">42</span><span class="w"> </span><span class="p">});</span><span class="w">   </span><span class="c1">// LabeledFrame | undefined</span>
-
-<span class="c1">// Or materialize first, then use O(1) lookups</span>
+<p><strong>Note:</strong> <code>labels.getFrame()</code> and <code>labels.getTrackAnnotations()</code> <strong>throw</strong> on lazy <code>Labels</code>. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale results. Either call <code>labels.materialize()</code> first, or use <code>labels.find({ video, frameIdx })</code>, which also materializes internally on the first call and then uses the O(1) index. Both paths do the same amount of work — there is no cheap lazy-preserving variant.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Option 1: materialize first, then O(1) lookup</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">materialize</span><span class="p">();</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">42</span><span class="p">);</span>
+
+<span class="c1">// Option 2: find() — equivalent, materializes on first call</span>
+<span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">frame</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">find</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">42</span><span class="w"> </span><span class="p">});</span><span class="w">   </span><span class="c1">// LabeledFrame | undefined</span>
 </code></pre></div>
 </blockquote>
 <h2 id="saving-with-embedded-frames">Saving with Embedded Frames<a class="headerlink" href="#saving-with-embedded-frames" title="Permanent link">&para;</a></h2>

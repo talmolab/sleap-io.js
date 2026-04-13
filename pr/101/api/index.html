@@ -899,7 +899,7 @@
 </code></pre></div>
 <p><code>LazyDataStore.copy()</code> duplicates the underlying HDF5 column arrays so that two <code>Labels</code> wrapping the same source file can diverge safely.</p>
 <h3 id="frame-merging">Frame merging<a class="headerlink" href="#frame-merging" title="Permanent link">&para;</a></h3>
-<p>Merge annotations from one <code>LabeledFrame</code> into another with strategy-aware handling. <code>LabeledFrame._mergeAnnotations(other, strategy?, threshold?)</code> supports six strategies, applied across all annotation modalities (centroids, bboxes, masks, label images, ROIs):</p>
+<p>Merge annotations from one <code>LabeledFrame</code> into another with strategy-aware handling. <code>LabeledFrame.mergeAnnotations(other, strategy?, threshold?)</code> supports six strategies, applied across all annotation modalities (centroids, bboxes, masks, label images, ROIs):</p>
 <table>
 <thead>
 <tr>
@@ -918,7 +918,7 @@
 </tr>
 <tr>
 <td><code>"keep_both"</code> <em>(default)</em></td>
-<td>Deduplicate by object identity, union both sets</td>
+<td>Deduplicate by object identity, union both sets (items from <code>other</code> are shallow-copied before insertion)</td>
 </tr>
 <tr>
 <td><code>"replace_predictions"</code></td>
@@ -936,13 +936,13 @@
 </table>
 <p>The <code>auto</code> and <code>update_tracks</code> strategies compare centroid distances against <code>threshold</code> (default <code>5.0</code> px). Empty masks and ROIs whose centroid is <code>null</code> are skipped by the matcher.</p>
 <div class="highlight"><pre><span></span><code><span class="c1">// Default behavior (keep_both): dedupe by identity, union everything</span>
-<span class="nx">lfA</span><span class="p">.</span><span class="nx">_mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">);</span>
+<span class="nx">lfA</span><span class="p">.</span><span class="nx">mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">);</span>
 
 <span class="c1">// Spatial auto merge with a 3 px threshold</span>
-<span class="nx">lfA</span><span class="p">.</span><span class="nx">_mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span><span class="p">,</span><span class="w"> </span><span class="mf">3.0</span><span class="p">);</span>
+<span class="nx">lfA</span><span class="p">.</span><span class="nx">mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span><span class="p">,</span><span class="w"> </span><span class="mf">3.0</span><span class="p">);</span>
 
 <span class="c1">// Keep only predicted updates from other, leave user annotations alone</span>
-<span class="nx">lfA</span><span class="p">.</span><span class="nx">_mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;replace_predictions&quot;</span><span class="p">);</span>
+<span class="nx">lfA</span><span class="p">.</span><span class="nx">mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;replace_predictions&quot;</span><span class="p">);</span>
 </code></pre></div>
 <h2 id="lazy-loading">Lazy Loading<a class="headerlink" href="#lazy-loading" title="Permanent link">&para;</a></h2>
 <p>Load SLP files with on-demand frame materialization for better performance on large datasets.</p>
@@ -963,14 +963,19 @@
 <li><strong><code>LazyFrameList</code></strong>: Array-like container with <code>at(idx)</code>, <code>length</code>, <code>toArray()</code>, <code>[Symbol.iterator]()</code>, and <code>materializedCount</code>.</li>
 </ul>
 <blockquote>
-<p><strong>Note:</strong> <code>labels.getFrame()</code> and <code>labels.getTrackAnnotations()</code> <strong>throw</strong> on lazy <code>Labels</code>. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale or partial results. Call <code>labels.materialize()</code> first, or use <code>labels.find({ video, frameIdx })</code> which handles both lazy and eager modes transparently (it returns <code>LabeledFrame[]</code> — take the first element).</p>
+<p><strong>Note:</strong> <code>labels.getFrame()</code> and <code>labels.getTrackAnnotations()</code> <strong>throw</strong> on lazy <code>Labels</code>. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale or partial results. You have two options, both of which trigger full materialization under the hood:</p>
+<ol>
+<li>Call <code>labels.materialize()</code> explicitly, then use the O(1) lookups.</li>
+<li>Call <code>labels.find({ video, frameIdx })</code>, which materializes internally on first call and then uses the same O(1) index. It returns <code>LabeledFrame[]</code> — take the first element.</li>
+</ol>
+<p>Both paths do the same amount of work on the first call; there's no cheap "lazy-preserving" variant of frame lookup by <code>(video, frameIdx)</code>.</p>
 </blockquote>
-<div class="highlight"><pre><span></span><code><span class="c1">// Safe patterns for lazy Labels</span>
-<span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">frame</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">find</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">42</span><span class="w"> </span><span class="p">});</span><span class="w">   </span><span class="c1">// LabeledFrame | undefined</span>
-
-<span class="c1">// Or materialize first for O(1) lookups</span>
+<div class="highlight"><pre><span></span><code><span class="c1">// Option 1: materialize first, then O(1) lookup</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">materialize</span><span class="p">();</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">42</span><span class="p">);</span><span class="w">  </span><span class="c1">// now safe</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">42</span><span class="p">);</span>
+
+<span class="c1">// Option 2: find() — equivalent, materializes on first call</span>
+<span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">frame</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">find</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">42</span><span class="w"> </span><span class="p">});</span><span class="w">   </span><span class="c1">// LabeledFrame | undefined</span>
 </code></pre></div>
 <h2 id="roi-segmentation-masks">ROI &amp; Segmentation Masks<a class="headerlink" href="#roi-segmentation-masks" title="Permanent link">&para;</a></h2>
 <p>Spatial annotations stored alongside pose data (SLP format 1.5+).</p>
@@ -1053,31 +1058,32 @@
 <h3 id="boundingbox"><code>BoundingBox</code><a class="headerlink" href="#boundingbox" title="Permanent link">&para;</a></h3>
 <p>Axis-aligned or rotated bounding box for detection/tracking workflows. <code>BoundingBox</code> is abstract; use <code>UserBoundingBox</code> or <code>PredictedBoundingBox</code> for direct construction.</p>
 <p>Bounding boxes use corner coordinates (<code>x1</code>, <code>y1</code>, <code>x2</code>, <code>y2</code>) as their primary storage. Center-based properties (<code>xCenter</code>, <code>yCenter</code>, <code>width</code>, <code>height</code>) are available as computed getters.</p>
-<div class="highlight"><pre><span></span><code><span class="c1">// Create user-annotated bbox from corners</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserBoundingBox</span><span class="p">({</span>
+<p>Construct a user-annotated bbox and attach it to a frame:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserBoundingBox</span><span class="p">({</span>
 <span class="w">  </span><span class="nx">x1</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="o">:</span><span class="w"> </span><span class="kt">20</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;animal&quot;</span><span class="p">,</span>
 <span class="p">});</span>
 
-<span class="c1">// Attach to a frame (the parent LabeledFrame provides video + frameIdx context)</span>
+<span class="c1">// The parent LabeledFrame provides video + frameIdx context</span>
 <span class="kd">let</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="mf">3</span><span class="p">);</span>
 <span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">lf</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">3</span><span class="w"> </span><span class="p">});</span>
 <span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">lf</span><span class="p">);</span>
 <span class="p">}</span>
 <span class="nx">lf</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">bbox</span><span class="p">);</span>
-
-<span class="c1">// Create predicted bbox with confidence score</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">pred</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedBoundingBox</span><span class="p">({</span>
+</code></pre></div>
+<p>Construct a predicted bbox with confidence score:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">predBbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedBoundingBox</span><span class="p">({</span>
 <span class="w">  </span><span class="nx">x1</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="o">:</span><span class="w"> </span><span class="kt">20</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.95</span><span class="p">,</span>
 <span class="p">});</span>
-
-<span class="c1">// Factory methods (return UserBoundingBox)</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">bbox2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXyxy</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">110</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">);</span><span class="w">  </span><span class="c1">// corner coords</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">bbox3</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXywh</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">);</span><span class="w">   </span><span class="c1">// top-left + size</span>
-
-<span class="c1">// Stored properties</span>
+</code></pre></div>
+<p>Factory methods (return <code>UserBoundingBox</code>):</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">fromCorners</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXyxy</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">110</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">);</span><span class="w">  </span><span class="c1">// corner coords</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">fromTopLeft</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXywh</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">);</span><span class="w">   </span><span class="c1">// top-left + size</span>
+</code></pre></div>
+<p>Properties and conversions:</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Stored properties</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">x1</span><span class="p">;</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">y1</span><span class="p">;</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">x2</span><span class="p">;</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">y2</span><span class="p">;</span><span class="w">  </span><span class="c1">// corner coordinates</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">angle</span><span class="p">;</span><span class="w">      </span><span class="c1">// rotation in radians (default 0)</span>
 

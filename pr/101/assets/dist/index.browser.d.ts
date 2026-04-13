@@ -676,7 +676,7 @@ declare class LabeledFrame {
      * @param threshold - Maximum centroid distance (pixels) for spatial matching
      *   in "auto" and "update_tracks" strategies.
      */
-    _mergeAnnotations(other: LabeledFrame, strategy?: MergeStrategy, threshold?: number): void;
+    mergeAnnotations(other: LabeledFrame, strategy?: MergeStrategy, threshold?: number): void;
     /**
      * Append an annotation to this frame, routing to the correct list by type.
      *

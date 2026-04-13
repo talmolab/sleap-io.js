@@ -242,13 +242,13 @@ labels.replaceVideos({ videoMap: new Map([[oldVid, newVid]]) });
 
 ### Frame merging
 
-Merge annotations from one `LabeledFrame` into another with strategy-aware handling. `LabeledFrame._mergeAnnotations(other, strategy?, threshold?)` supports six strategies, applied across all annotation modalities (centroids, bboxes, masks, label images, ROIs):
+Merge annotations from one `LabeledFrame` into another with strategy-aware handling. `LabeledFrame.mergeAnnotations(other, strategy?, threshold?)` supports six strategies, applied across all annotation modalities (centroids, bboxes, masks, label images, ROIs):
 
 | Strategy | Behavior |
 |---|---|
 | `"keep_original"` | Keep self only, discard everything from `other` |
 | `"keep_new"` | Replace self's annotations with (copies of) `other`'s |
-| `"keep_both"` *(default)* | Deduplicate by object identity, union both sets |
+| `"keep_both"` *(default)* | Deduplicate by object identity, union both sets (items from `other` are shallow-copied before insertion) |
 | `"replace_predictions"` | Keep user annotations from self; drop self's predicted and take all predicted from `other` |
 | `"auto"` | Spatially match by centroid distance; user beats predicted; add unmatched |
 | `"update_tracks"` | Spatially match and cascade track assignments only |
@@ -257,13 +257,13 @@ The `auto` and `update_tracks` strategies compare centroid distances against `th
 
 ```ts
 // Default behavior (keep_both): dedupe by identity, union everything
-lfA._mergeAnnotations(lfB);
+lfA.mergeAnnotations(lfB);
 
 // Spatial auto merge with a 3 px threshold
-lfA._mergeAnnotations(lfB, "auto", 3.0);
+lfA.mergeAnnotations(lfB, "auto", 3.0);
 
 // Keep only predicted updates from other, leave user annotations alone
-lfA._mergeAnnotations(lfB, "replace_predictions");
+lfA.mergeAnnotations(lfB, "replace_predictions");
 ```
 
 ## Lazy Loading
@@ -288,15 +288,20 @@ Key classes:
 - **`LazyDataStore`**: Holds raw HDF5 column data; supports `materializeFrame(idx)`, `materializeAll()`, `copy()`, and `toNumpy()` fast path.
 - **`LazyFrameList`**: Array-like container with `at(idx)`, `length`, `toArray()`, `[Symbol.iterator]()`, and `materializedCount`.
 
-> **Note:** `labels.getFrame()` and `labels.getTrackAnnotations()` **throw** on lazy `Labels`. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale or partial results. Call `labels.materialize()` first, or use `labels.find({ video, frameIdx })` which handles both lazy and eager modes transparently (it returns `LabeledFrame[]` — take the first element).
+> **Note:** `labels.getFrame()` and `labels.getTrackAnnotations()` **throw** on lazy `Labels`. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale or partial results. You have two options, both of which trigger full materialization under the hood:
+>
+> 1. Call `labels.materialize()` explicitly, then use the O(1) lookups.
+> 2. Call `labels.find({ video, frameIdx })`, which materializes internally on first call and then uses the same O(1) index. It returns `LabeledFrame[]` — take the first element.
+>
+> Both paths do the same amount of work on the first call; there's no cheap "lazy-preserving" variant of frame lookup by `(video, frameIdx)`.
 
 ```ts
-// Safe patterns for lazy Labels
-const [frame] = labels.find({ video, frameIdx: 42 });   // LabeledFrame | undefined
-
-// Or materialize first for O(1) lookups
+// Option 1: materialize first, then O(1) lookup
 labels.materialize();
-const lf = labels.getFrame(video, 42);  // now safe
+const lf = labels.getFrame(video, 42);
+
+// Option 2: find() — equivalent, materializes on first call
+const [frame] = labels.find({ video, frameIdx: 42 });   // LabeledFrame | undefined
 ```
 
 ## ROI & Segmentation Masks
@@ -389,31 +394,42 @@ Axis-aligned or rotated bounding box for detection/tracking workflows. `Bounding
 
 Bounding boxes use corner coordinates (`x1`, `y1`, `x2`, `y2`) as their primary storage. Center-based properties (`xCenter`, `yCenter`, `width`, `height`) are available as computed getters.
 
+Construct a user-annotated bbox and attach it to a frame:
+
 ```ts
-// Create user-annotated bbox from corners
 const bbox = new UserBoundingBox({
   x1: 0, y1: 20, x2: 100, y2: 100,
   category: "animal",
 });
 
-// Attach to a frame (the parent LabeledFrame provides video + frameIdx context)
+// The parent LabeledFrame provides video + frameIdx context
 let lf = labels.getFrame(labels.videos[0], 3);
 if (!lf) {
   lf = new LabeledFrame({ video: labels.videos[0], frameIdx: 3 });
   labels.append(lf);
 }
 lf.append(bbox);
+```
 
-// Create predicted bbox with confidence score
-const pred = new PredictedBoundingBox({
+Construct a predicted bbox with confidence score:
+
+```ts
+const predBbox = new PredictedBoundingBox({
   x1: 0, y1: 20, x2: 100, y2: 100,
   score: 0.95,
 });
+```
 
-// Factory methods (return UserBoundingBox)
-const bbox2 = BoundingBox.fromXyxy(10, 20, 110, 100);  // corner coords
-const bbox3 = BoundingBox.fromXywh(10, 20, 100, 80);   // top-left + size
+Factory methods (return `UserBoundingBox`):
 
+```ts
+const fromCorners = BoundingBox.fromXyxy(10, 20, 110, 100);  // corner coords
+const fromTopLeft = BoundingBox.fromXywh(10, 20, 100, 80);   // top-left + size
+```
+
+Properties and conversions:
+
+```ts
 // Stored properties
 bbox.x1; bbox.y1; bbox.x2; bbox.y2;  // corner coordinates
 bbox.angle;      // rotation in radians (default 0)

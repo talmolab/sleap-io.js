@@ -258,15 +258,15 @@ const array = labels.numpy();
 labels.materialize();
 ```
 
-> **Note:** `labels.getFrame()` and `labels.getTrackAnnotations()` **throw** on lazy `Labels`. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale results. Use `labels.find({ video, frameIdx })` (which handles both modes and returns `LabeledFrame[]`) or call `labels.materialize()` before using `getFrame` / `getTrackAnnotations`.
+> **Note:** `labels.getFrame()` and `labels.getTrackAnnotations()` **throw** on lazy `Labels`. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale results. Either call `labels.materialize()` first, or use `labels.find({ video, frameIdx })`, which also materializes internally on the first call and then uses the O(1) index. Both paths do the same amount of work — there is no cheap lazy-preserving variant.
 >
 > ```ts
-> // Works for both lazy and eager Labels
-> const [frame] = labels.find({ video, frameIdx: 42 });   // LabeledFrame | undefined
->
-> // Or materialize first, then use O(1) lookups
+> // Option 1: materialize first, then O(1) lookup
 > labels.materialize();
 > const lf = labels.getFrame(video, 42);
+>
+> // Option 2: find() — equivalent, materializes on first call
+> const [frame] = labels.find({ video, frameIdx: 42 });   // LabeledFrame | undefined
 > ```
 
 ## Saving with Embedded Frames

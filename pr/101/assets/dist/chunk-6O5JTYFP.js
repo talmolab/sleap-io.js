@@ -2121,7 +2121,7 @@ var LabeledFrame = class {
    * @param threshold - Maximum centroid distance (pixels) for spatial matching
    *   in "auto" and "update_tracks" strategies.
    */
-  _mergeAnnotations(other, strategy = "keep_both", threshold = 5) {
+  mergeAnnotations(other, strategy = "keep_both", threshold = 5) {
     if (strategy === "keep_original") {
       return;
     }
