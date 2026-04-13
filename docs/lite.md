@@ -176,6 +176,8 @@ interface VideoMetadata {
 | Skeleton parsing | ✅ | ✅ |
 | Metadata | ✅ | ✅ |
 
+> **Dependencies:** The full entry point pulls in `pako` (^2.1.0) for label image zlib compression, but lite mode does not import it — the `/lite` bundle stays free of `pako` and `h5wasm`.
+
 ## Example: File Upload Validation
 
 ```ts
