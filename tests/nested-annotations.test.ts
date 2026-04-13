@@ -64,7 +64,7 @@ describe("LabeledFrame annotation fields", () => {
     expect(lf.bboxes[0]).toBe(bUser);
   });
 
-  it("_mergeAnnotations merges, deduplicates, and copies new items", () => {
+  it("mergeAnnotations merges, deduplicates, and copies new items", () => {
     const video = new Video({ filename: "test.mp4" });
     const shared = new UserCentroid({ x: 1, y: 2});
     const unique = new UserCentroid({ x: 3, y: 4});
@@ -72,7 +72,7 @@ describe("LabeledFrame annotation fields", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [shared] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [shared, unique] });
 
-    lf1._mergeAnnotations(lf2);
+    lf1.mergeAnnotations(lf2);
 
     // shared should not be duplicated (same identity already in lf1)
     expect(lf1.centroids).toHaveLength(2);
@@ -484,7 +484,7 @@ describe("Lazy read with annotations", () => {
   });
 });
 
-describe("_mergeAnnotations strategies", () => {
+describe("mergeAnnotations strategies", () => {
   it("keep_original keeps self's annotations and discards other's", () => {
     const video = new Video({ filename: "test.mp4" });
     const selfC = new UserCentroid({ x: 1, y: 2});
@@ -493,7 +493,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
 
-    lf1._mergeAnnotations(lf2, "keep_original");
+    lf1.mergeAnnotations(lf2, "keep_original");
 
     expect(lf1.centroids).toHaveLength(1);
     expect(lf1.centroids[0]).toBe(selfC);
@@ -507,7 +507,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
 
-    lf1._mergeAnnotations(lf2, "keep_new");
+    lf1.mergeAnnotations(lf2, "keep_new");
 
     expect(lf1.centroids).toHaveLength(1);
     expect(lf1.centroids[0]).not.toBe(otherC); // copied, not same object
@@ -525,7 +525,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser, selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherPred, otherUser] });
 
-    lf1._mergeAnnotations(lf2, "replace_predictions");
+    lf1.mergeAnnotations(lf2, "replace_predictions");
 
     // selfUser kept, selfPred removed, otherPred added (copied), otherUser ignored
     expect(lf1.centroids).toHaveLength(2);
@@ -544,7 +544,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser, selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherPred] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     expect(lf1.centroids).toHaveLength(2);
     expect(lf1.centroids[0]).toBe(selfUser);
@@ -561,7 +561,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     // Both should be present: self's user kept + other's user added (unmatched)
     expect(lf1.centroids).toHaveLength(2);
@@ -578,7 +578,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     // Prediction replaced by user
     expect(lf1.centroids).toHaveLength(1);
@@ -595,7 +595,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     // Self's prediction kept (unmatched) + other's user added (unmatched)
     expect(lf1.centroids).toHaveLength(2);
@@ -615,7 +615,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, bboxes: [selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, bboxes: [otherUser] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     // Centroid distance ~1.4px, well within threshold — prediction replaced by user
     expect(lf1.bboxes).toHaveLength(1);
@@ -647,7 +647,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, masks: [selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, masks: [otherUser] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     // Bbox centroids are close — prediction replaced by user
     expect(lf1.masks).toHaveLength(1);
@@ -665,7 +665,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUserA, otherUserB] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     // One replaces prediction via match, other added as unmatched — neither dropped
     expect(lf1.centroids).toHaveLength(2);
@@ -694,7 +694,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, masks: [emptyMask] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, masks: [normalMask] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     // Both kept: empty mask has no centroid so it's unmatched
     expect(lf1.masks).toHaveLength(2);
@@ -711,7 +711,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
 
-    lf1._mergeAnnotations(lf2, "update_tracks");
+    lf1.mergeAnnotations(lf2, "update_tracks");
 
     // Self's centroid track updated to other's track
     expect(lf1.centroids).toHaveLength(1);
@@ -730,7 +730,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
 
-    lf1._mergeAnnotations(lf2, "update_tracks");
+    lf1.mergeAnnotations(lf2, "update_tracks");
 
     expect(lf1.centroids[0].track).toBe(trackA); // unchanged
   });
@@ -760,7 +760,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liSelf] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liOther] });
 
-    lf1._mergeAnnotations(lf2, "update_tracks");
+    lf1.mergeAnnotations(lf2, "update_tracks");
 
     // Label image track should be unchanged
     expect(lf1.labelImages[0].objects.get(1)!.track).toBe(trackA);
@@ -791,7 +791,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liSelf] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liOther] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     // User from self kept, prediction from other ignored (user beats predicted)
     expect(lf1.labelImages).toHaveLength(1);
@@ -822,7 +822,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, rois: [selfPred] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, rois: [otherUser] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     // Centroids are ~1.4px apart — prediction replaced by user
     expect(lf1.rois).toHaveLength(1);
@@ -849,7 +849,7 @@ describe("_mergeAnnotations strategies", () => {
     const lf1 = new LabeledFrame({ video, frameIdx: 0, rois: [emptyRoi] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, rois: [normalRoi] });
 
-    lf1._mergeAnnotations(lf2, "auto");
+    lf1.mergeAnnotations(lf2, "auto");
 
     // Both kept: empty ROI has no centroid so it's unmatched
     expect(lf1.rois).toHaveLength(2);

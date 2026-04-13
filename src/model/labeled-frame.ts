@@ -321,7 +321,7 @@ export class LabeledFrame {
    * @param threshold - Maximum centroid distance (pixels) for spatial matching
    *   in "auto" and "update_tracks" strategies.
    */
-  _mergeAnnotations(
+  mergeAnnotations(
     other: LabeledFrame,
     strategy: MergeStrategy = "keep_both",
     threshold: number = 5.0,

@@ -14,7 +14,7 @@ JavaScript/TypeScript utilities for reading and writing SLEAP `.slp` files with 
 - SLP read/write with format compatibility (format 1.0–2.2, including embedded frames via HDF5 video datasets).
 - Browser-compatible SLP writing via `saveSlpToBytes()`.
 - Streaming-friendly file access (URL, `File`, `FileSystemFileHandle`, `Blob`).
-- Core data model (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`, `Identity`, `Instance3D`, etc.).
+- Core data model (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`, `Centroid`, `Identity`, `Instance3D`, etc.).
 - ROI, segmentation mask, bounding box, and label image annotations with GeoJSON I/O.
 - 3D pose data structures with cross-library interop (Python sleap-io, luc3d).
 - Video backends accept `string`, `File`, or `Blob` sources.
@@ -25,14 +25,13 @@ JavaScript/TypeScript utilities for reading and writing SLEAP `.slp` files with 
 ## Quickstart
 
 ```bash
-npm install
-npm run build
+npm install @talmolab/sleap-io.js
 ```
 
 ### Load and save SLP
 
 ```ts
-import { loadSlp, saveSlp, saveSlpToBytes } from "sleap-io.js";
+import { loadSlp, saveSlp, saveSlpToBytes } from "@talmolab/sleap-io.js";
 
 const labels = await loadSlp("/path/to/session.slp", { openVideos: false });
 
@@ -46,7 +45,7 @@ const bytes: Uint8Array = await saveSlpToBytes(labels);
 ### Load video
 
 ```ts
-import { loadVideo, Mp4BoxVideoBackend } from "sleap-io.js";
+import { loadVideo, Mp4BoxVideoBackend } from "@talmolab/sleap-io.js";
 
 // From file path (Node.js) or URL (browser)
 const video = await loadVideo("/path/to/video.mp4", { openBackend: false });

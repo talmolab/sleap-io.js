@@ -45,6 +45,41 @@ describe("Labels ROI and Mask integration", () => {
     expect(labels.temporalRois[0]).toBe(temporalRoi);
   });
 
+  it("addStaticRoi appends to _staticRois and registers the track", () => {
+    const video = new Video({ filename: "arena.mp4" });
+    const track = new Track("animal");
+    const arena = ROI.fromBbox(0, 0, 100, 100, { video, track });
+    const labels = new Labels({ videos: [video] });
+
+    labels.addStaticRoi(arena);
+
+    expect(labels.staticRois).toHaveLength(1);
+    expect(labels.staticRois[0]).toBe(arena);
+    expect(labels.tracks).toContain(track);
+
+    // Second call with the same track should not duplicate it.
+    const arena2 = ROI.fromBbox(0, 0, 50, 50, { video, track });
+    labels.addStaticRoi(arena2);
+    expect(labels.staticRois).toHaveLength(2);
+    expect(labels.tracks.filter((t) => t === track)).toHaveLength(1);
+  });
+
+  it("addStaticRoi does not duplicate a track already registered via the constructor", () => {
+    const video = new Video({ filename: "arena.mp4" });
+    const track = new Track("animal");
+    // Track is registered via a frame annotation before addStaticRoi runs.
+    const bbox = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, track });
+    const lf = new LabeledFrame({ video, frameIdx: 0, bboxes: [bbox] });
+    const labels = new Labels({ labeledFrames: [lf], videos: [video] });
+    expect(labels.tracks).toEqual([track]);
+
+    const arena = ROI.fromBbox(0, 0, 100, 100, { video, track });
+    labels.addStaticRoi(arena);
+
+    expect(labels.staticRois).toHaveLength(1);
+    expect(labels.tracks.filter((t) => t === track)).toHaveLength(1);
+  });
+
   it("getRois filters by video", () => {
     const v1 = new Video({ filename: "a.mp4" });
     const v2 = new Video({ filename: "b.mp4" });

@@ -198,6 +198,83 @@ const labels = new Labels({ labeledFrames: [frame], skeletons: [skeleton], video
 labels.addVideo(video); // no-op if already present
 ```
 
+### Frame and track index lookups
+
+`Labels` builds lazy `Map` indices for O(1) frame and track lookups, replacing linear scans through `labeledFrames`. The frame-aware `find()` / `getCentroids()` / `getBboxes()` / `getMasks()` / `getLabelImages()` / `getRois()` methods use these indices internally when both `video` and `frameIdx` are passed.
+
+```ts
+// O(1) frame lookup
+const lf = labels.getFrame(video, 42);  // LabeledFrame | null
+
+// O(1) track annotation lookup, sorted by frameIdx
+const annotations = labels.getTrackAnnotations(video, track);
+
+// Force index rebuild after external mutations
+labels.reindex();
+```
+
+Indices are built lazily on first access and auto-invalidated when frames are added or videos replaced. See the [Lazy Loading](#lazy-loading) section below for the caveat that applies when the `Labels` is lazy.
+
+### Deep copy and video remapping
+
+`Labels.copy()` produces a fully independent copy of a `Labels` object with consistent internal references — frame videos point to the copy's video objects, instance skeletons point to the copy's skeletons, etc. Both eager and lazy `Labels` are supported.
+
+`Labels.replaceVideos()` rewrites video references across every collection in one call: `labeledFrames`, `suggestions`, `sessions`, `staticRois`, `temporalRois`, `masks`, `labelImages`, and `centroids`.
+
+```ts
+// Deep copy (eager or lazy — matches the original)
+const copy = labels.copy();
+
+// Suppress backend auto-opening on the new copy (faster, safer for bulk ops)
+const detached = labels.copy({ openVideos: false });
+
+// Replace video references — specify both old and new
+labels.replaceVideos({ oldVideos: [oldVid], newVideos: [newVid] });
+
+// Or infer old from current
+labels.replaceVideos({ newVideos: [newVid] });
+
+// Or pass a Map
+labels.replaceVideos({ videoMap: new Map([[oldVid, newVid]]) });
+```
+
+`LazyDataStore.copy()` duplicates the underlying HDF5 column arrays so that two `Labels` wrapping the same source file can diverge safely.
+
+### Frame merging
+
+Merge annotations from one `LabeledFrame` into another with strategy-aware handling. `LabeledFrame.mergeAnnotations(other, strategy?, threshold?)` supports six strategies, applied across all annotation modalities (centroids, bboxes, masks, label images, ROIs). To populate a single `LabeledFrame` in the first place, see [Adding annotations to frames](#adding-annotations-to-frames) below.
+
+| Strategy | Behavior |
+|---|---|
+| `"keep_original"` | Keep self only, discard everything from `other` |
+| `"keep_new"` | Replace self's annotations with (copies of) `other`'s |
+| `"keep_both"` *(default)* | Deduplicate by object identity, union both sets (items from `other` are shallow-copied before insertion) |
+| `"replace_predictions"` | Keep user annotations from self; drop self's predicted and take all predicted from `other` |
+| `"auto"` | Spatially match by centroid distance; user beats predicted; add unmatched |
+| `"update_tracks"` | Spatially match and cascade track assignments only |
+
+The `auto` and `update_tracks` strategies compare centroid distances against `threshold` (default `5.0` px). Empty masks and ROIs whose centroid is `null` are skipped by the matcher.
+
+The strategy argument is typed as `MergeStrategy`, re-exported from the package root for type-safe call sites:
+
+```ts
+import type { MergeStrategy } from "@talmolab/sleap-io.js";
+
+const strategy: MergeStrategy = "auto";
+lfA.mergeAnnotations(lfB, strategy, 3.0);
+```
+
+```ts
+// Default behavior (keep_both): dedupe by identity, union everything
+lfA.mergeAnnotations(lfB);
+
+// Spatial auto merge with a 3 px threshold
+lfA.mergeAnnotations(lfB, "auto", 3.0);
+
+// Keep only predicted updates from other, leave user annotations alone
+lfA.mergeAnnotations(lfB, "replace_predictions");
+```
+
 ## Lazy Loading
 
 Load SLP files with on-demand frame materialization for better performance on large datasets.
@@ -217,8 +294,24 @@ console.log(labels.isLazy);  // false
 
 Key classes:
 
-- **`LazyDataStore`**: Holds raw HDF5 column data; supports `materializeFrame(idx)`, `materializeAll()`, and `toNumpy()` fast path.
+- **`LazyDataStore`**: Holds raw HDF5 column data; supports `materializeFrame(idx)`, `materializeAll()`, `copy()`, and `toNumpy()` fast path.
 - **`LazyFrameList`**: Array-like container with `at(idx)`, `length`, `toArray()`, `[Symbol.iterator]()`, and `materializedCount`.
+
+> **Note:** `labels.getFrame()` and `labels.getTrackAnnotations()` **throw** on lazy `Labels`. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale or partial results. You have two options, both of which trigger full materialization under the hood:
+>
+> 1. Call `labels.materialize()` explicitly, then use the O(1) lookups.
+> 2. Call `labels.find({ video, frameIdx })`, which materializes internally on first call and then uses the same O(1) index. It returns `LabeledFrame[]` — take the first element.
+>
+> Both paths do the same amount of work on the first call; there's no cheap "lazy-preserving" variant of frame lookup by `(video, frameIdx)`.
+
+```ts
+// Option 1: materialize first, then O(1) lookup
+labels.materialize();
+const lf = labels.getFrame(video, 42);
+
+// Option 2: find() — equivalent, materializes on first call
+const [frame] = labels.find({ video, frameIdx: 42 });   // LabeledFrame | undefined
+```
 
 ## ROI & Segmentation Masks
 
@@ -310,23 +403,42 @@ Axis-aligned or rotated bounding box for detection/tracking workflows. `Bounding
 
 Bounding boxes use corner coordinates (`x1`, `y1`, `x2`, `y2`) as their primary storage. Center-based properties (`xCenter`, `yCenter`, `width`, `height`) are available as computed getters.
 
+Construct a user-annotated bbox and attach it to a frame:
+
 ```ts
-// Create user-annotated bbox from corners
 const bbox = new UserBoundingBox({
   x1: 0, y1: 20, x2: 100, y2: 100,
-  video: labels.videos[0], frameIdx: 3, category: "animal",
+  category: "animal",
 });
 
-// Create predicted bbox with confidence score
-const bbox = new PredictedBoundingBox({
+// The parent LabeledFrame provides video + frameIdx context
+let lf = labels.getFrame(labels.videos[0], 3);
+if (!lf) {
+  lf = new LabeledFrame({ video: labels.videos[0], frameIdx: 3 });
+  labels.append(lf);
+}
+lf.append(bbox);
+```
+
+Construct a predicted bbox with confidence score:
+
+```ts
+const predBbox = new PredictedBoundingBox({
   x1: 0, y1: 20, x2: 100, y2: 100,
   score: 0.95,
 });
+```
 
-// Factory methods (return UserBoundingBox)
-const bbox = BoundingBox.fromXyxy(10, 20, 110, 100);  // corner coords
-const bbox = BoundingBox.fromXywh(10, 20, 100, 80);   // top-left + size
+Factory methods (return `UserBoundingBox`):
 
+```ts
+const fromCorners = BoundingBox.fromXyxy(10, 20, 110, 100);  // corner coords
+const fromTopLeft = BoundingBox.fromXywh(10, 20, 100, 80);   // top-left + size
+```
+
+Properties and conversions:
+
+```ts
 // Stored properties
 bbox.x1; bbox.y1; bbox.x2; bbox.y2;  // corner coordinates
 bbox.angle;      // rotation in radians (default 0)
@@ -343,7 +455,6 @@ bbox.bounds;     // { minX, minY, maxX, maxY }
 bbox.area;       // width * height
 bbox.centroidXy; // [x, y]
 bbox.isPredicted; // true for PredictedBoundingBox
-bbox.isStatic;   // true if no frameIdx
 bbox.isRotated;  // true if angle != 0
 
 // Conversion
@@ -355,24 +466,35 @@ const mask = bbox.toMask(480, 640);    // SegmentationMask
 Point representing the center of an object. `Centroid` is abstract; use `UserCentroid` or `PredictedCentroid`.
 
 ```ts
-// Create user centroid
-const c = new UserCentroid({ x: 100, y: 200, video, frameIdx: 0, track });
+// Create user centroid (attach to a frame to provide video + frameIdx context)
+const c = new UserCentroid({ x: 100, y: 200, track });
+let lf = labels.getFrame(video, 0);
+if (!lf) {
+  lf = new LabeledFrame({ video, frameIdx: 0 });
+  labels.append(lf);
+}
+lf.append(c);
 
 // Create predicted centroid with confidence
 const pc = new PredictedCentroid({
   x: 50, y: 60, z: 3.5,
   score: 0.95,
   trackingScore: 0.8,
-  video, frameIdx: 1, track,
+  track,
   name: "spot1", source: "trackmate",
 });
+let lf1 = labels.getFrame(video, 1);
+if (!lf1) {
+  lf1 = new LabeledFrame({ video, frameIdx: 1 });
+  labels.append(lf1);
+}
+lf1.append(pc);
 
 // Properties
 c.xy;           // [x, y]
 c.yx;           // [y, x] (row, col)
 c.xyz;          // [x, y, z | null]
 c.isPredicted;  // false for User, true for Predicted
-c.isStatic;     // true if no frameIdx
 
 // Convert to single-node Instance
 const inst = pc.toInstance();  // PredictedInstance with centroid skeleton
@@ -399,6 +521,8 @@ CENTROID_SKELETON === getCentroidSkeleton();  // true (singleton)
 
 ### `Labels` Annotation Access
 
+Annotations (`Centroid`, `BoundingBox`, `SegmentationMask`, `LabelImage`, frame-bound `ROI`) live on individual `LabeledFrame` instances, not on `Labels`. The `Labels` getters return flattened read-only views across all frames; mutation always goes through the owning frame.
+
 ```ts
 // Read-only property getters (flat views across all frames)
 labels.rois;           // ROI[]
@@ -407,32 +531,64 @@ labels.bboxes;         // BoundingBox[]
 labels.centroids;      // Centroid[]
 labels.labelImages;    // LabelImage[]
 labels.identities;     // Identity[]
-labels.staticRois;     // ROIs without frame index
-labels.temporalRois;   // ROIs with frame index
-labels.staticBboxes;   // BBoxes without frame index
-labels.temporalBboxes; // BBoxes with frame index
+labels.staticRois;     // Static (video-level) ROIs, e.g. arena boundaries
+labels.temporalRois;   // Frame-bound ROIs (flat view across frames)
 
-// Mutation (adds to the appropriate LabeledFrame)
-labels.addRoi(roi);
-labels.addMask(mask);
-labels.addBbox(bbox);
-labels.addCentroid(centroid);
-labels.addLabelImage(labelImage);
-
-// Filtered queries (all support `predicted` filter)
+// Filtered queries (all support `predicted` filter; frame-aware filters use O(1) indices)
 labels.getRois({ video, frameIdx: 0, category: "arena", predicted: false });
 labels.getMasks({ video, category: "segmentation", predicted: true });
 labels.getBboxes({ video, frameIdx: 0, predicted: true });
 labels.getCentroids({ video, frameIdx: 0, track, predicted: true });
 labels.getLabelImages({ video, frameIdx: 0, track, category: "cell" });
 
+// Note: getRois({ video }) returns only frame-bound ROIs for that video.
+// For static ROIs, use labels.staticRois directly.
+
 // Add a video (deduplicates automatically)
 labels.addVideo(video);
 ```
 
-Annotations are stored per-frame on `LabeledFrame`. The `Labels` property getters return
-flattened views across all frames. When constructing `Labels` with flat annotation lists,
-they are automatically distributed to matching frames.
+#### Adding annotations to frames
+
+Use `LabeledFrame.append(annotation)` to add any annotation type. It routes by runtime type to the appropriate per-frame list (`lf.centroids`, `.bboxes`, `.masks`, `.labelImages`, `.rois`) and handles `Instance` and `PredictedInstance` as well. If you know the target list at the call site, you can also push directly.
+
+> **Note:** `Labels` and `LabeledFrame` each have an `append()` method. `labels.append(lf)` adds a `LabeledFrame` to a `Labels` (and also registers its video and tracks). `lf.append(annotation)` adds an annotation to a single `LabeledFrame`. They're different operations at different levels of the hierarchy.
+
+```ts
+import {
+  Labels,
+  LabeledFrame,
+  UserCentroid,
+  UserBoundingBox,
+  UserSegmentationMask,
+} from "@talmolab/sleap-io.js";
+
+// Build a frame with mixed annotations
+const lf = new LabeledFrame({ video, frameIdx: 5 });
+lf.append(new UserCentroid({ x: 100, y: 200, track }));
+lf.append(new UserBoundingBox({ x1: 50, y1: 50, x2: 150, y2: 150 }));
+lf.append(UserSegmentationMask.fromArray(maskData, 480, 640));
+
+// Or push directly if you know the type
+lf.centroids.push(new UserCentroid({ x: 10, y: 20 }));
+
+// Pass frames as labeledFrames when constructing Labels
+const labels = new Labels({ labeledFrames: [lf], videos: [video], skeletons: [skeleton] });
+
+// To mutate an existing Labels, look up the target frame first
+let existing = labels.getFrame(video, 5);
+if (!existing) {
+  existing = new LabeledFrame({ video, frameIdx: 5 });
+  labels.append(existing);
+}
+existing.append(anotherBbox);
+```
+
+Static ROIs (video-level, e.g. arena boundaries) live on `labels.staticRois`. Use `labels.addStaticRoi(roi)` to add one — the method also registers the ROI's track on `labels.tracks` if present:
+
+```ts
+labels.addStaticRoi(arenaRoi);
+```
 
 The SLP format version is set automatically based on content:
 
@@ -460,14 +616,14 @@ Dense integer label images for instance segmentation workflows (Cellpose, StarDi
 const li = LabelImage.fromArray(
   new Int32Array([0, 0, 1, 1, 0, 2, 2, 0, 0]),
   3, 3,  // height, width
-  { tracks: [trackA, trackB], video, frameIdx: 0 },
+  { tracks: [trackA, trackB] },
 );
 
 // From segmentation masks (composites multiple binary masks)
-const li = LabelImage.fromMasks(masks, { video, frameIdx: 0 });
+const li2 = LabelImage.fromMasks(masks);
 
 // From per-object binary masks (SAM / Mask R-CNN output)
-const li = LabelImage.fromBinaryMasks(
+const li3 = LabelImage.fromBinaryMasks(
   [mask1_2d, mask2_2d, mask3_2d],
   {
     tracks: [trackA, trackB, trackC],
@@ -481,10 +637,20 @@ const labelImages = LabelImage.fromStack({
   data: [frame0_2d, frame1_2d, frame2_2d],
   tracks: new Map([[1, trackA], [2, trackB]]),
   createTracks: true,  // auto-create Track objects from label IDs
-  video,
-  frameIdx: [0, 1, 2],
+});
+
+// Attach each label image to its frame
+labelImages.forEach((li, i) => {
+  let lf = labels.getFrame(video, i);
+  if (!lf) {
+    lf = new LabeledFrame({ video, frameIdx: i });
+    labels.append(lf);
+  }
+  lf.append(li);
 });
 ```
+
+Frame and video context for label images comes from the parent `LabeledFrame`. Factory methods return plain `UserLabelImage` objects; use `lf.append(li)` to attach them to a frame.
 
 ### Properties and Methods
 
