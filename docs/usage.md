@@ -258,6 +258,17 @@ const array = labels.numpy();
 labels.materialize();
 ```
 
+> **Note:** `labels.getFrame()` and `labels.getTrackAnnotations()` **throw** on lazy `Labels`. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale results. Use `labels.find(video, frameIdx)` (which handles both modes) or call `labels.materialize()` before using `getFrame` / `getTrackAnnotations`.
+>
+> ```ts
+> // Works for both lazy and eager Labels
+> const frame = labels.find(video, 42);
+>
+> // Or materialize first, then use O(1) lookups
+> labels.materialize();
+> const lf = labels.getFrame(video, 42);
+> ```
+
 ## Saving with Embedded Frames
 
 Embed video frames directly into the SLP file:
@@ -305,9 +316,28 @@ await saveSlpSet(set);
 
 SLP format 1.5+ supports spatial annotations alongside pose data.
 
+### Working with annotations
+
+Annotations (`Centroid`, `BoundingBox`, `SegmentationMask`, `LabelImage`, and frame-bound `ROI`) live on individual `LabeledFrame` instances — not on `Labels`. The parent frame provides `video` and `frameIdx` context; annotation constructors no longer take those fields.
+
+The primary mutation API is `LabeledFrame.append(annotation)`, which routes by runtime type to the correct per-frame list (`lf.centroids`, `lf.bboxes`, `lf.masks`, `lf.labelImages`, `lf.rois`). It also handles `Instance` and `PredictedInstance`.
+
+```ts
+// The mental model: create annotation → attach to frame → frame lives in Labels
+const c = new UserCentroid({ x: 100, y: 200 });
+let lf = labels.getFrame(video, 5);
+if (!lf) {
+  lf = new LabeledFrame({ video, frameIdx: 5 });
+  labels.labeledFrames.push(lf);
+}
+lf.append(c);
+```
+
+Static ROIs (e.g., arena boundaries that apply to an entire video rather than a specific frame) are the one exception — they live on `labels.staticRois` and can be mutated directly.
+
 ```ts
 import {
-  loadSlp, ROI, SegmentationMask,
+  loadSlp, LabeledFrame, ROI, SegmentationMask,
   UserBoundingBox, PredictedBoundingBox, BoundingBox,
   writeGeoJSON, readGeoJSON,
 } from "@talmolab/sleap-io.js";
@@ -322,19 +352,30 @@ const frameRois = labels.getRois({ video: labels.videos[0], frameIdx: 0 });
 const predMasks = labels.getMasks({ predicted: true });
 const frameBboxes = labels.getBboxes({ video: labels.videos[0], frameIdx: 0 });
 
-// Create ROIs
-const roi = ROI.fromPolygon([[0,0], [100,0], [100,100], [0,100]], {
+// Create a static arena ROI (video-level, not tied to a frame)
+const arena = ROI.fromPolygon([[0,0], [100,0], [100,100], [0,100]], {
   category: "arena",
   video: labels.videos[0],
 });
-labels.addRoi(roi);
+labels.staticRois.push(arena);
 
-// Create bounding boxes (corner coordinates)
+// Or create a frame-bound ROI and attach it to a LabeledFrame
+const frameRoi = ROI.fromPolygon([[10,10], [50,10], [50,50], [10,50]], {
+  category: "crop",
+});
+let lf = labels.getFrame(labels.videos[0], 0);
+if (!lf) {
+  lf = new LabeledFrame({ video: labels.videos[0], frameIdx: 0 });
+  labels.labeledFrames.push(lf);
+}
+lf.append(frameRoi);
+
+// Create a bounding box and attach it to the same frame
 const bbox = new UserBoundingBox({
   x1: 125, y1: 200, x2: 175, y2: 280,
-  category: "animal", video: labels.videos[0], frameIdx: 0,
+  category: "animal",
 });
-labels.addBbox(bbox);
+lf.append(bbox);
 
 // Query centroids
 const frameCentroids = labels.getCentroids({ video: labels.videos[0], frameIdx: 0 });
@@ -354,7 +395,7 @@ For dense instance segmentation workflows (Cellpose, StarDist, SAM, Mask R-CNN),
 ### From Segmentation Model Output
 
 ```ts
-import { LabelImage, Track } from "@talmolab/sleap-io.js";
+import { LabeledFrame, LabelImage, Track } from "@talmolab/sleap-io.js";
 
 // Create from per-object binary masks (e.g., SAM output)
 const trackA = new Track({ name: "cell_1" });
@@ -366,9 +407,16 @@ const li = LabelImage.fromBinaryMasks(
     height: 480, width: 640,  // required for Uint8Array input
     tracks: [trackA, trackB],
     categories: ["cell", "cell"],
-    video, frameIdx: 0,
   },
 );
+
+// Attach to a frame — video/frameIdx come from the parent LabeledFrame
+let lf = labels.getFrame(video, 0);
+if (!lf) {
+  lf = new LabeledFrame({ video, frameIdx: 0 });
+  labels.labeledFrames.push(lf);
+}
+lf.append(li);
 
 // Extract individual masks
 const cellMask = li.getTrackMask(trackA);  // Uint8Array
@@ -378,23 +426,26 @@ const allCells = li.getCategoryMask("cell");
 ### Batch Processing Video Frames
 
 ```ts
-import { LabelImage, normalizeLabelIds } from "@talmolab/sleap-io.js";
+import { LabeledFrame, LabelImage, normalizeLabelIds } from "@talmolab/sleap-io.js";
 
 // Create label images for each frame from a stack of 2D arrays
 const labelImages = LabelImage.fromStack({
   data: [frame0, frame1, frame2],  // number[][][] (per-frame 2D label arrays)
   createTracks: true,  // auto-create Track objects from label IDs
-  video,
-  frameIdx: [0, 1, 2],
 });
 
 // Normalize IDs so the same track gets the same label ID across all frames
 const trackMap = normalizeLabelIds(labelImages);
 
-// Add to labels
-for (const li of labelImages) {
-  labels.addLabelImage(li);
-}
+// Attach each label image to its corresponding frame
+labelImages.forEach((li, frameIdx) => {
+  let lf = labels.getFrame(video, frameIdx);
+  if (!lf) {
+    lf = new LabeledFrame({ video, frameIdx });
+    labels.labeledFrames.push(lf);
+  }
+  lf.append(li);
+});
 ```
 
 ### Spatial Transforms
