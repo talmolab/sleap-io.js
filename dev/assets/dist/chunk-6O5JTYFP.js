@@ -2121,7 +2121,7 @@ var LabeledFrame = class {
    * @param threshold - Maximum centroid distance (pixels) for spatial matching
    *   in "auto" and "update_tracks" strategies.
    */
-  _mergeAnnotations(other, strategy = "keep_both", threshold = 5) {
+  mergeAnnotations(other, strategy = "keep_both", threshold = 5) {
     if (strategy === "keep_original") {
       return;
     }
@@ -3276,6 +3276,18 @@ To use, first materialize:
     this._invalidateIndices();
     this.addVideo(frame.video);
     this._collectAnnotationTracks(frame);
+  }
+  /**
+   * Add a static ROI (not tied to any specific frame, e.g., an arena boundary).
+   *
+   * Registers the ROI's track (if any) on `this.tracks`. Use
+   * `lf.append(roi)` on a `LabeledFrame` to add a frame-bound ROI instead.
+   */
+  addStaticRoi(roi) {
+    this._staticRois.push(roi);
+    if (roi.track && !this.tracks.includes(roi.track)) {
+      this.tracks.push(roi.track);
+    }
   }
   toDict(options) {
     if (this._lazyFrameList) this.materialize();

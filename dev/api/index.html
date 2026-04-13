@@ -867,6 +867,89 @@
 <span class="c1">// Add a video with deduplication</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">addVideo</span><span class="p">(</span><span class="nx">video</span><span class="p">);</span><span class="w"> </span><span class="c1">// no-op if already present</span>
 </code></pre></div>
+<h3 id="frame-and-track-index-lookups">Frame and track index lookups<a class="headerlink" href="#frame-and-track-index-lookups" title="Permanent link">&para;</a></h3>
+<p><code>Labels</code> builds lazy <code>Map</code> indices for O(1) frame and track lookups, replacing linear scans through <code>labeledFrames</code>. The frame-aware <code>find()</code> / <code>getCentroids()</code> / <code>getBboxes()</code> / <code>getMasks()</code> / <code>getLabelImages()</code> / <code>getRois()</code> methods use these indices internally when both <code>video</code> and <code>frameIdx</code> are passed.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// O(1) frame lookup</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">42</span><span class="p">);</span><span class="w">  </span><span class="c1">// LabeledFrame | null</span>
+
+<span class="c1">// O(1) track annotation lookup, sorted by frameIdx</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">annotations</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getTrackAnnotations</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="p">);</span>
+
+<span class="c1">// Force index rebuild after external mutations</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">reindex</span><span class="p">();</span>
+</code></pre></div>
+<p>Indices are built lazily on first access and auto-invalidated when frames are added or videos replaced. See the <a href="#lazy-loading">Lazy Loading</a> section below for the caveat that applies when the <code>Labels</code> is lazy.</p>
+<h3 id="deep-copy-and-video-remapping">Deep copy and video remapping<a class="headerlink" href="#deep-copy-and-video-remapping" title="Permanent link">&para;</a></h3>
+<p><code>Labels.copy()</code> produces a fully independent copy of a <code>Labels</code> object with consistent internal references — frame videos point to the copy's video objects, instance skeletons point to the copy's skeletons, etc. Both eager and lazy <code>Labels</code> are supported.</p>
+<p><code>Labels.replaceVideos()</code> rewrites video references across every collection in one call: <code>labeledFrames</code>, <code>suggestions</code>, <code>sessions</code>, <code>staticRois</code>, <code>temporalRois</code>, <code>masks</code>, <code>labelImages</code>, and <code>centroids</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Deep copy (eager or lazy — matches the original)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">copy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">copy</span><span class="p">();</span>
+
+<span class="c1">// Suppress backend auto-opening on the new copy (faster, safer for bulk ops)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">detached</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">copy</span><span class="p">({</span><span class="w"> </span><span class="nx">openVideos</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Replace video references — specify both old and new</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">replaceVideos</span><span class="p">({</span><span class="w"> </span><span class="nx">oldVideos</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">oldVid</span><span class="p">],</span><span class="w"> </span><span class="nx">newVideos</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">newVid</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Or infer old from current</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">replaceVideos</span><span class="p">({</span><span class="w"> </span><span class="nx">newVideos</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">newVid</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Or pass a Map</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">replaceVideos</span><span class="p">({</span><span class="w"> </span><span class="nx">videoMap</span><span class="o">:</span><span class="w"> </span><span class="kt">new</span><span class="w"> </span><span class="nb">Map</span><span class="p">([[</span><span class="nx">oldVid</span><span class="p">,</span><span class="w"> </span><span class="nx">newVid</span><span class="p">]])</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<p><code>LazyDataStore.copy()</code> duplicates the underlying HDF5 column arrays so that two <code>Labels</code> wrapping the same source file can diverge safely.</p>
+<h3 id="frame-merging">Frame merging<a class="headerlink" href="#frame-merging" title="Permanent link">&para;</a></h3>
+<p>Merge annotations from one <code>LabeledFrame</code> into another with strategy-aware handling. <code>LabeledFrame.mergeAnnotations(other, strategy?, threshold?)</code> supports six strategies, applied across all annotation modalities (centroids, bboxes, masks, label images, ROIs). To populate a single <code>LabeledFrame</code> in the first place, see <a href="#adding-annotations-to-frames">Adding annotations to frames</a> below.</p>
+<table>
+<thead>
+<tr>
+<th>Strategy</th>
+<th>Behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>"keep_original"</code></td>
+<td>Keep self only, discard everything from <code>other</code></td>
+</tr>
+<tr>
+<td><code>"keep_new"</code></td>
+<td>Replace self's annotations with (copies of) <code>other</code>'s</td>
+</tr>
+<tr>
+<td><code>"keep_both"</code> <em>(default)</em></td>
+<td>Deduplicate by object identity, union both sets (items from <code>other</code> are shallow-copied before insertion)</td>
+</tr>
+<tr>
+<td><code>"replace_predictions"</code></td>
+<td>Keep user annotations from self; drop self's predicted and take all predicted from <code>other</code></td>
+</tr>
+<tr>
+<td><code>"auto"</code></td>
+<td>Spatially match by centroid distance; user beats predicted; add unmatched</td>
+</tr>
+<tr>
+<td><code>"update_tracks"</code></td>
+<td>Spatially match and cascade track assignments only</td>
+</tr>
+</tbody>
+</table>
+<p>The <code>auto</code> and <code>update_tracks</code> strategies compare centroid distances against <code>threshold</code> (default <code>5.0</code> px). Empty masks and ROIs whose centroid is <code>null</code> are skipped by the matcher.</p>
+<p>The strategy argument is typed as <code>MergeStrategy</code>, re-exported from the package root for type-safe call sites:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="kr">type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">MergeStrategy</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">strategy</span><span class="o">:</span><span class="w"> </span><span class="kt">MergeStrategy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span><span class="p">;</span>
+<span class="nx">lfA</span><span class="p">.</span><span class="nx">mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">,</span><span class="w"> </span><span class="nx">strategy</span><span class="p">,</span><span class="w"> </span><span class="mf">3.0</span><span class="p">);</span>
+</code></pre></div>
+<div class="highlight"><pre><span></span><code><span class="c1">// Default behavior (keep_both): dedupe by identity, union everything</span>
+<span class="nx">lfA</span><span class="p">.</span><span class="nx">mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">);</span>
+
+<span class="c1">// Spatial auto merge with a 3 px threshold</span>
+<span class="nx">lfA</span><span class="p">.</span><span class="nx">mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span><span class="p">,</span><span class="w"> </span><span class="mf">3.0</span><span class="p">);</span>
+
+<span class="c1">// Keep only predicted updates from other, leave user annotations alone</span>
+<span class="nx">lfA</span><span class="p">.</span><span class="nx">mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;replace_predictions&quot;</span><span class="p">);</span>
+</code></pre></div>
 <h2 id="lazy-loading">Lazy Loading<a class="headerlink" href="#lazy-loading" title="Permanent link">&para;</a></h2>
 <p>Load SLP files with on-demand frame materialization for better performance on large datasets.</p>
 <div class="highlight"><pre><span></span><code><span class="c1">// Load lazily - only metadata is parsed initially</span>
@@ -882,9 +965,24 @@
 </code></pre></div>
 <p>Key classes:</p>
 <ul>
-<li><strong><code>LazyDataStore</code></strong>: Holds raw HDF5 column data; supports <code>materializeFrame(idx)</code>, <code>materializeAll()</code>, and <code>toNumpy()</code> fast path.</li>
+<li><strong><code>LazyDataStore</code></strong>: Holds raw HDF5 column data; supports <code>materializeFrame(idx)</code>, <code>materializeAll()</code>, <code>copy()</code>, and <code>toNumpy()</code> fast path.</li>
 <li><strong><code>LazyFrameList</code></strong>: Array-like container with <code>at(idx)</code>, <code>length</code>, <code>toArray()</code>, <code>[Symbol.iterator]()</code>, and <code>materializedCount</code>.</li>
 </ul>
+<blockquote>
+<p><strong>Note:</strong> <code>labels.getFrame()</code> and <code>labels.getTrackAnnotations()</code> <strong>throw</strong> on lazy <code>Labels</code>. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale or partial results. You have two options, both of which trigger full materialization under the hood:</p>
+<ol>
+<li>Call <code>labels.materialize()</code> explicitly, then use the O(1) lookups.</li>
+<li>Call <code>labels.find({ video, frameIdx })</code>, which materializes internally on first call and then uses the same O(1) index. It returns <code>LabeledFrame[]</code> — take the first element.</li>
+</ol>
+<p>Both paths do the same amount of work on the first call; there's no cheap "lazy-preserving" variant of frame lookup by <code>(video, frameIdx)</code>.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="c1">// Option 1: materialize first, then O(1) lookup</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">materialize</span><span class="p">();</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">42</span><span class="p">);</span>
+
+<span class="c1">// Option 2: find() — equivalent, materializes on first call</span>
+<span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">frame</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">find</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">42</span><span class="w"> </span><span class="p">});</span><span class="w">   </span><span class="c1">// LabeledFrame | undefined</span>
+</code></pre></div>
 <h2 id="roi-segmentation-masks">ROI &amp; Segmentation Masks<a class="headerlink" href="#roi-segmentation-masks" title="Permanent link">&para;</a></h2>
 <p>Spatial annotations stored alongside pose data (SLP format 1.5+).</p>
 <h3 id="roi"><code>ROI</code><a class="headerlink" href="#roi" title="Permanent link">&para;</a></h3>
@@ -966,23 +1064,32 @@
 <h3 id="boundingbox"><code>BoundingBox</code><a class="headerlink" href="#boundingbox" title="Permanent link">&para;</a></h3>
 <p>Axis-aligned or rotated bounding box for detection/tracking workflows. <code>BoundingBox</code> is abstract; use <code>UserBoundingBox</code> or <code>PredictedBoundingBox</code> for direct construction.</p>
 <p>Bounding boxes use corner coordinates (<code>x1</code>, <code>y1</code>, <code>x2</code>, <code>y2</code>) as their primary storage. Center-based properties (<code>xCenter</code>, <code>yCenter</code>, <code>width</code>, <code>height</code>) are available as computed getters.</p>
-<div class="highlight"><pre><span></span><code><span class="c1">// Create user-annotated bbox from corners</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserBoundingBox</span><span class="p">({</span>
+<p>Construct a user-annotated bbox and attach it to a frame:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserBoundingBox</span><span class="p">({</span>
 <span class="w">  </span><span class="nx">x1</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="o">:</span><span class="w"> </span><span class="kt">20</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">3</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;animal&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;animal&quot;</span><span class="p">,</span>
 <span class="p">});</span>
 
-<span class="c1">// Create predicted bbox with confidence score</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedBoundingBox</span><span class="p">({</span>
+<span class="c1">// The parent LabeledFrame provides video + frameIdx context</span>
+<span class="kd">let</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="mf">3</span><span class="p">);</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">lf</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">3</span><span class="w"> </span><span class="p">});</span>
+<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">lf</span><span class="p">);</span>
+<span class="p">}</span>
+<span class="nx">lf</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">bbox</span><span class="p">);</span>
+</code></pre></div>
+<p>Construct a predicted bbox with confidence score:</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">predBbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedBoundingBox</span><span class="p">({</span>
 <span class="w">  </span><span class="nx">x1</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="o">:</span><span class="w"> </span><span class="kt">20</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.95</span><span class="p">,</span>
 <span class="p">});</span>
-
-<span class="c1">// Factory methods (return UserBoundingBox)</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXyxy</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">110</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">);</span><span class="w">  </span><span class="c1">// corner coords</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">bbox</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXywh</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">);</span><span class="w">   </span><span class="c1">// top-left + size</span>
-
-<span class="c1">// Stored properties</span>
+</code></pre></div>
+<p>Factory methods (return <code>UserBoundingBox</code>):</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">fromCorners</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXyxy</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">110</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">);</span><span class="w">  </span><span class="c1">// corner coords</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">fromTopLeft</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">BoundingBox</span><span class="p">.</span><span class="nx">fromXywh</span><span class="p">(</span><span class="mf">10</span><span class="p">,</span><span class="w"> </span><span class="mf">20</span><span class="p">,</span><span class="w"> </span><span class="mf">100</span><span class="p">,</span><span class="w"> </span><span class="mf">80</span><span class="p">);</span><span class="w">   </span><span class="c1">// top-left + size</span>
+</code></pre></div>
+<p>Properties and conversions:</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Stored properties</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">x1</span><span class="p">;</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">y1</span><span class="p">;</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">x2</span><span class="p">;</span><span class="w"> </span><span class="nx">bbox</span><span class="p">.</span><span class="nx">y2</span><span class="p">;</span><span class="w">  </span><span class="c1">// corner coordinates</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">angle</span><span class="p">;</span><span class="w">      </span><span class="c1">// rotation in radians (default 0)</span>
 
@@ -998,7 +1105,6 @@
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">area</span><span class="p">;</span><span class="w">       </span><span class="c1">// width * height</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">centroidXy</span><span class="p">;</span><span class="w"> </span><span class="c1">// [x, y]</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">isPredicted</span><span class="p">;</span><span class="w"> </span><span class="c1">// true for PredictedBoundingBox</span>
-<span class="nx">bbox</span><span class="p">.</span><span class="nx">isStatic</span><span class="p">;</span><span class="w">   </span><span class="c1">// true if no frameIdx</span>
 <span class="nx">bbox</span><span class="p">.</span><span class="nx">isRotated</span><span class="p">;</span><span class="w">  </span><span class="c1">// true if angle != 0</span>
 
 <span class="c1">// Conversion</span>
@@ -1007,24 +1113,35 @@
 </code></pre></div>
 <h3 id="centroid"><code>Centroid</code><a class="headerlink" href="#centroid" title="Permanent link">&para;</a></h3>
 <p>Point representing the center of an object. <code>Centroid</code> is abstract; use <code>UserCentroid</code> or <code>PredictedCentroid</code>.</p>
-<div class="highlight"><pre><span></span><code><span class="c1">// Create user centroid</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserCentroid</span><span class="p">({</span><span class="w"> </span><span class="nx">x</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">y</span><span class="o">:</span><span class="w"> </span><span class="kt">200</span><span class="p">,</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="w"> </span><span class="p">});</span>
+<div class="highlight"><pre><span></span><code><span class="c1">// Create user centroid (attach to a frame to provide video + frameIdx context)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">c</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">UserCentroid</span><span class="p">({</span><span class="w"> </span><span class="nx">x</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">y</span><span class="o">:</span><span class="w"> </span><span class="kt">200</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">let</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">);</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">lf</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
+<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">lf</span><span class="p">);</span>
+<span class="p">}</span>
+<span class="nx">lf</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">c</span><span class="p">);</span>
 
 <span class="c1">// Create predicted centroid with confidence</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">pc</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">PredictedCentroid</span><span class="p">({</span>
 <span class="w">  </span><span class="nx">x</span><span class="o">:</span><span class="w"> </span><span class="kt">50</span><span class="p">,</span><span class="w"> </span><span class="nx">y</span><span class="o">:</span><span class="w"> </span><span class="kt">60</span><span class="p">,</span><span class="w"> </span><span class="nx">z</span><span class="o">:</span><span class="w"> </span><span class="kt">3.5</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">score</span><span class="o">:</span><span class="w"> </span><span class="kt">0.95</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">trackingScore</span><span class="o">:</span><span class="w"> </span><span class="kt">0.8</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">1</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">track</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">name</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;spot1&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">source</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;trackmate&quot;</span><span class="p">,</span>
 <span class="p">});</span>
+<span class="kd">let</span><span class="w"> </span><span class="nx">lf1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">);</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">lf1</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">lf1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">1</span><span class="w"> </span><span class="p">});</span>
+<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">lf1</span><span class="p">);</span>
+<span class="p">}</span>
+<span class="nx">lf1</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">pc</span><span class="p">);</span>
 
 <span class="c1">// Properties</span>
 <span class="nx">c</span><span class="p">.</span><span class="nx">xy</span><span class="p">;</span><span class="w">           </span><span class="c1">// [x, y]</span>
 <span class="nx">c</span><span class="p">.</span><span class="nx">yx</span><span class="p">;</span><span class="w">           </span><span class="c1">// [y, x] (row, col)</span>
 <span class="nx">c</span><span class="p">.</span><span class="nx">xyz</span><span class="p">;</span><span class="w">          </span><span class="c1">// [x, y, z | null]</span>
 <span class="nx">c</span><span class="p">.</span><span class="nx">isPredicted</span><span class="p">;</span><span class="w">  </span><span class="c1">// false for User, true for Predicted</span>
-<span class="nx">c</span><span class="p">.</span><span class="nx">isStatic</span><span class="p">;</span><span class="w">     </span><span class="c1">// true if no frameIdx</span>
 
 <span class="c1">// Convert to single-node Instance</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">inst</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">pc</span><span class="p">.</span><span class="nx">toInstance</span><span class="p">();</span><span class="w">  </span><span class="c1">// PredictedInstance with centroid skeleton</span>
@@ -1047,6 +1164,7 @@
 <span class="nx">CENTROID_SKELETON</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="nx">getCentroidSkeleton</span><span class="p">();</span><span class="w">  </span><span class="c1">// true (singleton)</span>
 </code></pre></div>
 <h3 id="labels-annotation-access"><code>Labels</code> Annotation Access<a class="headerlink" href="#labels-annotation-access" title="Permanent link">&para;</a></h3>
+<p>Annotations (<code>Centroid</code>, <code>BoundingBox</code>, <code>SegmentationMask</code>, <code>LabelImage</code>, frame-bound <code>ROI</code>) live on individual <code>LabeledFrame</code> instances, not on <code>Labels</code>. The <code>Labels</code> getters return flattened read-only views across all frames; mutation always goes through the owning frame.</p>
 <div class="highlight"><pre><span></span><code><span class="c1">// Read-only property getters (flat views across all frames)</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">;</span><span class="w">           </span><span class="c1">// ROI[]</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">masks</span><span class="p">;</span><span class="w">          </span><span class="c1">// SegmentationMask[]</span>
@@ -1054,31 +1172,58 @@
 <span class="nx">labels</span><span class="p">.</span><span class="nx">centroids</span><span class="p">;</span><span class="w">      </span><span class="c1">// Centroid[]</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">labelImages</span><span class="p">;</span><span class="w">    </span><span class="c1">// LabelImage[]</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">identities</span><span class="p">;</span><span class="w">     </span><span class="c1">// Identity[]</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">staticRois</span><span class="p">;</span><span class="w">     </span><span class="c1">// ROIs without frame index</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">temporalRois</span><span class="p">;</span><span class="w">   </span><span class="c1">// ROIs with frame index</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">staticBboxes</span><span class="p">;</span><span class="w">   </span><span class="c1">// BBoxes without frame index</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">temporalBboxes</span><span class="p">;</span><span class="w"> </span><span class="c1">// BBoxes with frame index</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">staticRois</span><span class="p">;</span><span class="w">     </span><span class="c1">// Static (video-level) ROIs, e.g. arena boundaries</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">temporalRois</span><span class="p">;</span><span class="w">   </span><span class="c1">// Frame-bound ROIs (flat view across frames)</span>
 
-<span class="c1">// Mutation (adds to the appropriate LabeledFrame)</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">addRoi</span><span class="p">(</span><span class="nx">roi</span><span class="p">);</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">addMask</span><span class="p">(</span><span class="nx">mask</span><span class="p">);</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">addBbox</span><span class="p">(</span><span class="nx">bbox</span><span class="p">);</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">addCentroid</span><span class="p">(</span><span class="nx">centroid</span><span class="p">);</span>
-<span class="nx">labels</span><span class="p">.</span><span class="nx">addLabelImage</span><span class="p">(</span><span class="nx">labelImage</span><span class="p">);</span>
-
-<span class="c1">// Filtered queries (all support `predicted` filter)</span>
+<span class="c1">// Filtered queries (all support `predicted` filter; frame-aware filters use O(1) indices)</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getRois</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;arena&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="w"> </span><span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getMasks</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;segmentation&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getBboxes</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getCentroids</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="p">,</span><span class="w"> </span><span class="nx">predicted</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">getLabelImages</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="p">,</span><span class="w"> </span><span class="nx">category</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;cell&quot;</span><span class="w"> </span><span class="p">});</span>
 
+<span class="c1">// Note: getRois({ video }) returns only frame-bound ROIs for that video.</span>
+<span class="c1">// For static ROIs, use labels.staticRois directly.</span>
+
 <span class="c1">// Add a video (deduplicates automatically)</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">addVideo</span><span class="p">(</span><span class="nx">video</span><span class="p">);</span>
 </code></pre></div>
-<p>Annotations are stored per-frame on <code>LabeledFrame</code>. The <code>Labels</code> property getters return
-flattened views across all frames. When constructing <code>Labels</code> with flat annotation lists,
-they are automatically distributed to matching frames.</p>
+<h4 id="adding-annotations-to-frames">Adding annotations to frames<a class="headerlink" href="#adding-annotations-to-frames" title="Permanent link">&para;</a></h4>
+<p>Use <code>LabeledFrame.append(annotation)</code> to add any annotation type. It routes by runtime type to the appropriate per-frame list (<code>lf.centroids</code>, <code>.bboxes</code>, <code>.masks</code>, <code>.labelImages</code>, <code>.rois</code>) and handles <code>Instance</code> and <code>PredictedInstance</code> as well. If you know the target list at the call site, you can also push directly.</p>
+<blockquote>
+<p><strong>Note:</strong> <code>Labels</code> and <code>LabeledFrame</code> each have an <code>append()</code> method. <code>labels.append(lf)</code> adds a <code>LabeledFrame</code> to a <code>Labels</code> (and also registers its video and tracks). <code>lf.append(annotation)</code> adds an annotation to a single <code>LabeledFrame</code>. They're different operations at different levels of the hierarchy.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">Labels</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">LabeledFrame</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">UserCentroid</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">UserBoundingBox</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">UserSegmentationMask</span><span class="p">,</span>
+<span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Build a frame with mixed annotations</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">5</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">lf</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="ow">new</span><span class="w"> </span><span class="nx">UserCentroid</span><span class="p">({</span><span class="w"> </span><span class="nx">x</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span><span class="w"> </span><span class="nx">y</span><span class="o">:</span><span class="w"> </span><span class="kt">200</span><span class="p">,</span><span class="w"> </span><span class="nx">track</span><span class="w"> </span><span class="p">}));</span>
+<span class="nx">lf</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="ow">new</span><span class="w"> </span><span class="nx">UserBoundingBox</span><span class="p">({</span><span class="w"> </span><span class="nx">x1</span><span class="o">:</span><span class="w"> </span><span class="kt">50</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="o">:</span><span class="w"> </span><span class="kt">50</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="o">:</span><span class="w"> </span><span class="kt">150</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="o">:</span><span class="w"> </span><span class="kt">150</span><span class="w"> </span><span class="p">}));</span>
+<span class="nx">lf</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">UserSegmentationMask</span><span class="p">.</span><span class="nx">fromArray</span><span class="p">(</span><span class="nx">maskData</span><span class="p">,</span><span class="w"> </span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">));</span>
+
+<span class="c1">// Or push directly if you know the type</span>
+<span class="nx">lf</span><span class="p">.</span><span class="nx">centroids</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="ow">new</span><span class="w"> </span><span class="nx">UserCentroid</span><span class="p">({</span><span class="w"> </span><span class="nx">x</span><span class="o">:</span><span class="w"> </span><span class="kt">10</span><span class="p">,</span><span class="w"> </span><span class="nx">y</span><span class="o">:</span><span class="w"> </span><span class="kt">20</span><span class="w"> </span><span class="p">}));</span>
+
+<span class="c1">// Pass frames as labeledFrames when constructing Labels</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">Labels</span><span class="p">({</span><span class="w"> </span><span class="nx">labeledFrames</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">lf</span><span class="p">],</span><span class="w"> </span><span class="nx">videos</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">video</span><span class="p">],</span><span class="w"> </span><span class="nx">skeletons</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">skeleton</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// To mutate an existing Labels, look up the target frame first</span>
+<span class="kd">let</span><span class="w"> </span><span class="nx">existing</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">5</span><span class="p">);</span>
+<span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">existing</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">existing</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">5</span><span class="w"> </span><span class="p">});</span>
+<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">existing</span><span class="p">);</span>
+<span class="p">}</span>
+<span class="nx">existing</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">anotherBbox</span><span class="p">);</span>
+</code></pre></div>
+<p>Static ROIs (video-level, e.g. arena boundaries) live on <code>labels.staticRois</code>. Use <code>labels.addStaticRoi(roi)</code> to add one — the method also registers the ROI's track on <code>labels.tracks</code> if present:</p>
+<div class="highlight"><pre><span></span><code><span class="nx">labels</span><span class="p">.</span><span class="nx">addStaticRoi</span><span class="p">(</span><span class="nx">arenaRoi</span><span class="p">);</span>
+</code></pre></div>
 <p>The SLP format version is set automatically based on content:</p>
 <table>
 <thead>
@@ -1130,14 +1275,14 @@ they are automatically distributed to matching frames.</p>
 <span class="kd">const</span><span class="w"> </span><span class="nx">li</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromArray</span><span class="p">(</span>
 <span class="w">  </span><span class="ow">new</span><span class="w"> </span><span class="nb">Int32Array</span><span class="p">([</span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">]),</span>
 <span class="w">  </span><span class="mf">3</span><span class="p">,</span><span class="w"> </span><span class="mf">3</span><span class="p">,</span><span class="w">  </span><span class="c1">// height, width</span>
-<span class="w">  </span><span class="p">{</span><span class="w"> </span><span class="nx">tracks</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">trackA</span><span class="p">,</span><span class="w"> </span><span class="nx">trackB</span><span class="p">],</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="w"> </span><span class="nx">tracks</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">trackA</span><span class="p">,</span><span class="w"> </span><span class="nx">trackB</span><span class="p">]</span><span class="w"> </span><span class="p">},</span>
 <span class="p">);</span>
 
 <span class="c1">// From segmentation masks (composites multiple binary masks)</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">li</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromMasks</span><span class="p">(</span><span class="nx">masks</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">li2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromMasks</span><span class="p">(</span><span class="nx">masks</span><span class="p">);</span>
 
 <span class="c1">// From per-object binary masks (SAM / Mask R-CNN output)</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">li</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromBinaryMasks</span><span class="p">(</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">li3</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">LabelImage</span><span class="p">.</span><span class="nx">fromBinaryMasks</span><span class="p">(</span>
 <span class="w">  </span><span class="p">[</span><span class="nx">mask1_2d</span><span class="p">,</span><span class="w"> </span><span class="nx">mask2_2d</span><span class="p">,</span><span class="w"> </span><span class="nx">mask3_2d</span><span class="p">],</span>
 <span class="w">  </span><span class="p">{</span>
 <span class="w">    </span><span class="nx">tracks</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">trackA</span><span class="p">,</span><span class="w"> </span><span class="nx">trackB</span><span class="p">,</span><span class="w"> </span><span class="nx">trackC</span><span class="p">],</span>
@@ -1151,10 +1296,19 @@ they are automatically distributed to matching frames.</p>
 <span class="w">  </span><span class="nx">data</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">frame0_2d</span><span class="p">,</span><span class="w"> </span><span class="nx">frame1_2d</span><span class="p">,</span><span class="w"> </span><span class="nx">frame2_2d</span><span class="p">],</span>
 <span class="w">  </span><span class="nx">tracks</span><span class="o">:</span><span class="w"> </span><span class="kt">new</span><span class="w"> </span><span class="nb">Map</span><span class="p">([[</span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="nx">trackA</span><span class="p">],</span><span class="w"> </span><span class="p">[</span><span class="mf">2</span><span class="p">,</span><span class="w"> </span><span class="nx">trackB</span><span class="p">]]),</span>
 <span class="w">  </span><span class="nx">createTracks</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span><span class="w">  </span><span class="c1">// auto-create Track objects from label IDs</span>
-<span class="w">  </span><span class="nx">video</span><span class="p">,</span>
-<span class="w">  </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">,</span><span class="w"> </span><span class="mf">2</span><span class="p">],</span>
+<span class="p">});</span>
+
+<span class="c1">// Attach each label image to its frame</span>
+<span class="nx">labelImages</span><span class="p">.</span><span class="nx">forEach</span><span class="p">((</span><span class="nx">li</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kd">let</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">);</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">lf</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">i</span><span class="w"> </span><span class="p">});</span>
+<span class="w">    </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">lf</span><span class="p">);</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="w">  </span><span class="nx">lf</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">li</span><span class="p">);</span>
 <span class="p">});</span>
 </code></pre></div>
+<p>Frame and video context for label images comes from the parent <code>LabeledFrame</code>. Factory methods return plain <code>UserLabelImage</code> objects; use <code>lf.append(li)</code> to attach them to a frame.</p>
 <h3 id="properties-and-methods">Properties and Methods<a class="headerlink" href="#properties-and-methods" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="c1">// Data access</span>
 <span class="nx">li</span><span class="p">.</span><span class="nx">data</span><span class="p">;</span><span class="w">       </span><span class="c1">// Int32Array (flat, row-major)</span>
