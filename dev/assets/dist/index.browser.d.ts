@@ -53,8 +53,6 @@ interface CentroidOptions {
     x: number;
     y: number;
     z?: number | null;
-    video?: Video | null;
-    frameIdx?: number | null;
     track?: Track | null;
     trackingScore?: number | null;
     instance?: Instance | null;
@@ -65,8 +63,11 @@ interface CentroidOptions {
 /**
  * A point representing the center of an object.
  *
- * Supports optional 3D coordinates, video/frame/track/instance metadata,
+ * Supports optional 3D coordinates, track/instance metadata,
  * and interconversion with single-node Instance objects.
+ *
+ * Spatial-temporal context (video, frame index) is derived from the parent
+ * LabeledFrame, matching how Instance/PredictedInstance work.
  *
  * This class is abstract. Use UserCentroid or PredictedCentroid.
  */
@@ -74,8 +75,6 @@ declare class Centroid {
     x: number;
     y: number;
     z: number | null;
-    video: Video | null;
-    frameIdx: number | null;
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
@@ -93,8 +92,6 @@ declare class Centroid {
     get xyz(): [number, number, number | null];
     /** Whether this is a predicted centroid (has a score). */
     get isPredicted(): boolean;
-    /** Whether the centroid has no temporal association. */
-    get isStatic(): boolean;
     /**
      * Convert this centroid to a single-node Instance.
      *
@@ -164,7 +161,6 @@ interface ROIOptions {
     category?: string;
     source?: string;
     video?: Video | null;
-    frameIdx?: number | null;
     track?: Track | null;
     trackingScore?: number | null;
     instance?: Instance | null;
@@ -175,7 +171,6 @@ declare class ROI {
     category: string;
     source: string;
     video: Video | null;
-    frameIdx: number | null;
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
@@ -196,7 +191,6 @@ declare class ROI {
         geometry: Geometry;
         properties: Record<string, unknown>;
     };
-    get isStatic(): boolean;
     get isBbox(): boolean;
     get bounds(): {
         minX: number;
@@ -244,8 +238,6 @@ interface SegmentationMaskOptions {
     name?: string;
     category?: string;
     source?: string;
-    video?: Video | null;
-    frameIdx?: number | null;
     track?: Track | null;
     trackingScore?: number | null;
     instance?: Instance | null;
@@ -259,8 +251,6 @@ declare class SegmentationMask {
     name: string;
     category: string;
     source: string;
-    video: Video | null;
-    frameIdx: number | null;
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
@@ -332,8 +322,6 @@ interface BoundingBoxOptions {
     x2: number;
     y2: number;
     angle?: number;
-    video?: Video | null;
-    frameIdx?: number | null;
     track?: Track | null;
     instance?: Instance | null;
     trackingScore?: number | null;
@@ -348,8 +336,6 @@ declare class BoundingBox {
     x2: number;
     y2: number;
     angle: number;
-    video: Video | null;
-    frameIdx: number | null;
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
@@ -400,8 +386,6 @@ declare class BoundingBox {
     };
     /** Whether this is a predicted bbox (has a score). */
     get isPredicted(): boolean;
-    /** Whether the bbox has no temporal association. */
-    get isStatic(): boolean;
     /** Whether the bbox is rotated (angle != 0). */
     get isRotated(): boolean;
     /** Convert to a Polygon ROI. */
@@ -437,8 +421,6 @@ interface LabelImageOptions {
     height: number;
     width: number;
     objects?: Map<number, LabelImageObjectInfo>;
-    video?: Video | null;
-    frameIdx?: number | null;
     source?: string;
     scale?: [number, number];
     offset?: [number, number];
@@ -458,8 +440,6 @@ declare class LabelImage {
     width: number;
     /** Map from label ID (positive int) to object metadata. */
     objects: Map<number, LabelImageObjectInfo>;
-    video: Video | null;
-    frameIdx: number | null;
     source: string;
     /** Spatial scale factor: image_coord = li_coord / scale + offset. Default [1, 1]. */
     scale: [number, number];
@@ -477,8 +457,6 @@ declare class LabelImage {
     get tracks(): Track[];
     /** Unique non-empty category strings across all objects. */
     get categories(): Set<string>;
-    /** Whether this label image has no temporal association (frameIdx is null). */
-    get isStatic(): boolean;
     /** Whether this is a predicted label image (has a score). */
     get isPredicted(): boolean;
     /** Whether scale != [1,1] or offset != [0,0]. */
@@ -510,14 +488,10 @@ declare class LabelImage {
     static fromArray(data: Int32Array | number[][], height: number, width: number, options?: {
         tracks?: Track[] | Map<number, Track>;
         categories?: string[] | Map<number, string>;
-        video?: Video | null;
-        frameIdx?: number | null;
         source?: string;
     }): UserLabelImage;
     /** Create a LabelImage by compositing an array of SegmentationMasks. */
     static fromMasks(masks: SegmentationMask[], options?: {
-        video?: Video | null;
-        frameIdx?: number | null;
         source?: string;
     }): UserLabelImage;
     /**
@@ -530,8 +504,6 @@ declare class LabelImage {
      * @param options.categories - Category strings. Array (1-indexed) or Map<labelId, string>.
      * @param options.createTracks - If true and tracks is not provided, auto-create one Track
      *   per unique non-zero label ID found across ALL frames.
-     * @param options.frameIdx - Custom frame indices. Defaults to [0, 1, ..., T-1].
-     * @param options.video - Video reference shared across all frames.
      * @param options.source - Source string shared across all frames.
      */
     static fromStack(options: {
@@ -539,8 +511,6 @@ declare class LabelImage {
         tracks?: Map<number, Track> | Track[] | null;
         categories?: Map<number, string> | string[] | null;
         createTracks?: boolean;
-        frameIdx?: number[] | null;
-        video?: Video | null;
         source?: string;
     }): UserLabelImage[];
     /**
@@ -574,8 +544,6 @@ declare class LabelImage {
         names?: string[] | null;
         scores?: number[] | null;
         createTracks?: boolean;
-        video?: Video | null;
-        frameIdx?: number | null;
         source?: string;
         scale?: [number, number];
         offset?: [number, number];
@@ -709,6 +677,14 @@ declare class LabeledFrame {
      *   in "auto" and "update_tracks" strategies.
      */
     _mergeAnnotations(other: LabeledFrame, strategy?: MergeStrategy, threshold?: number): void;
+    /**
+     * Append an annotation to this frame, routing to the correct list by type.
+     *
+     * @param annotation - Any annotation type: Instance, PredictedInstance,
+     *   Centroid, BoundingBox, SegmentationMask, LabelImage, or ROI.
+     * @throws TypeError if the annotation type is not recognized.
+     */
+    append(annotation: Instance | PredictedInstance | Centroid | BoundingBox | SegmentationMask | LabelImage | ROI): void;
     removeEmptyInstances(): void;
 }
 
@@ -938,11 +914,7 @@ declare class Labels {
     sessions: RecordingSession[];
     provenance: Record<string, unknown>;
     identities: Identity[];
-    _initRois: ROI[];
-    _initMasks: SegmentationMask[];
-    _initBboxes: BoundingBox[];
-    _initCentroids: Centroid[];
-    _initLabelImages: LabelImage[];
+    _staticRois: ROI[];
     /** @internal Lazy frame list for on-demand materialization. */
     _lazyFrameList: LazyFrameList | null;
     /** @internal Lazy data store holding raw HDF5 data. */
@@ -960,14 +932,8 @@ declare class Labels {
         sessions?: RecordingSession[];
         provenance?: Record<string, unknown>;
         rois?: ROI[];
-        masks?: SegmentationMask[];
-        bboxes?: BoundingBox[];
-        centroids?: Centroid[];
-        labelImages?: LabelImage[];
         identities?: Identity[];
     });
-    /** Distribute flat annotation lists into their corresponding LabeledFrames. */
-    private _distributeAnnotations;
     /** Collect tracks from annotations on a frame into this.tracks. */
     private _collectAnnotationTracks;
     /** Raise if Labels is lazy-loaded. */
@@ -996,15 +962,6 @@ declare class Labels {
     getTrackAnnotations(video: Video, track: Track): Array<Centroid | BoundingBox | SegmentationMask | ROI | LabelImage | Instance | PredictedInstance>;
     /** Force rebuild of all indices on next access. */
     reindex(): void;
-    /** Find an existing LabeledFrame or create a new one. */
-    private _findOrCreateFrame;
-    /** Add an annotation to the appropriate LabeledFrame. */
-    private _addAnnotation;
-    addCentroid(centroid: Centroid): void;
-    addBbox(bbox: BoundingBox): void;
-    addMask(mask: SegmentationMask): void;
-    addLabelImage(labelImage: LabelImage): void;
-    addRoi(roi: ROI): void;
     /** Remove all predicted instances and predicted annotations from all frames. */
     removePredictions(): void;
     /** Flat view of all centroids across all frames. */
@@ -1015,7 +972,7 @@ declare class Labels {
     get masks(): SegmentationMask[];
     /** Flat view of all label images across all frames. */
     get labelImages(): LabelImage[];
-    /** Flat view of all ROIs across all frames. */
+    /** Flat view of all ROIs across all frames and static ROIs. */
     get rois(): ROI[];
     /** Whether this Labels instance is in lazy mode. */
     get isLazy(): boolean;
@@ -1039,8 +996,22 @@ declare class Labels {
         video?: Video | number;
         skipEmptyFrames?: boolean;
     }): LabelsDict;
+    /** Static ROIs (not attached to any LabeledFrame). */
     get staticRois(): ROI[];
+    /** Frame-bound ROIs (attached to LabeledFrames). */
     get temporalRois(): ROI[];
+    /**
+     * Filter ROIs across the Labels object.
+     *
+     * Filtering rule (matches sibling getters like `getMasks`/`getBboxes`):
+     *   - Frame-aware filters (`video` or `frameIdx`) walk only `labeledFrames`.
+     *     Static ROIs are excluded from these results.
+     *   - Otherwise (no filter, or only `category`/`track`/`instance`/`predicted`)
+     *     the search runs over `this.rois` — the union of static + frame-bound.
+     *
+     * To access static ROIs directly, use `staticRois`. To access only frame-bound
+     * ROIs across all frames, use `temporalRois`.
+     */
     getRois(filters?: {
         video?: Video;
         frameIdx?: number;
@@ -1057,8 +1028,6 @@ declare class Labels {
         instance?: Instance | PredictedInstance;
         predicted?: boolean;
     }): SegmentationMask[];
-    get staticBboxes(): BoundingBox[];
-    get temporalBboxes(): BoundingBox[];
     getBboxes(filters?: {
         video?: Video;
         frameIdx?: number;
@@ -1075,8 +1044,6 @@ declare class Labels {
         instance?: Instance | PredictedInstance;
         predicted?: boolean;
     }): Centroid[];
-    get staticLabelImages(): LabelImage[];
-    get temporalLabelImages(): LabelImage[];
     getLabelImages(filters?: {
         video?: Video;
         frameIdx?: number;

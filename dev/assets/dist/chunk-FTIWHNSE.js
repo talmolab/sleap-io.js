@@ -21,6 +21,1906 @@ import {
   resolveIdentity
 } from "./chunk-RVNDZMON.js";
 
+// src/model/centroid.ts
+var _centroidSkeleton = null;
+function getCentroidSkeleton() {
+  if (!_centroidSkeleton) {
+    _centroidSkeleton = new Skeleton({ nodes: ["centroid"], name: "centroid" });
+  }
+  return _centroidSkeleton;
+}
+var CENTROID_SKELETON = /* @__PURE__ */ (() => getCentroidSkeleton())();
+var Centroid = class _Centroid {
+  x;
+  y;
+  z;
+  track;
+  trackingScore;
+  instance;
+  category;
+  name;
+  source;
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx = null;
+  constructor(options) {
+    if (new.target === _Centroid) {
+      throw new TypeError(
+        "Centroid is abstract. Use UserCentroid or PredictedCentroid."
+      );
+    }
+    this.x = options.x;
+    this.y = options.y;
+    this.z = options.z ?? null;
+    this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
+    this.instance = options.instance ?? null;
+    this.category = options.category ?? "";
+    this.name = options.name ?? "";
+    this.source = options.source ?? "";
+  }
+  /** Coordinates as `[x, y]`. */
+  get xy() {
+    return [this.x, this.y];
+  }
+  /** Coordinates as `[y, x]` (row, col order). */
+  get yx() {
+    return [this.y, this.x];
+  }
+  /** Coordinates as `[x, y, z]`. */
+  get xyz() {
+    return [this.x, this.y, this.z];
+  }
+  /** Whether this is a predicted centroid (has a score). */
+  get isPredicted() {
+    return false;
+  }
+  /**
+   * Convert this centroid to a single-node Instance.
+   *
+   * @param skeleton - Skeleton to use. Must have exactly one node.
+   *   Defaults to the shared CENTROID_SKELETON.
+   * @returns Instance or PredictedInstance depending on this centroid's type.
+   */
+  toInstance(skeleton) {
+    const skel = skeleton ?? getCentroidSkeleton();
+    if (skel.nodes.length > 1) {
+      throw new Error(
+        `Skeleton must have exactly 1 node for centroid conversion, got ${skel.nodes.length}.`
+      );
+    }
+    const point = {
+      xy: [this.x, this.y],
+      visible: true,
+      complete: true,
+      name: skel.nodeNames[0]
+    };
+    if (this instanceof PredictedCentroid) {
+      return new PredictedInstance({
+        points: [{ ...point, score: this.score }],
+        skeleton: skel,
+        track: this.track,
+        score: this.score,
+        trackingScore: this.trackingScore ?? void 0
+      });
+    }
+    return new Instance({
+      points: [point],
+      skeleton: skel,
+      track: this.track,
+      trackingScore: this.trackingScore ?? void 0
+    });
+  }
+  /**
+   * Create a centroid from an Instance.
+   *
+   * @param instance - Source instance.
+   * @param options - Options for centroid extraction.
+   * @param options.method - "centerOfMass" (default), "bboxCenter", or "anchor".
+   * @param options.node - Node name or index for "anchor" method.
+   * @returns UserCentroid or PredictedCentroid depending on instance type.
+   */
+  static fromInstance(instance, options) {
+    const method = options?.method ?? "centerOfMass";
+    const visiblePoints = [];
+    for (const point of instance.points) {
+      if (point.visible && !Number.isNaN(point.xy[0]) && !Number.isNaN(point.xy[1])) {
+        visiblePoints.push(point.xy);
+      }
+    }
+    let x;
+    let y;
+    if (method === "centerOfMass") {
+      if (!visiblePoints.length) {
+        throw new Error("No visible points for centerOfMass.");
+      }
+      x = visiblePoints.reduce((sum, p) => sum + p[0], 0) / visiblePoints.length;
+      y = visiblePoints.reduce((sum, p) => sum + p[1], 0) / visiblePoints.length;
+    } else if (method === "bboxCenter") {
+      if (!visiblePoints.length) {
+        throw new Error("No visible points for bboxCenter.");
+      }
+      const xs = visiblePoints.map((p) => p[0]);
+      const ys = visiblePoints.map((p) => p[1]);
+      x = (Math.min(...xs) + Math.max(...xs)) / 2;
+      y = (Math.min(...ys) + Math.max(...ys)) / 2;
+    } else if (method === "anchor") {
+      const node = options?.node;
+      if (node === void 0 || node === null) {
+        throw new Error("Must specify 'node' for anchor method.");
+      }
+      let nodeIdx;
+      if (typeof node === "string") {
+        nodeIdx = instance.skeleton.index(node);
+      } else {
+        nodeIdx = node;
+      }
+      const pt = instance.points[nodeIdx];
+      if (!pt || Number.isNaN(pt.xy[0])) {
+        throw new Error(`Anchor node ${JSON.stringify(node)} is not visible in this instance.`);
+      }
+      x = pt.xy[0];
+      y = pt.xy[1];
+    } else {
+      throw new Error(
+        `Unknown method ${JSON.stringify(method)}. Expected 'centerOfMass', 'bboxCenter', or 'anchor'.`
+      );
+    }
+    const { method: _, node: __, ...extraOptions } = options ?? {};
+    const centroidOptions = {
+      x,
+      y,
+      track: instance.track ?? null,
+      trackingScore: instance.trackingScore ?? null,
+      instance,
+      source: method === "anchor" ? `anchor:${options?.node}` : method,
+      ...extraOptions
+    };
+    if ("score" in instance && typeof instance.score === "number") {
+      return new PredictedCentroid({
+        ...centroidOptions,
+        score: instance.score
+      });
+    }
+    return new UserCentroid(centroidOptions);
+  }
+};
+var UserCentroid = class extends Centroid {
+};
+var PredictedCentroid = class extends Centroid {
+  score;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+  }
+  get isPredicted() {
+    return true;
+  }
+};
+_registerCentroidFactory(
+  (instance, options) => Centroid.fromInstance(instance, options)
+);
+
+// src/model/roi.ts
+var _maskFactory = null;
+function _registerMaskFactory(factory) {
+  _maskFactory = factory;
+}
+var AnnotationType = /* @__PURE__ */ ((AnnotationType2) => {
+  AnnotationType2[AnnotationType2["DEFAULT"] = 0] = "DEFAULT";
+  AnnotationType2[AnnotationType2["BOUNDING_BOX"] = 1] = "BOUNDING_BOX";
+  AnnotationType2[AnnotationType2["SEGMENTATION"] = 2] = "SEGMENTATION";
+  AnnotationType2[AnnotationType2["ARENA"] = 3] = "ARENA";
+  AnnotationType2[AnnotationType2["ANCHOR"] = 4] = "ANCHOR";
+  return AnnotationType2;
+})(AnnotationType || {});
+var ROI = class _ROI {
+  geometry;
+  name;
+  category;
+  source;
+  video;
+  track;
+  trackingScore = null;
+  instance;
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx = null;
+  constructor(options) {
+    if (new.target === _ROI) {
+      throw new TypeError(
+        "ROI is abstract. Use UserROI or PredictedROI."
+      );
+    }
+    this.geometry = options.geometry;
+    this.name = options.name ?? "";
+    this.category = options.category ?? "";
+    this.source = options.source ?? "";
+    this.video = options.video ?? null;
+    this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
+    this.instance = options.instance ?? null;
+  }
+  /** @deprecated Use BoundingBox.fromXywh() instead. */
+  static fromBbox(x, y, width, height, options) {
+    const geometry = {
+      type: "Polygon",
+      coordinates: [
+        [
+          [x, y],
+          [x + width, y],
+          [x + width, y + height],
+          [x, y + height],
+          [x, y]
+        ]
+      ]
+    };
+    return new UserROI({
+      geometry,
+      ...options
+    });
+  }
+  /** @deprecated Use BoundingBox.fromXyxy() instead. */
+  static fromXyxy(x1, y1, x2, y2, options) {
+    const geometry = {
+      type: "Polygon",
+      coordinates: [
+        [
+          [x1, y1],
+          [x2, y1],
+          [x2, y2],
+          [x1, y2],
+          [x1, y1]
+        ]
+      ]
+    };
+    return new UserROI({
+      geometry,
+      ...options
+    });
+  }
+  static fromPolygon(coords, options) {
+    const ring = [...coords];
+    if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) {
+      ring.push([ring[0][0], ring[0][1]]);
+    }
+    const geometry = { type: "Polygon", coordinates: [ring] };
+    return new UserROI({
+      geometry,
+      ...options
+    });
+  }
+  static fromMultiPolygon(polygons, options) {
+    return new UserROI({
+      geometry: { type: "MultiPolygon", coordinates: polygons },
+      ...options
+    });
+  }
+  /** Whether this is a predicted ROI (has a score). */
+  get isPredicted() {
+    return false;
+  }
+  explode() {
+    const Ctor = this.constructor;
+    const copyFields = {
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      video: this.video,
+      track: this.track,
+      trackingScore: this.trackingScore,
+      instance: this.instance
+    };
+    if (this.isPredicted && "score" in this) {
+      copyFields.score = this.score;
+    }
+    if (this.geometry.type === "MultiPolygon") {
+      return this.geometry.coordinates.map(
+        (coords) => new Ctor({
+          geometry: { type: "Polygon", coordinates: coords },
+          ...copyFields
+        })
+      );
+    }
+    if (this.geometry.type === "GeometryCollection") {
+      return this.geometry.geometries.map(
+        (geom) => new Ctor({
+          geometry: geom,
+          ...copyFields
+        })
+      );
+    }
+    return [new Ctor({
+      geometry: this.geometry,
+      ...copyFields
+    })];
+  }
+  toGeoJSON() {
+    return {
+      type: "Feature",
+      geometry: this.geometry,
+      properties: {
+        name: this.name,
+        category: this.category,
+        source: this.source
+      }
+    };
+  }
+  get isBbox() {
+    if (this.geometry.type !== "Polygon") return false;
+    const coords = this.geometry.coordinates[0];
+    if (!coords || coords.length !== 5) return false;
+    for (let i = 0; i < 4; i++) {
+      const dx = Math.abs(coords[i + 1][0] - coords[i][0]);
+      const dy = Math.abs(coords[i + 1][1] - coords[i][1]);
+      if (dx > 1e-10 && dy > 1e-10) return false;
+    }
+    return true;
+  }
+  get bounds() {
+    const points = this._allPoints();
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [x, y] of points) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    return { minX, minY, maxX, maxY };
+  }
+  get area() {
+    if (this.geometry.type === "Point") return 0;
+    if (this.geometry.type === "MultiPoint") return 0;
+    if (this.geometry.type === "LineString") return 0;
+    if (this.geometry.type === "Polygon") {
+      return polygonArea(this.geometry.coordinates);
+    }
+    if (this.geometry.type === "MultiPolygon") {
+      let total = 0;
+      for (const poly of this.geometry.coordinates) {
+        total += polygonArea(poly);
+      }
+      return total;
+    }
+    if (this.geometry.type === "GeometryCollection") {
+      let total = 0;
+      for (const geom of this.geometry.geometries) {
+        const sub = new UserROI({ geometry: geom });
+        total += sub.area;
+      }
+      return total;
+    }
+    return 0;
+  }
+  /** Centroid of the geometry as `[x, y]`. */
+  get centroidXy() {
+    if (this.geometry.type === "Point") {
+      return [this.geometry.coordinates[0], this.geometry.coordinates[1]];
+    }
+    const b = this.bounds;
+    return [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2];
+  }
+  /** @deprecated Use `centroidXy` instead. */
+  get centroid() {
+    if (this.geometry.type === "Point") {
+      return { x: this.geometry.coordinates[0], y: this.geometry.coordinates[1] };
+    }
+    const b = this.bounds;
+    return { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
+  }
+  toMask(height, width) {
+    if (!_maskFactory) {
+      throw new Error(
+        "SegmentationMask not available. Import mask.ts before calling toMask()."
+      );
+    }
+    const mask = rasterizeGeometry(this.geometry, height, width);
+    return _maskFactory(mask, height, width, {
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      track: this.track,
+      instance: this.instance
+    });
+  }
+  _allPoints() {
+    if (this.geometry.type === "Point") {
+      return [this.geometry.coordinates];
+    }
+    if (this.geometry.type === "Polygon") {
+      return this.geometry.coordinates.flat();
+    }
+    if (this.geometry.type === "MultiPolygon") {
+      return this.geometry.coordinates.flat(2);
+    }
+    if (this.geometry.type === "MultiPoint") {
+      return this.geometry.coordinates;
+    }
+    if (this.geometry.type === "LineString") {
+      return this.geometry.coordinates;
+    }
+    if (this.geometry.type === "GeometryCollection") {
+      const pts = [];
+      for (const geom of this.geometry.geometries) {
+        const sub = new UserROI({ geometry: geom });
+        pts.push(...sub._allPoints());
+      }
+      return pts;
+    }
+    return [];
+  }
+};
+function ringArea(ring) {
+  let area = 0;
+  const n = ring.length;
+  for (let i = 0; i < n - 1; i++) {
+    area += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  }
+  return area / 2;
+}
+function polygonArea(rings) {
+  if (rings.length === 0) return 0;
+  let area = Math.abs(ringArea(rings[0]));
+  for (let i = 1; i < rings.length; i++) {
+    area -= Math.abs(ringArea(rings[i]));
+  }
+  return Math.abs(area);
+}
+function rasterizeGeometry(geometry, height, width) {
+  const mask = new Uint8Array(height * width);
+  if (geometry.type === "Polygon") {
+    scanlineFill(geometry.coordinates[0], mask, height, width, true);
+    for (let i = 1; i < geometry.coordinates.length; i++) {
+      scanlineFill(geometry.coordinates[i], mask, height, width, false);
+    }
+    return mask;
+  }
+  if (geometry.type === "MultiPolygon") {
+    for (const poly of geometry.coordinates) {
+      const polyMask = rasterizeGeometry({ type: "Polygon", coordinates: poly }, height, width);
+      for (let i = 0; i < mask.length; i++) {
+        if (polyMask[i]) mask[i] = 1;
+      }
+    }
+    return mask;
+  }
+  if (geometry.type === "GeometryCollection") {
+    for (const geom of geometry.geometries) {
+      const subMask = rasterizeGeometry(geom, height, width);
+      for (let i = 0; i < mask.length; i++) {
+        if (subMask[i]) mask[i] = 1;
+      }
+    }
+    return mask;
+  }
+  return mask;
+}
+function scanlineFill(coords, mask, height, width, fill) {
+  if (!coords || coords.length < 3) return;
+  let minY = Infinity, maxY = -Infinity;
+  for (const [, y] of coords) {
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  const startY = Math.max(0, Math.floor(minY));
+  const endY = Math.min(height - 1, Math.floor(maxY));
+  const n = coords.length - 1;
+  for (let y = startY; y <= endY; y++) {
+    const intersections = [];
+    for (let i = 0; i < n; i++) {
+      const y0 = coords[i][1];
+      const y1 = coords[i + 1][1];
+      if (y0 === y1) continue;
+      const lo = Math.min(y0, y1);
+      const hi = Math.max(y0, y1);
+      if (lo <= y + 0.5 && y + 0.5 < hi) {
+        const x0 = coords[i][0];
+        const x1 = coords[i + 1][0];
+        const t = (y + 0.5 - y0) / (y1 - y0);
+        intersections.push(x0 + t * (x1 - x0));
+      }
+    }
+    intersections.sort((a, b) => a - b);
+    for (let j = 0; j < intersections.length - 1; j += 2) {
+      const xStart = Math.max(0, Math.floor(intersections[j]));
+      const xEnd = Math.min(width, Math.ceil(intersections[j + 1]));
+      const val = fill ? 1 : 0;
+      for (let x = xStart; x < xEnd; x++) {
+        mask[y * width + x] = val;
+      }
+    }
+  }
+}
+function encodeWkb(geometry) {
+  if (geometry.type === "Point") {
+    const buf = new ArrayBuffer(21);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 1, true);
+    view.setFloat64(5, geometry.coordinates[0], true);
+    view.setFloat64(13, geometry.coordinates[1], true);
+    return new Uint8Array(buf);
+  }
+  if (geometry.type === "Polygon") {
+    return encodeWkbPolygon(geometry.coordinates);
+  }
+  if (geometry.type === "MultiPolygon") {
+    const polygonBuffers = [];
+    for (const poly of geometry.coordinates) {
+      polygonBuffers.push(encodeWkbPolygon(poly));
+    }
+    const totalSize = 9 + polygonBuffers.reduce((sum, b) => sum + b.length, 0);
+    const buf = new ArrayBuffer(totalSize);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 6, true);
+    view.setUint32(5, geometry.coordinates.length, true);
+    let offset = 9;
+    for (const pb of polygonBuffers) {
+      new Uint8Array(buf, offset, pb.length).set(pb);
+      offset += pb.length;
+    }
+    return new Uint8Array(buf);
+  }
+  if (geometry.type === "LineString") {
+    const numPoints = geometry.coordinates.length;
+    const size = 9 + numPoints * 16;
+    const buf = new ArrayBuffer(size);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 2, true);
+    view.setUint32(5, numPoints, true);
+    let offset = 9;
+    for (const [x, y] of geometry.coordinates) {
+      view.setFloat64(offset, x, true);
+      view.setFloat64(offset + 8, y, true);
+      offset += 16;
+    }
+    return new Uint8Array(buf);
+  }
+  if (geometry.type === "MultiPoint") {
+    const numPoints = geometry.coordinates.length;
+    const size = 9 + numPoints * 21;
+    const buf = new ArrayBuffer(size);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 4, true);
+    view.setUint32(5, numPoints, true);
+    let offset = 9;
+    for (const [x, y] of geometry.coordinates) {
+      view.setUint8(offset, 1);
+      view.setUint32(offset + 1, 1, true);
+      view.setFloat64(offset + 5, x, true);
+      view.setFloat64(offset + 13, y, true);
+      offset += 21;
+    }
+    return new Uint8Array(buf);
+  }
+  if (geometry.type === "GeometryCollection") {
+    const subBuffers = [];
+    for (const geom of geometry.geometries) {
+      subBuffers.push(encodeWkb(geom));
+    }
+    const totalSize = 9 + subBuffers.reduce((sum, b) => sum + b.length, 0);
+    const buf = new ArrayBuffer(totalSize);
+    const view = new DataView(buf);
+    view.setUint8(0, 1);
+    view.setUint32(1, 7, true);
+    view.setUint32(5, geometry.geometries.length, true);
+    let offset = 9;
+    for (const sb of subBuffers) {
+      new Uint8Array(buf, offset, sb.length).set(sb);
+      offset += sb.length;
+    }
+    return new Uint8Array(buf);
+  }
+  throw new Error(`Unsupported geometry type: ${geometry.type}`);
+}
+function encodeWkbPolygon(rings) {
+  let size = 9;
+  for (const ring of rings) {
+    size += 4 + ring.length * 16;
+  }
+  const buf = new ArrayBuffer(size);
+  const view = new DataView(buf);
+  view.setUint8(0, 1);
+  view.setUint32(1, 3, true);
+  view.setUint32(5, rings.length, true);
+  let offset = 9;
+  for (const ring of rings) {
+    view.setUint32(offset, ring.length, true);
+    offset += 4;
+    for (const [x, y] of ring) {
+      view.setFloat64(offset, x, true);
+      view.setFloat64(offset + 8, y, true);
+      offset += 16;
+    }
+  }
+  return new Uint8Array(buf);
+}
+function decodeWkb(bytes) {
+  return decodeWkbInternal(bytes).geometry;
+}
+function decodeWkbInternal(bytes) {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const byteOrder = view.getUint8(0);
+  const le = byteOrder === 1;
+  const wkbType = view.getUint32(1, le);
+  if (wkbType === 1) {
+    const x = view.getFloat64(5, le);
+    const y = view.getFloat64(13, le);
+    return { geometry: { type: "Point", coordinates: [x, y] }, bytesRead: 21 };
+  }
+  if (wkbType === 3) {
+    const { rings, bytesRead } = decodeWkbPolygon(view, 5, le);
+    return { geometry: { type: "Polygon", coordinates: rings }, bytesRead: 5 + bytesRead };
+  }
+  if (wkbType === 6) {
+    const numPolygons = view.getUint32(5, le);
+    const polygons = [];
+    let offset = 9;
+    for (let i = 0; i < numPolygons; i++) {
+      const innerLe = view.getUint8(offset) === 1;
+      offset += 5;
+      const { rings, bytesRead } = decodeWkbPolygon(view, offset, innerLe);
+      polygons.push(rings);
+      offset += bytesRead;
+    }
+    return { geometry: { type: "MultiPolygon", coordinates: polygons }, bytesRead: offset };
+  }
+  if (wkbType === 2) {
+    const numPoints = view.getUint32(5, le);
+    const coords = [];
+    let offset = 9;
+    for (let i = 0; i < numPoints; i++) {
+      const x = view.getFloat64(offset, le);
+      const y = view.getFloat64(offset + 8, le);
+      coords.push([x, y]);
+      offset += 16;
+    }
+    return { geometry: { type: "LineString", coordinates: coords }, bytesRead: offset };
+  }
+  if (wkbType === 4) {
+    const numPoints = view.getUint32(5, le);
+    const coords = [];
+    let offset = 9;
+    for (let i = 0; i < numPoints; i++) {
+      const innerLe = view.getUint8(offset) === 1;
+      offset += 5;
+      const x = view.getFloat64(offset, innerLe);
+      const y = view.getFloat64(offset + 8, innerLe);
+      coords.push([x, y]);
+      offset += 16;
+    }
+    return { geometry: { type: "MultiPoint", coordinates: coords }, bytesRead: offset };
+  }
+  if (wkbType === 7) {
+    const numGeometries = view.getUint32(5, le);
+    const geometries = [];
+    let offset = 9;
+    for (let i = 0; i < numGeometries; i++) {
+      const subBytes = new Uint8Array(bytes.buffer, bytes.byteOffset + offset, bytes.byteLength - offset);
+      const { geometry: geom, bytesRead } = decodeWkbInternal(subBytes);
+      geometries.push(geom);
+      offset += bytesRead;
+    }
+    return { geometry: { type: "GeometryCollection", geometries }, bytesRead: offset };
+  }
+  throw new Error(`Unsupported WKB type: ${wkbType}`);
+}
+function decodeWkbPolygon(view, offset, le) {
+  const numRings = view.getUint32(offset, le);
+  let pos = offset + 4;
+  const rings = [];
+  for (let i = 0; i < numRings; i++) {
+    const numPoints = view.getUint32(pos, le);
+    pos += 4;
+    const ring = [];
+    for (let j = 0; j < numPoints; j++) {
+      const x = view.getFloat64(pos, le);
+      const y = view.getFloat64(pos + 8, le);
+      ring.push([x, y]);
+      pos += 16;
+    }
+    rings.push(ring);
+  }
+  return { rings, bytesRead: pos - offset };
+}
+var UserROI = class extends ROI {
+};
+var PredictedROI = class extends ROI {
+  score;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+  }
+  get isPredicted() {
+    return true;
+  }
+};
+
+// src/model/bbox.ts
+var BoundingBox = class _BoundingBox {
+  x1;
+  y1;
+  x2;
+  y2;
+  angle;
+  track;
+  trackingScore;
+  instance;
+  category;
+  name;
+  source;
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx = null;
+  constructor(options) {
+    if (new.target === _BoundingBox) {
+      throw new TypeError(
+        "BoundingBox is abstract. Use UserBoundingBox or PredictedBoundingBox."
+      );
+    }
+    this.x1 = options.x1;
+    this.y1 = options.y1;
+    this.x2 = options.x2;
+    this.y2 = options.y2;
+    this.angle = options.angle ?? 0;
+    this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
+    this.instance = options.instance ?? null;
+    this.category = options.category ?? "";
+    this.name = options.name ?? "";
+    this.source = options.source ?? "";
+  }
+  /** Create from corner coordinates [x1, y1, x2, y2]. */
+  static fromXyxy(x1, y1, x2, y2, options) {
+    return new UserBoundingBox({ x1, y1, x2, y2, ...options });
+  }
+  /** Create from top-left corner + size [x, y, w, h]. */
+  static fromXywh(x, y, w, h, options) {
+    return new UserBoundingBox({ x1: x, y1: y, x2: x + w, y2: y + h, ...options });
+  }
+  /** Center X coordinate (computed from x1, x2). */
+  get xCenter() {
+    return (this.x1 + this.x2) / 2;
+  }
+  /** Center Y coordinate (computed from y1, y2). */
+  get yCenter() {
+    return (this.y1 + this.y2) / 2;
+  }
+  /** Width of the bbox (computed from x1, x2). */
+  get width() {
+    return Math.abs(this.x2 - this.x1);
+  }
+  /** Height of the bbox (computed from y1, y2). */
+  get height() {
+    return Math.abs(this.y2 - this.y1);
+  }
+  /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
+  get xyxy() {
+    if (!this.isRotated) {
+      return [this.x1, this.y1, this.x2, this.y2];
+    }
+    const c = this.corners;
+    const xs = c.map((p) => p[0]);
+    const ys = c.map((p) => p[1]);
+    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
+  }
+  /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
+  get xywh() {
+    const [x1, y1, x2, y2] = this.xyxy;
+    return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
+  }
+  /** Four corner points of the (possibly rotated) bbox. */
+  get corners() {
+    const hw = this.width / 2;
+    const hh = this.height / 2;
+    const local = [
+      [-hw, -hh],
+      [hw, -hh],
+      [hw, hh],
+      [-hw, hh]
+    ];
+    if (!this.isRotated) {
+      return local.map(([dx, dy]) => [this.xCenter + dx, this.yCenter + dy]);
+    }
+    const cos = Math.cos(this.angle);
+    const sin = Math.sin(this.angle);
+    return local.map(([dx, dy]) => [
+      this.xCenter + dx * cos - dy * sin,
+      this.yCenter + dx * sin + dy * cos
+    ]);
+  }
+  /** Axis-aligned bounds. */
+  get bounds() {
+    const [x1, y1, x2, y2] = this.xyxy;
+    return { minX: x1, minY: y1, maxX: x2, maxY: y2 };
+  }
+  /** Area of the bbox (width * height). */
+  get area() {
+    return this.width * this.height;
+  }
+  /** Center point as `[x, y]`. */
+  get centroidXy() {
+    return [this.xCenter, this.yCenter];
+  }
+  /** @deprecated Use `centroidXy` instead. */
+  get centroid() {
+    return { x: this.xCenter, y: this.yCenter };
+  }
+  /** Whether this is a predicted bbox (has a score). */
+  get isPredicted() {
+    return false;
+  }
+  /** Whether the bbox is rotated (angle != 0). */
+  get isRotated() {
+    return this.angle !== 0;
+  }
+  /** Convert to a Polygon ROI. */
+  toRoi() {
+    const c = this.corners;
+    const ring = [...c, c[0]];
+    return ROI.fromPolygon(ring, {
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      track: this.track,
+      instance: this.instance
+    });
+  }
+  /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
+  toMask(height, width) {
+    return this.toRoi().toMask(height, width);
+  }
+};
+var UserBoundingBox = class extends BoundingBox {
+};
+var PredictedBoundingBox = class extends BoundingBox {
+  score;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+  }
+  get isPredicted() {
+    return true;
+  }
+};
+
+// src/model/mask.ts
+function encodeRle(mask, height, width) {
+  const total = height * width;
+  if (total === 0) return new Uint32Array(0);
+  const runs = [];
+  let currentVal = 0;
+  let count = 0;
+  for (let i = 0; i < total; i++) {
+    const val = mask[i] ? 1 : 0;
+    if (val === currentVal) {
+      count++;
+    } else {
+      runs.push(count);
+      currentVal = val;
+      count = 1;
+    }
+  }
+  runs.push(count);
+  return new Uint32Array(runs);
+}
+function decodeRle(rleCounts, height, width) {
+  const total = height * width;
+  if (rleCounts.length === 0) return new Uint8Array(total);
+  const flat = new Uint8Array(total);
+  let pos = 0;
+  for (let i = 0; i < rleCounts.length; i++) {
+    const val = i % 2 === 0 ? 0 : 1;
+    const count = rleCounts[i];
+    if (val === 1) {
+      for (let j = 0; j < count && pos + j < total; j++) {
+        flat[pos + j] = 1;
+      }
+    }
+    pos += count;
+  }
+  return flat;
+}
+function resizeNearest(data, srcH, srcW, dstH, dstW) {
+  const Ctor = data.constructor;
+  const result = new Ctor(dstH * dstW);
+  for (let r = 0; r < dstH; r++) {
+    const srcR = Math.min(Math.floor(r * srcH / dstH), srcH - 1);
+    for (let c = 0; c < dstW; c++) {
+      const srcC = Math.min(Math.floor(c * srcW / dstW), srcW - 1);
+      result[r * dstW + c] = data[srcR * srcW + srcC];
+    }
+  }
+  return result;
+}
+var SegmentationMask = class _SegmentationMask {
+  rleCounts;
+  height;
+  width;
+  name;
+  category;
+  source;
+  track;
+  trackingScore = null;
+  instance;
+  /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
+  scale;
+  /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
+  offset;
+  /** @internal Deferred instance index for lazy resolution. */
+  _instanceIdx = null;
+  constructor(options) {
+    if (new.target === _SegmentationMask) {
+      throw new TypeError(
+        "SegmentationMask is abstract. Use UserSegmentationMask or PredictedSegmentationMask."
+      );
+    }
+    const scale = options.scale ?? [1, 1];
+    if (scale[0] <= 0 || scale[1] <= 0) {
+      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
+    }
+    this.rleCounts = options.rleCounts;
+    this.height = options.height;
+    this.width = options.width;
+    this.name = options.name ?? "";
+    this.category = options.category ?? "";
+    this.source = options.source ?? "";
+    this.track = options.track ?? null;
+    this.trackingScore = options.trackingScore ?? null;
+    this.instance = options.instance ?? null;
+    this.scale = scale;
+    this.offset = options.offset ?? [0, 0];
+  }
+  static fromArray(mask, height, width, options) {
+    let flat;
+    if (mask instanceof Uint8Array) {
+      flat = mask;
+    } else {
+      flat = new Uint8Array(height * width);
+      for (let r = 0; r < height; r++) {
+        for (let c = 0; c < width; c++) {
+          flat[r * width + c] = mask[r][c] ? 1 : 0;
+        }
+      }
+    }
+    const rleCounts = encodeRle(flat, height, width);
+    const stride = options?.stride;
+    const scaleFromStride = stride != null ? [1 / stride, 1 / stride] : void 0;
+    return new UserSegmentationMask({
+      rleCounts,
+      height,
+      width,
+      ...options,
+      scale: options?.scale ?? scaleFromStride
+    });
+  }
+  get data() {
+    return decodeRle(this.rleCounts, this.height, this.width);
+  }
+  get area() {
+    let total = 0;
+    for (let i = 1; i < this.rleCounts.length; i += 2) {
+      total += this.rleCounts[i];
+    }
+    return total;
+  }
+  /** Whether scale != [1,1] or offset != [0,0]. */
+  get hasSpatialTransform() {
+    return this.scale[0] !== 1 || this.scale[1] !== 1 || this.offset[0] !== 0 || this.offset[1] !== 0;
+  }
+  /** The image-space extent of this mask (accounting for scale). */
+  get imageExtent() {
+    return {
+      height: Math.floor(this.height / this.scale[1]),
+      width: Math.floor(this.width / this.scale[0])
+    };
+  }
+  get isPredicted() {
+    return false;
+  }
+  /**
+   * Create a resampled copy of this mask at the target dimensions.
+   * The returned mask has scale=[1,1] and offset=[0,0].
+   */
+  resampled(targetHeight, targetWidth) {
+    const srcData = this.data;
+    const resized = resizeNearest(srcData, this.height, this.width, targetHeight, targetWidth);
+    const rleCounts = encodeRle(resized, targetHeight, targetWidth);
+    const baseOpts = {
+      rleCounts,
+      height: targetHeight,
+      width: targetWidth,
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      track: this.track,
+      instance: this.instance,
+      scale: [1, 1],
+      offset: [0, 0]
+    };
+    if (this instanceof PredictedSegmentationMask) {
+      const pm = this;
+      let resampledScoreMap = null;
+      if (pm.scoreMap) {
+        resampledScoreMap = resizeNearest(
+          pm.scoreMap,
+          this.height,
+          this.width,
+          targetHeight,
+          targetWidth
+        );
+      }
+      return new PredictedSegmentationMask({
+        ...baseOpts,
+        score: pm.score,
+        scoreMap: resampledScoreMap
+      });
+    }
+    return new UserSegmentationMask(baseOpts);
+  }
+  get bbox() {
+    const flat = this.data;
+    let minR = this.height, maxR = -1, minC = this.width, maxC = -1;
+    for (let r = 0; r < this.height; r++) {
+      for (let c = 0; c < this.width; c++) {
+        if (flat[r * this.width + c]) {
+          if (r < minR) minR = r;
+          if (r > maxR) maxR = r;
+          if (c < minC) minC = c;
+          if (c > maxC) maxC = c;
+        }
+      }
+    }
+    if (maxR === -1) return { x: 0, y: 0, width: 0, height: 0 };
+    const [sx, sy] = this.scale;
+    const [ox, oy] = this.offset;
+    return {
+      x: minC / sx + ox,
+      y: minR / sy + oy,
+      width: (maxC - minC + 1) / sx,
+      height: (maxR - minR + 1) / sy
+    };
+  }
+  /** Convert to a `BoundingBox` object with metadata.
+   *
+   * Returns a `UserBoundingBox` or `PredictedBoundingBox` depending on whether
+   * this mask is predicted. Coordinates are in image space (respecting
+   * scale/offset).
+   */
+  toBbox() {
+    const { x, y, width, height } = this.bbox;
+    const opts = {
+      x1: x,
+      y1: y,
+      x2: x + width,
+      y2: y + height,
+      track: this.track,
+      instance: this.instance,
+      category: this.category,
+      name: this.name,
+      source: this.source
+    };
+    if (this instanceof PredictedSegmentationMask) {
+      return new PredictedBoundingBox({
+        ...opts,
+        score: this.score
+      });
+    }
+    return new UserBoundingBox(opts);
+  }
+  /** Convert the mask to a bounding-box polygon ROI. */
+  toPolygon() {
+    const bb = this.bbox;
+    let geometry;
+    if (bb.width === 0 || bb.height === 0) {
+      geometry = { type: "Polygon", coordinates: [[]] };
+    } else {
+      const { x, y, width, height } = bb;
+      geometry = {
+        type: "Polygon",
+        coordinates: [
+          [
+            [x, y],
+            [x + width, y],
+            [x + width, y + height],
+            [x, y + height],
+            [x, y]
+          ]
+        ]
+      };
+    }
+    return ROI.fromPolygon(
+      geometry.coordinates[0],
+      {
+        name: this.name,
+        category: this.category,
+        source: this.source,
+        track: this.track,
+        instance: this.instance
+      }
+    );
+  }
+};
+var UserSegmentationMask = class extends SegmentationMask {
+};
+var PredictedSegmentationMask = class extends SegmentationMask {
+  score;
+  scoreMap;
+  /** Spatial scale for the score map. Default [1, 1]. */
+  scoreMapScale;
+  /** Spatial offset for the score map. Default [0, 0]. */
+  scoreMapOffset;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+    this.scoreMap = options.scoreMap ?? null;
+    this.scoreMapScale = options.scoreMapScale ?? [1, 1];
+    this.scoreMapOffset = options.scoreMapOffset ?? [0, 0];
+  }
+  get isPredicted() {
+    return true;
+  }
+};
+_registerMaskFactory(
+  (mask, height, width, options) => {
+    return SegmentationMask.fromArray(mask, height, width, options);
+  }
+);
+
+// src/model/label-image.ts
+var LabelImage = class _LabelImage {
+  /** Flat (H*W) Int32Array, row-major. 0 = background, positive = object ID. */
+  data;
+  height;
+  width;
+  /** Map from label ID (positive int) to object metadata. */
+  objects;
+  source;
+  /** Spatial scale factor: image_coord = li_coord / scale + offset. Default [1, 1]. */
+  scale;
+  /** Spatial offset: image_coord = li_coord / scale + offset. Default [0, 0]. */
+  offset;
+  /** @internal Deferred instance indices for lazy resolution. Map<label_id, instance_idx> */
+  _objectInstanceIdxs = null;
+  constructor(options) {
+    if (new.target === _LabelImage) {
+      throw new TypeError(
+        "LabelImage is abstract. Use UserLabelImage or PredictedLabelImage."
+      );
+    }
+    const scale = options.scale ?? [1, 1];
+    if (scale[0] <= 0 || scale[1] <= 0) {
+      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
+    }
+    this.data = options.data;
+    this.height = options.height;
+    this.width = options.width;
+    this.objects = options.objects ?? /* @__PURE__ */ new Map();
+    this.source = options.source ?? "";
+    this.scale = scale;
+    this.offset = options.offset ?? [0, 0];
+  }
+  // --- Computed properties ---
+  /** Number of objects in the label image metadata. */
+  get nObjects() {
+    return this.objects.size;
+  }
+  /** Sorted unique non-zero label IDs present in the data.
+   *  Note: Scans the full pixel array on every call. Cache the result if needed multiple times. */
+  get labelIds() {
+    const ids = /* @__PURE__ */ new Set();
+    for (let i = 0; i < this.data.length; i++) {
+      if (this.data[i] > 0) ids.add(this.data[i]);
+    }
+    return Array.from(ids).sort((a, b) => a - b);
+  }
+  /** Non-null tracks from objects, sorted by label ID. */
+  get tracks() {
+    const result = [];
+    for (const lid of Array.from(this.objects.keys()).sort((a, b) => a - b)) {
+      const info = this.objects.get(lid);
+      if (info.track !== null) result.push(info.track);
+    }
+    return result;
+  }
+  /** Unique non-empty category strings across all objects. */
+  get categories() {
+    const cats = /* @__PURE__ */ new Set();
+    for (const info of this.objects.values()) {
+      if (info.category !== "") cats.add(info.category);
+    }
+    return cats;
+  }
+  /** Whether this is a predicted label image (has a score). */
+  get isPredicted() {
+    return false;
+  }
+  /** Whether scale != [1,1] or offset != [0,0]. */
+  get hasSpatialTransform() {
+    return this.scale[0] !== 1 || this.scale[1] !== 1 || this.offset[0] !== 0 || this.offset[1] !== 0;
+  }
+  /** The image-space extent of this label image (accounting for scale). */
+  get imageExtent() {
+    return {
+      height: Math.floor(this.height / this.scale[1]),
+      width: Math.floor(this.width / this.scale[0])
+    };
+  }
+  /**
+   * Create a resampled copy of this label image at the target dimensions.
+   * The returned label image has scale=[1,1] and offset=[0,0].
+   */
+  resampled(targetHeight, targetWidth) {
+    const resizedData = resizeNearest(this.data, this.height, this.width, targetHeight, targetWidth);
+    const baseOpts = {
+      data: resizedData,
+      height: targetHeight,
+      width: targetWidth,
+      objects: new Map(this.objects),
+      source: this.source,
+      scale: [1, 1],
+      offset: [0, 0]
+    };
+    if (this instanceof PredictedLabelImage) {
+      const pli = this;
+      let resampledScoreMap = null;
+      if (pli.scoreMap) {
+        resampledScoreMap = resizeNearest(
+          pli.scoreMap,
+          this.height,
+          this.width,
+          targetHeight,
+          targetWidth
+        );
+      }
+      return new PredictedLabelImage({
+        ...baseOpts,
+        score: pli.score,
+        scoreMap: resampledScoreMap
+      });
+    }
+    return new UserLabelImage(baseOpts);
+  }
+  // --- Mask extraction ---
+  /** Get a binary mask (Uint8Array) for a specific label ID. */
+  getObjectMask(labelId) {
+    const mask = new Uint8Array(this.height * this.width);
+    for (let i = 0; i < this.data.length; i++) {
+      if (this.data[i] === labelId) mask[i] = 1;
+    }
+    return mask;
+  }
+  /** Get a binary mask for all objects associated with a given track. */
+  getTrackMask(track) {
+    const matchingIds = [];
+    for (const [lid, info] of this.objects) {
+      if (info.track === track) matchingIds.push(lid);
+    }
+    if (matchingIds.length === 0) {
+      throw new Error(`Track "${track.name}" not found in this LabelImage.`);
+    }
+    const idSet = new Set(matchingIds);
+    const mask = new Uint8Array(this.height * this.width);
+    for (let i = 0; i < this.data.length; i++) {
+      if (idSet.has(this.data[i])) mask[i] = 1;
+    }
+    return mask;
+  }
+  /** Get a binary mask for all objects with a given category. Throws if category not found. */
+  getCategoryMask(category) {
+    const matchingIds = [];
+    for (const [lid, info] of this.objects) {
+      if (info.category === category) matchingIds.push(lid);
+    }
+    if (matchingIds.length === 0) {
+      throw new Error(`Category "${category}" not found in this LabelImage.`);
+    }
+    const idSet = new Set(matchingIds);
+    const mask = new Uint8Array(this.height * this.width);
+    for (let i = 0; i < this.data.length; i++) {
+      if (idSet.has(this.data[i])) mask[i] = 1;
+    }
+    return mask;
+  }
+  // --- Iterator ---
+  /** Iterate over objects as [track, category, binaryMask] tuples in sorted label ID order. */
+  *items() {
+    const ids = this.labelIds;
+    const maskMap = /* @__PURE__ */ new Map();
+    for (const lid of ids) {
+      maskMap.set(lid, new Uint8Array(this.height * this.width));
+    }
+    for (let i = 0; i < this.data.length; i++) {
+      const mask = maskMap.get(this.data[i]);
+      if (mask) mask[i] = 1;
+    }
+    for (const lid of ids) {
+      const info = this.objects.get(lid) ?? {
+        track: null,
+        category: "",
+        name: "",
+        instance: null
+      };
+      yield [info.track, info.category, maskMap.get(lid)];
+    }
+  }
+  // --- Factories ---
+  /**
+   * Create a LabelImage from a flat Int32Array or 2D number array.
+   *
+   * Tracks are auto-created when not provided. When provided as an array,
+   * they are assigned positionally starting at label ID 1.
+   */
+  static fromArray(data, height, width, options) {
+    let flat;
+    if (data instanceof Int32Array) {
+      flat = data;
+    } else {
+      flat = new Int32Array(height * width);
+      for (let r = 0; r < height; r++) {
+        for (let c = 0; c < width; c++) {
+          flat[r * width + c] = data[r][c];
+        }
+      }
+    }
+    const uniqueIds = /* @__PURE__ */ new Set();
+    for (let i = 0; i < flat.length; i++) {
+      if (flat[i] > 0) uniqueIds.add(flat[i]);
+    }
+    const sortedIds = Array.from(uniqueIds).sort((a, b) => a - b);
+    const trackMap = /* @__PURE__ */ new Map();
+    const tracks = options?.tracks;
+    if (tracks === void 0) {
+      for (const lid of sortedIds) {
+        trackMap.set(lid, new Track(String(lid)));
+      }
+    } else if (Array.isArray(tracks)) {
+      for (let i = 0; i < tracks.length; i++) {
+        trackMap.set(i + 1, tracks[i]);
+      }
+    } else {
+      for (const [k, v] of tracks) {
+        trackMap.set(k, v);
+      }
+    }
+    const catMap = /* @__PURE__ */ new Map();
+    const cats = options?.categories;
+    if (cats !== void 0) {
+      if (Array.isArray(cats)) {
+        for (let i = 0; i < cats.length; i++) {
+          catMap.set(i + 1, cats[i]);
+        }
+      } else {
+        for (const [k, v] of cats) {
+          catMap.set(k, v);
+        }
+      }
+    }
+    const allIds = /* @__PURE__ */ new Set([...sortedIds, ...trackMap.keys(), ...catMap.keys()]);
+    const objects = /* @__PURE__ */ new Map();
+    for (const lid of Array.from(allIds).sort((a, b) => a - b)) {
+      objects.set(lid, {
+        track: trackMap.get(lid) ?? null,
+        category: catMap.get(lid) ?? "",
+        name: "",
+        instance: null
+      });
+    }
+    return new UserLabelImage({
+      data: flat,
+      height,
+      width,
+      objects,
+      source: options?.source ?? ""
+    });
+  }
+  /** Create a LabelImage by compositing an array of SegmentationMasks. */
+  static fromMasks(masks, options) {
+    if (masks.length === 0) {
+      throw new Error("Cannot create LabelImage from empty mask list.");
+    }
+    const height = masks[0].height;
+    const width = masks[0].width;
+    const scale = [...masks[0].scale];
+    const offset = [...masks[0].offset];
+    for (const m of masks.slice(1)) {
+      if (m.height !== height || m.width !== width) {
+        throw new Error(
+          `All masks must have the same shape. Expected (${height}, ${width}), got (${m.height}, ${m.width}).`
+        );
+      }
+      if (m.scale[0] !== scale[0] || m.scale[1] !== scale[1]) {
+        throw new Error(
+          `All masks must have the same scale. Expected [${scale[0]}, ${scale[1]}], got [${m.scale[0]}, ${m.scale[1]}].`
+        );
+      }
+      if (m.offset[0] !== offset[0] || m.offset[1] !== offset[1]) {
+        throw new Error(
+          `All masks must have the same offset. Expected [${offset[0]}, ${offset[1]}], got [${m.offset[0]}, ${m.offset[1]}].`
+        );
+      }
+    }
+    const data = new Int32Array(height * width);
+    const objects = /* @__PURE__ */ new Map();
+    for (let i = 0; i < masks.length; i++) {
+      const labelId = i + 1;
+      const maskData = masks[i].data;
+      for (let j = 0; j < maskData.length; j++) {
+        if (maskData[j]) data[j] = labelId;
+      }
+      objects.set(labelId, {
+        track: masks[i].track,
+        category: masks[i].category,
+        name: masks[i].name,
+        instance: masks[i].instance
+      });
+    }
+    return new UserLabelImage({
+      data,
+      height,
+      width,
+      objects,
+      source: options?.source ?? "",
+      scale,
+      offset
+    });
+  }
+  /**
+   * Create a list of LabelImages from a stack of 2D arrays (one per frame).
+   *
+   * Shared Track objects are created once and reused across frames.
+   *
+   * @param options.data - Array of flat Int32Arrays or 2D number arrays, one per frame.
+   * @param options.tracks - Track objects to assign. Array (1-indexed) or Map<labelId, Track>.
+   * @param options.categories - Category strings. Array (1-indexed) or Map<labelId, string>.
+   * @param options.createTracks - If true and tracks is not provided, auto-create one Track
+   *   per unique non-zero label ID found across ALL frames.
+   * @param options.source - Source string shared across all frames.
+   */
+  static fromStack(options) {
+    const { data, source } = options;
+    if (data.length === 0) return [];
+    const first = data[0];
+    const height = first.length;
+    const width = first[0]?.length ?? 0;
+    const allIds = /* @__PURE__ */ new Set();
+    for (const frame of data) {
+      if (Array.isArray(frame)) {
+        for (const row of frame) {
+          for (const val of row) {
+            if (val > 0) allIds.add(val);
+          }
+        }
+      }
+    }
+    const sortedIds = Array.from(allIds).sort((a, b) => a - b);
+    let trackMap;
+    if (options.tracks != null) {
+      trackMap = /* @__PURE__ */ new Map();
+      if (Array.isArray(options.tracks)) {
+        for (let i = 0; i < options.tracks.length; i++) {
+          trackMap.set(i + 1, options.tracks[i]);
+        }
+      } else {
+        for (const [k, v] of options.tracks) {
+          trackMap.set(k, v);
+        }
+      }
+    } else if (options.createTracks) {
+      trackMap = /* @__PURE__ */ new Map();
+      for (const lid of sortedIds) {
+        trackMap.set(lid, new Track(String(lid)));
+      }
+    }
+    let catMap;
+    if (options.categories != null) {
+      catMap = /* @__PURE__ */ new Map();
+      if (Array.isArray(options.categories)) {
+        for (let i = 0; i < options.categories.length; i++) {
+          catMap.set(i + 1, options.categories[i]);
+        }
+      } else {
+        for (const [k, v] of options.categories) {
+          catMap.set(k, v);
+        }
+      }
+    }
+    const result = [];
+    for (let t = 0; t < data.length; t++) {
+      const frameData = data[t];
+      result.push(
+        _LabelImage.fromArray(frameData, height, width, {
+          tracks: trackMap,
+          categories: catMap,
+          source
+        })
+      );
+    }
+    return result;
+  }
+  /**
+   * Create a LabelImage from per-object binary mask arrays.
+   *
+   * This is a convenience factory for workflows that produce per-object boolean
+   * masks (e.g., SAM, Mask R-CNN) without going through SegmentationMask/RLE.
+   *
+   * Overlapping pixels are assigned to the last mask (same as fromMasks).
+   *
+   * @param masks - Binary masks as:
+   *   - `number[][]` — single 2D mask (rows of pixel values)
+   *   - `number[][][]` — array of 2D masks
+   *   - `(Uint8Array | number[][])[]` — array of flat or 2D masks
+   * @param options.height - Required when masks are flat Uint8Array.
+   * @param options.width - Required when masks are flat Uint8Array.
+   * @param options.labelIds - Explicit pixel values per mask. Must be positive and unique.
+   *   Defaults to sequential [1, 2, ..., N].
+   * @param options.tracks - Track objects per mask (positional).
+   * @param options.categories - Category strings per mask (positional).
+   * @param options.names - Name strings per mask (positional).
+   * @param options.scores - Confidence scores per mask (positional).
+   * @param options.createTracks - Auto-create Track objects named by label ID.
+   */
+  static fromBinaryMasks(masks, options) {
+    let maskList;
+    if (masks.length === 0) {
+      throw new Error("Cannot create LabelImage from empty mask list.");
+    }
+    const first = masks[0];
+    if (first instanceof Uint8Array) {
+      maskList = masks;
+    } else if (Array.isArray(first)) {
+      if (first.length > 0 && typeof first[0] === "number") {
+        maskList = [masks];
+      } else if (first.length > 0 && Array.isArray(first[0])) {
+        maskList = masks;
+      } else {
+        maskList = [masks];
+      }
+    } else {
+      throw new Error("Unsupported mask format.");
+    }
+    const n = maskList.length;
+    let height = options?.height;
+    let width = options?.width;
+    for (const m of maskList) {
+      if (Array.isArray(m)) {
+        height = height ?? m.length;
+        width = width ?? m[0]?.length ?? 0;
+        break;
+      }
+    }
+    if (height === void 0 || width === void 0) {
+      throw new Error(
+        "Cannot determine mask dimensions. Provide height and width in options when using flat Uint8Array masks."
+      );
+    }
+    const pixelCount = height * width;
+    const flatMasks = [];
+    for (let i = 0; i < n; i++) {
+      const m = maskList[i];
+      if (m instanceof Uint8Array) {
+        if (m.length !== pixelCount) {
+          throw new Error(
+            `Mask ${i} has length ${m.length}, expected ${pixelCount} (${height}x${width}).`
+          );
+        }
+        flatMasks.push(m);
+      } else {
+        if (m.length !== height || (m[0]?.length ?? 0) !== width) {
+          throw new Error(
+            `Mask ${i} has shape (${m.length}, ${m[0]?.length ?? 0}), expected (${height}, ${width}).`
+          );
+        }
+        const flat = new Uint8Array(pixelCount);
+        for (let r = 0; r < height; r++) {
+          for (let c = 0; c < width; c++) {
+            if (m[r][c]) flat[r * width + c] = 1;
+          }
+        }
+        flatMasks.push(flat);
+      }
+    }
+    const labelIds = [];
+    if (options?.labelIds != null) {
+      if (options.labelIds.length !== n) {
+        throw new Error(
+          `labelIds length (${options.labelIds.length}) must match number of masks (${n}).`
+        );
+      }
+      const seen = /* @__PURE__ */ new Set();
+      for (const id of options.labelIds) {
+        if (id <= 0) {
+          throw new Error(
+            `All labelIds must be positive, got ${id}.`
+          );
+        }
+        if (seen.has(id)) {
+          throw new Error(`Duplicate labelId: ${id}.`);
+        }
+        seen.add(id);
+        labelIds.push(id);
+      }
+    } else {
+      for (let i = 0; i < n; i++) {
+        labelIds.push(i + 1);
+      }
+    }
+    if (options?.tracks != null && options.tracks.length !== n) {
+      throw new Error(
+        `tracks length (${options.tracks.length}) must match number of masks (${n}).`
+      );
+    }
+    if (options?.categories != null && options.categories.length !== n) {
+      throw new Error(
+        `categories length (${options.categories.length}) must match number of masks (${n}).`
+      );
+    }
+    if (options?.names != null && options.names.length !== n) {
+      throw new Error(
+        `names length (${options.names.length}) must match number of masks (${n}).`
+      );
+    }
+    if (options?.scores != null && options.scores.length !== n) {
+      throw new Error(
+        `scores length (${options.scores.length}) must match number of masks (${n}).`
+      );
+    }
+    let trackList;
+    if (options?.tracks != null) {
+      trackList = options.tracks;
+    } else if (options?.createTracks) {
+      trackList = labelIds.map((id) => new Track(String(id)));
+    } else {
+      trackList = new Array(n).fill(null);
+    }
+    const data = new Int32Array(pixelCount);
+    const objects = /* @__PURE__ */ new Map();
+    for (let i = 0; i < n; i++) {
+      const labelId = labelIds[i];
+      const maskData = flatMasks[i];
+      for (let j = 0; j < maskData.length; j++) {
+        if (maskData[j]) data[j] = labelId;
+      }
+      objects.set(labelId, {
+        track: trackList[i],
+        category: options?.categories?.[i] ?? "",
+        name: options?.names?.[i] ?? "",
+        instance: null,
+        score: options?.scores?.[i] ?? void 0
+      });
+    }
+    return new UserLabelImage({
+      data,
+      height,
+      width,
+      objects,
+      source: options?.source ?? "",
+      scale: options?.scale,
+      offset: options?.offset
+    });
+  }
+  // --- Conversion ---
+  /** Decompose this LabelImage into individual SegmentationMask objects. */
+  toMasks() {
+    const ids = this.labelIds;
+    const maskMap = /* @__PURE__ */ new Map();
+    for (const lid of ids) {
+      maskMap.set(lid, new Uint8Array(this.height * this.width));
+    }
+    for (let i = 0; i < this.data.length; i++) {
+      const mask = maskMap.get(this.data[i]);
+      if (mask) mask[i] = 1;
+    }
+    const result = [];
+    for (const lid of ids) {
+      const info = this.objects.get(lid) ?? {
+        track: null,
+        category: "",
+        name: "",
+        instance: null
+      };
+      const rleCounts = encodeRle(maskMap.get(lid), this.height, this.width);
+      const baseOpts = {
+        rleCounts,
+        height: this.height,
+        width: this.width,
+        track: info.track,
+        category: info.category,
+        name: info.name,
+        instance: info.instance,
+        source: this.source,
+        scale: [...this.scale],
+        offset: [...this.offset]
+      };
+      if (this instanceof PredictedLabelImage) {
+        const pli = this;
+        result.push(new PredictedSegmentationMask({
+          ...baseOpts,
+          score: info.score ?? pli.score
+        }));
+      } else {
+        result.push(new UserSegmentationMask(baseOpts));
+      }
+    }
+    return result;
+  }
+  /** Extract tight bounding boxes for each object in the label image.
+   *
+   * Returns `UserBoundingBox` or `PredictedBoundingBox` objects depending on
+   * whether this label image is predicted. Each bounding box inherits track,
+   * category, name, instance, and score from the corresponding object entry.
+   *
+   * Bounding boxes are in image coordinates (respecting scale/offset).
+   * Label IDs present in `objects` but with no pixels in the data are skipped.
+   */
+  toBboxes() {
+    const data = this.data;
+    const h = this.height;
+    const w = this.width;
+    const labelBounds = /* @__PURE__ */ new Map();
+    for (let r = 0; r < h; r++) {
+      for (let c = 0; c < w; c++) {
+        const v = data[r * w + c];
+        if (v <= 0) continue;
+        const bounds = labelBounds.get(v);
+        if (!bounds) {
+          labelBounds.set(v, { minR: r, maxR: r, minC: c, maxC: c });
+        } else {
+          if (r < bounds.minR) bounds.minR = r;
+          if (r > bounds.maxR) bounds.maxR = r;
+          if (c < bounds.minC) bounds.minC = c;
+          if (c > bounds.maxC) bounds.maxC = c;
+        }
+      }
+    }
+    if (labelBounds.size === 0) return [];
+    const [sx, sy] = this.scale;
+    const [ox, oy] = this.offset;
+    const isPredicted = this instanceof PredictedLabelImage;
+    const bboxes = [];
+    for (const [lid, info] of this.objects) {
+      const bounds = labelBounds.get(lid);
+      if (!bounds) continue;
+      const x1 = bounds.minC / sx + ox;
+      const y1 = bounds.minR / sy + oy;
+      const x2 = (bounds.maxC + 1) / sx + ox;
+      const y2 = (bounds.maxR + 1) / sy + oy;
+      const opts = {
+        x1,
+        y1,
+        x2,
+        y2,
+        track: info.track,
+        instance: info.instance,
+        category: info.category,
+        name: info.name,
+        source: this.source
+      };
+      if (isPredicted) {
+        const pli = this;
+        bboxes.push(
+          new PredictedBoundingBox({
+            ...opts,
+            score: info.score ?? pli.score
+          })
+        );
+      } else {
+        bboxes.push(new UserBoundingBox(opts));
+      }
+    }
+    return bboxes;
+  }
+};
+var UserLabelImage = class extends LabelImage {
+};
+var PredictedLabelImage = class extends LabelImage {
+  score;
+  scoreMap;
+  /** Spatial scale for the score map. Default [1, 1]. */
+  scoreMapScale;
+  /** Spatial offset for the score map. Default [0, 0]. */
+  scoreMapOffset;
+  constructor(options) {
+    super(options);
+    this.score = options.score;
+    this.scoreMap = options.scoreMap ?? null;
+    this.scoreMapScale = options.scoreMapScale ?? [1, 1];
+    this.scoreMapOffset = options.scoreMapOffset ?? [0, 0];
+  }
+  get isPredicted() {
+    return true;
+  }
+};
+function normalizeLabelIds(labelImages, options) {
+  const by = options?.by ?? "track";
+  if (by === "track") {
+    return normalizeLabelIdsByTrack(labelImages);
+  } else {
+    return normalizeLabelIdsByCategory(labelImages);
+  }
+}
+function normalizeLabelIdsByTrack(labelImages) {
+  const trackToId = /* @__PURE__ */ new Map();
+  let nextId = 1;
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId);
+      if (info.track !== null && !trackToId.has(info.track)) {
+        trackToId.set(info.track, nextId++);
+      }
+    }
+  }
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+    let maxOld = 0;
+    for (const k of sortedKeys) {
+      if (k > maxOld) maxOld = k;
+    }
+    const lut = new Int32Array(maxOld + 1);
+    const newObjects = /* @__PURE__ */ new Map();
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId);
+      let newId;
+      if (info.track !== null) {
+        newId = trackToId.get(info.track);
+      } else {
+        newId = nextId++;
+      }
+      lut[oldId] = newId;
+      newObjects.set(newId, info);
+    }
+    const newData = new Int32Array(li.data.length);
+    for (let j = 0; j < li.data.length; j++) {
+      const v = li.data[j];
+      newData[j] = v > 0 && v <= maxOld ? lut[v] : 0;
+    }
+    li.data = newData;
+    li.objects = newObjects;
+  }
+  return trackToId;
+}
+function normalizeLabelIdsByCategory(labelImages) {
+  const categoryToId = /* @__PURE__ */ new Map();
+  let nextId = 1;
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId);
+      const cat = info.category ?? "";
+      if (!categoryToId.has(cat)) {
+        categoryToId.set(cat, nextId++);
+      }
+    }
+  }
+  for (const li of labelImages) {
+    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
+    let maxOld = 0;
+    for (const k of sortedKeys) {
+      if (k > maxOld) maxOld = k;
+    }
+    const lut = new Int32Array(maxOld + 1);
+    const newObjects = /* @__PURE__ */ new Map();
+    for (const oldId of sortedKeys) {
+      const info = li.objects.get(oldId);
+      const cat = info.category ?? "";
+      const newId = categoryToId.get(cat);
+      lut[oldId] = newId;
+      if (!newObjects.has(newId)) {
+        newObjects.set(newId, info);
+      }
+    }
+    const newData = new Int32Array(li.data.length);
+    for (let j = 0; j < li.data.length; j++) {
+      const v = li.data[j];
+      newData[j] = v > 0 && v <= maxOld ? lut[v] : 0;
+    }
+    li.data = newData;
+    li.objects = newObjects;
+  }
+  return categoryToId;
+}
+
 // src/model/labeled-frame.ts
 var ANNOTATION_ATTRS = [
   "centroids",
@@ -272,6 +2172,32 @@ var LabeledFrame = class {
           this[attr].push(_shallowCopy(item));
         }
       }
+    }
+  }
+  /**
+   * Append an annotation to this frame, routing to the correct list by type.
+   *
+   * @param annotation - Any annotation type: Instance, PredictedInstance,
+   *   Centroid, BoundingBox, SegmentationMask, LabelImage, or ROI.
+   * @throws TypeError if the annotation type is not recognized.
+   */
+  append(annotation) {
+    if (annotation instanceof PredictedInstance || annotation instanceof Instance) {
+      this.instances.push(annotation);
+    } else if (annotation instanceof Centroid) {
+      this.centroids.push(annotation);
+    } else if (annotation instanceof BoundingBox) {
+      this.bboxes.push(annotation);
+    } else if (annotation instanceof SegmentationMask) {
+      this.masks.push(annotation);
+    } else if (annotation instanceof LabelImage) {
+      this.labelImages.push(annotation);
+    } else if (annotation instanceof ROI) {
+      this.rois.push(annotation);
+    } else {
+      throw new TypeError(
+        `Unknown annotation type: ${annotation.constructor?.name ?? typeof annotation}`
+      );
     }
   }
   removeEmptyInstances() {
@@ -995,14 +2921,8 @@ var Labels = class _Labels {
   sessions;
   provenance;
   identities;
-  // Annotation fields: accepted as constructor kwargs, distributed into
-  // LabeledFrames at init time. Undistributed annotations (video=null or
-  // frameIdx=null) are kept here. Access via property getters.
-  _initRois;
-  _initMasks;
-  _initBboxes;
-  _initCentroids;
-  _initLabelImages;
+  // Static ROIs: not tied to any specific frame (e.g., arena boundaries).
+  _staticRois;
   /** @internal Lazy frame list for on-demand materialization. */
   _lazyFrameList = null;
   /** @internal Lazy data store holding raw HDF5 data. */
@@ -1020,11 +2940,7 @@ var Labels = class _Labels {
     this.suggestions = options?.suggestions ?? [];
     this.sessions = options?.sessions ?? [];
     this.provenance = options?.provenance ?? {};
-    this._initRois = options?.rois ?? [];
-    this._initMasks = options?.masks ?? [];
-    this._initBboxes = options?.bboxes ?? [];
-    this._initCentroids = options?.centroids ?? [];
-    this._initLabelImages = options?.labelImages ?? [];
+    this._staticRois = options?.rois ?? [];
     this.identities = options?.identities ?? [];
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = /* @__PURE__ */ new Map();
@@ -1052,54 +2968,15 @@ var Labels = class _Labels {
       this.tracks = Array.from(uniqueTracks.values());
     }
     if (!this._lazyFrameList) {
-      this._distributeAnnotations();
       for (const lf of this.labeledFrames) {
         this._collectAnnotationTracks(lf);
       }
     }
-  }
-  /** Distribute flat annotation lists into their corresponding LabeledFrames. */
-  _distributeAnnotations() {
-    const frameMap = /* @__PURE__ */ new Map();
-    for (const lf of this.labeledFrames) {
-      let byIdx = frameMap.get(lf.video);
-      if (!byIdx) {
-        byIdx = /* @__PURE__ */ new Map();
-        frameMap.set(lf.video, byIdx);
+    for (const roi of this._staticRois) {
+      if (roi.track && !this.tracks.includes(roi.track)) {
+        this.tracks.push(roi.track);
       }
-      byIdx.set(lf.frameIdx, lf);
     }
-    const getOrCreate = (video, frameIdx) => {
-      let byIdx = frameMap.get(video);
-      if (byIdx) {
-        const existing = byIdx.get(frameIdx);
-        if (existing) return existing;
-      } else {
-        byIdx = /* @__PURE__ */ new Map();
-        frameMap.set(video, byIdx);
-      }
-      const lf = new LabeledFrame({ video, frameIdx });
-      byIdx.set(frameIdx, lf);
-      this.labeledFrames.push(lf);
-      return lf;
-    };
-    const distribute = (items, attr) => {
-      const remaining = [];
-      for (const ann of items) {
-        if (ann.video !== null && ann.frameIdx !== null) {
-          const lf = getOrCreate(ann.video, ann.frameIdx);
-          lf[attr].push(ann);
-        } else {
-          remaining.push(ann);
-        }
-      }
-      return remaining;
-    };
-    this._initCentroids = distribute(this._initCentroids, "centroids");
-    this._initBboxes = distribute(this._initBboxes, "bboxes");
-    this._initMasks = distribute(this._initMasks, "masks");
-    this._initLabelImages = distribute(this._initLabelImages, "labelImages");
-    this._initRois = distribute(this._initRois, "rois");
   }
   /** Collect tracks from annotations on a frame into this.tracks. */
   _collectAnnotationTracks(lf) {
@@ -1205,10 +3082,25 @@ To use, first materialize:
         }
       }
     }
+    const annFrameIdx = /* @__PURE__ */ new Map();
+    for (const lf of this.labeledFrames) {
+      for (const ann of [
+        ...lf.centroids,
+        ...lf.bboxes,
+        ...lf.masks,
+        ...lf.rois,
+        ...lf.instances
+      ]) {
+        annFrameIdx.set(ann, lf.frameIdx);
+      }
+      for (const li of lf.labelImages) {
+        annFrameIdx.set(li, lf.frameIdx);
+      }
+    }
     for (const videoMap of this._trackIndex.values()) {
       for (const list of videoMap.values()) {
         list.sort(
-          (a, b) => (a.frameIdx ?? 0) - (b.frameIdx ?? 0)
+          (a, b) => (annFrameIdx.get(a) ?? 0) - (annFrameIdx.get(b) ?? 0)
         );
       }
     }
@@ -1241,48 +3133,6 @@ To use, first materialize:
   reindex() {
     this._invalidateIndices();
   }
-  /** Find an existing LabeledFrame or create a new one. */
-  _findOrCreateFrame(video, frameIdx) {
-    const existing = this.getFrame(video, frameIdx);
-    if (existing) return existing;
-    const lf = new LabeledFrame({ video, frameIdx });
-    this.labeledFrames.push(lf);
-    this._invalidateIndices();
-    return lf;
-  }
-  /** Add an annotation to the appropriate LabeledFrame. */
-  _addAnnotation(annotation, attr) {
-    if (annotation.video === null || annotation.frameIdx === null) {
-      throw new Error(`Annotation must have video and frameIdx set.`);
-    }
-    const lf = this._findOrCreateFrame(annotation.video, annotation.frameIdx);
-    lf[attr].push(annotation);
-    this._invalidateIndices();
-    if (!this.videos.includes(annotation.video)) this.videos.push(annotation.video);
-    if (annotation.track && !this.tracks.includes(annotation.track)) {
-      this.tracks.push(annotation.track);
-    }
-  }
-  addCentroid(centroid) {
-    this._addAnnotation(centroid, "centroids");
-  }
-  addBbox(bbox) {
-    this._addAnnotation(bbox, "bboxes");
-  }
-  addMask(mask) {
-    this._addAnnotation(mask, "masks");
-  }
-  addLabelImage(labelImage) {
-    this._addAnnotation(labelImage, "labelImages");
-    for (const info of labelImage.objects.values()) {
-      if (info.track && !this.tracks.includes(info.track)) {
-        this.tracks.push(info.track);
-      }
-    }
-  }
-  addRoi(roi) {
-    this._addAnnotation(roi, "rois");
-  }
   /** Remove all predicted instances and predicted annotations from all frames. */
   removePredictions() {
     if (this._lazyFrameList) this.materialize();
@@ -1298,10 +3148,7 @@ To use, first materialize:
       const undist = this._lazyDataStore._undistributedCentroids;
       return [...undist, ...[...byFrame.values()].flat()];
     }
-    return [
-      ...this._initCentroids,
-      ...this.labeledFrames.flatMap((lf) => lf.centroids)
-    ];
+    return this.labeledFrames.flatMap((lf) => lf.centroids);
   }
   /** Flat view of all bounding boxes across all frames. */
   get bboxes() {
@@ -1310,10 +3157,7 @@ To use, first materialize:
       const undist = this._lazyDataStore._undistributedBboxes;
       return [...undist, ...[...byFrame.values()].flat()];
     }
-    return [
-      ...this._initBboxes,
-      ...this.labeledFrames.flatMap((lf) => lf.bboxes)
-    ];
+    return this.labeledFrames.flatMap((lf) => lf.bboxes);
   }
   /** Flat view of all segmentation masks across all frames. */
   get masks() {
@@ -1322,10 +3166,7 @@ To use, first materialize:
       const undist = this._lazyDataStore._undistributedMasks;
       return [...undist, ...[...byFrame.values()].flat()];
     }
-    return [
-      ...this._initMasks,
-      ...this.labeledFrames.flatMap((lf) => lf.masks)
-    ];
+    return this.labeledFrames.flatMap((lf) => lf.masks);
   }
   /** Flat view of all label images across all frames. */
   get labelImages() {
@@ -1334,12 +3175,9 @@ To use, first materialize:
       const undist = this._lazyDataStore._undistributedLabelImages;
       return [...undist, ...[...byFrame.values()].flat()];
     }
-    return [
-      ...this._initLabelImages,
-      ...this.labeledFrames.flatMap((lf) => lf.labelImages)
-    ];
+    return this.labeledFrames.flatMap((lf) => lf.labelImages);
   }
-  /** Flat view of all ROIs across all frames. */
+  /** Flat view of all ROIs across all frames and static ROIs. */
   get rois() {
     if (this._lazyFrameList && this._lazyDataStore) {
       const byFrame = this._lazyDataStore._roiByFrame;
@@ -1347,7 +3185,7 @@ To use, first materialize:
       return [...undist, ...[...byFrame.values()].flat()];
     }
     return [
-      ...this._initRois,
+      ...this._staticRois,
       ...this.labeledFrames.flatMap((lf) => lf.rois)
     ];
   }
@@ -1386,11 +3224,7 @@ To use, first materialize:
       }
     }
     if (store) {
-      this._initRois = store._undistributedRois;
-      this._initMasks = store._undistributedMasks;
-      this._initBboxes = store._undistributedBboxes;
-      this._initCentroids = store._undistributedCentroids;
-      this._initLabelImages = store._undistributedLabelImages;
+      this._staticRois = store._undistributedRois;
     }
   }
   get negativeFrames() {
@@ -1447,26 +3281,44 @@ To use, first materialize:
     if (this._lazyFrameList) this.materialize();
     return toDict(this, options);
   }
+  /** Static ROIs (not attached to any LabeledFrame). */
   get staticRois() {
-    return this.rois.filter((roi) => roi.isStatic);
+    return [...this._staticRois];
   }
+  /** Frame-bound ROIs (attached to LabeledFrames). */
   get temporalRois() {
-    return this.rois.filter((roi) => !roi.isStatic);
+    return this.labeledFrames.flatMap((lf) => lf.rois);
   }
+  /**
+   * Filter ROIs across the Labels object.
+   *
+   * Filtering rule (matches sibling getters like `getMasks`/`getBboxes`):
+   *   - Frame-aware filters (`video` or `frameIdx`) walk only `labeledFrames`.
+   *     Static ROIs are excluded from these results.
+   *   - Otherwise (no filter, or only `category`/`track`/`instance`/`predicted`)
+   *     the search runs over `this.rois` — the union of static + frame-bound.
+   *
+   * To access static ROIs directly, use `staticRois`. To access only frame-bound
+   * ROIs across all frames, use `temporalRois`.
+   */
   getRois(filters) {
     if (!filters) return [...this.rois];
     let results;
     if (filters.video !== void 0 && filters.frameIdx !== void 0) {
       const lf = this.getFrame(filters.video, filters.frameIdx);
       results = lf ? lf.rois : [];
+    } else if (filters.video !== void 0) {
+      results = [];
+      for (const lf of this.labeledFrames) {
+        if (lf.video === filters.video) results.push(...lf.rois);
+      }
+    } else if (filters.frameIdx !== void 0) {
+      results = [];
+      for (const lf of this.labeledFrames) {
+        if (lf.frameIdx === filters.frameIdx) results.push(...lf.rois);
+      }
     } else {
       results = this.rois;
-      if (filters.video !== void 0) {
-        results = results.filter((r) => r.video === filters.video);
-      }
-      if (filters.frameIdx !== void 0) {
-        results = results.filter((r) => r.frameIdx === filters.frameIdx);
-      }
     }
     if (filters.category !== void 0) {
       results = results.filter((r) => r.category === filters.category);
@@ -1488,14 +3340,18 @@ To use, first materialize:
     if (filters.video !== void 0 && filters.frameIdx !== void 0) {
       const lf = this.getFrame(filters.video, filters.frameIdx);
       results = lf ? lf.masks : [];
+    } else if (filters.video !== void 0) {
+      results = [];
+      for (const lf of this.labeledFrames) {
+        if (lf.video === filters.video) results.push(...lf.masks);
+      }
+    } else if (filters.frameIdx !== void 0) {
+      results = [];
+      for (const lf of this.labeledFrames) {
+        if (lf.frameIdx === filters.frameIdx) results.push(...lf.masks);
+      }
     } else {
       results = this.masks;
-      if (filters.video !== void 0) {
-        results = results.filter((m) => m.video === filters.video);
-      }
-      if (filters.frameIdx !== void 0) {
-        results = results.filter((m) => m.frameIdx === filters.frameIdx);
-      }
     }
     if (filters.category !== void 0) {
       results = results.filter((m) => m.category === filters.category);
@@ -1511,26 +3367,24 @@ To use, first materialize:
     }
     return results;
   }
-  get staticBboxes() {
-    return this.bboxes.filter((b) => b.isStatic);
-  }
-  get temporalBboxes() {
-    return this.bboxes.filter((b) => !b.isStatic);
-  }
   getBboxes(filters) {
     if (!filters) return [...this.bboxes];
     let results;
     if (filters.video !== void 0 && filters.frameIdx !== void 0) {
       const lf = this.getFrame(filters.video, filters.frameIdx);
       results = lf ? lf.bboxes : [];
+    } else if (filters.video !== void 0) {
+      results = [];
+      for (const lf of this.labeledFrames) {
+        if (lf.video === filters.video) results.push(...lf.bboxes);
+      }
+    } else if (filters.frameIdx !== void 0) {
+      results = [];
+      for (const lf of this.labeledFrames) {
+        if (lf.frameIdx === filters.frameIdx) results.push(...lf.bboxes);
+      }
     } else {
       results = this.bboxes;
-      if (filters.video !== void 0) {
-        results = results.filter((b) => b.video === filters.video);
-      }
-      if (filters.frameIdx !== void 0) {
-        results = results.filter((b) => b.frameIdx === filters.frameIdx);
-      }
     }
     if (filters.category !== void 0) {
       results = results.filter((b) => b.category === filters.category);
@@ -1552,14 +3406,18 @@ To use, first materialize:
     if (filters.video !== void 0 && filters.frameIdx !== void 0) {
       const lf = this.getFrame(filters.video, filters.frameIdx);
       results = lf ? lf.centroids : [];
+    } else if (filters.video !== void 0) {
+      results = [];
+      for (const lf of this.labeledFrames) {
+        if (lf.video === filters.video) results.push(...lf.centroids);
+      }
+    } else if (filters.frameIdx !== void 0) {
+      results = [];
+      for (const lf of this.labeledFrames) {
+        if (lf.frameIdx === filters.frameIdx) results.push(...lf.centroids);
+      }
     } else {
       results = this.centroids;
-      if (filters.video !== void 0) {
-        results = results.filter((c) => c.video === filters.video);
-      }
-      if (filters.frameIdx !== void 0) {
-        results = results.filter((c) => c.frameIdx === filters.frameIdx);
-      }
     }
     if (filters.category !== void 0) {
       results = results.filter((c) => c.category === filters.category);
@@ -1575,26 +3433,24 @@ To use, first materialize:
     }
     return results;
   }
-  get staticLabelImages() {
-    return this.labelImages.filter((li) => li.isStatic);
-  }
-  get temporalLabelImages() {
-    return this.labelImages.filter((li) => !li.isStatic);
-  }
   getLabelImages(filters) {
     if (!filters) return [...this.labelImages];
     let results;
     if (filters.video !== void 0 && filters.frameIdx !== void 0) {
       const lf = this.getFrame(filters.video, filters.frameIdx);
       results = lf ? lf.labelImages : [];
+    } else if (filters.video !== void 0) {
+      results = [];
+      for (const lf of this.labeledFrames) {
+        if (lf.video === filters.video) results.push(...lf.labelImages);
+      }
+    } else if (filters.frameIdx !== void 0) {
+      results = [];
+      for (const lf of this.labeledFrames) {
+        if (lf.frameIdx === filters.frameIdx) results.push(...lf.labelImages);
+      }
     } else {
       results = this.labelImages;
-      if (filters.video !== void 0) {
-        results = results.filter((li) => li.video === filters.video);
-      }
-      if (filters.frameIdx !== void 0) {
-        results = results.filter((li) => li.frameIdx === filters.frameIdx);
-      }
     }
     if (filters.track !== void 0) {
       results = results.filter(
@@ -1638,36 +3494,16 @@ To use, first materialize:
     for (const frame of this.labeledFrames) {
       const mapped = videoMap.get(frame.video);
       if (mapped) frame.video = mapped;
-      for (const c of frame.centroids) {
-        if (c.video && videoMap.has(c.video)) c.video = videoMap.get(c.video);
-      }
-      for (const b of frame.bboxes) {
-        if (b.video && videoMap.has(b.video)) b.video = videoMap.get(b.video);
-      }
-      for (const m of frame.masks) {
-        if (m.video && videoMap.has(m.video)) m.video = videoMap.get(m.video);
-      }
       for (const r of frame.rois) {
         if (r.video && videoMap.has(r.video)) r.video = videoMap.get(r.video);
-      }
-      for (const li of frame.labelImages) {
-        if (li.video && videoMap.has(li.video)) li.video = videoMap.get(li.video);
       }
     }
     for (const suggestion of this.suggestions) {
       const mapped = videoMap.get(suggestion.video);
       if (mapped) suggestion.video = mapped;
     }
-    for (const ann of [
-      ...this._initCentroids,
-      ...this._initBboxes,
-      ...this._initMasks,
-      ...this._initRois
-    ]) {
-      if (ann.video && videoMap.has(ann.video)) ann.video = videoMap.get(ann.video);
-    }
-    for (const li of this._initLabelImages) {
-      if (li.video && videoMap.has(li.video)) li.video = videoMap.get(li.video);
+    for (const roi of this._staticRois) {
+      if (roi.video && videoMap.has(roi.video)) roi.video = videoMap.get(roi.video);
     }
     this.videos = this.videos.map((v) => videoMap.get(v) ?? v);
     this._invalidateIndices();
@@ -1864,11 +3700,7 @@ To use, first materialize:
         }),
         sessions: structuredClone(this.sessions),
         provenance: { ...this.provenance },
-        rois: cloneAncillary(this._initRois),
-        masks: cloneAncillary(this._initMasks),
-        bboxes: cloneAncillary(this._initBboxes),
-        centroids: cloneAncillary(this._initCentroids),
-        labelImages: cloneAncillary(this._initLabelImages),
+        rois: cloneAncillary(this._staticRois),
         identities: structuredClone(this.identities)
       });
     }
@@ -2459,1969 +4291,6 @@ var Identity = class {
     this.metadata = options?.metadata ?? {};
   }
 };
-
-// src/model/roi.ts
-var _maskFactory = null;
-function _registerMaskFactory(factory) {
-  _maskFactory = factory;
-}
-var AnnotationType = /* @__PURE__ */ ((AnnotationType2) => {
-  AnnotationType2[AnnotationType2["DEFAULT"] = 0] = "DEFAULT";
-  AnnotationType2[AnnotationType2["BOUNDING_BOX"] = 1] = "BOUNDING_BOX";
-  AnnotationType2[AnnotationType2["SEGMENTATION"] = 2] = "SEGMENTATION";
-  AnnotationType2[AnnotationType2["ARENA"] = 3] = "ARENA";
-  AnnotationType2[AnnotationType2["ANCHOR"] = 4] = "ANCHOR";
-  return AnnotationType2;
-})(AnnotationType || {});
-var ROI = class _ROI {
-  geometry;
-  name;
-  category;
-  source;
-  video;
-  frameIdx;
-  track;
-  trackingScore = null;
-  instance;
-  /** @internal Deferred instance index for lazy resolution. */
-  _instanceIdx = null;
-  constructor(options) {
-    if (new.target === _ROI) {
-      throw new TypeError(
-        "ROI is abstract. Use UserROI or PredictedROI."
-      );
-    }
-    this.geometry = options.geometry;
-    this.name = options.name ?? "";
-    this.category = options.category ?? "";
-    this.source = options.source ?? "";
-    this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
-    this.track = options.track ?? null;
-    this.trackingScore = options.trackingScore ?? null;
-    this.instance = options.instance ?? null;
-  }
-  /** @deprecated Use BoundingBox.fromXywh() instead. */
-  static fromBbox(x, y, width, height, options) {
-    const geometry = {
-      type: "Polygon",
-      coordinates: [
-        [
-          [x, y],
-          [x + width, y],
-          [x + width, y + height],
-          [x, y + height],
-          [x, y]
-        ]
-      ]
-    };
-    return new UserROI({
-      geometry,
-      ...options
-    });
-  }
-  /** @deprecated Use BoundingBox.fromXyxy() instead. */
-  static fromXyxy(x1, y1, x2, y2, options) {
-    const geometry = {
-      type: "Polygon",
-      coordinates: [
-        [
-          [x1, y1],
-          [x2, y1],
-          [x2, y2],
-          [x1, y2],
-          [x1, y1]
-        ]
-      ]
-    };
-    return new UserROI({
-      geometry,
-      ...options
-    });
-  }
-  static fromPolygon(coords, options) {
-    const ring = [...coords];
-    if (ring.length > 0 && (ring[0][0] !== ring[ring.length - 1][0] || ring[0][1] !== ring[ring.length - 1][1])) {
-      ring.push([ring[0][0], ring[0][1]]);
-    }
-    const geometry = { type: "Polygon", coordinates: [ring] };
-    return new UserROI({
-      geometry,
-      ...options
-    });
-  }
-  static fromMultiPolygon(polygons, options) {
-    return new UserROI({
-      geometry: { type: "MultiPolygon", coordinates: polygons },
-      ...options
-    });
-  }
-  /** Whether this is a predicted ROI (has a score). */
-  get isPredicted() {
-    return false;
-  }
-  explode() {
-    const Ctor = this.constructor;
-    const copyFields = {
-      name: this.name,
-      category: this.category,
-      source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
-      track: this.track,
-      trackingScore: this.trackingScore,
-      instance: this.instance
-    };
-    if (this.isPredicted && "score" in this) {
-      copyFields.score = this.score;
-    }
-    if (this.geometry.type === "MultiPolygon") {
-      return this.geometry.coordinates.map(
-        (coords) => new Ctor({
-          geometry: { type: "Polygon", coordinates: coords },
-          ...copyFields
-        })
-      );
-    }
-    if (this.geometry.type === "GeometryCollection") {
-      return this.geometry.geometries.map(
-        (geom) => new Ctor({
-          geometry: geom,
-          ...copyFields
-        })
-      );
-    }
-    return [new Ctor({
-      geometry: this.geometry,
-      ...copyFields
-    })];
-  }
-  toGeoJSON() {
-    return {
-      type: "Feature",
-      geometry: this.geometry,
-      properties: {
-        name: this.name,
-        category: this.category,
-        source: this.source,
-        frame_idx: this.frameIdx,
-        roi_type: this.isStatic ? "static" : "temporal"
-      }
-    };
-  }
-  get isStatic() {
-    return this.frameIdx === null;
-  }
-  get isBbox() {
-    if (this.geometry.type !== "Polygon") return false;
-    const coords = this.geometry.coordinates[0];
-    if (!coords || coords.length !== 5) return false;
-    for (let i = 0; i < 4; i++) {
-      const dx = Math.abs(coords[i + 1][0] - coords[i][0]);
-      const dy = Math.abs(coords[i + 1][1] - coords[i][1]);
-      if (dx > 1e-10 && dy > 1e-10) return false;
-    }
-    return true;
-  }
-  get bounds() {
-    const points = this._allPoints();
-    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
-    for (const [x, y] of points) {
-      if (x < minX) minX = x;
-      if (y < minY) minY = y;
-      if (x > maxX) maxX = x;
-      if (y > maxY) maxY = y;
-    }
-    return { minX, minY, maxX, maxY };
-  }
-  get area() {
-    if (this.geometry.type === "Point") return 0;
-    if (this.geometry.type === "MultiPoint") return 0;
-    if (this.geometry.type === "LineString") return 0;
-    if (this.geometry.type === "Polygon") {
-      return polygonArea(this.geometry.coordinates);
-    }
-    if (this.geometry.type === "MultiPolygon") {
-      let total = 0;
-      for (const poly of this.geometry.coordinates) {
-        total += polygonArea(poly);
-      }
-      return total;
-    }
-    if (this.geometry.type === "GeometryCollection") {
-      let total = 0;
-      for (const geom of this.geometry.geometries) {
-        const sub = new UserROI({ geometry: geom });
-        total += sub.area;
-      }
-      return total;
-    }
-    return 0;
-  }
-  /** Centroid of the geometry as `[x, y]`. */
-  get centroidXy() {
-    if (this.geometry.type === "Point") {
-      return [this.geometry.coordinates[0], this.geometry.coordinates[1]];
-    }
-    const b = this.bounds;
-    return [(b.minX + b.maxX) / 2, (b.minY + b.maxY) / 2];
-  }
-  /** @deprecated Use `centroidXy` instead. */
-  get centroid() {
-    if (this.geometry.type === "Point") {
-      return { x: this.geometry.coordinates[0], y: this.geometry.coordinates[1] };
-    }
-    const b = this.bounds;
-    return { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
-  }
-  toMask(height, width) {
-    if (!_maskFactory) {
-      throw new Error(
-        "SegmentationMask not available. Import mask.ts before calling toMask()."
-      );
-    }
-    const mask = rasterizeGeometry(this.geometry, height, width);
-    return _maskFactory(mask, height, width, {
-      name: this.name,
-      category: this.category,
-      source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
-      track: this.track,
-      instance: this.instance
-    });
-  }
-  _allPoints() {
-    if (this.geometry.type === "Point") {
-      return [this.geometry.coordinates];
-    }
-    if (this.geometry.type === "Polygon") {
-      return this.geometry.coordinates.flat();
-    }
-    if (this.geometry.type === "MultiPolygon") {
-      return this.geometry.coordinates.flat(2);
-    }
-    if (this.geometry.type === "MultiPoint") {
-      return this.geometry.coordinates;
-    }
-    if (this.geometry.type === "LineString") {
-      return this.geometry.coordinates;
-    }
-    if (this.geometry.type === "GeometryCollection") {
-      const pts = [];
-      for (const geom of this.geometry.geometries) {
-        const sub = new UserROI({ geometry: geom });
-        pts.push(...sub._allPoints());
-      }
-      return pts;
-    }
-    return [];
-  }
-};
-function ringArea(ring) {
-  let area = 0;
-  const n = ring.length;
-  for (let i = 0; i < n - 1; i++) {
-    area += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
-  }
-  return area / 2;
-}
-function polygonArea(rings) {
-  if (rings.length === 0) return 0;
-  let area = Math.abs(ringArea(rings[0]));
-  for (let i = 1; i < rings.length; i++) {
-    area -= Math.abs(ringArea(rings[i]));
-  }
-  return Math.abs(area);
-}
-function rasterizeGeometry(geometry, height, width) {
-  const mask = new Uint8Array(height * width);
-  if (geometry.type === "Polygon") {
-    scanlineFill(geometry.coordinates[0], mask, height, width, true);
-    for (let i = 1; i < geometry.coordinates.length; i++) {
-      scanlineFill(geometry.coordinates[i], mask, height, width, false);
-    }
-    return mask;
-  }
-  if (geometry.type === "MultiPolygon") {
-    for (const poly of geometry.coordinates) {
-      const polyMask = rasterizeGeometry({ type: "Polygon", coordinates: poly }, height, width);
-      for (let i = 0; i < mask.length; i++) {
-        if (polyMask[i]) mask[i] = 1;
-      }
-    }
-    return mask;
-  }
-  if (geometry.type === "GeometryCollection") {
-    for (const geom of geometry.geometries) {
-      const subMask = rasterizeGeometry(geom, height, width);
-      for (let i = 0; i < mask.length; i++) {
-        if (subMask[i]) mask[i] = 1;
-      }
-    }
-    return mask;
-  }
-  return mask;
-}
-function scanlineFill(coords, mask, height, width, fill) {
-  if (!coords || coords.length < 3) return;
-  let minY = Infinity, maxY = -Infinity;
-  for (const [, y] of coords) {
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
-  }
-  const startY = Math.max(0, Math.floor(minY));
-  const endY = Math.min(height - 1, Math.floor(maxY));
-  const n = coords.length - 1;
-  for (let y = startY; y <= endY; y++) {
-    const intersections = [];
-    for (let i = 0; i < n; i++) {
-      const y0 = coords[i][1];
-      const y1 = coords[i + 1][1];
-      if (y0 === y1) continue;
-      const lo = Math.min(y0, y1);
-      const hi = Math.max(y0, y1);
-      if (lo <= y + 0.5 && y + 0.5 < hi) {
-        const x0 = coords[i][0];
-        const x1 = coords[i + 1][0];
-        const t = (y + 0.5 - y0) / (y1 - y0);
-        intersections.push(x0 + t * (x1 - x0));
-      }
-    }
-    intersections.sort((a, b) => a - b);
-    for (let j = 0; j < intersections.length - 1; j += 2) {
-      const xStart = Math.max(0, Math.floor(intersections[j]));
-      const xEnd = Math.min(width, Math.ceil(intersections[j + 1]));
-      const val = fill ? 1 : 0;
-      for (let x = xStart; x < xEnd; x++) {
-        mask[y * width + x] = val;
-      }
-    }
-  }
-}
-function encodeWkb(geometry) {
-  if (geometry.type === "Point") {
-    const buf = new ArrayBuffer(21);
-    const view = new DataView(buf);
-    view.setUint8(0, 1);
-    view.setUint32(1, 1, true);
-    view.setFloat64(5, geometry.coordinates[0], true);
-    view.setFloat64(13, geometry.coordinates[1], true);
-    return new Uint8Array(buf);
-  }
-  if (geometry.type === "Polygon") {
-    return encodeWkbPolygon(geometry.coordinates);
-  }
-  if (geometry.type === "MultiPolygon") {
-    const polygonBuffers = [];
-    for (const poly of geometry.coordinates) {
-      polygonBuffers.push(encodeWkbPolygon(poly));
-    }
-    const totalSize = 9 + polygonBuffers.reduce((sum, b) => sum + b.length, 0);
-    const buf = new ArrayBuffer(totalSize);
-    const view = new DataView(buf);
-    view.setUint8(0, 1);
-    view.setUint32(1, 6, true);
-    view.setUint32(5, geometry.coordinates.length, true);
-    let offset = 9;
-    for (const pb of polygonBuffers) {
-      new Uint8Array(buf, offset, pb.length).set(pb);
-      offset += pb.length;
-    }
-    return new Uint8Array(buf);
-  }
-  if (geometry.type === "LineString") {
-    const numPoints = geometry.coordinates.length;
-    const size = 9 + numPoints * 16;
-    const buf = new ArrayBuffer(size);
-    const view = new DataView(buf);
-    view.setUint8(0, 1);
-    view.setUint32(1, 2, true);
-    view.setUint32(5, numPoints, true);
-    let offset = 9;
-    for (const [x, y] of geometry.coordinates) {
-      view.setFloat64(offset, x, true);
-      view.setFloat64(offset + 8, y, true);
-      offset += 16;
-    }
-    return new Uint8Array(buf);
-  }
-  if (geometry.type === "MultiPoint") {
-    const numPoints = geometry.coordinates.length;
-    const size = 9 + numPoints * 21;
-    const buf = new ArrayBuffer(size);
-    const view = new DataView(buf);
-    view.setUint8(0, 1);
-    view.setUint32(1, 4, true);
-    view.setUint32(5, numPoints, true);
-    let offset = 9;
-    for (const [x, y] of geometry.coordinates) {
-      view.setUint8(offset, 1);
-      view.setUint32(offset + 1, 1, true);
-      view.setFloat64(offset + 5, x, true);
-      view.setFloat64(offset + 13, y, true);
-      offset += 21;
-    }
-    return new Uint8Array(buf);
-  }
-  if (geometry.type === "GeometryCollection") {
-    const subBuffers = [];
-    for (const geom of geometry.geometries) {
-      subBuffers.push(encodeWkb(geom));
-    }
-    const totalSize = 9 + subBuffers.reduce((sum, b) => sum + b.length, 0);
-    const buf = new ArrayBuffer(totalSize);
-    const view = new DataView(buf);
-    view.setUint8(0, 1);
-    view.setUint32(1, 7, true);
-    view.setUint32(5, geometry.geometries.length, true);
-    let offset = 9;
-    for (const sb of subBuffers) {
-      new Uint8Array(buf, offset, sb.length).set(sb);
-      offset += sb.length;
-    }
-    return new Uint8Array(buf);
-  }
-  throw new Error(`Unsupported geometry type: ${geometry.type}`);
-}
-function encodeWkbPolygon(rings) {
-  let size = 9;
-  for (const ring of rings) {
-    size += 4 + ring.length * 16;
-  }
-  const buf = new ArrayBuffer(size);
-  const view = new DataView(buf);
-  view.setUint8(0, 1);
-  view.setUint32(1, 3, true);
-  view.setUint32(5, rings.length, true);
-  let offset = 9;
-  for (const ring of rings) {
-    view.setUint32(offset, ring.length, true);
-    offset += 4;
-    for (const [x, y] of ring) {
-      view.setFloat64(offset, x, true);
-      view.setFloat64(offset + 8, y, true);
-      offset += 16;
-    }
-  }
-  return new Uint8Array(buf);
-}
-function decodeWkb(bytes) {
-  return decodeWkbInternal(bytes).geometry;
-}
-function decodeWkbInternal(bytes) {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  const byteOrder = view.getUint8(0);
-  const le = byteOrder === 1;
-  const wkbType = view.getUint32(1, le);
-  if (wkbType === 1) {
-    const x = view.getFloat64(5, le);
-    const y = view.getFloat64(13, le);
-    return { geometry: { type: "Point", coordinates: [x, y] }, bytesRead: 21 };
-  }
-  if (wkbType === 3) {
-    const { rings, bytesRead } = decodeWkbPolygon(view, 5, le);
-    return { geometry: { type: "Polygon", coordinates: rings }, bytesRead: 5 + bytesRead };
-  }
-  if (wkbType === 6) {
-    const numPolygons = view.getUint32(5, le);
-    const polygons = [];
-    let offset = 9;
-    for (let i = 0; i < numPolygons; i++) {
-      const innerLe = view.getUint8(offset) === 1;
-      offset += 5;
-      const { rings, bytesRead } = decodeWkbPolygon(view, offset, innerLe);
-      polygons.push(rings);
-      offset += bytesRead;
-    }
-    return { geometry: { type: "MultiPolygon", coordinates: polygons }, bytesRead: offset };
-  }
-  if (wkbType === 2) {
-    const numPoints = view.getUint32(5, le);
-    const coords = [];
-    let offset = 9;
-    for (let i = 0; i < numPoints; i++) {
-      const x = view.getFloat64(offset, le);
-      const y = view.getFloat64(offset + 8, le);
-      coords.push([x, y]);
-      offset += 16;
-    }
-    return { geometry: { type: "LineString", coordinates: coords }, bytesRead: offset };
-  }
-  if (wkbType === 4) {
-    const numPoints = view.getUint32(5, le);
-    const coords = [];
-    let offset = 9;
-    for (let i = 0; i < numPoints; i++) {
-      const innerLe = view.getUint8(offset) === 1;
-      offset += 5;
-      const x = view.getFloat64(offset, innerLe);
-      const y = view.getFloat64(offset + 8, innerLe);
-      coords.push([x, y]);
-      offset += 16;
-    }
-    return { geometry: { type: "MultiPoint", coordinates: coords }, bytesRead: offset };
-  }
-  if (wkbType === 7) {
-    const numGeometries = view.getUint32(5, le);
-    const geometries = [];
-    let offset = 9;
-    for (let i = 0; i < numGeometries; i++) {
-      const subBytes = new Uint8Array(bytes.buffer, bytes.byteOffset + offset, bytes.byteLength - offset);
-      const { geometry: geom, bytesRead } = decodeWkbInternal(subBytes);
-      geometries.push(geom);
-      offset += bytesRead;
-    }
-    return { geometry: { type: "GeometryCollection", geometries }, bytesRead: offset };
-  }
-  throw new Error(`Unsupported WKB type: ${wkbType}`);
-}
-function decodeWkbPolygon(view, offset, le) {
-  const numRings = view.getUint32(offset, le);
-  let pos = offset + 4;
-  const rings = [];
-  for (let i = 0; i < numRings; i++) {
-    const numPoints = view.getUint32(pos, le);
-    pos += 4;
-    const ring = [];
-    for (let j = 0; j < numPoints; j++) {
-      const x = view.getFloat64(pos, le);
-      const y = view.getFloat64(pos + 8, le);
-      ring.push([x, y]);
-      pos += 16;
-    }
-    rings.push(ring);
-  }
-  return { rings, bytesRead: pos - offset };
-}
-var UserROI = class extends ROI {
-};
-var PredictedROI = class extends ROI {
-  score;
-  constructor(options) {
-    super(options);
-    this.score = options.score;
-  }
-  get isPredicted() {
-    return true;
-  }
-};
-
-// src/model/bbox.ts
-var BoundingBox = class _BoundingBox {
-  x1;
-  y1;
-  x2;
-  y2;
-  angle;
-  video;
-  frameIdx;
-  track;
-  trackingScore;
-  instance;
-  category;
-  name;
-  source;
-  /** @internal Deferred instance index for lazy resolution. */
-  _instanceIdx = null;
-  constructor(options) {
-    if (new.target === _BoundingBox) {
-      throw new TypeError(
-        "BoundingBox is abstract. Use UserBoundingBox or PredictedBoundingBox."
-      );
-    }
-    this.x1 = options.x1;
-    this.y1 = options.y1;
-    this.x2 = options.x2;
-    this.y2 = options.y2;
-    this.angle = options.angle ?? 0;
-    this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
-    this.track = options.track ?? null;
-    this.trackingScore = options.trackingScore ?? null;
-    this.instance = options.instance ?? null;
-    this.category = options.category ?? "";
-    this.name = options.name ?? "";
-    this.source = options.source ?? "";
-  }
-  /** Create from corner coordinates [x1, y1, x2, y2]. */
-  static fromXyxy(x1, y1, x2, y2, options) {
-    return new UserBoundingBox({ x1, y1, x2, y2, ...options });
-  }
-  /** Create from top-left corner + size [x, y, w, h]. */
-  static fromXywh(x, y, w, h, options) {
-    return new UserBoundingBox({ x1: x, y1: y, x2: x + w, y2: y + h, ...options });
-  }
-  /** Center X coordinate (computed from x1, x2). */
-  get xCenter() {
-    return (this.x1 + this.x2) / 2;
-  }
-  /** Center Y coordinate (computed from y1, y2). */
-  get yCenter() {
-    return (this.y1 + this.y2) / 2;
-  }
-  /** Width of the bbox (computed from x1, x2). */
-  get width() {
-    return Math.abs(this.x2 - this.x1);
-  }
-  /** Height of the bbox (computed from y1, y2). */
-  get height() {
-    return Math.abs(this.y2 - this.y1);
-  }
-  /** Axis-aligned bounding box as [x1, y1, x2, y2]. */
-  get xyxy() {
-    if (!this.isRotated) {
-      return [this.x1, this.y1, this.x2, this.y2];
-    }
-    const c = this.corners;
-    const xs = c.map((p) => p[0]);
-    const ys = c.map((p) => p[1]);
-    return [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)];
-  }
-  /** Top-left x, y and size (AABB dimensions for rotated bboxes). */
-  get xywh() {
-    const [x1, y1, x2, y2] = this.xyxy;
-    return { x: x1, y: y1, width: x2 - x1, height: y2 - y1 };
-  }
-  /** Four corner points of the (possibly rotated) bbox. */
-  get corners() {
-    const hw = this.width / 2;
-    const hh = this.height / 2;
-    const local = [
-      [-hw, -hh],
-      [hw, -hh],
-      [hw, hh],
-      [-hw, hh]
-    ];
-    if (!this.isRotated) {
-      return local.map(([dx, dy]) => [this.xCenter + dx, this.yCenter + dy]);
-    }
-    const cos = Math.cos(this.angle);
-    const sin = Math.sin(this.angle);
-    return local.map(([dx, dy]) => [
-      this.xCenter + dx * cos - dy * sin,
-      this.yCenter + dx * sin + dy * cos
-    ]);
-  }
-  /** Axis-aligned bounds. */
-  get bounds() {
-    const [x1, y1, x2, y2] = this.xyxy;
-    return { minX: x1, minY: y1, maxX: x2, maxY: y2 };
-  }
-  /** Area of the bbox (width * height). */
-  get area() {
-    return this.width * this.height;
-  }
-  /** Center point as `[x, y]`. */
-  get centroidXy() {
-    return [this.xCenter, this.yCenter];
-  }
-  /** @deprecated Use `centroidXy` instead. */
-  get centroid() {
-    return { x: this.xCenter, y: this.yCenter };
-  }
-  /** Whether this is a predicted bbox (has a score). */
-  get isPredicted() {
-    return false;
-  }
-  /** Whether the bbox has no temporal association. */
-  get isStatic() {
-    return this.frameIdx === null;
-  }
-  /** Whether the bbox is rotated (angle != 0). */
-  get isRotated() {
-    return this.angle !== 0;
-  }
-  /** Convert to a Polygon ROI. */
-  toRoi() {
-    const c = this.corners;
-    const ring = [...c, c[0]];
-    return ROI.fromPolygon(ring, {
-      name: this.name,
-      category: this.category,
-      source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
-      track: this.track,
-      instance: this.instance
-    });
-  }
-  /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
-  toMask(height, width) {
-    return this.toRoi().toMask(height, width);
-  }
-};
-var UserBoundingBox = class extends BoundingBox {
-};
-var PredictedBoundingBox = class extends BoundingBox {
-  score;
-  constructor(options) {
-    super(options);
-    this.score = options.score;
-  }
-  get isPredicted() {
-    return true;
-  }
-};
-
-// src/model/mask.ts
-function encodeRle(mask, height, width) {
-  const total = height * width;
-  if (total === 0) return new Uint32Array(0);
-  const runs = [];
-  let currentVal = 0;
-  let count = 0;
-  for (let i = 0; i < total; i++) {
-    const val = mask[i] ? 1 : 0;
-    if (val === currentVal) {
-      count++;
-    } else {
-      runs.push(count);
-      currentVal = val;
-      count = 1;
-    }
-  }
-  runs.push(count);
-  return new Uint32Array(runs);
-}
-function decodeRle(rleCounts, height, width) {
-  const total = height * width;
-  if (rleCounts.length === 0) return new Uint8Array(total);
-  const flat = new Uint8Array(total);
-  let pos = 0;
-  for (let i = 0; i < rleCounts.length; i++) {
-    const val = i % 2 === 0 ? 0 : 1;
-    const count = rleCounts[i];
-    if (val === 1) {
-      for (let j = 0; j < count && pos + j < total; j++) {
-        flat[pos + j] = 1;
-      }
-    }
-    pos += count;
-  }
-  return flat;
-}
-function resizeNearest(data, srcH, srcW, dstH, dstW) {
-  const Ctor = data.constructor;
-  const result = new Ctor(dstH * dstW);
-  for (let r = 0; r < dstH; r++) {
-    const srcR = Math.min(Math.floor(r * srcH / dstH), srcH - 1);
-    for (let c = 0; c < dstW; c++) {
-      const srcC = Math.min(Math.floor(c * srcW / dstW), srcW - 1);
-      result[r * dstW + c] = data[srcR * srcW + srcC];
-    }
-  }
-  return result;
-}
-var SegmentationMask = class _SegmentationMask {
-  rleCounts;
-  height;
-  width;
-  name;
-  category;
-  source;
-  video;
-  frameIdx;
-  track;
-  trackingScore = null;
-  instance;
-  /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
-  scale;
-  /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
-  offset;
-  /** @internal Deferred instance index for lazy resolution. */
-  _instanceIdx = null;
-  constructor(options) {
-    if (new.target === _SegmentationMask) {
-      throw new TypeError(
-        "SegmentationMask is abstract. Use UserSegmentationMask or PredictedSegmentationMask."
-      );
-    }
-    const scale = options.scale ?? [1, 1];
-    if (scale[0] <= 0 || scale[1] <= 0) {
-      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
-    }
-    this.rleCounts = options.rleCounts;
-    this.height = options.height;
-    this.width = options.width;
-    this.name = options.name ?? "";
-    this.category = options.category ?? "";
-    this.source = options.source ?? "";
-    this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
-    this.track = options.track ?? null;
-    this.trackingScore = options.trackingScore ?? null;
-    this.instance = options.instance ?? null;
-    this.scale = scale;
-    this.offset = options.offset ?? [0, 0];
-  }
-  static fromArray(mask, height, width, options) {
-    let flat;
-    if (mask instanceof Uint8Array) {
-      flat = mask;
-    } else {
-      flat = new Uint8Array(height * width);
-      for (let r = 0; r < height; r++) {
-        for (let c = 0; c < width; c++) {
-          flat[r * width + c] = mask[r][c] ? 1 : 0;
-        }
-      }
-    }
-    const rleCounts = encodeRle(flat, height, width);
-    const stride = options?.stride;
-    const scaleFromStride = stride != null ? [1 / stride, 1 / stride] : void 0;
-    return new UserSegmentationMask({
-      rleCounts,
-      height,
-      width,
-      ...options,
-      scale: options?.scale ?? scaleFromStride
-    });
-  }
-  get data() {
-    return decodeRle(this.rleCounts, this.height, this.width);
-  }
-  get area() {
-    let total = 0;
-    for (let i = 1; i < this.rleCounts.length; i += 2) {
-      total += this.rleCounts[i];
-    }
-    return total;
-  }
-  /** Whether scale != [1,1] or offset != [0,0]. */
-  get hasSpatialTransform() {
-    return this.scale[0] !== 1 || this.scale[1] !== 1 || this.offset[0] !== 0 || this.offset[1] !== 0;
-  }
-  /** The image-space extent of this mask (accounting for scale). */
-  get imageExtent() {
-    return {
-      height: Math.floor(this.height / this.scale[1]),
-      width: Math.floor(this.width / this.scale[0])
-    };
-  }
-  get isPredicted() {
-    return false;
-  }
-  /**
-   * Create a resampled copy of this mask at the target dimensions.
-   * The returned mask has scale=[1,1] and offset=[0,0].
-   */
-  resampled(targetHeight, targetWidth) {
-    const srcData = this.data;
-    const resized = resizeNearest(srcData, this.height, this.width, targetHeight, targetWidth);
-    const rleCounts = encodeRle(resized, targetHeight, targetWidth);
-    const baseOpts = {
-      rleCounts,
-      height: targetHeight,
-      width: targetWidth,
-      name: this.name,
-      category: this.category,
-      source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
-      track: this.track,
-      instance: this.instance,
-      scale: [1, 1],
-      offset: [0, 0]
-    };
-    if (this instanceof PredictedSegmentationMask) {
-      const pm = this;
-      let resampledScoreMap = null;
-      if (pm.scoreMap) {
-        resampledScoreMap = resizeNearest(
-          pm.scoreMap,
-          this.height,
-          this.width,
-          targetHeight,
-          targetWidth
-        );
-      }
-      return new PredictedSegmentationMask({
-        ...baseOpts,
-        score: pm.score,
-        scoreMap: resampledScoreMap
-      });
-    }
-    return new UserSegmentationMask(baseOpts);
-  }
-  get bbox() {
-    const flat = this.data;
-    let minR = this.height, maxR = -1, minC = this.width, maxC = -1;
-    for (let r = 0; r < this.height; r++) {
-      for (let c = 0; c < this.width; c++) {
-        if (flat[r * this.width + c]) {
-          if (r < minR) minR = r;
-          if (r > maxR) maxR = r;
-          if (c < minC) minC = c;
-          if (c > maxC) maxC = c;
-        }
-      }
-    }
-    if (maxR === -1) return { x: 0, y: 0, width: 0, height: 0 };
-    const [sx, sy] = this.scale;
-    const [ox, oy] = this.offset;
-    return {
-      x: minC / sx + ox,
-      y: minR / sy + oy,
-      width: (maxC - minC + 1) / sx,
-      height: (maxR - minR + 1) / sy
-    };
-  }
-  /** Convert to a `BoundingBox` object with metadata.
-   *
-   * Returns a `UserBoundingBox` or `PredictedBoundingBox` depending on whether
-   * this mask is predicted. Coordinates are in image space (respecting
-   * scale/offset).
-   */
-  toBbox() {
-    const { x, y, width, height } = this.bbox;
-    const opts = {
-      x1: x,
-      y1: y,
-      x2: x + width,
-      y2: y + height,
-      video: this.video,
-      frameIdx: this.frameIdx,
-      track: this.track,
-      instance: this.instance,
-      category: this.category,
-      name: this.name,
-      source: this.source
-    };
-    if (this instanceof PredictedSegmentationMask) {
-      return new PredictedBoundingBox({
-        ...opts,
-        score: this.score
-      });
-    }
-    return new UserBoundingBox(opts);
-  }
-  /** Convert the mask to a bounding-box polygon ROI. */
-  toPolygon() {
-    const bb = this.bbox;
-    let geometry;
-    if (bb.width === 0 || bb.height === 0) {
-      geometry = { type: "Polygon", coordinates: [[]] };
-    } else {
-      const { x, y, width, height } = bb;
-      geometry = {
-        type: "Polygon",
-        coordinates: [
-          [
-            [x, y],
-            [x + width, y],
-            [x + width, y + height],
-            [x, y + height],
-            [x, y]
-          ]
-        ]
-      };
-    }
-    return ROI.fromPolygon(
-      geometry.coordinates[0],
-      {
-        name: this.name,
-        category: this.category,
-        source: this.source,
-        video: this.video,
-        frameIdx: this.frameIdx,
-        track: this.track,
-        instance: this.instance
-      }
-    );
-  }
-};
-var UserSegmentationMask = class extends SegmentationMask {
-};
-var PredictedSegmentationMask = class extends SegmentationMask {
-  score;
-  scoreMap;
-  /** Spatial scale for the score map. Default [1, 1]. */
-  scoreMapScale;
-  /** Spatial offset for the score map. Default [0, 0]. */
-  scoreMapOffset;
-  constructor(options) {
-    super(options);
-    this.score = options.score;
-    this.scoreMap = options.scoreMap ?? null;
-    this.scoreMapScale = options.scoreMapScale ?? [1, 1];
-    this.scoreMapOffset = options.scoreMapOffset ?? [0, 0];
-  }
-  get isPredicted() {
-    return true;
-  }
-};
-_registerMaskFactory(
-  (mask, height, width, options) => {
-    return SegmentationMask.fromArray(mask, height, width, options);
-  }
-);
-
-// src/model/centroid.ts
-var _centroidSkeleton = null;
-function getCentroidSkeleton() {
-  if (!_centroidSkeleton) {
-    _centroidSkeleton = new Skeleton({ nodes: ["centroid"], name: "centroid" });
-  }
-  return _centroidSkeleton;
-}
-var CENTROID_SKELETON = /* @__PURE__ */ (() => getCentroidSkeleton())();
-var Centroid = class _Centroid {
-  x;
-  y;
-  z;
-  video;
-  frameIdx;
-  track;
-  trackingScore;
-  instance;
-  category;
-  name;
-  source;
-  /** @internal Deferred instance index for lazy resolution. */
-  _instanceIdx = null;
-  constructor(options) {
-    if (new.target === _Centroid) {
-      throw new TypeError(
-        "Centroid is abstract. Use UserCentroid or PredictedCentroid."
-      );
-    }
-    this.x = options.x;
-    this.y = options.y;
-    this.z = options.z ?? null;
-    this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
-    this.track = options.track ?? null;
-    this.trackingScore = options.trackingScore ?? null;
-    this.instance = options.instance ?? null;
-    this.category = options.category ?? "";
-    this.name = options.name ?? "";
-    this.source = options.source ?? "";
-  }
-  /** Coordinates as `[x, y]`. */
-  get xy() {
-    return [this.x, this.y];
-  }
-  /** Coordinates as `[y, x]` (row, col order). */
-  get yx() {
-    return [this.y, this.x];
-  }
-  /** Coordinates as `[x, y, z]`. */
-  get xyz() {
-    return [this.x, this.y, this.z];
-  }
-  /** Whether this is a predicted centroid (has a score). */
-  get isPredicted() {
-    return false;
-  }
-  /** Whether the centroid has no temporal association. */
-  get isStatic() {
-    return this.frameIdx === null;
-  }
-  /**
-   * Convert this centroid to a single-node Instance.
-   *
-   * @param skeleton - Skeleton to use. Must have exactly one node.
-   *   Defaults to the shared CENTROID_SKELETON.
-   * @returns Instance or PredictedInstance depending on this centroid's type.
-   */
-  toInstance(skeleton) {
-    const skel = skeleton ?? getCentroidSkeleton();
-    if (skel.nodes.length > 1) {
-      throw new Error(
-        `Skeleton must have exactly 1 node for centroid conversion, got ${skel.nodes.length}.`
-      );
-    }
-    const point = {
-      xy: [this.x, this.y],
-      visible: true,
-      complete: true,
-      name: skel.nodeNames[0]
-    };
-    if (this instanceof PredictedCentroid) {
-      return new PredictedInstance({
-        points: [{ ...point, score: this.score }],
-        skeleton: skel,
-        track: this.track,
-        score: this.score,
-        trackingScore: this.trackingScore ?? void 0
-      });
-    }
-    return new Instance({
-      points: [point],
-      skeleton: skel,
-      track: this.track,
-      trackingScore: this.trackingScore ?? void 0
-    });
-  }
-  /**
-   * Create a centroid from an Instance.
-   *
-   * @param instance - Source instance.
-   * @param options - Options for centroid extraction.
-   * @param options.method - "centerOfMass" (default), "bboxCenter", or "anchor".
-   * @param options.node - Node name or index for "anchor" method.
-   * @returns UserCentroid or PredictedCentroid depending on instance type.
-   */
-  static fromInstance(instance, options) {
-    const method = options?.method ?? "centerOfMass";
-    const visiblePoints = [];
-    for (const point of instance.points) {
-      if (point.visible && !Number.isNaN(point.xy[0]) && !Number.isNaN(point.xy[1])) {
-        visiblePoints.push(point.xy);
-      }
-    }
-    let x;
-    let y;
-    if (method === "centerOfMass") {
-      if (!visiblePoints.length) {
-        throw new Error("No visible points for centerOfMass.");
-      }
-      x = visiblePoints.reduce((sum, p) => sum + p[0], 0) / visiblePoints.length;
-      y = visiblePoints.reduce((sum, p) => sum + p[1], 0) / visiblePoints.length;
-    } else if (method === "bboxCenter") {
-      if (!visiblePoints.length) {
-        throw new Error("No visible points for bboxCenter.");
-      }
-      const xs = visiblePoints.map((p) => p[0]);
-      const ys = visiblePoints.map((p) => p[1]);
-      x = (Math.min(...xs) + Math.max(...xs)) / 2;
-      y = (Math.min(...ys) + Math.max(...ys)) / 2;
-    } else if (method === "anchor") {
-      const node = options?.node;
-      if (node === void 0 || node === null) {
-        throw new Error("Must specify 'node' for anchor method.");
-      }
-      let nodeIdx;
-      if (typeof node === "string") {
-        nodeIdx = instance.skeleton.index(node);
-      } else {
-        nodeIdx = node;
-      }
-      const pt = instance.points[nodeIdx];
-      if (!pt || Number.isNaN(pt.xy[0])) {
-        throw new Error(`Anchor node ${JSON.stringify(node)} is not visible in this instance.`);
-      }
-      x = pt.xy[0];
-      y = pt.xy[1];
-    } else {
-      throw new Error(
-        `Unknown method ${JSON.stringify(method)}. Expected 'centerOfMass', 'bboxCenter', or 'anchor'.`
-      );
-    }
-    const { method: _, node: __, ...extraOptions } = options ?? {};
-    const centroidOptions = {
-      x,
-      y,
-      track: instance.track ?? null,
-      trackingScore: instance.trackingScore ?? null,
-      instance,
-      source: method === "anchor" ? `anchor:${options?.node}` : method,
-      ...extraOptions
-    };
-    if ("score" in instance && typeof instance.score === "number") {
-      return new PredictedCentroid({
-        ...centroidOptions,
-        score: instance.score
-      });
-    }
-    return new UserCentroid(centroidOptions);
-  }
-};
-var UserCentroid = class extends Centroid {
-};
-var PredictedCentroid = class extends Centroid {
-  score;
-  constructor(options) {
-    super(options);
-    this.score = options.score;
-  }
-  get isPredicted() {
-    return true;
-  }
-};
-_registerCentroidFactory(
-  (instance, options) => Centroid.fromInstance(instance, options)
-);
-
-// src/model/label-image.ts
-var LabelImage = class _LabelImage {
-  /** Flat (H*W) Int32Array, row-major. 0 = background, positive = object ID. */
-  data;
-  height;
-  width;
-  /** Map from label ID (positive int) to object metadata. */
-  objects;
-  video;
-  frameIdx;
-  source;
-  /** Spatial scale factor: image_coord = li_coord / scale + offset. Default [1, 1]. */
-  scale;
-  /** Spatial offset: image_coord = li_coord / scale + offset. Default [0, 0]. */
-  offset;
-  /** @internal Deferred instance indices for lazy resolution. Map<label_id, instance_idx> */
-  _objectInstanceIdxs = null;
-  constructor(options) {
-    if (new.target === _LabelImage) {
-      throw new TypeError(
-        "LabelImage is abstract. Use UserLabelImage or PredictedLabelImage."
-      );
-    }
-    const scale = options.scale ?? [1, 1];
-    if (scale[0] <= 0 || scale[1] <= 0) {
-      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
-    }
-    this.data = options.data;
-    this.height = options.height;
-    this.width = options.width;
-    this.objects = options.objects ?? /* @__PURE__ */ new Map();
-    this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
-    this.source = options.source ?? "";
-    this.scale = scale;
-    this.offset = options.offset ?? [0, 0];
-  }
-  // --- Computed properties ---
-  /** Number of objects in the label image metadata. */
-  get nObjects() {
-    return this.objects.size;
-  }
-  /** Sorted unique non-zero label IDs present in the data.
-   *  Note: Scans the full pixel array on every call. Cache the result if needed multiple times. */
-  get labelIds() {
-    const ids = /* @__PURE__ */ new Set();
-    for (let i = 0; i < this.data.length; i++) {
-      if (this.data[i] > 0) ids.add(this.data[i]);
-    }
-    return Array.from(ids).sort((a, b) => a - b);
-  }
-  /** Non-null tracks from objects, sorted by label ID. */
-  get tracks() {
-    const result = [];
-    for (const lid of Array.from(this.objects.keys()).sort((a, b) => a - b)) {
-      const info = this.objects.get(lid);
-      if (info.track !== null) result.push(info.track);
-    }
-    return result;
-  }
-  /** Unique non-empty category strings across all objects. */
-  get categories() {
-    const cats = /* @__PURE__ */ new Set();
-    for (const info of this.objects.values()) {
-      if (info.category !== "") cats.add(info.category);
-    }
-    return cats;
-  }
-  /** Whether this label image has no temporal association (frameIdx is null). */
-  get isStatic() {
-    return this.frameIdx === null;
-  }
-  /** Whether this is a predicted label image (has a score). */
-  get isPredicted() {
-    return false;
-  }
-  /** Whether scale != [1,1] or offset != [0,0]. */
-  get hasSpatialTransform() {
-    return this.scale[0] !== 1 || this.scale[1] !== 1 || this.offset[0] !== 0 || this.offset[1] !== 0;
-  }
-  /** The image-space extent of this label image (accounting for scale). */
-  get imageExtent() {
-    return {
-      height: Math.floor(this.height / this.scale[1]),
-      width: Math.floor(this.width / this.scale[0])
-    };
-  }
-  /**
-   * Create a resampled copy of this label image at the target dimensions.
-   * The returned label image has scale=[1,1] and offset=[0,0].
-   */
-  resampled(targetHeight, targetWidth) {
-    const resizedData = resizeNearest(this.data, this.height, this.width, targetHeight, targetWidth);
-    const baseOpts = {
-      data: resizedData,
-      height: targetHeight,
-      width: targetWidth,
-      objects: new Map(this.objects),
-      video: this.video,
-      frameIdx: this.frameIdx,
-      source: this.source,
-      scale: [1, 1],
-      offset: [0, 0]
-    };
-    if (this instanceof PredictedLabelImage) {
-      const pli = this;
-      let resampledScoreMap = null;
-      if (pli.scoreMap) {
-        resampledScoreMap = resizeNearest(
-          pli.scoreMap,
-          this.height,
-          this.width,
-          targetHeight,
-          targetWidth
-        );
-      }
-      return new PredictedLabelImage({
-        ...baseOpts,
-        score: pli.score,
-        scoreMap: resampledScoreMap
-      });
-    }
-    return new UserLabelImage(baseOpts);
-  }
-  // --- Mask extraction ---
-  /** Get a binary mask (Uint8Array) for a specific label ID. */
-  getObjectMask(labelId) {
-    const mask = new Uint8Array(this.height * this.width);
-    for (let i = 0; i < this.data.length; i++) {
-      if (this.data[i] === labelId) mask[i] = 1;
-    }
-    return mask;
-  }
-  /** Get a binary mask for all objects associated with a given track. */
-  getTrackMask(track) {
-    const matchingIds = [];
-    for (const [lid, info] of this.objects) {
-      if (info.track === track) matchingIds.push(lid);
-    }
-    if (matchingIds.length === 0) {
-      throw new Error(`Track "${track.name}" not found in this LabelImage.`);
-    }
-    const idSet = new Set(matchingIds);
-    const mask = new Uint8Array(this.height * this.width);
-    for (let i = 0; i < this.data.length; i++) {
-      if (idSet.has(this.data[i])) mask[i] = 1;
-    }
-    return mask;
-  }
-  /** Get a binary mask for all objects with a given category. Throws if category not found. */
-  getCategoryMask(category) {
-    const matchingIds = [];
-    for (const [lid, info] of this.objects) {
-      if (info.category === category) matchingIds.push(lid);
-    }
-    if (matchingIds.length === 0) {
-      throw new Error(`Category "${category}" not found in this LabelImage.`);
-    }
-    const idSet = new Set(matchingIds);
-    const mask = new Uint8Array(this.height * this.width);
-    for (let i = 0; i < this.data.length; i++) {
-      if (idSet.has(this.data[i])) mask[i] = 1;
-    }
-    return mask;
-  }
-  // --- Iterator ---
-  /** Iterate over objects as [track, category, binaryMask] tuples in sorted label ID order. */
-  *items() {
-    const ids = this.labelIds;
-    const maskMap = /* @__PURE__ */ new Map();
-    for (const lid of ids) {
-      maskMap.set(lid, new Uint8Array(this.height * this.width));
-    }
-    for (let i = 0; i < this.data.length; i++) {
-      const mask = maskMap.get(this.data[i]);
-      if (mask) mask[i] = 1;
-    }
-    for (const lid of ids) {
-      const info = this.objects.get(lid) ?? {
-        track: null,
-        category: "",
-        name: "",
-        instance: null
-      };
-      yield [info.track, info.category, maskMap.get(lid)];
-    }
-  }
-  // --- Factories ---
-  /**
-   * Create a LabelImage from a flat Int32Array or 2D number array.
-   *
-   * Tracks are auto-created when not provided. When provided as an array,
-   * they are assigned positionally starting at label ID 1.
-   */
-  static fromArray(data, height, width, options) {
-    let flat;
-    if (data instanceof Int32Array) {
-      flat = data;
-    } else {
-      flat = new Int32Array(height * width);
-      for (let r = 0; r < height; r++) {
-        for (let c = 0; c < width; c++) {
-          flat[r * width + c] = data[r][c];
-        }
-      }
-    }
-    const uniqueIds = /* @__PURE__ */ new Set();
-    for (let i = 0; i < flat.length; i++) {
-      if (flat[i] > 0) uniqueIds.add(flat[i]);
-    }
-    const sortedIds = Array.from(uniqueIds).sort((a, b) => a - b);
-    const trackMap = /* @__PURE__ */ new Map();
-    const tracks = options?.tracks;
-    if (tracks === void 0) {
-      for (const lid of sortedIds) {
-        trackMap.set(lid, new Track(String(lid)));
-      }
-    } else if (Array.isArray(tracks)) {
-      for (let i = 0; i < tracks.length; i++) {
-        trackMap.set(i + 1, tracks[i]);
-      }
-    } else {
-      for (const [k, v] of tracks) {
-        trackMap.set(k, v);
-      }
-    }
-    const catMap = /* @__PURE__ */ new Map();
-    const cats = options?.categories;
-    if (cats !== void 0) {
-      if (Array.isArray(cats)) {
-        for (let i = 0; i < cats.length; i++) {
-          catMap.set(i + 1, cats[i]);
-        }
-      } else {
-        for (const [k, v] of cats) {
-          catMap.set(k, v);
-        }
-      }
-    }
-    const allIds = /* @__PURE__ */ new Set([...sortedIds, ...trackMap.keys(), ...catMap.keys()]);
-    const objects = /* @__PURE__ */ new Map();
-    for (const lid of Array.from(allIds).sort((a, b) => a - b)) {
-      objects.set(lid, {
-        track: trackMap.get(lid) ?? null,
-        category: catMap.get(lid) ?? "",
-        name: "",
-        instance: null
-      });
-    }
-    return new UserLabelImage({
-      data: flat,
-      height,
-      width,
-      objects,
-      video: options?.video ?? null,
-      frameIdx: options?.frameIdx ?? null,
-      source: options?.source ?? ""
-    });
-  }
-  /** Create a LabelImage by compositing an array of SegmentationMasks. */
-  static fromMasks(masks, options) {
-    if (masks.length === 0) {
-      throw new Error("Cannot create LabelImage from empty mask list.");
-    }
-    const height = masks[0].height;
-    const width = masks[0].width;
-    const scale = [...masks[0].scale];
-    const offset = [...masks[0].offset];
-    for (const m of masks.slice(1)) {
-      if (m.height !== height || m.width !== width) {
-        throw new Error(
-          `All masks must have the same shape. Expected (${height}, ${width}), got (${m.height}, ${m.width}).`
-        );
-      }
-      if (m.scale[0] !== scale[0] || m.scale[1] !== scale[1]) {
-        throw new Error(
-          `All masks must have the same scale. Expected [${scale[0]}, ${scale[1]}], got [${m.scale[0]}, ${m.scale[1]}].`
-        );
-      }
-      if (m.offset[0] !== offset[0] || m.offset[1] !== offset[1]) {
-        throw new Error(
-          `All masks must have the same offset. Expected [${offset[0]}, ${offset[1]}], got [${m.offset[0]}, ${m.offset[1]}].`
-        );
-      }
-    }
-    const data = new Int32Array(height * width);
-    const objects = /* @__PURE__ */ new Map();
-    for (let i = 0; i < masks.length; i++) {
-      const labelId = i + 1;
-      const maskData = masks[i].data;
-      for (let j = 0; j < maskData.length; j++) {
-        if (maskData[j]) data[j] = labelId;
-      }
-      objects.set(labelId, {
-        track: masks[i].track,
-        category: masks[i].category,
-        name: masks[i].name,
-        instance: masks[i].instance
-      });
-    }
-    return new UserLabelImage({
-      data,
-      height,
-      width,
-      objects,
-      video: options?.video ?? null,
-      frameIdx: options?.frameIdx ?? null,
-      source: options?.source ?? "",
-      scale,
-      offset
-    });
-  }
-  /**
-   * Create a list of LabelImages from a stack of 2D arrays (one per frame).
-   *
-   * Shared Track objects are created once and reused across frames.
-   *
-   * @param options.data - Array of flat Int32Arrays or 2D number arrays, one per frame.
-   * @param options.tracks - Track objects to assign. Array (1-indexed) or Map<labelId, Track>.
-   * @param options.categories - Category strings. Array (1-indexed) or Map<labelId, string>.
-   * @param options.createTracks - If true and tracks is not provided, auto-create one Track
-   *   per unique non-zero label ID found across ALL frames.
-   * @param options.frameIdx - Custom frame indices. Defaults to [0, 1, ..., T-1].
-   * @param options.video - Video reference shared across all frames.
-   * @param options.source - Source string shared across all frames.
-   */
-  static fromStack(options) {
-    const { data, video, source } = options;
-    if (data.length === 0) return [];
-    const first = data[0];
-    const height = first.length;
-    const width = first[0]?.length ?? 0;
-    const allIds = /* @__PURE__ */ new Set();
-    for (const frame of data) {
-      if (Array.isArray(frame)) {
-        for (const row of frame) {
-          for (const val of row) {
-            if (val > 0) allIds.add(val);
-          }
-        }
-      }
-    }
-    const sortedIds = Array.from(allIds).sort((a, b) => a - b);
-    let trackMap;
-    if (options.tracks != null) {
-      trackMap = /* @__PURE__ */ new Map();
-      if (Array.isArray(options.tracks)) {
-        for (let i = 0; i < options.tracks.length; i++) {
-          trackMap.set(i + 1, options.tracks[i]);
-        }
-      } else {
-        for (const [k, v] of options.tracks) {
-          trackMap.set(k, v);
-        }
-      }
-    } else if (options.createTracks) {
-      trackMap = /* @__PURE__ */ new Map();
-      for (const lid of sortedIds) {
-        trackMap.set(lid, new Track(String(lid)));
-      }
-    }
-    let catMap;
-    if (options.categories != null) {
-      catMap = /* @__PURE__ */ new Map();
-      if (Array.isArray(options.categories)) {
-        for (let i = 0; i < options.categories.length; i++) {
-          catMap.set(i + 1, options.categories[i]);
-        }
-      } else {
-        for (const [k, v] of options.categories) {
-          catMap.set(k, v);
-        }
-      }
-    }
-    const result = [];
-    for (let t = 0; t < data.length; t++) {
-      const frameData = data[t];
-      const frameIdx = options.frameIdx ? options.frameIdx[t] : t;
-      result.push(
-        _LabelImage.fromArray(frameData, height, width, {
-          tracks: trackMap,
-          categories: catMap,
-          video,
-          frameIdx,
-          source
-        })
-      );
-    }
-    return result;
-  }
-  /**
-   * Create a LabelImage from per-object binary mask arrays.
-   *
-   * This is a convenience factory for workflows that produce per-object boolean
-   * masks (e.g., SAM, Mask R-CNN) without going through SegmentationMask/RLE.
-   *
-   * Overlapping pixels are assigned to the last mask (same as fromMasks).
-   *
-   * @param masks - Binary masks as:
-   *   - `number[][]` — single 2D mask (rows of pixel values)
-   *   - `number[][][]` — array of 2D masks
-   *   - `(Uint8Array | number[][])[]` — array of flat or 2D masks
-   * @param options.height - Required when masks are flat Uint8Array.
-   * @param options.width - Required when masks are flat Uint8Array.
-   * @param options.labelIds - Explicit pixel values per mask. Must be positive and unique.
-   *   Defaults to sequential [1, 2, ..., N].
-   * @param options.tracks - Track objects per mask (positional).
-   * @param options.categories - Category strings per mask (positional).
-   * @param options.names - Name strings per mask (positional).
-   * @param options.scores - Confidence scores per mask (positional).
-   * @param options.createTracks - Auto-create Track objects named by label ID.
-   */
-  static fromBinaryMasks(masks, options) {
-    let maskList;
-    if (masks.length === 0) {
-      throw new Error("Cannot create LabelImage from empty mask list.");
-    }
-    const first = masks[0];
-    if (first instanceof Uint8Array) {
-      maskList = masks;
-    } else if (Array.isArray(first)) {
-      if (first.length > 0 && typeof first[0] === "number") {
-        maskList = [masks];
-      } else if (first.length > 0 && Array.isArray(first[0])) {
-        maskList = masks;
-      } else {
-        maskList = [masks];
-      }
-    } else {
-      throw new Error("Unsupported mask format.");
-    }
-    const n = maskList.length;
-    let height = options?.height;
-    let width = options?.width;
-    for (const m of maskList) {
-      if (Array.isArray(m)) {
-        height = height ?? m.length;
-        width = width ?? m[0]?.length ?? 0;
-        break;
-      }
-    }
-    if (height === void 0 || width === void 0) {
-      throw new Error(
-        "Cannot determine mask dimensions. Provide height and width in options when using flat Uint8Array masks."
-      );
-    }
-    const pixelCount = height * width;
-    const flatMasks = [];
-    for (let i = 0; i < n; i++) {
-      const m = maskList[i];
-      if (m instanceof Uint8Array) {
-        if (m.length !== pixelCount) {
-          throw new Error(
-            `Mask ${i} has length ${m.length}, expected ${pixelCount} (${height}x${width}).`
-          );
-        }
-        flatMasks.push(m);
-      } else {
-        if (m.length !== height || (m[0]?.length ?? 0) !== width) {
-          throw new Error(
-            `Mask ${i} has shape (${m.length}, ${m[0]?.length ?? 0}), expected (${height}, ${width}).`
-          );
-        }
-        const flat = new Uint8Array(pixelCount);
-        for (let r = 0; r < height; r++) {
-          for (let c = 0; c < width; c++) {
-            if (m[r][c]) flat[r * width + c] = 1;
-          }
-        }
-        flatMasks.push(flat);
-      }
-    }
-    const labelIds = [];
-    if (options?.labelIds != null) {
-      if (options.labelIds.length !== n) {
-        throw new Error(
-          `labelIds length (${options.labelIds.length}) must match number of masks (${n}).`
-        );
-      }
-      const seen = /* @__PURE__ */ new Set();
-      for (const id of options.labelIds) {
-        if (id <= 0) {
-          throw new Error(
-            `All labelIds must be positive, got ${id}.`
-          );
-        }
-        if (seen.has(id)) {
-          throw new Error(`Duplicate labelId: ${id}.`);
-        }
-        seen.add(id);
-        labelIds.push(id);
-      }
-    } else {
-      for (let i = 0; i < n; i++) {
-        labelIds.push(i + 1);
-      }
-    }
-    if (options?.tracks != null && options.tracks.length !== n) {
-      throw new Error(
-        `tracks length (${options.tracks.length}) must match number of masks (${n}).`
-      );
-    }
-    if (options?.categories != null && options.categories.length !== n) {
-      throw new Error(
-        `categories length (${options.categories.length}) must match number of masks (${n}).`
-      );
-    }
-    if (options?.names != null && options.names.length !== n) {
-      throw new Error(
-        `names length (${options.names.length}) must match number of masks (${n}).`
-      );
-    }
-    if (options?.scores != null && options.scores.length !== n) {
-      throw new Error(
-        `scores length (${options.scores.length}) must match number of masks (${n}).`
-      );
-    }
-    let trackList;
-    if (options?.tracks != null) {
-      trackList = options.tracks;
-    } else if (options?.createTracks) {
-      trackList = labelIds.map((id) => new Track(String(id)));
-    } else {
-      trackList = new Array(n).fill(null);
-    }
-    const data = new Int32Array(pixelCount);
-    const objects = /* @__PURE__ */ new Map();
-    for (let i = 0; i < n; i++) {
-      const labelId = labelIds[i];
-      const maskData = flatMasks[i];
-      for (let j = 0; j < maskData.length; j++) {
-        if (maskData[j]) data[j] = labelId;
-      }
-      objects.set(labelId, {
-        track: trackList[i],
-        category: options?.categories?.[i] ?? "",
-        name: options?.names?.[i] ?? "",
-        instance: null,
-        score: options?.scores?.[i] ?? void 0
-      });
-    }
-    return new UserLabelImage({
-      data,
-      height,
-      width,
-      objects,
-      video: options?.video ?? null,
-      frameIdx: options?.frameIdx ?? null,
-      source: options?.source ?? "",
-      scale: options?.scale,
-      offset: options?.offset
-    });
-  }
-  // --- Conversion ---
-  /** Decompose this LabelImage into individual SegmentationMask objects. */
-  toMasks() {
-    const ids = this.labelIds;
-    const maskMap = /* @__PURE__ */ new Map();
-    for (const lid of ids) {
-      maskMap.set(lid, new Uint8Array(this.height * this.width));
-    }
-    for (let i = 0; i < this.data.length; i++) {
-      const mask = maskMap.get(this.data[i]);
-      if (mask) mask[i] = 1;
-    }
-    const result = [];
-    for (const lid of ids) {
-      const info = this.objects.get(lid) ?? {
-        track: null,
-        category: "",
-        name: "",
-        instance: null
-      };
-      const rleCounts = encodeRle(maskMap.get(lid), this.height, this.width);
-      const baseOpts = {
-        rleCounts,
-        height: this.height,
-        width: this.width,
-        track: info.track,
-        category: info.category,
-        name: info.name,
-        instance: info.instance,
-        video: this.video,
-        frameIdx: this.frameIdx,
-        source: this.source,
-        scale: [...this.scale],
-        offset: [...this.offset]
-      };
-      if (this instanceof PredictedLabelImage) {
-        const pli = this;
-        result.push(new PredictedSegmentationMask({
-          ...baseOpts,
-          score: info.score ?? pli.score
-        }));
-      } else {
-        result.push(new UserSegmentationMask(baseOpts));
-      }
-    }
-    return result;
-  }
-  /** Extract tight bounding boxes for each object in the label image.
-   *
-   * Returns `UserBoundingBox` or `PredictedBoundingBox` objects depending on
-   * whether this label image is predicted. Each bounding box inherits track,
-   * category, name, instance, and score from the corresponding object entry.
-   *
-   * Bounding boxes are in image coordinates (respecting scale/offset).
-   * Label IDs present in `objects` but with no pixels in the data are skipped.
-   */
-  toBboxes() {
-    const data = this.data;
-    const h = this.height;
-    const w = this.width;
-    const labelBounds = /* @__PURE__ */ new Map();
-    for (let r = 0; r < h; r++) {
-      for (let c = 0; c < w; c++) {
-        const v = data[r * w + c];
-        if (v <= 0) continue;
-        const bounds = labelBounds.get(v);
-        if (!bounds) {
-          labelBounds.set(v, { minR: r, maxR: r, minC: c, maxC: c });
-        } else {
-          if (r < bounds.minR) bounds.minR = r;
-          if (r > bounds.maxR) bounds.maxR = r;
-          if (c < bounds.minC) bounds.minC = c;
-          if (c > bounds.maxC) bounds.maxC = c;
-        }
-      }
-    }
-    if (labelBounds.size === 0) return [];
-    const [sx, sy] = this.scale;
-    const [ox, oy] = this.offset;
-    const isPredicted = this instanceof PredictedLabelImage;
-    const bboxes = [];
-    for (const [lid, info] of this.objects) {
-      const bounds = labelBounds.get(lid);
-      if (!bounds) continue;
-      const x1 = bounds.minC / sx + ox;
-      const y1 = bounds.minR / sy + oy;
-      const x2 = (bounds.maxC + 1) / sx + ox;
-      const y2 = (bounds.maxR + 1) / sy + oy;
-      const opts = {
-        x1,
-        y1,
-        x2,
-        y2,
-        video: this.video,
-        frameIdx: this.frameIdx,
-        track: info.track,
-        instance: info.instance,
-        category: info.category,
-        name: info.name,
-        source: this.source
-      };
-      if (isPredicted) {
-        const pli = this;
-        bboxes.push(
-          new PredictedBoundingBox({
-            ...opts,
-            score: info.score ?? pli.score
-          })
-        );
-      } else {
-        bboxes.push(new UserBoundingBox(opts));
-      }
-    }
-    return bboxes;
-  }
-};
-var UserLabelImage = class extends LabelImage {
-};
-var PredictedLabelImage = class extends LabelImage {
-  score;
-  scoreMap;
-  /** Spatial scale for the score map. Default [1, 1]. */
-  scoreMapScale;
-  /** Spatial offset for the score map. Default [0, 0]. */
-  scoreMapOffset;
-  constructor(options) {
-    super(options);
-    this.score = options.score;
-    this.scoreMap = options.scoreMap ?? null;
-    this.scoreMapScale = options.scoreMapScale ?? [1, 1];
-    this.scoreMapOffset = options.scoreMapOffset ?? [0, 0];
-  }
-  get isPredicted() {
-    return true;
-  }
-};
-function normalizeLabelIds(labelImages, options) {
-  const by = options?.by ?? "track";
-  if (by === "track") {
-    return normalizeLabelIdsByTrack(labelImages);
-  } else {
-    return normalizeLabelIdsByCategory(labelImages);
-  }
-}
-function normalizeLabelIdsByTrack(labelImages) {
-  const trackToId = /* @__PURE__ */ new Map();
-  let nextId = 1;
-  for (const li of labelImages) {
-    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
-    for (const oldId of sortedKeys) {
-      const info = li.objects.get(oldId);
-      if (info.track !== null && !trackToId.has(info.track)) {
-        trackToId.set(info.track, nextId++);
-      }
-    }
-  }
-  for (const li of labelImages) {
-    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
-    let maxOld = 0;
-    for (const k of sortedKeys) {
-      if (k > maxOld) maxOld = k;
-    }
-    const lut = new Int32Array(maxOld + 1);
-    const newObjects = /* @__PURE__ */ new Map();
-    for (const oldId of sortedKeys) {
-      const info = li.objects.get(oldId);
-      let newId;
-      if (info.track !== null) {
-        newId = trackToId.get(info.track);
-      } else {
-        newId = nextId++;
-      }
-      lut[oldId] = newId;
-      newObjects.set(newId, info);
-    }
-    const newData = new Int32Array(li.data.length);
-    for (let j = 0; j < li.data.length; j++) {
-      const v = li.data[j];
-      newData[j] = v > 0 && v <= maxOld ? lut[v] : 0;
-    }
-    li.data = newData;
-    li.objects = newObjects;
-  }
-  return trackToId;
-}
-function normalizeLabelIdsByCategory(labelImages) {
-  const categoryToId = /* @__PURE__ */ new Map();
-  let nextId = 1;
-  for (const li of labelImages) {
-    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
-    for (const oldId of sortedKeys) {
-      const info = li.objects.get(oldId);
-      const cat = info.category ?? "";
-      if (!categoryToId.has(cat)) {
-        categoryToId.set(cat, nextId++);
-      }
-    }
-  }
-  for (const li of labelImages) {
-    const sortedKeys = Array.from(li.objects.keys()).sort((a, b) => a - b);
-    let maxOld = 0;
-    for (const k of sortedKeys) {
-      if (k > maxOld) maxOld = k;
-    }
-    const lut = new Int32Array(maxOld + 1);
-    const newObjects = /* @__PURE__ */ new Map();
-    for (const oldId of sortedKeys) {
-      const info = li.objects.get(oldId);
-      const cat = info.category ?? "";
-      const newId = categoryToId.get(cat);
-      lut[oldId] = newId;
-      if (!newObjects.has(newId)) {
-        newObjects.set(newId, info);
-      }
-    }
-    const newData = new Int32Array(li.data.length);
-    for (let j = 0; j < li.data.length; j++) {
-      const v = li.data[j];
-      newData[j] = v > 0 && v <= maxOld ? lut[v] : 0;
-    }
-    li.data = newData;
-    li.objects = newObjects;
-  }
-  return categoryToId;
-}
 
 // src/video/mp4box-video.ts
 var isBrowser2 = typeof window !== "undefined" && typeof document !== "undefined";
@@ -6449,14 +6318,265 @@ function writeSlpToFile(file, labels, embeddedVideoData) {
   writeLabeledFrames(file, labels);
   writeNegativeFrames(file, labels);
   const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
-  writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
-  writeMasks(file, labels.masks, labels.videos, labels.tracks, allInstances);
-  writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
-  writeCentroids(file, labels.centroids, labels.videos, labels.tracks, allInstances);
-  writeLabelImages(file, labels.labelImages, labels.videos, labels.tracks, allInstances);
+  const allRois = [];
+  const roiCtx = [];
+  const allMasks = [];
+  const maskCtx = [];
+  const allBboxes = [];
+  const bboxCtx = [];
+  const allCentroids = [];
+  const centroidCtx = [];
+  const allLabelImages = [];
+  const liCtx = [];
+  for (const lf of labels.labeledFrames) {
+    const vidIdx = labels.videos.indexOf(lf.video);
+    for (const r of lf.rois) {
+      allRois.push(r);
+      roiCtx.push([vidIdx, lf.frameIdx]);
+    }
+    for (const m of lf.masks) {
+      allMasks.push(m);
+      maskCtx.push([vidIdx, lf.frameIdx]);
+    }
+    for (const b of lf.bboxes) {
+      allBboxes.push(b);
+      bboxCtx.push([vidIdx, lf.frameIdx]);
+    }
+    for (const c of lf.centroids) {
+      allCentroids.push(c);
+      centroidCtx.push([vidIdx, lf.frameIdx]);
+    }
+    for (const li of lf.labelImages) {
+      allLabelImages.push(li);
+      liCtx.push([vidIdx, lf.frameIdx]);
+    }
+  }
+  for (const r of labels._staticRois) {
+    allRois.push(r);
+    roiCtx.push([r.video ? labels.videos.indexOf(r.video) : -1, -1]);
+  }
+  writeRois(file, allRois, labels.videos, labels.tracks, allInstances, roiCtx);
+  writeMasks(file, allMasks, labels.videos, labels.tracks, allInstances, maskCtx);
+  writeBboxes(file, allBboxes, labels.videos, labels.tracks, allInstances, bboxCtx);
+  writeCentroids(file, allCentroids, labels.videos, labels.tracks, allInstances, centroidCtx);
+  writeLabelImages(file, allLabelImages, labels.videos, labels.tracks, allInstances, liCtx);
+}
+var LazySourceFallback = class extends Error {
+  constructor() {
+    super("lazy source mode requires materialization");
+    this.name = "LazySourceFallback";
+  }
+};
+function makeLazySourceLabels(labels) {
+  const restoredVideos = labels.videos.map((v) => v.sourceVideo ?? v);
+  const videoMap = /* @__PURE__ */ new Map();
+  for (let i = 0; i < labels.videos.length; i++) {
+    if (labels.videos[i] !== restoredVideos[i]) {
+      videoMap.set(labels.videos[i], restoredVideos[i]);
+    }
+  }
+  if (videoMap.size === 0) return labels;
+  for (const session of labels.sessions) {
+    for (const v of session.videoByCamera.values()) {
+      if (videoMap.has(v)) {
+        throw new LazySourceFallback();
+      }
+    }
+  }
+  const remappedSuggestions = labels.suggestions.map((s) => {
+    const newVideo = videoMap.get(s.video);
+    if (!newVideo) return s;
+    return new SuggestionFrame({
+      video: newVideo,
+      frameIdx: s.frameIdx,
+      group: s.group,
+      metadata: s.metadata
+    });
+  });
+  const out = new Labels({
+    videos: restoredVideos,
+    skeletons: labels.skeletons,
+    tracks: labels.tracks,
+    suggestions: remappedSuggestions,
+    sessions: labels.sessions,
+    // safe: verified no swapped refs
+    identities: labels.identities,
+    provenance: labels.provenance,
+    rois: labels._staticRois
+  });
+  out._lazyFrameList = labels._lazyFrameList;
+  out._lazyDataStore = labels._lazyDataStore;
+  return out;
+}
+function writeLazyMatrixDataset(file, name, columns, fieldNames, dtype) {
+  const rowCount = (columns[fieldNames[0]] ?? []).length;
+  const colCount = fieldNames.length;
+  const rows = [];
+  for (let i = 0; i < rowCount; i++) {
+    const row = new Array(colCount);
+    for (let j = 0; j < colCount; j++) {
+      const col = columns[fieldNames[j]] ?? [];
+      const v = col[i];
+      row[j] = v === void 0 || v === null ? 0 : Number(v);
+    }
+    rows.push(row);
+  }
+  createMatrixDataset(file, name, rows, fieldNames, dtype);
+}
+function writeLazyFramesAndInstances(file, store) {
+  writeLazyMatrixDataset(
+    file,
+    "frames",
+    store.framesData,
+    ["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"],
+    "<i8"
+  );
+  writeLazyMatrixDataset(
+    file,
+    "instances",
+    store.instancesData,
+    [
+      "instance_id",
+      "instance_type",
+      "frame_id",
+      "skeleton",
+      "track",
+      "from_predicted",
+      "score",
+      "point_id_start",
+      "point_id_end",
+      "tracking_score"
+    ],
+    "<f8"
+  );
+  writeLazyMatrixDataset(
+    file,
+    "points",
+    store.pointsData,
+    ["x", "y", "visible", "complete"],
+    "<f8"
+  );
+  writeLazyMatrixDataset(
+    file,
+    "pred_points",
+    store.predPointsData,
+    ["x", "y", "visible", "complete", "score"],
+    "<f8"
+  );
+}
+function writeLazyNegativeFrames(file, store) {
+  if (store.negativeFrames.size === 0) return;
+  const rows = [];
+  for (const key of store.negativeFrames) {
+    const [vidStr, fidxStr] = key.split(":");
+    rows.push([Number(vidStr), Number(fidxStr)]);
+  }
+  rows.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  createMatrixDataset(file, "negative_frames", rows, ["video_id", "frame_idx"], "<i8");
+}
+function writeSlpToFileLazy(file, labels) {
+  const store = labels._lazyDataStore;
+  if (!labels.isLazy || !store) {
+    throw new Error("writeSlpToFileLazy requires lazy Labels with a data store");
+  }
+  writeMetadata(file, labels);
+  writeVideos(file, labels.videos);
+  writeTracks(file, labels.tracks);
+  writeSuggestions(file, labels.suggestions, labels.videos);
+  writeIdentities(file, labels.identities);
+  writeSessions(file, labels.sessions, labels.videos, [], labels.identities);
+  writeLazyFramesAndInstances(file, store);
+  writeLazyNegativeFrames(file, store);
+  const allRois = [];
+  const roiCtx = [];
+  const allMasks = [];
+  const maskCtx = [];
+  const allBboxes = [];
+  const bboxCtx = [];
+  const allCentroids = [];
+  const centroidCtx = [];
+  const allLabelImages = [];
+  const liCtx = [];
+  const collectFrameBound = (byFrame, out, ctxOut) => {
+    for (const [key, list] of byFrame) {
+      const [vidStr, fidxStr] = key.split(":");
+      const vidIdx = Number(vidStr);
+      const fidx = Number(fidxStr);
+      for (const ann of list) {
+        out.push(ann);
+        ctxOut.push([vidIdx, fidx]);
+      }
+    }
+  };
+  collectFrameBound(store._roiByFrame, allRois, roiCtx);
+  collectFrameBound(store._maskByFrame, allMasks, maskCtx);
+  collectFrameBound(store._bboxByFrame, allBboxes, bboxCtx);
+  collectFrameBound(store._centroidByFrame, allCentroids, centroidCtx);
+  collectFrameBound(store._labelImageByFrame, allLabelImages, liCtx);
+  for (const roi of store._undistributedRois) {
+    allRois.push(roi);
+    const vidIdx = roi.video ? labels.videos.indexOf(roi.video) : -1;
+    roiCtx.push([vidIdx, -1]);
+  }
+  for (const m of store._undistributedMasks) {
+    allMasks.push(m);
+    maskCtx.push([-1, -1]);
+  }
+  for (const b of store._undistributedBboxes) {
+    allBboxes.push(b);
+    bboxCtx.push([-1, -1]);
+  }
+  for (const c of store._undistributedCentroids) {
+    allCentroids.push(c);
+    centroidCtx.push([-1, -1]);
+  }
+  for (const li of store._undistributedLabelImages) {
+    allLabelImages.push(li);
+    liCtx.push([-1, -1]);
+  }
+  writeRois(file, allRois, labels.videos, labels.tracks, void 0, roiCtx);
+  writeMasks(file, allMasks, labels.videos, labels.tracks, [], maskCtx);
+  writeBboxes(file, allBboxes, labels.videos, labels.tracks, [], bboxCtx);
+  writeCentroids(file, allCentroids, labels.videos, labels.tracks, [], centroidCtx);
+  writeLabelImages(file, allLabelImages, labels.videos, labels.tracks, [], liCtx);
 }
 async function saveSlpToBytes(labels, options) {
   const embedMode = options?.embed ?? false;
+  if (labels.isLazy) {
+    const needsMaterialization = embedMode === true || embedMode === "all" || embedMode === "user" || embedMode === "suggestions" || embedMode === "user+suggestions";
+    if (!needsMaterialization) {
+      let lazyWriteLabels = labels;
+      let proceedWithFastPath = true;
+      if (embedMode === "source") {
+        try {
+          lazyWriteLabels = makeLazySourceLabels(labels);
+        } catch (e) {
+          if (e instanceof LazySourceFallback) {
+            labels.materialize();
+            proceedWithFastPath = false;
+          } else {
+            throw e;
+          }
+        }
+      }
+      if (proceedWithFastPath) {
+        const module2 = await getH5Module();
+        const memPath2 = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+        const file2 = new module2.File(memPath2, "w");
+        try {
+          writeSlpToFileLazy(file2, lazyWriteLabels);
+        } finally {
+          file2.close();
+        }
+        const fs2 = getH5FileSystem(module2);
+        const bytes2 = fs2.readFile(memPath2);
+        fs2.unlink(memPath2);
+        return bytes2;
+      }
+    } else {
+      labels.materialize();
+    }
+  }
   let writeLabels = labels;
   if (embedMode === "source") {
     const restoredVideos = labels.videos.map((video) => {
@@ -6484,11 +6604,7 @@ async function saveSlpToBytes(labels, options) {
       suggestions: labels.suggestions,
       sessions: labels.sessions,
       provenance: labels.provenance,
-      rois: labels.rois,
-      masks: labels.masks,
-      bboxes: labels.bboxes,
-      centroids: labels.centroids,
-      labelImages: labels.labelImages,
+      rois: labels._staticRois,
       identities: labels.identities
     });
   }
@@ -7038,7 +7154,7 @@ function createMatrixDataset(file, name, rows, fieldNames, dtype) {
   const dataset = file.get(name);
   setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
 }
-function writeRois(file, rois, videos, tracks, instances) {
+function writeRois(file, rois, videos, tracks, instances, contexts) {
   if (!rois.length) return;
   const rows = [];
   const wkbChunks = [];
@@ -7047,16 +7163,17 @@ function writeRois(file, rois, videos, tracks, instances) {
   const names = [];
   const sources = [];
   const hasInstances = instances && instances.length > 0;
-  for (const roi of rois) {
+  for (let i = 0; i < rois.length; i++) {
+    const roi = rois[i];
     const wkb = encodeWkb(roi.geometry);
     const wkbStart = wkbOffset;
     const wkbEnd = wkbOffset + wkb.length;
     wkbChunks.push(wkb);
     wkbOffset = wkbEnd;
-    const videoIdx = roi.video ? videos.indexOf(roi.video) : -1;
-    const frameIdx = roi.frameIdx ?? -1;
+    const videoIdx = contexts ? contexts[i][0] : roi.video ? videos.indexOf(roi.video) : -1;
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = roi.track ? tracks.indexOf(roi.track) : -1;
-    const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : -1;
+    const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : roi._instanceIdx ?? -1;
     const score = roi.isPredicted ? roi.score : Number.NaN;
     const isPredicted = roi.isPredicted ? 1 : 0;
     const trackingScore = roi.trackingScore ?? Number.NaN;
@@ -7084,7 +7201,7 @@ function writeRois(file, rois, videos, tracks, instances) {
   }
   file.create_dataset({ name: "roi_wkb", data: wkbFlat, shape: [wkbFlat.length], dtype: "<B" });
 }
-function writeMasks(file, masks, videos, tracks, instances) {
+function writeMasks(file, masks, videos, tracks, instances, contexts) {
   if (!masks.length) return;
   const rows = [];
   const rleChunks = [];
@@ -7106,8 +7223,8 @@ function writeMasks(file, masks, videos, tracks, instances) {
     const rleEnd = rleOffset + rleBytes.length;
     rleChunks.push(rleBytes);
     rleOffset = rleEnd;
-    const videoIdx = mask.video ? videos.indexOf(mask.video) : -1;
-    const frameIdx = mask.frameIdx ?? -1;
+    const videoIdx = contexts ? contexts[i][0] : -1;
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = mask.track ? tracks.indexOf(mask.track) : -1;
     const score = mask.isPredicted ? mask.score : Number.NaN;
     const isPredicted = mask.isPredicted ? 1 : 0;
@@ -7185,18 +7302,19 @@ function writeMasks(file, masks, videos, tracks, instances) {
     file.create_dataset({ name: "mask_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
   }
 }
-function writeBboxes(file, bboxes, videos, tracks, instances) {
+function writeBboxes(file, bboxes, _videos, tracks, instances, contexts) {
   if (!bboxes.length) return;
   const rows = [];
   const categories = [];
   const names = [];
   const sources = [];
-  for (const bbox of bboxes) {
-    const videoIdx = bbox.video ? videos.indexOf(bbox.video) : -1;
-    const frameIdx = bbox.frameIdx ?? -1;
+  for (let i = 0; i < bboxes.length; i++) {
+    const bbox = bboxes[i];
+    const videoIdx = contexts ? contexts[i][0] : -1;
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = bbox.track ? tracks.indexOf(bbox.track) : -1;
     const score = bbox.isPredicted ? bbox.score : Number.NaN;
-    const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance) : -1;
+    const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance) : bbox._instanceIdx ?? -1;
     const trackingScore = bbox.trackingScore ?? Number.NaN;
     rows.push([
       bbox.x1,
@@ -7226,7 +7344,7 @@ function writeBboxes(file, bboxes, videos, tracks, instances) {
   writeStringDataset(file, "bbox_names", names);
   writeStringDataset(file, "bbox_sources", sources);
 }
-function writeLabelImages(file, labelImages, videos, tracks, instances) {
+function writeLabelImages(file, labelImages, _videos, tracks, instances, contexts) {
   if (!labelImages.length) return;
   const endianCheck = new Uint8Array(new Uint16Array([258]).buffer);
   if (endianCheck[0] !== 2) {
@@ -7245,8 +7363,8 @@ function writeLabelImages(file, labelImages, videos, tracks, instances) {
   let smOffset = 0;
   for (let liIdx = 0; liIdx < labelImages.length; liIdx++) {
     const li = labelImages[liIdx];
-    const videoIdx = li.video ? videos.indexOf(li.video) : -1;
-    const frameIdx = li.frameIdx ?? -1;
+    const videoIdx = contexts ? contexts[liIdx][0] : -1;
+    const frameIdx = contexts ? contexts[liIdx][1] : -1;
     const pixelBytes = new Uint8Array(li.data.buffer, li.data.byteOffset, li.data.byteLength);
     const compressed = deflate(pixelBytes);
     const dataStart = dataOffset;
@@ -7364,18 +7482,19 @@ function writeLabelImages(file, labelImages, videos, tracks, instances) {
     file.create_dataset({ name: "label_image_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
   }
 }
-function writeCentroids(file, centroids, videos, tracks, instances) {
+function writeCentroids(file, centroids, _videos, tracks, instances, contexts) {
   if (!centroids.length) return;
   const rows = [];
   const categories = [];
   const names = [];
   const sources = [];
-  for (const c of centroids) {
-    const videoIdx = c.video ? videos.indexOf(c.video) : -1;
-    const frameIdx = c.frameIdx ?? -1;
+  for (let i = 0; i < centroids.length; i++) {
+    const c = centroids[i];
+    const videoIdx = contexts ? contexts[i][0] : -1;
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = c.track ? tracks.indexOf(c.track) : -1;
     const score = c.isPredicted ? c.score : Number.NaN;
-    const instanceIdx = c.instance ? instances.indexOf(c.instance) : -1;
+    const instanceIdx = c.instance ? instances.indexOf(c.instance) : c._instanceIdx ?? -1;
     const isPredicted = c.isPredicted ? 1 : 0;
     const trackingScore = c.trackingScore ?? Number.NaN;
     rows.push([
@@ -7457,10 +7576,68 @@ async function readSlp(source, options) {
     const identities = readIdentities(file.get("identities_json"));
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames, identities);
     const allInstances = labeledFrames.flatMap((f) => f.instances);
-    const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks, allInstances);
-    const masks = readMasks(file, videos, tracks);
-    const centroids = readCentroids(file, videos, tracks);
-    const labelImages = readLabelImages(file, videos, tracks, allInstances);
+    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(file, videos, tracks, allInstances);
+    const maskTuples = readMasks(file, videos, tracks);
+    const centroidTuples = readCentroids(file, videos, tracks);
+    const labelImageTuples = readLabelImages(file, videos, tracks, allInstances);
+    const frameMap = /* @__PURE__ */ new Map();
+    for (const lf of labeledFrames) {
+      const vidIdx = videos.indexOf(lf.video);
+      frameMap.set(`${vidIdx}:${lf.frameIdx}`, lf);
+    }
+    const getOrCreateFrame = (vidIdx, frameIdx) => {
+      const key = `${vidIdx}:${frameIdx}`;
+      let lf = frameMap.get(key);
+      if (!lf) {
+        lf = new LabeledFrame({ video: videos[vidIdx], frameIdx });
+        frameMap.set(key, lf);
+        labeledFrames.push(lf);
+      }
+      return lf;
+    };
+    const staticRois = [];
+    const distributeTuples = (tuples, push) => {
+      for (const [ann, vidIdx, frameIdx] of tuples) {
+        if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
+          push(getOrCreateFrame(vidIdx, frameIdx), ann);
+        }
+      }
+    };
+    for (const [roi, vidIdx, frameIdx] of roiTuples) {
+      if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
+        getOrCreateFrame(vidIdx, frameIdx).rois.push(roi);
+      } else {
+        staticRois.push(roi);
+      }
+    }
+    distributeTuples(bboxTuples, (lf, b) => lf.bboxes.push(b));
+    distributeTuples(maskTuples, (lf, m) => lf.masks.push(m));
+    distributeTuples(centroidTuples, (lf, c) => lf.centroids.push(c));
+    distributeTuples(labelImageTuples, (lf, li) => lf.labelImages.push(li));
+    const allInstancesFlat = labeledFrames.flatMap((lf) => lf.instances);
+    const resolveInstanceRef = (ann) => {
+      if (ann._instanceIdx !== null && ann._instanceIdx >= 0 && ann._instanceIdx < allInstancesFlat.length) {
+        ann.instance = allInstancesFlat[ann._instanceIdx];
+        ann._instanceIdx = null;
+      }
+    };
+    for (const lf of labeledFrames) {
+      for (const b of lf.bboxes) resolveInstanceRef(b);
+      for (const c of lf.centroids) resolveInstanceRef(c);
+      for (const m of lf.masks) resolveInstanceRef(m);
+      for (const r of lf.rois) resolveInstanceRef(r);
+      for (const li of lf.labelImages) {
+        if (li._objectInstanceIdxs) {
+          for (const [labelId, instIdx] of li._objectInstanceIdxs) {
+            const obj = li.objects.get(labelId);
+            if (obj && instIdx >= 0 && instIdx < allInstancesFlat.length) {
+              obj.instance = allInstancesFlat[instIdx];
+            }
+          }
+          li._objectInstanceIdxs = null;
+        }
+      }
+    }
     return new Labels({
       labeledFrames,
       videos,
@@ -7470,11 +7647,7 @@ async function readSlp(source, options) {
       sessions,
       identities,
       provenance: metadataJson?.provenance ?? {},
-      rois,
-      masks,
-      bboxes,
-      centroids,
-      labelImages
+      rois: staticRois
     });
   } finally {
     close();
@@ -7523,19 +7696,16 @@ async function readSlpLazy(source, options) {
     const lazyFrames = new LazyFrameList(store);
     const identities = readIdentities(file.get("identities_json"));
     const sessions = readSessions(file.get("sessions_json"), videos, skeletons, [], identities);
-    const { rois, bboxes } = readRoisAndBboxes(file, videos, tracks);
-    const masks = readMasks(file, videos, tracks);
-    const centroids = readCentroids(file, videos, tracks);
-    const labelImages = readLabelImages(file, videos, tracks);
-    const videoIndexMap = /* @__PURE__ */ new Map();
-    for (let i = 0; i < videos.length; i++) videoIndexMap.set(videos[i], i);
-    const buildAnnByFrame = (annotations) => {
+    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(file, videos, tracks);
+    const maskTuples = readMasks(file, videos, tracks);
+    const centroidTuples = readCentroids(file, videos, tracks);
+    const labelImageTuples = readLabelImages(file, videos, tracks);
+    const buildAnnByFrame = (tuples) => {
       const byFrame = /* @__PURE__ */ new Map();
       const undistributed = [];
-      for (const ann of annotations) {
-        if (ann.video !== null && ann.frameIdx !== null) {
-          const vidIdx = videoIndexMap.get(ann.video) ?? -1;
-          const key = `${vidIdx}:${ann.frameIdx}`;
+      for (const [ann, vidIdx, frameIdx] of tuples) {
+        if (vidIdx >= 0 && frameIdx >= 0) {
+          const key = `${vidIdx}:${frameIdx}`;
           const list = byFrame.get(key);
           if (list) list.push(ann);
           else byFrame.set(key, [ann]);
@@ -7545,11 +7715,11 @@ async function readSlpLazy(source, options) {
       }
       return { byFrame, undistributed };
     };
-    const cResult = buildAnnByFrame(centroids);
-    const bResult = buildAnnByFrame(bboxes);
-    const mResult = buildAnnByFrame(masks);
-    const rResult = buildAnnByFrame(rois);
-    const liResult = buildAnnByFrame(labelImages);
+    const cResult = buildAnnByFrame(centroidTuples);
+    const bResult = buildAnnByFrame(bboxTuples);
+    const mResult = buildAnnByFrame(maskTuples);
+    const rResult = buildAnnByFrame(roiTuples);
+    const liResult = buildAnnByFrame(labelImageTuples);
     store._centroidByFrame = cResult.byFrame;
     store._bboxByFrame = bResult.byFrame;
     store._maskByFrame = mResult.byFrame;
@@ -7946,7 +8116,6 @@ function readRoisWithMigration(file, videos, tracks, instances) {
     const videoIdx = Number(videoIndices[i]);
     const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
     const frameIdxVal = Number(frameIndices[i]);
-    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
     const annotType = Number(annotationTypes[i]);
@@ -7954,7 +8123,7 @@ function readRoisWithMigration(file, videos, tracks, instances) {
     const roiTsVal = trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
     const roiTrackingScore = Number.isNaN(roiTsVal) ? null : roiTsVal;
     if (annotType === 1 /* BOUNDING_BOX */ && !isPred) {
-      const tmpRoi = new UserROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, frameIdx, track });
+      const tmpRoi = new UserROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, track });
       const b = tmpRoi.bounds;
       const scoreVal = Number(scores[i]);
       const bboxScore = Number.isNaN(scoreVal) ? null : scoreVal;
@@ -7963,28 +8132,27 @@ function readRoisWithMigration(file, videos, tracks, instances) {
         y1: b.minY,
         x2: b.maxX,
         y2: b.maxY,
-        video,
-        frameIdx,
         track,
         trackingScore: roiTrackingScore,
         category: categories[i] ?? "",
         name: names[i] ?? "",
         source: sources[i] ?? ""
       };
+      let bbox;
       if (bboxScore !== null) {
-        migratedBboxes.push(new PredictedBoundingBox({ ...bboxOptions, score: bboxScore }));
+        bbox = new PredictedBoundingBox({ ...bboxOptions, score: bboxScore });
       } else {
-        migratedBboxes.push(new UserBoundingBox(bboxOptions));
+        bbox = new UserBoundingBox(bboxOptions);
       }
       if (instanceIndices.length > 0) {
         const instIdx = Number(instanceIndices[i]);
-        const bbox = migratedBboxes[migratedBboxes.length - 1];
         if (instances && instIdx >= 0 && instIdx < instances.length) {
           bbox.instance = instances[instIdx];
         } else if (instIdx >= 0) {
           bbox._instanceIdx = instIdx;
         }
       }
+      migratedBboxes.push([bbox, videoIdx, frameIdxVal]);
     } else {
       const roiOptions = {
         geometry,
@@ -7992,7 +8160,6 @@ function readRoisWithMigration(file, videos, tracks, instances) {
         category: categories[i] ?? "",
         source: sources[i] ?? "",
         video,
-        frameIdx,
         track,
         trackingScore: roiTrackingScore
       };
@@ -8011,12 +8178,12 @@ function readRoisWithMigration(file, videos, tracks, instances) {
           roi._instanceIdx = instIdx;
         }
       }
-      rois.push(roi);
+      rois.push([roi, videoIdx, frameIdxVal]);
     }
   }
   return { rois, migratedBboxes };
 }
-function readBboxes(file, videos, tracks) {
+function readBboxes(file, _videos, tracks) {
   const bboxesDs = file.get("bboxes");
   if (!bboxesDs) return [];
   const bboxesData = normalizeStructDataset(bboxesDs);
@@ -8044,9 +8211,7 @@ function readBboxes(file, videos, tracks) {
   const bboxes = [];
   for (let i = 0; i < count; i++) {
     const videoIdx = Number(videoIndices[i]);
-    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
     const frameIdxVal = Number(frameIndices[i]);
-    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
     const scoreVal = Number(bboxScores[i]);
@@ -8075,8 +8240,6 @@ function readBboxes(file, videos, tracks) {
       x2: bx2,
       y2: by2,
       angle: Number(angles[i]),
-      video,
-      frameIdx,
       track,
       trackingScore,
       category: categories[i] ?? "",
@@ -8092,7 +8255,7 @@ function readBboxes(file, videos, tracks) {
     if (instanceIdx >= 0) {
       bbox._instanceIdx = instanceIdx;
     }
-    bboxes.push(bbox);
+    bboxes.push([bbox, videoIdx, frameIdxVal]);
   }
   return bboxes;
 }
@@ -8141,7 +8304,7 @@ function readScoreMaps(file, indexPath, dataPath) {
   }
   return result;
 }
-function readMasks(file, videos, tracks) {
+function readMasks(file, _videos, tracks) {
   const masksDs = file.get("masks");
   if (!masksDs) return [];
   const masksData = normalizeStructDataset(masksDs);
@@ -8180,9 +8343,7 @@ function readMasks(file, videos, tracks) {
       rleCounts[j] = rleView.getUint32(j * 4, true);
     }
     const videoIdx = Number(videoIndices[i]);
-    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
     const frameIdxVal = Number(frameIndices[i]);
-    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
     const scaleX = scaleXCol.length > i ? Number(scaleXCol[i]) : 1;
@@ -8198,8 +8359,6 @@ function readMasks(file, videos, tracks) {
       name: names[i] ?? "",
       category: categories[i] ?? "",
       source: sources[i] ?? "",
-      video,
-      frameIdx,
       track,
       trackingScore: maskTrackingScore,
       scale: [scaleX, scaleY],
@@ -8222,11 +8381,11 @@ function readMasks(file, videos, tracks) {
     if (instIdx >= 0) {
       mask._instanceIdx = instIdx;
     }
-    masks.push(mask);
+    masks.push([mask, videoIdx, frameIdxVal]);
   }
   return masks;
 }
-function readLabelImages(file, videos, tracks, instances) {
+function readLabelImages(file, _videos, tracks, instances) {
   const liDs = file.get("label_images");
   if (!liDs) return [];
   const liData = normalizeStructDataset(liDs);
@@ -8279,9 +8438,7 @@ function readLabelImages(file, videos, tracks, instances) {
   const labelImages = [];
   for (let i = 0; i < videoIndices.length; i++) {
     const videoIdx = Number(videoIndices[i]);
-    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
     const frameIdxVal = Number(frameIndices[i]);
-    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
     const height = Number(heights[i]);
     const width = Number(widths[i]);
     let pixelData;
@@ -8350,8 +8507,6 @@ function readLabelImages(file, videos, tracks, instances) {
         height,
         width,
         objects,
-        video,
-        frameIdx,
         source: sources[i] ?? "",
         score: liScore,
         scoreMap: sm?.scoreMap ?? null,
@@ -8364,8 +8519,6 @@ function readLabelImages(file, videos, tracks, instances) {
         height,
         width,
         objects,
-        video,
-        frameIdx,
         source: sources[i] ?? "",
         scale: liScale,
         offset: liOffset
@@ -8374,7 +8527,7 @@ function readLabelImages(file, videos, tracks, instances) {
     if (deferredInstances.size > 0) {
       li._objectInstanceIdxs = deferredInstances;
     }
-    labelImages.push(li);
+    labelImages.push([li, videoIdx, frameIdxVal]);
   }
   return labelImages;
 }
@@ -8540,7 +8693,7 @@ function parseVideoIdFromDataset2(dataset) {
   const id = Number(group.slice(5));
   return Number.isNaN(id) ? null : id;
 }
-function readCentroids(file, videos, tracks) {
+function readCentroids(file, _videos, tracks) {
   const centroidsDs = file.get("centroids");
   if (!centroidsDs) return [];
   const data = normalizeStructDataset(centroidsDs);
@@ -8562,9 +8715,7 @@ function readCentroids(file, videos, tracks) {
   const centroids = [];
   for (let i = 0; i < count; i++) {
     const videoIdx = Number(videoIndices[i]);
-    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
     const frameIdxVal = Number(frameIndices[i]);
-    const frameIdx = frameIdxVal === -1 ? null : frameIdxVal;
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
     const zVal = zs.length > i ? Number(zs[i]) : Number.NaN;
@@ -8576,8 +8727,6 @@ function readCentroids(file, videos, tracks) {
       x: Number(xs[i]),
       y: Number(ys[i]),
       z,
-      video,
-      frameIdx,
       track,
       trackingScore,
       category: categories[i] ?? "",
@@ -8595,7 +8744,7 @@ function readCentroids(file, videos, tracks) {
     if (instanceIdx >= 0) {
       centroid._instanceIdx = instanceIdx;
     }
-    centroids.push(centroid);
+    centroids.push([centroid, videoIdx, frameIdxVal]);
   }
   return centroids;
 }
@@ -8713,8 +8862,7 @@ function roisFromGeoJSON(geojson) {
       geometry: feature.geometry,
       name: String(props.name ?? ""),
       category: String(props.category ?? ""),
-      source: String(props.source ?? ""),
-      frameIdx: typeof props.frame_idx === "number" ? props.frame_idx : null
+      source: String(props.source ?? "")
     });
   });
 }
@@ -9312,6 +9460,32 @@ var InstanceContext = class {
 };
 
 export {
+  getCentroidSkeleton,
+  CENTROID_SKELETON,
+  Centroid,
+  UserCentroid,
+  PredictedCentroid,
+  _registerMaskFactory,
+  AnnotationType,
+  ROI,
+  rasterizeGeometry,
+  encodeWkb,
+  decodeWkb,
+  UserROI,
+  PredictedROI,
+  BoundingBox,
+  UserBoundingBox,
+  PredictedBoundingBox,
+  encodeRle,
+  decodeRle,
+  resizeNearest,
+  SegmentationMask,
+  UserSegmentationMask,
+  PredictedSegmentationMask,
+  LabelImage,
+  UserLabelImage,
+  PredictedLabelImage,
+  normalizeLabelIds,
   _annotationCentroidXy,
   _findAnnotationMatches,
   LabeledFrame,
@@ -9335,32 +9509,6 @@ export {
   RecordingSession,
   makeCameraFromDict,
   Identity,
-  _registerMaskFactory,
-  AnnotationType,
-  ROI,
-  rasterizeGeometry,
-  encodeWkb,
-  decodeWkb,
-  UserROI,
-  PredictedROI,
-  BoundingBox,
-  UserBoundingBox,
-  PredictedBoundingBox,
-  encodeRle,
-  decodeRle,
-  resizeNearest,
-  SegmentationMask,
-  UserSegmentationMask,
-  PredictedSegmentationMask,
-  getCentroidSkeleton,
-  CENTROID_SKELETON,
-  Centroid,
-  UserCentroid,
-  PredictedCentroid,
-  LabelImage,
-  UserLabelImage,
-  PredictedLabelImage,
-  normalizeLabelIds,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
   StreamingH5File,

@@ -89,7 +89,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-T45RKCCC.js";
+} from "./chunk-FTIWHNSE.js";
 import {
   Edge,
   Instance,
@@ -253,7 +253,7 @@ function readTrackMateCsv(spotsPath, options) {
     trackMap.set(tid, new Track(`Track_${tid}`));
   }
   const tracks = [...trackMap.values()];
-  const centroids = [];
+  const centroidsByFrame = /* @__PURE__ */ new Map();
   for (const row of dataRows) {
     const spotId = parseInt(row[col["ID"]], 10);
     const tidStr = row[col["TRACK_ID"]];
@@ -266,23 +266,25 @@ function readTrackMateCsv(spotsPath, options) {
     const track = tidStr ? trackMap.get(parseInt(tidStr, 10)) ?? null : null;
     const trackingScore = targetToCost.get(spotId) ?? null;
     const label = col["LABEL"] !== void 0 ? row[col["LABEL"]] : `ID${spotId}`;
-    centroids.push(
-      new PredictedCentroid({
-        x,
-        y,
-        z,
-        video: videoObj,
-        frameIdx,
-        track,
-        trackingScore,
-        score,
-        name: label,
-        source: "trackmate"
-      })
-    );
+    const centroid = new PredictedCentroid({
+      x,
+      y,
+      z,
+      track,
+      trackingScore,
+      score,
+      name: label,
+      source: "trackmate"
+    });
+    centroidsByFrame.set(frameIdx, [...centroidsByFrame.get(frameIdx) ?? [], centroid]);
   }
   const videos = videoObj ? [videoObj] : [];
-  const labels = new Labels({ videos, tracks, centroids });
+  const video = videoObj ?? new Video({ filename: "" });
+  const labeledFrames = [];
+  for (const [frameIdx, frameCentroids] of [...centroidsByFrame.entries()].sort((a, b) => a[0] - b[0])) {
+    labeledFrames.push(new LabeledFrame({ video, frameIdx, centroids: frameCentroids }));
+  }
+  const labels = new Labels({ labeledFrames, videos, tracks });
   labels.provenance["filename"] = spotsPath;
   return labels;
 }
