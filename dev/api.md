@@ -357,6 +357,8 @@ const mask = roi.toMask(480, 640);
 
 > **Note:** `ROI.fromBbox()` and `ROI.fromXyxy()` are deprecated. Use `BoundingBox.fromXywh()` or `BoundingBox.fromXyxy()` instead.
 
+> **Note:** `ROI.video` is retained for static ROIs (arena boundaries, chamber outlines stored on `labels.staticRois`); `ROI.frameIdx` was removed in v0.3.0. Frame-bound ROIs derive their frame from the parent `LabeledFrame` — attach them with `lf.append(roi)`.
+
 ### `SegmentationMask`
 RLE-encoded binary mask. `SegmentationMask` is abstract; use `UserSegmentationMask` or `PredictedSegmentationMask` for direct construction. The `fromArray()` factory returns `UserSegmentationMask`.
 

@@ -25,7 +25,7 @@ await saveSlp(labels, "/tmp/session-roundtrip.slp", { embed: false });
 ## Features
 
 - SLP read/write with embedded frame support (format 1.0–2.2).
-- ROI and segmentation mask annotations (format 1.5), ROI-instance associations (format 1.6), bounding boxes (format 1.7), label images (format 1.8), identities (format 1.9), spatial metadata (format 2.1).
+- ROI and segmentation mask annotations (format 1.5), ROI-instance associations (format 1.6), bounding boxes (format 1.7), label images (format 1.8), identities (format 1.9), corner-based bounding boxes (format 2.0), spatial metadata (format 2.1), chunked label image storage (format 2.2).
 - Browser-compatible SLP writing via `saveSlpToBytes()`.
 - Streaming inputs (URL, `File`, `FileSystemFileHandle`, `Blob`).
 - Data model types (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`, `ROI`, `SegmentationMask`, `BoundingBox`, `Centroid`, `LabelImage`, `Identity`, `Instance3D`).

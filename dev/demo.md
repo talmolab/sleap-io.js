@@ -14,3 +14,5 @@ The embedded viewer below loads `.slp` files entirely in the browser. It streams
   loading="lazy"
 ></iframe>
 
+Source: [`docs/assets/demo/demo.js`](https://github.com/talmolab/sleap-io.js/blob/main/docs/assets/demo/demo.js) · [`index.html`](https://github.com/talmolab/sleap-io.js/blob/main/docs/assets/demo/index.html)
+

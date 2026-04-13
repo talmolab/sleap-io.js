@@ -1022,6 +1022,7 @@
 </code></pre></div>
 <blockquote>
 <p><strong>Note:</strong> <code>ROI.fromBbox()</code> and <code>ROI.fromXyxy()</code> are deprecated. Use <code>BoundingBox.fromXywh()</code> or <code>BoundingBox.fromXyxy()</code> instead.</p>
+<p><strong>Note:</strong> <code>ROI.video</code> is retained for static ROIs (arena boundaries, chamber outlines stored on <code>labels.staticRois</code>); <code>ROI.frameIdx</code> was removed in v0.3.0. Frame-bound ROIs derive their frame from the parent <code>LabeledFrame</code> — attach them with <code>lf.append(roi)</code>.</p>
 </blockquote>
 <h3 id="segmentationmask"><code>SegmentationMask</code><a class="headerlink" href="#segmentationmask" title="Permanent link">&para;</a></h3>
 <p>RLE-encoded binary mask. <code>SegmentationMask</code> is abstract; use <code>UserSegmentationMask</code> or <code>PredictedSegmentationMask</code> for direct construction. The <code>fromArray()</code> factory returns <code>UserSegmentationMask</code>.</p>

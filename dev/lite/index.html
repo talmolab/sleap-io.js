@@ -814,6 +814,9 @@
 </tr>
 </tbody>
 </table>
+<blockquote>
+<p><strong>Dependencies:</strong> The full entry point pulls in <code>pako</code> (^2.1.0) for label image zlib compression, but lite mode does not import it — the <code>/lite</code> bundle stays free of <code>pako</code> and <code>h5wasm</code>.</p>
+</blockquote>
 <h2 id="example-file-upload-validation">Example: File Upload Validation<a class="headerlink" href="#example-file-upload-validation" title="Permanent link">&para;</a></h2>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlpMetadata</span><span class="p">,</span><span class="w"> </span><span class="nx">validateSlpBuffer</span><span class="p">,</span><span class="w"> </span><span class="nx">isHdf5Buffer</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js/lite&quot;</span><span class="p">;</span>
 
