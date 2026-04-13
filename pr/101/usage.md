@@ -333,7 +333,7 @@ if (!lf) {
 lf.append(c);
 ```
 
-Static ROIs (e.g., arena boundaries that apply to an entire video rather than a specific frame) are the one exception — they live on `labels.staticRois` and can be mutated directly.
+Static ROIs (e.g., arena boundaries that apply to an entire video rather than a specific frame) are the one exception — they live on `labels.staticRois` and are added via `labels.addStaticRoi(roi)`.
 
 ```ts
 import {
@@ -357,7 +357,7 @@ const arena = ROI.fromPolygon([[0,0], [100,0], [100,100], [0,100]], {
   category: "arena",
   video: labels.videos[0],
 });
-labels.staticRois.push(arena);
+labels.addStaticRoi(arena);
 
 // Or create a frame-bound ROI and attach it to a LabeledFrame
 const frameRoi = ROI.fromPolygon([[10,10], [50,10], [50,50], [10,50]], {

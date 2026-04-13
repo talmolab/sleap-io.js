@@ -1209,8 +1209,8 @@
 <span class="p">}</span>
 <span class="nx">existing</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">anotherBbox</span><span class="p">);</span>
 </code></pre></div>
-<p>Static ROIs (video-level, e.g. arena boundaries) live on <code>labels.staticRois</code> and can be mutated directly:</p>
-<div class="highlight"><pre><span></span><code><span class="nx">labels</span><span class="p">.</span><span class="nx">staticRois</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">arenaRoi</span><span class="p">);</span>
+<p>Static ROIs (video-level, e.g. arena boundaries) live on <code>labels.staticRois</code>. Use <code>labels.addStaticRoi(roi)</code> to add one — the method also registers the ROI's track on <code>labels.tracks</code> if present:</p>
+<div class="highlight"><pre><span></span><code><span class="nx">labels</span><span class="p">.</span><span class="nx">addStaticRoi</span><span class="p">(</span><span class="nx">arenaRoi</span><span class="p">);</span>
 </code></pre></div>
 <p>The SLP format version is set automatically based on content:</p>
 <table>

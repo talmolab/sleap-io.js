@@ -559,10 +559,10 @@ if (!existing) {
 existing.append(anotherBbox);
 ```
 
-Static ROIs (video-level, e.g. arena boundaries) live on `labels.staticRois` and can be mutated directly:
+Static ROIs (video-level, e.g. arena boundaries) live on `labels.staticRois`. Use `labels.addStaticRoi(roi)` to add one — the method also registers the ROI's track on `labels.tracks` if present:
 
 ```ts
-labels.staticRois.push(arenaRoi);
+labels.addStaticRoi(arenaRoi);
 ```
 
 The SLP format version is set automatically based on content:

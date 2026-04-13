@@ -992,6 +992,13 @@ declare class Labels {
     }): LabeledFrame[];
     addVideo(video: Video): void;
     append(frame: LabeledFrame): void;
+    /**
+     * Add a static ROI (not tied to any specific frame, e.g., an arena boundary).
+     *
+     * Registers the ROI's track (if any) on `this.tracks`. Use
+     * `lf.append(roi)` on a `LabeledFrame` to add a frame-bound ROI instead.
+     */
+    addStaticRoi(roi: ROI): void;
     toDict(options?: {
         video?: Video | number;
         skipEmptyFrames?: boolean;
