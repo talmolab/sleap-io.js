@@ -258,11 +258,11 @@ const array = labels.numpy();
 labels.materialize();
 ```
 
-> **Note:** `labels.getFrame()` and `labels.getTrackAnnotations()` **throw** on lazy `Labels`. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale results. Use `labels.find(video, frameIdx)` (which handles both modes) or call `labels.materialize()` before using `getFrame` / `getTrackAnnotations`.
+> **Note:** `labels.getFrame()` and `labels.getTrackAnnotations()` **throw** on lazy `Labels`. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale results. Use `labels.find({ video, frameIdx })` (which handles both modes and returns `LabeledFrame[]`) or call `labels.materialize()` before using `getFrame` / `getTrackAnnotations`.
 >
 > ```ts
 > // Works for both lazy and eager Labels
-> const frame = labels.find(video, 42);
+> const [frame] = labels.find({ video, frameIdx: 42 });   // LabeledFrame | undefined
 >
 > // Or materialize first, then use O(1) lookups
 > labels.materialize();
@@ -328,7 +328,7 @@ const c = new UserCentroid({ x: 100, y: 200 });
 let lf = labels.getFrame(video, 5);
 if (!lf) {
   lf = new LabeledFrame({ video, frameIdx: 5 });
-  labels.labeledFrames.push(lf);
+  labels.append(lf);
 }
 lf.append(c);
 ```
@@ -366,7 +366,7 @@ const frameRoi = ROI.fromPolygon([[10,10], [50,10], [50,50], [10,50]], {
 let lf = labels.getFrame(labels.videos[0], 0);
 if (!lf) {
   lf = new LabeledFrame({ video: labels.videos[0], frameIdx: 0 });
-  labels.labeledFrames.push(lf);
+  labels.append(lf);
 }
 lf.append(frameRoi);
 
@@ -414,7 +414,7 @@ const li = LabelImage.fromBinaryMasks(
 let lf = labels.getFrame(video, 0);
 if (!lf) {
   lf = new LabeledFrame({ video, frameIdx: 0 });
-  labels.labeledFrames.push(lf);
+  labels.append(lf);
 }
 lf.append(li);
 
@@ -442,7 +442,7 @@ labelImages.forEach((li, frameIdx) => {
   let lf = labels.getFrame(video, frameIdx);
   if (!lf) {
     lf = new LabeledFrame({ video, frameIdx });
-    labels.labeledFrames.push(lf);
+    labels.append(lf);
   }
   lf.append(li);
 });

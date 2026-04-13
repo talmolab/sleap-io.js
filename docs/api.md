@@ -249,7 +249,7 @@ Merge annotations from one `LabeledFrame` into another with strategy-aware handl
 | `"keep_original"` | Keep self only, discard everything from `other` |
 | `"keep_new"` | Replace self's annotations with (copies of) `other`'s |
 | `"keep_both"` *(default)* | Deduplicate by object identity, union both sets |
-| `"replace_predictions"` | Keep user annotations from self, replace predicted entries with `other`'s |
+| `"replace_predictions"` | Keep user annotations from self; drop self's predicted and take all predicted from `other` |
 | `"auto"` | Spatially match by centroid distance; user beats predicted; add unmatched |
 | `"update_tracks"` | Spatially match and cascade track assignments only |
 
@@ -288,11 +288,11 @@ Key classes:
 - **`LazyDataStore`**: Holds raw HDF5 column data; supports `materializeFrame(idx)`, `materializeAll()`, `copy()`, and `toNumpy()` fast path.
 - **`LazyFrameList`**: Array-like container with `at(idx)`, `length`, `toArray()`, `[Symbol.iterator]()`, and `materializedCount`.
 
-> **Note:** `labels.getFrame()` and `labels.getTrackAnnotations()` **throw** on lazy `Labels`. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale or partial results. Call `labels.materialize()` first, or use `labels.find(video, frameIdx)` which handles both lazy and eager modes transparently.
+> **Note:** `labels.getFrame()` and `labels.getTrackAnnotations()` **throw** on lazy `Labels`. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale or partial results. Call `labels.materialize()` first, or use `labels.find({ video, frameIdx })` which handles both lazy and eager modes transparently (it returns `LabeledFrame[]` — take the first element).
 
 ```ts
 // Safe patterns for lazy Labels
-const frame = labels.find(video, 42);   // works in both modes
+const [frame] = labels.find({ video, frameIdx: 42 });   // LabeledFrame | undefined
 
 // Or materialize first for O(1) lookups
 labels.materialize();
@@ -400,7 +400,7 @@ const bbox = new UserBoundingBox({
 let lf = labels.getFrame(labels.videos[0], 3);
 if (!lf) {
   lf = new LabeledFrame({ video: labels.videos[0], frameIdx: 3 });
-  labels.labeledFrames.push(lf);
+  labels.append(lf);
 }
 lf.append(bbox);
 
@@ -446,7 +446,7 @@ const c = new UserCentroid({ x: 100, y: 200, track });
 let lf = labels.getFrame(video, 0);
 if (!lf) {
   lf = new LabeledFrame({ video, frameIdx: 0 });
-  labels.labeledFrames.push(lf);
+  labels.append(lf);
 }
 lf.append(c);
 
@@ -461,7 +461,7 @@ const pc = new PredictedCentroid({
 let lf1 = labels.getFrame(video, 1);
 if (!lf1) {
   lf1 = new LabeledFrame({ video, frameIdx: 1 });
-  labels.labeledFrames.push(lf1);
+  labels.append(lf1);
 }
 lf1.append(pc);
 
@@ -527,6 +527,8 @@ labels.addVideo(video);
 
 Use `LabeledFrame.append(annotation)` to add any annotation type. It routes by runtime type to the appropriate per-frame list (`lf.centroids`, `.bboxes`, `.masks`, `.labelImages`, `.rois`) and handles `Instance` and `PredictedInstance` as well. If you know the target list at the call site, you can also push directly.
 
+> **Note:** `Labels` and `LabeledFrame` each have an `append()` method. `labels.append(lf)` adds a `LabeledFrame` to a `Labels` (and also registers its video and tracks). `lf.append(annotation)` adds an annotation to a single `LabeledFrame`. They're different operations at different levels of the hierarchy.
+
 ```ts
 import {
   Labels,
@@ -552,7 +554,7 @@ const labels = new Labels({ labeledFrames: [lf], videos: [video], skeletons: [sk
 let existing = labels.getFrame(video, 5);
 if (!existing) {
   existing = new LabeledFrame({ video, frameIdx: 5 });
-  labels.labeledFrames.push(existing);
+  labels.append(existing);
 }
 existing.append(anotherBbox);
 ```
@@ -617,7 +619,7 @@ labelImages.forEach((li, i) => {
   let lf = labels.getFrame(video, i);
   if (!lf) {
     lf = new LabeledFrame({ video, frameIdx: i });
-    labels.labeledFrames.push(lf);
+    labels.append(lf);
   }
   lf.append(li);
 });
