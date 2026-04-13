@@ -24,17 +24,8 @@ JavaScript/TypeScript utilities for reading and writing SLEAP `.slp` files with 
 
 ## Quickstart
 
-Install from npm:
-
 ```bash
 npm install @talmolab/sleap-io.js
-```
-
-To build from source (for contributors):
-
-```bash
-npm install
-npm run build
 ```
 
 ### Load and save SLP
