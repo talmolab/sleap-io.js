@@ -15,6 +15,7 @@ import { LabelImage, PredictedLabelImage } from "../../model/label-image.js";
 import { deflate } from "pako";
 import { Identity } from "../../model/identity.js";
 import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
+import type { LazyDataStore } from "../../model/lazy.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile: ((filename: string, bytes: Uint8Array) => Promise<void>) | null = null;
@@ -88,11 +89,306 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   writeLabeledFrames(file, labels);
   writeNegativeFrames(file, labels);
   const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
-  writeRois(file, labels.rois, labels.videos, labels.tracks, allInstances);
-  writeMasks(file, labels.masks, labels.videos, labels.tracks, allInstances);
-  writeBboxes(file, labels.bboxes, labels.videos, labels.tracks, allInstances);
-  writeCentroids(file, labels.centroids, labels.videos, labels.tracks, allInstances);
-  writeLabelImages(file, labels.labelImages, labels.videos, labels.tracks, allInstances);
+
+  // Build flat annotation lists with routing contexts from parent LabeledFrames
+  const allRois: ROI[] = [];
+  const roiCtx: [number, number][] = [];
+  const allMasks: SegmentationMask[] = [];
+  const maskCtx: [number, number][] = [];
+  const allBboxes: BoundingBox[] = [];
+  const bboxCtx: [number, number][] = [];
+  const allCentroids: Centroid[] = [];
+  const centroidCtx: [number, number][] = [];
+  const allLabelImages: LabelImage[] = [];
+  const liCtx: [number, number][] = [];
+
+  for (const lf of labels.labeledFrames) {
+    const vidIdx = labels.videos.indexOf(lf.video);
+    for (const r of lf.rois) { allRois.push(r); roiCtx.push([vidIdx, lf.frameIdx]); }
+    for (const m of lf.masks) { allMasks.push(m); maskCtx.push([vidIdx, lf.frameIdx]); }
+    for (const b of lf.bboxes) { allBboxes.push(b); bboxCtx.push([vidIdx, lf.frameIdx]); }
+    for (const c of lf.centroids) { allCentroids.push(c); centroidCtx.push([vidIdx, lf.frameIdx]); }
+    for (const li of lf.labelImages) { allLabelImages.push(li); liCtx.push([vidIdx, lf.frameIdx]); }
+  }
+  // Static ROIs
+  for (const r of labels._staticRois) {
+    allRois.push(r);
+    roiCtx.push([r.video ? labels.videos.indexOf(r.video) : -1, -1]);
+  }
+
+  writeRois(file, allRois, labels.videos, labels.tracks, allInstances, roiCtx);
+  writeMasks(file, allMasks, labels.videos, labels.tracks, allInstances, maskCtx);
+  writeBboxes(file, allBboxes, labels.videos, labels.tracks, allInstances, bboxCtx);
+  writeCentroids(file, allCentroids, labels.videos, labels.tracks, allInstances, centroidCtx);
+  writeLabelImages(file, allLabelImages, labels.videos, labels.tracks, allInstances, liCtx);
+}
+
+/**
+ * Sentinel error thrown by {@link makeLazySourceLabels} when the lazy source
+ * fast path cannot safely swap videos in place (multi-camera sessions
+ * referencing a video that's getting swapped). The dispatch layer catches
+ * this and falls back to materializing the labels.
+ */
+class LazySourceFallback extends Error {
+  constructor() {
+    super("lazy source mode requires materialization");
+    this.name = "LazySourceFallback";
+  }
+}
+
+/**
+ * Build a shallow Labels copy with `videos[]` swapped to source paths,
+ * suitable for the lazy fast-path writer when `embed: "source"` is set.
+ *
+ * The lazy data store is keyed by `videoIdx` (not video object identity),
+ * so we don't need to remap any annotations — only the `videos[]` array,
+ * the `suggestions` (which reference videos by identity), and we need to
+ * verify no `RecordingSession` references a video that's being swapped.
+ *
+ * Note: the eager source-mode path (`saveSlpToBytes`) does NOT remap
+ * suggestions or check sessions today. The lazy path here is more correct;
+ * fixing eager is a separate follow-up.
+ *
+ * @throws LazySourceFallback if any session references a swapped video.
+ */
+function makeLazySourceLabels(labels: Labels): Labels {
+  const restoredVideos = labels.videos.map((v) => v.sourceVideo ?? v);
+  const videoMap = new Map<Video, Video>();
+  for (let i = 0; i < labels.videos.length; i++) {
+    if (labels.videos[i] !== restoredVideos[i]) {
+      videoMap.set(labels.videos[i], restoredVideos[i]);
+    }
+  }
+
+  // No swaps needed — just return the original labels.
+  if (videoMap.size === 0) return labels;
+
+  // Multi-camera sessions referencing a swapped video are too complex for
+  // the lazy fast path. Bail out so the dispatch layer can materialize.
+  for (const session of labels.sessions) {
+    for (const v of session.videoByCamera.values()) {
+      if (videoMap.has(v)) {
+        throw new LazySourceFallback();
+      }
+    }
+  }
+
+  const remappedSuggestions = labels.suggestions.map((s) => {
+    const newVideo = videoMap.get(s.video);
+    if (!newVideo) return s;
+    return new SuggestionFrame({
+      video: newVideo,
+      frameIdx: s.frameIdx,
+      group: s.group,
+      metadata: s.metadata,
+    });
+  });
+
+  const out = new Labels({
+    videos: restoredVideos,
+    skeletons: labels.skeletons,
+    tracks: labels.tracks,
+    suggestions: remappedSuggestions,
+    sessions: labels.sessions, // safe: verified no swapped refs
+    identities: labels.identities,
+    provenance: labels.provenance,
+    rois: labels._staticRois,
+  });
+  out._lazyFrameList = labels._lazyFrameList;
+  out._lazyDataStore = labels._lazyDataStore;
+  return out;
+}
+
+/**
+ * Write `frames`/`instances`/`points`/`pred_points` HDF5 datasets directly
+ * from the lazy store's parsed column data, bypassing materialization.
+ *
+ * The columns are stored as `Record<string, any[]>` (parsed from the original
+ * HDF5 reader). We rebuild row-major typed arrays and call the existing
+ * {@link createMatrixDataset} helper so we get identical output to the eager
+ * writer for these four datasets.
+ *
+ * TODO: a column-aware fast path could avoid the row rebuild entirely.
+ */
+function writeLazyMatrixDataset(
+  file: any,
+  name: string,
+  columns: Record<string, any[]>,
+  fieldNames: string[],
+  dtype: string,
+): void {
+  const rowCount = (columns[fieldNames[0]] ?? []).length;
+  const colCount = fieldNames.length;
+  const rows: number[][] = [];
+  for (let i = 0; i < rowCount; i++) {
+    const row = new Array<number>(colCount);
+    for (let j = 0; j < colCount; j++) {
+      const col = columns[fieldNames[j]] ?? [];
+      const v = col[i];
+      row[j] = v === undefined || v === null ? 0 : Number(v);
+    }
+    rows.push(row);
+  }
+  createMatrixDataset(file, name, rows, fieldNames, dtype);
+}
+
+function writeLazyFramesAndInstances(file: any, store: LazyDataStore): void {
+  writeLazyMatrixDataset(
+    file,
+    "frames",
+    store.framesData,
+    ["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"],
+    "<i8",
+  );
+  writeLazyMatrixDataset(
+    file,
+    "instances",
+    store.instancesData,
+    [
+      "instance_id",
+      "instance_type",
+      "frame_id",
+      "skeleton",
+      "track",
+      "from_predicted",
+      "score",
+      "point_id_start",
+      "point_id_end",
+      "tracking_score",
+    ],
+    "<f8",
+  );
+  writeLazyMatrixDataset(
+    file,
+    "points",
+    store.pointsData,
+    ["x", "y", "visible", "complete"],
+    "<f8",
+  );
+  writeLazyMatrixDataset(
+    file,
+    "pred_points",
+    store.predPointsData,
+    ["x", "y", "visible", "complete", "score"],
+    "<f8",
+  );
+}
+
+function writeLazyNegativeFrames(file: any, store: LazyDataStore): void {
+  if (store.negativeFrames.size === 0) return;
+  const rows: number[][] = [];
+  for (const key of store.negativeFrames) {
+    const [vidStr, fidxStr] = key.split(":");
+    rows.push([Number(vidStr), Number(fidxStr)]);
+  }
+  // Deterministic ordering for byte-stable output.
+  rows.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  createMatrixDataset(file, "negative_frames", rows, ["video_id", "frame_idx"], "<i8");
+}
+
+/**
+ * Lazy fast-path SLP writer. Mirrors Python's `_write_labels_lazy`.
+ *
+ * Reuses metadata writers (which only depend on eager `Labels` fields like
+ * `videos`/`tracks`/`suggestions`/`identities`/`sessions`/`provenance`) and
+ * pulls frames/instances/points/pred_points/negative_frames + per-type
+ * annotation maps directly from `LazyDataStore`. No `LabeledFrame` or
+ * `Instance` objects are constructed in this path.
+ *
+ * Limitations (matching Python):
+ *   - `writeSessions` is called with an empty `labeledFrames` list, so any
+ *     `FrameGroup` references that resolve via labeled-frame index are lost.
+ *   - Instance associations on annotations are persisted via the stored
+ *     `_instanceIdx` field (no live `instance` references in lazy mode).
+ *
+ * @throws Error if `labels.isLazy` is false or the lazy store is missing.
+ */
+function writeSlpToFileLazy(file: any, labels: Labels): void {
+  const store = labels._lazyDataStore;
+  if (!labels.isLazy || !store) {
+    throw new Error("writeSlpToFileLazy requires lazy Labels with a data store");
+  }
+
+  writeMetadata(file, labels);
+  writeVideos(file, labels.videos);
+  writeTracks(file, labels.tracks);
+  writeSuggestions(file, labels.suggestions, labels.videos);
+  writeIdentities(file, labels.identities);
+  // Sessions: pass empty labeledFrames since they aren't materialized.
+  // Frame-group refs resolved by lf index will be lost — matches Python.
+  writeSessions(file, labels.sessions, labels.videos, [], labels.identities);
+
+  writeLazyFramesAndInstances(file, store);
+  writeLazyNegativeFrames(file, store);
+
+  // Build per-type (annotation, context) pairs from the lazy store maps.
+  // Per-frame Map keys are "vidIdx:frameIdx" strings (see read.ts).
+  const allRois: ROI[] = [];
+  const roiCtx: [number, number][] = [];
+  const allMasks: SegmentationMask[] = [];
+  const maskCtx: [number, number][] = [];
+  const allBboxes: BoundingBox[] = [];
+  const bboxCtx: [number, number][] = [];
+  const allCentroids: Centroid[] = [];
+  const centroidCtx: [number, number][] = [];
+  const allLabelImages: LabelImage[] = [];
+  const liCtx: [number, number][] = [];
+
+  const collectFrameBound = <T>(
+    byFrame: Map<string, T[]>,
+    out: T[],
+    ctxOut: [number, number][],
+  ): void => {
+    for (const [key, list] of byFrame) {
+      const [vidStr, fidxStr] = key.split(":");
+      const vidIdx = Number(vidStr);
+      const fidx = Number(fidxStr);
+      for (const ann of list) {
+        out.push(ann);
+        ctxOut.push([vidIdx, fidx]);
+      }
+    }
+  };
+
+  collectFrameBound(store._roiByFrame, allRois, roiCtx);
+  collectFrameBound(store._maskByFrame, allMasks, maskCtx);
+  collectFrameBound(store._bboxByFrame, allBboxes, bboxCtx);
+  collectFrameBound(store._centroidByFrame, allCentroids, centroidCtx);
+  collectFrameBound(store._labelImageByFrame, allLabelImages, liCtx);
+
+  // Undistributed ROIs (static ROIs): preserve the video association by
+  // looking up videos.indexOf(roi.video) instead of using -1. The other
+  // four undistributed lists shouldn't have annotations with .video after
+  // PR #94 (those classes no longer carry video), so they always use -1.
+  for (const roi of store._undistributedRois) {
+    allRois.push(roi);
+    const vidIdx = roi.video ? labels.videos.indexOf(roi.video) : -1;
+    roiCtx.push([vidIdx, -1]);
+  }
+  for (const m of store._undistributedMasks) {
+    allMasks.push(m);
+    maskCtx.push([-1, -1]);
+  }
+  for (const b of store._undistributedBboxes) {
+    allBboxes.push(b);
+    bboxCtx.push([-1, -1]);
+  }
+  for (const c of store._undistributedCentroids) {
+    allCentroids.push(c);
+    centroidCtx.push([-1, -1]);
+  }
+  for (const li of store._undistributedLabelImages) {
+    allLabelImages.push(li);
+    liCtx.push([-1, -1]);
+  }
+
+  // Pass undefined for `instances` so each writer uses the _instanceIdx
+  // fallback (Side fix A) for any annotations with deferred instance links.
+  writeRois(file, allRois, labels.videos, labels.tracks, undefined, roiCtx);
+  writeMasks(file, allMasks, labels.videos, labels.tracks, [], maskCtx);
+  writeBboxes(file, allBboxes, labels.videos, labels.tracks, [], bboxCtx);
+  writeCentroids(file, allCentroids, labels.videos, labels.tracks, [], centroidCtx);
+  writeLabelImages(file, allLabelImages, labels.videos, labels.tracks, [], liCtx);
 }
 
 /**
@@ -115,6 +411,55 @@ export async function saveSlpToBytes(
   options?: SlpWriteOptions
 ): Promise<Uint8Array> {
   const embedMode = options?.embed ?? false;
+
+  // Lazy fast path: skip materialization for embed modes that don't need
+  // to read pixel data from videos. Mirrors Python's write_labels dispatch.
+  if (labels.isLazy) {
+    const needsMaterialization =
+      embedMode === true ||
+      embedMode === "all" ||
+      embedMode === "user" ||
+      embedMode === "suggestions" ||
+      embedMode === "user+suggestions";
+
+    if (!needsMaterialization) {
+      let lazyWriteLabels: Labels = labels;
+      let proceedWithFastPath = true;
+
+      if (embedMode === "source") {
+        try {
+          lazyWriteLabels = makeLazySourceLabels(labels);
+        } catch (e) {
+          if (e instanceof LazySourceFallback) {
+            // Multi-camera session references would break under the swap.
+            // Fall back to materialization + the eager source-mode path.
+            labels.materialize();
+            proceedWithFastPath = false;
+          } else {
+            throw e;
+          }
+        }
+      }
+
+      if (proceedWithFastPath) {
+        const module = await getH5Module();
+        const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+        const file = new module.File(memPath, "w");
+        try {
+          writeSlpToFileLazy(file, lazyWriteLabels);
+        } finally {
+          file.close();
+        }
+        const fs = getH5FileSystem(module);
+        const bytes = fs.readFile!(memPath);
+        fs.unlink!(memPath);
+        return bytes;
+      }
+    } else {
+      // Embed modes that need pixel data: materialize and continue with eager path.
+      labels.materialize();
+    }
+  }
 
   // Source mode: restore original video paths before writing
   let writeLabels = labels;
@@ -144,11 +489,7 @@ export async function saveSlpToBytes(
       suggestions: labels.suggestions,
       sessions: labels.sessions,
       provenance: labels.provenance,
-      rois: labels.rois,
-      masks: labels.masks,
-      bboxes: labels.bboxes,
-      centroids: labels.centroids,
-      labelImages: labels.labelImages,
+      rois: labels._staticRois,
       identities: labels.identities,
     });
   }
@@ -849,7 +1190,7 @@ function createMatrixDataset(file: any, name: string, rows: number[][], fieldNam
   setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
 }
 
-function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name: string }>, instances?: Array<Instance | PredictedInstance>): void {
+function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name: string }>, instances?: Array<Instance | PredictedInstance>, contexts?: [number, number][]): void {
   if (!rois.length) return;
 
   const rows: number[][] = [];
@@ -860,17 +1201,22 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
   const sources: string[] = [];
   const hasInstances = instances && instances.length > 0;
 
-  for (const roi of rois) {
+  for (let i = 0; i < rois.length; i++) {
+    const roi = rois[i];
     const wkb = encodeWkb(roi.geometry);
     const wkbStart = wkbOffset;
     const wkbEnd = wkbOffset + wkb.length;
     wkbChunks.push(wkb);
     wkbOffset = wkbEnd;
 
-    const videoIdx = roi.video ? videos.indexOf(roi.video) : -1;
-    const frameIdx = roi.frameIdx ?? -1;
+    const videoIdx = contexts ? contexts[i][0] : (roi.video ? videos.indexOf(roi.video) : -1);
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = roi.track ? tracks.indexOf(roi.track as any) : -1;
-    const instanceIdx = hasInstances && roi.instance ? instances.indexOf(roi.instance) : -1;
+    // Fall back to stored _instanceIdx when no live instance link (e.g., lazy mode).
+    const instanceIdx =
+      hasInstances && roi.instance
+        ? instances.indexOf(roi.instance)
+        : (roi._instanceIdx ?? -1);
     const score = roi.isPredicted ? (roi as PredictedROI).score : Number.NaN;
     const isPredicted = roi.isPredicted ? 1 : 0;
     const trackingScore = roi.trackingScore ?? Number.NaN;
@@ -906,6 +1252,7 @@ function writeMasks(
   videos: Video[],
   tracks: Array<{ name: string }>,
   instances: (Instance | PredictedInstance)[],
+  contexts?: [number, number][],
 ): void {
   if (!masks.length) return;
 
@@ -934,8 +1281,8 @@ function writeMasks(
     rleChunks.push(rleBytes);
     rleOffset = rleEnd;
 
-    const videoIdx = mask.video ? videos.indexOf(mask.video) : -1;
-    const frameIdx = mask.frameIdx ?? -1;
+    const videoIdx = contexts ? contexts[i][0] : -1;
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = mask.track ? tracks.indexOf(mask.track as any) : -1;
     const score = mask.isPredicted ? (mask as PredictedSegmentationMask).score : Number.NaN;
     const isPredicted = mask.isPredicted ? 1 : 0;
@@ -1004,9 +1351,10 @@ function writeMasks(
 function writeBboxes(
   file: any,
   bboxes: BoundingBox[],
-  videos: Video[],
+  _videos: Video[],
   tracks: Array<{ name: string }>,
   instances: (Instance | PredictedInstance)[],
+  contexts?: [number, number][],
 ): void {
   if (!bboxes.length) return;
 
@@ -1015,12 +1363,16 @@ function writeBboxes(
   const names: string[] = [];
   const sources: string[] = [];
 
-  for (const bbox of bboxes) {
-    const videoIdx = bbox.video ? videos.indexOf(bbox.video) : -1;
-    const frameIdx = bbox.frameIdx ?? -1;
+  for (let i = 0; i < bboxes.length; i++) {
+    const bbox = bboxes[i];
+    const videoIdx = contexts ? contexts[i][0] : -1;
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = bbox.track ? tracks.indexOf(bbox.track as any) : -1;
     const score = bbox.isPredicted ? (bbox as PredictedBoundingBox).score : Number.NaN;
-    const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance as Instance) : -1;
+    // Fall back to stored _instanceIdx when no live instance link (e.g., lazy mode).
+    const instanceIdx = bbox.instance
+      ? instances.indexOf(bbox.instance as Instance)
+      : (bbox._instanceIdx ?? -1);
 
     const trackingScore = bbox.trackingScore ?? Number.NaN;
 
@@ -1054,9 +1406,10 @@ function writeBboxes(
 function writeLabelImages(
   file: any,
   labelImages: LabelImage[],
-  videos: Video[],
+  _videos: Video[],
   tracks: Track[],
   instances: (Instance | PredictedInstance)[],
+  contexts?: [number, number][],
 ): void {
   if (!labelImages.length) return;
 
@@ -1082,8 +1435,8 @@ function writeLabelImages(
 
   for (let liIdx = 0; liIdx < labelImages.length; liIdx++) {
     const li = labelImages[liIdx];
-    const videoIdx = li.video ? videos.indexOf(li.video) : -1;
-    const frameIdx = li.frameIdx ?? -1;
+    const videoIdx = contexts ? contexts[liIdx][0] : -1;
+    const frameIdx = contexts ? contexts[liIdx][1] : -1;
 
     // Compress pixel data: Int32Array -> raw bytes -> zlib
     const pixelBytes = new Uint8Array(li.data.buffer, li.data.byteOffset, li.data.byteLength);
@@ -1182,9 +1535,10 @@ function writeLabelImages(
 function writeCentroids(
   file: any,
   centroids: Centroid[],
-  videos: Video[],
+  _videos: Video[],
   tracks: Array<{ name: string }>,
   instances: (Instance | PredictedInstance)[],
+  contexts?: [number, number][],
 ): void {
   if (!centroids.length) return;
 
@@ -1193,12 +1547,16 @@ function writeCentroids(
   const names: string[] = [];
   const sources: string[] = [];
 
-  for (const c of centroids) {
-    const videoIdx = c.video ? videos.indexOf(c.video) : -1;
-    const frameIdx = c.frameIdx ?? -1;
+  for (let i = 0; i < centroids.length; i++) {
+    const c = centroids[i];
+    const videoIdx = contexts ? contexts[i][0] : -1;
+    const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = c.track ? tracks.indexOf(c.track as any) : -1;
     const score = c.isPredicted ? (c as PredictedCentroid).score : Number.NaN;
-    const instanceIdx = c.instance ? instances.indexOf(c.instance as Instance) : -1;
+    // Fall back to stored _instanceIdx when no live instance link (e.g., lazy mode).
+    const instanceIdx = c.instance
+      ? instances.indexOf(c.instance as Instance)
+      : (c._instanceIdx ?? -1);
     const isPredicted = c.isPredicted ? 1 : 0;
     const trackingScore = c.trackingScore ?? Number.NaN;
 

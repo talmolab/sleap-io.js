@@ -89,12 +89,16 @@ describe("Labels track index", () => {
     const video = new Video({ filename: "test.mp4" });
     const t1 = new Track("t1");
     const t2 = new Track("t2");
-    const c1 = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0, track: t1 });
-    const c2 = new UserCentroid({ x: 3, y: 4, video, frameIdx: 5, track: t1 });
-    const c3 = new UserCentroid({ x: 5, y: 6, video, frameIdx: 2, track: t2 });
+    const c1 = new UserCentroid({ x: 1, y: 2, track: t1 });
+    const c2 = new UserCentroid({ x: 3, y: 4, track: t1 });
+    const c3 = new UserCentroid({ x: 5, y: 6, track: t2 });
 
     const labels = new Labels({
-      centroids: [c1, c2, c3],
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 0, centroids: [c1] }),
+        new LabeledFrame({ video, frameIdx: 5, centroids: [c2] }),
+        new LabeledFrame({ video, frameIdx: 2, centroids: [c3] }),
+      ],
       videos: [video],
       tracks: [t1, t2],
     });
@@ -143,14 +147,8 @@ describe("Labels track index", () => {
       objects: new Map<number, LabelImageObjectInfo>([
         [1, { track, category: "cell", name: "", instance: null }],
       ]),
-      video,
-      frameIdx: 0,
     });
-    const labels = new Labels({
-      labelImages: [li],
-      videos: [video],
-      tracks: [track],
-    });
+    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video, frameIdx: 0, labelImages: [li] })], videos: [video], tracks: [track] });
 
     const anns = labels.getTrackAnnotations(video, track);
     expect(anns).toHaveLength(1);
@@ -208,9 +206,9 @@ describe("Labels.find() fast path", () => {
 describe("get*() fast paths", () => {
   it("getCentroids uses O(1) frame lookup when video+frameIdx given", () => {
     const video = new Video({ filename: "test.mp4" });
-    const c0 = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0 });
-    const c1 = new UserCentroid({ x: 3, y: 4, video, frameIdx: 1 });
-    const labels = new Labels({ centroids: [c0, c1], videos: [video] });
+    const c0 = new UserCentroid({ x: 1, y: 2});
+    const c1 = new UserCentroid({ x: 3, y: 4});
+    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video: video, frameIdx: 0, centroids: [c0] }), new LabeledFrame({ video: video, frameIdx: 1, centroids: [c1] })], videos: [video] });
 
     // Fast path: both video and frameIdx
     let result = labels.getCentroids({ video, frameIdx: 0 });
@@ -253,7 +251,7 @@ describe("get*() fast paths", () => {
       video,
       frameIdx: 0,
     });
-    const labels = new Labels({ bboxes: [b1, b2], videos: [video] });
+    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video: video, frameIdx: 0, bboxes: [b1, b2] })], videos: [video] });
 
     // Fast path with video+frameIdx
     let result = labels.getBboxes({ video, frameIdx: 0 });
@@ -279,11 +277,8 @@ describe("get*() fast paths", () => {
     const mask = new UserSegmentationMask({
       rleCounts: new Uint32Array([16]),
       height: 4,
-      width: 4,
-      video,
-      frameIdx: 0,
-    });
-    const labels = new Labels({ masks: [mask], videos: [video] });
+      width: 4, });
+    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video: video, frameIdx: 0, masks: [mask] })], videos: [video] });
 
     let result = labels.getMasks({ video, frameIdx: 0 });
     expect(result).toHaveLength(1);
@@ -302,10 +297,9 @@ describe("get*() fast paths", () => {
       objects: new Map<number, LabelImageObjectInfo>([
         [1, { track: null, category: "cell", name: "", instance: null }],
       ]),
-      video,
-      frameIdx: 0,
     });
-    const labels = new Labels({ labelImages: [li], videos: [video] });
+    const lf = new LabeledFrame({ video, frameIdx: 0, labelImages: [li] });
+    const labels = new Labels({ labeledFrames: [lf], videos: [video] });
 
     let result = labels.getLabelImages({ video, frameIdx: 0 });
     expect(result).toHaveLength(1);
@@ -320,14 +314,14 @@ describe("get*() fast paths", () => {
     const roi1 = new UserROI({
       geometry: { type: "Point", coordinates: [0, 0] },
       video,
-      frameIdx: 0,
     });
     const roi2 = new UserROI({
       geometry: { type: "Point", coordinates: [5, 5] },
       video,
-      frameIdx: 1,
     });
-    const labels = new Labels({ rois: [roi1, roi2], videos: [video] });
+    const lf0 = new LabeledFrame({ video, frameIdx: 0, rois: [roi1] });
+    const lf1 = new LabeledFrame({ video, frameIdx: 1, rois: [roi2] });
+    const labels = new Labels({ labeledFrames: [lf0, lf1], videos: [video] });
 
     // Fast path with video+frameIdx
     let result = labels.getRois({ video, frameIdx: 0 });
@@ -388,23 +382,21 @@ describe("Index invalidation", () => {
     expect(labels.getFrame(newVideo, 0)).toBe(lf);
   });
 
-  it("addCentroid() invalidates indices", () => {
+  it("append() with annotations invalidates indices", () => {
     const video = new Video({ filename: "test.mp4" });
     const track = new Track("t1");
-    const c0 = new UserCentroid({ x: 1, y: 2, video, frameIdx: 0, track });
-    const labels = new Labels({
-      centroids: [c0],
-      videos: [video],
-      tracks: [track],
-    });
+    const c0 = new UserCentroid({ x: 1, y: 2, track });
+    const lf0 = new LabeledFrame({ video, frameIdx: 0, centroids: [c0] });
+    const labels = new Labels({ labeledFrames: [lf0], videos: [video], tracks: [track] });
 
     // Build track index
     let anns = labels.getTrackAnnotations(video, track);
     expect(anns).toHaveLength(1);
 
-    // Add another centroid to the same track
-    const c1 = new UserCentroid({ x: 3, y: 4, video, frameIdx: 1, track });
-    labels.addCentroid(c1);
+    // Append a new frame with another centroid on the same track
+    const c1 = new UserCentroid({ x: 3, y: 4, track });
+    const lf1 = new LabeledFrame({ video, frameIdx: 1, centroids: [c1] });
+    labels.append(lf1);
 
     // Track index should be invalidated and rebuilt
     anns = labels.getTrackAnnotations(video, track);
@@ -444,7 +436,7 @@ describe("Labels.removePredictions()", () => {
     const pred = PredictedInstance.fromArray([[1, 2], [3, 4]], skel, 0.9);
     pred.track = track;
     const lf = new LabeledFrame({ video, frameIdx: 0, instances: [pred] });
-    const c = new UserCentroid({ x: 5, y: 6, video, frameIdx: 0, track });
+    const c = new UserCentroid({ x: 5, y: 6, track });
     lf.centroids.push(c);
 
     const labels = new Labels({

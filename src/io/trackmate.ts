@@ -12,6 +12,7 @@
 import * as fs from "fs";
 import * as path from "path";
 import { Labels } from "../model/labels.js";
+import { LabeledFrame } from "../model/labeled-frame.js";
 import { Track } from "../model/instance.js";
 import { PredictedCentroid } from "../model/centroid.js";
 import { Video } from "../model/video.js";
@@ -184,7 +185,7 @@ export function readTrackMateCsv(
   const tracks = [...trackMap.values()];
 
   // Build PredictedCentroid objects
-  const centroids: PredictedCentroid[] = [];
+  const centroidsByFrame = new Map<number, PredictedCentroid[]>();
   for (const row of dataRows) {
     const spotId = parseInt(row[col["ID"]], 10);
     const tidStr = row[col["TRACK_ID"]];
@@ -202,25 +203,27 @@ export function readTrackMateCsv(
     const trackingScore = targetToCost.get(spotId) ?? null;
     const label = col["LABEL"] !== undefined ? row[col["LABEL"]] : `ID${spotId}`;
 
-    centroids.push(
-      new PredictedCentroid({
-        x,
-        y,
-        z,
-        video: videoObj,
-        frameIdx,
-        track,
-        trackingScore,
-        score,
-        name: label,
-        source: "trackmate",
-      }),
-    );
+    const centroid = new PredictedCentroid({
+      x,
+      y,
+      z,
+      track,
+      trackingScore,
+      score,
+      name: label,
+      source: "trackmate",
+    });
+    centroidsByFrame.set(frameIdx, [...(centroidsByFrame.get(frameIdx) ?? []), centroid]);
   }
 
-  // Assemble Labels
+  // Assemble Labels with LabeledFrames
   const videos = videoObj ? [videoObj] : [];
-  const labels = new Labels({ videos, tracks, centroids });
+  const video = videoObj ?? new Video({ filename: "" });
+  const labeledFrames: LabeledFrame[] = [];
+  for (const [frameIdx, frameCentroids] of [...centroidsByFrame.entries()].sort((a, b) => a[0] - b[0])) {
+    labeledFrames.push(new LabeledFrame({ video, frameIdx, centroids: frameCentroids }));
+  }
+  const labels = new Labels({ labeledFrames, videos, tracks });
   labels.provenance["filename"] = spotsPath;
   return labels;
 }

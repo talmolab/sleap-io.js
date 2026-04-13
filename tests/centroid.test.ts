@@ -11,6 +11,7 @@ import { Instance, PredictedInstance, Track } from "../src/model/instance.js";
 import { Skeleton } from "../src/model/skeleton.js";
 import { Labels } from "../src/model/labels.js";
 import { Video } from "../src/model/video.js";
+import { LabeledFrame } from "../src/model/labeled-frame.js";
 
 describe("Centroid", () => {
   it("is abstract — cannot be instantiated directly", () => {
@@ -22,8 +23,6 @@ describe("Centroid", () => {
     expect(c.x).toBe(10.5);
     expect(c.y).toBe(20.3);
     expect(c.z).toBeNull();
-    expect(c.video).toBeNull();
-    expect(c.frameIdx).toBeNull();
     expect(c.track).toBeNull();
     expect(c.trackingScore).toBeNull();
     expect(c.instance).toBeNull();
@@ -31,27 +30,24 @@ describe("Centroid", () => {
     expect(c.name).toBe("");
     expect(c.source).toBe("");
     expect(c.isPredicted).toBe(false);
-    expect(c.isStatic).toBe(true);
   });
 
   it("constructs UserCentroid with all options", () => {
     const track = new Track("track1");
     const c = new UserCentroid({
       x: 100, y: 200, z: 1.5,
-      frameIdx: 5, track,
+      track,
       trackingScore: 0.8,
       category: "cell",
       name: "ID42",
       source: "center_of_mass",
     });
     expect(c.z).toBe(1.5);
-    expect(c.frameIdx).toBe(5);
     expect(c.track).toBe(track);
     expect(c.trackingScore).toBe(0.8);
     expect(c.category).toBe("cell");
     expect(c.name).toBe("ID42");
     expect(c.source).toBe("center_of_mass");
-    expect(c.isStatic).toBe(false);
   });
 
   it("constructs PredictedCentroid with score", () => {
@@ -247,12 +243,19 @@ describe("Labels.getCentroids", () => {
     const v1 = new Video({ filename: "v1.mp4" });
     const v2 = new Video({ filename: "v2.mp4" });
     const t1 = new Track("t1");
-    const centroids = [
-      new UserCentroid({ x: 1, y: 2, video: v1, frameIdx: 0 }),
-      new UserCentroid({ x: 3, y: 4, video: v1, frameIdx: 1 }),
-      new PredictedCentroid({ x: 5, y: 6, video: v2, frameIdx: 0, score: 0.9, track: t1 }),
-    ];
-    const labels = new Labels({ centroids, videos: [v1, v2], tracks: [t1] });
+
+    const lf0v1 = new LabeledFrame({ video: v1, frameIdx: 0 });
+    lf0v1.centroids.push(new UserCentroid({ x: 1, y: 2 }));
+    const lf1v1 = new LabeledFrame({ video: v1, frameIdx: 1 });
+    lf1v1.centroids.push(new UserCentroid({ x: 3, y: 4 }));
+    const lf0v2 = new LabeledFrame({ video: v2, frameIdx: 0 });
+    lf0v2.centroids.push(new PredictedCentroid({ x: 5, y: 6, score: 0.9, track: t1 }));
+
+    const labels = new Labels({
+      labeledFrames: [lf0v1, lf1v1, lf0v2],
+      videos: [v1, v2],
+      tracks: [t1],
+    });
 
     expect(labels.getCentroids()).toHaveLength(3);
     expect(labels.getCentroids({ video: v1 })).toHaveLength(2);

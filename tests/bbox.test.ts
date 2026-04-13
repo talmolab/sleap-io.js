@@ -20,7 +20,6 @@ describe("BoundingBox", () => {
     expect(bb.height).toBe(80);
     expect(bb.angle).toBe(0);
     expect(bb.isPredicted).toBe(false);
-    expect(bb.isStatic).toBe(true);
     expect(bb.isRotated).toBe(false);
   });
 
@@ -102,9 +101,10 @@ describe("BoundingBox", () => {
     expect(xywh.height).toBe(80);
   });
 
-  it("isStatic when frameIdx is set", () => {
-    const bb = new UserBoundingBox({ x1: 0, y1: 10, x2: 100, y2: 90, frameIdx: 5 });
-    expect(bb.isStatic).toBe(false);
+  it("no longer has isStatic or frameIdx", () => {
+    const bb = new UserBoundingBox({ x1: 0, y1: 10, x2: 100, y2: 90 });
+    expect((bb as any).isStatic).toBeUndefined();
+    expect((bb as any).frameIdx).toBeUndefined();
   });
 
   it("centroidXy returns [x, y] tuple", () => {

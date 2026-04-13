@@ -45,22 +45,21 @@ describe("Python compatibility (#76)", () => {
     const maskData = new Uint8Array(10 * 10);
     maskData[0] = 1; maskData[1] = 1;
     const mask = SegmentationMask.fromArray(maskData, 10, 10, {
-      name: "mask1", category: "cell", source: "model", video, frameIdx: 0,
+      name: "mask1", category: "cell", source: "model",
     });
 
     const bbox = new UserBoundingBox({
-      x1: 0, y1: 20, x2: 100, y2: 100,
-      video, frameIdx: 0, track, category: "animal", name: "bb1", source: "manual",
+      x1: 0, y1: 20, x2: 100, y2: 100, track, category: "animal", name: "bb1", source: "manual",
     });
 
+    frame.masks.push(mask);
+    frame.bboxes.push(bbox);
     const labels = new Labels({
       skeletons: [skeleton],
       videos: [video],
       labeledFrames: [frame],
       tracks: [track],
       rois: [roi],
-      masks: [mask],
-      bboxes: [bbox],
     });
 
     const bytes = await saveSlpToBytes(labels);

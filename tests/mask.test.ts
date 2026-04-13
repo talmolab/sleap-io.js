@@ -338,20 +338,15 @@ describe("SegmentationMask.toBbox", () => {
 
   it("propagates metadata", () => {
     const track = new Track("t1");
-    const video = new Video({ filename: "test.mp4" });
     const mask = makeMask2D(10, 10, (r, c) => r >= 2 && r < 5 && c >= 1 && c < 4);
     const sm = SegmentationMask.fromArray(mask, 10, 10, {
       track,
-      video,
-      frameIdx: 3,
       category: "cell",
       name: "obj1",
       source: "manual",
     });
     const bb = sm.toBbox();
     expect(bb.track).toBe(track);
-    expect(bb.video).toBe(video);
-    expect(bb.frameIdx).toBe(3);
     expect(bb.category).toBe("cell");
     expect(bb.name).toBe("obj1");
     expect(bb.source).toBe("manual");

@@ -62,8 +62,6 @@ describe("LabelImage", () => {
       expect(li.height).toBe(2);
       expect(li.width).toBe(2);
       expect(li.objects.size).toBe(0);
-      expect(li.video).toBeNull();
-      expect(li.frameIdx).toBeNull();
       expect(li.source).toBe("");
     });
 
@@ -82,11 +80,9 @@ describe("LabelImage", () => {
         height,
         width,
         objects,
-        frameIdx: 5,
         source: "cellpose",
       });
       expect(li.objects.size).toBe(2);
-      expect(li.frameIdx).toBe(5);
       expect(li.source).toBe("cellpose");
     });
   });
@@ -185,17 +181,12 @@ describe("LabelImage", () => {
     });
   });
 
-  describe("isStatic", () => {
-    it("is true when frameIdx is null", () => {
+  describe("no longer has isStatic or frameIdx", () => {
+    it("does not have isStatic or frameIdx properties", () => {
       const { data, height, width } = makeLabelData([[0]]);
       const li = new UserLabelImage({ data, height, width });
-      expect(li.isStatic).toBe(true);
-    });
-
-    it("is false when frameIdx is set", () => {
-      const { data, height, width } = makeLabelData([[0]]);
-      const li = new UserLabelImage({ data, height, width, frameIdx: 0 });
-      expect(li.isStatic).toBe(false);
+      expect((li as any).isStatic).toBeUndefined();
+      expect((li as any).frameIdx).toBeUndefined();
     });
   });
 
@@ -406,13 +397,11 @@ describe("LabelImage", () => {
       expect(li.objects.get(3)!.category).toBe("nucleus");
     });
 
-    it("passes through video, frameIdx, source", () => {
+    it("passes through source", () => {
       const flat = new Int32Array([0, 1]);
       const li = LabelImage.fromArray(flat, 1, 2, {
-        frameIdx: 42,
         source: "stardist",
       });
-      expect(li.frameIdx).toBe(42);
       expect(li.source).toBe("stardist");
     });
   });
@@ -649,8 +638,6 @@ describe("LabelImage.fromStack", () => {
     const frame2 = [[0, 1], [2, 0]];
     const result = LabelImage.fromStack({ data: [frame1, frame2] });
     expect(result).toHaveLength(2);
-    expect(result[0].frameIdx).toBe(0);
-    expect(result[1].frameIdx).toBe(1);
     expect(result[0].height).toBe(2);
     expect(result[0].width).toBe(2);
   });
@@ -683,13 +670,11 @@ describe("LabelImage.fromStack", () => {
     expect(result[0].objects.get(2)?.category).toBe("nucleus");
   });
 
-  it("uses custom frameIdx", () => {
+  it("fromStack returns correct number of items", () => {
     const result = LabelImage.fromStack({
       data: [[[1]], [[2]]],
-      frameIdx: [10, 20],
     });
-    expect(result[0].frameIdx).toBe(10);
-    expect(result[1].frameIdx).toBe(20);
+    expect(result).toHaveLength(2);
   });
 
   it("returns empty array for empty data", () => {
@@ -987,15 +972,14 @@ describe("LabelImage.fromBinaryMasks", () => {
     expect(li.objects.has(10)).toBe(true);
   });
 
-  it("passes through video, frameIdx, source", () => {
+  it("passes through source", () => {
     const li = LabelImage.fromBinaryMasks(
       [
         [1, 0],
         [0, 1],
       ],
-      { frameIdx: 42, source: "test.png" },
+      { source: "test.png" },
     );
-    expect(li.frameIdx).toBe(42);
     expect(li.source).toBe("test.png");
   });
 
@@ -1353,7 +1337,7 @@ describe("normalizeLabelIds", () => {
     expect(li.objects.has(5)).toBe(false);
   });
 
-  it("preserves video/frameIdx/source metadata", () => {
+  it("preserves source metadata", () => {
     const li = LabelImage.fromBinaryMasks(
       [
         [
@@ -1361,10 +1345,9 @@ describe("normalizeLabelIds", () => {
           [0, 0],
         ],
       ],
-      { frameIdx: 7, source: "test.png" },
+      { source: "test.png" },
     );
     normalizeLabelIds([li]);
-    expect(li.frameIdx).toBe(7);
     expect(li.source).toBe("test.png");
   });
 
@@ -1456,7 +1439,6 @@ describe("LabelImage.toBboxes", () => {
       [0, 1, 0],
     ]);
     const track = new Track("t1");
-    const video = new Video({ filename: "test.mp4" });
     const li = new UserLabelImage({
       data,
       height: 3,
@@ -1464,15 +1446,11 @@ describe("LabelImage.toBboxes", () => {
       objects: new Map([
         [1, { track, category: "cell", name: "obj1", instance: null }],
       ]),
-      video,
-      frameIdx: 5,
       source: "cellpose",
     });
     const bboxes = li.toBboxes();
     const bb = bboxes[0];
     expect(bb.track).toBe(track);
-    expect(bb.video).toBe(video);
-    expect(bb.frameIdx).toBe(5);
     expect(bb.category).toBe("cell");
     expect(bb.name).toBe("obj1");
     expect(bb.source).toBe("cellpose");

@@ -40,7 +40,6 @@ export function roisFromGeoJSON(
       name: String(props.name ?? ""),
       category: String(props.category ?? ""),
       source: String(props.source ?? ""),
-      frameIdx: typeof props.frame_idx === "number" ? props.frame_idx : null,
     });
   });
 }

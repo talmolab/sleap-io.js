@@ -79,15 +79,17 @@ describe("readTrackMateCsv", () => {
     expect(c0.x).toBeCloseTo(10.0);
     expect(c0.y).toBeCloseTo(20.0);
     expect(c0.z).toBeNull(); // 0.0 -> null
-    expect(c0.frameIdx).toBe(0);
+    // frameIdx is now on the parent LabeledFrame, not the centroid
     expect(c0.score).toBeCloseTo(5.5);
     expect(c0.name).toBe("ID100");
     expect(c0.source).toBe("trackmate");
     expect(c0.track).not.toBeNull();
     expect(c0.track!.name).toBe("Track_0");
 
-    const c2 = labels.centroids[2] as PredictedCentroid;
-    expect(c2.track!.name).toBe("Track_1");
+    // Centroids are grouped by frame; Track_1 centroid is on frame 0
+    const trackNames = labels.centroids.map((c) => c.track?.name);
+    expect(trackNames).toContain("Track_0");
+    expect(trackNames).toContain("Track_1");
 
     fs.rmSync(dir, { recursive: true });
   });
@@ -145,7 +147,8 @@ describe("readTrackMateCsv", () => {
 
     expect(labels.videos).toHaveLength(1);
     expect(labels.videos[0].filename).toBe("my_video.tif");
-    expect(labels.centroids[0].video).toBe(labels.videos[0]);
+    // centroids no longer have .video; check the parent frame instead
+    expect(labels.labeledFrames[0].video).toBe(labels.videos[0]);
 
     fs.rmSync(dir, { recursive: true });
   });

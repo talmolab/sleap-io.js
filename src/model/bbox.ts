@@ -1,4 +1,3 @@
-import type { Video } from "./video.js";
 import type { Track, Instance } from "./instance.js";
 import type { SegmentationMask } from "./mask.js";
 import { ROI } from "./roi.js";
@@ -10,8 +9,6 @@ export interface BoundingBoxOptions {
   x2: number;
   y2: number;
   angle?: number;
-  video?: Video | null;
-  frameIdx?: number | null;
   track?: Track | null;
   instance?: Instance | null;
   trackingScore?: number | null;
@@ -27,8 +24,6 @@ export class BoundingBox {
   x2: number;
   y2: number;
   angle: number;
-  video: Video | null;
-  frameIdx: number | null;
   track: Track | null;
   trackingScore: number | null;
   instance: Instance | null;
@@ -49,8 +44,6 @@ export class BoundingBox {
     this.x2 = options.x2;
     this.y2 = options.y2;
     this.angle = options.angle ?? 0;
-    this.video = options.video ?? null;
-    this.frameIdx = options.frameIdx ?? null;
     this.track = options.track ?? null;
     this.trackingScore = options.trackingScore ?? null;
     this.instance = options.instance ?? null;
@@ -167,11 +160,6 @@ export class BoundingBox {
     return false;
   }
 
-  /** Whether the bbox has no temporal association. */
-  get isStatic(): boolean {
-    return this.frameIdx === null;
-  }
-
   /** Whether the bbox is rotated (angle != 0). */
   get isRotated(): boolean {
     return this.angle !== 0;
@@ -186,8 +174,6 @@ export class BoundingBox {
       name: this.name,
       category: this.category,
       source: this.source,
-      video: this.video,
-      frameIdx: this.frameIdx,
       track: this.track,
       instance: this.instance,
     });
