@@ -242,7 +242,7 @@ labels.replaceVideos({ videoMap: new Map([[oldVid, newVid]]) });
 
 ### Frame merging
 
-Merge annotations from one `LabeledFrame` into another with strategy-aware handling. `LabeledFrame.mergeAnnotations(other, strategy?, threshold?)` supports six strategies, applied across all annotation modalities (centroids, bboxes, masks, label images, ROIs):
+Merge annotations from one `LabeledFrame` into another with strategy-aware handling. `LabeledFrame.mergeAnnotations(other, strategy?, threshold?)` supports six strategies, applied across all annotation modalities (centroids, bboxes, masks, label images, ROIs). To populate a single `LabeledFrame` in the first place, see [Adding annotations to frames](#adding-annotations-to-frames) below.
 
 | Strategy | Behavior |
 |---|---|
@@ -254,6 +254,15 @@ Merge annotations from one `LabeledFrame` into another with strategy-aware handl
 | `"update_tracks"` | Spatially match and cascade track assignments only |
 
 The `auto` and `update_tracks` strategies compare centroid distances against `threshold` (default `5.0` px). Empty masks and ROIs whose centroid is `null` are skipped by the matcher.
+
+The strategy argument is typed as `MergeStrategy`, re-exported from the package root for type-safe call sites:
+
+```ts
+import type { MergeStrategy } from "@talmolab/sleap-io.js";
+
+const strategy: MergeStrategy = "auto";
+lfA.mergeAnnotations(lfB, strategy, 3.0);
+```
 
 ```ts
 // Default behavior (keep_both): dedupe by identity, union everything

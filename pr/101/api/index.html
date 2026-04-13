@@ -899,7 +899,7 @@
 </code></pre></div>
 <p><code>LazyDataStore.copy()</code> duplicates the underlying HDF5 column arrays so that two <code>Labels</code> wrapping the same source file can diverge safely.</p>
 <h3 id="frame-merging">Frame merging<a class="headerlink" href="#frame-merging" title="Permanent link">&para;</a></h3>
-<p>Merge annotations from one <code>LabeledFrame</code> into another with strategy-aware handling. <code>LabeledFrame.mergeAnnotations(other, strategy?, threshold?)</code> supports six strategies, applied across all annotation modalities (centroids, bboxes, masks, label images, ROIs):</p>
+<p>Merge annotations from one <code>LabeledFrame</code> into another with strategy-aware handling. <code>LabeledFrame.mergeAnnotations(other, strategy?, threshold?)</code> supports six strategies, applied across all annotation modalities (centroids, bboxes, masks, label images, ROIs). To populate a single <code>LabeledFrame</code> in the first place, see <a href="#adding-annotations-to-frames">Adding annotations to frames</a> below.</p>
 <table>
 <thead>
 <tr>
@@ -935,6 +935,12 @@
 </tbody>
 </table>
 <p>The <code>auto</code> and <code>update_tracks</code> strategies compare centroid distances against <code>threshold</code> (default <code>5.0</code> px). Empty masks and ROIs whose centroid is <code>null</code> are skipped by the matcher.</p>
+<p>The strategy argument is typed as <code>MergeStrategy</code>, re-exported from the package root for type-safe call sites:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="kr">type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">MergeStrategy</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">strategy</span><span class="o">:</span><span class="w"> </span><span class="kt">MergeStrategy</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="s2">&quot;auto&quot;</span><span class="p">;</span>
+<span class="nx">lfA</span><span class="p">.</span><span class="nx">mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">,</span><span class="w"> </span><span class="nx">strategy</span><span class="p">,</span><span class="w"> </span><span class="mf">3.0</span><span class="p">);</span>
+</code></pre></div>
 <div class="highlight"><pre><span></span><code><span class="c1">// Default behavior (keep_both): dedupe by identity, union everything</span>
 <span class="nx">lfA</span><span class="p">.</span><span class="nx">mergeAnnotations</span><span class="p">(</span><span class="nx">lfB</span><span class="p">);</span>
 
