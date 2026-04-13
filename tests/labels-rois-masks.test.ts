@@ -45,6 +45,25 @@ describe("Labels ROI and Mask integration", () => {
     expect(labels.temporalRois[0]).toBe(temporalRoi);
   });
 
+  it("addStaticRoi appends to _staticRois and registers the track", () => {
+    const video = new Video({ filename: "arena.mp4" });
+    const track = new Track("animal");
+    const arena = ROI.fromBbox(0, 0, 100, 100, { video, track });
+    const labels = new Labels({ videos: [video] });
+
+    labels.addStaticRoi(arena);
+
+    expect(labels.staticRois).toHaveLength(1);
+    expect(labels.staticRois[0]).toBe(arena);
+    expect(labels.tracks).toContain(track);
+
+    // Second call with the same track should not duplicate it.
+    const arena2 = ROI.fromBbox(0, 0, 50, 50, { video, track });
+    labels.addStaticRoi(arena2);
+    expect(labels.staticRois).toHaveLength(2);
+    expect(labels.tracks.filter((t) => t === track)).toHaveLength(1);
+  });
+
   it("getRois filters by video", () => {
     const v1 = new Video({ filename: "a.mp4" });
     const v2 = new Video({ filename: "b.mp4" });
