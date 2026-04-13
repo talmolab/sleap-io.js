@@ -922,7 +922,7 @@
 </tr>
 <tr>
 <td><code>"replace_predictions"</code></td>
-<td>Keep user annotations from self, replace predicted entries with <code>other</code>'s</td>
+<td>Keep user annotations from self; drop self's predicted and take all predicted from <code>other</code></td>
 </tr>
 <tr>
 <td><code>"auto"</code></td>
@@ -963,10 +963,10 @@
 <li><strong><code>LazyFrameList</code></strong>: Array-like container with <code>at(idx)</code>, <code>length</code>, <code>toArray()</code>, <code>[Symbol.iterator]()</code>, and <code>materializedCount</code>.</li>
 </ul>
 <blockquote>
-<p><strong>Note:</strong> <code>labels.getFrame()</code> and <code>labels.getTrackAnnotations()</code> <strong>throw</strong> on lazy <code>Labels</code>. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale or partial results. Call <code>labels.materialize()</code> first, or use <code>labels.find(video, frameIdx)</code> which handles both lazy and eager modes transparently.</p>
+<p><strong>Note:</strong> <code>labels.getFrame()</code> and <code>labels.getTrackAnnotations()</code> <strong>throw</strong> on lazy <code>Labels</code>. These O(1) lookups rely on fully materialized frame/track indices and would otherwise silently return stale or partial results. Call <code>labels.materialize()</code> first, or use <code>labels.find({ video, frameIdx })</code> which handles both lazy and eager modes transparently (it returns <code>LabeledFrame[]</code> — take the first element).</p>
 </blockquote>
 <div class="highlight"><pre><span></span><code><span class="c1">// Safe patterns for lazy Labels</span>
-<span class="kd">const</span><span class="w"> </span><span class="nx">frame</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">find</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">42</span><span class="p">);</span><span class="w">   </span><span class="c1">// works in both modes</span>
+<span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">frame</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">find</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">42</span><span class="w"> </span><span class="p">});</span><span class="w">   </span><span class="c1">// LabeledFrame | undefined</span>
 
 <span class="c1">// Or materialize first for O(1) lookups</span>
 <span class="nx">labels</span><span class="p">.</span><span class="nx">materialize</span><span class="p">();</span>
@@ -1063,7 +1063,7 @@
 <span class="kd">let</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="mf">3</span><span class="p">);</span>
 <span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">lf</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="o">:</span><span class="w"> </span><span class="kt">labels.videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">3</span><span class="w"> </span><span class="p">});</span>
-<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">lf</span><span class="p">);</span>
+<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">lf</span><span class="p">);</span>
 <span class="p">}</span>
 <span class="nx">lf</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">bbox</span><span class="p">);</span>
 
@@ -1106,7 +1106,7 @@
 <span class="kd">let</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">);</span>
 <span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">lf</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
-<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">lf</span><span class="p">);</span>
+<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">lf</span><span class="p">);</span>
 <span class="p">}</span>
 <span class="nx">lf</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">c</span><span class="p">);</span>
 
@@ -1121,7 +1121,7 @@
 <span class="kd">let</span><span class="w"> </span><span class="nx">lf1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">1</span><span class="p">);</span>
 <span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">lf1</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">lf1</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">1</span><span class="w"> </span><span class="p">});</span>
-<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">lf1</span><span class="p">);</span>
+<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">lf1</span><span class="p">);</span>
 <span class="p">}</span>
 <span class="nx">lf1</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">pc</span><span class="p">);</span>
 
@@ -1178,6 +1178,9 @@
 </code></pre></div>
 <h4 id="adding-annotations-to-frames">Adding annotations to frames<a class="headerlink" href="#adding-annotations-to-frames" title="Permanent link">&para;</a></h4>
 <p>Use <code>LabeledFrame.append(annotation)</code> to add any annotation type. It routes by runtime type to the appropriate per-frame list (<code>lf.centroids</code>, <code>.bboxes</code>, <code>.masks</code>, <code>.labelImages</code>, <code>.rois</code>) and handles <code>Instance</code> and <code>PredictedInstance</code> as well. If you know the target list at the call site, you can also push directly.</p>
+<blockquote>
+<p><strong>Note:</strong> <code>Labels</code> and <code>LabeledFrame</code> each have an <code>append()</code> method. <code>labels.append(lf)</code> adds a <code>LabeledFrame</code> to a <code>Labels</code> (and also registers its video and tracks). <code>lf.append(annotation)</code> adds an annotation to a single <code>LabeledFrame</code>. They're different operations at different levels of the hierarchy.</p>
+</blockquote>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">Labels</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">LabeledFrame</span><span class="p">,</span>
@@ -1202,7 +1205,7 @@
 <span class="kd">let</span><span class="w"> </span><span class="nx">existing</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="mf">5</span><span class="p">);</span>
 <span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">existing</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">existing</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">5</span><span class="w"> </span><span class="p">});</span>
-<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">existing</span><span class="p">);</span>
+<span class="w">  </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">existing</span><span class="p">);</span>
 <span class="p">}</span>
 <span class="nx">existing</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">anotherBbox</span><span class="p">);</span>
 </code></pre></div>
@@ -1288,7 +1291,7 @@
 <span class="w">  </span><span class="kd">let</span><span class="w"> </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">getFrame</span><span class="p">(</span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">i</span><span class="p">);</span>
 <span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">lf</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">    </span><span class="nx">lf</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nx">LabeledFrame</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">i</span><span class="w"> </span><span class="p">});</span>
-<span class="w">    </span><span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">.</span><span class="nx">push</span><span class="p">(</span><span class="nx">lf</span><span class="p">);</span>
+<span class="w">    </span><span class="nx">labels</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">lf</span><span class="p">);</span>
 <span class="w">  </span><span class="p">}</span>
 <span class="w">  </span><span class="nx">lf</span><span class="p">.</span><span class="nx">append</span><span class="p">(</span><span class="nx">li</span><span class="p">);</span>
 <span class="p">});</span>
