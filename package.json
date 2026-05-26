@@ -34,7 +34,7 @@
     "lint": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "h5wasm": "^0.8.8",
+    "h5wasm": "^0.9.0",
     "jsfive": "^0.3.10",
     "mediabunny": "^1.30.0",
     "mp4box": "^0.5.4",

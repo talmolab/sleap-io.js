@@ -108,7 +108,7 @@ async function initH5Wasm(h5wasmUrl) {
   if (h5wasmModule) return;
 
   // Default to CDN if no URL provided
-  const url = h5wasmUrl || 'https://cdn.jsdelivr.net/npm/h5wasm@0.8.8/dist/iife/h5wasm.js';
+  const url = h5wasmUrl || 'https://cdn.jsdelivr.net/npm/h5wasm@0.9.0/dist/iife/h5wasm.js';
 
   // Import h5wasm IIFE
   importScripts(url);
@@ -187,7 +187,8 @@ async function openBufferFile(buffer, filename = 'data.h5') {
 
   // Write buffer to virtual filesystem
   const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  mountPath = '/buffer-' + Date.now() + '/' + filename;
+  const basename = filename.split('/').pop().split('\\\\').pop() || 'data.h5';
+  mountPath = '/buffer-' + Date.now() + '/' + basename;
 
   // Create parent directory
   const dir = mountPath.substring(0, mountPath.lastIndexOf('/'));

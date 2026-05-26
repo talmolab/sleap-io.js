@@ -207,50 +207,65 @@ async function readVideosStreaming(
           ? [meta.frameCount, meta.height, meta.width, meta.channels]
           : undefined;
 
-      // Auto-detect dataset path when embedded but not specified in metadata
+      // Auto-detect dataset path and read attributes only when we need them
+      // (openVideos or metadata is incomplete). Probing embedded video datasets
+      // can crash h5wasm on some pkg.slp files, so skip when not needed.
       let datasetPath: string | undefined = meta.dataset;
-      if (meta.embedded && !datasetPath) {
-        datasetPath = (await findVideoDatasetStreaming(file, videoIndex)) ?? undefined;
-      }
-
-      // Read format and channel_order from HDF5 dataset attributes if available
-      // This matches Python sleap-io behavior (video_reading.py:987-1006)
       let format = meta.format;
       let channelOrderFromAttrs: string | undefined;
-      if (datasetPath) {
-        try {
-          const attrs = await file.getAttrs(datasetPath);
-          // Read format attribute
-          if (!format) {
-            const formatAttr = attrs.format;
-            if (formatAttr) {
-              format = typeof formatAttr === "string"
-                ? formatAttr
-                : (formatAttr as { value?: string })?.value;
+      let sourceFrameCount: number | undefined;
+
+      if (openVideos || !format) {
+        if (meta.embedded && !datasetPath) {
+          datasetPath = (await findVideoDatasetStreaming(file, videoIndex)) ?? undefined;
+        }
+
+        if (datasetPath) {
+          try {
+            const attrs = await file.getAttrs(datasetPath);
+            if (!format) {
+              const formatAttr = attrs.format;
+              if (formatAttr) {
+                format = typeof formatAttr === "string"
+                  ? formatAttr
+                  : (formatAttr as { value?: string })?.value;
+              }
             }
+            const channelOrderAttr = attrs.channel_order;
+            if (channelOrderAttr) {
+              channelOrderFromAttrs = typeof channelOrderAttr === "string"
+                ? channelOrderAttr
+                : (channelOrderAttr as { value?: string })?.value;
+            }
+            // Read source video total frame count for embedded videos.
+            // This is the full frame count of the original video, not the
+            // number of embedded frames. Used so the seekbar shows the full
+            // source video range (matching Python SLEAP behavior).
+            if (meta.embedded) {
+              const framesAttr = attrs.frames;
+              if (framesAttr != null) {
+                const val = typeof framesAttr === "object" && framesAttr !== null && "value" in framesAttr
+                  ? (framesAttr as { value: unknown }).value
+                  : framesAttr;
+                sourceFrameCount = Number(val);
+              }
+            }
+          } catch {
+            // Ignore attribute read errors — h5wasm may not support this dataset
           }
-          // Read channel_order attribute (like Python does)
-          const channelOrderAttr = attrs.channel_order;
-          if (channelOrderAttr) {
-            channelOrderFromAttrs = typeof channelOrderAttr === "string"
-              ? channelOrderAttr
-              : (channelOrderAttr as { value?: string })?.value;
-          }
-        } catch {
-          // Ignore attribute read errors
         }
       }
 
-      // Determine channel order with priority:
-      // 1. JSON metadata (meta.channelOrder)
-      // 2. HDF5 dataset attribute (channelOrderFromAttrs)
-      // 3. Legacy fallback based on format_id (BGR for < 1.4)
       const channelOrder = meta.channelOrder ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
+
+      const videoShape: [number, number, number, number] | undefined =
+        (sourceFrameCount ?? meta.frameCount) && meta.height && meta.width && meta.channels
+          ? [(sourceFrameCount ?? meta.frameCount)!, meta.height, meta.width, meta.channels]
+          : shape;
 
       // Create streaming backend for embedded videos when openVideos is true
       let backend = null;
       if (openVideos && meta.embedded && datasetPath) {
-        // Read frame_numbers for this video
         const frameNumbers = await readFrameNumbersStreaming(file, datasetPath);
 
         backend = new StreamingHdf5VideoBackend({
@@ -260,7 +275,7 @@ async function readVideosStreaming(
           frameNumbers,
           format: format ?? "png",
           channelOrder,
-          shape,
+          shape: videoShape,
           fps: meta.fps,
         });
       }
@@ -271,7 +286,7 @@ async function readVideosStreaming(
         backendMetadata: {
           dataset: datasetPath,
           format,
-          shape,
+          shape: videoShape,
           fps: meta.fps,
           channel_order: channelOrder,
         },
