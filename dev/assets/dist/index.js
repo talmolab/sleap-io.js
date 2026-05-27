@@ -89,7 +89,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-P7OCYUXB.js";
+} from "./chunk-HRKBM3GU.js";
 import {
   Edge,
   Instance,
@@ -309,7 +309,7 @@ var DEFAULT_COLOR = PALETTES.standard[0];
 async function renderImage(source, options = {}) {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } = extractSourceData(source, opts);
-  if (instances.length === 0 && !opts.image) {
+  if (instances.length === 0 && !opts.image && !hasNonInstanceAnnotations(source)) {
     throw new Error(
       "No instances to render and no background image provided"
     );
@@ -431,6 +431,12 @@ async function renderImage(source, options = {}) {
     opts.postRenderCallback(renderCtx);
   }
   return ctx.getImageData(0, 0, scaledWidth, scaledHeight);
+}
+function hasNonInstanceAnnotations(source) {
+  if (Array.isArray(source)) return false;
+  const lf = "labeledFrames" in source ? source.labeledFrames[0] : source;
+  if (!lf) return false;
+  return (lf.labelImages?.length ?? 0) > 0 || (lf.masks?.length ?? 0) > 0 || (lf.bboxes?.length ?? 0) > 0 || (lf.rois?.length ?? 0) > 0 || (lf.centroids?.length ?? 0) > 0;
 }
 function extractSourceData(source, options) {
   if (Array.isArray(source)) {
