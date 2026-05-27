@@ -181,6 +181,14 @@ describe("numpy codec", () => {
     expect(arr.length).toBe(6);
   });
 
+  it("floors fractional numFrames and ignores non-finite values", () => {
+    const labels = buildSparseLabels({ shape: null, labeledFrameIdx: 2 });
+    expect(labels.numpy({ numFrames: 9.7 }).length).toBe(9);
+    expect(labels.numpy({ numFrames: Number.NaN }).length).toBe(3);
+    expect(labels.numpy({ numFrames: Number.POSITIVE_INFINITY }).length).toBe(3);
+    expect(labels.numpy({ numFrames: -2.5 }).length).toBe(3);
+  });
+
   it("threads numFrames through the toNumpy codec wrapper", () => {
     const labels = buildSparseLabels({ shape: null, labeledFrameIdx: 2 });
     const viaCodec = toNumpy(labels, { numFrames: 9 });

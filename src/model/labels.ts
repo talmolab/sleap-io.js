@@ -1037,7 +1037,8 @@ export class Labels {
    *   Useful when `video.shape` is null — for example, Mp4Box-backed browser
    *   videos — and you still want a video-length-sized array. If smaller than
    *   `maxLabeledFrame + 1`, it is clamped up so no labeled frames are dropped.
-   *   Values `<= 0` are ignored.
+   *   Non-finite, non-positive, or fractional values are sanitized via
+   *   `Math.floor` and ignored when `<= 0`.
    */
   numpy(options?: { video?: Video; returnConfidence?: boolean; numFrames?: number }): number[][][][] {
     if (this._lazyDataStore) {
@@ -1048,7 +1049,8 @@ export class Labels {
     if (!frames.length) return [];
 
     let maxFrame = Math.max(...frames.map((frame) => frame.frameIdx));
-    const override = options?.numFrames && options.numFrames > 0 ? options.numFrames : 0;
+    const rawOverride = options?.numFrames;
+    const override = Number.isFinite(rawOverride) && (rawOverride as number) > 0 ? Math.floor(rawOverride as number) : 0;
     const effectiveLength = override > 0 ? override : (targetVideo.shape?.[0] ?? 0);
     if (effectiveLength > 0) {
       maxFrame = Math.max(maxFrame, effectiveLength - 1);

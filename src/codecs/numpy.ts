@@ -12,7 +12,8 @@ import { Video } from "../model/video.js";
  *   Useful when `video.shape` is null — for example, Mp4Box-backed browser
  *   videos — and you still want a video-length-sized array. If smaller than
  *   `maxLabeledFrame + 1`, it is clamped up so no labeled frames are dropped.
- *   Values `<= 0` are ignored.
+ *   Non-finite, non-positive, or fractional values are sanitized via
+ *   `Math.floor` and ignored when `<= 0`.
  */
 export function toNumpy(
   labels: Labels,
