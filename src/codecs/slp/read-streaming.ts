@@ -202,10 +202,6 @@ async function readVideosStreaming(
 
     for (let videoIndex = 0; videoIndex < metadataList.length; videoIndex++) {
       const meta = metadataList[videoIndex];
-      const shape: [number, number, number, number] | undefined =
-        meta.frameCount && meta.height && meta.width && meta.channels
-          ? [meta.frameCount, meta.height, meta.width, meta.channels]
-          : undefined;
 
       // Auto-detect dataset path when embedded but not specified in metadata
       let datasetPath: string | undefined = meta.dataset;
@@ -213,11 +209,14 @@ async function readVideosStreaming(
         datasetPath = (await findVideoDatasetStreaming(file, videoIndex)) ?? undefined;
       }
 
-      // Read format and channel_order from HDF5 dataset attributes if available
-      // This matches Python sleap-io behavior (video_reading.py:987-1006)
+      // Read format/channel_order/frames from HDF5 dataset attributes when available.
+      // This matches Python sleap-io behavior (video_reading.py:987-1006). Only probe
+      // when we actually need the data — when opening backends or when format is
+      // unknown — to avoid h5wasm calls on the read-only metadata path.
       let format = meta.format;
       let channelOrderFromAttrs: string | undefined;
-      if (datasetPath) {
+      let frameCountFromAttrs: number | undefined;
+      if (datasetPath && (openVideos || !format)) {
         try {
           const attrs = await file.getAttrs(datasetPath);
           // Read format attribute
@@ -236,10 +235,30 @@ async function readVideosStreaming(
               ? channelOrderAttr
               : (channelOrderAttr as { value?: string })?.value;
           }
+          // Read frames attribute — source video's total frame count for embedded
+          // videos. The dataset itself only holds a subset (e.g. labeled frames),
+          // but the seekbar should span the full source. Falls back to JSON
+          // metadata's frameCount when absent.
+          const framesAttr = attrs.frames;
+          if (framesAttr !== undefined && framesAttr !== null) {
+            const rawVal = typeof framesAttr === "object" && framesAttr !== null && "value" in framesAttr
+              ? (framesAttr as { value: unknown }).value
+              : framesAttr;
+            const num = typeof rawVal === "bigint" ? Number(rawVal) : Number(rawVal);
+            if (Number.isFinite(num) && num > 0) {
+              frameCountFromAttrs = num;
+            }
+          }
         } catch {
           // Ignore attribute read errors
         }
       }
+
+      const frameCount = frameCountFromAttrs ?? meta.frameCount;
+      const shape: [number, number, number, number] | undefined =
+        frameCount && meta.height && meta.width && meta.channels
+          ? [frameCount, meta.height, meta.width, meta.channels]
+          : undefined;
 
       // Determine channel order with priority:
       // 1. JSON metadata (meta.channelOrder)
