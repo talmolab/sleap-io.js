@@ -8,6 +8,8 @@ import {
   Symmetry,
   Track,
   _registerCentroidFactory,
+  attrToNumber,
+  attrToString,
   parseJsonAttr,
   parseJsonEntry,
   parseSkeletons,
@@ -19,7 +21,7 @@ import {
   reconstructInstance3D,
   resolveCameraKey,
   resolveIdentity
-} from "./chunk-RVNDZMON.js";
+} from "./chunk-HZEX4MKR.js";
 
 // src/model/centroid.ts
 var _centroidSkeleton = null;
@@ -4871,6 +4873,12 @@ let h5wasmModule = null;
 let FS = null;
 let currentFile = null;
 let mountPath = null;
+// Track how the current file was mounted so closeFile can clean up correctly:
+// 'remote' = MEMFS dir + createLazyFile, 'local' = WORKERFS mount,
+// 'buffer' = MEMFS dir + FS.writeFile. Required because FS.rmdir fails on
+// non-empty dirs (errno 55) and on file paths (errno 54).
+let mountType = null;
+let currentFilename = null;
 
 self.onmessage = async function(e) {
   const { type, payload, id } = e.data;
@@ -4979,6 +4987,8 @@ async function openRemoteFile(url, filename = 'data.h5') {
 
   // Create mount point
   mountPath = '/remote-' + Date.now();
+  mountType = 'remote';
+  currentFilename = filename;
   FS.mkdir(mountPath);
 
   // Create lazy file - this enables range request streaming!
@@ -5009,6 +5019,8 @@ async function openLocalFile(file, filename) {
 
   // Create mount point for WORKERFS
   mountPath = '/local-' + Date.now();
+  mountType = 'local';
+  currentFilename = fname;
   FS.mkdir(mountPath);
 
   // Mount the file using WORKERFS (zero-copy access)
@@ -5039,6 +5051,8 @@ async function openBufferFile(buffer, filename = 'data.h5') {
   // Strip any directory components so MEMFS doesn't need recursive mkdir.
   const basename = (filename.split('/').pop() || '').split('\\\\').pop() || 'data.h5';
   mountPath = '/buffer-' + Date.now() + '/' + basename;
+  mountType = 'buffer';
+  currentFilename = basename;
 
   // Create parent directory
   const dir = mountPath.substring(0, mountPath.lastIndexOf('/'));
@@ -5156,8 +5170,38 @@ function closeFile() {
     currentFile = null;
   }
   if (mountPath && FS) {
-    try { FS.rmdir(mountPath); } catch (e) {}
+    // Cleanup sequence depends on how the file was mounted. FS.rmdir requires
+    // an empty dir; FS.rmdir on a file path fails with errno 54. Without the
+    // right sequence per mount type, repeated open/close cycles leak MEMFS
+    // entries (and for 'buffer' mounts, the entire file bytes) for the lifetime
+    // of the worker.
+    const warn = function(op, path, e) {
+      try {
+        var msg = '[h5-worker] cleanup ' + op + '(' + path + ') failed: ' + (e && (e.message || e.errno || e));
+        if (typeof console !== 'undefined' && console.warn) console.warn(msg);
+      } catch (_) {}
+    };
+    if (mountType === 'buffer') {
+      // mountPath is the file; parent dir was created by FS.mkdir.
+      var parent = mountPath.substring(0, mountPath.lastIndexOf('/'));
+      try { FS.unlink(mountPath); } catch (e) { warn('unlink', mountPath, e); }
+      try { FS.rmdir(parent); } catch (e) { warn('rmdir', parent, e); }
+    } else if (mountType === 'remote') {
+      // mountPath is the dir containing the lazy file.
+      var lazyPath = mountPath + '/' + currentFilename;
+      try { FS.unlink(lazyPath); } catch (e) { warn('unlink', lazyPath, e); }
+      try { FS.rmdir(mountPath); } catch (e) { warn('rmdir', mountPath, e); }
+    } else if (mountType === 'local') {
+      // WORKERFS mount must be unmounted before rmdir.
+      try { FS.unmount(mountPath); } catch (e) { warn('unmount', mountPath, e); }
+      try { FS.rmdir(mountPath); } catch (e) { warn('rmdir', mountPath, e); }
+    } else {
+      // Unknown mount type \u2014 best effort rmdir (preserves pre-existing behavior).
+      try { FS.rmdir(mountPath); } catch (e) { warn('rmdir', mountPath, e); }
+    }
     mountPath = null;
+    mountType = null;
+    currentFilename = null;
   }
 }
 `;
@@ -5838,26 +5882,16 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
       let format = meta.format;
       let channelOrderFromAttrs;
       let frameCountFromAttrs;
-      if (datasetPath && (openVideos || !format)) {
+      if (datasetPath) {
         try {
           const attrs = await file.getAttrs(datasetPath);
           if (!format) {
-            const formatAttr = attrs.format;
-            if (formatAttr) {
-              format = typeof formatAttr === "string" ? formatAttr : formatAttr?.value;
-            }
+            format = attrToString(attrs.format);
           }
-          const channelOrderAttr = attrs.channel_order;
-          if (channelOrderAttr) {
-            channelOrderFromAttrs = typeof channelOrderAttr === "string" ? channelOrderAttr : channelOrderAttr?.value;
-          }
-          const framesAttr = attrs.frames;
-          if (framesAttr !== void 0 && framesAttr !== null) {
-            const rawVal = typeof framesAttr === "object" && framesAttr !== null && "value" in framesAttr ? framesAttr.value : framesAttr;
-            const num = typeof rawVal === "bigint" ? Number(rawVal) : Number(rawVal);
-            if (Number.isFinite(num) && num > 0) {
-              frameCountFromAttrs = num;
-            }
+          channelOrderFromAttrs = attrToString(attrs.channel_order);
+          const framesNum = attrToNumber(attrs.frames);
+          if (framesNum !== void 0 && framesNum > 0) {
+            frameCountFromAttrs = framesNum;
           }
         } catch {
         }
@@ -7849,20 +7883,23 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
     }
     let format = backendMeta.format;
     let channelOrderFromAttrs;
+    let frameCountFromAttrs;
     if (datasetPath) {
       const videoDs = file.get(datasetPath);
       if (videoDs) {
         const attrs = videoDs.attrs ?? {};
         if (!format) {
-          const rawFormat = attrs.format?.value ?? attrs.format;
-          format = rawFormat instanceof Uint8Array ? textDecoder.decode(rawFormat) : rawFormat;
+          format = attrToString(attrs.format);
         }
-        if (attrs.channel_order) {
-          const rawCo = attrs.channel_order?.value ?? attrs.channel_order;
-          channelOrderFromAttrs = rawCo instanceof Uint8Array ? textDecoder.decode(rawCo) : rawCo;
+        channelOrderFromAttrs = attrToString(attrs.channel_order);
+        const framesNum = attrToNumber(attrs.frames);
+        if (framesNum !== void 0 && framesNum > 0) {
+          frameCountFromAttrs = framesNum;
         }
       }
     }
+    const jsonShape = backendMeta.shape;
+    const shape = jsonShape && jsonShape.length === 4 ? [frameCountFromAttrs ?? jsonShape[0], jsonShape[1], jsonShape[2], jsonShape[3]] : void 0;
     const channelOrder = backendMeta.channel_order ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
     let backend = null;
     if (openVideos) {
@@ -7873,7 +7910,7 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
         frameSizes: readFrameSizes(file, datasetPath),
         format,
         channelOrder,
-        shape: backendMeta.shape,
+        shape,
         fps: backendMeta.fps
       });
     }
@@ -7882,7 +7919,7 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
       new Video({
         filename,
         backend,
-        backendMetadata: backendMeta,
+        backendMetadata: shape !== backendMeta.shape ? { ...backendMeta, shape } : backendMeta,
         sourceVideo,
         openBackend: openVideos,
         embedded

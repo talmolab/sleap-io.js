@@ -89,7 +89,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-FN7Y45JS.js";
+} from "./chunk-P7OCYUXB.js";
 import {
   Edge,
   Instance,
@@ -107,7 +107,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-RVNDZMON.js";
+} from "./chunk-HZEX4MKR.js";
 
 // src/codecs/slp/h5-node.ts
 var modulePromise = null;

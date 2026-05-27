@@ -432,6 +432,29 @@ function parseJsonAttr(attr) {
 function trimHdf5String(str) {
   return str.trim().replace(/\0+$/, "");
 }
+function attrToString(attr) {
+  if (attr === void 0 || attr === null) return void 0;
+  if (typeof attr === "string") return trimHdf5String(attr);
+  if (attr instanceof Uint8Array) return trimHdf5String(textDecoder.decode(attr));
+  if (typeof attr === "object" && "value" in attr) {
+    const v = attr.value;
+    if (typeof v === "string") return trimHdf5String(v);
+    if (v instanceof Uint8Array) return trimHdf5String(textDecoder.decode(v));
+  }
+  return void 0;
+}
+function attrToNumber(attr) {
+  if (attr === void 0 || attr === null) return void 0;
+  let raw = attr;
+  if (typeof attr === "object" && "value" in attr) {
+    raw = attr.value;
+  }
+  if (typeof raw !== "number" && typeof raw !== "bigint" && typeof raw !== "string") {
+    return void 0;
+  }
+  const num = typeof raw === "bigint" ? Number(raw) : Number(raw);
+  return Number.isFinite(num) ? num : void 0;
+}
 function parseJsonEntry(entry) {
   if (typeof entry === "string") return JSON.parse(trimHdf5String(entry));
   if (entry instanceof Uint8Array) return JSON.parse(trimHdf5String(textDecoder.decode(entry)));
@@ -680,6 +703,8 @@ export {
   Instance3D,
   PredictedInstance3D,
   parseJsonAttr,
+  attrToString,
+  attrToNumber,
   parseJsonEntry,
   parseSkeletons,
   parseTracks,
