@@ -38,6 +38,46 @@ function trimHdf5String(str: string): string {
 }
 
 /**
+ * Normalize an HDF5 attribute value to a string.
+ *
+ * Handles the three shapes encountered across reader paths:
+ * - jsfive: `{ value: string | Uint8Array }`
+ * - streaming worker (serialized): `{ value: string }`
+ * - already a primitive string
+ */
+export function attrToString(attr: unknown): string | undefined {
+  if (attr === undefined || attr === null) return undefined;
+  if (typeof attr === "string") return trimHdf5String(attr);
+  if (attr instanceof Uint8Array) return trimHdf5String(textDecoder.decode(attr));
+  if (typeof attr === "object" && "value" in attr) {
+    const v = (attr as { value: unknown }).value;
+    if (typeof v === "string") return trimHdf5String(v);
+    if (v instanceof Uint8Array) return trimHdf5String(textDecoder.decode(v));
+  }
+  return undefined;
+}
+
+/**
+ * Normalize an HDF5 numeric attribute to a finite number, or undefined.
+ *
+ * Handles BigInt (HDF5 int64/uint64), wrapped `{ value }` objects, and plain numbers.
+ * Returns undefined for non-finite or non-numeric inputs so callers can `??`-chain
+ * it with a fallback. Callers are responsible for their own range checks (e.g. > 0).
+ */
+export function attrToNumber(attr: unknown): number | undefined {
+  if (attr === undefined || attr === null) return undefined;
+  let raw: unknown = attr;
+  if (typeof attr === "object" && "value" in attr) {
+    raw = (attr as { value: unknown }).value;
+  }
+  if (typeof raw !== "number" && typeof raw !== "bigint" && typeof raw !== "string") {
+    return undefined;
+  }
+  const num = typeof raw === "bigint" ? Number(raw) : Number(raw);
+  return Number.isFinite(num) ? num : undefined;
+}
+
+/**
  * Parse a single JSON entry from a dataset value.
  * Handles both string and Uint8Array entries.
  * Trims trailing nulls/whitespace for fixed-width HDF5 strings.

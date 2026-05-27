@@ -9,7 +9,7 @@
  */
 
 import { openH5Worker, StreamingH5File, isStreamingSupported, type StreamingH5Source } from "./h5-streaming.js";
-import { parseJsonAttr, parseJsonEntry, parseSkeletons, parseTracks, parseVideosMetadata, parseSuggestions, resolveCameraKey, reconstructInstance3D, resolveIdentity } from "./parsers.js";
+import { attrToNumber, attrToString, parseJsonAttr, parseJsonEntry, parseSkeletons, parseTracks, parseVideosMetadata, parseSuggestions, resolveCameraKey, reconstructInstance3D, resolveIdentity } from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../../model/instance.js";
@@ -209,45 +209,26 @@ async function readVideosStreaming(
         datasetPath = (await findVideoDatasetStreaming(file, videoIndex)) ?? undefined;
       }
 
-      // Read format/channel_order/frames from HDF5 dataset attributes when available.
-      // This matches Python sleap-io behavior (video_reading.py:987-1006). Only probe
-      // when we actually need the data — when opening backends or when format is
-      // unknown — to avoid h5wasm calls on the read-only metadata path.
+      // Read format/channel_order/frames from HDF5 dataset attributes when a
+      // dataset path is known. Always probe even when openVideos is false —
+      // downstream consumers (e.g. write.ts re-embed at line 1054) read
+      // channel_order from Video.backendMetadata to avoid color corruption on
+      // save, so metadata-only loads must populate it too. The `frames` attribute
+      // records the source video's total frame count for embedded videos, used
+      // by the seekbar. Matches Python sleap-io (video_reading.py:987-1006).
       let format = meta.format;
       let channelOrderFromAttrs: string | undefined;
       let frameCountFromAttrs: number | undefined;
-      if (datasetPath && (openVideos || !format)) {
+      if (datasetPath) {
         try {
           const attrs = await file.getAttrs(datasetPath);
-          // Read format attribute
           if (!format) {
-            const formatAttr = attrs.format;
-            if (formatAttr) {
-              format = typeof formatAttr === "string"
-                ? formatAttr
-                : (formatAttr as { value?: string })?.value;
-            }
+            format = attrToString(attrs.format);
           }
-          // Read channel_order attribute (like Python does)
-          const channelOrderAttr = attrs.channel_order;
-          if (channelOrderAttr) {
-            channelOrderFromAttrs = typeof channelOrderAttr === "string"
-              ? channelOrderAttr
-              : (channelOrderAttr as { value?: string })?.value;
-          }
-          // Read frames attribute — source video's total frame count for embedded
-          // videos. The dataset itself only holds a subset (e.g. labeled frames),
-          // but the seekbar should span the full source. Falls back to JSON
-          // metadata's frameCount when absent.
-          const framesAttr = attrs.frames;
-          if (framesAttr !== undefined && framesAttr !== null) {
-            const rawVal = typeof framesAttr === "object" && framesAttr !== null && "value" in framesAttr
-              ? (framesAttr as { value: unknown }).value
-              : framesAttr;
-            const num = typeof rawVal === "bigint" ? Number(rawVal) : Number(rawVal);
-            if (Number.isFinite(num) && num > 0) {
-              frameCountFromAttrs = num;
-            }
+          channelOrderFromAttrs = attrToString(attrs.channel_order);
+          const framesNum = attrToNumber(attrs.frames);
+          if (framesNum !== undefined && framesNum > 0) {
+            frameCountFromAttrs = framesNum;
           }
         } catch {
           // Ignore attribute read errors
