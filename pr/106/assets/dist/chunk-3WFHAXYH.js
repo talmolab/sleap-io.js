@@ -5796,6 +5796,21 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     videos,
     formatId
   });
+  const negFramesData = await readStructDatasetStreaming(file, "negative_frames");
+  if (negFramesData && Object.keys(negFramesData).length > 0) {
+    const videoIds = negFramesData.video_id ?? negFramesData.video ?? [];
+    const frameIdxs = negFramesData.frame_idx ?? [];
+    const negativeSet = /* @__PURE__ */ new Set();
+    for (let i = 0; i < frameIdxs.length; i++) {
+      negativeSet.add(`${Number(videoIds[i])}:${Number(frameIdxs[i])}`);
+    }
+    for (const frame of labeledFrames) {
+      const videoIndex = Math.max(0, videos.indexOf(frame.video));
+      if (negativeSet.has(`${videoIndex}:${frame.frameIdx}`)) {
+        frame.isNegative = true;
+      }
+    }
+  }
   const identities = await readIdentitiesStreaming(file);
   const sessions = await readSessionsStreaming(file, videos, skeletons, labeledFrames, identities);
   return new Labels({
@@ -6130,7 +6145,13 @@ async function readStructDatasetStreaming(file, path) {
         const attrs = await file.getAttrs(path);
         const fnAttr = attrs.field_names ?? attrs.fieldNames;
         if (fnAttr) {
-          const raw = Array.isArray(fnAttr) ? fnAttr : fnAttr?.value;
+          let raw = Array.isArray(fnAttr) ? fnAttr : fnAttr?.value;
+          if (typeof raw === "string") {
+            try {
+              raw = JSON.parse(raw);
+            } catch {
+            }
+          }
           if (Array.isArray(raw)) {
             fieldNames = raw.map(String);
           }
