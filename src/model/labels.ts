@@ -1029,7 +1029,18 @@ export class Labels {
     });
   }
 
-  numpy(options?: { video?: Video; returnConfidence?: boolean }): number[][][][] {
+  /**
+   * Convert labels to a dense `[frames, tracks, nodes, coords]` array.
+   *
+   * @param options.numFrames Optional explicit length of the output's frame
+   *   dimension. Takes precedence over `video.shape[0]` (the inferred fallback).
+   *   Useful when `video.shape` is null — for example, Mp4Box-backed browser
+   *   videos — and you still want a video-length-sized array. If smaller than
+   *   `maxLabeledFrame + 1`, it is clamped up so no labeled frames are dropped.
+   *   Non-finite, non-positive, or fractional values are sanitized via
+   *   `Math.floor` and ignored when `<= 0`.
+   */
+  numpy(options?: { video?: Video; returnConfidence?: boolean; numFrames?: number }): number[][][][] {
     if (this._lazyDataStore) {
       return this._lazyDataStore.toNumpy(options);
     }
@@ -1038,9 +1049,11 @@ export class Labels {
     if (!frames.length) return [];
 
     let maxFrame = Math.max(...frames.map((frame) => frame.frameIdx));
-    const videoLength = targetVideo.shape?.[0] ?? 0;
-    if (videoLength > 0) {
-      maxFrame = Math.max(maxFrame, videoLength - 1);
+    const rawOverride = options?.numFrames;
+    const override = Number.isFinite(rawOverride) && (rawOverride as number) > 0 ? Math.floor(rawOverride as number) : 0;
+    const effectiveLength = override > 0 ? override : (targetVideo.shape?.[0] ?? 0);
+    if (effectiveLength > 0) {
+      maxFrame = Math.max(maxFrame, effectiveLength - 1);
     }
     const tracks = this.tracks.length ? this.tracks.length : Math.max(1, ...frames.map((frame) => frame.instances.length));
     const nodes = this.skeletons[0]?.nodes.length ?? 0;

@@ -3,7 +3,8 @@ import { describe, it, expect } from "vitest";
 import { loadSlp } from "../../src/io/main.js";
 import { toNumpy, fromNumpy } from "../../src/codecs/numpy.js";
 import { Labels } from "../../src/model/labels.js";
-import { PredictedInstance } from "../../src/model/instance.js";
+import { Instance, PredictedInstance } from "../../src/model/instance.js";
+import { LabeledFrame } from "../../src/model/labeled-frame.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 import { Video } from "../../src/model/video.js";
 import { fileURLToPath } from "node:url";
@@ -13,6 +14,21 @@ const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 
 async function loadFixture(filename: string) {
   return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false });
+}
+
+function buildSparseLabels(options: {
+  shape?: [number, number, number, number] | null;
+  labeledFrameIdx: number;
+}): Labels {
+  const video = new Video({ filename: "sparse.mp4" });
+  if (options.shape !== undefined) video.shape = options.shape;
+  const skeleton = new Skeleton(["a", "b"]);
+  const frame = new LabeledFrame({
+    video,
+    frameIdx: options.labeledFrameIdx,
+    instances: [Instance.fromArray([[1, 2], [3, 4]], skeleton)],
+  });
+  return new Labels({ labeledFrames: [frame], videos: [video], skeletons: [skeleton] });
 }
 
 describe("numpy codec", () => {
@@ -121,5 +137,63 @@ describe("numpy codec", () => {
     expect(() => fromNumpy([[[[0, 0]]]] as any, { skeleton })).toThrow(/video/);
     expect(() => fromNumpy([[[[0, 0]]]] as any, { video })).toThrow(/skeleton/);
     expect(() => fromNumpy([[[[0, 0]]]] as any, { video, videos: [video], skeleton })).toThrow(/both/);
+  });
+
+  it("sizes output to video.shape[0] when known and labels are sparse", () => {
+    const labels = buildSparseLabels({ shape: [10, 1, 1, 1], labeledFrameIdx: 3 });
+    const arr = labels.numpy();
+    expect(arr.length).toBe(10);
+    expect(arr[3][0][0]).toEqual([1, 2]);
+    expect(Number.isNaN(arr[9][0][0][0])).toBe(true);
+  });
+
+  it("falls back to last labeled frame + 1 when video.shape is null", () => {
+    const labels = buildSparseLabels({ shape: null, labeledFrameIdx: 3 });
+    const arr = labels.numpy();
+    expect(arr.length).toBe(4);
+  });
+
+  it("uses numFrames override when video.shape is null", () => {
+    const labels = buildSparseLabels({ shape: null, labeledFrameIdx: 3 });
+    const arr = labels.numpy({ numFrames: 10 });
+    expect(arr.length).toBe(10);
+    expect(arr[3][0][0]).toEqual([1, 2]);
+  });
+
+  it("numFrames overrides video.shape[0] when both provided", () => {
+    const labels = buildSparseLabels({ shape: [5, 1, 1, 1], labeledFrameIdx: 1 });
+    const arr = labels.numpy({ numFrames: 12 });
+    expect(arr.length).toBe(12);
+  });
+
+  it("clamps numFrames up to maxLabeledFrame + 1", () => {
+    const labels = buildSparseLabels({ shape: null, labeledFrameIdx: 7 });
+    const arr = labels.numpy({ numFrames: 3 });
+    expect(arr.length).toBe(8);
+    expect(arr[7][0][0]).toEqual([1, 2]);
+    expect(Number.isNaN(arr[0][0][0][0])).toBe(true);
+    expect(Number.isNaN(arr[6][0][0][0])).toBe(true);
+  });
+
+  it("ignores numFrames <= 0", () => {
+    const labels = buildSparseLabels({ shape: [6, 1, 1, 1], labeledFrameIdx: 1 });
+    const arr = labels.numpy({ numFrames: 0 });
+    expect(arr.length).toBe(6);
+  });
+
+  it("floors fractional numFrames and ignores non-finite values", () => {
+    const labels = buildSparseLabels({ shape: null, labeledFrameIdx: 2 });
+    expect(labels.numpy({ numFrames: 9.7 }).length).toBe(9);
+    expect(labels.numpy({ numFrames: Number.NaN }).length).toBe(3);
+    expect(labels.numpy({ numFrames: Number.POSITIVE_INFINITY }).length).toBe(3);
+    expect(labels.numpy({ numFrames: -2.5 }).length).toBe(3);
+  });
+
+  it("threads numFrames through the toNumpy codec wrapper", () => {
+    const labels = buildSparseLabels({ shape: null, labeledFrameIdx: 2 });
+    const viaCodec = toNumpy(labels, { numFrames: 9 });
+    const viaMethod = labels.numpy({ numFrames: 9 });
+    expect(viaCodec).toEqual(viaMethod);
+    expect(viaCodec.length).toBe(9);
   });
 });

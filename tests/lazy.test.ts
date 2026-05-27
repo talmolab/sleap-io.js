@@ -242,3 +242,52 @@ describe("Lazy auto-materialization", () => {
     expect(lazyNumpy.length).toBeGreaterThan(0);
   });
 });
+
+describe("LazyDataStore.toNumpy numFrames", () => {
+  async function loadLazyWithMaxFrame(filename: string) {
+    const lazy = await loadFixtureLazy(filename);
+    const eager = await loadFixture(filename);
+    const targetVideo = eager.videos[0];
+    const maxLabeledFrame = Math.max(
+      ...eager.labeledFrames
+        .filter((f) => f.video.matchesPath(targetVideo, true))
+        .map((f) => f.frameIdx)
+    );
+    return { lazy, eager, maxLabeledFrame };
+  }
+
+  it("toNumpy sizes to video.shape[0] when known", async () => {
+    const { lazy, maxLabeledFrame } = await loadLazyWithMaxFrame("typical.slp");
+    const knownLength = maxLabeledFrame + 25;
+    lazy.videos[0].shape = [knownLength, 384, 384, 1];
+    expect(lazy.numpy().length).toBe(knownLength);
+  });
+
+  it("toNumpy falls back to last labeled frame + 1 when shape is null", async () => {
+    const { lazy, maxLabeledFrame } = await loadLazyWithMaxFrame("typical.slp");
+    lazy.videos[0].shape = null;
+    expect(lazy.numpy().length).toBe(maxLabeledFrame + 1);
+  });
+
+  it("toNumpy respects numFrames override when shape is null", async () => {
+    const { lazy, maxLabeledFrame } = await loadLazyWithMaxFrame("typical.slp");
+    lazy.videos[0].shape = null;
+    const override = maxLabeledFrame + 50;
+    expect(lazy.numpy({ numFrames: override }).length).toBe(override);
+  });
+
+  it("toNumpy numFrames takes precedence over video.shape[0]", async () => {
+    const { lazy, maxLabeledFrame } = await loadLazyWithMaxFrame("typical.slp");
+    const shapeLength = maxLabeledFrame + 10;
+    lazy.videos[0].shape = [shapeLength, 384, 384, 1];
+    const override = shapeLength + 100;
+    expect(lazy.numpy({ numFrames: override }).length).toBe(override);
+  });
+
+  it("toNumpy clamps numFrames up to cover all labeled frames", async () => {
+    const { lazy, maxLabeledFrame } = await loadLazyWithMaxFrame("typical.slp");
+    lazy.videos[0].shape = null;
+    // numFrames=1 is below maxLabeledFrame + 1; expect clamping up.
+    expect(lazy.numpy({ numFrames: 1 }).length).toBe(maxLabeledFrame + 1);
+  });
+});
