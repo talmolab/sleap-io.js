@@ -17,7 +17,7 @@ import { UserBoundingBox } from "../src/model/bbox.js";
 import { Track } from "../src/model/instance.js";
 import { ready, File as H5File } from "h5wasm/node";
 import { writeFileSync, unlinkSync } from "node:fs";
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -210,6 +210,7 @@ describe("Python compatibility (#76)", () => {
 
     const bytes = await saveSlpToBytes(labels);
     const slpPath = tmpSlp();
+    const pyPath = slpPath.replace(/\.slp$/, ".py");
 
     try {
       writeFileSync(slpPath, bytes);
@@ -218,18 +219,25 @@ describe("Python compatibility (#76)", () => {
       // Full sio.load_slp() not yet supported because JS writes flat <f8
       // matrices (no compound dtype), so Python gets float indices for the
       // instances dataset. h5wasm doesn't support compound dtype creation.
+      //
+      // Write the script to a file and invoke via execFileSync (no shell), so
+      // the SLP path interpolation and multiline script body don't have to
+      // survive shell quoting — JSON.stringify produces a valid Python string
+      // literal (same backslash-escape rules) on both POSIX and Windows.
       const pyScript = `
 import h5py, json
 from sleap_io.io.slp import read_metadata, read_skeletons
 
+slp_path = ${JSON.stringify(slpPath)}
+
 # Test 1: metadata reads without .decode() error (issue #76)
-md = read_metadata("${slpPath}")
+md = read_metadata(slp_path)
 assert "version" in md, f"Missing version in metadata"
 assert len(md["skeletons"]) == 1, f"Expected 1 skeleton, got {len(md['skeletons'])}"
 assert len(md["nodes"]) == 3, f"Expected 3 nodes, got {len(md['nodes'])}"
 
 # Test 2: skeletons decode correctly (format fix)
-skeletons = read_skeletons("${slpPath}")
+skeletons = read_skeletons(slp_path)
 assert len(skeletons) == 1, f"Expected 1 skeleton, got {len(skeletons)}"
 skel = skeletons[0]
 assert skel.name == "fly", f"Expected name 'fly', got '{skel.name}'"
@@ -240,13 +248,15 @@ assert len(skel.edges) == 2, f"Expected 2 edges, got {len(skel.edges)}"
 
 print("OK: Python reads metadata and skeletons from JS-written SLP")
 `;
-      const result = execSync(`uv run --with sleap-io python -c '${pyScript}'`, {
+      writeFileSync(pyPath, pyScript);
+      const result = execFileSync("uv", ["run", "--with", "sleap-io", "python", pyPath], {
         encoding: "utf-8",
         timeout: 30000,
       });
       expect(result).toContain("OK: Python reads metadata and skeletons from JS-written SLP");
     } finally {
       try { unlinkSync(slpPath); } catch {}
+      try { unlinkSync(pyPath); } catch {}
     }
   });
 });

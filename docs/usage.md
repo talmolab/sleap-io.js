@@ -96,7 +96,7 @@ Browser usage requires an [import map](https://developer.mozilla.org/en-US/docs/
 <script type="importmap">
 {
   "imports": {
-    "h5wasm": "https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js",
+    "h5wasm": "https://unpkg.com/h5wasm@0.10.2/dist/esm/hdf5_hl.js",
     "yaml": "https://esm.sh/yaml@2.6.1"
   }
 }
@@ -198,7 +198,7 @@ for (const frame of labels.labeledFrames) {
   <script type="importmap">
   {
     "imports": {
-      "h5wasm": "https://unpkg.com/h5wasm@0.8.8/dist/esm/hdf5_hl.js",
+      "h5wasm": "https://unpkg.com/h5wasm@0.10.2/dist/esm/hdf5_hl.js",
       "yaml": "https://esm.sh/yaml@2.6.1"
     }
   }

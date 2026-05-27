@@ -1,5 +1,5 @@
 import { openH5File, OpenH5Options, SlpSource } from "./h5.js";
-import { parseJsonAttr, parseSkeletons, resolveCameraKey, reconstructInstance3D, resolveIdentity } from "./parsers.js";
+import { attrToNumber, attrToString, parseJsonAttr, parseSkeletons, resolveCameraKey, reconstructInstance3D, resolveIdentity } from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../../model/instance.js";
@@ -388,30 +388,37 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
       datasetPath = findVideoDataset(file, videoIndex);
     }
 
-    // Read format and channel_order from HDF5 dataset attributes if available
-    // This matches Python sleap-io behavior (video_reading.py:987-1006)
+    // Read format, channel_order, and frames from HDF5 dataset attributes when
+    // available. Matches Python sleap-io behavior (video_reading.py:987-1006).
+    // The `frames` attribute records the source video's total frame count for
+    // embedded videos — the dataset itself only holds a subset (e.g. labeled
+    // frames), but downstream consumers (seekbar, re-embed) need the source
+    // range. Falls back to JSON shape[0] when absent.
     let format = backendMeta.format as string | undefined;
     let channelOrderFromAttrs: string | undefined;
+    let frameCountFromAttrs: number | undefined;
     if (datasetPath) {
       const videoDs = file.get(datasetPath);
       if (videoDs) {
-        const attrs = (videoDs as { attrs?: Record<string, { value?: string }> }).attrs ?? {};
-        // Read format attribute (may be string or Uint8Array depending on writer)
+        const attrs = (videoDs as { attrs?: Record<string, unknown> }).attrs ?? {};
         if (!format) {
-          const rawFormat = attrs.format?.value ?? (attrs.format as unknown);
-          format = rawFormat instanceof Uint8Array
-            ? textDecoder.decode(rawFormat)
-            : (rawFormat as string | undefined);
+          format = attrToString(attrs.format);
         }
-        // Read channel_order attribute (like Python does)
-        if (attrs.channel_order) {
-          const rawCo = attrs.channel_order?.value ?? (attrs.channel_order as unknown);
-          channelOrderFromAttrs = rawCo instanceof Uint8Array
-            ? textDecoder.decode(rawCo)
-            : (rawCo as string | undefined);
+        channelOrderFromAttrs = attrToString(attrs.channel_order);
+        const framesNum = attrToNumber(attrs.frames);
+        if (framesNum !== undefined && framesNum > 0) {
+          frameCountFromAttrs = framesNum;
         }
       }
     }
+
+    // Compose shape: prefer frames attribute for [0] (source video total),
+    // keep height/width/channels from JSON shape when present.
+    const jsonShape = backendMeta.shape as number[] | undefined;
+    const shape: [number, number, number, number] | undefined =
+      jsonShape && jsonShape.length === 4
+        ? [frameCountFromAttrs ?? jsonShape[0], jsonShape[1], jsonShape[2], jsonShape[3]]
+        : undefined;
 
     // Determine channel order with priority:
     // 1. JSON metadata (backendMeta.channel_order)
@@ -428,7 +435,7 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
         frameSizes: readFrameSizes(file, datasetPath),
         format,
         channelOrder,
-        shape: backendMeta.shape,
+        shape,
         fps: backendMeta.fps,
       });
     }
@@ -439,7 +446,7 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
       new Video({
         filename,
         backend,
-        backendMetadata: backendMeta,
+        backendMetadata: shape !== backendMeta.shape ? { ...backendMeta, shape } : backendMeta,
         sourceVideo,
         openBackend: openVideos,
         embedded,
