@@ -215,7 +215,17 @@ export class LazyDataStore {
    * Returns [frames, tracks/instances, nodes, coords] where coords is
    * [x, y] or [x, y, score] when returnConfidence is true.
    */
-  toNumpy(options?: { video?: Video; returnConfidence?: boolean }): number[][][][] {
+  /**
+   * Convert lazy-mode labels to a dense `[frames, tracks, nodes, coords]` array.
+   *
+   * @param options.numFrames Optional explicit length of the output's frame
+   *   dimension. Takes precedence over `video.shape[0]` (the inferred fallback).
+   *   Useful when `video.shape` is null — for example, Mp4Box-backed browser
+   *   videos — and you still want a video-length-sized array. If smaller than
+   *   `maxLabeledFrame + 1`, it is clamped up so no labeled frames are dropped.
+   *   Values `<= 0` are ignored.
+   */
+  toNumpy(options?: { video?: Video; returnConfidence?: boolean; numFrames?: number }): number[][][][] {
     const targetVideo = options?.video ?? this.videos[0];
     if (!targetVideo) return [];
 
@@ -252,9 +262,10 @@ export class LazyDataStore {
     }
     if (!matchingFrames.length) return [];
 
-    const videoLength = targetVideo.shape?.[0] ?? 0;
-    if (videoLength > 0) {
-      maxFrameIdx = Math.max(maxFrameIdx, videoLength - 1);
+    const override = options?.numFrames && options.numFrames > 0 ? options.numFrames : 0;
+    const effectiveLength = override > 0 ? override : (targetVideo.shape?.[0] ?? 0);
+    if (effectiveLength > 0) {
+      maxFrameIdx = Math.max(maxFrameIdx, effectiveLength - 1);
     }
 
     const nodeCount = this.skeletons[0]?.nodes.length ?? 0;

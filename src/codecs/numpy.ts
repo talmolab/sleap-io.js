@@ -4,8 +4,25 @@ import { PredictedInstance, Track, predictedPointsFromArray } from "../model/ins
 import { Skeleton } from "../model/skeleton.js";
 import { Video } from "../model/video.js";
 
-export function toNumpy(labels: Labels, options?: { returnConfidence?: boolean; video?: Video }): number[][][][] {
-  return labels.numpy({ returnConfidence: options?.returnConfidence, video: options?.video });
+/**
+ * Convert labels to a dense `[frames, tracks, nodes, coords]` array.
+ *
+ * @param options.numFrames Optional explicit length of the output's frame
+ *   dimension. Takes precedence over `video.shape[0]` (the inferred fallback).
+ *   Useful when `video.shape` is null — for example, Mp4Box-backed browser
+ *   videos — and you still want a video-length-sized array. If smaller than
+ *   `maxLabeledFrame + 1`, it is clamped up so no labeled frames are dropped.
+ *   Values `<= 0` are ignored.
+ */
+export function toNumpy(
+  labels: Labels,
+  options?: { returnConfidence?: boolean; video?: Video; numFrames?: number }
+): number[][][][] {
+  return labels.numpy({
+    returnConfidence: options?.returnConfidence,
+    video: options?.video,
+    numFrames: options?.numFrames,
+  });
 }
 
 export function fromNumpy(
