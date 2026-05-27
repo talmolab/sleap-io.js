@@ -870,21 +870,18 @@ declare class LazyDataStore {
      */
     materializeFrame(frameIdx: number): LabeledFrame | null;
     /**
-     * Build a 4D numpy-like array directly from raw column data without
-     * materializing any LabeledFrame or Instance objects.
-     *
-     * Returns [frames, tracks/instances, nodes, coords] where coords is
-     * [x, y] or [x, y, score] when returnConfidence is true.
-     */
-    /**
-     * Convert lazy-mode labels to a dense `[frames, tracks, nodes, coords]` array.
+     * Convert lazy-mode labels to a dense `[frames, tracks, nodes, coords]` array
+     * directly from raw column data without materializing any LabeledFrame or
+     * Instance objects. Coords is `[x, y]` or `[x, y, score]` when
+     * `returnConfidence` is true.
      *
      * @param options.numFrames Optional explicit length of the output's frame
      *   dimension. Takes precedence over `video.shape[0]` (the inferred fallback).
      *   Useful when `video.shape` is null — for example, Mp4Box-backed browser
      *   videos — and you still want a video-length-sized array. If smaller than
      *   `maxLabeledFrame + 1`, it is clamped up so no labeled frames are dropped.
-     *   Values `<= 0` are ignored.
+     *   Non-finite, non-positive, or fractional values are sanitized via
+     *   `Math.floor` and ignored when `<= 0`.
      */
     toNumpy(options?: {
         video?: Video;
@@ -1111,7 +1108,8 @@ declare class Labels {
      *   Useful when `video.shape` is null — for example, Mp4Box-backed browser
      *   videos — and you still want a video-length-sized array. If smaller than
      *   `maxLabeledFrame + 1`, it is clamped up so no labeled frames are dropped.
-     *   Values `<= 0` are ignored.
+     *   Non-finite, non-positive, or fractional values are sanitized via
+     *   `Math.floor` and ignored when `<= 0`.
      */
     numpy(options?: {
         video?: Video;
@@ -1596,7 +1594,8 @@ declare function fromDict(data: LabelsDict): Labels;
  *   Useful when `video.shape` is null — for example, Mp4Box-backed browser
  *   videos — and you still want a video-length-sized array. If smaller than
  *   `maxLabeledFrame + 1`, it is clamped up so no labeled frames are dropped.
- *   Values `<= 0` are ignored.
+ *   Non-finite, non-positive, or fractional values are sanitized via
+ *   `Math.floor` and ignored when `<= 0`.
  */
 declare function toNumpy(labels: Labels, options?: {
     returnConfidence?: boolean;
