@@ -139,6 +139,36 @@ export class SegmentationMask {
   ): UserSegmentationMask {
     let flat: Uint8Array;
     if (mask instanceof Uint8Array) {
+      // Multi-class guard (parity with Python sleap-io PR #421): refuse
+      // arrays with more than one distinct non-zero value to avoid silently
+      // collapsing class labels. Single-non-zero-value arrays like [0, 5, 5]
+      // are allowed and binarized by encodeRle's truthy check. boolean[][]
+      // inputs are inherently binary and bypass this guard, matching
+      // Python's array.astype(bool) opt-in path.
+      const distinct = new Set<number>();
+      let hasMore = false;
+      for (let i = 0; i < mask.length; i++) {
+        const v = mask[i];
+        if (v === 0 || distinct.has(v)) continue;
+        if (distinct.size >= 3) {
+          hasMore = true;
+          break;
+        }
+        distinct.add(v);
+      }
+      if (distinct.size > 1) {
+        const sample = Array.from(distinct).join(", ");
+        const more = hasMore ? "+" : "";
+        throw new Error(
+          `SegmentationMask is binary (one object per mask) but got an ` +
+            `array with ${distinct.size}${more} distinct non-zero values ` +
+            `(e.g. [${sample}]). Use UserLabelImage.fromArray(array) to ` +
+            `keep all classes in one dense array, or ` +
+            `UserLabelImage.fromBinaryMasks([...]) to split per-class ` +
+            `binaries. To opt in to binarization explicitly, pre-binarize ` +
+            `with Uint8Array.from(arr, v => v ? 1 : 0).`,
+        );
+      }
       flat = mask;
     } else {
       flat = new Uint8Array(height * width);
