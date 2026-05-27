@@ -447,4 +447,55 @@ describe("LabelImage SLP I/O", () => {
     expect(obj!.category).toBe("cell");
     expect(obj!.name).toBe("lazy_test");
   });
+
+  it("labelImage.data survives dropping the Labels reference (Python PR #419 parity)", async () => {
+    // The Python bug fixed in PR #419 was that Labels.__del__ closed the
+    // h5py file on GC, invalidating lazy LabelImage.data readers. The JS
+    // port eagerly materializes pixel data into a standalone Int32Array
+    // (see comment on readLabelImages), so the bug shape doesn't exist.
+    // This test locks that behavior in: hold only the LabelImage, drop the
+    // Labels, and confirm data remains readable and intact.
+    const video = new Video({ filename: "v.mp4" });
+    const skeleton = new Skeleton({ nodes: ["a"] });
+    const track = new Track("t");
+
+    const sourceData = new Int32Array(3 * 3);
+    sourceData[0] = 1;
+    sourceData[4] = 1;
+    sourceData[8] = 1;
+
+    const li = new UserLabelImage({
+      data: sourceData,
+      height: 3,
+      width: 3,
+      objects: new Map<number, LabelImageObjectInfo>([
+        [1, { track, category: "cell", name: "diag", instance: null }],
+      ]),
+    });
+    const lf = new LabeledFrame({ video, frameIdx: 0, labelImages: [li] });
+    const labels = new Labels({
+      labeledFrames: [lf],
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [track],
+    });
+
+    const bytes = await saveSlpToBytes(labels);
+
+    // Load, hold only the inner LabelImage, then drop the Labels reference.
+    let labelImage: LabelImage | null;
+    {
+      const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+      labelImage = loaded.labelImages[0];
+    }
+    // `loaded` is now out of scope; only `labelImage` keeps the data alive.
+
+    expect(labelImage).not.toBeNull();
+    expect(labelImage!.data.length).toBe(9);
+    expect(labelImage!.data[0]).toBe(1);
+    expect(labelImage!.data[4]).toBe(1);
+    expect(labelImage!.data[8]).toBe(1);
+    expect(labelImage!.height).toBe(3);
+    expect(labelImage!.width).toBe(3);
+  });
 });

@@ -70,7 +70,11 @@ export async function renderImage(
   const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } =
     extractSourceData(source, opts);
 
-  if (instances.length === 0 && !opts.image) {
+  if (
+    instances.length === 0 &&
+    !opts.image &&
+    !hasNonInstanceAnnotations(source)
+  ) {
     throw new Error(
       "No instances to render and no background image provided"
     );
@@ -253,6 +257,34 @@ export async function renderImage(
   // Return ImageData
   // Cast to standard ImageData for compatibility
   return ctx.getImageData(0, 0, scaledWidth, scaledHeight) as unknown as ImageData;
+}
+
+/**
+ * Whether `source` carries non-instance annotations (label images, masks,
+ * bboxes, rois, centroids) that should keep renderImage from throwing even
+ * when there are no instances. For Labels, checks the first labeled frame.
+ *
+ * Mirrors Python sleap-io PR #420: renderImage(source=lf) must work on
+ * segmentation-only LabeledFrames. The actual overlay rendering of these
+ * annotations is tracked in issue #96 — this hook is the single place to
+ * extend when that lands.
+ */
+function hasNonInstanceAnnotations(
+  source: Labels | LabeledFrame | (Instance | PredictedInstance)[]
+): boolean {
+  if (Array.isArray(source)) return false;
+  const lf: LabeledFrame | undefined =
+    "labeledFrames" in source
+      ? (source as Labels).labeledFrames[0]
+      : (source as LabeledFrame);
+  if (!lf) return false;
+  return (
+    (lf.labelImages?.length ?? 0) > 0 ||
+    (lf.masks?.length ?? 0) > 0 ||
+    (lf.bboxes?.length ?? 0) > 0 ||
+    (lf.rois?.length ?? 0) > 0 ||
+    (lf.centroids?.length ?? 0) > 0
+  );
 }
 
 /**

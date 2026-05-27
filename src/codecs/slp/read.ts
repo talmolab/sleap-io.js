@@ -1102,6 +1102,11 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
   return masks;
 }
 
+// Pixel data is eagerly materialized into a standalone Int32Array per
+// LabelImage; the h5wasm File is closed by readSlp's finally block before
+// Labels is returned. label-image .data therefore has no dependency on the
+// source file lifetime — the Python issue addressed by PR #419 (h5py
+// Dataset closure invalidated by Labels.__del__) does not apply here.
 function readLabelImages(
   file: any,
   _videos: Video[],
