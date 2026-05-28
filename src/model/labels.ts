@@ -328,6 +328,11 @@ export class Labels {
    *
    * Note: skeleton `name` is not part of `matches()` — the canonical's name wins.
    *
+   * Note: `matches()` compares only node count and node names in order — it does
+   * NOT compare `edges` or `symmetries`. If matched skeletons differ in topology,
+   * the canonical (first) skeleton's edges/symmetries are kept and the others are
+   * discarded.
+   *
    * Legacy `.slp` files often carry content-duplicate skeletons (a pre-1.5 Python
    * sleap quirk). Call this method after `loadSlp` if you want them collapsed —
    * it is not run automatically on load.
