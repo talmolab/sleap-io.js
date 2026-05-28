@@ -6271,6 +6271,9 @@ function getFieldNamesFromMeta(meta) {
       }
     }
   }
+  if (Array.isArray(dtype)) {
+    return dtype.map((pair) => pair[0]);
+  }
   if (typeof dtype === "object" && dtype !== null) {
     const dtypeObj = dtype;
     if (dtypeObj.compound_type && typeof dtypeObj.compound_type === "object") {
