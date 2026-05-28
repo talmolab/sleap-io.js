@@ -609,8 +609,28 @@ async function readStructDatasetStreaming(
     const meta = await file.getDatasetMeta(path);
     const data = await file.getDatasetValue(path);
 
-    // Get field names from metadata
-    const fieldNames = getFieldNamesFromMeta(meta);
+    // Get field names: try dtype metadata first, then HDF5 dataset attributes.
+    // Matches main-thread reader's getFieldNames (read.ts:1356-1372).
+    let fieldNames = getFieldNamesFromMeta(meta);
+    if (fieldNames.length === 0) {
+      try {
+        const attrs = await file.getAttrs(path);
+        const fnAttr = attrs.field_names ?? attrs.fieldNames;
+        if (fnAttr) {
+          let raw = Array.isArray(fnAttr) ? fnAttr
+            : (fnAttr as { value?: unknown })?.value;
+          if (typeof raw === "string") {
+            try { raw = JSON.parse(raw); } catch { /* not JSON */ }
+          }
+          if (raw instanceof Uint8Array) {
+            try { raw = JSON.parse(new TextDecoder().decode(raw)); } catch { /* not JSON */ }
+          }
+          if (Array.isArray(raw)) {
+            fieldNames = raw.map(String);
+          }
+        }
+      } catch { /* ignore attribute read errors */ }
+    }
 
     return normalizeStructData(data.value, data.shape, fieldNames);
   } catch {
