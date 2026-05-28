@@ -6300,7 +6300,32 @@ async function readStructDatasetStreaming(file, path) {
     if (!keys.includes(path)) return {};
     const meta = await file.getDatasetMeta(path);
     const data = await file.getDatasetValue(path);
-    const fieldNames = getFieldNamesFromMeta(meta);
+    let fieldNames = getFieldNamesFromMeta(meta);
+    if (fieldNames.length === 0) {
+      try {
+        const attrs = await file.getAttrs(path);
+        const fnAttr = attrs.field_names ?? attrs.fieldNames;
+        if (fnAttr) {
+          let raw = Array.isArray(fnAttr) ? fnAttr : fnAttr?.value;
+          if (typeof raw === "string") {
+            try {
+              raw = JSON.parse(raw);
+            } catch {
+            }
+          }
+          if (raw instanceof Uint8Array) {
+            try {
+              raw = JSON.parse(new TextDecoder().decode(raw));
+            } catch {
+            }
+          }
+          if (Array.isArray(raw)) {
+            fieldNames = raw.map(String);
+          }
+        }
+      } catch {
+      }
+    }
     return normalizeStructData(data.value, data.shape, fieldNames);
   } catch {
     return {};
