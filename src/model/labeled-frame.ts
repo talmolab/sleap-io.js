@@ -327,6 +327,7 @@ export class LabeledFrame {
     threshold: number = 5.0,
   ): void {
     if (strategy === "keep_original") {
+      this._resolveNegativeFlag(other);
       return;
     }
 
@@ -334,6 +335,7 @@ export class LabeledFrame {
       for (const attr of ANNOTATION_ATTRS) {
         this[attr] = (other[attr] as Annotation[]).map(_shallowCopy) as any;
       }
+      this._resolveNegativeFlag(other);
       return;
     }
 
@@ -347,6 +349,7 @@ export class LabeledFrame {
         }
         (this as any)[attr] = kept;
       }
+      this._resolveNegativeFlag(other);
       return;
     }
 
@@ -359,6 +362,7 @@ export class LabeledFrame {
           threshold,
         );
       }
+      this._resolveNegativeFlag(other);
       return;
     }
 
@@ -371,6 +375,7 @@ export class LabeledFrame {
           threshold,
         );
       }
+      this._resolveNegativeFlag(other);
       return;
     }
 
@@ -383,6 +388,11 @@ export class LabeledFrame {
         }
       }
     }
+    this._resolveNegativeFlag(other);
+  }
+
+  private _resolveNegativeFlag(other: LabeledFrame): void {
+    this.isNegative = (this.isNegative || other.isNegative) && !this.hasUserInstances;
   }
 
   /**
