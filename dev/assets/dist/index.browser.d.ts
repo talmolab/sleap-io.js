@@ -972,6 +972,35 @@ declare class Labels {
     reindex(): void;
     /** Remove all predicted instances and predicted annotations from all frames. */
     removePredictions(): void;
+    /**
+     * Collapse structurally-equal skeletons into a single canonical entry.
+     *
+     * Skeletons are partitioned via {@link Skeleton.matches} (same node count and
+     * node names in the same order). The first member of each equivalence class
+     * is kept as canonical; the rest are removed from `this.skeletons` and every
+     * instance referencing a non-canonical skeleton is reassigned to the canonical
+     * via direct property assignment. Points are positional, so reassignment is
+     * safe and does not change any point coordinates.
+     *
+     * Note: skeleton `name` is not part of `matches()` — the canonical's name wins.
+     *
+     * Note: `matches()` compares only node count and node names in order — it does
+     * NOT compare `edges` or `symmetries`. If matched skeletons differ in topology,
+     * the canonical (first) skeleton's edges/symmetries are kept and the others are
+     * discarded.
+     *
+     * Legacy `.slp` files often carry content-duplicate skeletons (a pre-1.5 Python
+     * sleap quirk). Call this method after `loadSlp` if you want them collapsed —
+     * it is not run automatically on load.
+     *
+     * In lazy mode this forces full materialization, consistent with other Labels
+     * mutators.
+     *
+     * @returns Number of duplicate skeletons collapsed (0 if none).
+     */
+    dedupSkeletons(): {
+        canonicalized: number;
+    };
     /** Flat view of all centroids across all frames. */
     get centroids(): Centroid[];
     /** Flat view of all bounding boxes across all frames. */

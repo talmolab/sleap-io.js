@@ -3174,6 +3174,57 @@ To use, first materialize:
     }
     this._invalidateIndices();
   }
+  /**
+   * Collapse structurally-equal skeletons into a single canonical entry.
+   *
+   * Skeletons are partitioned via {@link Skeleton.matches} (same node count and
+   * node names in the same order). The first member of each equivalence class
+   * is kept as canonical; the rest are removed from `this.skeletons` and every
+   * instance referencing a non-canonical skeleton is reassigned to the canonical
+   * via direct property assignment. Points are positional, so reassignment is
+   * safe and does not change any point coordinates.
+   *
+   * Note: skeleton `name` is not part of `matches()` — the canonical's name wins.
+   *
+   * Note: `matches()` compares only node count and node names in order — it does
+   * NOT compare `edges` or `symmetries`. If matched skeletons differ in topology,
+   * the canonical (first) skeleton's edges/symmetries are kept and the others are
+   * discarded.
+   *
+   * Legacy `.slp` files often carry content-duplicate skeletons (a pre-1.5 Python
+   * sleap quirk). Call this method after `loadSlp` if you want them collapsed —
+   * it is not run automatically on load.
+   *
+   * In lazy mode this forces full materialization, consistent with other Labels
+   * mutators.
+   *
+   * @returns Number of duplicate skeletons collapsed (0 if none).
+   */
+  dedupSkeletons() {
+    if (this._lazyFrameList) this.materialize();
+    if (this.skeletons.length <= 1) return { canonicalized: 0 };
+    const canonicals = [];
+    const canonicalFor = /* @__PURE__ */ new Map();
+    for (const skel of this.skeletons) {
+      const existing = canonicals.find((c) => skel.matches(c));
+      if (existing) {
+        canonicalFor.set(skel, existing);
+      } else {
+        canonicals.push(skel);
+        canonicalFor.set(skel, skel);
+      }
+    }
+    const canonicalized = this.skeletons.length - canonicals.length;
+    if (canonicalized === 0) return { canonicalized: 0 };
+    this.skeletons = canonicals;
+    for (const frame of this.labeledFrames) {
+      for (const inst of frame.instances) {
+        const canon = canonicalFor.get(inst.skeleton);
+        if (canon && inst.skeleton !== canon) inst.skeleton = canon;
+      }
+    }
+    return { canonicalized };
+  }
   /** Flat view of all centroids across all frames. */
   get centroids() {
     if (this._lazyFrameList && this._lazyDataStore) {
