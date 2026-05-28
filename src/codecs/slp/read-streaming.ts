@@ -605,7 +605,10 @@ async function readStructDatasetStreaming(
 /**
  * Extract field names from dataset metadata.
  */
-function getFieldNamesFromMeta(meta: { shape: number[]; dtype: string }): string[] {
+export function getFieldNamesFromMeta(meta: {
+  shape: number[];
+  dtype: string;
+}): string[] {
   // dtype might be a string like "{'names':['x','y','visible','complete'],...}"
   // or an object with compound type info
   const dtype = meta.dtype;
