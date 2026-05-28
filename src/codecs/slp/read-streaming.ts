@@ -9,7 +9,7 @@
  */
 
 import { openH5Worker, StreamingH5File, isStreamingSupported, type StreamingH5Source } from "./h5-streaming.js";
-import { parseJsonAttr, parseJsonEntry, parseSkeletons, parseTracks, parseVideosMetadata, parseSuggestions, resolveCameraKey, reconstructInstance3D, resolveIdentity } from "./parsers.js";
+import { attrToNumber, attrToString, parseJsonAttr, parseJsonEntry, parseSkeletons, parseTracks, parseVideosMetadata, parseSuggestions, resolveCameraKey, reconstructInstance3D, resolveIdentity } from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../../model/instance.js";
@@ -202,10 +202,6 @@ async function readVideosStreaming(
 
     for (let videoIndex = 0; videoIndex < metadataList.length; videoIndex++) {
       const meta = metadataList[videoIndex];
-      const shape: [number, number, number, number] | undefined =
-        meta.frameCount && meta.height && meta.width && meta.channels
-          ? [meta.frameCount, meta.height, meta.width, meta.channels]
-          : undefined;
 
       // Auto-detect dataset path when embedded but not specified in metadata
       let datasetPath: string | undefined = meta.dataset;
@@ -213,33 +209,37 @@ async function readVideosStreaming(
         datasetPath = (await findVideoDatasetStreaming(file, videoIndex)) ?? undefined;
       }
 
-      // Read format and channel_order from HDF5 dataset attributes if available
-      // This matches Python sleap-io behavior (video_reading.py:987-1006)
+      // Read format/channel_order/frames from HDF5 dataset attributes when a
+      // dataset path is known. Always probe even when openVideos is false —
+      // downstream consumers (e.g. write.ts re-embed at line 1054) read
+      // channel_order from Video.backendMetadata to avoid color corruption on
+      // save, so metadata-only loads must populate it too. The `frames` attribute
+      // records the source video's total frame count for embedded videos, used
+      // by the seekbar. Matches Python sleap-io (video_reading.py:987-1006).
       let format = meta.format;
       let channelOrderFromAttrs: string | undefined;
+      let frameCountFromAttrs: number | undefined;
       if (datasetPath) {
         try {
           const attrs = await file.getAttrs(datasetPath);
-          // Read format attribute
           if (!format) {
-            const formatAttr = attrs.format;
-            if (formatAttr) {
-              format = typeof formatAttr === "string"
-                ? formatAttr
-                : (formatAttr as { value?: string })?.value;
-            }
+            format = attrToString(attrs.format);
           }
-          // Read channel_order attribute (like Python does)
-          const channelOrderAttr = attrs.channel_order;
-          if (channelOrderAttr) {
-            channelOrderFromAttrs = typeof channelOrderAttr === "string"
-              ? channelOrderAttr
-              : (channelOrderAttr as { value?: string })?.value;
+          channelOrderFromAttrs = attrToString(attrs.channel_order);
+          const framesNum = attrToNumber(attrs.frames);
+          if (framesNum !== undefined && framesNum > 0) {
+            frameCountFromAttrs = framesNum;
           }
         } catch {
           // Ignore attribute read errors
         }
       }
+
+      const frameCount = frameCountFromAttrs ?? meta.frameCount;
+      const shape: [number, number, number, number] | undefined =
+        frameCount && meta.height && meta.width && meta.channels
+          ? [frameCount, meta.height, meta.width, meta.channels]
+          : undefined;
 
       // Determine channel order with priority:
       // 1. JSON metadata (meta.channelOrder)

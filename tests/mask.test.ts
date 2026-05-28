@@ -142,6 +142,36 @@ describe("SegmentationMask", () => {
     expect(mask.area).toBe(6); // 2 rows * 3 cols
   });
 
+  it("fromArray rejects multi-class Uint8Array (Python PR #421 parity)", () => {
+    // Multi-class label array — silently binarizing this would collapse
+    // classes 1, 2, and 3 into one undifferentiated blob, losing all the
+    // class information the user encoded. The guard fires loudly instead.
+    const multiClass = new Uint8Array([0, 1, 2, 0, 3, 0]);
+    expect(() => SegmentationMask.fromArray(multiClass, 2, 3)).toThrow(
+      /SegmentationMask is binary.*distinct non-zero values/,
+    );
+  });
+
+  it("fromArray accepts single-non-zero-value Uint8Array (one-class mask)", () => {
+    // A binary mask stamped with a class ID (here: 5) is one object — not
+    // multi-class — and should pass the guard, with encodeRle's truthy
+    // collapse handling the binarization downstream.
+    const stamped = new Uint8Array([0, 5, 5, 0, 5, 0]);
+    const mask = SegmentationMask.fromArray(stamped, 2, 3);
+    expect(mask.area).toBe(3);
+  });
+
+  it("fromArray boolean[][] bypasses the multi-class guard", () => {
+    // boolean[][] is the JS analog of Python's array.astype(bool) — the
+    // documented opt-in to binarization. It should never trip the guard.
+    const arr: boolean[][] = [
+      [false, true, true],
+      [true, false, true],
+    ];
+    const mask = SegmentationMask.fromArray(arr, 2, 3);
+    expect(mask.area).toBe(4);
+  });
+
   it("toPolygon creates an ROI", () => {
     const data = makeMask2D(20, 20, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
     const mask = SegmentationMask.fromArray(data, 20, 20, {

@@ -316,6 +316,62 @@ export class Labels {
     this._invalidateIndices();
   }
 
+  /**
+   * Collapse structurally-equal skeletons into a single canonical entry.
+   *
+   * Skeletons are partitioned via {@link Skeleton.matches} (same node count and
+   * node names in the same order). The first member of each equivalence class
+   * is kept as canonical; the rest are removed from `this.skeletons` and every
+   * instance referencing a non-canonical skeleton is reassigned to the canonical
+   * via direct property assignment. Points are positional, so reassignment is
+   * safe and does not change any point coordinates.
+   *
+   * Note: skeleton `name` is not part of `matches()` — the canonical's name wins.
+   *
+   * Note: `matches()` compares only node count and node names in order — it does
+   * NOT compare `edges` or `symmetries`. If matched skeletons differ in topology,
+   * the canonical (first) skeleton's edges/symmetries are kept and the others are
+   * discarded.
+   *
+   * Legacy `.slp` files often carry content-duplicate skeletons (a pre-1.5 Python
+   * sleap quirk). Call this method after `loadSlp` if you want them collapsed —
+   * it is not run automatically on load.
+   *
+   * In lazy mode this forces full materialization, consistent with other Labels
+   * mutators.
+   *
+   * @returns Number of duplicate skeletons collapsed (0 if none).
+   */
+  dedupSkeletons(): { canonicalized: number } {
+    if (this._lazyFrameList) this.materialize();
+    if (this.skeletons.length <= 1) return { canonicalized: 0 };
+
+    const canonicals: Skeleton[] = [];
+    const canonicalFor = new Map<Skeleton, Skeleton>();
+    for (const skel of this.skeletons) {
+      const existing = canonicals.find((c) => skel.matches(c));
+      if (existing) {
+        canonicalFor.set(skel, existing);
+      } else {
+        canonicals.push(skel);
+        canonicalFor.set(skel, skel);
+      }
+    }
+
+    const canonicalized = this.skeletons.length - canonicals.length;
+    if (canonicalized === 0) return { canonicalized: 0 };
+
+    this.skeletons = canonicals;
+    for (const frame of this.labeledFrames) {
+      for (const inst of frame.instances) {
+        const canon = canonicalFor.get(inst.skeleton);
+        if (canon && inst.skeleton !== canon) inst.skeleton = canon;
+      }
+    }
+
+    return { canonicalized };
+  }
+
   /** Flat view of all centroids across all frames. */
   get centroids(): Centroid[] {
     if (this._lazyFrameList && this._lazyDataStore) {
@@ -1029,7 +1085,18 @@ export class Labels {
     });
   }
 
-  numpy(options?: { video?: Video; returnConfidence?: boolean }): number[][][][] {
+  /**
+   * Convert labels to a dense `[frames, tracks, nodes, coords]` array.
+   *
+   * @param options.numFrames Optional explicit length of the output's frame
+   *   dimension. Takes precedence over `video.shape[0]` (the inferred fallback).
+   *   Useful when `video.shape` is null — for example, Mp4Box-backed browser
+   *   videos — and you still want a video-length-sized array. If smaller than
+   *   `maxLabeledFrame + 1`, it is clamped up so no labeled frames are dropped.
+   *   Non-finite, non-positive, or fractional values are sanitized via
+   *   `Math.floor` and ignored when `<= 0`.
+   */
+  numpy(options?: { video?: Video; returnConfidence?: boolean; numFrames?: number }): number[][][][] {
     if (this._lazyDataStore) {
       return this._lazyDataStore.toNumpy(options);
     }
@@ -1038,9 +1105,11 @@ export class Labels {
     if (!frames.length) return [];
 
     let maxFrame = Math.max(...frames.map((frame) => frame.frameIdx));
-    const videoLength = targetVideo.shape?.[0] ?? 0;
-    if (videoLength > 0) {
-      maxFrame = Math.max(maxFrame, videoLength - 1);
+    const rawOverride = options?.numFrames;
+    const override = Number.isFinite(rawOverride) && (rawOverride as number) > 0 ? Math.floor(rawOverride as number) : 0;
+    const effectiveLength = override > 0 ? override : (targetVideo.shape?.[0] ?? 0);
+    if (effectiveLength > 0) {
+      maxFrame = Math.max(maxFrame, effectiveLength - 1);
     }
     const tracks = this.tracks.length ? this.tracks.length : Math.max(1, ...frames.map((frame) => frame.instances.length));
     const nodes = this.skeletons[0]?.nodes.length ?? 0;

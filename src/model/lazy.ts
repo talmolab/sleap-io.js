@@ -209,13 +209,20 @@ export class LazyDataStore {
   }
 
   /**
-   * Build a 4D numpy-like array directly from raw column data without
-   * materializing any LabeledFrame or Instance objects.
+   * Convert lazy-mode labels to a dense `[frames, tracks, nodes, coords]` array
+   * directly from raw column data without materializing any LabeledFrame or
+   * Instance objects. Coords is `[x, y]` or `[x, y, score]` when
+   * `returnConfidence` is true.
    *
-   * Returns [frames, tracks/instances, nodes, coords] where coords is
-   * [x, y] or [x, y, score] when returnConfidence is true.
+   * @param options.numFrames Optional explicit length of the output's frame
+   *   dimension. Takes precedence over `video.shape[0]` (the inferred fallback).
+   *   Useful when `video.shape` is null — for example, Mp4Box-backed browser
+   *   videos — and you still want a video-length-sized array. If smaller than
+   *   `maxLabeledFrame + 1`, it is clamped up so no labeled frames are dropped.
+   *   Non-finite, non-positive, or fractional values are sanitized via
+   *   `Math.floor` and ignored when `<= 0`.
    */
-  toNumpy(options?: { video?: Video; returnConfidence?: boolean }): number[][][][] {
+  toNumpy(options?: { video?: Video; returnConfidence?: boolean; numFrames?: number }): number[][][][] {
     const targetVideo = options?.video ?? this.videos[0];
     if (!targetVideo) return [];
 
@@ -252,9 +259,11 @@ export class LazyDataStore {
     }
     if (!matchingFrames.length) return [];
 
-    const videoLength = targetVideo.shape?.[0] ?? 0;
-    if (videoLength > 0) {
-      maxFrameIdx = Math.max(maxFrameIdx, videoLength - 1);
+    const rawOverride = options?.numFrames;
+    const override = Number.isFinite(rawOverride) && (rawOverride as number) > 0 ? Math.floor(rawOverride as number) : 0;
+    const effectiveLength = override > 0 ? override : (targetVideo.shape?.[0] ?? 0);
+    if (effectiveLength > 0) {
+      maxFrameIdx = Math.max(maxFrameIdx, effectiveLength - 1);
     }
 
     const nodeCount = this.skeletons[0]?.nodes.length ?? 0;

@@ -22,6 +22,12 @@ let h5wasmModule = null;
 let FS = null;
 let currentFile = null;
 let mountPath = null;
+// Track how the current file was mounted so closeFile can clean up correctly:
+// 'remote' = MEMFS dir + createLazyFile, 'local' = WORKERFS mount,
+// 'buffer' = MEMFS dir + FS.writeFile. Required because FS.rmdir fails on
+// non-empty dirs (errno 55) and on file paths (errno 54).
+let mountType = null;
+let currentFilename = null;
 
 self.onmessage = async function(e) {
   const { type, payload, id } = e.data;
@@ -108,7 +114,7 @@ async function initH5Wasm(h5wasmUrl) {
   if (h5wasmModule) return;
 
   // Default to CDN if no URL provided
-  const url = h5wasmUrl || 'https://cdn.jsdelivr.net/npm/h5wasm@0.8.8/dist/iife/h5wasm.js';
+  const url = h5wasmUrl || 'https://cdn.jsdelivr.net/npm/h5wasm@0.10.2/dist/iife/h5wasm.js';
 
   // Import h5wasm IIFE
   importScripts(url);
@@ -130,6 +136,8 @@ async function openRemoteFile(url, filename = 'data.h5') {
 
   // Create mount point
   mountPath = '/remote-' + Date.now();
+  mountType = 'remote';
+  currentFilename = filename;
   FS.mkdir(mountPath);
 
   // Create lazy file - this enables range request streaming!
@@ -160,6 +168,8 @@ async function openLocalFile(file, filename) {
 
   // Create mount point for WORKERFS
   mountPath = '/local-' + Date.now();
+  mountType = 'local';
+  currentFilename = fname;
   FS.mkdir(mountPath);
 
   // Mount the file using WORKERFS (zero-copy access)
@@ -187,7 +197,11 @@ async function openBufferFile(buffer, filename = 'data.h5') {
 
   // Write buffer to virtual filesystem
   const data = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-  mountPath = '/buffer-' + Date.now() + '/' + filename;
+  // Strip any directory components so MEMFS doesn't need recursive mkdir.
+  const basename = (filename.split('/').pop() || '').split('\\\\').pop() || 'data.h5';
+  mountPath = '/buffer-' + Date.now() + '/' + basename;
+  mountType = 'buffer';
+  currentFilename = basename;
 
   // Create parent directory
   const dir = mountPath.substring(0, mountPath.lastIndexOf('/'));
@@ -305,8 +319,38 @@ function closeFile() {
     currentFile = null;
   }
   if (mountPath && FS) {
-    try { FS.rmdir(mountPath); } catch (e) {}
+    // Cleanup sequence depends on how the file was mounted. FS.rmdir requires
+    // an empty dir; FS.rmdir on a file path fails with errno 54. Without the
+    // right sequence per mount type, repeated open/close cycles leak MEMFS
+    // entries (and for 'buffer' mounts, the entire file bytes) for the lifetime
+    // of the worker.
+    const warn = function(op, path, e) {
+      try {
+        var msg = '[h5-worker] cleanup ' + op + '(' + path + ') failed: ' + (e && (e.message || e.errno || e));
+        if (typeof console !== 'undefined' && console.warn) console.warn(msg);
+      } catch (_) {}
+    };
+    if (mountType === 'buffer') {
+      // mountPath is the file; parent dir was created by FS.mkdir.
+      var parent = mountPath.substring(0, mountPath.lastIndexOf('/'));
+      try { FS.unlink(mountPath); } catch (e) { warn('unlink', mountPath, e); }
+      try { FS.rmdir(parent); } catch (e) { warn('rmdir', parent, e); }
+    } else if (mountType === 'remote') {
+      // mountPath is the dir containing the lazy file.
+      var lazyPath = mountPath + '/' + currentFilename;
+      try { FS.unlink(lazyPath); } catch (e) { warn('unlink', lazyPath, e); }
+      try { FS.rmdir(mountPath); } catch (e) { warn('rmdir', mountPath, e); }
+    } else if (mountType === 'local') {
+      // WORKERFS mount must be unmounted before rmdir.
+      try { FS.unmount(mountPath); } catch (e) { warn('unmount', mountPath, e); }
+      try { FS.rmdir(mountPath); } catch (e) { warn('rmdir', mountPath, e); }
+    } else {
+      // Unknown mount type — best effort rmdir (preserves pre-existing behavior).
+      try { FS.rmdir(mountPath); } catch (e) { warn('rmdir', mountPath, e); }
+    }
     mountPath = null;
+    mountType = null;
+    currentFilename = null;
   }
 }
 `;

@@ -360,6 +360,9 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
   // looking up videos.indexOf(roi.video) instead of using -1. The other
   // four undistributed lists shouldn't have annotations with .video after
   // PR #94 (those classes no longer carry video), so they always use -1.
+  // Mirrors the fix from Python sleap-io PR #414 (talmolab/sleap-io); the
+  // JS port already had this in place via Side fix B and is covered by
+  // tests/lazy-write.test.ts "preserves static ROI video association".
   for (const roi of store._undistributedRois) {
     allRois.push(roi);
     const vidIdx = roi.video ? labels.videos.indexOf(roi.video) : -1;

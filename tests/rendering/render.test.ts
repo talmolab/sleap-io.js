@@ -6,6 +6,7 @@ import { Instance, Track } from "../../src/model/instance";
 import { LabeledFrame } from "../../src/model/labeled-frame";
 import { Labels } from "../../src/model/labels";
 import { Video } from "../../src/model/video";
+import { UserBoundingBox } from "../../src/model/bbox";
 
 // Create a simple skeleton for testing
 function createTestSkeleton(): Skeleton {
@@ -102,6 +103,41 @@ describe("renderImage", () => {
       expect(imageData).toBeDefined();
       expect(imageData.width).toBe(100);
       expect(imageData.height).toBe(100);
+    });
+
+    it("renders an annotation-only LabeledFrame (Python PR #420 parity)", async () => {
+      // A LabeledFrame with no instances but with a non-instance annotation
+      // (here: a bounding box) should render without throwing. Overlay
+      // drawing for these annotations is tracked in issue #96 — for now the
+      // call just returns the canvas at the requested size.
+      const video = createTestVideo();
+      const bbox = new UserBoundingBox({ x: 5, y: 5, width: 20, height: 20 });
+      const frame = new LabeledFrame({
+        video,
+        frameIdx: 0,
+        instances: [],
+        bboxes: [bbox],
+      });
+
+      const imageData = await renderImage(frame, { width: 80, height: 80 });
+      expect(imageData).toBeDefined();
+      expect(imageData.width).toBe(80);
+      expect(imageData.height).toBe(80);
+    });
+
+    it("still throws on a fully-empty LabeledFrame with no image", async () => {
+      // The guard relaxation is annotation-aware, not blanket: an LF with
+      // nothing on it and no image/background still has nothing to render.
+      const video = createTestVideo();
+      const frame = new LabeledFrame({
+        video,
+        frameIdx: 0,
+        instances: [],
+      });
+
+      await expect(
+        renderImage(frame, { width: 80, height: 80 })
+      ).rejects.toThrow("No instances to render");
     });
   });
 
