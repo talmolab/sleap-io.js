@@ -622,6 +622,10 @@ function getFieldNamesFromMeta(meta: { shape: number[]; dtype: string }): string
     }
   }
 
+  if (Array.isArray(dtype)) {
+    return dtype.map((pair: [string, string]) => pair[0]);
+  }
+
   if (typeof dtype === "object" && dtype !== null) {
     const dtypeObj = dtype as Record<string, unknown>;
     if (dtypeObj.compound_type && typeof dtypeObj.compound_type === "object") {
