@@ -230,6 +230,18 @@ async function readVideosStreaming(
           if (framesNum !== undefined && framesNum > 0) {
             frameCountFromAttrs = framesNum;
           }
+          // Read height/width/channels from dataset attributes when JSON metadata
+          // is missing (common for pkg.slp files)
+          const readNumAttr = (attr: unknown): number | undefined => {
+            if (attr === undefined || attr === null) return undefined;
+            const v = typeof attr === "object" && attr !== null && "value" in attr
+              ? (attr as { value: unknown }).value : attr;
+            const n = Number(v);
+            return Number.isFinite(n) && n > 0 ? n : undefined;
+          };
+          if (!meta.height) meta.height = readNumAttr(attrs.height);
+          if (!meta.width) meta.width = readNumAttr(attrs.width);
+          if (!meta.channels) meta.channels = readNumAttr(attrs.channels);
         } catch {
           // Ignore attribute read errors
         }
@@ -237,8 +249,8 @@ async function readVideosStreaming(
 
       const frameCount = frameCountFromAttrs ?? meta.frameCount;
       const shape: [number, number, number, number] | undefined =
-        frameCount && meta.height && meta.width && meta.channels
-          ? [frameCount, meta.height, meta.width, meta.channels]
+        (meta.height && meta.width && meta.channels)
+          ? [frameCount ?? 0, meta.height, meta.width, meta.channels]
           : undefined;
 
       // Determine channel order with priority:
@@ -263,6 +275,10 @@ async function readVideosStreaming(
           shape,
           fps: meta.fps,
         });
+
+        if (!shape || shape[0] === 0) {
+          await backend.probeShape(frameCount ?? undefined);
+        }
       }
 
       videos.push(new Video({

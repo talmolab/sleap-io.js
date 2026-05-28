@@ -112,6 +112,47 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     return image ?? rawBytes;
   }
 
+  async probeShape(sourceFrameCount?: number): Promise<void> {
+    if (this.shape && this.shape[0] > 0) return;
+    try {
+      // Reuse the same loading path as getFrame — populates cachedData
+      if (!this.cachedData) {
+        const data = await this.h5file.getDatasetValue(this.datasetPath);
+        this.cachedData = normalizeVideoData(data.value, data.shape);
+
+        if (isContiguousEncodedBuffer(this.cachedData, this.format, this.shape)) {
+          this.frameOffsets = findEncodedFrameOffsets(
+            this.cachedData as unknown as Uint8Array,
+            this.format,
+            this.shape?.[0] ?? 0
+          );
+        }
+      }
+
+      // Decode first entry to get image dimensions
+      const entry = Array.isArray(this.cachedData) ? this.cachedData[0] : null;
+      if (!entry) return;
+      const rawBytes = toUint8Array(entry);
+      if (!rawBytes || rawBytes.length === 0) return;
+
+      if (isEncodedFormat(this.format)) {
+        const decoded = await decodeImageBytes(rawBytes, this.format, this.channelOrder);
+        if (decoded && "width" in decoded && "height" in decoded) {
+          // Use source frame count if available, otherwise infer from max frame number
+          let fc = sourceFrameCount ?? 0;
+          if (!fc && this.frameNumberToIndex.size > 0) {
+            let maxIdx = 0;
+            for (const key of this.frameNumberToIndex.keys()) {
+              if (key > maxIdx) maxIdx = key;
+            }
+            fc = maxIdx + 1;
+          }
+          this.shape = [fc, decoded.height, decoded.width, 4];
+        }
+      }
+    } catch { /* probe failed, shape stays undefined */ }
+  }
+
   close(): void {
     this.cachedData = null;
     this.frameOffsets = null;
