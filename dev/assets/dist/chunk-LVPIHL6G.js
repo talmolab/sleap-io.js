@@ -4846,6 +4846,41 @@ var StreamingHdf5VideoBackend = class {
     const image = decodeRawFrame(rawBytes, this.shape, this.channelOrder);
     return image ?? rawBytes;
   }
+  async probeShape(sourceFrameCount) {
+    if (this.shape && this.shape[0] > 0) return;
+    try {
+      if (!this.cachedData) {
+        const data = await this.h5file.getDatasetValue(this.datasetPath);
+        this.cachedData = normalizeVideoData(data.value, data.shape);
+        if (isContiguousEncodedBuffer(this.cachedData, this.format, this.shape)) {
+          this.frameOffsets = findEncodedFrameOffsets(
+            this.cachedData,
+            this.format,
+            this.shape?.[0] ?? 0
+          );
+        }
+      }
+      const entry = Array.isArray(this.cachedData) ? this.cachedData[0] : null;
+      if (!entry) return;
+      const rawBytes = toUint8Array(entry);
+      if (!rawBytes || rawBytes.length === 0) return;
+      if (isEncodedFormat(this.format)) {
+        const decoded = await decodeImageBytes(rawBytes, this.format, this.channelOrder);
+        if (decoded && "width" in decoded && "height" in decoded) {
+          let fc = sourceFrameCount ?? 0;
+          if (!fc && this.frameNumberToIndex.size > 0) {
+            let maxIdx = 0;
+            for (const key of this.frameNumberToIndex.keys()) {
+              if (key > maxIdx) maxIdx = key;
+            }
+            fc = maxIdx + 1;
+          }
+          this.shape = [fc, decoded.height, decoded.width, 4];
+        }
+      }
+    } catch {
+    }
+  }
   close() {
     this.cachedData = null;
     this.frameOffsets = null;
@@ -5988,11 +6023,20 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
           if (framesNum !== void 0 && framesNum > 0) {
             frameCountFromAttrs = framesNum;
           }
+          const readNumAttr = (attr) => {
+            if (attr === void 0 || attr === null) return void 0;
+            const v = typeof attr === "object" && attr !== null && "value" in attr ? attr.value : attr;
+            const n = Number(v);
+            return Number.isFinite(n) && n > 0 ? n : void 0;
+          };
+          if (!meta.height) meta.height = readNumAttr(attrs.height);
+          if (!meta.width) meta.width = readNumAttr(attrs.width);
+          if (!meta.channels) meta.channels = readNumAttr(attrs.channels);
         } catch {
         }
       }
       const frameCount = frameCountFromAttrs ?? meta.frameCount;
-      const shape = frameCount && meta.height && meta.width && meta.channels ? [frameCount, meta.height, meta.width, meta.channels] : void 0;
+      const shape = meta.height && meta.width && meta.channels ? [frameCount ?? 0, meta.height, meta.width, meta.channels] : void 0;
       const channelOrder = meta.channelOrder ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
       let backend = null;
       if (openVideos && meta.embedded && datasetPath) {
@@ -6007,6 +6051,9 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
           shape,
           fps: meta.fps
         });
+        if (!shape || shape[0] === 0) {
+          await backend.probeShape(frameCount ?? void 0);
+        }
       }
       videos.push(new Video({
         filename: meta.filename,

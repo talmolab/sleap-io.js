@@ -1425,6 +1425,7 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
         fps?: number;
     });
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    probeShape(sourceFrameCount?: number): Promise<void>;
     close(): void;
 }
 
