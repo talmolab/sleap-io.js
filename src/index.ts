@@ -30,6 +30,7 @@ export { createVideoBackend, type VideoBackendType } from "./video/factory.js";
 export * from "./io/main.js";
 export * from "./io/geojson.js";
 export * from "./io/trackmate.js";
+export * from "./io/ultralytics.js";
 export * from "./codecs/dictionary.js";
 export * from "./codecs/numpy.js";
 export * from "./codecs/skeleton-yaml.js";
