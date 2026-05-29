@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
+import { describe, it, expect, vi, beforeEach } from "../bun-test";
 import { renderImage, toPNG, toJPEG, toDataURL } from "../../src/rendering/render";
 import { RenderContext, InstanceContext } from "../../src/rendering/context";
 import { Skeleton } from "../../src/model/skeleton";

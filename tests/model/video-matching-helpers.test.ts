@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Ported from Python tests/model/test_matching.py (pinned @ 054cce39f).
  *
@@ -19,7 +18,7 @@
  * All assertions reproduce the PYTHON expectation, not whatever the current JS
  * happens to do. Python `is` -> `toBe` (reference identity); value -> predicates.
  */
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "../bun-test";
 import { promises as fsp } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";

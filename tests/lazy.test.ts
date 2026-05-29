@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { loadSlp } from "../src/io/main.js";
 import { readSlpLazy } from "../src/codecs/slp/read.js";
 import { LazyDataStore, LazyFrameList } from "../src/model/lazy.js";

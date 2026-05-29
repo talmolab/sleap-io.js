@@ -1,7 +1,8 @@
 // Node-only default FS resolver for the merge/matching subsystem (DECISIONS D7).
 //
 // This module is imported by the Node entry point (`src/index.ts`) and by the
-// vitest setup, but NEVER by the browser entry (`src/index.browser.ts`). Keeping
+// bun test preload (`bunfig.toml`), but NEVER by the browser entry
+// (`src/index.browser.ts`). Keeping
 // the `node:fs` reference here — out of the shared `matching.ts` — ensures the
 // browser-reachable module graph contains no Node-only imports (issue #70).
 //

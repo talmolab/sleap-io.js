@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { SuggestionFrame, Video, Labels, Skeleton } from "../src/index.js";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
 import { readSlp } from "../src/codecs/slp/read.js";

@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { roisToGeoJSON, roisFromGeoJSON, writeGeoJSON, readGeoJSON } from "../src/io/geojson.js";
 import { ROI } from "../src/model/roi.js";
 

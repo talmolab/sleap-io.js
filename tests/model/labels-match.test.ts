@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Port of Labels.match() (read-only) + Labels.matchVideo() Python tests.
  *
@@ -42,7 +41,7 @@
  * - Tests requiring real .slp / HDF5 fixtures are reconstructed programmatically
  *   where the behavior is path/basename-driven; one HDF5-dataset case is skipped.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { Track } from "../../src/model/instance.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 import { Video } from "../../src/model/video.js";

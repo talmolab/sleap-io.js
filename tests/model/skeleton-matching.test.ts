@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Ports of test_matching.py::TestSkeletonMatcher (GROUP 1) plus direct coverage
  * of Skeleton.matches / Skeleton.nodeSimilarities.
@@ -9,7 +8,7 @@
  * from ARCHITECTURE §4.1 / PARITY-CHECKLIST §1.B (no direct Python test, but the
  * Python semantics are fixed by Skeleton.matches / node_similarities).
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { Skeleton } from "../../src/model/skeleton.js";
 import {
   SkeletonMatcher,

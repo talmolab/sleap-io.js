@@ -11,8 +11,7 @@
  * in Node. Instead, we drive h5wasm's FS module directly in Node and reproduce
  * the buffer-mount lifecycle from h5-worker.ts to validate the cleanup algorithm.
  */
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { attrToNumber, attrToString } from "../src/codecs/slp/parsers.js";
 import { readSlp } from "../src/codecs/slp/read.js";
 import { fileURLToPath } from "node:url";

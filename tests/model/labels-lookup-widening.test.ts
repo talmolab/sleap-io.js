@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Port of Python PR #436 (sleap-io issue #107): the Labels lookup APIs are
  * widened to accept a foreign video reference (`Video | string | URL`) and
@@ -18,7 +17,7 @@
  *   tests/model/test_labels.py::test_match_video_ambiguous_raises (393-400)
  *   tests/model/test_labels.py::test_extract_foreign_video     (532-539)
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import {
   Labels,
   Video,

@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Port of Labels.clean() / removePredictions(clean) Python tests.
  *
@@ -23,7 +22,7 @@
  * - Annotation centroids carry their own `track`; we assert preservation /
  *   pruning by reference identity.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { Instance, PredictedInstance, Track } from "../../src/model/instance.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 import { Video } from "../../src/model/video.js";

@@ -1,10 +1,9 @@
-/* @vitest-environment node */
 /**
  * Generate SLP test files and verify Python sleap-io can read them.
  * This test creates temporary .slp files written by JS, then invokes
  * Python sleap-io to read them back, verifying cross-language compatibility.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect, setDefaultTimeout } from "./bun-test";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
 import { Labels } from "../src/model/labels.js";
 import { Skeleton } from "../src/model/skeleton.js";
@@ -20,6 +19,12 @@ import { writeFileSync, unlinkSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+
+// These tests shell out to Python via `uv run --with sleap-io`. On a cold uv
+// cache (e.g. fresh CI) the first invocation downloads sleap-io and its deps
+// (numpy/pandas/h5py), which easily exceeds bun's 5s default per-test timeout.
+// Give them generous headroom; warm runs still finish in well under a second.
+setDefaultTimeout(120_000);
 
 function tmpSlp(): string {
   return join(tmpdir(), `sleap-io-js-test-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);

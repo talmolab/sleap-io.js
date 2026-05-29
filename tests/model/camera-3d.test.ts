@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { Camera, CameraGroup, InstanceGroup, FrameGroup, RecordingSession } from "../../src/model/camera.js";
 import { Identity } from "../../src/model/identity.js";
 import { Instance3D, PredictedInstance3D } from "../../src/model/instance3d.js";

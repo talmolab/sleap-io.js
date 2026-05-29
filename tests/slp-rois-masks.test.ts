@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { Labels } from "../src/model/labels.js";
 import { ROI, PredictedROI } from "../src/model/roi.js";
 import { SegmentationMask, UserSegmentationMask, PredictedSegmentationMask } from "../src/model/mask.js";

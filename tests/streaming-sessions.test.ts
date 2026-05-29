@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { readSlp } from "../src/codecs/slp/read.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";

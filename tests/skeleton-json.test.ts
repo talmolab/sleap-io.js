@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { readSkeletonJson } from "../src/codecs/skeleton-json.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";

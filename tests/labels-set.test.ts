@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { LabelsSet, Labels, Video, Skeleton, LabeledFrame, Instance } from "../src/index.js";
 import { loadSlpSet, saveSlpSet, loadSlp, saveSlp } from "../src/io/main.js";
 import { fileURLToPath } from "node:url";

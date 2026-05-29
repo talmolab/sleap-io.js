@@ -6,7 +6,7 @@ import { RecordingSession, Camera, InstanceGroup, FrameGroup } from "../../model
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
-import { getH5Module, getH5FileSystem } from "./h5.js";
+import { getH5Module, getH5FileSystem, ensureH5StagingDir } from "./h5.js";
 import { ROI, PredictedROI, encodeWkb } from "../../model/roi.js";
 import { SegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
 import { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
@@ -446,6 +446,7 @@ export async function saveSlpToBytes(
 
       if (proceedWithFastPath) {
         const module = await getH5Module();
+        ensureH5StagingDir(module);
         const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
         const file = new module.File(memPath, "w");
         try {
@@ -498,6 +499,7 @@ export async function saveSlpToBytes(
   }
 
   const module = await getH5Module();
+  ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
 
   // If embedding, we need to determine frames per video and prepare embedded data

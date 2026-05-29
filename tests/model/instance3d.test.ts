@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { Instance3D, PredictedInstance3D } from "../../src/model/instance3d.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 

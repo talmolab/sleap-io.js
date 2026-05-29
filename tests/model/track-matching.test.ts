@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Ports of test_matching.py::TestTrackMatcher (GROUP 3): NAME vs IDENTITY.
  *
@@ -10,7 +9,7 @@
  * under IDENTITY, but DO match under NAME. The direct Track.matches coverage and
  * the "Unknown matching method" throw back instance.py:340-356.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { Track } from "../../src/model/instance.js";
 import { TrackMatcher, TrackMatchMethod } from "../../src/model/matching.js";
 

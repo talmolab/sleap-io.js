@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { loadSlpMetadata, validateSlpBuffer, isHdf5Buffer } from "../src/lite.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";

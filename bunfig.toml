@@ -1,0 +1,16 @@
+# Bun configuration. See https://bun.com/docs/runtime/bunfig
+
+[test]
+# Register the Node-side I/O backends before any test file runs, replacing the
+# old vitest `setupFiles`. `h5-node.ts` wires up the h5wasm/node HDF5 backend
+# and the SLP file writer; `node-fs-resolver.ts` installs the node:fs resolver
+# used by the merge/matching subsystem. The suite runs with `bun test --parallel`
+# (each file in its own worker process, implying `--isolate`); these preloads run
+# per worker, so the registrations are present in every test file.
+preload = ["./src/codecs/slp/h5-node.ts", "./src/model/node-fs-resolver.ts"]
+
+# Coverage (emitted only when `--coverage` is passed, e.g. `bun test --coverage`).
+# Write an lcov report into `coverage/` so CI can upload it as an artifact, and
+# keep the human-readable text table on stdout.
+coverageReporter = ["text", "lcov"]
+coverageDir = "coverage"

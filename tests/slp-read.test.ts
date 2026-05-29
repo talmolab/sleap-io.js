@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { loadSlp } from "../src/io/main.js";
 import { Instance, PredictedInstance } from "../src/model/instance.js";
 import { fileURLToPath } from "node:url";
