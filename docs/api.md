@@ -45,6 +45,12 @@ import {
   readLabelsSet as readUltralyticsSet,
   parseLabelFile,
   detectLineFormat,
+  loadJabs,
+  JABS_DEFAULT_SKELETON,
+  makeJabsDefaultSkeleton,
+  predictionToInstance,
+  staticObjectToRoi,
+  makeSimpleSkeleton,
   Identity,
   Instance3D,
   PredictedInstance3D,
@@ -855,6 +861,29 @@ Label-line formats (coordinates normalized to `[0, 1]`):
 - **Pose** — `class_id x_center y_center width height x1 y1 v1 … xn yn vn` → `Instance` (visibility `0` = invisible, `1`/`2` = visible).
 
 > **Image I/O note:** image dimensions are read from the file header (PNG/JPEG/GIF/BMP/TIFF) rather than by decoding pixels. On write, frames backed by an on-disk image file are copied verbatim; frames yielding raw `ImageData` pixels are encoded to PNG; otherwise the frame is skipped with a warning. The `imageFormat`/`imageQuality` options apply only to the raw-pixel PNG path.
+
+## JABS Pose I/O
+
+Read [JABS](https://github.com/KumarLabJax/JABS-behavior-classifier) (Jackson Lab Animal Behavior System) pose files. JABS files are HDF5 on disk, so this reader is Node.js only. Matches Python sleap-io v0.7.0 (PR #371): instances are `PredictedInstance` objects with per-point confidence, and static objects are `UserROI`s rather than synthetic skeletons.
+
+```ts
+import { loadJabs } from "@talmolab/sleap-io.js";
+
+// Read a JABS pose file (pose versions 2–6). Async (HDF5 via h5wasm).
+const labels = await loadJabs("recording_pose_est_v5.h5");
+
+labels.labeledFrames;   // frames of PredictedInstance poses
+labels.tracks;          // one Track per JABS identity (v2 → a single track "1")
+labels.staticRois;      // static objects as UserROI (also in labels.rois)
+labels.videos[0];       // Video named after the pose file (…_pose_est_vN.h5 → ….avi)
+
+// Optional: override the skeleton (must have one node per keypoint column)
+const labels2 = await loadJabs("recording_pose_est_v2.h5", { skeleton: myMouseSkeleton });
+```
+
+Static objects become `UserROI`s with `source: "jabs"` and `category: "arena"` for `corners` (or `"anchor"` otherwise); a single-point object (e.g. `lixit`) is a `Point` geometry, multi-point (e.g. `corners`) is a `MultiPoint`. The default `JABS_DEFAULT_SKELETON` is the 12-node "Mouse" skeleton; `makeJabsDefaultSkeleton()`, `predictionToInstance()`, `staticObjectToRoi()`, and `makeSimpleSkeleton()` are also exported.
+
+> JABS coordinates are stored `(y, x)` and flipped to `(x, y)` on read. Static-object coordinates are kept as-stored. The writer (`saveJabs`) is not yet implemented — the common path is a one-time JABS → SLP conversion.
 
 ## Skeleton Codecs
 
