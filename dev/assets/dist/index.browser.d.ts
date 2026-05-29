@@ -1593,8 +1593,17 @@ declare class Labels {
     get length(): number;
     [Symbol.iterator](): Iterator<LabeledFrame>;
     get instances(): Array<Instance | PredictedInstance>;
+    /**
+     * Search for labeled frames given video and/or frame index.
+     *
+     * A foreign `Video` instance or filename (`string`/`URL`) is resolved to the
+     * matching `Video` in `this.videos` via {@link _resolveVideo} (SYNC; see its
+     * documented divergence from `matchVideo`), so an object created independently
+     * still works. When the video does not resolve to a project video the foreign
+     * reference is used as-is, so identity-based lookups yield no results.
+     */
     find(options: {
-        video?: Video;
+        video?: Video | string | URL;
         frameIdx?: number;
     }): LabeledFrame[];
     addVideo(video: Video): void;
@@ -1627,7 +1636,7 @@ declare class Labels {
      * ROIs across all frames, use `temporalRois`.
      */
     getRois(filters?: {
-        video?: Video;
+        video?: Video | string | URL;
         frameIdx?: number;
         category?: string;
         track?: Track;
@@ -1635,7 +1644,7 @@ declare class Labels {
         predicted?: boolean;
     }): ROI[];
     getMasks(filters?: {
-        video?: Video;
+        video?: Video | string | URL;
         frameIdx?: number;
         category?: string;
         track?: Track;
@@ -1643,7 +1652,7 @@ declare class Labels {
         predicted?: boolean;
     }): SegmentationMask[];
     getBboxes(filters?: {
-        video?: Video;
+        video?: Video | string | URL;
         frameIdx?: number;
         category?: string;
         track?: Track;
@@ -1651,7 +1660,7 @@ declare class Labels {
         predicted?: boolean;
     }): BoundingBox[];
     getCentroids(filters?: {
-        video?: Video;
+        video?: Video | string | URL;
         frameIdx?: number;
         category?: string;
         track?: Track;
@@ -1659,7 +1668,7 @@ declare class Labels {
         predicted?: boolean;
     }): Centroid[];
     getLabelImages(filters?: {
-        video?: Video;
+        video?: Video | string | URL;
         frameIdx?: number;
         track?: Track;
         category?: string;
@@ -1710,8 +1719,16 @@ declare class Labels {
      *   Non-finite, non-positive, or fractional values are sanitized via
      *   `Math.floor` and ignored when `<= 0`.
      */
+    /**
+     * Build a dense `(frames, tracks, nodes, channels)` array from instance points.
+     *
+     * A foreign `Video` instance or filename (`string`/`URL`) is resolved to the
+     * matching project `Video` via {@link _resolveVideo} (SYNC; see its documented
+     * divergence from `matchVideo`). When `options.video` is absent, defaults to
+     * `this.video` (the first video).
+     */
     numpy(options?: {
-        video?: Video;
+        video?: Video | string | URL;
         returnConfidence?: boolean;
         numFrames?: number;
     }): number[][][][];
@@ -1815,6 +1832,33 @@ declare class Labels {
         track?: string | TrackMatcher | null;
     }): Promise<MatchResult>;
     /**
+     * Resolve a video argument to the canonical `Video` in this `Labels` (SYNC).
+     *
+     * Mirrors Python `Labels._resolve_video` (labels.py:1346-1374). Used internally
+     * by the video-accepting query methods ({@link find}, {@link numpy},
+     * {@link extract}, and the `get*` family) to canonicalize a foreign `Video`,
+     * filename, or index so that identity-based lookups succeed.
+     *
+     * DOCUMENTED DIVERGENCE (DECISIONS-107): unlike the async {@link matchVideo},
+     * this resolver is SYNCHRONOUS and therefore does NOT perform inode/pose/image
+     * matching. It uses only the synchronous matching subset:
+     *   1. identity (`===`),
+     *   2. unique `v.matchesPath(query, true)` (strict; posix-normalized),
+     *   3. unique `v.matchesPath(query, false)` (basename),
+     * raising on ambiguity (>1 match at a tier) with messages mirroring
+     * {@link matchVideo}. For all in-memory and non-existent-file lookups (the
+     * realistic case) this is observably identical to Python's `match_video`-based
+     * resolution, since strict `matchesPath` already does normalized path equality.
+     *
+     * @param video - A `Video`, filename (`string`/`URL`), integer index into
+     *   `this.videos`, or `null`/`undefined`.
+     * @returns The canonical `Video`, or `null` if `video` is `null`/`undefined`.
+     *   If no video matches, the foreign `Video` is returned unchanged and a
+     *   path is coerced into a new (unopened) `Video`, so identity-based lookups
+     *   simply yield empty results (preserving the "no match" behavior).
+     */
+    private _resolveVideo;
+    /**
      * Resolve a foreign `Video` or path to the canonical `Video` in `this.videos`.
      *
      * Faithful port of Python `Labels.match_video` (labels.py:1216-1344). Uses its
@@ -1865,19 +1909,30 @@ declare class Labels {
      * for the extracted videos, and records the source labels in provenance.
      *
      * @param inds - Frame selection: an array of integer indices, an array of
-     *   `[Video, frameIdx]` tuples, or a single `Video` (all of its frames).
+     *   `[Video, frameIdx]` tuples, or a single `Video` (all of its frames). A
+     *   foreign `Video`/filename (`string`/`URL`) selector or tuple element is
+     *   resolved to the matching project `Video` via {@link _resolveVideo} (SYNC;
+     *   see its documented divergence from `matchVideo`).
      * @param copy - If `true` (default), deep-copy the frames and containing
      *   objects; otherwise share references with this Labels.
      * @returns A new `Labels` containing the selected frames.
      */
-    extract(inds: number[] | Array<[Video, number]> | Video, copy?: boolean): Labels;
+    extract(inds: number[] | Array<[Video | string | URL, number]> | Video | string | URL, copy?: boolean): Labels;
+    /**
+     * Canonicalize an {@link extract} selector, resolving foreign `Video` /
+     * filename references to the matching project `Video` via {@link _resolveVideo}
+     * (SYNC). The `number[]` index-array path is returned unchanged. Returns a
+     * narrowed selector that {@link _selectFrames} can consume directly.
+     */
+    private _resolveExtractInds;
     /**
      * Resolve an extraction selection to a list of LabeledFrame references.
      *
      * Supports the subset of Python `__getitem__` selectors needed by
      * `extract`/`split`: integer index arrays, `[Video, frameIdx]` tuple arrays,
-     * and a single `Video`. (Filename/path resolution requires `matchVideo`,
-     * which is added in a later phase.)
+     * and a single `Video`. Foreign `Video`/filename references are canonicalized
+     * by {@link _resolveExtractInds} before reaching this method, so it receives
+     * canonical project `Video` instances.
      */
     private _selectFrames;
     /**

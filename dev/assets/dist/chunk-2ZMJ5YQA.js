@@ -4935,14 +4935,24 @@ To use, first materialize:
     if (this._lazyFrameList) this.materialize();
     return this.labeledFrames.flatMap((frame) => frame.instances);
   }
+  /**
+   * Search for labeled frames given video and/or frame index.
+   *
+   * A foreign `Video` instance or filename (`string`/`URL`) is resolved to the
+   * matching `Video` in `this.videos` via {@link _resolveVideo} (SYNC; see its
+   * documented divergence from `matchVideo`), so an object created independently
+   * still works. When the video does not resolve to a project video the foreign
+   * reference is used as-is, so identity-based lookups yield no results.
+   */
   find(options) {
     if (this._lazyFrameList) this.materialize();
-    if (options.video !== void 0 && options.frameIdx !== void 0) {
-      const frame = this.getFrame(options.video, options.frameIdx);
+    const resolved = options.video !== void 0 ? this._resolveVideo(options.video) ?? void 0 : void 0;
+    if (resolved !== void 0 && options.frameIdx !== void 0) {
+      const frame = this.getFrame(resolved, options.frameIdx);
       return frame ? [frame] : [];
     }
     return this.labeledFrames.filter((frame) => {
-      if (options.video && frame.video !== options.video) {
+      if (resolved && frame.video !== resolved) {
         return false;
       }
       if (options.frameIdx !== void 0 && frame.frameIdx !== options.frameIdx) {
@@ -5001,14 +5011,15 @@ To use, first materialize:
    */
   getRois(filters) {
     if (!filters) return [...this.rois];
+    const video = filters.video !== void 0 ? this._resolveVideo(filters.video) ?? void 0 : void 0;
     let results;
-    if (filters.video !== void 0 && filters.frameIdx !== void 0) {
-      const lf = this.getFrame(filters.video, filters.frameIdx);
+    if (video !== void 0 && filters.frameIdx !== void 0) {
+      const lf = this.getFrame(video, filters.frameIdx);
       results = lf ? lf.rois : [];
-    } else if (filters.video !== void 0) {
+    } else if (video !== void 0) {
       results = [];
       for (const lf of this.labeledFrames) {
-        if (lf.video === filters.video) results.push(...lf.rois);
+        if (lf.video === video) results.push(...lf.rois);
       }
     } else if (filters.frameIdx !== void 0) {
       results = [];
@@ -5034,14 +5045,15 @@ To use, first materialize:
   }
   getMasks(filters) {
     if (!filters) return [...this.masks];
+    const video = filters.video !== void 0 ? this._resolveVideo(filters.video) ?? void 0 : void 0;
     let results;
-    if (filters.video !== void 0 && filters.frameIdx !== void 0) {
-      const lf = this.getFrame(filters.video, filters.frameIdx);
+    if (video !== void 0 && filters.frameIdx !== void 0) {
+      const lf = this.getFrame(video, filters.frameIdx);
       results = lf ? lf.masks : [];
-    } else if (filters.video !== void 0) {
+    } else if (video !== void 0) {
       results = [];
       for (const lf of this.labeledFrames) {
-        if (lf.video === filters.video) results.push(...lf.masks);
+        if (lf.video === video) results.push(...lf.masks);
       }
     } else if (filters.frameIdx !== void 0) {
       results = [];
@@ -5067,14 +5079,15 @@ To use, first materialize:
   }
   getBboxes(filters) {
     if (!filters) return [...this.bboxes];
+    const video = filters.video !== void 0 ? this._resolveVideo(filters.video) ?? void 0 : void 0;
     let results;
-    if (filters.video !== void 0 && filters.frameIdx !== void 0) {
-      const lf = this.getFrame(filters.video, filters.frameIdx);
+    if (video !== void 0 && filters.frameIdx !== void 0) {
+      const lf = this.getFrame(video, filters.frameIdx);
       results = lf ? lf.bboxes : [];
-    } else if (filters.video !== void 0) {
+    } else if (video !== void 0) {
       results = [];
       for (const lf of this.labeledFrames) {
-        if (lf.video === filters.video) results.push(...lf.bboxes);
+        if (lf.video === video) results.push(...lf.bboxes);
       }
     } else if (filters.frameIdx !== void 0) {
       results = [];
@@ -5100,14 +5113,15 @@ To use, first materialize:
   }
   getCentroids(filters) {
     if (!filters) return [...this.centroids];
+    const video = filters.video !== void 0 ? this._resolveVideo(filters.video) ?? void 0 : void 0;
     let results;
-    if (filters.video !== void 0 && filters.frameIdx !== void 0) {
-      const lf = this.getFrame(filters.video, filters.frameIdx);
+    if (video !== void 0 && filters.frameIdx !== void 0) {
+      const lf = this.getFrame(video, filters.frameIdx);
       results = lf ? lf.centroids : [];
-    } else if (filters.video !== void 0) {
+    } else if (video !== void 0) {
       results = [];
       for (const lf of this.labeledFrames) {
-        if (lf.video === filters.video) results.push(...lf.centroids);
+        if (lf.video === video) results.push(...lf.centroids);
       }
     } else if (filters.frameIdx !== void 0) {
       results = [];
@@ -5133,14 +5147,15 @@ To use, first materialize:
   }
   getLabelImages(filters) {
     if (!filters) return [...this.labelImages];
+    const video = filters.video !== void 0 ? this._resolveVideo(filters.video) ?? void 0 : void 0;
     let results;
-    if (filters.video !== void 0 && filters.frameIdx !== void 0) {
-      const lf = this.getFrame(filters.video, filters.frameIdx);
+    if (video !== void 0 && filters.frameIdx !== void 0) {
+      const lf = this.getFrame(video, filters.frameIdx);
       results = lf ? lf.labelImages : [];
-    } else if (filters.video !== void 0) {
+    } else if (video !== void 0) {
       results = [];
       for (const lf of this.labeledFrames) {
-        if (lf.video === filters.video) results.push(...lf.labelImages);
+        if (lf.video === video) results.push(...lf.labelImages);
       }
     } else if (filters.frameIdx !== void 0) {
       results = [];
@@ -5437,11 +5452,19 @@ To use, first materialize:
    *   Non-finite, non-positive, or fractional values are sanitized via
    *   `Math.floor` and ignored when `<= 0`.
    */
+  /**
+   * Build a dense `(frames, tracks, nodes, channels)` array from instance points.
+   *
+   * A foreign `Video` instance or filename (`string`/`URL`) is resolved to the
+   * matching project `Video` via {@link _resolveVideo} (SYNC; see its documented
+   * divergence from `matchVideo`). When `options.video` is absent, defaults to
+   * `this.video` (the first video).
+   */
   numpy(options) {
+    const targetVideo = this._resolveVideo(options?.video) ?? this.video;
     if (this._lazyDataStore) {
-      return this._lazyDataStore.toNumpy(options);
+      return this._lazyDataStore.toNumpy({ ...options, video: targetVideo });
     }
-    const targetVideo = options?.video ?? this.video;
     const frames = this.labeledFrames.filter((frame) => frame.video.matchesPath(targetVideo, true));
     if (!frames.length) return [];
     let maxFrame = Math.max(...frames.map((frame) => frame.frameIdx));
@@ -5960,6 +5983,57 @@ To use, first materialize:
     return result;
   }
   /**
+   * Resolve a video argument to the canonical `Video` in this `Labels` (SYNC).
+   *
+   * Mirrors Python `Labels._resolve_video` (labels.py:1346-1374). Used internally
+   * by the video-accepting query methods ({@link find}, {@link numpy},
+   * {@link extract}, and the `get*` family) to canonicalize a foreign `Video`,
+   * filename, or index so that identity-based lookups succeed.
+   *
+   * DOCUMENTED DIVERGENCE (DECISIONS-107): unlike the async {@link matchVideo},
+   * this resolver is SYNCHRONOUS and therefore does NOT perform inode/pose/image
+   * matching. It uses only the synchronous matching subset:
+   *   1. identity (`===`),
+   *   2. unique `v.matchesPath(query, true)` (strict; posix-normalized),
+   *   3. unique `v.matchesPath(query, false)` (basename),
+   * raising on ambiguity (>1 match at a tier) with messages mirroring
+   * {@link matchVideo}. For all in-memory and non-existent-file lookups (the
+   * realistic case) this is observably identical to Python's `match_video`-based
+   * resolution, since strict `matchesPath` already does normalized path equality.
+   *
+   * @param video - A `Video`, filename (`string`/`URL`), integer index into
+   *   `this.videos`, or `null`/`undefined`.
+   * @returns The canonical `Video`, or `null` if `video` is `null`/`undefined`.
+   *   If no video matches, the foreign `Video` is returned unchanged and a
+   *   path is coerced into a new (unopened) `Video`, so identity-based lookups
+   *   simply yield empty results (preserving the "no match" behavior).
+   */
+  _resolveVideo(video) {
+    if (video == null) return null;
+    if (typeof video === "number") return this.videos[video];
+    const query = video instanceof Video ? video : new Video({ filename: String(video), openBackend: false });
+    for (const v of this.videos) {
+      if (v === query) return v;
+    }
+    const ambiguous = (candidates, by) => {
+      const names = candidates.map((v) => filenameRepr(v.filename)).join(", ");
+      return new Error(
+        `Ambiguous video match for ${filenameRepr(query.filename)}: matched ${candidates.length} videos ${by}: ${names}.`
+      );
+    };
+    const strict = this.videos.filter((v) => v.matchesPath(query, true));
+    if (strict.length > 1) {
+      throw ambiguous(strict, "by file identity");
+    }
+    if (strict.length) return strict[0];
+    const byBasename = this.videos.filter((v) => v.matchesPath(query, false));
+    if (byBasename.length > 1) {
+      throw ambiguous(byBasename, "by basename");
+    }
+    if (byBasename.length) return byBasename[0];
+    return query;
+  }
+  /**
    * Resolve a foreign `Video` or path to the canonical `Video` in `this.videos`.
    *
    * Faithful port of Python `Labels.match_video` (labels.py:1216-1344). Uses its
@@ -6167,14 +6241,18 @@ To use, first materialize:
    * for the extracted videos, and records the source labels in provenance.
    *
    * @param inds - Frame selection: an array of integer indices, an array of
-   *   `[Video, frameIdx]` tuples, or a single `Video` (all of its frames).
+   *   `[Video, frameIdx]` tuples, or a single `Video` (all of its frames). A
+   *   foreign `Video`/filename (`string`/`URL`) selector or tuple element is
+   *   resolved to the matching project `Video` via {@link _resolveVideo} (SYNC;
+   *   see its documented divergence from `matchVideo`).
    * @param copy - If `true` (default), deep-copy the frames and containing
    *   objects; otherwise share references with this Labels.
    * @returns A new `Labels` containing the selected frames.
    */
   extract(inds, copy = true) {
     if (this._lazyFrameList) this.materialize();
-    let lfs = this._selectFrames(inds);
+    const resolvedInds = this._resolveExtractInds(inds);
+    let lfs = this._selectFrames(resolvedInds);
     if (copy) {
       lfs = this._deepCopyFrames(lfs);
     }
@@ -6194,7 +6272,7 @@ To use, first materialize:
       return ka === kb ? a[1] - b[1] : ka - kb;
     }).map(([s]) => s);
     const extractedVideos = new Set(
-      this._selectFrames(inds).map((lf) => lf.video)
+      this._selectFrames(resolvedInds).map((lf) => lf.video)
     );
     let suggestions = this.suggestions.filter(
       (sf) => extractedVideos.has(sf.video)
@@ -6224,12 +6302,37 @@ To use, first materialize:
     return labels;
   }
   /**
+   * Canonicalize an {@link extract} selector, resolving foreign `Video` /
+   * filename references to the matching project `Video` via {@link _resolveVideo}
+   * (SYNC). The `number[]` index-array path is returned unchanged. Returns a
+   * narrowed selector that {@link _selectFrames} can consume directly.
+   */
+  _resolveExtractInds(inds) {
+    if (inds instanceof Video) {
+      return this._resolveVideo(inds);
+    }
+    if (typeof inds === "string" || inds instanceof URL) {
+      return this._resolveVideo(inds);
+    }
+    if (Array.isArray(inds)) {
+      if (inds.length === 0) return inds;
+      if (Array.isArray(inds[0])) {
+        return inds.map(
+          ([video, frameIdx]) => [this._resolveVideo(video), frameIdx]
+        );
+      }
+      return inds;
+    }
+    return inds;
+  }
+  /**
    * Resolve an extraction selection to a list of LabeledFrame references.
    *
    * Supports the subset of Python `__getitem__` selectors needed by
    * `extract`/`split`: integer index arrays, `[Video, frameIdx]` tuple arrays,
-   * and a single `Video`. (Filename/path resolution requires `matchVideo`,
-   * which is added in a later phase.)
+   * and a single `Video`. Foreign `Video`/filename references are canonicalized
+   * by {@link _resolveExtractInds} before reaching this method, so it receives
+   * canonical project `Video` instances.
    */
   _selectFrames(inds) {
     if (inds instanceof Video) {
