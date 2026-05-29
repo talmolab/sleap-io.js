@@ -262,14 +262,18 @@ async function readVideosStreaming(
       // Create streaming backend for embedded videos when openVideos is true
       let backend = null;
       if (openVideos && meta.embedded && datasetPath) {
-        // Read frame_numbers for this video
+        // Read frame_numbers (and frame_sizes when present) for this video.
+        // frame_sizes lets the 1D-concatenated layout (JS writer) byte-range
+        // slice exactly, mirroring the sync reader (read.ts) — see issue #135.
         const frameNumbers = await readFrameNumbersStreaming(file, datasetPath);
+        const frameSizes = await readFrameSizesStreaming(file, datasetPath);
 
         backend = new StreamingHdf5VideoBackend({
           filename: meta.filename,
           h5file: file,
           datasetPath,
           frameNumbers,
+          frameSizes,
           format: format ?? "png",
           channelOrder,
           shape,
@@ -338,6 +342,43 @@ async function readFrameNumbersStreaming(
     return [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * Read the frame_sizes dataset for a video, if present.
+ *
+ * frame_sizes records the encoded byte length of each embedded frame and is
+ * written by the JS writer (1D concatenated layout). When available it lets the
+ * backend byte-range slice an exact frame instead of scanning. Returns undefined
+ * when the dataset is absent (e.g. Python-written 2D padded files).
+ */
+async function readFrameSizesStreaming(
+  file: StreamingH5File,
+  datasetPath: string
+): Promise<number[] | undefined> {
+  try {
+    const groupPath = datasetPath.endsWith("/video")
+      ? datasetPath.slice(0, -6)
+      : datasetPath;
+
+    const groupKeys = await file.getKeys(groupPath);
+    if (!groupKeys.includes("frame_sizes")) {
+      return undefined;
+    }
+
+    const data = await file.getDatasetValue(`${groupPath}/frame_sizes`);
+    const values = data.value;
+
+    if (Array.isArray(values)) {
+      return values.map((v: unknown) => Number(v));
+    }
+    if (ArrayBuffer.isView(values)) {
+      return Array.from(values as unknown as ArrayLike<number>).map(Number);
+    }
+    return undefined;
+  } catch {
+    return undefined;
   }
 }
 
