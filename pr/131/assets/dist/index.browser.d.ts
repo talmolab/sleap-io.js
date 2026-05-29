@@ -2301,8 +2301,8 @@ declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Prom
  *
  * Reading works in both Node and the browser (via `openH5File`). Writing is
  * Node-only for disk I/O: bytes are built in an h5wasm in-memory virtual FS and
- * written with a dynamic `node:fs/promises` import so the browser bundle stays
- * free of Node-only imports.
+ * written through the Node filesystem ops registered by `h5-node.ts`, so this
+ * module stays free of Node-only imports and the browser bundle stays clean.
  */
 
 /**

@@ -8395,6 +8395,28 @@ function _registerNodeH5(getModule, openFile) {
   _nodeGetModule = getModule;
   _nodeOpenFile = openFile;
 }
+var _nodeWriteFile = null;
+var _nodeFileExists = null;
+var _nodeReadPackageVersion = null;
+function _registerNodeFileOps(ops) {
+  _nodeWriteFile = ops.writeFile;
+  _nodeFileExists = ops.fileExists;
+  _nodeReadPackageVersion = ops.readPackageVersion;
+}
+async function nodeWriteFile(path, bytes) {
+  if (!_nodeWriteFile) {
+    throw new Error(
+      "Writing files requires a Node.js environment. This codec's writer is Node-only."
+    );
+  }
+  await _nodeWriteFile(path, bytes);
+}
+async function nodeFileExists(path) {
+  return _nodeFileExists ? _nodeFileExists(path) : null;
+}
+async function nodeReadPackageVersion() {
+  return _nodeReadPackageVersion ? _nodeReadPackageVersion() : null;
+}
 var modulePromise = null;
 async function getH5Module() {
   if (_nodeGetModule) {
@@ -10566,12 +10588,9 @@ function readDimsAttr(attrs) {
 }
 async function isAnalysisH5File(source) {
   try {
-    if (typeof source === "string" && typeof process !== "undefined" && !!process.versions?.node) {
-      try {
-        const { existsSync } = await import("fs");
-        if (!existsSync(source)) return false;
-      } catch {
-      }
+    if (typeof source === "string") {
+      const exists = await nodeFileExists(source);
+      if (exists === false) return false;
     }
     const { file, close } = await openH5File(source);
     try {
@@ -10980,22 +10999,8 @@ function toAnalysisArrays(labels, video, allFrames, minOccupancy) {
 }
 async function readPackageVersion() {
   try {
-    const { readFile } = await import("fs/promises");
-    const { fileURLToPath } = await import("url");
-    const { dirname, join } = await import("path");
-    const here = dirname(fileURLToPath(import.meta.url));
-    const candidates = [
-      join(here, "..", "..", "package.json"),
-      join(here, "..", "..", "..", "package.json")
-    ];
-    for (const candidate of candidates) {
-      try {
-        const raw = await readFile(candidate, "utf-8");
-        const pkg = JSON.parse(raw);
-        if (pkg.version) return pkg.version;
-      } catch {
-      }
-    }
+    const version = await nodeReadPackageVersion();
+    if (version) return version;
   } catch {
   }
   return "0.0.0";
@@ -11163,8 +11168,7 @@ async function writeLabels(labels, filename, options) {
   const fsModule = getH5FileSystem(module);
   const bytes = fsModule.readFile(memPath);
   fsModule.unlink(memPath);
-  const { writeFile } = await import("fs/promises");
-  await writeFile(filename, bytes);
+  await nodeWriteFile(filename, bytes);
 }
 
 // src/codecs/slp/read.ts
@@ -13210,6 +13214,7 @@ export {
   openStreamingH5,
   openH5Worker,
   _registerNodeH5,
+  _registerNodeFileOps,
   createVideoBackend,
   readSlpStreaming,
   _registerFileWriter,
