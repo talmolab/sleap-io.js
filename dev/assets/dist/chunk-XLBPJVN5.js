@@ -7404,10 +7404,147 @@ var Mp4BoxVideoBackend = class {
   }
 };
 
-// src/video/streaming-hdf5-video.ts
-var isBrowser3 = typeof window !== "undefined" && typeof document !== "undefined";
+// src/video/embedded-frame.ts
 var PNG_MAGIC = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
 var JPEG_MAGIC = new Uint8Array([255, 216, 255]);
+function isEncodedFormat(format) {
+  const n = format.toLowerCase();
+  return n === "png" || n === "jpg" || n === "jpeg";
+}
+function magicFor(format) {
+  return format.toLowerCase() === "png" ? PNG_MAGIC : JPEG_MAGIC;
+}
+function matchesMagicAt(buffer, pos, magic) {
+  if (pos + magic.length > buffer.length) return false;
+  for (let k = 0; k < magic.length; k++) {
+    if (buffer[pos + k] !== magic[k]) return false;
+  }
+  return true;
+}
+function startsWithImageMagic(buffer) {
+  return matchesMagicAt(buffer, 0, PNG_MAGIC) || matchesMagicAt(buffer, 0, JPEG_MAGIC);
+}
+function findEncodedFrameOffsets(buffer, format, expectedFrameCount) {
+  const magic = magicFor(format);
+  const m0 = magic[0];
+  const L = magic.length;
+  const limit = buffer.length - L;
+  const offsets = [];
+  for (let i = 0; i <= limit; i++) {
+    if (buffer[i] !== m0) continue;
+    let ok = true;
+    for (let k = 1; k < L; k++) {
+      if (buffer[i + k] !== magic[k]) {
+        ok = false;
+        break;
+      }
+    }
+    if (!ok) continue;
+    offsets.push(i);
+    i += L - 1;
+    if (expectedFrameCount > 0 && offsets.length >= expectedFrameCount) break;
+  }
+  return offsets;
+}
+function computeOffsetsFromSizes(sizes) {
+  const offsets = new Array(sizes.length);
+  let off = 0;
+  for (let i = 0; i < sizes.length; i++) {
+    offsets[i] = off;
+    off += sizes[i];
+  }
+  return offsets;
+}
+function trimPaddedRow(row, size) {
+  if (size != null && size >= 0 && size <= row.length) {
+    return size === row.length ? row : row.subarray(0, size);
+  }
+  let end = row.length;
+  while (end > 0 && row[end - 1] === 0) end--;
+  return end === row.length ? row : row.subarray(0, end);
+}
+function classifyLayout(shape, frameCount) {
+  if (shape.length >= 2) return "padded";
+  if (shape.length === 1) {
+    if (frameCount > 0) return shape[0] === frameCount ? "vlen" : "concat";
+    return "ambiguous1d";
+  }
+  return "ambiguous1d";
+}
+function rowSlice(shape, index) {
+  return shape.map(
+    (dim, d) => d === 0 ? [index, index + 1] : [0, dim]
+  );
+}
+function asUint8Array(value) {
+  if (value == null) return null;
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    const v = value;
+    return new Uint8Array(v.buffer, v.byteOffset, v.byteLength);
+  }
+  if (Array.isArray(value)) {
+    return Uint8Array.from(value);
+  }
+  if (typeof value === "object" && "buffer" in value) {
+    return new Uint8Array(value.buffer);
+  }
+  return null;
+}
+async function readEmbeddedFrameBytes(reader, index) {
+  if (index < 0) return null;
+  const meta = await reader.getMeta();
+  const shape = meta.shape ?? [];
+  const layout = classifyLayout(shape, reader.frameCount);
+  const encoded = isEncodedFormat(reader.format);
+  if (layout === "padded") {
+    const { value } = await reader.readSlice(rowSlice(shape, index));
+    const row = asUint8Array(value);
+    if (!row) return null;
+    return encoded ? trimPaddedRow(row, reader.frameSizes?.[index]) : row;
+  }
+  if (layout === "vlen") {
+    const { value } = await reader.readSlice([[index, index + 1]]);
+    const entry = Array.isArray(value) ? value[0] : value;
+    return asUint8Array(entry);
+  }
+  if (layout === "concat" && reader.frameSizes && reader.frameSizes.length > index) {
+    const offsets2 = reader.legacy.offsets ??= computeOffsetsFromSizes(reader.frameSizes);
+    const start = offsets2[index];
+    const end = start + reader.frameSizes[index];
+    const { value } = await reader.readSlice([[start, end]]);
+    return asUint8Array(value);
+  }
+  if (!reader.legacy.whole) {
+    const { value } = await reader.readSlice();
+    if (Array.isArray(value)) {
+      reader.legacy.whole = value;
+    } else {
+      const buf2 = asUint8Array(value);
+      if (!buf2) return null;
+      reader.legacy.whole = buf2;
+      if (encoded && startsWithImageMagic(buf2)) {
+        reader.legacy.offsets = findEncodedFrameOffsets(buf2, reader.format, reader.frameCount);
+      }
+    }
+  }
+  const whole = reader.legacy.whole;
+  if (Array.isArray(whole)) {
+    return asUint8Array(whole[index]);
+  }
+  const buf = whole;
+  const offsets = reader.legacy.offsets;
+  if (offsets && offsets.length > index) {
+    const start = offsets[index];
+    const end = index + 1 < offsets.length ? offsets[index + 1] : buf.length;
+    return buf.slice(start, end);
+  }
+  return null;
+}
+
+// src/video/streaming-hdf5-video.ts
+var isBrowser3 = typeof window !== "undefined" && typeof document !== "undefined";
 var StreamingHdf5VideoBackend = class {
   filename;
   dataset;
@@ -7418,9 +7555,9 @@ var StreamingHdf5VideoBackend = class {
   frameNumberToIndex;
   format;
   channelOrder;
-  cachedData;
-  frameOffsets;
-  // For contiguous buffer: byte offsets of each frame
+  frameSizes;
+  legacy;
+  metaCache;
   constructor(options) {
     this.filename = options.filename;
     this.h5file = options.h5file;
@@ -7430,39 +7567,20 @@ var StreamingHdf5VideoBackend = class {
     this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";
+    this.frameSizes = options.frameSizes;
     this.shape = options.shape;
     this.fps = options.fps;
-    this.cachedData = null;
-    this.frameOffsets = null;
+    this.legacy = { whole: null, offsets: null };
+    this.metaCache = null;
   }
   async getFrame(frameIndex) {
     const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
     if (index === void 0) return null;
-    if (!this.cachedData) {
-      try {
-        const data = await this.h5file.getDatasetValue(this.datasetPath);
-        this.cachedData = normalizeVideoData(data.value, data.shape);
-        if (isContiguousEncodedBuffer(this.cachedData, this.format, this.shape)) {
-          this.frameOffsets = findEncodedFrameOffsets(
-            this.cachedData,
-            this.format,
-            this.shape?.[0] ?? 0
-          );
-        }
-      } catch {
-        return null;
-      }
-    }
     let rawBytes;
-    if (this.frameOffsets && this.frameOffsets.length > index) {
-      const buffer = this.cachedData;
-      const start = this.frameOffsets[index];
-      const end = index + 1 < this.frameOffsets.length ? this.frameOffsets[index + 1] : buffer.length;
-      rawBytes = buffer.slice(start, end);
-    } else {
-      const entry = this.cachedData[index];
-      if (entry == null) return null;
-      rawBytes = toUint8Array(entry);
+    try {
+      rawBytes = await readEmbeddedFrameBytes(this.buildReader(), index);
+    } catch {
+      return null;
     }
     if (!rawBytes || rawBytes.length === 0) return null;
     if (isEncodedFormat(this.format)) {
@@ -7475,20 +7593,7 @@ var StreamingHdf5VideoBackend = class {
   async probeShape(sourceFrameCount) {
     if (this.shape && this.shape[0] > 0) return;
     try {
-      if (!this.cachedData) {
-        const data = await this.h5file.getDatasetValue(this.datasetPath);
-        this.cachedData = normalizeVideoData(data.value, data.shape);
-        if (isContiguousEncodedBuffer(this.cachedData, this.format, this.shape)) {
-          this.frameOffsets = findEncodedFrameOffsets(
-            this.cachedData,
-            this.format,
-            this.shape?.[0] ?? 0
-          );
-        }
-      }
-      const entry = Array.isArray(this.cachedData) ? this.cachedData[0] : null;
-      if (!entry) return;
-      const rawBytes = toUint8Array(entry);
+      const rawBytes = await readEmbeddedFrameBytes(this.buildReader(), 0);
       if (!rawBytes || rawBytes.length === 0) return;
       if (isEncodedFormat(this.format)) {
         const decoded = await decodeImageBytes(rawBytes, this.format, this.channelOrder);
@@ -7507,71 +7612,31 @@ var StreamingHdf5VideoBackend = class {
     } catch {
     }
   }
+  /** Build a single-frame reader bound to the streaming worker file. */
+  buildReader() {
+    return {
+      frameCount: this.frameNumberToIndex.size,
+      format: this.format,
+      frameSizes: this.frameSizes,
+      legacy: this.legacy,
+      getMeta: async () => {
+        if (!this.metaCache) {
+          this.metaCache = await this.h5file.getDatasetMeta(this.datasetPath);
+        }
+        return this.metaCache;
+      },
+      readSlice: async (slice) => {
+        const data = await this.h5file.getDatasetValue(this.datasetPath, slice);
+        return { value: data.value, shape: data.shape };
+      }
+    };
+  }
   close() {
-    this.cachedData = null;
-    this.frameOffsets = null;
+    this.legacy.whole = null;
+    this.legacy.offsets = null;
+    this.metaCache = null;
   }
 };
-function normalizeVideoData(value, _shape) {
-  if (Array.isArray(value)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) {
-    const arr = value;
-    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
-  }
-  return [];
-}
-function isContiguousEncodedBuffer(data, format, shape) {
-  if (!isEncodedFormat(format)) return false;
-  if (!(data instanceof Uint8Array)) return false;
-  if (data.length < 8) return false;
-  const isPng = matchesMagic(data, PNG_MAGIC);
-  const isJpeg = matchesMagic(data, JPEG_MAGIC);
-  if (!isPng && !isJpeg) return false;
-  if (shape) {
-    const frameCount = shape[0];
-    if (frameCount > 1 && data.length > 1e4) {
-      return true;
-    }
-  }
-  return true;
-}
-function matchesMagic(buffer, magic) {
-  if (buffer.length < magic.length) return false;
-  for (let i = 0; i < magic.length; i++) {
-    if (buffer[i] !== magic[i]) return false;
-  }
-  return true;
-}
-function findEncodedFrameOffsets(buffer, format, expectedFrameCount) {
-  const offsets = [];
-  const magic = format.toLowerCase() === "png" ? PNG_MAGIC : JPEG_MAGIC;
-  for (let i = 0; i <= buffer.length - magic.length; i++) {
-    if (matchesMagic(buffer.subarray(i), magic)) {
-      offsets.push(i);
-      i += magic.length - 1;
-      if (expectedFrameCount > 0 && offsets.length >= expectedFrameCount) {
-        break;
-      }
-    }
-  }
-  return offsets;
-}
-function toUint8Array(entry) {
-  if (entry instanceof Uint8Array) return entry;
-  if (entry instanceof ArrayBuffer) return new Uint8Array(entry);
-  if (ArrayBuffer.isView(entry)) return new Uint8Array(entry.buffer, entry.byteOffset, entry.byteLength);
-  if (Array.isArray(entry)) return new Uint8Array(entry.flat());
-  if (entry && typeof entry === "object" && "buffer" in entry) {
-    return new Uint8Array(entry.buffer);
-  }
-  return null;
-}
-function isEncodedFormat(format) {
-  const normalized = format.toLowerCase();
-  return normalized === "png" || normalized === "jpg" || normalized === "jpeg";
-}
 async function decodeImageBytes(bytes, format, channelOrder) {
   if (!isBrowser3 || typeof createImageBitmap === "undefined") return null;
   const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
@@ -8202,8 +8267,6 @@ async function openH5Worker(source, options) {
 
 // src/video/hdf5-video.ts
 var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
-var PNG_MAGIC2 = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
-var JPEG_MAGIC2 = new Uint8Array([255, 216, 255]);
 var Hdf5VideoBackend = class {
   filename;
   dataset;
@@ -8214,9 +8277,8 @@ var Hdf5VideoBackend = class {
   frameNumberToIndex;
   format;
   channelOrder;
-  cachedData;
-  frameOffsets;
   frameSizes;
+  legacy;
   constructor(options) {
     this.filename = options.filename;
     this.file = options.file;
@@ -8228,119 +8290,42 @@ var Hdf5VideoBackend = class {
     this.channelOrder = options.channelOrder ?? "RGB";
     this.shape = options.shape;
     this.fps = options.fps;
-    this.cachedData = null;
-    this.frameOffsets = null;
     this.frameSizes = options.frameSizes;
+    this.legacy = { whole: null, offsets: null };
   }
   async getFrame(frameIndex) {
     const dataset = this.file.get(this.datasetPath);
     if (!dataset) return null;
     const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
     if (index === void 0) return null;
-    if (!this.cachedData) {
-      const value = dataset.value;
-      this.cachedData = normalizeVideoData2(value);
-      if (this.frameSizes && this.frameSizes.length > 0 && this.cachedData instanceof Uint8Array) {
-        this.frameOffsets = computeOffsetsFromSizes(this.frameSizes);
-      } else if (isContiguousEncodedBuffer2(this.cachedData, this.format, this.shape)) {
-        this.frameOffsets = findEncodedFrameOffsets2(
-          this.cachedData,
-          this.format,
-          this.shape?.[0] ?? 0
-        );
-      }
-    }
-    let rawBytes;
-    if (this.frameOffsets && this.frameOffsets.length > index) {
-      const buffer = this.cachedData;
-      const start = this.frameOffsets[index];
-      const end = index + 1 < this.frameOffsets.length ? this.frameOffsets[index + 1] : buffer.length;
-      rawBytes = buffer.slice(start, end);
-    } else {
-      const entry = this.cachedData[index];
-      if (entry == null) return null;
-      rawBytes = toUint8Array2(entry);
-    }
+    const rawBytes = await readEmbeddedFrameBytes(this.buildReader(dataset), index);
     if (!rawBytes || rawBytes.length === 0) return null;
-    if (isEncodedFormat2(this.format)) {
+    if (isEncodedFormat(this.format)) {
       const decoded = await decodeImageBytes2(rawBytes, this.format, this.channelOrder);
       return decoded ?? rawBytes;
     }
     const image = decodeRawFrame2(rawBytes, this.shape, this.channelOrder);
     return image ?? rawBytes;
   }
+  /** Build a single-frame reader bound to an open h5wasm dataset object. */
+  buildReader(dataset) {
+    return {
+      frameCount: this.frameNumberToIndex.size,
+      format: this.format,
+      frameSizes: this.frameSizes,
+      legacy: this.legacy,
+      getMeta: async () => ({ shape: dataset.shape ?? [], dtype: dataset.dtype }),
+      readSlice: async (slice) => {
+        const value = slice ? dataset.slice(slice) : dataset.value;
+        return { value, shape: dataset.shape ?? [] };
+      }
+    };
+  }
   close() {
-    this.cachedData = null;
-    this.frameOffsets = null;
+    this.legacy.whole = null;
+    this.legacy.offsets = null;
   }
 };
-function normalizeVideoData2(value) {
-  if (Array.isArray(value)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) {
-    const arr = value;
-    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
-  }
-  return [];
-}
-function isContiguousEncodedBuffer2(data, format, shape) {
-  if (!isEncodedFormat2(format)) return false;
-  if (!(data instanceof Uint8Array)) return false;
-  if (data.length < 8) return false;
-  const isPng = matchesMagic2(data, PNG_MAGIC2);
-  const isJpeg = matchesMagic2(data, JPEG_MAGIC2);
-  if (!isPng && !isJpeg) return false;
-  if (shape) {
-    const frameCount = shape[0];
-    if (frameCount > 1 && data.length > 1e4) {
-      return true;
-    }
-  }
-  return true;
-}
-function matchesMagic2(buffer, magic) {
-  if (buffer.length < magic.length) return false;
-  for (let i = 0; i < magic.length; i++) {
-    if (buffer[i] !== magic[i]) return false;
-  }
-  return true;
-}
-function findEncodedFrameOffsets2(buffer, format, expectedFrameCount) {
-  const offsets = [];
-  const magic = format.toLowerCase() === "png" ? PNG_MAGIC2 : JPEG_MAGIC2;
-  for (let i = 0; i <= buffer.length - magic.length; i++) {
-    if (matchesMagic2(buffer.subarray(i), magic)) {
-      offsets.push(i);
-      i += magic.length - 1;
-      if (expectedFrameCount > 0 && offsets.length >= expectedFrameCount) {
-        break;
-      }
-    }
-  }
-  return offsets;
-}
-function computeOffsetsFromSizes(sizes) {
-  const offsets = new Array(sizes.length);
-  let offset = 0;
-  for (let i = 0; i < sizes.length; i++) {
-    offsets[i] = offset;
-    offset += sizes[i];
-  }
-  return offsets;
-}
-function toUint8Array2(entry) {
-  if (entry instanceof Uint8Array) return entry;
-  if (entry instanceof ArrayBuffer) return new Uint8Array(entry);
-  if (ArrayBuffer.isView(entry)) return new Uint8Array(entry.buffer, entry.byteOffset, entry.byteLength);
-  if (Array.isArray(entry)) return new Uint8Array(entry.flat());
-  if (entry?.buffer) return new Uint8Array(entry.buffer);
-  return null;
-}
-function isEncodedFormat2(format) {
-  const normalized = format.toLowerCase();
-  return normalized === "png" || normalized === "jpg" || normalized === "jpeg";
-}
 async function decodeImageBytes2(bytes, format, channelOrder) {
   if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
   const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
@@ -8695,11 +8680,13 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
       let backend = null;
       if (openVideos && meta.embedded && datasetPath) {
         const frameNumbers = await readFrameNumbersStreaming(file, datasetPath);
+        const frameSizes = await readFrameSizesStreaming(file, datasetPath);
         backend = new StreamingHdf5VideoBackend({
           filename: meta.filename,
           h5file: file,
           datasetPath,
           frameNumbers,
+          frameSizes,
           format: format ?? "png",
           channelOrder,
           shape,
@@ -8748,6 +8735,26 @@ async function readFrameNumbersStreaming(file, datasetPath) {
     return [];
   } catch {
     return [];
+  }
+}
+async function readFrameSizesStreaming(file, datasetPath) {
+  try {
+    const groupPath = datasetPath.endsWith("/video") ? datasetPath.slice(0, -6) : datasetPath;
+    const groupKeys = await file.getKeys(groupPath);
+    if (!groupKeys.includes("frame_sizes")) {
+      return void 0;
+    }
+    const data = await file.getDatasetValue(`${groupPath}/frame_sizes`);
+    const values = data.value;
+    if (Array.isArray(values)) {
+      return values.map((v) => Number(v));
+    }
+    if (ArrayBuffer.isView(values)) {
+      return Array.from(values).map(Number);
+    }
+    return void 0;
+  } catch {
+    return void 0;
   }
 }
 async function findVideoDatasetStreaming(file, videoIndex) {

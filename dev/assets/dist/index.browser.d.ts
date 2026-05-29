@@ -2197,9 +2197,10 @@ declare function openH5Worker(source: StreamingH5Source, options?: StreamingH5Op
  * a synchronous h5wasm File object, making it suitable for browser environments
  * where the SLP file is loaded via HTTP range requests.
  *
- * Supports two data storage formats:
- * 1. vlen-encoded: Array of individual frame blobs (each index = one frame)
- * 2. Contiguous buffer: Single buffer with all frames concatenated
+ * Reads one frame at a time via hyperslab slicing (issue #135) rather than
+ * loading and caching the entire per-video dataset. Supports 2D padded, 1D
+ * concatenated (with `frame_sizes`), and variable-length (vlen) blob layouts;
+ * see {@link readEmbeddedFrameBytes}.
  */
 declare class StreamingHdf5VideoBackend implements VideoBackend {
     filename: string;
@@ -2211,13 +2212,15 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
     private frameNumberToIndex;
     private format;
     private channelOrder;
-    private cachedData;
-    private frameOffsets;
+    private frameSizes;
+    private legacy;
+    private metaCache;
     constructor(options: {
         filename: string;
         h5file: StreamingH5File;
         datasetPath: string;
         frameNumbers?: number[];
+        frameSizes?: number[];
         format?: string;
         channelOrder?: string;
         shape?: [number, number, number, number];
@@ -2225,6 +2228,8 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
     });
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
     probeShape(sourceFrameCount?: number): Promise<void>;
+    /** Build a single-frame reader bound to the streaming worker file. */
+    private buildReader;
     close(): void;
 }
 
