@@ -1,19 +1,22 @@
 import { VideoBackend, VideoFrame } from "./backend.js";
+import {
+  type EmbeddedFrameReader,
+  type Hdf5Slice,
+  type LegacyFrameCache,
+  type SliceReadResult,
+  isEncodedFormat,
+  readEmbeddedFrameBytes,
+} from "./embedded-frame.js";
 
 const isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
 
-// PNG magic bytes: 0x89 P N G \r \n 0x1A \n
-const PNG_MAGIC = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-
-// JPEG magic bytes: 0xFF 0xD8 0xFF
-const JPEG_MAGIC = new Uint8Array([0xff, 0xd8, 0xff]);
-
 /**
- * Video backend for embedded images in HDF5 files.
+ * Video backend for embedded images in HDF5 files (synchronous h5wasm).
  *
- * Supports two data storage formats:
- * 1. vlen-encoded: Array of individual frame blobs (each index = one frame)
- * 2. Contiguous buffer: Single buffer with all frames concatenated
+ * Reads a single frame at a time via hyperslab slicing rather than loading and
+ * caching the entire per-video dataset. Supports 2D padded, 1D concatenated
+ * (with `frame_sizes`), and variable-length (vlen) blob layouts. See issue #135
+ * and {@link readEmbeddedFrameBytes} for details.
  */
 export class Hdf5VideoBackend implements VideoBackend {
   filename: string;
@@ -25,9 +28,8 @@ export class Hdf5VideoBackend implements VideoBackend {
   private frameNumberToIndex: Map<number, number>;
   private format: string;
   private channelOrder: string;
-  private cachedData: unknown[] | Uint8Array | null;
-  private frameOffsets: number[] | null;
   private frameSizes: number[] | undefined;
+  private legacy: LegacyFrameCache;
 
   constructor(options: {
     filename: string;
@@ -51,9 +53,8 @@ export class Hdf5VideoBackend implements VideoBackend {
     this.channelOrder = options.channelOrder ?? "RGB";
     this.shape = options.shape;
     this.fps = options.fps;
-    this.cachedData = null;
-    this.frameOffsets = null;
     this.frameSizes = options.frameSizes;
+    this.legacy = { whole: null, offsets: null };
   }
 
   async getFrame(frameIndex: number): Promise<VideoFrame | null> {
@@ -65,40 +66,7 @@ export class Hdf5VideoBackend implements VideoBackend {
       : frameIndex;
     if (index === undefined) return null;
 
-    if (!this.cachedData) {
-      const value = dataset.value;
-      this.cachedData = normalizeVideoData(value);
-
-      // Use frame_sizes for reliable frame boundary detection if available
-      if (this.frameSizes && this.frameSizes.length > 0 && this.cachedData instanceof Uint8Array) {
-        this.frameOffsets = computeOffsetsFromSizes(this.frameSizes);
-      } else if (isContiguousEncodedBuffer(this.cachedData, this.format, this.shape)) {
-        // Fall back to magic byte scanning for old files without frame_sizes
-        this.frameOffsets = findEncodedFrameOffsets(
-          this.cachedData as Uint8Array,
-          this.format,
-          this.shape?.[0] ?? 0
-        );
-      }
-    }
-
-    let rawBytes: Uint8Array | null;
-
-    // Handle contiguous buffer with computed frame offsets
-    if (this.frameOffsets && this.frameOffsets.length > index) {
-      const buffer = this.cachedData as Uint8Array;
-      const start = this.frameOffsets[index];
-      const end = index + 1 < this.frameOffsets.length
-        ? this.frameOffsets[index + 1]
-        : buffer.length;
-      rawBytes = buffer.slice(start, end);
-    } else {
-      // Standard vlen-encoded array: each index is a frame blob
-      const entry = (this.cachedData as unknown[])[index];
-      if (entry == null) return null;
-      rawBytes = toUint8Array(entry);
-    }
-
+    const rawBytes = await readEmbeddedFrameBytes(this.buildReader(dataset), index);
     if (!rawBytes || rawBytes.length === 0) return null;
 
     if (isEncodedFormat(this.format)) {
@@ -110,111 +78,25 @@ export class Hdf5VideoBackend implements VideoBackend {
     return image ?? rawBytes;
   }
 
+  /** Build a single-frame reader bound to an open h5wasm dataset object. */
+  private buildReader(dataset: any): EmbeddedFrameReader {
+    return {
+      frameCount: this.frameNumberToIndex.size,
+      format: this.format,
+      frameSizes: this.frameSizes,
+      legacy: this.legacy,
+      getMeta: async () => ({ shape: dataset.shape ?? [], dtype: dataset.dtype }),
+      readSlice: async (slice?: Hdf5Slice): Promise<SliceReadResult> => {
+        const value = slice ? dataset.slice(slice) : dataset.value;
+        return { value, shape: dataset.shape ?? [] };
+      },
+    };
+  }
+
   close(): void {
-    this.cachedData = null;
-    this.frameOffsets = null;
+    this.legacy.whole = null;
+    this.legacy.offsets = null;
   }
-}
-
-/**
- * Normalize video data to a consistent format.
- */
-function normalizeVideoData(value: unknown): unknown[] | Uint8Array {
-  if (Array.isArray(value)) {
-    return value;
-  }
-  if (ArrayBuffer.isView(value)) {
-    const arr = value as ArrayBufferView;
-    return new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength);
-  }
-  return [];
-}
-
-/**
- * Check if the data is a contiguous buffer of encoded (PNG/JPEG) images.
- */
-function isContiguousEncodedBuffer(
-  data: unknown[] | Uint8Array,
-  format: string,
-  shape?: [number, number, number, number]
-): boolean {
-  if (!isEncodedFormat(format)) return false;
-  if (!(data instanceof Uint8Array)) return false;
-  if (data.length < 8) return false;
-
-  const isPng = matchesMagic(data, PNG_MAGIC);
-  const isJpeg = matchesMagic(data, JPEG_MAGIC);
-
-  if (!isPng && !isJpeg) return false;
-
-  if (shape) {
-    const frameCount = shape[0];
-    if (frameCount > 1 && data.length > 10000) {
-      return true;
-    }
-  }
-
-  return true;
-}
-
-function matchesMagic(buffer: Uint8Array, magic: Uint8Array): boolean {
-  if (buffer.length < magic.length) return false;
-  for (let i = 0; i < magic.length; i++) {
-    if (buffer[i] !== magic[i]) return false;
-  }
-  return true;
-}
-
-/**
- * Find byte offsets of each encoded frame in a contiguous buffer.
- */
-function findEncodedFrameOffsets(
-  buffer: Uint8Array,
-  format: string,
-  expectedFrameCount: number
-): number[] {
-  const offsets: number[] = [];
-  const magic = format.toLowerCase() === "png" ? PNG_MAGIC : JPEG_MAGIC;
-
-  for (let i = 0; i <= buffer.length - magic.length; i++) {
-    if (matchesMagic(buffer.subarray(i), magic)) {
-      offsets.push(i);
-      i += magic.length - 1;
-
-      if (expectedFrameCount > 0 && offsets.length >= expectedFrameCount) {
-        break;
-      }
-    }
-  }
-
-  return offsets;
-}
-
-/**
- * Compute byte offsets from an array of frame sizes (cumulative sum).
- */
-function computeOffsetsFromSizes(sizes: number[]): number[] {
-  const offsets: number[] = new Array(sizes.length);
-  let offset = 0;
-  for (let i = 0; i < sizes.length; i++) {
-    offsets[i] = offset;
-    offset += sizes[i];
-  }
-  return offsets;
-}
-
-function toUint8Array(entry: any): Uint8Array | null {
-  if (entry instanceof Uint8Array) return entry;
-  if (entry instanceof ArrayBuffer) return new Uint8Array(entry);
-  if (ArrayBuffer.isView(entry)) return new Uint8Array(entry.buffer, entry.byteOffset, entry.byteLength);
-  if (Array.isArray(entry)) return new Uint8Array(entry.flat());
-  if (entry?.buffer) return new Uint8Array(entry.buffer);
-  return null;
-}
-
-function isEncodedFormat(format: string): boolean {
-  const normalized = format.toLowerCase();
-  return normalized === "png" || normalized === "jpg" || normalized === "jpeg";
 }
 
 async function decodeImageBytes(
