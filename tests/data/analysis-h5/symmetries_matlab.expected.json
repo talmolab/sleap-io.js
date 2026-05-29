@@ -1,0 +1,86 @@
+{
+ "nFrames": 1,
+ "frameIndices": [
+  0
+ ],
+ "trackNames": [
+  "animal1"
+ ],
+ "nodeNames": [
+  "nose",
+  "left_ear",
+  "right_ear",
+  "tail"
+ ],
+ "edgeInds": [
+  [
+   0,
+   1
+  ],
+  [
+   0,
+   2
+  ],
+  [
+   0,
+   3
+  ]
+ ],
+ "edgeNames": [
+  [
+   "nose",
+   "left_ear"
+  ],
+  [
+   "nose",
+   "right_ear"
+  ],
+  [
+   "nose",
+   "tail"
+  ]
+ ],
+ "symmetries": [
+  [
+   "left_ear",
+   "right_ear"
+  ]
+ ],
+ "skeletonName": "mouse",
+ "videoFilename": "complex_video.mp4",
+ "provenance": {},
+ "frames": [
+  {
+   "frameIdx": 0,
+   "instances": [
+    {
+     "points": [
+      [
+       10.0,
+       20.0,
+       0.9
+      ],
+      [
+       30.0,
+       40.0,
+       0.85
+      ],
+      [
+       50.0,
+       60.0,
+       0.88
+      ],
+      [
+       70.0,
+       80.0,
+       0.92
+      ]
+     ],
+     "score": 0.95,
+     "trackingScore": null,
+     "isPredicted": true
+    }
+   ]
+  }
+ ]
+}

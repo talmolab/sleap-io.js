@@ -1,0 +1,99 @@
+{
+ "nFrames": 3,
+ "frameIndices": [
+  0,
+  1,
+  2
+ ],
+ "trackNames": [
+  "track_0"
+ ],
+ "nodeNames": [
+  "head",
+  "tail"
+ ],
+ "edgeInds": [
+  [
+   0,
+   1
+  ]
+ ],
+ "edgeNames": [
+  [
+   "head",
+   "tail"
+  ]
+ ],
+ "symmetries": [],
+ "skeletonName": "simple",
+ "videoFilename": "untracked_video.mp4",
+ "provenance": {},
+ "frames": [
+  {
+   "frameIdx": 0,
+   "instances": [
+    {
+     "points": [
+      [
+       100.0,
+       200.0,
+       0.9
+      ],
+      [
+       150.0,
+       250.0,
+       0.85
+      ]
+     ],
+     "score": 0.95,
+     "trackingScore": null,
+     "isPredicted": true
+    }
+   ]
+  },
+  {
+   "frameIdx": 1,
+   "instances": [
+    {
+     "points": [
+      [
+       101.0,
+       201.0,
+       0.9
+      ],
+      [
+       151.0,
+       251.0,
+       0.85
+      ]
+     ],
+     "score": 0.95,
+     "trackingScore": null,
+     "isPredicted": true
+    }
+   ]
+  },
+  {
+   "frameIdx": 2,
+   "instances": [
+    {
+     "points": [
+      [
+       102.0,
+       202.0,
+       0.9
+      ],
+      [
+       152.0,
+       252.0,
+       0.85
+      ]
+     ],
+     "score": 0.95,
+     "trackingScore": null,
+     "isPredicted": true
+    }
+   ]
+  }
+ ]
+}

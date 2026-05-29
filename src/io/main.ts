@@ -6,6 +6,7 @@ import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
 import { writeSlp, saveSlpToBytes } from "../codecs/slp/write.js";
 import { createVideoBackend, VideoBackendType } from "../video/factory.js";
 import { OpenH5Options, SlpSource, isStreamingSupported } from "../codecs/slp/h5.js";
+import { readLabels as readAnalysisH5, writeLabels as writeAnalysisH5 } from "./analysis-h5.js";
 
 function isNode(): boolean {
   return typeof process !== "undefined" && !!process.versions?.node;
@@ -99,6 +100,79 @@ export async function saveSlp(
 }
 
 export { saveSlpToBytes } from "../codecs/slp/write.js";
+
+/**
+ * Load a SLEAP Analysis HDF5 file (.h5).
+ *
+ * Mirrors Python's `load_analysis_h5`. The axis ordering is detected from the
+ * stored `dims` attributes, and extended metadata (skeleton symmetries, video
+ * backend metadata) is used to reconstruct the full Labels context when present.
+ *
+ * @param filename - Path to the Analysis HDF5 file
+ * @param options - Loading options
+ * @param options.video - Video to associate with the data. If omitted, uses the
+ *   `video_path` stored in the file. Can be a Video object or path string.
+ * @returns Loaded Labels object
+ */
+export async function loadAnalysisH5(
+  filename: string,
+  options?: { video?: Video | string }
+): Promise<Labels> {
+  return readAnalysisH5(filename, { video: options?.video });
+}
+
+/**
+ * Save labels to a SLEAP Analysis HDF5 file (.h5).
+ *
+ * Mirrors Python's `save_analysis_h5`. Node-only for disk I/O.
+ *
+ * @param labels - Labels object to save
+ * @param filename - Output file path
+ * @param options - Save options
+ * @param options.video - Video to export. If omitted, uses the first video. Can
+ *   be a Video object or an integer index.
+ * @param options.labelsPath - Source labels path (stored as metadata)
+ * @param options.allFrames - Include all frames from 0 to last labeled frame (default: true)
+ * @param options.minOccupancy - Minimum track occupancy ratio (0-1) to keep (default: 0)
+ * @param options.preset - Axis ordering preset ("matlab" default, "standard"); mutually exclusive with explicit dims
+ * @param options.frameDim - Explicit position of the frame dimension (0-3)
+ * @param options.trackDim - Explicit position of the track dimension (0-3)
+ * @param options.nodeDim - Explicit position of the node dimension (0-3)
+ * @param options.xyDim - Explicit position of the xy dimension (0-3)
+ * @param options.saveMetadata - Store extended metadata for full round-trip (default: true)
+ */
+export async function saveAnalysisH5(
+  labels: Labels,
+  filename: string,
+  options?: {
+    video?: Video | number;
+    labelsPath?: string;
+    allFrames?: boolean;
+    minOccupancy?: number;
+    preset?: string;
+    frameDim?: number;
+    trackDim?: number;
+    nodeDim?: number;
+    xyDim?: number;
+    saveMetadata?: boolean;
+  }
+): Promise<void> {
+  await writeAnalysisH5(labels, filename, {
+    video: options?.video,
+    labelsPath: options?.labelsPath,
+    allFrames: options?.allFrames,
+    minOccupancy: options?.minOccupancy,
+    preset: options?.preset,
+    frameDim: options?.frameDim,
+    trackDim: options?.trackDim,
+    nodeDim: options?.nodeDim,
+    xyDim: options?.xyDim,
+    saveMetadata: options?.saveMetadata,
+  });
+}
+
+/** Re-export the Analysis HDF5 format detector for public use. */
+export { isAnalysisH5File } from "./analysis-h5.js";
 
 /**
  * Load multiple SLP files in parallel.
