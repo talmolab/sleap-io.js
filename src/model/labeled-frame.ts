@@ -254,7 +254,9 @@ export class LabeledFrame {
   }
 
   get userInstances(): Instance[] {
-    return this.instances.filter((inst) => inst instanceof Instance) as Instance[];
+    // Exact-type match: PredictedInstance extends Instance, so `instanceof Instance`
+    // would wrongly include predictions. Mirrors Python `type(inst) is Instance`.
+    return this.instances.filter((inst) => inst.constructor === Instance) as Instance[];
   }
 
   get predictedInstances(): PredictedInstance[] {

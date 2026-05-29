@@ -11,7 +11,7 @@ export function _registerCentroidFactory(factory: CentroidFactory): void {
 export class Track {
   name: string;
 
-  constructor(name: string) {
+  constructor(name = "") {
     this.name = name;
   }
 }
