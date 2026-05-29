@@ -9,7 +9,7 @@
  * The browser entry point never imports this file, ensuring the browser
  * bundle contains no references to Node built-in modules.
  */
-import { _registerNodeH5, type H5Module, type SlpSource, type H5File } from "./h5.js";
+import { _registerNodeH5, _registerNodeFileOps, type H5Module, type SlpSource, type H5File } from "./h5.js";
 import { _registerFileWriter } from "./write.js";
 
 let modulePromise: Promise<H5Module> | null = null;
@@ -60,4 +60,43 @@ _registerNodeH5(getH5ModuleNode, openH5FileNode);
 _registerFileWriter(async (filename: string, bytes: Uint8Array) => {
   const { writeFile } = await import("node:fs/promises");
   await writeFile(filename, bytes);
+});
+
+// Node filesystem ops for direct-file codecs (e.g. Analysis-HDF5). Keeping the
+// node: imports here means the shared h5.ts (and thus the browser bundle) never
+// references Node built-ins.
+_registerNodeFileOps({
+  writeFile: async (filename: string, bytes: Uint8Array) => {
+    const { writeFile } = await import("node:fs/promises");
+    await writeFile(filename, bytes);
+  },
+  fileExists: async (path: string) => {
+    const { existsSync } = await import("node:fs");
+    return existsSync(path);
+  },
+  readPackageVersion: async () => {
+    try {
+      const { readFile } = await import("node:fs/promises");
+      const { fileURLToPath } = await import("node:url");
+      const { dirname, join } = await import("node:path");
+      const here = dirname(fileURLToPath(import.meta.url));
+      // h5-node lives at <root>/(src|dist)/codecs/slp/, so package.json is 3 up.
+      const candidates = [
+        join(here, "..", "..", "..", "package.json"),
+        join(here, "..", "..", "..", "..", "package.json"),
+      ];
+      for (const candidate of candidates) {
+        try {
+          const raw = await readFile(candidate, "utf-8");
+          const pkg = JSON.parse(raw) as { version?: string };
+          if (pkg.version) return pkg.version;
+        } catch {
+          // try next candidate
+        }
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  },
 });

@@ -22,8 +22,8 @@
  *
  * Reading works in both Node and the browser (via `openH5File`). Writing is
  * Node-only for disk I/O: bytes are built in an h5wasm in-memory virtual FS and
- * written with a dynamic `node:fs/promises` import so the browser bundle stays
- * free of Node-only imports.
+ * written through the Node filesystem ops registered by `h5-node.ts`, so this
+ * module stays free of Node-only imports and the browser bundle stays clean.
  */
 
 import { Labels } from "../model/labels.js";
@@ -31,7 +31,14 @@ import { PredictedInstance, Track } from "../model/instance.js";
 import { LabeledFrame } from "../model/labeled-frame.js";
 import { Skeleton } from "../model/skeleton.js";
 import { Video } from "../model/video.js";
-import { openH5File, getH5Module, getH5FileSystem } from "../codecs/slp/h5.js";
+import {
+  openH5File,
+  getH5Module,
+  getH5FileSystem,
+  nodeWriteFile,
+  nodeFileExists,
+  nodeReadPackageVersion,
+} from "../codecs/slp/h5.js";
 
 // =============================================================================
 // Preset definitions (port of PRESETS / _get_axis_order / _get_transpose_axes /
@@ -385,19 +392,12 @@ export async function isAnalysisH5File(
     // h5wasm node provider opens a File handle lazily and may NOT throw
     // synchronously for a missing path (it can resolve to a stale in-memory
     // handle), which would otherwise yield a false positive. h5py raises for a
-    // missing file, so we mirror that. The fs import is dynamic so the browser
-    // bundle stays free of Node-only imports.
-    if (
-      typeof source === "string" &&
-      typeof process !== "undefined" &&
-      !!process.versions?.node
-    ) {
-      try {
-        const { existsSync } = await import("node:fs");
-        if (!existsSync(source)) return false;
-      } catch {
-        // If fs is unavailable, fall through to the open-based detection.
-      }
+    // missing file, so we mirror that. The existence check is routed through the
+    // Node provider (registered by h5-node.ts) so this module stays free of
+    // Node-only imports; it resolves to null in the browser, where we skip it.
+    if (typeof source === "string") {
+      const exists = await nodeFileExists(source);
+      if (exists === false) return false;
     }
 
     const { file, close } = await openH5File(source);
@@ -1043,29 +1043,13 @@ interface H5WriteFile {
   close(): void;
 }
 
-/** Read the JS package version (not hardcoded). */
+/** Read the JS package version (not hardcoded), via the Node provider. */
 async function readPackageVersion(): Promise<string> {
   try {
-    const { readFile } = await import("node:fs/promises");
-    const { fileURLToPath } = await import("node:url");
-    const { dirname, join } = await import("node:path");
-    const here = dirname(fileURLToPath(import.meta.url));
-    // Walk up to find package.json (handles src/ vs dist/ layouts).
-    const candidates = [
-      join(here, "..", "..", "package.json"),
-      join(here, "..", "..", "..", "package.json"),
-    ];
-    for (const candidate of candidates) {
-      try {
-        const raw = await readFile(candidate, "utf-8");
-        const pkg = JSON.parse(raw) as { version?: string };
-        if (pkg.version) return pkg.version;
-      } catch {
-        // try next
-      }
-    }
+    const version = await nodeReadPackageVersion();
+    if (version) return version;
   } catch {
-    // ignore
+    // ignore — fall back to the sentinel below.
   }
   return "0.0.0";
 }
@@ -1095,7 +1079,7 @@ function videoFilenameString(video: Video): string {
  * Save a {@link Labels} object to a SLEAP Analysis HDF5 file.
  *
  * Node-only: bytes are produced via an h5wasm in-memory virtual FS and written
- * to disk with a dynamic `node:fs/promises` import.
+ * to disk through the Node filesystem ops registered by `h5-node.ts`.
  *
  * @param labels - Labels to export.
  * @param filename - Output file path.
@@ -1309,7 +1293,7 @@ export async function writeLabels(
   const bytes = fsModule.readFile!(memPath);
   fsModule.unlink!(memPath);
 
-  // Write to disk (Node-only) via a dynamic import.
-  const { writeFile } = await import("node:fs/promises");
-  await writeFile(filename, bytes);
+  // Write to disk via the registered Node file writer (Node-only). Routing
+  // through the provider keeps this module free of Node-only imports.
+  await nodeWriteFile(filename, bytes);
 }
