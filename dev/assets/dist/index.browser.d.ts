@@ -2278,6 +2278,43 @@ type SlpWriteOptions = {
 declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Promise<Uint8Array>;
 
 /**
+ * SLEAP Analysis HDF5 format I/O.
+ *
+ * A portable format for exporting pose-tracking predictions as dense numpy
+ * arrays. This is a 1:1 TypeScript port of `sleap_io/io/analysis_h5.py`
+ * (`read_labels` / `write_labels` / `is_analysis_h5_file`) together with the
+ * occupancy/location array builder `to_analysis_arrays` from
+ * `sleap_io/codecs/numpy.py`.
+ *
+ * Format features:
+ * - Configurable axis ordering via presets ("matlab" default, "standard") or
+ *   explicit dimension positions.
+ * - Gzip-compressed storage.
+ * - Self-documenting: dimension names stored as the dataset `dims` attribute
+ *   (a JSON array string, matching Python's `json.dumps`).
+ * - Optional extended metadata (skeleton symmetries, video backend metadata)
+ *   for full round-trip.
+ *
+ * Canonical internal shape for `tracks` is `(frame, track, node, xy)`; other
+ * arrays drop trailing dims: `point_scores` `(frame, track, node)`,
+ * `instance_scores`/`tracking_scores`/`track_occupancy` `(frame, track)`.
+ *
+ * Reading works in both Node and the browser (via `openH5File`). Writing is
+ * Node-only for disk I/O: bytes are built in an h5wasm in-memory virtual FS and
+ * written through the Node filesystem ops registered by `h5-node.ts`, so this
+ * module stays free of Node-only imports and the browser bundle stays clean.
+ */
+
+/**
+ * Check whether a file is a SLEAP Analysis HDF5 file.
+ *
+ * True iff the file opens as HDF5 and contains a `track_occupancy` dataset.
+ * Returns false on any error. This distinguishes Analysis HDF5 files from JABS
+ * HDF5 files (which have a `poseest` group instead).
+ */
+declare function isAnalysisH5File(source: string | ArrayBuffer | Uint8Array): Promise<boolean>;
+
+/**
  * Load a SLEAP labels file (.slp).
  *
  * Automatically selects the best loading strategy:
@@ -2308,6 +2345,55 @@ declare function loadSlp(source: SlpSource, options?: {
 declare function saveSlp(labels: Labels, filename: string, options?: {
     embed?: boolean | string;
     restoreOriginalVideos?: boolean;
+}): Promise<void>;
+
+/**
+ * Load a SLEAP Analysis HDF5 file (.h5).
+ *
+ * Mirrors Python's `load_analysis_h5`. The axis ordering is detected from the
+ * stored `dims` attributes, and extended metadata (skeleton symmetries, video
+ * backend metadata) is used to reconstruct the full Labels context when present.
+ *
+ * @param filename - Path to the Analysis HDF5 file
+ * @param options - Loading options
+ * @param options.video - Video to associate with the data. If omitted, uses the
+ *   `video_path` stored in the file. Can be a Video object or path string.
+ * @returns Loaded Labels object
+ */
+declare function loadAnalysisH5(filename: string, options?: {
+    video?: Video | string;
+}): Promise<Labels>;
+/**
+ * Save labels to a SLEAP Analysis HDF5 file (.h5).
+ *
+ * Mirrors Python's `save_analysis_h5`. Node-only for disk I/O.
+ *
+ * @param labels - Labels object to save
+ * @param filename - Output file path
+ * @param options - Save options
+ * @param options.video - Video to export. If omitted, uses the first video. Can
+ *   be a Video object or an integer index.
+ * @param options.labelsPath - Source labels path (stored as metadata)
+ * @param options.allFrames - Include all frames from 0 to last labeled frame (default: true)
+ * @param options.minOccupancy - Minimum track occupancy ratio (0-1) to keep (default: 0)
+ * @param options.preset - Axis ordering preset ("matlab" default, "standard"); mutually exclusive with explicit dims
+ * @param options.frameDim - Explicit position of the frame dimension (0-3)
+ * @param options.trackDim - Explicit position of the track dimension (0-3)
+ * @param options.nodeDim - Explicit position of the node dimension (0-3)
+ * @param options.xyDim - Explicit position of the xy dimension (0-3)
+ * @param options.saveMetadata - Store extended metadata for full round-trip (default: true)
+ */
+declare function saveAnalysisH5(labels: Labels, filename: string, options?: {
+    video?: Video | number;
+    labelsPath?: string;
+    allFrames?: boolean;
+    minOccupancy?: number;
+    preset?: string;
+    frameDim?: number;
+    trackDim?: number;
+    nodeDim?: number;
+    xyDim?: number;
+    saveMetadata?: boolean;
 }): Promise<void>;
 
 /**
@@ -2731,4 +2817,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BoundingBox, type BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, ConflictResolution, DUPLICATE_MATCHER, ErrorMode, FrameGroup, FrameStrategy, type FsResolver, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, MatchResult, type MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, type SegmentationMaskOptions, Skeleton, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, TrackMatchMethod, TrackMatcher, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, VideoMatchMethod, VideoMatcher, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, toDict, toNumpy, writeGeoJSON };
+export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BoundingBox, type BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, ConflictResolution, DUPLICATE_MATCHER, ErrorMode, FrameGroup, FrameStrategy, type FsResolver, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, MatchResult, type MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, type SegmentationMaskOptions, Skeleton, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, TrackMatchMethod, TrackMatcher, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, VideoMatchMethod, VideoMatcher, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isAnalysisH5File, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadAnalysisH5, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveAnalysisH5, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, toDict, toNumpy, writeGeoJSON };

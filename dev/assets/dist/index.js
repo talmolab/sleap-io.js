@@ -71,6 +71,7 @@ import {
   _findAnnotationMatches,
   _registerFileWriter,
   _registerMaskFactory,
+  _registerNodeFileOps,
   _registerNodeH5,
   _resolveMergedIsNegative,
   createVideoBackend,
@@ -91,9 +92,11 @@ import {
   getCentroidSkeleton,
   getMarkerFunction,
   getPalette,
+  isAnalysisH5File,
   isStreamingSupported,
   isTrainingConfig,
   labelsFromNumpy,
+  loadAnalysisH5,
   loadSlp,
   loadSlpSet,
   loadVideo,
@@ -113,6 +116,7 @@ import {
   rodriguesTransformation,
   roisFromGeoJSON,
   roisToGeoJSON,
+  saveAnalysisH5,
   saveSlp,
   saveSlpSet,
   saveSlpToBytes,
@@ -121,7 +125,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-2ZMJ5YQA.js";
+} from "./chunk-PN2PATXM.js";
 import {
   Edge,
   Instance,
@@ -180,6 +184,38 @@ _registerNodeH5(getH5ModuleNode, openH5FileNode);
 _registerFileWriter(async (filename, bytes) => {
   const { writeFile } = await import("fs/promises");
   await writeFile(filename, bytes);
+});
+_registerNodeFileOps({
+  writeFile: async (filename, bytes) => {
+    const { writeFile } = await import("fs/promises");
+    await writeFile(filename, bytes);
+  },
+  fileExists: async (path2) => {
+    const { existsSync: existsSync2 } = await import("fs");
+    return existsSync2(path2);
+  },
+  readPackageVersion: async () => {
+    try {
+      const { readFile } = await import("fs/promises");
+      const { fileURLToPath } = await import("url");
+      const { dirname: dirname2, join: join2 } = await import("path");
+      const here = dirname2(fileURLToPath(import.meta.url));
+      const candidates = [
+        join2(here, "..", "..", "..", "package.json"),
+        join2(here, "..", "..", "..", "..", "package.json")
+      ];
+      for (const candidate of candidates) {
+        try {
+          const raw = await readFile(candidate, "utf-8");
+          const pkg = JSON.parse(raw);
+          if (pkg.version) return pkg.version;
+        } catch {
+        }
+      }
+    } catch {
+    }
+    return null;
+  }
 });
 
 // src/model/node-fs-resolver.ts
@@ -862,10 +898,12 @@ export {
   getCentroidSkeleton,
   getMarkerFunction,
   getPalette,
+  isAnalysisH5File,
   isStreamingSupported,
   isTrackMateFile,
   isTrainingConfig,
   labelsFromNumpy,
+  loadAnalysisH5,
   loadSlp,
   loadSlpSet,
   loadTrackMate,
@@ -895,6 +933,7 @@ export {
   rodriguesTransformation,
   roisFromGeoJSON,
   roisToGeoJSON,
+  saveAnalysisH5,
   saveImage,
   saveSlp,
   saveSlpSet,

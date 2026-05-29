@@ -8395,6 +8395,28 @@ function _registerNodeH5(getModule, openFile) {
   _nodeGetModule = getModule;
   _nodeOpenFile = openFile;
 }
+var _nodeWriteFile = null;
+var _nodeFileExists = null;
+var _nodeReadPackageVersion = null;
+function _registerNodeFileOps(ops) {
+  _nodeWriteFile = ops.writeFile;
+  _nodeFileExists = ops.fileExists;
+  _nodeReadPackageVersion = ops.readPackageVersion;
+}
+async function nodeWriteFile(path, bytes) {
+  if (!_nodeWriteFile) {
+    throw new Error(
+      "Writing files requires a Node.js environment. This codec's writer is Node-only."
+    );
+  }
+  await _nodeWriteFile(path, bytes);
+}
+async function nodeFileExists(path) {
+  return _nodeFileExists ? _nodeFileExists(path) : null;
+}
+async function nodeReadPackageVersion() {
+  return _nodeReadPackageVersion ? _nodeReadPackageVersion() : null;
+}
 var modulePromise = null;
 async function getH5Module() {
   if (_nodeGetModule) {
@@ -9431,13 +9453,13 @@ async function saveSlpToBytes(labels, options) {
       labels.materialize();
     }
   }
-  let writeLabels = labels;
+  let writeLabels2 = labels;
   if (embedMode === "source") {
     const restoredVideos = labels.videos.map((video) => {
       if (video.sourceVideo) return video.sourceVideo;
       return video;
     });
-    writeLabels = new Labels({
+    writeLabels2 = new Labels({
       labeledFrames: labels.labeledFrames.map((frame) => {
         const videoIdx = labels.videos.indexOf(frame.video);
         const restoredVideo = videoIdx >= 0 ? restoredVideos[videoIdx] : frame.video;
@@ -9470,7 +9492,7 @@ async function saveSlpToBytes(labels, options) {
   }
   const file = new module.File(memPath, "w");
   try {
-    writeSlpToFile(file, writeLabels, embeddedVideoData);
+    writeSlpToFile(file, writeLabels2, embeddedVideoData);
   } finally {
     file.close();
   }
@@ -10379,9 +10401,779 @@ function writeCentroids(file, centroids, _videos, tracks, instances, contexts) {
   writeStringDataset(file, "centroid_sources", sources);
 }
 
+// src/io/analysis-h5.ts
+var PRESETS = {
+  // Standard: (frame, track, node, xy) - intuitive Python indexing.
+  standard: { frame: 0, track: 1, node: 2, xy: 3 },
+  // MATLAB: (track, xy, node, frame) - SLEAP-compatible column-major.
+  matlab: { frame: 3, track: 0, node: 2, xy: 1 }
+};
+function dimsForNdim(ndim) {
+  if (ndim === 4) return ["frame", "track", "node", "xy"];
+  if (ndim === 3) return ["frame", "track", "node"];
+  return ["frame", "track"];
+}
+function getAxisOrder(preset, frameDim, trackDim, nodeDim, xyDim) {
+  const explicitDims = [frameDim, trackDim, nodeDim, xyDim];
+  const hasExplicit = explicitDims.some((d) => d !== void 0);
+  if (preset !== void 0 && hasExplicit) {
+    throw new Error(
+      "Cannot specify both 'preset' and explicit dimension positions (frame_dim, track_dim, node_dim, xy_dim). Use one or the other."
+    );
+  }
+  if (hasExplicit) {
+    if (!explicitDims.every((d) => d !== void 0)) {
+      throw new Error(
+        "When using explicit dimensions, all four must be specified: frame_dim, track_dim, node_dim, xy_dim"
+      );
+    }
+    const sorted = [...explicitDims].sort((a, b) => a - b);
+    const isPermutation = sorted.length === 4 && sorted[0] === 0 && sorted[1] === 1 && sorted[2] === 2 && sorted[3] === 3;
+    if (!isPermutation) {
+      throw new Error(
+        `Dimension positions must be a permutation of [0, 1, 2, 3]. Got: frame_dim=${frameDim}, track_dim=${trackDim}, node_dim=${nodeDim}, xy_dim=${xyDim}`
+      );
+    }
+    return {
+      axisOrder: {
+        frame: frameDim,
+        track: trackDim,
+        node: nodeDim,
+        xy: xyDim
+      },
+      presetName: "custom"
+    };
+  }
+  const presetName = preset ?? "matlab";
+  if (!(presetName in PRESETS)) {
+    throw new Error(
+      `Unknown preset '${presetName}'. Available: ${JSON.stringify(Object.keys(PRESETS))}`
+    );
+  }
+  return { axisOrder: PRESETS[presetName], presetName };
+}
+function getTransposeAxes(fromOrder, toOrder, ndim) {
+  const dims = dimsForNdim(ndim);
+  const axes = [];
+  for (let targetPos = 0; targetPos < ndim; targetPos++) {
+    for (const dim of dims) {
+      if (toOrder[dim] === targetPos) {
+        axes.push(fromOrder[dim]);
+        break;
+      }
+    }
+  }
+  return axes;
+}
+function getDimsTuple(axisOrder, ndim) {
+  const dims = dimsForNdim(ndim);
+  const result = new Array(ndim).fill("");
+  for (const dim of dims) {
+    if (dim in axisOrder) {
+      result[axisOrder[dim]] = dim;
+    }
+  }
+  return result;
+}
+function rowMajorStrides(shape) {
+  const strides = new Array(shape.length).fill(1);
+  for (let i = shape.length - 2; i >= 0; i--) {
+    strides[i] = strides[i + 1] * shape[i + 1];
+  }
+  return strides;
+}
+function transposeFlat(data, shape, axes) {
+  const numShape = Array.from(shape, (s) => Number(s));
+  const ndim = numShape.length;
+  const inStrides = rowMajorStrides(numShape);
+  const outShape = axes.map((a) => numShape[a]);
+  const total = outShape.reduce((a, b) => a * b, 1);
+  const out = new Float64Array(total);
+  const outStridesInInput = axes.map((a) => inStrides[a]);
+  const idx = new Array(ndim).fill(0);
+  for (let flat = 0; flat < total; flat++) {
+    let src = 0;
+    for (let d = 0; d < ndim; d++) {
+      src += idx[d] * outStridesInInput[d];
+    }
+    out[flat] = data[src];
+    for (let d = ndim - 1; d >= 0; d--) {
+      idx[d]++;
+      if (idx[d] < outShape[d]) break;
+      idx[d] = 0;
+    }
+  }
+  return { data: out, shape: outShape };
+}
+function renumberOrder(order, keep) {
+  const filtered = [];
+  for (const k of keep) {
+    if (k in order) filtered.push([k, order[k]]);
+  }
+  const positions = filtered.map(([, v]) => v).sort((a, b) => a - b);
+  const result = {};
+  for (const [k, v] of filtered) {
+    result[k] = positions.indexOf(v);
+  }
+  return result;
+}
+var textDecoder = new TextDecoder();
+function getDs(file, name) {
+  const item = file.get(name);
+  if (item == null) return null;
+  if (!("value" in item)) return null;
+  return item;
+}
+function decodeStringElement(v) {
+  if (typeof v === "string") return v;
+  if (v instanceof Uint8Array) return textDecoder.decode(v);
+  if (Array.isArray(v)) return textDecoder.decode(Uint8Array.from(v));
+  return String(v);
+}
+function decodeStringArray(value) {
+  if (value == null) return [];
+  if (typeof value === "string") return [value];
+  if (value instanceof Uint8Array) return [textDecoder.decode(value)];
+  if (Array.isArray(value)) return value.map(decodeStringElement);
+  if (typeof value.length === "number") {
+    return Array.from(value).map(decodeStringElement);
+  }
+  return [decodeStringElement(value)];
+}
+function decodeScalarString(value) {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (value instanceof Uint8Array) return textDecoder.decode(value);
+  if (Array.isArray(value)) {
+    if (value.length === 0) return "";
+    return decodeStringElement(value[0]);
+  }
+  return decodeStringElement(value);
+}
+function unwrapAttr(attr) {
+  if (attr != null && typeof attr === "object" && "value" in attr) {
+    return attr.value;
+  }
+  return attr;
+}
+function readStringAttr(attrs, name) {
+  if (!attrs || !(name in attrs)) return void 0;
+  const raw = unwrapAttr(attrs[name]);
+  if (raw == null) return void 0;
+  if (typeof raw === "string") return raw;
+  if (raw instanceof Uint8Array) return textDecoder.decode(raw);
+  if (Array.isArray(raw)) {
+    if (raw.length === 0) return "";
+    return decodeStringElement(raw[0]);
+  }
+  return String(raw);
+}
+function readDimsAttr(attrs) {
+  if (!attrs || !("dims" in attrs)) return void 0;
+  const raw = unwrapAttr(attrs["dims"]);
+  if (raw == null) return void 0;
+  if (Array.isArray(raw)) {
+    return raw.map(decodeStringElement);
+  }
+  let s;
+  if (typeof raw === "string") s = raw;
+  else if (raw instanceof Uint8Array) s = textDecoder.decode(raw);
+  else s = String(raw);
+  try {
+    const parsed = JSON.parse(s);
+    if (Array.isArray(parsed)) return parsed.map((x) => String(x));
+  } catch {
+  }
+  return void 0;
+}
+async function isAnalysisH5File(source) {
+  try {
+    if (typeof source === "string") {
+      const exists = await nodeFileExists(source);
+      if (exists === false) return false;
+    }
+    const { file, close } = await openH5File(source);
+    try {
+      const f = file;
+      if (typeof f.keys === "function") {
+        const keys = f.keys();
+        return Array.isArray(keys) && keys.includes("track_occupancy");
+      }
+      const item = f.get("track_occupancy");
+      return typeof item === "object" && item !== null;
+    } finally {
+      close();
+    }
+  } catch {
+    return false;
+  }
+}
+async function readLabels(filename, options) {
+  const { file: rawFile, close } = await openH5File(filename);
+  const file = rawFile;
+  try {
+    const fileAttrs = file.attrs ?? {};
+    const tracksDs = getDs(file, "tracks");
+    if (tracksDs == null) {
+      throw new Error("Analysis HDF5 file is missing the 'tracks' dataset.");
+    }
+    const tracksAttrs = tracksDs.attrs ?? {};
+    let storedOrder;
+    const tracksDims = readDimsAttr(tracksAttrs);
+    if (tracksDims) {
+      storedOrder = {};
+      tracksDims.forEach((dim, i) => {
+        storedOrder[dim] = i;
+      });
+    } else {
+      const transposeRaw = unwrapAttr(fileAttrs["transpose"]);
+      const wasTransposed = transposeRaw === void 0 ? true : Boolean(transposeRaw);
+      if (wasTransposed) {
+        storedOrder = PRESETS["matlab"];
+      } else {
+        storedOrder = { frame: 0, node: 1, xy: 2, track: 3 };
+      }
+    }
+    const canonicalOrder4d = { frame: 0, track: 1, node: 2, xy: 3 };
+    const canonicalOrder3d = { frame: 0, track: 1, node: 2 };
+    const canonicalOrder2d = { frame: 0, track: 1 };
+    const tracksShape = tracksDs.shape ?? [];
+    const axes4d = getTransposeAxes(storedOrder, canonicalOrder4d, 4);
+    const tracksT = transposeFlat(
+      tracksDs.value,
+      tracksShape,
+      axes4d
+    );
+    const [nFrames, nTracks, nNodes] = tracksT.shape;
+    const tracksData = tracksT.data;
+    const storedOrder3d = renumberOrder(storedOrder, ["frame", "track", "node"]);
+    const storedOrder2d = renumberOrder(storedOrder, ["frame", "track"]);
+    const axes3d = getTransposeAxes(storedOrder3d, canonicalOrder3d, 3);
+    const axes2d = getTransposeAxes(storedOrder2d, canonicalOrder2d, 2);
+    const pointScoresDs = getDs(file, "point_scores");
+    const pointScoresData = pointScoresDs ? transposeFlat(
+      pointScoresDs.value,
+      pointScoresDs.shape ?? [],
+      axes3d
+    ).data : new Float64Array(nFrames * nTracks * nNodes).fill(NaN);
+    const instanceScoresDs = getDs(file, "instance_scores");
+    const instanceScoresData = instanceScoresDs ? transposeFlat(
+      instanceScoresDs.value,
+      instanceScoresDs.shape ?? [],
+      axes2d
+    ).data : new Float64Array(nFrames * nTracks).fill(NaN);
+    const trackingScoresDs = getDs(file, "tracking_scores");
+    const trackingScoresData = trackingScoresDs ? transposeFlat(
+      trackingScoresDs.value,
+      trackingScoresDs.shape ?? [],
+      axes2d
+    ).data : new Float64Array(nFrames * nTracks).fill(NaN);
+    const trackNamesDs = getDs(file, "track_names");
+    const trackNames = trackNamesDs ? decodeStringArray(trackNamesDs.value) : [];
+    const nodeNamesDs = getDs(file, "node_names");
+    const nodeNames = nodeNamesDs ? decodeStringArray(nodeNamesDs.value) : [];
+    const edgeNames = [];
+    const edgeNamesDs = getDs(file, "edge_names");
+    if (edgeNamesDs && edgeNamesDs.value != null) {
+      const raw = edgeNamesDs.value;
+      if (Array.isArray(raw) && raw.length > 0 && Array.isArray(raw[0])) {
+        for (const pair of raw) {
+          if (pair.length >= 2) {
+            edgeNames.push([
+              decodeStringElement(pair[0]),
+              decodeStringElement(pair[1])
+            ]);
+          }
+        }
+      } else {
+        const flat = decodeStringArray(raw);
+        for (let i = 0; i + 1 < flat.length; i += 2) {
+          edgeNames.push([flat[i], flat[i + 1]]);
+        }
+      }
+    }
+    let videoPath = "";
+    const videoPathDs = getDs(file, "video_path");
+    if (videoPathDs) videoPath = decodeScalarString(videoPathDs.value);
+    let provenance = {};
+    const provenanceDs = getDs(file, "provenance");
+    if (provenanceDs) {
+      const raw = decodeScalarString(provenanceDs.value);
+      if (raw) {
+        try {
+          provenance = JSON.parse(raw);
+        } catch {
+          provenance = {};
+        }
+      }
+    }
+    const skeletonName = readStringAttr(fileAttrs, "skeleton_name") ?? "";
+    let skeletonSymmetries = [];
+    const symRaw = readStringAttr(fileAttrs, "skeleton_symmetries");
+    if (symRaw) {
+      try {
+        skeletonSymmetries = JSON.parse(symRaw);
+      } catch {
+        skeletonSymmetries = [];
+      }
+    }
+    let videoBackendMetadata = {};
+    const vbmRaw = readStringAttr(fileAttrs, "video_backend_metadata");
+    if (vbmRaw) {
+      try {
+        videoBackendMetadata = JSON.parse(vbmRaw);
+      } catch {
+        videoBackendMetadata = {};
+      }
+    }
+    let video;
+    if (options?.video !== void 0) {
+      if (typeof options.video === "string") {
+        video = new Video({ filename: options.video });
+      } else {
+        video = options.video;
+      }
+    } else {
+      video = new Video({ filename: videoPath });
+      video.backendMetadata = videoBackendMetadata;
+    }
+    const nodeNameSet = new Set(nodeNames);
+    const validEdges = edgeNames.filter(
+      ([s, d]) => nodeNameSet.has(s) && nodeNameSet.has(d)
+    );
+    const skeleton = new Skeleton({
+      nodes: nodeNames,
+      edges: validEdges,
+      name: skeletonName ? skeletonName : void 0
+    });
+    for (const pair of skeletonSymmetries) {
+      try {
+        skeleton.addSymmetry(pair[0], pair[1]);
+      } catch {
+      }
+    }
+    const tracks = trackNames.length ? trackNames.map((name) => new Track(name)) : [null];
+    const labeledFrames = [];
+    for (let frameIdx = 0; frameIdx < nFrames; frameIdx++) {
+      const instances = [];
+      for (let trackIdx = 0; trackIdx < nTracks; trackIdx++) {
+        const base4d = (frameIdx * nTracks + trackIdx) * nNodes * 2;
+        let allNaN = true;
+        for (let n = 0; n < nNodes * 2; n++) {
+          if (!Number.isNaN(tracksData[base4d + n])) {
+            allNaN = false;
+            break;
+          }
+        }
+        if (allNaN) continue;
+        const base3d = (frameIdx * nTracks + trackIdx) * nNodes;
+        const base2d = frameIdx * nTracks + trackIdx;
+        const instanceScore = instanceScoresData[base2d];
+        const trackingScore = trackingScoresData[base2d];
+        const pointsData = [];
+        for (let n = 0; n < nNodes; n++) {
+          const x = tracksData[base4d + n * 2];
+          const y = tracksData[base4d + n * 2 + 1];
+          const score = pointScoresData[base3d + n];
+          pointsData.push([x, y, score]);
+        }
+        const inst = PredictedInstance.fromNumpy({
+          pointsData,
+          skeleton,
+          score: Number.isNaN(instanceScore) ? 0 : instanceScore,
+          track: tracks[trackIdx] ?? void 0,
+          trackingScore: Number.isNaN(trackingScore) ? void 0 : trackingScore
+        });
+        instances.push(inst);
+      }
+      if (instances.length > 0) {
+        labeledFrames.push(new LabeledFrame({ video, frameIdx, instances }));
+      }
+    }
+    const realTracks = tracks.filter((t) => t != null);
+    const labels = new Labels({
+      labeledFrames,
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: realTracks,
+      provenance
+    });
+    labels.provenance["filename"] = String(filename);
+    return labels;
+  } finally {
+    close();
+  }
+}
+function maxInstancesPerFrame(lfs) {
+  let nInstances = 0;
+  for (const lf of lfs) {
+    const nUser = (lf.userInstances ?? []).length;
+    const nPredicted = (lf.predictedInstances ?? []).length;
+    const nFrameInstances = Math.max(nUser, nPredicted);
+    nInstances = Math.max(nInstances, nFrameInstances);
+  }
+  return nInstances;
+}
+function untrackedFrameInstances(lf, isSingleInstance) {
+  const include = [];
+  const userInsts = lf.userInstances ?? [];
+  const predInsts = lf.predictedInstances ?? [];
+  const hasUser = userInsts.length > 0;
+  if (hasUser) {
+    for (const inst of userInsts) include.push(inst);
+    if (isSingleInstance && include.length > 0) {
+      return include;
+    }
+    for (const inst of predInsts) {
+      let skip = false;
+      for (const userInst of userInsts) {
+        if (userInst.fromPredicted !== void 0 && userInst.fromPredicted === inst) {
+          skip = true;
+          break;
+        }
+        if (userInst.track != null && inst.track != null && userInst.track === inst.track) {
+          skip = true;
+          break;
+        }
+      }
+      if (!skip) include.push(inst);
+    }
+  } else {
+    for (const inst of predInsts) include.push(inst);
+  }
+  return include;
+}
+function trackedFrameInstances(lf) {
+  const trackToInstance = /* @__PURE__ */ new Map();
+  for (const inst of lf.predictedInstances ?? []) {
+    if (inst.track != null) trackToInstance.set(inst.track, inst);
+  }
+  for (const inst of lf.userInstances ?? []) {
+    if (inst.track != null) trackToInstance.set(inst.track, inst);
+  }
+  return trackToInstance;
+}
+function videoFrameCount(video) {
+  const shape = video.shape;
+  if (shape && shape.length > 0 && typeof shape[0] === "number") {
+    return shape[0];
+  }
+  return 0;
+}
+function toAnalysisArrays(labels, video, allFrames, minOccupancy) {
+  const lfs = labels.find({ video });
+  if (!lfs.length) {
+    throw new Error(`No labeled frames in video: ${video.filename}`);
+  }
+  const frameIdxs = lfs.map((lf) => lf.frameIdx).sort((a, b) => a - b);
+  const firstFrame = allFrames ? 0 : frameIdxs[0];
+  let lastFrame = frameIdxs[frameIdxs.length - 1];
+  const videoLength = videoFrameCount(video);
+  if (videoLength > 0) {
+    lastFrame = Math.max(lastFrame, videoLength - 1);
+  }
+  const nFrames = lastFrame - firstFrame + 1;
+  const skeleton = labels.skeletons[0];
+  const nodeCount = skeleton.nodeNames.length;
+  const untracked = labels.tracks.length === 0;
+  let nTracks;
+  let isSingleInstance = false;
+  let trackToSlot = null;
+  if (untracked) {
+    const nInstances = maxInstancesPerFrame(lfs);
+    isSingleInstance = nInstances === 1;
+    nTracks = nInstances;
+  } else {
+    nTracks = labels.tracks.length;
+    trackToSlot = /* @__PURE__ */ new Map();
+    labels.tracks.forEach((track, i) => trackToSlot.set(track, i));
+  }
+  const occupancy = new Float64Array(nFrames * nTracks);
+  const locations = new Float64Array(nFrames * nTracks * nodeCount * 2).fill(NaN);
+  const pointScores = new Float64Array(nFrames * nTracks * nodeCount).fill(NaN);
+  const instanceScores = new Float64Array(nFrames * nTracks).fill(NaN);
+  const trackingScores = new Float64Array(nFrames * nTracks).fill(NaN);
+  const lfMap = /* @__PURE__ */ new Map();
+  for (const lf of lfs) lfMap.set(lf.frameIdx, lf);
+  for (let frameIdx = firstFrame; frameIdx <= lastFrame; frameIdx++) {
+    const frameI = frameIdx - firstFrame;
+    const lf = lfMap.get(frameIdx);
+    if (!lf) continue;
+    const slotted = [];
+    if (untracked) {
+      const insts = untrackedFrameInstances(lf, isSingleInstance);
+      insts.forEach((inst, i) => slotted.push([i, inst]));
+    } else {
+      for (const [track, inst] of trackedFrameInstances(lf)) {
+        const slot = trackToSlot.get(track);
+        if (slot !== void 0) slotted.push([slot, inst]);
+      }
+    }
+    for (const [trackI, inst] of slotted) {
+      if (trackI >= nTracks) continue;
+      occupancy[frameI * nTracks + trackI] = 1;
+      const xy = inst.numpy();
+      const locBase = (frameI * nTracks + trackI) * nodeCount * 2;
+      for (let n = 0; n < nodeCount; n++) {
+        const row = xy[n] ?? [NaN, NaN];
+        locations[locBase + n * 2] = row[0];
+        locations[locBase + n * 2 + 1] = row[1];
+      }
+      const ts = inst.trackingScore;
+      if (ts !== void 0 && ts !== null) {
+        trackingScores[frameI * nTracks + trackI] = ts;
+      }
+      if (inst instanceof PredictedInstance) {
+        const withScores = inst.numpy({ scores: true });
+        const psBase = (frameI * nTracks + trackI) * nodeCount;
+        for (let n = 0; n < nodeCount; n++) {
+          const row = withScores[n];
+          pointScores[psBase + n] = row ? row[2] : NaN;
+        }
+        if (inst.score !== void 0 && inst.score !== null) {
+          instanceScores[frameI * nTracks + trackI] = inst.score;
+        }
+      }
+    }
+  }
+  const occupiedFrames = new Array(nTracks).fill(0);
+  for (let f = 0; f < nFrames; f++) {
+    for (let t = 0; t < nTracks; t++) {
+      occupiedFrames[t] += occupancy[f * nTracks + t];
+    }
+  }
+  const keepMask = occupiedFrames.map(
+    (count) => count > 0 && count / nFrames >= minOccupancy
+  );
+  const keepIdxs = [];
+  keepMask.forEach((keep, i) => {
+    if (keep) keepIdxs.push(i);
+  });
+  let finalNTracks = nTracks;
+  let finalOccupancy = occupancy;
+  let finalLocations = locations;
+  let finalPointScores = pointScores;
+  let finalInstanceScores = instanceScores;
+  let finalTrackingScores = trackingScores;
+  if (keepIdxs.length !== nTracks) {
+    finalNTracks = keepIdxs.length;
+    finalOccupancy = new Float64Array(nFrames * finalNTracks);
+    finalLocations = new Float64Array(nFrames * finalNTracks * nodeCount * 2);
+    finalPointScores = new Float64Array(nFrames * finalNTracks * nodeCount);
+    finalInstanceScores = new Float64Array(nFrames * finalNTracks);
+    finalTrackingScores = new Float64Array(nFrames * finalNTracks);
+    for (let f = 0; f < nFrames; f++) {
+      for (let newT = 0; newT < finalNTracks; newT++) {
+        const oldT = keepIdxs[newT];
+        finalOccupancy[f * finalNTracks + newT] = occupancy[f * nTracks + oldT];
+        finalInstanceScores[f * finalNTracks + newT] = instanceScores[f * nTracks + oldT];
+        finalTrackingScores[f * finalNTracks + newT] = trackingScores[f * nTracks + oldT];
+        for (let n = 0; n < nodeCount; n++) {
+          finalPointScores[(f * finalNTracks + newT) * nodeCount + n] = pointScores[(f * nTracks + oldT) * nodeCount + n];
+          const newBase = ((f * finalNTracks + newT) * nodeCount + n) * 2;
+          const oldBase = ((f * nTracks + oldT) * nodeCount + n) * 2;
+          finalLocations[newBase] = locations[oldBase];
+          finalLocations[newBase + 1] = locations[oldBase + 1];
+        }
+      }
+    }
+  }
+  let trackNames;
+  if (untracked) {
+    trackNames = Array.from({ length: finalNTracks }, (_, i) => `track_${i}`);
+  } else {
+    trackNames = labels.tracks.filter((_, i) => keepMask[i]).map((t) => t.name);
+  }
+  return {
+    occupancy: finalOccupancy,
+    locations: finalLocations,
+    pointScores: finalPointScores,
+    instanceScores: finalInstanceScores,
+    trackingScores: finalTrackingScores,
+    trackNames,
+    firstFrame,
+    nFrames,
+    nTracks: finalNTracks,
+    nNodes: nodeCount
+  };
+}
+async function readPackageVersion() {
+  try {
+    const version = await nodeReadPackageVersion();
+    if (version) return version;
+  } catch {
+  }
+  return "0.0.0";
+}
+function setRootAttr(f, name, value) {
+  try {
+    f.create_attribute(name, value);
+    return;
+  } catch {
+  }
+  const root = f.get("/");
+  if (root) {
+    root.create_attribute(name, value);
+  }
+}
+function videoFilenameString(video) {
+  const fn = video.filename;
+  if (Array.isArray(fn)) return fn.length ? fn[0] : "";
+  return fn ?? "";
+}
+async function writeLabels(labels, filename, options) {
+  const allFrames = options?.allFrames ?? true;
+  const minOccupancy = options?.minOccupancy ?? 0;
+  const saveMetadata = options?.saveMetadata ?? true;
+  const { axisOrder, presetName } = getAxisOrder(
+    options?.preset,
+    options?.frameDim,
+    options?.trackDim,
+    options?.nodeDim,
+    options?.xyDim
+  );
+  let video;
+  if (options?.video === void 0) {
+    video = labels.videos[0];
+  } else if (typeof options.video === "number") {
+    video = labels.videos[options.video];
+  } else {
+    video = options.video;
+  }
+  const arrays = toAnalysisArrays(labels, video, allFrames, minOccupancy);
+  const { nFrames, nTracks, nNodes } = arrays;
+  const canonicalOrder4d = { frame: 0, track: 1, node: 2, xy: 3 };
+  const canonicalOrder3d = { frame: 0, track: 1, node: 2 };
+  const canonicalOrder2d = { frame: 0, track: 1 };
+  const targetOrder3d = renumberOrder(axisOrder, ["frame", "track", "node"]);
+  const targetOrder2d = renumberOrder(axisOrder, ["frame", "track"]);
+  const targetOrderOccupancy = presetName === "matlab" ? { frame: 0, track: 1 } : targetOrder2d;
+  const axes4d = getTransposeAxes(canonicalOrder4d, axisOrder, 4);
+  const axes3d = getTransposeAxes(canonicalOrder3d, targetOrder3d, 3);
+  const axes2d = getTransposeAxes(canonicalOrder2d, targetOrder2d, 2);
+  const axesOccupancy = getTransposeAxes(canonicalOrder2d, targetOrderOccupancy, 2);
+  const locationsT = transposeFlat(
+    arrays.locations,
+    [nFrames, nTracks, nNodes, 2],
+    axes4d
+  );
+  const pointScoresT = transposeFlat(
+    arrays.pointScores,
+    [nFrames, nTracks, nNodes],
+    axes3d
+  );
+  const instanceScoresT = transposeFlat(
+    arrays.instanceScores,
+    [nFrames, nTracks],
+    axes2d
+  );
+  const trackingScoresT = transposeFlat(
+    arrays.trackingScores,
+    [nFrames, nTracks],
+    axes2d
+  );
+  const occupancyT = transposeFlat(arrays.occupancy, [nFrames, nTracks], axesOccupancy);
+  const dims4d = getDimsTuple(axisOrder, 4);
+  const dims3d = getDimsTuple(targetOrder3d, 3);
+  const dims2d = getDimsTuple(targetOrder2d, 2);
+  const dimsOccupancy = getDimsTuple(targetOrderOccupancy, 2);
+  const skeleton = labels.skeletons[0];
+  const nodeNames = skeleton.nodeNames;
+  const edgeNames = skeleton.edges.map(
+    (e) => [e.source.name, e.destination.name]
+  );
+  const edgeInds = skeleton.edgeIndices;
+  const version = await readPackageVersion();
+  const module = await getH5Module();
+  const memPath = `/tmp/analysis_${Date.now()}_${Math.random().toString(16).slice(2)}.h5`;
+  const f = new module.File(
+    memPath,
+    "w"
+  );
+  try {
+    const writeNumeric = (name, data, shape, dimNames) => {
+      const canCompress = shape.length > 0 && shape.every((d) => d > 0);
+      if (canCompress) {
+        f.create_dataset({
+          name,
+          data,
+          shape,
+          dtype: "<f8",
+          chunks: shape,
+          compression: "gzip",
+          compression_opts: 9
+        });
+      } else {
+        f.create_dataset({ name, data, shape, dtype: "<f8" });
+      }
+      const ds = f.get(name);
+      if (ds) ds.create_attribute("dims", JSON.stringify(dimNames));
+    };
+    writeNumeric("tracks", locationsT.data, locationsT.shape, dims4d);
+    writeNumeric("track_occupancy", occupancyT.data, occupancyT.shape, dimsOccupancy);
+    writeNumeric("point_scores", pointScoresT.data, pointScoresT.shape, dims3d);
+    writeNumeric("instance_scores", instanceScoresT.data, instanceScoresT.shape, dims2d);
+    writeNumeric("tracking_scores", trackingScoresT.data, trackingScoresT.shape, dims2d);
+    f.create_dataset({ name: "track_names", data: arrays.trackNames });
+    f.create_dataset({ name: "node_names", data: nodeNames });
+    const edgeFlat = [];
+    for (const [s, d] of edgeNames) {
+      edgeFlat.push(s, d);
+    }
+    f.create_dataset({
+      name: "edge_names",
+      data: edgeFlat,
+      shape: [edgeNames.length, 2]
+    });
+    f.create_dataset({
+      name: "edge_inds",
+      data: Int32Array.from(edgeInds.flat()),
+      shape: [edgeInds.length, 2],
+      dtype: "<i4"
+    });
+    f.create_dataset({
+      name: "labels_path",
+      data: options?.labelsPath ? String(options.labelsPath) : ""
+    });
+    f.create_dataset({
+      name: "video_path",
+      data: videoFilenameString(video) || ""
+    });
+    f.create_dataset({
+      name: "video_ind",
+      data: Int32Array.from([labels.videos.indexOf(video)]),
+      shape: [],
+      dtype: "<i4"
+    });
+    f.create_dataset({
+      name: "provenance",
+      data: JSON.stringify(labels.provenance ?? {})
+    });
+    setRootAttr(f, "preset", presetName);
+    setRootAttr(f, "format", "analysis");
+    setRootAttr(f, "sleap_io_version", version);
+    if (saveMetadata) {
+      const symmetries = skeleton.symmetryNames;
+      setRootAttr(f, "skeleton_name", skeleton.name ?? "");
+      setRootAttr(f, "skeleton_symmetries", JSON.stringify(symmetries));
+      setRootAttr(
+        f,
+        "video_backend_metadata",
+        JSON.stringify(video.backendMetadata ?? {})
+      );
+    }
+  } finally {
+    f.close();
+  }
+  const fsModule = getH5FileSystem(module);
+  const bytes = fsModule.readFile(memPath);
+  fsModule.unlink(memPath);
+  await nodeWriteFile(filename, bytes);
+}
+
 // src/codecs/slp/read.ts
 import { inflate } from "pako";
-var textDecoder = new TextDecoder();
+var textDecoder2 = new TextDecoder();
 async function readSlp(source, options) {
   const { file, close } = await openH5File(source, options?.h5);
   try {
@@ -10665,7 +11457,7 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
   for (let videoIndex = 0; videoIndex < values.length; videoIndex++) {
     const entry = values[videoIndex];
     if (!entry) continue;
-    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
+    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder2.decode(entry));
     const backendMeta = parsed.backend ?? {};
     let filename = backendMeta.filename ?? parsed.filename ?? "";
     let datasetPath = backendMeta.dataset ?? null;
@@ -10767,7 +11559,7 @@ function readSuggestions(dataset, videos) {
   const values = dataset.value ?? [];
   const suggestions = [];
   for (const entry of values) {
-    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
+    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder2.decode(entry));
     const videoIndex = Number(parsed.video ?? 0);
     const video = videos[videoIndex];
     if (!video) continue;
@@ -10780,7 +11572,7 @@ function readIdentities(dataset) {
   const values = dataset.value ?? [];
   const identities = [];
   for (const entry of values) {
-    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
+    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder2.decode(entry));
     const { name, color, ...rest } = parsed;
     identities.push(new Identity({
       name: name ?? "",
@@ -10795,7 +11587,7 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
   const values = dataset.value ?? [];
   const sessions = [];
   for (const entry of values) {
-    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
+    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder2.decode(entry));
     const cameraGroup = new CameraGroup();
     const cameraMap = /* @__PURE__ */ new Map();
     const calibration = asRecord(parsed.calibration);
@@ -10926,7 +11718,7 @@ function readAttrString(dataset, name) {
   }
   if (value instanceof Uint8Array) {
     try {
-      return JSON.parse(textDecoder.decode(value));
+      return JSON.parse(textDecoder2.decode(value));
     } catch {
       return [];
     }
@@ -11447,7 +12239,7 @@ function getFieldNames(dataset) {
   }
   if (value instanceof Uint8Array) {
     try {
-      const parsed = JSON.parse(textDecoder.decode(value));
+      const parsed = JSON.parse(textDecoder2.decode(value));
       if (Array.isArray(parsed)) return parsed.map((entry) => String(entry));
     } catch {
       return [];
@@ -11670,6 +12462,23 @@ async function saveSlp(labels, filename, options) {
   await writeSlp(filename, labels, {
     embed: options?.embed ?? false,
     restoreOriginalVideos: options?.restoreOriginalVideos ?? true
+  });
+}
+async function loadAnalysisH5(filename, options) {
+  return readLabels(filename, { video: options?.video });
+}
+async function saveAnalysisH5(labels, filename, options) {
+  await writeLabels(labels, filename, {
+    video: options?.video,
+    labelsPath: options?.labelsPath,
+    allFrames: options?.allFrames,
+    minOccupancy: options?.minOccupancy,
+    preset: options?.preset,
+    frameDim: options?.frameDim,
+    trackDim: options?.trackDim,
+    nodeDim: options?.nodeDim,
+    xyDim: options?.xyDim,
+    saveMetadata: options?.saveMetadata
   });
 }
 async function loadSlpSet(sources, options) {
@@ -12405,12 +13214,16 @@ export {
   openStreamingH5,
   openH5Worker,
   _registerNodeH5,
+  _registerNodeFileOps,
   createVideoBackend,
   readSlpStreaming,
   _registerFileWriter,
   saveSlpToBytes,
+  isAnalysisH5File,
   loadSlp,
   saveSlp,
+  loadAnalysisH5,
+  saveAnalysisH5,
   loadSlpSet,
   saveSlpSet,
   loadVideo,

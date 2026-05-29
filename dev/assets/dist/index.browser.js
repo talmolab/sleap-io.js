@@ -89,9 +89,11 @@ import {
   getCentroidSkeleton,
   getMarkerFunction,
   getPalette,
+  isAnalysisH5File,
   isStreamingSupported,
   isTrainingConfig,
   labelsFromNumpy,
+  loadAnalysisH5,
   loadSlp,
   loadSlpSet,
   loadVideo,
@@ -111,6 +113,7 @@ import {
   rodriguesTransformation,
   roisFromGeoJSON,
   roisToGeoJSON,
+  saveAnalysisH5,
   saveSlp,
   saveSlpSet,
   saveSlpToBytes,
@@ -118,7 +121,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-2ZMJ5YQA.js";
+} from "./chunk-PN2PATXM.js";
 import {
   Edge,
   Instance,
@@ -238,9 +241,11 @@ export {
   getCentroidSkeleton,
   getMarkerFunction,
   getPalette,
+  isAnalysisH5File,
   isStreamingSupported,
   isTrainingConfig,
   labelsFromNumpy,
+  loadAnalysisH5,
   loadSlp,
   loadSlpSet,
   loadVideo,
@@ -266,6 +271,7 @@ export {
   rodriguesTransformation,
   roisFromGeoJSON,
   roisToGeoJSON,
+  saveAnalysisH5,
   saveSlp,
   saveSlpSet,
   saveSlpToBytes,
