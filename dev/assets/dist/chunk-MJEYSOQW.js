@@ -8529,6 +8529,12 @@ function getH5FileSystem(module) {
   }
   return fs;
 }
+function ensureH5StagingDir(module) {
+  try {
+    getH5FileSystem(module).mkdir?.("/tmp");
+  } catch {
+  }
+}
 
 // src/video/factory.ts
 var MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "mpeg", "avi"];
@@ -9437,6 +9443,7 @@ async function saveSlpToBytes(labels, options) {
       }
       if (proceedWithFastPath) {
         const module2 = await getH5Module();
+        ensureH5StagingDir(module2);
         const memPath2 = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
         const file2 = new module2.File(memPath2, "w");
         try {
@@ -9485,6 +9492,7 @@ async function saveSlpToBytes(labels, options) {
     });
   }
   const module = await getH5Module();
+  ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
   let embeddedVideoData = null;
   if (embedMode && embedMode !== "source") {
@@ -11085,6 +11093,7 @@ async function writeLabels(labels, filename, options) {
   const edgeInds = skeleton.edgeIndices;
   const version = await readPackageVersion();
   const module = await getH5Module();
+  ensureH5StagingDir(module);
   const memPath = `/tmp/analysis_${Date.now()}_${Math.random().toString(16).slice(2)}.h5`;
   const f = new module.File(
     memPath,
