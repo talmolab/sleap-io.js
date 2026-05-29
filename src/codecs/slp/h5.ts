@@ -246,3 +246,22 @@ export function getH5FileSystem(module: H5Module): H5FileSystem {
   }
   return fs;
 }
+
+/**
+ * Ensure the in-memory staging directory used for writing h5/SLP output exists
+ * in h5wasm's Emscripten filesystem.
+ *
+ * Writers stage their file at `/tmp/...` inside the wasm FS and read the bytes
+ * back. Node's h5wasm build pre-creates `/tmp`, but Bun's does not — there,
+ * opening a `File` at `/tmp/...` yields an invalid file id, so every subsequent
+ * `create_dataset`/`file.get`/attribute call fails. Creating the directory up
+ * front fixes Bun and is a no-op elsewhere: `mkdir` throws when the directory
+ * already exists, which we ignore.
+ */
+export function ensureH5StagingDir(module: H5Module): void {
+  try {
+    getH5FileSystem(module).mkdir?.("/tmp");
+  } catch {
+    // Directory already exists (Node/browser) — nothing to do.
+  }
+}

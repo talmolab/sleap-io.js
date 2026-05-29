@@ -35,6 +35,7 @@ import {
   openH5File,
   getH5Module,
   getH5FileSystem,
+  ensureH5StagingDir,
   nodeWriteFile,
   nodeFileExists,
   nodeReadPackageVersion,
@@ -1177,6 +1178,7 @@ export async function writeLabels(
 
   // Build the file in the h5wasm virtual FS.
   const module = await getH5Module();
+  ensureH5StagingDir(module);
   const memPath = `/tmp/analysis_${Date.now()}_${Math.random().toString(16).slice(2)}.h5`;
   const f = new (module as unknown as { File: new (p: string, m: string) => H5WriteFile }).File(
     memPath,

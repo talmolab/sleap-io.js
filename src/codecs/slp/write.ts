@@ -6,7 +6,7 @@ import { RecordingSession, Camera, InstanceGroup, FrameGroup } from "../../model
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
-import { getH5Module, getH5FileSystem } from "./h5.js";
+import { getH5Module, getH5FileSystem, ensureH5StagingDir } from "./h5.js";
 import { ROI, PredictedROI, encodeWkb } from "../../model/roi.js";
 import { SegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
 import { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
@@ -33,25 +33,6 @@ export function _registerFileWriter(
 
 const FORMAT_ID = 1.4;
 const textEncoder = new TextEncoder();
-
-/**
- * Ensure the in-memory staging directory used for SLP output exists in h5wasm's
- * Emscripten filesystem.
- *
- * We stage the SLP at `/tmp/...` inside the wasm FS and read the bytes back.
- * Node's h5wasm build pre-creates `/tmp`, but Bun's does not — there, opening a
- * `File` at `/tmp/...` yields an invalid file id, so every subsequent
- * `create_dataset`/`file.get`/attribute call fails. Creating the directory up
- * front fixes Bun and is a no-op elsewhere: `mkdir` throws when the directory
- * already exists, which we ignore.
- */
-function ensureH5StagingDir(module: Awaited<ReturnType<typeof getH5Module>>): void {
-  try {
-    getH5FileSystem(module).mkdir?.("/tmp");
-  } catch {
-    // Directory already exists (Node/browser) — nothing to do.
-  }
-}
 
 /** Write a string as a fixed-length HDF5 string attribute (H5T_STRING).
  *  h5py reads fixed-length strings as `bytes`, so Python's `.decode()` works.

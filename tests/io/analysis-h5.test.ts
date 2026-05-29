@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Tests for SLEAP Analysis HDF5 I/O.
  *
@@ -18,7 +17,7 @@
  * built here has no backend, so its frame count is unknown and the codec sizes
  * the frame axis to the last labeled frame. These are exercised in Python.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import {
   loadAnalysisH5,
   saveAnalysisH5,
