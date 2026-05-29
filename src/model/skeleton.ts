@@ -45,6 +45,30 @@ export class Symmetry {
 
 export type NodeOrIndex = Node | string | number;
 
+/** NUL delimiter for joining names into set keys (so ("A","BC") != ("AB","C")). */
+const NAME_DELIM = "\u0000";
+
+/** Check two sets of strings for equality (same size and same members). */
+function setsEqual(a: Set<string>, b: Set<string>): boolean {
+  if (a.size !== b.size) return false;
+  for (const x of a) {
+    if (!b.has(x)) return false;
+  }
+  return true;
+}
+
+/** Canonical key for a directed edge (order within the pair is preserved). */
+function edgeKey(source: string, destination: string): string {
+  return source + NAME_DELIM + destination;
+}
+
+/** Canonical key for a symmetry: the SORTED pair of its two node names. */
+function symmetryKey(symmetry: Symmetry): string {
+  const names = Array.from(symmetry.nodes).map((node) => node.name);
+  names.sort();
+  return names.join(NAME_DELIM);
+}
+
 export class Skeleton {
   nodes: Node[];
   edges: Edge[];
@@ -121,12 +145,96 @@ export class Skeleton {
     });
   }
 
-  matches(other: Skeleton): boolean {
-    if (this.nodeNames.length !== other.nodeNames.length) return false;
-    for (let i = 0; i < this.nodeNames.length; i += 1) {
-      if (this.nodeNames[i] !== other.nodeNames[i]) return false;
+  /**
+   * Check if this skeleton matches another skeleton's structure.
+   *
+   * Two skeletons match if they have the same nodes (by name), the same edges
+   * (by directed source/destination name pairs), and the same symmetries (by
+   * unordered node-name pairs). All comparisons are by node NAME, never by Node
+   * identity. Two empty skeletons match.
+   *
+   * @param other Another skeleton to compare with.
+   * @param opts.requireSameOrder If true, node names must be in the same order;
+   *   if false (default), only the set of node names must match. Affects ONLY
+   *   the node-name check — edges and symmetries are always compared as
+   *   unordered sets.
+   * @returns True if the skeletons match, false otherwise.
+   */
+  matches(other: Skeleton, opts: { requireSameOrder?: boolean } = {}): boolean {
+    const requireSameOrder = opts.requireSameOrder ?? false;
+
+    // 1. Same number of nodes.
+    if (this.nodes.length !== other.nodes.length) return false;
+
+    // 2. Node names: ordered list equality or set equality.
+    const selfNames = this.nodeNames;
+    const otherNames = other.nodeNames;
+    if (requireSameOrder) {
+      for (let i = 0; i < selfNames.length; i += 1) {
+        if (selfNames[i] !== otherNames[i]) return false;
+      }
+    } else {
+      if (!setsEqual(new Set(selfNames), new Set(otherNames))) return false;
     }
-    return true;
+
+    // 3. Same number of edges.
+    if (this.edges.length !== other.edges.length) return false;
+
+    // 4. Edge set equality: directed (source.name, destination.name) pairs.
+    const selfEdgeSet = new Set(
+      this.edges.map((edge) => edgeKey(edge.source.name, edge.destination.name))
+    );
+    const otherEdgeSet = new Set(
+      other.edges.map((edge) => edgeKey(edge.source.name, edge.destination.name))
+    );
+    if (!setsEqual(selfEdgeSet, otherEdgeSet)) return false;
+
+    // 5. Same number of symmetries.
+    if (this.symmetries.length !== other.symmetries.length) return false;
+
+    // 6. Symmetry set equality: key from the SORTED pair of node names.
+    const selfSymSet = new Set(this.symmetries.map(symmetryKey));
+    const otherSymSet = new Set(other.symmetries.map(symmetryKey));
+    return setsEqual(selfSymSet, otherSymSet);
+  }
+
+  /**
+   * Calculate node overlap metrics with another skeleton.
+   *
+   * Node names are de-duplicated to sets first.
+   *
+   * @param other Another skeleton to compare with.
+   * @returns An object with similarity metrics:
+   *   - `nCommon`: Number of nodes in common.
+   *   - `nSelfOnly`: Number of nodes only in this skeleton.
+   *   - `nOtherOnly`: Number of nodes only in the other skeleton.
+   *   - `jaccard`: Jaccard similarity (intersection/union), 0 if union empty.
+   *   - `dice`: Dice coefficient (2*intersection/(nSelf+nOther)), 0 if both empty.
+   */
+  nodeSimilarities(other: Skeleton): {
+    nCommon: number;
+    nSelfOnly: number;
+    nOtherOnly: number;
+    jaccard: number;
+    dice: number;
+  } {
+    const selfNodes = new Set(this.nodeNames);
+    const otherNodes = new Set(other.nodeNames);
+
+    let nCommon = 0;
+    for (const name of selfNodes) {
+      if (otherNodes.has(name)) nCommon += 1;
+    }
+    const sizeSelf = selfNodes.size;
+    const sizeOther = otherNodes.size;
+    const nSelfOnly = sizeSelf - nCommon;
+    const nOtherOnly = sizeOther - nCommon;
+    const nUnion = sizeSelf + sizeOther - nCommon;
+
+    const jaccard = nUnion > 0 ? nCommon / nUnion : 0;
+    const dice = sizeSelf + sizeOther > 0 ? (2 * nCommon) / (sizeSelf + sizeOther) : 0;
+
+    return { nCommon, nSelfOnly, nOtherOnly, jaccard, dice };
   }
 
   addEdge(source: NodeOrIndex, destination: NodeOrIndex): void {

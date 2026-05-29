@@ -1,4 +1,4 @@
-import { Labels } from "./labels.js";
+import type { Labels } from "./labels.js";
 
 export class LabelsSet {
   labels: Map<string, Labels>;

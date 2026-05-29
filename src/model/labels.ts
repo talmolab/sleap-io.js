@@ -1,5 +1,6 @@
-import { LabeledFrame } from "./labeled-frame.js";
+import { LabeledFrame, _resolveMergedIsNegative } from "./labeled-frame.js";
 import { Instance, PredictedInstance, Track } from "./instance.js";
+import type { PredictedPointsArray } from "./instance.js";
 import { Skeleton, Node, Edge, Symmetry } from "./skeleton.js";
 import { SuggestionFrame } from "./suggestions.js";
 import { Video } from "./video.js";
@@ -8,11 +9,129 @@ import { Identity } from "./identity.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
 import { LazyDataStore, LazyFrameList } from "./lazy.js";
+import { LabelsSet } from "./labels-set.js";
+import {
+  SkeletonMatcher,
+  VideoMatcher,
+  TrackMatcher,
+  InstanceMatcher,
+  SkeletonMatchMethod,
+  VideoMatchMethod,
+  TrackMatchMethod,
+  InstanceMatchMethod,
+  ErrorMode,
+  MergeResult,
+  MatchResult,
+  ConflictResolution,
+  MergeError,
+  SkeletonMismatchError,
+  isSameFile,
+  toSkeletonMatchMethod,
+  toVideoMatchMethod,
+  toTrackMatchMethod,
+  toInstanceMatchMethod,
+  toErrorMode,
+} from "./matching.js";
 import type { ROI } from "./roi.js";
 import type { SegmentationMask } from "./mask.js";
 import type { BoundingBox } from "./bbox.js";
 import type { Centroid } from "./centroid.js";
 import type { LabelImage } from "./label-image.js";
+
+/** Package version recorded in merge provenance (mirrors `sleap_io.__version__`). */
+const SLEAP_IO_VERSION = "0.3.1";
+
+/** Basename: final path component, splitting on BOTH "/" and "\" (Python `Path(f).name`). */
+function pathBasename(path: string): string {
+  const parts = path.split(/[/\\]/);
+  return parts[parts.length - 1];
+}
+
+/**
+ * Coerce a skeleton-matcher argument (mirrors the merge/match coercion blocks):
+ * `null`/`undefined` -> default `SkeletonMatcher(STRUCTURE)`; a string -> a matcher
+ * built from the validated enum (THROWS on an unknown string); else used as-is.
+ */
+function coerceSkeletonMatcher(
+  x: string | SkeletonMatcher | null | undefined,
+): SkeletonMatcher {
+  if (x == null) {
+    return new SkeletonMatcher(SkeletonMatchMethod.STRUCTURE);
+  }
+  if (typeof x === "string") {
+    return new SkeletonMatcher(toSkeletonMatchMethod(x));
+  }
+  return x;
+}
+
+/** Coerce a video-matcher argument: `null` -> default `VideoMatcher()` (AUTO). */
+function coerceVideoMatcher(
+  x: string | VideoMatcher | null | undefined,
+): VideoMatcher {
+  if (x == null) {
+    return new VideoMatcher();
+  }
+  if (typeof x === "string") {
+    return new VideoMatcher(toVideoMatchMethod(x));
+  }
+  return x;
+}
+
+/** Coerce a track-matcher argument: `null` -> default `TrackMatcher()` (NAME). */
+function coerceTrackMatcher(
+  x: string | TrackMatcher | null | undefined,
+): TrackMatcher {
+  if (x == null) {
+    return new TrackMatcher();
+  }
+  if (typeof x === "string") {
+    return new TrackMatcher(toTrackMatchMethod(x));
+  }
+  return x;
+}
+
+/** Coerce an instance-matcher argument: `null` -> default `InstanceMatcher()` (SPATIAL/5.0). */
+function coerceInstanceMatcher(
+  x: string | InstanceMatcher | null | undefined,
+): InstanceMatcher {
+  if (x == null) {
+    return new InstanceMatcher();
+  }
+  if (typeof x === "string") {
+    return new InstanceMatcher(toInstanceMatchMethod(x));
+  }
+  return x;
+}
+
+/**
+ * Produce a naive local-time ISO-8601 string WITHOUT a trailing `Z`, mirroring
+ * Python `datetime.now().isoformat()` (local wall-clock, no timezone suffix,
+ * with sub-second precision). The workflow-script ban on time APIs does NOT
+ * apply to this runtime code.
+ */
+function localIsoStringWithoutZ(): string {
+  const d = new Date();
+  const pad = (n: number, width = 2) => String(n).padStart(width, "0");
+  return (
+    `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}` +
+    `T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}` +
+    `.${pad(d.getMilliseconds(), 3)}000`
+  );
+}
+
+/** Python `repr()` of a filename (string) or filename-list (ImageVideo). */
+function filenameRepr(filename: string | string[]): string {
+  const reprStr = (s: string): string => {
+    // Mirror Python str repr: prefer single quotes; escape backslashes and the
+    // chosen quote.
+    const escaped = s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    return `'${escaped}'`;
+  };
+  if (Array.isArray(filename)) {
+    return `[${filename.map(reprStr).join(", ")}]`;
+  }
+  return reprStr(filename);
+}
 
 /** Shared shape for annotations that support deferred instance resolution. */
 interface DeferredInstanceRef {
@@ -307,31 +426,51 @@ export class Labels {
     this._invalidateIndices();
   }
 
-  /** Remove all predicted instances and predicted annotations from all frames. */
-  removePredictions(): void {
+  /**
+   * Remove all predicted instances and predicted annotations from all frames.
+   *
+   * Mirrors Python `Labels.remove_predictions` (labels.py:1684-1710).
+   *
+   * @param clean - If `true` (the default), also prune empty frames and unused
+   *   skeletons/tracks via {@link clean} with `frames`, `skeletons`, `tracks`
+   *   enabled and `emptyInstances`/`videos` disabled. Does NOT remove videos
+   *   with no labeled frames, nor instances with no visible points.
+   */
+  removePredictions(clean = true): void {
     if (this._lazyFrameList) this.materialize();
     for (const lf of this.labeledFrames) {
       lf.removePredictions();
     }
     this._invalidateIndices();
+
+    if (clean) {
+      this.clean({
+        frames: true,
+        emptyInstances: false,
+        skeletons: true,
+        tracks: true,
+        videos: false,
+      });
+    }
   }
 
   /**
    * Collapse structurally-equal skeletons into a single canonical entry.
    *
-   * Skeletons are partitioned via {@link Skeleton.matches} (same node count and
-   * node names in the same order). The first member of each equivalence class
-   * is kept as canonical; the rest are removed from `this.skeletons` and every
-   * instance referencing a non-canonical skeleton is reassigned to the canonical
-   * via direct property assignment. Points are positional, so reassignment is
-   * safe and does not change any point coordinates.
+   * Skeletons are partitioned via {@link Skeleton.matches} called with
+   * `requireSameOrder: true` (same node count, same node names IN THE SAME
+   * ORDER, same edge set, and same symmetry set). The first member of each
+   * equivalence class is kept as canonical; the rest are removed from
+   * `this.skeletons` and every instance referencing a non-canonical skeleton is
+   * reassigned to the canonical via direct property assignment. Points are
+   * positional and are NOT remapped, so order-identical matching is required to
+   * keep reassignment safe.
    *
    * Note: skeleton `name` is not part of `matches()` — the canonical's name wins.
    *
-   * Note: `matches()` compares only node count and node names in order — it does
-   * NOT compare `edges` or `symmetries`. If matched skeletons differ in topology,
-   * the canonical (first) skeleton's edges/symmetries are kept and the others are
-   * discarded.
+   * Note: skeletons that share node names but differ in node ORDER are treated
+   * as distinct here (they are not collapsed), since collapsing them would
+   * misalign instance points.
    *
    * Legacy `.slp` files often carry content-duplicate skeletons (a pre-1.5 Python
    * sleap quirk). Call this method after `loadSlp` if you want them collapsed —
@@ -349,7 +488,10 @@ export class Labels {
     const canonicals: Skeleton[] = [];
     const canonicalFor = new Map<Skeleton, Skeleton>();
     for (const skel of this.skeletons) {
-      const existing = canonicals.find((c) => skel.matches(c));
+      // requireSameOrder: true — dedup reassigns instances to the canonical
+      // skeleton without remapping point positions, so only skeletons whose
+      // node ORDER also matches can be safely collapsed (points are positional).
+      const existing = canonicals.find((c) => skel.matches(c, { requireSameOrder: true }));
       if (existing) {
         canonicalFor.set(skel, existing);
       } else {
@@ -1142,5 +1284,1238 @@ export class Labels {
     }
 
     return videoArray;
+  }
+
+  /**
+   * Update data structures based on contents.
+   *
+   * Repopulates `videos`, `skeletons`, and `tracks` from the labeled frames,
+   * their instances and nested annotations, and the suggestions. Existing
+   * entries are preserved (in order); only missing ones are appended.
+   *
+   * Mirrors Python `Labels.update` (labels.py:435-457).
+   */
+  update(): void {
+    if (this._lazyFrameList) this.materialize();
+    for (const lf of this.labeledFrames) {
+      if (!this.videos.includes(lf.video)) {
+        this.videos.push(lf.video);
+      }
+      for (const inst of lf.instances) {
+        if (!this.skeletons.includes(inst.skeleton)) {
+          this.skeletons.push(inst.skeleton);
+        }
+        if (inst.track != null && !this.tracks.includes(inst.track)) {
+          this.tracks.push(inst.track);
+        }
+      }
+      // Collect tracks from nested annotations.
+      this._collectAnnotationTracks(lf);
+    }
+    for (const sf of this.suggestions) {
+      if (!this.videos.includes(sf.video)) {
+        this.videos.push(sf.video);
+      }
+    }
+  }
+
+  /**
+   * Remap video and track references on a frame's annotations in place.
+   *
+   * Mirrors Python `Labels._remap_frame_annotations` (labels.py:3621-3648).
+   * Centroids/bboxes/masks: only `.track` is remapped. ROIs: both `.video` and
+   * `.track`. Label-image objects: nested `info.track` only. Membership is by
+   * reference via `Map.has`/`Map.get` (never a `?? default`), so a track/video
+   * absent from the map is left untouched.
+   *
+   * @param frame - LabeledFrame whose annotations should be remapped.
+   * @param videoMap - Map from old videos to new videos.
+   * @param trackMap - Map from old tracks to new tracks.
+   */
+  static _remapFrameAnnotations(
+    frame: LabeledFrame,
+    videoMap: Map<Video, Video>,
+    trackMap: Map<Track, Track>,
+  ): void {
+    for (const ann of [...frame.centroids, ...frame.bboxes, ...frame.masks] as Array<
+      Centroid | BoundingBox | SegmentationMask
+    >) {
+      if (ann.track != null && trackMap.has(ann.track)) {
+        ann.track = trackMap.get(ann.track)!;
+      }
+    }
+    for (const r of frame.rois) {
+      if (r.video != null && videoMap.has(r.video)) {
+        r.video = videoMap.get(r.video)!;
+      }
+      if (r.track != null && trackMap.has(r.track)) {
+        r.track = trackMap.get(r.track)!;
+      }
+    }
+    for (const li of frame.labelImages) {
+      for (const info of li.objects.values()) {
+        if (info.track != null && trackMap.has(info.track)) {
+          info.track = trackMap.get(info.track)!;
+        }
+      }
+    }
+  }
+
+  /**
+   * Map an instance to use mapped skeleton and track, returning a NEW instance.
+   *
+   * Mirrors Python `Labels._map_instance` (labels.py:3650-3687). The source
+   * instance is never mutated: its points are deep-copied and the returned
+   * instance is a fresh object of the SAME exact type (`Instance` vs
+   * `PredictedInstance`, dispatched via `constructor ===`). Skeleton/track are
+   * resolved through the maps with `?? original` fallback.
+   *
+   * @param instance - Instance to map.
+   * @param skeletonMap - Map from old skeletons to new skeletons.
+   * @param trackMap - Map from old tracks to new tracks.
+   * @returns New instance with mapped skeleton and track.
+   */
+  _mapInstance(
+    instance: Instance | PredictedInstance,
+    skeletonMap: Map<Skeleton, Skeleton>,
+    trackMap: Map<Track, Track>,
+  ): Instance | PredictedInstance {
+    const mappedSkeleton = skeletonMap.get(instance.skeleton) ?? instance.skeleton;
+    const mappedTrack = instance.track
+      ? trackMap.get(instance.track) ?? instance.track
+      : null;
+
+    // Deep/independent copy of the points so the source is never aliased.
+    const newPoints = instance.points.map((p) => ({
+      ...p,
+      xy: [...p.xy] as [number, number],
+    }));
+
+    if (instance.constructor === PredictedInstance) {
+      const predicted = instance as PredictedInstance;
+      return new PredictedInstance({
+        points: newPoints as unknown as PredictedPointsArray,
+        skeleton: mappedSkeleton,
+        score: predicted.score,
+        track: mappedTrack,
+        trackingScore: predicted.trackingScore,
+      });
+    }
+    return new Instance({
+      points: newPoints,
+      skeleton: mappedSkeleton,
+      track: mappedTrack,
+      trackingScore: instance.trackingScore,
+      fromPredicted: instance.fromPredicted,
+    });
+  }
+
+  /**
+   * Merge another `Labels` object into this one in place.
+   *
+   * Faithful port of Python `Labels.merge` (labels.py:3149-3618). Runs the fixed
+   * 5-step pipeline (skeletons -> videos -> tracks -> frames -> suggestions),
+   * building reference-keyed maps FROM `other`'s objects TO `self`'s objects (or
+   * to a newly-appended `other` object), and returns a {@link MergeResult}.
+   *
+   * Async (DECISIONS D8): the AUTO video cascade awaits filesystem and pixel
+   * reads. Coercion of the matcher/error-mode arguments happens BEFORE the merge
+   * body, so a bad method/error-mode string propagates (it is NOT collected into
+   * the result).
+   *
+   * @param other - The `Labels` to merge into `self`.
+   * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE; string ->
+   *   validated; else used as-is).
+   * @param opts.video - Video matcher (`null` -> AUTO).
+   * @param opts.track - Track matcher (`null` -> NAME).
+   * @param opts.frame - The frame merge strategy as a RAW string (default
+   *   `"auto"`; NOT validated against the enum — an invalid value falls through
+   *   `LabeledFrame.merge`'s strategy chain into the AUTO branch).
+   * @param opts.instance - Instance matcher (`null` -> SPATIAL/5.0).
+   * @param opts.validate - If `true` (default), an unmatched skeleton under
+   *   STRICT raises `SkeletonMismatchError`.
+   * @param opts.progressCallback - Called `(current, total, message)` per frame
+   *   and once at the end.
+   * @param opts.errorMode - `"continue"` (default), `"strict"`, or `"warn"`.
+   */
+  async merge(
+    other: Labels,
+    opts: {
+      skeleton?: string | SkeletonMatcher | null;
+      video?: string | VideoMatcher | null;
+      track?: string | TrackMatcher | null;
+      frame?: string;
+      instance?: string | InstanceMatcher | null;
+      validate?: boolean;
+      progressCallback?: (
+        current: number,
+        total: number,
+        message: string,
+      ) => void;
+      errorMode?: string;
+    } = {},
+  ): Promise<MergeResult> {
+    // ----- §6.2 coercion (BEFORE the try: throws PROPAGATE) -----------------
+    const skeletonMatcher = coerceSkeletonMatcher(opts.skeleton);
+    const videoMatcher = coerceVideoMatcher(opts.video);
+    const trackMatcher = coerceTrackMatcher(opts.track);
+    const instanceMatcher = coerceInstanceMatcher(opts.instance);
+    const frame = opts.frame ?? "auto"; // RAW string, NOT validated.
+    const validate = opts.validate ?? true;
+    const progressCallback = opts.progressCallback;
+    const errorModeEnum = toErrorMode(opts.errorMode ?? "continue");
+
+    // ----- §6.3 lazy guard + init -------------------------------------------
+    // JS convention: materialize a lazy Labels rather than raising.
+    if (this._lazyFrameList) this.materialize();
+
+    const result = new MergeResult(true);
+
+    // Ensure merge_history exists OUTSIDE the try (so even a failed merge leaves
+    // an empty history if it was absent).
+    if (!("merge_history" in this.provenance)) {
+      this.provenance.merge_history = [];
+    }
+    const mergeHistory = this.provenance.merge_history as Array<
+      Record<string, unknown>
+    >;
+
+    const mergeRecord: Record<string, unknown> = {
+      timestamp: localIsoStringWithoutZ(),
+      source_filename:
+        (other.provenance.filename as string | undefined) ?? null,
+      target_filename: (this.provenance.filename as string | undefined) ?? null,
+      source_labels: {
+        n_frames: other.labeledFrames.length,
+        n_videos: other.videos.length,
+        n_skeletons: other.skeletons.length,
+        n_tracks: other.tracks.length,
+      },
+      strategy: frame,
+      sleap_io_version: SLEAP_IO_VERSION,
+    };
+
+    // §6.11 / DECISIONS D11: initialize `total` so the final progressCallback is
+    // always in scope even if an early non-strict error short-circuits.
+    let total = 0;
+
+    try {
+      // ----- §6.4 STEP 1: skeletons ---------------------------------------
+      const skeletonMap = new Map<Skeleton, Skeleton>();
+      for (const otherSkel of other.skeletons) {
+        let matched = false;
+        for (const selfSkel of this.skeletons) {
+          // arg order (self, other) — matters for SUBSET (asymmetric).
+          if (skeletonMatcher.match(selfSkel, otherSkel)) {
+            skeletonMap.set(otherSkel, selfSkel);
+            matched = true;
+            break; // first match wins
+          }
+        }
+        if (!matched) {
+          if (validate && errorModeEnum === ErrorMode.STRICT) {
+            throw new SkeletonMismatchError(
+              `No matching skeleton found for ${otherSkel.name}`,
+              { skeleton: otherSkel },
+            );
+          } else if (errorModeEnum === ErrorMode.WARN) {
+            console.warn(`Warning: No matching skeleton for ${otherSkel.name}`);
+          }
+          this.skeletons.push(otherSkel); // append foreign ref
+          skeletonMap.set(otherSkel, otherSkel); // map to itself
+        }
+      }
+
+      // ----- §6.5 STEP 2: videos ------------------------------------------
+      const videoMap = new Map<Video, Video>();
+      // frameIdxMap: (otherVideo, oldIdx) -> [newVideo, newIdx], reference-keyed.
+      const frameIdxMap = new Map<Video, Map<number, [Video, number]>>();
+      const setFrameIdx = (
+        v: Video,
+        oldIdx: number,
+        newVideo: Video,
+        newIdx: number,
+      ): void => {
+        let inner = frameIdxMap.get(v);
+        if (inner == null) {
+          inner = new Map();
+          frameIdxMap.set(v, inner);
+        }
+        inner.set(oldIdx, [newVideo, newIdx]);
+      };
+
+      for (const otherVideo of other.videos) {
+        let matched = false;
+
+        if (
+          videoMatcher.method === VideoMatchMethod.IMAGE_DEDUP ||
+          videoMatcher.method === VideoMatchMethod.SHAPE
+        ) {
+          // Pairwise match() loop (first match wins).
+          for (const selfVideo of this.videos) {
+            // arg order (self, other); await the async matcher.
+            if (await videoMatcher.match(selfVideo, otherVideo)) {
+              if (videoMatcher.method === VideoMatchMethod.IMAGE_DEDUP) {
+                const dedupedVideo = otherVideo.deduplicateWith(selfVideo);
+                if (dedupedVideo === null) {
+                  // All images were duplicates -> map to existing video.
+                  videoMap.set(otherVideo, selfVideo);
+                  if (
+                    Array.isArray(otherVideo.filename) &&
+                    Array.isArray(selfVideo.filename)
+                  ) {
+                    const otherBasenames = otherVideo.filename.map(pathBasename);
+                    const selfBasenames = selfVideo.filename.map(pathBasename);
+                    otherBasenames.forEach((bn, oldIdx) => {
+                      const newIdx = selfBasenames.indexOf(bn);
+                      if (newIdx !== -1) {
+                        setFrameIdx(otherVideo, oldIdx, selfVideo, newIdx);
+                      }
+                    });
+                  }
+                } else {
+                  // New deduplicated video.
+                  this.videos.push(dedupedVideo);
+                  videoMap.set(otherVideo, dedupedVideo);
+                  if (
+                    Array.isArray(otherVideo.filename) &&
+                    Array.isArray(dedupedVideo.filename)
+                  ) {
+                    const otherBasenames = otherVideo.filename.map(pathBasename);
+                    const dedupedBasenames =
+                      dedupedVideo.filename.map(pathBasename);
+                    const selfBasenames = Array.isArray(selfVideo.filename)
+                      ? selfVideo.filename.map(pathBasename)
+                      : [];
+                    otherBasenames.forEach((bn, oldIdx) => {
+                      const dedupIdx = dedupedBasenames.indexOf(bn);
+                      if (dedupIdx !== -1) {
+                        setFrameIdx(otherVideo, oldIdx, dedupedVideo, dedupIdx);
+                      } else {
+                        const selfIdx = selfBasenames.indexOf(bn);
+                        if (selfIdx === -1) {
+                          throw new Error(
+                            "Unexpected basename mismatch, possible file corruption.",
+                          );
+                        }
+                        setFrameIdx(otherVideo, oldIdx, selfVideo, selfIdx);
+                      }
+                    });
+                  }
+                }
+              } else {
+                // SHAPE: merge videos with the same shape.
+                const mergedVideo = selfVideo.mergeWith(otherVideo);
+                const selfVideoIdx = this.videos.indexOf(selfVideo);
+                this.videos[selfVideoIdx] = mergedVideo; // in-place replace
+                videoMap.set(otherVideo, mergedVideo);
+                videoMap.set(selfVideo, mergedVideo); // ONLY self-key set
+                if (
+                  Array.isArray(otherVideo.filename) &&
+                  Array.isArray(mergedVideo.filename)
+                ) {
+                  const otherBasenames = otherVideo.filename.map(pathBasename);
+                  const mergedBasenames = mergedVideo.filename.map(pathBasename);
+                  otherBasenames.forEach((bn, oldIdx) => {
+                    const newIdx = mergedBasenames.indexOf(bn);
+                    if (newIdx !== -1) {
+                      setFrameIdx(otherVideo, oldIdx, mergedVideo, newIdx);
+                    }
+                  });
+                }
+              }
+              matched = true;
+              break;
+            }
+          }
+        } else {
+          // All other methods: full find_match cascade.
+          const matchedVideo = await videoMatcher.findMatch(
+            otherVideo,
+            this.videos,
+            { labelsIncoming: other, labelsBase: this },
+          );
+          if (matchedVideo !== null) {
+            videoMap.set(otherVideo, matchedVideo);
+            matched = true;
+          }
+        }
+
+        if (!matched) {
+          this.videos.push(otherVideo); // append foreign ref
+          videoMap.set(otherVideo, otherVideo); // map to itself
+        }
+      }
+
+      // ----- §6.6 STEP 3: tracks ------------------------------------------
+      const trackMap = new Map<Track, Track>();
+      for (const otherTrack of other.tracks) {
+        let matched = false;
+        // this.tracks GROWS in-loop; the inner loop re-reads it each iteration.
+        for (const selfTrack of this.tracks) {
+          if (trackMatcher.match(selfTrack, otherTrack)) {
+            trackMap.set(otherTrack, selfTrack);
+            matched = true;
+            break; // first match wins
+          }
+        }
+        if (!matched) {
+          this.tracks.push(otherTrack);
+          trackMap.set(otherTrack, otherTrack);
+        }
+      }
+
+      // ----- §6.7 STEP 4: frames ------------------------------------------
+      total = other.labeledFrames.length;
+
+      for (let idx = 0; idx < total; idx++) {
+        const otherFrame = other.labeledFrames[idx];
+        progressCallback?.(idx, total, `Merging frame ${idx + 1}/${total}`);
+
+        // Resolve mapped (video, frameIdx): frameIdxMap takes precedence.
+        let mappedVideo: Video;
+        let mappedFrameIdx: number;
+        const inner = frameIdxMap.get(otherFrame.video);
+        const mapped = inner?.get(otherFrame.frameIdx);
+        if (mapped != null) {
+          [mappedVideo, mappedFrameIdx] = mapped;
+        } else {
+          mappedVideo = videoMap.get(otherFrame.video) ?? otherFrame.video;
+          mappedFrameIdx = otherFrame.frameIdx;
+        }
+
+        const matching = this.find({
+          video: mappedVideo,
+          frameIdx: mappedFrameIdx,
+        });
+
+        if (matching.length === 0) {
+          // BRANCH A: create a new frame.
+          const newFrame = new LabeledFrame({
+            video: mappedVideo,
+            frameIdx: mappedFrameIdx,
+            instances: [],
+            isNegative: otherFrame.isNegative,
+          });
+          for (const inst of otherFrame.instances) {
+            newFrame.instances.push(
+              this._mapInstance(inst, skeletonMap, trackMap),
+            );
+            result.instancesAdded += 1; // per instance
+          }
+          newFrame.mergeAnnotations(otherFrame); // default "keep_both"
+          Labels._remapFrameAnnotations(newFrame, videoMap, trackMap);
+          this.append(newFrame);
+          result.framesMerged += 1;
+        } else {
+          // BRANCH B: merge into the existing frame.
+          const selfFrame = matching[0];
+          const selfWasNegative = selfFrame.isNegative; // BEFORE merge mutates
+
+          const [rawMerged, conflicts] = selfFrame.merge(otherFrame, {
+            instance: instanceMatcher,
+            frame,
+          });
+
+          // Remap skeleton/track of instances that came from `other`.
+          const mergedInstances = rawMerged.map((inst) =>
+            skeletonMap.has(inst.skeleton)
+              ? this._mapInstance(inst, skeletonMap, trackMap)
+              : inst,
+          );
+
+          const nBefore = selfFrame.instances.length; // BEFORE reassignment
+          const nAfter = mergedInstances.length;
+          result.instancesAdded += Math.max(0, nAfter - nBefore);
+
+          for (const [orig, nw, resolution] of conflicts) {
+            result.conflicts.push(
+              new ConflictResolution(
+                selfFrame,
+                "instance_conflict",
+                orig,
+                nw,
+                resolution,
+              ),
+            );
+          }
+
+          const [, negativeConflict] = _resolveMergedIsNegative(
+            selfWasNegative,
+            otherFrame.isNegative,
+            mergedInstances,
+          );
+          if (negativeConflict) {
+            result.conflicts.push(
+              new ConflictResolution(
+                selfFrame,
+                "negative_flag_conflict",
+                selfWasNegative,
+                otherFrame.isNegative,
+                "dropped_for_user_pose",
+              ),
+            );
+          }
+
+          selfFrame.instances = mergedInstances;
+          Labels._remapFrameAnnotations(selfFrame, videoMap, trackMap);
+          result.framesMerged += 1;
+        }
+      }
+
+      // ----- §6.8 STEP 5: suggestions -------------------------------------
+      for (const otherSuggestion of other.suggestions) {
+        const mappedVideo =
+          videoMap.get(otherSuggestion.video) ?? otherSuggestion.video;
+        let exists = false;
+        for (const selfSuggestion of this.suggestions) {
+          if (
+            selfSuggestion.video === mappedVideo &&
+            selfSuggestion.frameIdx === otherSuggestion.frameIdx
+          ) {
+            exists = true;
+            break;
+          }
+        }
+        if (!exists) {
+          this.suggestions.push(
+            new SuggestionFrame({
+              video: mappedVideo,
+              frameIdx: otherSuggestion.frameIdx,
+            }),
+          );
+        }
+      }
+
+      // ----- §6.9 success tail --------------------------------------------
+      mergeRecord.result = {
+        frames_merged: result.framesMerged,
+        instances_added: result.instancesAdded,
+        conflicts: result.conflicts.length, // COUNT, not the list
+      };
+      mergeHistory.push(mergeRecord); // appended ONLY on success
+    } catch (e) {
+      // ----- §6.10 exception handlers -------------------------------------
+      if (e instanceof MergeError) {
+        result.successful = false;
+        result.errors.push(e);
+        if (errorModeEnum === ErrorMode.STRICT) throw e;
+      } else {
+        result.successful = false;
+        const err = e as { message?: string; constructor?: { name?: string } };
+        result.errors.push(
+          new MergeError(String(err?.message ?? e), {
+            exception: err?.constructor?.name,
+          }),
+        );
+        if (errorModeEnum === ErrorMode.STRICT) throw e; // rethrow ORIGINAL
+      }
+    }
+
+    // Mutations occurred above (videos/tracks/skeletons/frames/suggestions).
+    this._invalidateIndices();
+
+    // ----- §6.11 final tail (OUTSIDE try, always runs) --------------------
+    progressCallback?.(total, total, "Merge complete");
+
+    return result;
+  }
+
+  /**
+   * Build correspondence maps between this `Labels` and another WITHOUT mutating
+   * either (read-only twin of {@link merge}).
+   *
+   * Faithful port of Python `Labels.match` (labels.py:3020-3147). Coerces only
+   * the video/skeleton/track matchers (NO instance matcher, NO error mode). No
+   * lazy guard, no try/except, no provenance, no mutation. AUTO videos use the
+   * full `findMatch` cascade; every other method (including IMAGE_DEDUP/SHAPE)
+   * uses a simple first-match-wins loop. Unmatched -> `null`.
+   *
+   * Async (DECISIONS D8): the AUTO cascade awaits filesystem/pixel reads.
+   *
+   * @param other - The `Labels` to match against (maps `other` -> `self`).
+   * @param opts.video - Video matcher (`null` -> AUTO).
+   * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE).
+   * @param opts.track - Track matcher (`null` -> NAME).
+   */
+  async match(
+    other: Labels,
+    opts: {
+      video?: string | VideoMatcher | null;
+      skeleton?: string | SkeletonMatcher | null;
+      track?: string | TrackMatcher | null;
+    } = {},
+  ): Promise<MatchResult> {
+    const skeletonMatcher = coerceSkeletonMatcher(opts.skeleton);
+    const videoMatcher = coerceVideoMatcher(opts.video);
+    const trackMatcher = coerceTrackMatcher(opts.track);
+
+    const result = new MatchResult();
+
+    // Skeletons: first self match wins, else null.
+    for (const otherSkel of other.skeletons) {
+      let matchedSkel: Skeleton | null = null;
+      for (const selfSkel of this.skeletons) {
+        if (skeletonMatcher.match(selfSkel, otherSkel)) {
+          matchedSkel = selfSkel;
+          break;
+        }
+      }
+      result.skeletonMap.set(otherSkel, matchedSkel);
+    }
+
+    // Videos: AUTO uses the full cascade; others use a first-match-wins loop.
+    for (const otherVideo of other.videos) {
+      let matchedVideo: Video | null;
+      if (videoMatcher.method === VideoMatchMethod.AUTO) {
+        matchedVideo = await videoMatcher.findMatch(otherVideo, this.videos, {
+          labelsIncoming: other,
+          labelsBase: this,
+        });
+      } else {
+        matchedVideo = null;
+        for (const selfVideo of this.videos) {
+          if (await videoMatcher.match(selfVideo, otherVideo)) {
+            matchedVideo = selfVideo;
+            break;
+          }
+        }
+      }
+      result.videoMap.set(otherVideo, matchedVideo);
+    }
+
+    // Tracks: first self match wins, else null.
+    for (const otherTrack of other.tracks) {
+      let matchedTrack: Track | null = null;
+      for (const selfTrack of this.tracks) {
+        if (trackMatcher.match(selfTrack, otherTrack)) {
+          matchedTrack = selfTrack;
+          break;
+        }
+      }
+      result.trackMap.set(otherTrack, matchedTrack);
+    }
+
+    return result;
+  }
+
+  /**
+   * Resolve a foreign `Video` or path to the canonical `Video` in `this.videos`.
+   *
+   * Faithful port of Python `Labels.match_video` (labels.py:1216-1344). Uses its
+   * OWN simpler cascade (NOT `findMatch`). Method validation runs BEFORE the
+   * identity short-circuit. RAISES on ambiguity (>1 candidate), unlike
+   * {@link match} which silently takes the first.
+   *
+   * Async (DECISIONS D8): the file-identity tier awaits `isSameFile` / FS checks.
+   *
+   * @param videoOrPath - A `Video`, or a filename string (wrapped in an unopened
+   *   `Video`).
+   * @param method - `"auto"` (default), another method string, or a
+   *   `VideoMatcher`. AUTO (string or matcher) uses the tiered cascade.
+   * @returns The canonical `Video` from `this.videos`, or `null` if none match.
+   */
+  async matchVideo(
+    videoOrPath: Video | string,
+    method: string | VideoMatcher = "auto",
+  ): Promise<Video | null> {
+    // Coerce the query into a Video (path -> unopened Video).
+    let query: Video;
+    if (videoOrPath instanceof Video) {
+      query = videoOrPath;
+    } else if (typeof videoOrPath === "string") {
+      query = new Video({ filename: videoOrPath, openBackend: false });
+    } else {
+      throw new TypeError(
+        `match_video() expects a Video, str, or Path, got ${
+          (videoOrPath as { constructor?: { name?: string } })?.constructor
+            ?.name ?? typeof videoOrPath
+        }.`,
+      );
+    }
+
+    // Normalize the strategy (runs BEFORE the identity short-circuit). AUTO ->
+    // null sentinel (tiered cascade); non-AUTO -> a VideoMatcher.
+    let matcher: VideoMatcher | null;
+    if (typeof method === "string") {
+      const methodEnum = toVideoMatchMethod(method); // throws on unknown
+      matcher =
+        methodEnum === VideoMatchMethod.AUTO
+          ? null
+          : new VideoMatcher(methodEnum);
+    } else if (method instanceof VideoMatcher) {
+      matcher = method.method === VideoMatchMethod.AUTO ? null : method;
+    } else {
+      throw new TypeError(
+        `match_video() expects method to be a str or VideoMatcher, got ${
+          (method as { constructor?: { name?: string } })?.constructor?.name ??
+          typeof method
+        }.`,
+      );
+    }
+
+    // Identity short-circuit.
+    for (const video of this.videos) {
+      if (video === query) return video;
+    }
+
+    const ambiguous = (candidates: Video[], by: string): Error => {
+      const names = candidates.map((v) => filenameRepr(v.filename)).join(", ");
+      return new Error(
+        `Ambiguous video match for ${filenameRepr(query.filename)}: matched ` +
+          `${candidates.length} videos ${by}: ${names}.`,
+      );
+    };
+
+    if (matcher === null) {
+      // AUTO tiered cascade.
+      const definitive: Video[] = [];
+      for (const v of this.videos) {
+        if ((await isSameFile(v, query)) || v.matchesPath(query, true)) {
+          definitive.push(v);
+        }
+      }
+      if (definitive.length > 1) {
+        throw ambiguous(definitive, "by file identity");
+      }
+      if (definitive.length) {
+        return definitive[0];
+      }
+
+      const byBasename = this.videos.filter((v) => v.matchesPath(query, false));
+      if (byBasename.length > 1) {
+        throw ambiguous(byBasename, "by basename");
+      }
+      return byBasename.length ? byBasename[0] : null;
+    }
+
+    // Explicit (non-AUTO) strategy.
+    const matches: Video[] = [];
+    for (const v of this.videos) {
+      if (await matcher.match(v, query)) matches.push(v);
+    }
+    if (matches.length > 1) {
+      throw ambiguous(matches, `with method '${matcher.method}'`);
+    }
+    return matches.length ? matches[0] : null;
+  }
+
+  /**
+   * Remove empty frames, unused skeletons, tracks and videos.
+   *
+   * Mirrors Python `Labels.clean` (labels.py:1577-1682). In-place, returns
+   * void. This is an explicit opt-in operation (never auto-run on load).
+   *
+   * @param opts.frames - If `true` (default), remove empty frames. Negative
+   *   frames (`isNegative === true`) and annotation-only frames are preserved.
+   * @param opts.emptyInstances - If `true` (NOT default), remove instances with
+   *   no visible points (before the emptiness check).
+   * @param opts.skeletons - If `true` (default), remove unused skeletons.
+   * @param opts.tracks - If `true` (default), remove unused tracks and the
+   *   annotations/objects that reference removed tracks (track=null is always
+   *   preserved).
+   * @param opts.videos - If `true` (NOT default), remove videos with no labeled
+   *   frames.
+   */
+  clean(opts?: {
+    frames?: boolean;
+    emptyInstances?: boolean;
+    skeletons?: boolean;
+    tracks?: boolean;
+    videos?: boolean;
+  }): void {
+    // JS convention (and ARCHITECTURE §7.3): materialize lazy Labels rather than
+    // raising, unlike Python's clean() which calls _check_not_lazy.
+    if (this._lazyFrameList) this.materialize();
+
+    const frames = opts?.frames ?? true;
+    const emptyInstances = opts?.emptyInstances ?? false;
+    const skeletons = opts?.skeletons ?? true;
+    const tracks = opts?.tracks ?? true;
+    const videos = opts?.videos ?? false;
+
+    const usedSkeletons: Skeleton[] = [];
+    const usedTracks: Track[] = [];
+    const usedVideos: Video[] = [];
+    const keptFrames: LabeledFrame[] = [];
+
+    for (const lf of this.labeledFrames) {
+      if (emptyInstances) {
+        lf.removeEmptyInstances();
+      }
+
+      // A frame is non-empty if it has pose instances or any annotations.
+      const hasAnnotations =
+        lf.centroids.length > 0 ||
+        lf.bboxes.length > 0 ||
+        lf.masks.length > 0 ||
+        lf.labelImages.length > 0 ||
+        lf.rois.length > 0;
+
+      // Empty-frame skip: instances here = POSE instances only.
+      if (
+        frames &&
+        lf.instances.length === 0 &&
+        !lf.isNegative &&
+        !hasAnnotations
+      ) {
+        continue;
+      }
+
+      if (videos && !usedVideos.includes(lf.video)) {
+        usedVideos.push(lf.video);
+      }
+
+      if (skeletons || tracks) {
+        for (const inst of lf.instances) {
+          if (skeletons && !usedSkeletons.includes(inst.skeleton)) {
+            usedSkeletons.push(inst.skeleton);
+          }
+          if (
+            tracks &&
+            inst.track != null &&
+            !usedTracks.includes(inst.track)
+          ) {
+            usedTracks.push(inst.track);
+          }
+        }
+      }
+
+      // Also collect tracks from annotations (centroids -> bboxes -> masks ->
+      // rois, then label-image objects in insertion order).
+      if (tracks) {
+        for (const ann of [
+          ...lf.centroids,
+          ...lf.bboxes,
+          ...lf.masks,
+          ...lf.rois,
+        ] as Array<Centroid | BoundingBox | SegmentationMask | ROI>) {
+          if (ann.track != null && !usedTracks.includes(ann.track)) {
+            usedTracks.push(ann.track);
+          }
+        }
+        for (const li of lf.labelImages) {
+          for (const info of li.objects.values()) {
+            if (info.track != null && !usedTracks.includes(info.track)) {
+              usedTracks.push(info.track);
+            }
+          }
+        }
+      }
+
+      if (frames) {
+        keptFrames.push(lf);
+      }
+    }
+
+    if (videos) {
+      this.videos = this.videos.filter((v) => usedVideos.includes(v));
+    }
+
+    if (skeletons) {
+      this.skeletons = this.skeletons.filter((s) => usedSkeletons.includes(s));
+    }
+
+    if (tracks) {
+      this.tracks = this.tracks.filter((t) => usedTracks.includes(t));
+
+      // Remove annotations within frames that reference removed tracks.
+      const validTracks = new Set(this.tracks);
+      const targetFrames = frames ? keptFrames : this.labeledFrames;
+      for (const lf of targetFrames) {
+        if (lf.centroids.length) {
+          lf.centroids = lf.centroids.filter(
+            (a) => a.track == null || validTracks.has(a.track),
+          );
+        }
+        if (lf.bboxes.length) {
+          lf.bboxes = lf.bboxes.filter(
+            (a) => a.track == null || validTracks.has(a.track),
+          );
+        }
+        if (lf.masks.length) {
+          lf.masks = lf.masks.filter(
+            (a) => a.track == null || validTracks.has(a.track),
+          );
+        }
+        if (lf.rois.length) {
+          lf.rois = lf.rois.filter(
+            (a) => a.track == null || validTracks.has(a.track),
+          );
+        }
+        if (lf.labelImages.length) {
+          for (const li of lf.labelImages) {
+            if (li.objects.size) {
+              const kept = new Map(li.objects);
+              for (const [k, v] of li.objects) {
+                if (!(v.track == null || validTracks.has(v.track))) {
+                  kept.delete(k);
+                }
+              }
+              li.objects = kept;
+            }
+          }
+        }
+      }
+    }
+
+    if (frames) {
+      this.labeledFrames = keptFrames;
+    }
+
+    this._invalidateIndices();
+  }
+
+  /**
+   * Extract a set of frames into a new Labels object.
+   *
+   * Mirrors Python `Labels.extract` (labels.py:2482-2551). Copies the selected
+   * frames and their reachable graph (instances/skeletons/tracks/videos/
+   * annotations) with structural sharing (each shared object copied once), keeps
+   * the relative ordering of tracks/skeletons by NAME, copies/dedups suggestions
+   * for the extracted videos, and records the source labels in provenance.
+   *
+   * @param inds - Frame selection: an array of integer indices, an array of
+   *   `[Video, frameIdx]` tuples, or a single `Video` (all of its frames).
+   * @param copy - If `true` (default), deep-copy the frames and containing
+   *   objects; otherwise share references with this Labels.
+   * @returns A new `Labels` containing the selected frames.
+   */
+  extract(
+    inds: number[] | Array<[Video, number]> | Video,
+    copy = true,
+  ): Labels {
+    if (this._lazyFrameList) this.materialize();
+
+    let lfs = this._selectFrames(inds);
+
+    if (copy) {
+      lfs = this._deepCopyFrames(lfs);
+    }
+    const labels = new Labels({ labeledFrames: lfs });
+
+    // Keep the track list in the same relative order as the source by NAME.
+    const trackToInd = new Map<string, number>();
+    this.tracks.forEach((t, i) => trackToInd.set(t.name, i));
+    labels.tracks = labels.tracks
+      .map((t, i) => [t, i] as const)
+      .sort((a, b) => {
+        const ka = trackToInd.get(a[0].name) ?? 0;
+        const kb = trackToInd.get(b[0].name) ?? 0;
+        return ka === kb ? a[1] - b[1] : ka - kb;
+      })
+      .map(([t]) => t);
+
+    // Keep the skeleton list in source order by NAME.
+    const skelToInd = new Map<string, number>();
+    this.skeletons.forEach((s, i) => skelToInd.set(s.name ?? "", i));
+    labels.skeletons = labels.skeletons
+      .map((s, i) => [s, i] as const)
+      .sort((a, b) => {
+        const ka = skelToInd.get(a[0].name ?? "") ?? 0;
+        const kb = skelToInd.get(b[0].name ?? "") ?? 0;
+        return ka === kb ? a[1] - b[1] : ka - kb;
+      })
+      .map(([s]) => s);
+
+    // Copy suggestion frames for the extracted videos. Re-select on the ORIGINAL
+    // frames to read their (un-copied) videos for membership.
+    const extractedVideos = new Set<Video>(
+      this._selectFrames(inds).map((lf) => lf.video),
+    );
+    let suggestions = this.suggestions.filter((sf) =>
+      extractedVideos.has(sf.video),
+    );
+    if (copy) {
+      suggestions = suggestions.map(
+        (sf) =>
+          new SuggestionFrame({
+            video: sf.video,
+            frameIdx: sf.frameIdx,
+            group: sf.group,
+            metadata: { ...sf.metadata },
+          }),
+      );
+    }
+
+    // De-duplicate suggestion videos against labels.videos.
+    for (const sf of suggestions) {
+      for (const vid of labels.videos) {
+        if (vid.matchesContent(sf.video) && vid.matchesPath(sf.video)) {
+          sf.video = vid;
+          break;
+        }
+      }
+    }
+
+    labels.suggestions.push(...suggestions);
+    labels.update();
+
+    labels.provenance = { ...labels.provenance };
+    labels.provenance.source_labels =
+      (this.provenance.filename as string | undefined) ?? null;
+
+    return labels;
+  }
+
+  /**
+   * Resolve an extraction selection to a list of LabeledFrame references.
+   *
+   * Supports the subset of Python `__getitem__` selectors needed by
+   * `extract`/`split`: integer index arrays, `[Video, frameIdx]` tuple arrays,
+   * and a single `Video`. (Filename/path resolution requires `matchVideo`,
+   * which is added in a later phase.)
+   */
+  private _selectFrames(
+    inds: number[] | Array<[Video, number]> | Video,
+  ): LabeledFrame[] {
+    if (inds instanceof Video) {
+      return this.find({ video: inds });
+    }
+    if (Array.isArray(inds)) {
+      if (inds.length === 0) return [];
+      if (Array.isArray(inds[0])) {
+        const tuples = inds as Array<[Video, number]>;
+        const result: LabeledFrame[] = [];
+        for (const [video, frameIdx] of tuples) {
+          const res = this.find({ video, frameIdx });
+          if (res.length === 1) {
+            result.push(res[0]);
+          } else if (res.length === 0) {
+            throw new Error(
+              `No labeled frames found for video ${video} and frame index ${frameIdx}.`,
+            );
+          }
+        }
+        return result;
+      }
+      return (inds as number[]).map((i) => this.labeledFrames[i]);
+    }
+    return [];
+  }
+
+  /**
+   * Deep-copy a list of frames with structural sharing.
+   *
+   * Reproduces Python `deepcopy(lfs)`: shared Track/Skeleton/Video objects within
+   * the selected subgraph are copied exactly once (via memo maps), so references
+   * shared across frames/instances remain shared in the copy.
+   */
+  private _deepCopyFrames(frames: LabeledFrame[]): LabeledFrame[] {
+    const videoMap = new Map<Video, Video>();
+    const skeletonMap = new Map<Skeleton, Skeleton>();
+    const trackMap = new Map<Track, Track>();
+
+    const mapVideo = (v: Video): Video => {
+      let nv = videoMap.get(v);
+      if (!nv) {
+        nv = new Video({
+          filename: Array.isArray(v.filename) ? [...v.filename] : v.filename,
+          backendMetadata: { ...v.backendMetadata },
+          openBackend: v.openBackend,
+          embedded: v.hasEmbeddedImages,
+        });
+        nv.shape = v.shape;
+        nv.fps = v.fps;
+        videoMap.set(v, nv);
+      }
+      return nv;
+    };
+
+    const mapSkeleton = (s: Skeleton): Skeleton => {
+      let ns = skeletonMap.get(s);
+      if (!ns) {
+        const nodeMap = new Map<Node, Node>();
+        const newNodes = s.nodes.map((n) => {
+          const nn = new Node(n.name);
+          nodeMap.set(n, nn);
+          return nn;
+        });
+        const newEdges = s.edges.map(
+          (e) => new Edge(nodeMap.get(e.source)!, nodeMap.get(e.destination)!),
+        );
+        const newSymmetries = s.symmetries.map((sym) => {
+          const nodes = [...sym.nodes];
+          return new Symmetry([
+            nodeMap.get(nodes[0])!,
+            nodeMap.get(nodes[1])!,
+          ]);
+        });
+        ns = new Skeleton({
+          nodes: newNodes,
+          edges: newEdges,
+          symmetries: newSymmetries,
+          name: s.name,
+        });
+        skeletonMap.set(s, ns);
+      }
+      return ns;
+    };
+
+    const mapTrack = (t: Track | null | undefined): Track | null => {
+      if (t == null) return null;
+      let nt = trackMap.get(t);
+      if (!nt) {
+        nt = new Track(t.name);
+        trackMap.set(t, nt);
+      }
+      return nt;
+    };
+
+    const cloneInstance = (
+      inst: Instance | PredictedInstance,
+    ): Instance | PredictedInstance => {
+      const newPoints = inst.points.map((p) => ({
+        ...p,
+        xy: [...p.xy] as [number, number],
+      }));
+      const newSkeleton = mapSkeleton(inst.skeleton);
+      const newTrack = mapTrack(inst.track);
+      if (inst.constructor === PredictedInstance) {
+        const predicted = inst as PredictedInstance;
+        return new PredictedInstance({
+          points: newPoints as unknown as PredictedPointsArray,
+          skeleton: newSkeleton,
+          track: newTrack,
+          score: predicted.score,
+          trackingScore: predicted.trackingScore,
+        });
+      }
+      return new Instance({
+        points: newPoints,
+        skeleton: newSkeleton,
+        track: newTrack,
+        trackingScore: inst.trackingScore,
+      });
+    };
+
+    // Clone an ancillary annotation: shallow-clone preserving prototype, then
+    // remap its shared video/track refs (and nested label-image object refs)
+    // through the memo maps so structural sharing is preserved.
+    const cloneAncillary = <T extends object>(items: T[]): T[] =>
+      items.map((item) => {
+        const clone = Object.create(
+          Object.getPrototypeOf(item),
+          Object.getOwnPropertyDescriptors(item),
+        ) as T;
+        const anyClone = clone as Record<string, unknown>;
+        if ("video" in anyClone && anyClone.video != null) {
+          anyClone.video = mapVideo(anyClone.video as Video);
+        }
+        if ("track" in anyClone && anyClone.track != null) {
+          anyClone.track = mapTrack(anyClone.track as Track);
+        }
+        // Drop instance back-refs (cannot be remapped without global identity).
+        if ("instance" in anyClone) {
+          anyClone.instance = null;
+        }
+        // LabelImage: copy the objects Map and remap nested track refs.
+        if (
+          "objects" in anyClone &&
+          anyClone.objects instanceof Map
+        ) {
+          const oldObjects = anyClone.objects as Map<number, Record<string, unknown>>;
+          const newObjects = new Map<number, Record<string, unknown>>();
+          for (const [id, info] of oldObjects) {
+            const newInfo = { ...info };
+            if (newInfo.track != null) {
+              newInfo.track = mapTrack(newInfo.track as Track);
+            }
+            newInfo.instance = null;
+            newObjects.set(id, newInfo);
+          }
+          anyClone.objects = newObjects;
+        }
+        return clone;
+      });
+
+    return frames.map(
+      (f) =>
+        new LabeledFrame({
+          video: mapVideo(f.video),
+          frameIdx: f.frameIdx,
+          instances: f.instances.map(cloneInstance),
+          isNegative: f.isNegative,
+          centroids: cloneAncillary(f.centroids) as Centroid[],
+          bboxes: cloneAncillary(f.bboxes) as BoundingBox[],
+          masks: cloneAncillary(f.masks) as SegmentationMask[],
+          labelImages: cloneAncillary(f.labelImages) as LabelImage[],
+          rois: cloneAncillary(f.rois) as ROI[],
+        }),
+    );
+  }
+
+  /**
+   * Separate the labels into two random splits.
+   *
+   * Mirrors Python `Labels.split` (labels.py:2553-2607) for the count/branch
+   * logic. Per DECISIONS D5, the index selection uses a deterministic seeded
+   * RNG (NOT NumPy PCG64) — counts and edge cases match Python exactly, but the
+   * specific frames chosen are not bit-identical to NumPy.
+   *
+   * @param n - Size of the first split. `>= 1` is an absolute frame count;
+   *   `< 1.0` is a fraction of the total (`max(trunc(n0*n), 1)`).
+   * @param seed - Optional integer seed for reproducibility within JS. When
+   *   omitted/null, a fixed default seed is used.
+   * @returns A `LabelsSet` with keys `"split1"` and `"split2"`.
+   */
+  split(n: number, seed?: number | null): LabelsSet {
+    if (this._lazyFrameList) this.materialize();
+
+    const n0 = this.labeledFrames.length;
+    if (n0 === 0) {
+      return new LabelsSet({ split1: this, split2: this });
+    }
+
+    let n1: number;
+    if (n < 1.0) {
+      n1 = Math.max(Math.trunc(n0 * n), 1);
+    } else {
+      n1 = Math.trunc(n);
+    }
+    // Python also computes n2 = max(n0 - n1, 1), but it never drives selection
+    // (split2 is the sorted set-difference complement), so it is elided here.
+
+    // Deterministic seeded RNG (mulberry32). Default seed when none provided.
+    const rng = Labels._mulberry32(seed == null ? 0x9e3779b9 : seed >>> 0);
+
+    // Choose n1 distinct indices from 0..n0-1 (partial Fisher-Yates).
+    const pool = Array.from({ length: n0 }, (_, i) => i);
+    const take = Math.min(n1, n0);
+    for (let i = 0; i < take; i += 1) {
+      const j = i + Math.floor(rng() * (n0 - i));
+      const tmp = pool[i];
+      pool[i] = pool[j];
+      pool[j] = tmp;
+    }
+    const inds1 = pool.slice(0, take);
+
+    let inds2: number[];
+    if (n0 === 1) {
+      inds2 = [0];
+    } else {
+      const inds1Set = new Set(inds1);
+      inds2 = [];
+      for (let i = 0; i < n0; i += 1) {
+        if (!inds1Set.has(i)) inds2.push(i);
+      }
+    }
+
+    const split1 = this.extract(inds1, true);
+    const split2 = this.extract(inds2, true);
+
+    return new LabelsSet({ split1, split2 });
+  }
+
+  /** Deterministic 32-bit RNG (mulberry32). Returns floats in [0, 1). */
+  private static _mulberry32(seed: number): () => number {
+    let a = seed >>> 0;
+    return () => {
+      a |= 0;
+      a = (a + 0x6d2b79f5) | 0;
+      let t = Math.imul(a ^ (a >>> 15), 1 | a);
+      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
   }
 }
