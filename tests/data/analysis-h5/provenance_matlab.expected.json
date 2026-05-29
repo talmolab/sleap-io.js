@@ -1,0 +1,56 @@
+{
+ "nFrames": 1,
+ "frameIndices": [
+  0
+ ],
+ "trackNames": [
+  "animal1"
+ ],
+ "nodeNames": [
+  "head",
+  "tail"
+ ],
+ "edgeInds": [
+  [
+   0,
+   1
+  ]
+ ],
+ "edgeNames": [
+  [
+   "head",
+   "tail"
+  ]
+ ],
+ "symmetries": [],
+ "skeletonName": "simple",
+ "videoFilename": "provenance_video.mp4",
+ "provenance": {
+  "source": "test",
+  "version": "1.0"
+ },
+ "frames": [
+  {
+   "frameIdx": 0,
+   "instances": [
+    {
+     "points": [
+      [
+       100.0,
+       200.0,
+       0.9
+      ],
+      [
+       150.0,
+       250.0,
+       0.85
+      ]
+     ],
+     "score": 0.95,
+     "trackingScore": 0.88,
+     "isPredicted": true
+    }
+   ]
+  }
+ ]
+}

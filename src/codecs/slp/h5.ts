@@ -49,6 +49,52 @@ export function _registerNodeH5(
   _nodeOpenFile = openFile;
 }
 
+// Node-only filesystem ops — registered by h5-node.ts (imported as a side-effect
+// from the Node entry point). They stay null in the browser so this shared,
+// browser-safe module never references Node built-ins (issue #70).
+let _nodeWriteFile: ((path: string, bytes: Uint8Array) => Promise<void>) | null = null;
+let _nodeFileExists: ((path: string) => Promise<boolean>) | null = null;
+let _nodeReadPackageVersion: (() => Promise<string | null>) | null = null;
+
+/**
+ * Register Node.js filesystem operations used by codecs that read/write files
+ * directly (e.g. the Analysis-HDF5 writer). Called as a side-effect when the
+ * Node entry point imports h5-node.ts.
+ * @internal
+ */
+export function _registerNodeFileOps(ops: {
+  writeFile: (path: string, bytes: Uint8Array) => Promise<void>;
+  fileExists: (path: string) => Promise<boolean>;
+  readPackageVersion: () => Promise<string | null>;
+}): void {
+  _nodeWriteFile = ops.writeFile;
+  _nodeFileExists = ops.fileExists;
+  _nodeReadPackageVersion = ops.readPackageVersion;
+}
+
+/** Write bytes to a path via the Node provider. Throws in the browser. */
+export async function nodeWriteFile(path: string, bytes: Uint8Array): Promise<void> {
+  if (!_nodeWriteFile) {
+    throw new Error(
+      "Writing files requires a Node.js environment. This codec's writer is Node-only."
+    );
+  }
+  await _nodeWriteFile(path, bytes);
+}
+
+/**
+ * Whether a path exists, via the Node provider. Resolves to null when no Node
+ * provider is registered (e.g. the browser), meaning "unknown".
+ */
+export async function nodeFileExists(path: string): Promise<boolean | null> {
+  return _nodeFileExists ? _nodeFileExists(path) : null;
+}
+
+/** Read the package version via the Node provider, or null if unavailable. */
+export async function nodeReadPackageVersion(): Promise<string | null> {
+  return _nodeReadPackageVersion ? _nodeReadPackageVersion() : null;
+}
+
 // Browser-only module cache — unused when Node provider is registered, but kept
 // at module scope so the browser code path caches across calls.
 let modulePromise: Promise<H5Module> | null = null;

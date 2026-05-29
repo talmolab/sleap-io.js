@@ -1,0 +1,151 @@
+{
+ "nFrames": 3,
+ "frameIndices": [
+  0,
+  1,
+  2
+ ],
+ "trackNames": [
+  "animal1",
+  "animal2"
+ ],
+ "nodeNames": [
+  "head",
+  "tail"
+ ],
+ "edgeInds": [
+  [
+   0,
+   1
+  ]
+ ],
+ "edgeNames": [
+  [
+   "head",
+   "tail"
+  ]
+ ],
+ "symmetries": [],
+ "skeletonName": "simple",
+ "videoFilename": "multi_video.mp4",
+ "provenance": {},
+ "frames": [
+  {
+   "frameIdx": 0,
+   "instances": [
+    {
+     "points": [
+      [
+       100.0,
+       200.0,
+       0.9
+      ],
+      [
+       150.0,
+       250.0,
+       0.85
+      ]
+     ],
+     "score": 0.95,
+     "trackingScore": null,
+     "isPredicted": true
+    },
+    {
+     "points": [
+      [
+       300.0,
+       400.0,
+       0.88
+      ],
+      [
+       350.0,
+       450.0,
+       0.82
+      ]
+     ],
+     "score": 0.92,
+     "trackingScore": null,
+     "isPredicted": true
+    }
+   ]
+  },
+  {
+   "frameIdx": 1,
+   "instances": [
+    {
+     "points": [
+      [
+       101.0,
+       201.0,
+       0.9
+      ],
+      [
+       151.0,
+       251.0,
+       0.85
+      ]
+     ],
+     "score": 0.95,
+     "trackingScore": null,
+     "isPredicted": true
+    },
+    {
+     "points": [
+      [
+       301.0,
+       401.0,
+       0.88
+      ],
+      [
+       351.0,
+       451.0,
+       0.82
+      ]
+     ],
+     "score": 0.92,
+     "trackingScore": null,
+     "isPredicted": true
+    }
+   ]
+  },
+  {
+   "frameIdx": 2,
+   "instances": [
+    {
+     "points": [
+      [
+       102.0,
+       202.0,
+       0.9
+      ],
+      [
+       152.0,
+       252.0,
+       0.85
+      ]
+     ],
+     "score": 0.95,
+     "trackingScore": null,
+     "isPredicted": true
+    },
+    {
+     "points": [
+      [
+       302.0,
+       402.0,
+       0.88
+      ],
+      [
+       352.0,
+       452.0,
+       0.82
+      ]
+     ],
+     "score": 0.92,
+     "trackingScore": null,
+     "isPredicted": true
+    }
+   ]
+  }
+ ]
+}
