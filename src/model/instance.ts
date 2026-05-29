@@ -296,11 +296,39 @@ export class Instance {
     return this.track === other.track;
   }
 
+  /**
+   * Check if this instance overlaps with another by bounding-box IoU.
+   *
+   * Mirrors Python `Instance.overlaps_with` (instance.py:772-830). Bounding
+   * boxes are computed over VISIBLE points; if either has none, returns false.
+   * If the boxes do not STRICTLY intersect on both axes (touching edges count
+   * as no overlap), returns false regardless of `iouThreshold` — this matches
+   * Python's `np.any(intersection_min >= intersection_max) -> False`
+   * short-circuit, which runs before the threshold comparison.
+   *
+   * @param other - Another instance to compare with.
+   * @param iouThreshold - Minimum IoU to count as overlapping (inclusive `>=`).
+   */
   overlapsWith(other: Instance, iouThreshold = 0.5): boolean {
     const boxA = this.boundingBox();
     const boxB = other.boundingBox();
     if (!boxA || !boxB) return false;
-    const iou = intersectionOverUnion(boxA, boxB);
+
+    // box[0] = [minX, minY] (mins), box[1] = [maxX, maxY] (maxs).
+    const interMinX = Math.max(boxA[0][0], boxB[0][0]);
+    const interMinY = Math.max(boxA[0][1], boxB[0][1]);
+    const interMaxX = Math.min(boxA[1][0], boxB[1][0]);
+    const interMaxY = Math.min(boxA[1][1], boxB[1][1]);
+
+    // No strict intersection on either axis -> not overlapping, independent of
+    // the threshold (Python returns False here before the `>= threshold` check).
+    if (interMinX >= interMaxX || interMinY >= interMaxY) return false;
+
+    const interArea = (interMaxX - interMinX) * (interMaxY - interMinY);
+    const areaA = (boxA[1][0] - boxA[0][0]) * (boxA[1][1] - boxA[0][1]);
+    const areaB = (boxB[1][0] - boxB[0][0]) * (boxB[1][1] - boxB[0][1]);
+    const union = areaA + areaB - interArea;
+    const iou = union > 0 ? interArea / union : 0;
     return iou >= iouThreshold;
   }
 
@@ -426,25 +454,3 @@ export function predictedPointsFromDict(pointsDict: Record<string, number[]>, sk
   return points;
 }
 
-function intersectionOverUnion(
-  boxA: [[number, number], [number, number]],
-  boxB: [[number, number], [number, number]]
-): number {
-  // box[0] = [minX, minY] (mins), box[1] = [maxX, maxY] (maxs).
-  const interMinX = Math.max(boxA[0][0], boxB[0][0]);
-  const interMinY = Math.max(boxA[0][1], boxB[0][1]);
-  const interMaxX = Math.min(boxA[1][0], boxB[1][0]);
-  const interMaxY = Math.min(boxA[1][1], boxB[1][1]);
-
-  // Intersection exists only when the min is strictly less than the max on BOTH
-  // axes; touching boxes (equal) count as no overlap.
-  if (!(interMinX < interMaxX) || !(interMinY < interMaxY)) {
-    return 0;
-  }
-
-  const interArea = (interMaxX - interMinX) * (interMaxY - interMinY);
-  const areaA = (boxA[1][0] - boxA[0][0]) * (boxA[1][1] - boxA[0][1]);
-  const areaB = (boxB[1][0] - boxB[0][0]) * (boxB[1][1] - boxB[0][1]);
-  const union = areaA + areaB - interArea;
-  return union > 0 ? interArea / union : 0;
-}
