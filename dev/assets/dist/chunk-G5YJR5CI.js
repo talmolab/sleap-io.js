@@ -13224,6 +13224,8 @@ export {
   openH5Worker,
   _registerNodeH5,
   _registerNodeFileOps,
+  nodeFileExists,
+  openH5File,
   createVideoBackend,
   readSlpStreaming,
   _registerFileWriter,

@@ -101,7 +101,9 @@ import {
   loadSlpSet,
   loadVideo,
   makeCameraFromDict,
+  nodeFileExists,
   normalizeLabelIds,
+  openH5File,
   openH5Worker,
   openStreamingH5,
   rasterizeGeometry,
@@ -125,7 +127,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-MJEYSOQW.js";
+} from "./chunk-G5YJR5CI.js";
 import {
   Edge,
   Instance,
@@ -1232,6 +1234,228 @@ function invertClassNames(classNames) {
   return result;
 }
 
+// src/io/jabs.ts
+var JABS_DEFAULT_KEYPOINT_NAMES = [
+  "NOSE",
+  "LEFT_EAR",
+  "RIGHT_EAR",
+  "BASE_NECK",
+  "LEFT_FRONT_PAW",
+  "RIGHT_FRONT_PAW",
+  "CENTER_SPINE",
+  "LEFT_REAR_PAW",
+  "RIGHT_REAR_PAW",
+  "BASE_TAIL",
+  "MID_TAIL",
+  "TIP_TAIL"
+];
+var JABS_DEFAULT_EDGE_INDICES = [
+  // Spine
+  [3, 0],
+  [3, 6],
+  [6, 9],
+  [9, 10],
+  [10, 11],
+  // Ears
+  [0, 1],
+  [0, 2],
+  // Front paws
+  [6, 4],
+  [6, 5],
+  // Rear paws
+  [9, 7],
+  [9, 8]
+];
+var JABS_DEFAULT_SYMMETRY_INDICES = [
+  [1, 2],
+  // ears
+  [4, 5],
+  // front paws
+  [7, 8]
+  // rear paws
+];
+function makeJabsDefaultSkeleton() {
+  const nodes = JABS_DEFAULT_KEYPOINT_NAMES.map((name) => new Node(name));
+  const edges = JABS_DEFAULT_EDGE_INDICES.map(([a, b]) => new Edge(nodes[a], nodes[b]));
+  const symmetries = JABS_DEFAULT_SYMMETRY_INDICES.map(
+    ([a, b]) => new Symmetry([nodes[a], nodes[b]])
+  );
+  return new Skeleton({ nodes, edges, symmetries, name: "Mouse" });
+}
+var JABS_DEFAULT_SKELETON = makeJabsDefaultSkeleton();
+function makeSimpleSkeleton(name, numPoints) {
+  const nodes = Array.from({ length: numPoints }, (_, i) => new Node(`${name}_kp${i}`));
+  const edges = Array.from({ length: Math.max(0, numPoints - 1) }, (_, i) => new Edge(nodes[i], nodes[i + 1]));
+  return new Skeleton({ nodes, edges, name });
+}
+function predictionToInstance(data, confidence, skeleton, track) {
+  if (skeleton.nodes.length !== data.length) {
+    throw new Error(
+      `Skeleton (${skeleton.nodes.length}) does not match number of keypoints (${data.length})`
+    );
+  }
+  const pointsData = [];
+  const scores = [];
+  for (let i = 0; i < skeleton.nodes.length; i++) {
+    if (confidence[i] > 0) {
+      pointsData.push([data[i][0], data[i][1], confidence[i], 1]);
+      scores.push(confidence[i]);
+    } else {
+      pointsData.push([Number.NaN, Number.NaN, Number.NaN, 0]);
+    }
+  }
+  if (scores.length === 0) return null;
+  const meanScore = scores.reduce((a, b) => a + b, 0) / scores.length;
+  return PredictedInstance.fromNumpy({ pointsData, skeleton, track: track ?? null, score: meanScore });
+}
+function staticObjectToRoi(name, coords, video) {
+  let geometry;
+  if (coords.length === 1) {
+    geometry = { type: "Point", coordinates: [coords[0][0], coords[0][1]] };
+  } else {
+    geometry = { type: "MultiPoint", coordinates: coords.map(([x, y]) => [x, y]) };
+  }
+  const category = name === "corners" ? "arena" : "anchor";
+  return new UserROI({ geometry, name, category, source: "jabs", video });
+}
+function getDataset(file, name) {
+  const item = file.get(name);
+  if (item == null || !("value" in item)) return null;
+  return item;
+}
+function attrValue(attr) {
+  if (attr == null) return void 0;
+  if (typeof attr === "object" && "value" in attr) {
+    return attr.value;
+  }
+  return attr;
+}
+function num(v) {
+  return typeof v === "bigint" ? Number(v) : v;
+}
+async function loadJabs(labelsPath, options) {
+  const skeleton = options?.skeleton ?? JABS_DEFAULT_SKELETON;
+  const videoName = labelsPath.replace(/(_pose_est_v[2-6])?\.h5/g, ".avi");
+  const video = new Video({ filename: videoName, openBackend: false });
+  const exists = await nodeFileExists(labelsPath);
+  if (exists === false) {
+    throw new Error(`${labelsPath} doesn't exist.`);
+  }
+  const tracks = /* @__PURE__ */ new Map();
+  const frames = [];
+  const { file: rawFile, close } = await openH5File(labelsPath);
+  const file = rawFile;
+  try {
+    const pointsDs = getDataset(file, "poseest/points");
+    if (pointsDs == null) {
+      throw new Error(`JABS pose file is missing 'poseest/points': ${labelsPath}`);
+    }
+    const pShape = Array.from(pointsDs.shape, num);
+    const numFrames = pShape[0];
+    const poseest = file.get("poseest");
+    const verRaw = poseest?.attrs ? attrValue(poseest.attrs["version"]) : void 0;
+    let poseVersion;
+    if (verRaw != null && verRaw.length > 0) {
+      poseVersion = Number(verRaw[0]);
+    } else {
+      if (pShape.length !== 3) {
+        throw new Error(
+          `Pose version not present and shape does not match single mouse: shape of ${JSON.stringify(pShape)} for ${labelsPath}`
+        );
+      }
+      poseVersion = 2;
+    }
+    const M = pShape.length === 4 ? pShape[1] : 1;
+    const N = pShape[pShape.length - 2];
+    const pointsVal = pointsDs.value;
+    const confVal = getDataset(file, "poseest/confidence")?.value ?? [];
+    if (poseVersion === 2) {
+      tracks.set(1, new Track("1"));
+    }
+    let idVal = null;
+    let instanceCountVal = null;
+    if (poseVersion === 3) {
+      const idDs = getDataset(file, "poseest/instance_track_id");
+      const countDs = getDataset(file, "poseest/instance_count");
+      if (idDs == null) {
+        throw new Error(`JABS pose file is missing 'poseest/instance_track_id': ${labelsPath}`);
+      }
+      if (countDs == null) {
+        throw new Error(`JABS pose file is missing 'poseest/instance_count': ${labelsPath}`);
+      }
+      idVal = idDs.value;
+      instanceCountVal = countDs.value;
+    } else if (poseVersion > 3) {
+      const idDs = getDataset(file, "poseest/instance_embed_id");
+      if (idDs == null) {
+        throw new Error(`JABS pose file is missing 'poseest/instance_embed_id': ${labelsPath}`);
+      }
+      idVal = idDs.value;
+    }
+    const extractInstance = (f, slot) => {
+      const data = [];
+      const conf = [];
+      for (let n = 0; n < N; n++) {
+        const flat = (f * M + slot) * N + n;
+        const pbase = flat * 2;
+        const rawY = num(pointsVal[pbase]);
+        const rawX = num(pointsVal[pbase + 1]);
+        data.push([rawX, rawY]);
+        conf.push(confVal.length ? num(confVal[flat]) : 0);
+      }
+      return { data, conf };
+    };
+    for (let frameIdx = 0; frameIdx < numFrames; frameIdx++) {
+      const instances = [];
+      if (poseVersion === 2) {
+        const { data, conf } = extractInstance(frameIdx, 0);
+        const inst = predictionToInstance(data, conf, skeleton, tracks.get(1));
+        if (inst) instances.push(inst);
+      } else {
+        let maxIds;
+        if (poseVersion === 3) {
+          maxIds = instanceCountVal ? num(instanceCountVal[frameIdx]) : M;
+        } else {
+          maxIds = M;
+        }
+        for (let curId = 0; curId < maxIds; curId++) {
+          const poseId = idVal ? num(idVal[frameIdx * M + curId]) : 0;
+          if (poseVersion > 3 && poseId <= 0) continue;
+          if (!tracks.has(poseId)) {
+            tracks.set(poseId, new Track(String(poseId)));
+          }
+          const { data, conf } = extractInstance(frameIdx, curId);
+          const inst = predictionToInstance(data, conf, skeleton, tracks.get(poseId));
+          if (inst) instances.push(inst);
+        }
+      }
+      frames.push(new LabeledFrame({ video, frameIdx, instances }));
+    }
+    const rois = [];
+    const rootKeys = typeof file.keys === "function" ? file.keys() : [];
+    if (poseVersion >= 5 && rootKeys.includes("static_objects")) {
+      const soGroup = file.get("static_objects");
+      const objNames = soGroup && typeof soGroup.keys === "function" ? soGroup.keys() : [];
+      for (const objName of objNames) {
+        const ds = getDataset(file, `static_objects/${objName}`);
+        if (ds == null) continue;
+        const shape = Array.from(ds.shape, num);
+        const nPts = shape[0] ?? 0;
+        const coords = [];
+        for (let k = 0; k < nPts; k++) {
+          coords.push([num(ds.value[k * 2]), num(ds.value[k * 2 + 1])]);
+        }
+        rois.push(staticObjectToRoi(objName, coords, video));
+      }
+    }
+    const labels = new Labels({ labeledFrames: frames, rois });
+    labels.provenance["filename"] = labelsPath;
+    return labels;
+  } finally {
+    close();
+  }
+}
+
 // src/rendering/render.ts
 var DEFAULT_OPTIONS = {
   colorBy: "auto",
@@ -1667,6 +1891,10 @@ export {
   InstanceGroup,
   InstanceMatchMethod,
   InstanceMatcher,
+  JABS_DEFAULT_EDGE_INDICES,
+  JABS_DEFAULT_KEYPOINT_NAMES,
+  JABS_DEFAULT_SKELETON,
+  JABS_DEFAULT_SYMMETRY_INDICES,
   LabelImage,
   LabeledFrame,
   Labels,
@@ -1758,12 +1986,15 @@ export {
   isTrainingConfig,
   labelsFromNumpy,
   loadAnalysisH5,
+  loadJabs,
   loadSlp,
   loadSlpSet,
   loadTrackMate,
   loadUltralytics,
   loadVideo,
   makeCameraFromDict,
+  makeJabsDefaultSkeleton,
+  makeSimpleSkeleton,
   normalizeCoordinates,
   normalizeLabelIds,
   openH5Worker,
@@ -1776,6 +2007,7 @@ export {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict,
+  predictionToInstance,
   probeImageSize,
   rasterizeGeometry,
   readGeoJSON,
@@ -1801,6 +2033,7 @@ export {
   saveSlpToBytes,
   saveUltralytics,
   setFsResolver,
+  staticObjectToRoi,
   toDataURL,
   toDict,
   toJPEG,

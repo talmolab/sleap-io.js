@@ -1,7 +1,7 @@
-import { Video, Labels, ROI, BoundingBox, LabeledFrame, LabelsSet, RenderOptions, VideoOptions } from './index.browser.js';
-export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, CentroidOptions, ColorScheme, ColorSpec, ConflictResolution, DUPLICATE_MATCHER, ErrorMode, FrameGroup, FrameStrategy, FsResolver, GeoJSONFeature, GeoJSONFeatureCollection, Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, LabelImageObjectInfo, LabelImageOptions, LabelsDict, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, MarkerShape, MatchResult, MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, RGB, RGBA, ROIOptions, RecordingSession, RenderContext, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, SegmentationMaskOptions, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, TrackMatchMethod, TrackMatcher, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, VideoBackend, VideoBackendType, VideoFrame, VideoMatchMethod, VideoMatcher, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isAnalysisH5File, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadAnalysisH5, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveAnalysisH5, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, toDict, toNumpy, writeGeoJSON } from './index.browser.js';
-import { I as Instance, S as Skeleton, P as PredictedInstance } from './instance-DLj547bw.js';
-export { E as Edge, N as Node, k as NodeOrIndex, b as Point, d as PointsArray, c as PredictedPoint, e as PredictedPointsArray, a as Symmetry, T as Track, _ as _registerCentroidFactory, p as pointsEmpty, g as pointsFromArray, i as pointsFromDict, f as predictedPointsEmpty, h as predictedPointsFromArray, j as predictedPointsFromDict } from './instance-DLj547bw.js';
+import { Video, Labels, ROI, BoundingBox, LabeledFrame, LabelsSet, UserROI, RenderOptions, VideoOptions } from './index.browser.js';
+export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, CentroidOptions, ColorScheme, ColorSpec, ConflictResolution, DUPLICATE_MATCHER, ErrorMode, FrameGroup, FrameStrategy, FsResolver, GeoJSONFeature, GeoJSONFeatureCollection, Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, LabelImageObjectInfo, LabelImageOptions, LabelsDict, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, MarkerShape, MatchResult, MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, RGB, RGBA, ROIOptions, RecordingSession, RenderContext, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, SegmentationMaskOptions, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, TrackMatchMethod, TrackMatcher, UserBoundingBox, UserCentroid, UserLabelImage, UserSegmentationMask, VideoBackend, VideoBackendType, VideoFrame, VideoMatchMethod, VideoMatcher, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isAnalysisH5File, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadAnalysisH5, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveAnalysisH5, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, toDict, toNumpy, writeGeoJSON } from './index.browser.js';
+import { I as Instance, S as Skeleton, T as Track, P as PredictedInstance } from './instance-DLj547bw.js';
+export { E as Edge, N as Node, k as NodeOrIndex, b as Point, d as PointsArray, c as PredictedPoint, e as PredictedPointsArray, a as Symmetry, _ as _registerCentroidFactory, p as pointsEmpty, g as pointsFromArray, i as pointsFromDict, f as predictedPointsEmpty, h as predictedPointsFromArray, j as predictedPointsFromDict } from './instance-DLj547bw.js';
 
 /**
  * Read TrackMate CSV exports into sleap-io data structures.
@@ -324,6 +324,98 @@ declare function probeImageSize(filePath: string): ImageShape | null;
 declare function encodePng(rgba: Uint8Array | Uint8ClampedArray, width: number, height: number, compressLevel?: number | null): Uint8Array;
 
 /**
+ * JABS (Jackson Lab Animal Behavior System) pose-file reader.
+ *
+ * A TypeScript port of the reader half of Python sleap-io's
+ * `sleap_io/io/jabs.py` (v0.7.x, PR #371), which:
+ *
+ * - returns {@link PredictedInstance} objects (with per-point confidence
+ *   scores), and
+ * - emits static objects (arena corners, lixit, food hopper, …) as
+ *   {@link UserROI} objects in `labels.staticRois` — `category: "arena"` for
+ *   `corners`, `category: "anchor"` otherwise, and `source: "jabs"` — rather
+ *   than as synthetic instances/skeletons in frame 0.
+ *
+ * JABS pose files are HDF5 on disk, so this reader is Node-only (it reads
+ * through `openH5File`, which uses h5wasm/node) and is exported from the Node
+ * entry point only.
+ *
+ * Supported pose versions: 2 (single mouse) through 6. Segmentation data (v6)
+ * and per-file attributes such as `cm_per_pixel` are ignored, matching Python.
+ *
+ * The writer half (`convert_labels` / `write_jabs_v*`) is intentionally not
+ * ported: per issue #99, `saveJabs` is lower priority since the common workflow
+ * is a one-time JABS → SLP conversion.
+ */
+
+/** Ordered JABS keypoint names (pose versions 2–6). */
+declare const JABS_DEFAULT_KEYPOINT_NAMES: readonly ["NOSE", "LEFT_EAR", "RIGHT_EAR", "BASE_NECK", "LEFT_FRONT_PAW", "RIGHT_FRONT_PAW", "CENTER_SPINE", "LEFT_REAR_PAW", "RIGHT_REAR_PAW", "BASE_TAIL", "MID_TAIL", "TIP_TAIL"];
+/** Edge connections (by node index) for the default JABS skeleton. Root is BASE_NECK (3). */
+declare const JABS_DEFAULT_EDGE_INDICES: Array<[number, number]>;
+/** Symmetric node pairs (by node index) for the default JABS skeleton. */
+declare const JABS_DEFAULT_SYMMETRY_INDICES: Array<[number, number]>;
+/** Build a fresh copy of the default JABS "Mouse" skeleton. */
+declare function makeJabsDefaultSkeleton(): Skeleton;
+/**
+ * The default JABS "Mouse" skeleton (12 nodes, 11 edges, 3 symmetries).
+ *
+ * Shared module-level instance used as the default for {@link loadJabs}.
+ * Treat it as read-only; callers needing a mutable skeleton should use
+ * {@link makeJabsDefaultSkeleton}.
+ */
+declare const JABS_DEFAULT_SKELETON: Skeleton;
+/** Create a `Skeleton` with `numPoints` nodes connected in a line. */
+declare function makeSimpleSkeleton(name: string, numPoints: number): Skeleton;
+/**
+ * Build a {@link PredictedInstance} from JABS prediction data.
+ *
+ * @param data - Keypoint locations as `(nNodes, 2)` in `[x, y]` order (JABS
+ *   stores `[y, x]`; the reader flips before calling this).
+ * @param confidence - Per-keypoint confidence scores, length `nNodes`.
+ * @param skeleton - Skeleton to use for the instance.
+ * @param track - Optional track to assign.
+ * @returns A `PredictedInstance` with per-point scores, or `null` if no
+ *   keypoint has positive confidence.
+ */
+declare function predictionToInstance(data: number[][], confidence: number[], skeleton: Skeleton, track?: Track | null): PredictedInstance | null;
+/**
+ * Convert JABS static-object keypoints into a {@link UserROI}.
+ *
+ * A single point becomes a `Point` geometry; multiple points become a
+ * `MultiPoint`. Coordinates are kept in their stored order (static objects are
+ * NOT y/x-flipped, unlike poses). Category is `"arena"` for `corners`,
+ * `"anchor"` otherwise; `source` is `"jabs"`.
+ */
+declare function staticObjectToRoi(name: string, coords: number[][], video: Video): UserROI;
+/** Options for {@link loadJabs}. */
+interface LoadJabsOptions {
+    /**
+     * Skeleton to use for instances. Defaults to {@link JABS_DEFAULT_SKELETON}
+     * (the JABS v2–6 "Mouse" skeleton). Must have one node per keypoint column.
+     */
+    skeleton?: Skeleton | null;
+}
+/**
+ * Read a JABS pose file (HDF5) into a {@link Labels} object.
+ *
+ * Instances are {@link PredictedInstance} objects with per-point confidence
+ * scores; v5+ static objects are loaded as {@link UserROI} static ROIs. The
+ * associated {@link Video} filename is derived from the pose-file name
+ * (`*_pose_est_vN.h5` → `*.avi`).
+ *
+ * Node-only (reads HDF5 via h5wasm).
+ *
+ * Divergence from Python: a missing file raises (matching Python's
+ * `FileNotFoundError`), but Python's separate `os.R_OK` `PermissionError` for a
+ * present-but-unreadable file is not replicated — such a file instead surfaces
+ * whatever error the underlying h5wasm reader throws.
+ *
+ * @param labelsPath - Path to the JABS pose file.
+ * @param options - Optional `skeleton` override.
+ */
+declare function loadJabs(labelsPath: string, options?: LoadJabsOptions): Promise<Labels>;
+
+/**
  * Render poses on a single frame.
  *
  * @param source - Labels, LabeledFrame, or array of Instances to render
@@ -362,4 +454,4 @@ declare function checkFfmpeg(): Promise<boolean>;
  */
 declare function renderVideo(source: Labels | LabeledFrame[], outputPath: string, options?: VideoOptions): Promise<void>;
 
-export { BoundingBox, type CreateDataYamlOptions, type ImageShape, Instance, LabeledFrame, Labels, LabelsSet, type LineFormat, type ParseLabelFileOptions, type ParsedLabelFile, PredictedInstance, ROI, type ReadLabelsOptions, type ReadLabelsSetOptions, RenderOptions, Skeleton, type TrackMateOptions, Video, VideoOptions, type WriteLabelsOptions, buildClassNamesFromBboxes, buildClassNamesFromRois, checkFfmpeg, classNamesFromConfig, createDataYaml, createSkeletonFromConfig, createSplitsFromLabels, denormalizeCoordinates, detectLineFormat, encodePng, isTrackMateFile, loadTrackMate, loadUltralytics, normalizeCoordinates, parseDataYaml, parseLabelFile, probeImageSize, readLabels, readLabelsSet, readTrackMateCsv, renderImage, renderVideo, saveImage, saveUltralytics, toDataURL, toJPEG, toPNG, writeBboxLabelFile, writeLabelFile, writeLabels, writeRoiLabelFile };
+export { BoundingBox, type CreateDataYamlOptions, type ImageShape, Instance, JABS_DEFAULT_EDGE_INDICES, JABS_DEFAULT_KEYPOINT_NAMES, JABS_DEFAULT_SKELETON, JABS_DEFAULT_SYMMETRY_INDICES, LabeledFrame, Labels, LabelsSet, type LineFormat, type LoadJabsOptions, type ParseLabelFileOptions, type ParsedLabelFile, PredictedInstance, ROI, type ReadLabelsOptions, type ReadLabelsSetOptions, RenderOptions, Skeleton, Track, type TrackMateOptions, UserROI, Video, VideoOptions, type WriteLabelsOptions, buildClassNamesFromBboxes, buildClassNamesFromRois, checkFfmpeg, classNamesFromConfig, createDataYaml, createSkeletonFromConfig, createSplitsFromLabels, denormalizeCoordinates, detectLineFormat, encodePng, isTrackMateFile, loadJabs, loadTrackMate, loadUltralytics, makeJabsDefaultSkeleton, makeSimpleSkeleton, normalizeCoordinates, parseDataYaml, parseLabelFile, predictionToInstance, probeImageSize, readLabels, readLabelsSet, readTrackMateCsv, renderImage, renderVideo, saveImage, saveUltralytics, staticObjectToRoi, toDataURL, toJPEG, toPNG, writeBboxLabelFile, writeLabelFile, writeLabels, writeRoiLabelFile };

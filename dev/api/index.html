@@ -455,6 +455,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#jabs-pose-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      JABS Pose I/O
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skeleton-codecs" class="md-nav__link">
     <span class="md-ellipsis">
       Skeleton Codecs
@@ -655,6 +664,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#jabs-pose-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      JABS Pose I/O
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skeleton-codecs" class="md-nav__link">
     <span class="md-ellipsis">
       Skeleton Codecs
@@ -753,6 +771,12 @@
 <span class="w">  </span><span class="nx">readLabelsSet</span><span class="w"> </span><span class="kr">as</span><span class="w"> </span><span class="nx">readUltralyticsSet</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">parseLabelFile</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">detectLineFormat</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">loadJabs</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">JABS_DEFAULT_SKELETON</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">makeJabsDefaultSkeleton</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">predictionToInstance</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">staticObjectToRoi</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">makeSimpleSkeleton</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Identity</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Instance3D</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">PredictedInstance3D</span><span class="p">,</span>
@@ -1492,6 +1516,25 @@
 - <strong>Pose</strong> — <code>class_id x_center y_center width height x1 y1 v1 … xn yn vn</code> → <code>Instance</code> (visibility <code>0</code> = invisible, <code>1</code>/<code>2</code> = visible).</p>
 <blockquote>
 <p><strong>Image I/O note:</strong> image dimensions are read from the file header (PNG/JPEG/GIF/BMP/TIFF) rather than by decoding pixels. On write, frames backed by an on-disk image file are copied verbatim; frames yielding raw <code>ImageData</code> pixels are encoded to PNG; otherwise the frame is skipped with a warning. The <code>imageFormat</code>/<code>imageQuality</code> options apply only to the raw-pixel PNG path.</p>
+</blockquote>
+<h2 id="jabs-pose-io">JABS Pose I/O<a class="headerlink" href="#jabs-pose-io" title="Permanent link">&para;</a></h2>
+<p>Read <a href="https://github.com/KumarLabJax/JABS-behavior-classifier">JABS</a> (Jackson Lab Animal Behavior System) pose files. JABS files are HDF5 on disk, so this reader is Node.js only. Matches Python sleap-io v0.7.0 (PR #371): instances are <code>PredictedInstance</code> objects with per-point confidence, and static objects are <code>UserROI</code>s rather than synthetic skeletons.</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadJabs</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Read a JABS pose file (pose versions 2–6). Async (HDF5 via h5wasm).</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadJabs</span><span class="p">(</span><span class="s2">&quot;recording_pose_est_v5.h5&quot;</span><span class="p">);</span>
+
+<span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">;</span><span class="w">   </span><span class="c1">// frames of PredictedInstance poses</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">tracks</span><span class="p">;</span><span class="w">          </span><span class="c1">// one Track per JABS identity (v2 → a single track &quot;1&quot;)</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">staticRois</span><span class="p">;</span><span class="w">      </span><span class="c1">// static objects as UserROI (also in labels.rois)</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">videos</span><span class="p">[</span><span class="mf">0</span><span class="p">];</span><span class="w">       </span><span class="c1">// Video named after the pose file (…_pose_est_vN.h5 → ….avi)</span>
+
+<span class="c1">// Optional: override the skeleton (must have one node per keypoint column)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels2</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadJabs</span><span class="p">(</span><span class="s2">&quot;recording_pose_est_v2.h5&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">skeleton</span><span class="o">:</span><span class="w"> </span><span class="kt">myMouseSkeleton</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<p>Static objects become <code>UserROI</code>s with <code>source: "jabs"</code> and <code>category: "arena"</code> for <code>corners</code> (or <code>"anchor"</code> otherwise); a single-point object (e.g. <code>lixit</code>) is a <code>Point</code> geometry, multi-point (e.g. <code>corners</code>) is a <code>MultiPoint</code>. The default <code>JABS_DEFAULT_SKELETON</code> is the 12-node "Mouse" skeleton; <code>makeJabsDefaultSkeleton()</code>, <code>predictionToInstance()</code>, <code>staticObjectToRoi()</code>, and <code>makeSimpleSkeleton()</code> are also exported.</p>
+<blockquote>
+<p>JABS coordinates are stored <code>(y, x)</code> and flipped to <code>(x, y)</code> on read. Static-object coordinates are kept as-stored. The writer (<code>saveJabs</code>) is not yet implemented — the common path is a one-time JABS → SLP conversion.</p>
 </blockquote>
 <h2 id="skeleton-codecs">Skeleton Codecs<a class="headerlink" href="#skeleton-codecs" title="Permanent link">&para;</a></h2>
 <h3 id="json-jsonpickle-format">JSON (jsonpickle format)<a class="headerlink" href="#json-jsonpickle-format" title="Permanent link">&para;</a></h3>

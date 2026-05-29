@@ -121,7 +121,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-MJEYSOQW.js";
+} from "./chunk-G5YJR5CI.js";
 import {
   Edge,
   Instance,
