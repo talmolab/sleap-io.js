@@ -1,0 +1,53 @@
+{
+ "nFrames": 1,
+ "frameIndices": [
+  0
+ ],
+ "trackNames": [
+  "animal1"
+ ],
+ "nodeNames": [
+  "head",
+  "tail"
+ ],
+ "edgeInds": [
+  [
+   0,
+   1
+  ]
+ ],
+ "edgeNames": [
+  [
+   "head",
+   "tail"
+  ]
+ ],
+ "symmetries": [],
+ "skeletonName": null,
+ "videoFilename": "legacy_video.mp4",
+ "provenance": {},
+ "frames": [
+  {
+   "frameIdx": 0,
+   "instances": [
+    {
+     "points": [
+      [
+       100.0,
+       150.0,
+       0.9
+      ],
+      [
+       200.0,
+       250.0,
+       0.85
+      ]
+     ],
+     "score": 0.95,
+     "trackingScore": null,
+     "isPredicted": true
+    }
+   ]
+  }
+ ]
+}

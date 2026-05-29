@@ -1,0 +1,107 @@
+[
+ {
+  "name": "simple_matlab",
+  "h5": "simple_matlab.analysis.h5",
+  "expected": "simple_matlab.expected.json",
+  "preset": "matlab",
+  "legacy": false
+ },
+ {
+  "name": "simple_standard",
+  "h5": "simple_standard.analysis.h5",
+  "expected": "simple_standard.expected.json",
+  "preset": "standard",
+  "legacy": false
+ },
+ {
+  "name": "simple_custom",
+  "h5": "simple_custom.analysis.h5",
+  "expected": "simple_custom.expected.json",
+  "preset": "matlab",
+  "legacy": false
+ },
+ {
+  "name": "multi_matlab",
+  "h5": "multi_matlab.analysis.h5",
+  "expected": "multi_matlab.expected.json",
+  "preset": "matlab",
+  "legacy": false
+ },
+ {
+  "name": "symmetries_matlab",
+  "h5": "symmetries_matlab.analysis.h5",
+  "expected": "symmetries_matlab.expected.json",
+  "preset": "matlab",
+  "legacy": false
+ },
+ {
+  "name": "noedges_matlab",
+  "h5": "noedges_matlab.analysis.h5",
+  "expected": "noedges_matlab.expected.json",
+  "preset": "matlab",
+  "legacy": false
+ },
+ {
+  "name": "untracked_single_standard",
+  "h5": "untracked_single_standard.analysis.h5",
+  "expected": "untracked_single_standard.expected.json",
+  "preset": "standard",
+  "legacy": false
+ },
+ {
+  "name": "untracked_multi_matlab",
+  "h5": "untracked_multi_matlab.analysis.h5",
+  "expected": "untracked_multi_matlab.expected.json",
+  "preset": "matlab",
+  "legacy": false
+ },
+ {
+  "name": "untracked_multi_standard",
+  "h5": "untracked_multi_standard.analysis.h5",
+  "expected": "untracked_multi_standard.expected.json",
+  "preset": "standard",
+  "legacy": false
+ },
+ {
+  "name": "single_frame_matlab",
+  "h5": "single_frame_matlab.analysis.h5",
+  "expected": "single_frame_matlab.expected.json",
+  "preset": "matlab",
+  "legacy": false
+ },
+ {
+  "name": "provenance_matlab",
+  "h5": "provenance_matlab.analysis.h5",
+  "expected": "provenance_matlab.expected.json",
+  "preset": "matlab",
+  "legacy": false
+ },
+ {
+  "name": "legacy_nodims",
+  "h5": "legacy_nodims.analysis.h5",
+  "expected": "legacy_nodims.expected.json",
+  "preset": "legacy",
+  "legacy": true
+ },
+ {
+  "name": "legacy_transpose_false",
+  "h5": "legacy_transpose_false.analysis.h5",
+  "expected": "legacy_transpose_false.expected.json",
+  "preset": "legacy",
+  "legacy": true
+ },
+ {
+  "name": "centered_pair_matlab",
+  "h5": "centered_pair_matlab.analysis.h5",
+  "expected": "centered_pair_matlab.expected.json",
+  "preset": "matlab",
+  "legacy": false
+ },
+ {
+  "name": "centered_pair_standard",
+  "h5": "centered_pair_standard.analysis.h5",
+  "expected": "centered_pair_standard.expected.json",
+  "preset": "standard",
+  "legacy": false
+ }
+]

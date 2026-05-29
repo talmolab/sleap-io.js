@@ -1,0 +1,43 @@
+{
+ "nFrames": 1,
+ "frameIndices": [
+  0
+ ],
+ "trackNames": [
+  "animal1"
+ ],
+ "nodeNames": [
+  "point1",
+  "point2"
+ ],
+ "edgeInds": [],
+ "edgeNames": [],
+ "symmetries": [],
+ "skeletonName": "noedges",
+ "videoFilename": "no_edges_video.mp4",
+ "provenance": {},
+ "frames": [
+  {
+   "frameIdx": 0,
+   "instances": [
+    {
+     "points": [
+      [
+       100.0,
+       200.0,
+       0.9
+      ],
+      [
+       150.0,
+       250.0,
+       0.85
+      ]
+     ],
+     "score": 0.95,
+     "trackingScore": null,
+     "isPredicted": true
+    }
+   ]
+  }
+ ]
+}
