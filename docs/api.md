@@ -38,6 +38,13 @@ import {
   readTrackMateCsv,
   loadTrackMate,
   isTrackMateFile,
+  loadUltralytics,
+  saveUltralytics,
+  readLabels as readUltralytics,
+  writeLabels as writeUltralytics,
+  readLabelsSet as readUltralyticsSet,
+  parseLabelFile,
+  detectLineFormat,
   Identity,
   Instance3D,
   PredictedInstance3D,
@@ -817,6 +824,37 @@ const labels = loadTrackMate("data_spots.csv");
 TrackMate CSV format:
 - `*_spots.csv` — spot detections with `POSITION_X`, `POSITION_Y`, `POSITION_Z`, `FRAME`, `QUALITY`, `TRACK_ID`
 - `*_edges.csv` — frame-to-frame linkages; `LINK_COST` is stored as `trackingScore` on target centroids
+
+## Ultralytics YOLO I/O
+
+Read and write [Ultralytics YOLO](https://docs.ultralytics.com/datasets/) datasets — pose, detection, and segmentation. A dataset is a directory of `data.yaml` + per-split `images/` and `labels/`. The format of each label line is auto-detected by value count. Node.js only (directory-based I/O).
+
+```ts
+import { loadUltralytics, saveUltralytics } from "@talmolab/sleap-io.js";
+
+// Load a split (auto-detects pose/detection/segmentation per line)
+const labels = loadUltralytics("path/to/yolo_dataset", { split: "train" });
+labels.labeledFrames;  // pose instances (5 + 3k value lines)
+labels.bboxes;         // UserBoundingBox / PredictedBoundingBox (5 / 6 value lines)
+labels.rois;           // UserROI from segmentation polygons
+
+// Pointing at data.yaml directly also works
+loadUltralytics("path/to/yolo_dataset/data.yaml");
+
+// Write a dataset (default task "pose"; also "detect" / "segment")
+await saveUltralytics(labels, "out_dir", { splitRatios: { train: 0.8, val: 0.2 } });
+await saveUltralytics(labels, "out_dir", { task: "detect" });   // writes labels.bboxes
+await saveUltralytics(labels, "out_dir", { task: "segment" });  // writes labels.rois
+```
+
+Lower-level helpers are also exported: `parseLabelFile(path, skeleton, [h, w], { classNames })` returns `{ instances, rois, bboxes }`; `detectLineFormat(parts)` returns `"detection" | "detection_conf" | "segmentation" | "pose"`; plus `writeLabelFile`, `writeBboxLabelFile`, `writeRoiLabelFile`, `readLabelsSet`, `parseDataYaml`, `createDataYaml`, and `createSkeletonFromConfig`.
+
+Label-line formats (coordinates normalized to `[0, 1]`):
+- **Detection** — `class_id x_center y_center width height [confidence]` → `UserBoundingBox` (5 values) or `PredictedBoundingBox` (6 values).
+- **Segmentation** — `class_id x1 y1 x2 y2 … xn yn` → `UserROI` polygon (multi-polygons are exploded on write; interior holes are dropped with a warning).
+- **Pose** — `class_id x_center y_center width height x1 y1 v1 … xn yn vn` → `Instance` (visibility `0` = invisible, `1`/`2` = visible).
+
+> **Image I/O note:** image dimensions are read from the file header (PNG/JPEG/GIF/BMP/TIFF) rather than by decoding pixels. On write, frames backed by an on-disk image file are copied verbatim; frames yielding raw `ImageData` pixels are encoded to PNG; otherwise the frame is skipped with a warning. The `imageFormat`/`imageQuality` options apply only to the raw-pixel PNG path.
 
 ## Skeleton Codecs
 

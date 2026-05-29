@@ -16,6 +16,7 @@ JavaScript/TypeScript utilities for reading and writing SLEAP `.slp` files with 
 - Streaming-friendly file access (URL, `File`, `FileSystemFileHandle`, `Blob`).
 - Core data model (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`, `Centroid`, `Identity`, `Instance3D`, etc.).
 - ROI, segmentation mask, bounding box, and label image annotations with GeoJSON I/O.
+- Ultralytics YOLO dataset reader/writer (pose, detection, segmentation; Node.js).
 - 3D pose data structures with cross-library interop (Python sleap-io, luc3d).
 - Video backends accept `string`, `File`, or `Blob` sources.
 - Browser-safe: Node.js-only dependencies (`skia-canvas`, `child_process`) are dynamically imported, so bundlers can tree-shake them.
@@ -41,6 +42,20 @@ await saveSlp(labels, "/tmp/session-roundtrip.slp", { embed: false });
 // Save to bytes (works in browsers too)
 const bytes: Uint8Array = await saveSlpToBytes(labels);
 ```
+
+### Load and save Ultralytics YOLO datasets
+
+```ts
+import { loadUltralytics, saveUltralytics } from "@talmolab/sleap-io.js";
+
+// Read a split; the per-line format (pose/detection/segmentation) is auto-detected
+const labels = loadUltralytics("/path/to/yolo_dataset", { split: "train" });
+
+// Write back out (task: "pose" default, or "detect" / "segment")
+await saveUltralytics(labels, "/tmp/yolo_out", { splitRatios: { train: 0.8, val: 0.2 } });
+```
+
+Node.js only (directory-based datasets). See [docs/api.md](docs/api.md#ultralytics-yolo-io) for label-line formats and lower-level helpers.
 
 ### Load video
 
