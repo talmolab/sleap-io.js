@@ -1,5 +1,5 @@
-import { k as Skeleton, T as Track } from './instance-CrKeNF4a.js';
-export { E as Edge, N as Node, S as Symmetry } from './instance-CrKeNF4a.js';
+import { k as Skeleton, T as Track } from './instance-DM1Nsppv.js';
+export { E as Edge, N as Node, S as Symmetry } from './instance-DM1Nsppv.js';
 
 /**
  * jsfive-based HDF5 file interface.

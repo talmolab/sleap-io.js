@@ -1,5 +1,5 @@
-import { T as Track, I as Instance, k as Skeleton, P as PredictedInstance } from './instance-CrKeNF4a.js';
-export { E as Edge, N as Node, j as NodeOrIndex, a as Point, c as PointsArray, b as PredictedPoint, d as PredictedPointsArray, S as Symmetry, _ as _registerCentroidFactory, p as pointsEmpty, f as pointsFromArray, h as pointsFromDict, e as predictedPointsEmpty, g as predictedPointsFromArray, i as predictedPointsFromDict } from './instance-CrKeNF4a.js';
+import { T as Track, I as Instance, k as Skeleton, P as PredictedInstance } from './instance-DM1Nsppv.js';
+export { E as Edge, N as Node, j as NodeOrIndex, a as Point, c as PointsArray, b as PredictedPoint, d as PredictedPointsArray, S as Symmetry, _ as _registerCentroidFactory, p as pointsEmpty, f as pointsFromArray, h as pointsFromDict, e as predictedPointsEmpty, g as predictedPointsFromArray, i as predictedPointsFromDict } from './instance-DM1Nsppv.js';
 
 type VideoFrame = ImageData | ImageBitmap | Uint8Array | ArrayBuffer;
 interface VideoBackend {
@@ -38,7 +38,94 @@ declare class Video {
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
     getFrameTimes(): Promise<number[] | null>;
     close(): void;
+    /**
+     * Check if this video has the same path as another video.
+     *
+     * Port of Python `Video.matches_path` (video.py:637-715). The public default
+     * is kept at `strict = true` (DECISIONS D1) because every merge/match call
+     * site passes `strict` explicitly, so the default is never load-bearing for
+     * parity; the LOGIC below mirrors Python exactly.
+     *
+     * @param other - Another video to compare with.
+     * @param strict - If `true`, require an exact (posix-normalized) path match.
+     *   If `false`, consider videos with the same basename as matching.
+     */
     matchesPath(other: Video, strict?: boolean): boolean;
+    /**
+     * Check if this video has the same content as another video.
+     *
+     * Port of Python `Video.matches_content` (video.py:717-742). Compares the
+     * FULL 4-tuple shape (frames, height, width, channels) and the backend type
+     * name, NOT actual frame data.
+     *
+     * @param other - Another video to compare with.
+     * @returns `true` if the videos have the same shape and backend type.
+     */
+    matchesContent(other: Video): boolean;
+    /**
+     * Check if this video has the same shape as another video.
+     *
+     * Port of Python `Video.matches_shape` (video.py:744-772). Compares only
+     * height, width, and channels (INCLUDING channels, EXCLUDING frames).
+     *
+     * @param other - Another video to compare with.
+     * @returns `true` if the videos have the same height, width, and channels.
+     */
+    matchesShape(other: Video): boolean;
+    /**
+     * Check if this video has overlapping images with another video.
+     *
+     * Port of Python `Video.has_overlapping_images` (video.py:774-799). Only
+     * meaningful for image sequences (list filenames); compares basenames.
+     *
+     * @param other - Another video to compare with.
+     * @returns `true` if both are image sequences with at least one shared
+     *   image basename, `false` otherwise.
+     */
+    hasOverlappingImages(other: Video): boolean;
+    /**
+     * Whether this video is grayscale, or `null` if unknown.
+     *
+     * Port of Python `Video.grayscale` getter (video.py:225-239): if the shape is
+     * known, grayscale is `shape[-1] === 1`; otherwise fall back to a stored
+     * `backendMetadata["grayscale"]` value (real key-presence, so a stored `null`
+     * is returned as-is), else `null`. Used by `deduplicateWith` / `mergeWith` to
+     * carry the grayscale hint onto the newly created video.
+     */
+    get grayscale(): boolean | null;
+    /**
+     * Create a new video with duplicate images removed.
+     *
+     * Port of Python `Video.deduplicate_with` (video.py:801-840). Specific to
+     * image-sequence videos (ImageVideo: `filename` is a list). Images are
+     * considered duplicates when they share a basename. The returned video
+     * contains only the images from THIS video whose basename is not present in
+     * `other`, preserving this video's order.
+     *
+     * Return contract (matches Python exactly): returns `null` when ALL of this
+     * video's images are duplicates (Python returns `None`); otherwise returns a
+     * NEW `Video` (never `this`, never `other`) carrying the surviving image paths.
+     *
+     * @param other - Another image-sequence video to deduplicate against.
+     * @returns A new `Video` with the non-duplicate images, or `null` if every
+     *   image was a duplicate.
+     * @throws Error - If either video's `filename` is not a list (ImageVideo).
+     */
+    deduplicateWith(other: Video): Video | null;
+    /**
+     * Merge another video's images into this one.
+     *
+     * Port of Python `Video.merge_with` (video.py:842-883). Specific to
+     * image-sequence videos (ImageVideo: `filename` is a list). Returns a NEW
+     * `Video` containing all unique images (by basename) from both videos,
+     * preserving order: every unique image from THIS video first, then any image
+     * from `other` whose basename has not already been seen.
+     *
+     * @param other - Another image-sequence video to merge with.
+     * @returns A new `Video` with the de-duplicated union of both videos' images.
+     * @throws Error - If either video's `filename` is not a list (ImageVideo).
+     */
+    mergeWith(other: Video): Video;
 }
 
 /** Return the shared single-node `Skeleton(["centroid"])` instance. */
@@ -599,6 +686,415 @@ declare function normalizeLabelIds(labelImages: LabelImage[], options: {
     by: "category";
 }): Map<string, number>;
 
+/**
+ * Unified matcher system for comparing and matching data structures during merging.
+ *
+ * TypeScript port of Python `sleap_io/model/matching.py` (pinned @ 054cce39f).
+ * PART 1 implements the six enums (+ validators), the result/error types, the
+ * progress-bar stub, and the module-level helper functions (video file/shape/
+ * pose/image matching). The four matcher classes and preconfigured singletons
+ * are added in PART 2.
+ *
+ * Identity policy (ARCHITECTURE §9): all model objects compare by reference
+ * (`===`) and are used directly as `Map`/`Set` keys. Value comparison happens
+ * ONLY through the named `.matches*` / `samePoseAs` / etc. methods. Maps preserve
+ * insertion order. Exact-type discrimination uses `x.constructor === Instance` /
+ * `=== PredictedInstance` (mirrors Python `type(x) is ...`).
+ */
+
+/** Methods for matching skeletons (matching.py:34-47). */
+declare const SkeletonMatchMethod: {
+    readonly EXACT: "exact";
+    readonly STRUCTURE: "structure";
+    readonly OVERLAP: "overlap";
+    readonly SUBSET: "subset";
+};
+type SkeletonMatchMethod = (typeof SkeletonMatchMethod)[keyof typeof SkeletonMatchMethod];
+/** Methods for matching instances (matching.py:50-61). */
+declare const InstanceMatchMethod: {
+    readonly SPATIAL: "spatial";
+    readonly IDENTITY: "identity";
+    readonly IOU: "iou";
+};
+type InstanceMatchMethod = (typeof InstanceMatchMethod)[keyof typeof InstanceMatchMethod];
+/** Methods for matching tracks (matching.py:64-73). */
+declare const TrackMatchMethod: {
+    readonly NAME: "name";
+    readonly IDENTITY: "identity";
+};
+type TrackMatchMethod = (typeof TrackMatchMethod)[keyof typeof TrackMatchMethod];
+/** Methods for matching videos (matching.py:76-99). */
+declare const VideoMatchMethod: {
+    readonly PATH: "path";
+    readonly BASENAME: "basename";
+    readonly CONTENT: "content";
+    readonly AUTO: "auto";
+    readonly IMAGE_DEDUP: "image_dedup";
+    readonly SHAPE: "shape";
+};
+type VideoMatchMethod = (typeof VideoMatchMethod)[keyof typeof VideoMatchMethod];
+/** Strategies for handling frame merging (matching.py:102-121). */
+declare const FrameStrategy: {
+    readonly AUTO: "auto";
+    readonly KEEP_ORIGINAL: "keep_original";
+    readonly KEEP_NEW: "keep_new";
+    readonly KEEP_BOTH: "keep_both";
+    readonly UPDATE_TRACKS: "update_tracks";
+    readonly REPLACE_PREDICTIONS: "replace_predictions";
+};
+type FrameStrategy = (typeof FrameStrategy)[keyof typeof FrameStrategy];
+/** Error handling modes for merge operations (matching.py:124-135). */
+declare const ErrorMode: {
+    readonly CONTINUE: "continue";
+    readonly STRICT: "strict";
+    readonly WARN: "warn";
+};
+type ErrorMode = (typeof ErrorMode)[keyof typeof ErrorMode];
+/**
+ * Information about a conflict that was resolved during merging
+ * (matching.py:1150-1170). Plain data record; equality is not exercised.
+ *
+ * Only two `conflictType` values are emitted: `"instance_conflict"` and
+ * `"negative_flag_conflict"`.
+ */
+declare class ConflictResolution {
+    frame: LabeledFrame;
+    conflictType: string;
+    originalData: unknown;
+    newData: unknown;
+    resolution: string;
+    constructor(frame: LabeledFrame, conflictType: string, originalData: unknown, newData: unknown, resolution: string);
+}
+/**
+ * Base exception for merge errors (matching.py:1173-1183).
+ *
+ * `details` is a FRESH `{}` per instance (never a shared module object).
+ */
+declare class MergeError extends Error {
+    details: Record<string, unknown>;
+    constructor(message: string, details?: Record<string, unknown>);
+}
+/**
+ * Raised when skeletons don't match during merge (matching.py:1186-1189).
+ *
+ * Extends {@link MergeError} with no new fields/methods; `instanceof MergeError`
+ * MUST hold so a single `catch (e) { if (e instanceof MergeError) ... }`
+ * captures both.
+ */
+declare class SkeletonMismatchError extends MergeError {
+    constructor(message: string, details?: Record<string, unknown>);
+}
+/**
+ * Result of a merge operation (matching.py:1192-1242).
+ *
+ * `merge()` never touches `instancesUpdated`/`instancesSkipped` — they stay 0.
+ * `conflicts` and `errors` are fresh arrays per instance.
+ */
+declare class MergeResult {
+    successful: boolean;
+    framesMerged: number;
+    instancesAdded: number;
+    instancesUpdated: number;
+    instancesSkipped: number;
+    conflicts: ConflictResolution[];
+    errors: MergeError[];
+    constructor(successful: boolean, options?: {
+        framesMerged?: number;
+        instancesAdded?: number;
+        instancesUpdated?: number;
+        instancesSkipped?: number;
+        conflicts?: ConflictResolution[];
+        errors?: MergeError[];
+    });
+    /**
+     * Generate a human-readable summary of the merge result (matching.py:1214-1242).
+     *
+     * Byte-exact: U+2713 (checkmark) / U+2717 (ballot X) prefix; 2-space indents
+     * for counts, 4-space "- " indents for error lines; optional int lines gated
+     * on `!== 0`; list lines gated on `.length > 0`; first-5 errors + overflow
+     * line. No trailing newline.
+     */
+    summary(): string;
+}
+/**
+ * Result of matching two Labels objects (matching.py:1245-1336).
+ *
+ * Maps are keyed by `other`'s objects (by reference) and store `self`'s objects
+ * or `null` on no-match. `Map` preserves insertion order, which the
+ * `unmatched*`/`summary()` consumers rely on.
+ */
+declare class MatchResult {
+    videoMap: Map<Video, Video | null>;
+    skeletonMap: Map<Skeleton, Skeleton | null>;
+    trackMap: Map<Track, Track | null>;
+    constructor(options?: {
+        videoMap?: Map<Video, Video | null>;
+        skeletonMap?: Map<Skeleton, Skeleton | null>;
+        trackMap?: Map<Track, Track | null>;
+    });
+    /** Videos from `other` that had no match in `self` (insertion order). */
+    get unmatchedVideos(): Video[];
+    /** Skeletons from `other` that had no match in `self` (insertion order). */
+    get unmatchedSkeletons(): Skeleton[];
+    /** Tracks from `other` that had no match in `self` (insertion order). */
+    get unmatchedTracks(): Track[];
+    /** True if all videos from `other` were matched (empty map => true). */
+    get allVideosMatched(): boolean;
+    /** True if all skeletons from `other` were matched (empty map => true). */
+    get allSkeletonsMatched(): boolean;
+    /** True if all tracks from `other` were matched (empty map => true). */
+    get allTracksMatched(): boolean;
+    /** Number of videos successfully matched (counts `value != null`). */
+    get nVideosMatched(): number;
+    /** Number of skeletons successfully matched (counts `value != null`). */
+    get nSkeletonsMatched(): number;
+    /** Number of tracks successfully matched (counts `value != null`). */
+    get nTracksMatched(): number;
+    /**
+     * Generate a human-readable summary of the match result (matching.py:1319-1336).
+     *
+     * Three always-present count lines (no leading space). Only videos get an
+     * unmatched listing (first 5 + overflow), 2-space "- " indents. No trailing
+     * newline.
+     */
+    summary(): string;
+}
+/**
+ * Presentation-only progress bar stub (matching.py:1339-1388).
+ *
+ * The only contract that matters for merge output parity is the
+ * `callback(current, total, message)` signature `merge()` calls. There is no
+ * tqdm in JS, so the bar is a no-op (optionally logs). The context-manager
+ * shape is preserved via `[Symbol.dispose]` (for `using`) and explicit `enter`/
+ * `exit` methods.
+ */
+declare class MergeProgressBar {
+    desc: string;
+    leave: boolean;
+    pbar: unknown;
+    constructor(desc?: string, leave?: boolean);
+    /** Context-manager enter: returns self. */
+    enter(): this;
+    /** Context-manager exit: closes the (stub) bar. */
+    exit(): void;
+    /** `using` support: dispose closes the (stub) bar. */
+    [Symbol.dispose](): void;
+    /**
+     * Progress callback for merge operations. Creates the (stub) bar lazily only
+     * when `total` is truthy (nonzero), then records absolute progress. No-op
+     * presentation.
+     */
+    callback(current: number, total: number, message?: string): void;
+}
+/**
+ * Abstract filesystem operations needed by the video file helpers. All methods
+ * are async. A browser/no-FS environment supplies a resolver whose methods
+ * return the conservative answers (or simply leaves the default, which detects
+ * the missing `fs` and degrades).
+ */
+interface FsResolver {
+    /** True if the path exists on disk. */
+    exists(path: string): Promise<boolean>;
+    /**
+     * True if both paths refer to the same file (e.g. via inode `dev`+`ino`).
+     * Implementations may throw; callers wrap in try/catch.
+     */
+    sameFile(path1: string, path2: string): Promise<boolean>;
+    /**
+     * Canonical absolute path (symlinks resolved when the file exists, else a
+     * plain absolute resolution). Used for the resolved-path equality fallback.
+     * May throw; callers wrap in try/catch.
+     */
+    realpath(path: string): Promise<string>;
+}
+/**
+ * Override the filesystem resolver (DECISIONS D7). Pass `null` to clear the
+ * explicit override and fall back to the registered default — the Node `fs`
+ * resolver in Node builds/tests, or none in the browser bundle (which degrades
+ * to the conservative "cannot verify" path). Tests use this to inject a stub.
+ */
+declare function setFsResolver(resolver: FsResolver | null): void;
+/**
+ * Matcher for comparing and matching skeletons (matching.py:647-684).
+ *
+ * @remarks
+ * - `requireSameOrder` is consulted ONLY by the STRUCTURE method (EXACT forces
+ *   `requireSameOrder=true`).
+ * - `minOverlap` is consulted ONLY by the OVERLAP method.
+ */
+declare class SkeletonMatcher {
+    method: SkeletonMatchMethod;
+    requireSameOrder: boolean;
+    minOverlap: number;
+    /**
+     * @param method - The matching method (default STRUCTURE). A bare string is
+     *   coerced to the enum value and validated (throws on unknown).
+     * @param options - `requireSameOrder` (default `false`), `minOverlap`
+     *   (default `0.5`).
+     */
+    constructor(method?: SkeletonMatchMethod | string, options?: {
+        requireSameOrder?: boolean;
+        minOverlap?: number;
+    });
+    /**
+     * Check if two skeletons match according to the configured method
+     * (matching.py:667-684). Dispatch order is load-bearing.
+     */
+    match(skeleton1: Skeleton, skeleton2: Skeleton): boolean;
+}
+/**
+ * Matcher for comparing and matching instances (matching.py:687-771).
+ *
+ * @remarks
+ * Threshold semantics depend on method: SPATIAL → pixel tolerance, IOU → minimum
+ * IoU, IDENTITY → unused.
+ */
+declare class InstanceMatcher {
+    method: InstanceMatchMethod;
+    threshold: number;
+    /**
+     * @param method - The matching method (default SPATIAL). A bare string is
+     *   coerced + validated.
+     * @param options - `threshold` (default `5.0`).
+     */
+    constructor(method?: InstanceMatchMethod | string, options?: {
+        threshold?: number;
+    });
+    /**
+     * Check if two instances match according to the configured method
+     * (matching.py:705-714).
+     */
+    match(instance1: Instance, instance2: Instance): boolean;
+    /**
+     * Find all matching instances between two lists (matching.py:716-771).
+     *
+     * Returns the FULL Cartesian product of `[idx1, idx2, score]` triples for
+     * matching pairs (NOT greedy/one-to-one). Output order = nested-loop encounter
+     * order (`i` outer, `j` inner). The gate ({@link match}) and the score are
+     * computed by SEPARATE code paths, so a subclass that overrides `match()` to
+     * always-true still gets a correct (or zero) score.
+     */
+    findMatches(instances1: Instance[], instances2: Instance[]): [number, number, number][];
+}
+/**
+ * Matcher for comparing and matching tracks (matching.py:774-790).
+ *
+ * @remarks
+ * Delegates to `Track.matches(other, method)`, passing the string VALUE of the
+ * configured method ("name" / "identity").
+ */
+declare class TrackMatcher {
+    method: TrackMatchMethod;
+    /**
+     * @param method - The matching method (default NAME). A bare string is coerced
+     *   + validated.
+     */
+    constructor(method?: TrackMatchMethod | string);
+    /** Check if two tracks match according to the configured method. */
+    match(track1: Track, track2: Track): boolean;
+}
+/**
+ * Matcher for comparing and matching videos (matching.py:793-1126).
+ *
+ * @remarks
+ * `strict` is consulted ONLY by the PATH method. The AUTO method uses
+ * `strict=true` for one internal stage and `strict=false` for another,
+ * regardless of `this.strict`. The per-instance `_frameCache` is fresh per
+ * matcher and excluded from any equality/repr (it is identity-keyed).
+ *
+ * Async-ness (DECISIONS D8): the AUTO cascade reaches filesystem checks
+ * (`isSameFile`, `originalVideosConflict`, `_fileExists`) and image pixels
+ * (`getFrame`), all of which are async, so {@link match} and {@link findMatch}
+ * return `Promise`. Every FS/image helper is awaited (a non-awaited Promise is
+ * truthy and would cause false matches).
+ */
+declare class VideoMatcher {
+    method: VideoMatchMethod;
+    strict: boolean;
+    contentFrames: number;
+    comparePredictions: string | boolean;
+    compareImages: boolean;
+    imageSimilarityThreshold: number;
+    /** Fresh, reference-keyed per matcher; NOT a constructor argument. */
+    private _frameCache;
+    /**
+     * @param method - The matching method (default AUTO). A bare string is coerced
+     *   + validated.
+     * @param options - `strict` (default `false`), `contentFrames` (default `3`),
+     *   `comparePredictions` (default `"auto"`), `compareImages` (default
+     *   `false`), `imageSimilarityThreshold` (default `0.05`).
+     */
+    constructor(method?: VideoMatchMethod | string, options?: {
+        strict?: boolean;
+        contentFrames?: number;
+        comparePredictions?: string | boolean;
+        compareImages?: boolean;
+        imageSimilarityThreshold?: number;
+    });
+    /**
+     * Get frame instances with reference-keyed caching (matching.py:834-850).
+     * Avoids recomputing the per-video frame map during a merge.
+     */
+    private _getCachedFrameInstances;
+    /**
+     * Check if two videos match according to the configured method
+     * (matching.py:852-897) — PAIRWISE (NOT the full AUTO cascade).
+     *
+     * For AUTO this performs rejection checks + definitive identity + path match;
+     * for the full AUTO matching with leaf-uniqueness use {@link findMatch}.
+     *
+     * Async because the AUTO branch awaits `isSameFile` / `originalVideosConflict`.
+     */
+    match(video1: Video, video2: Video): Promise<boolean>;
+    /**
+     * Find a matching video from `candidates` using the configured method
+     * (matching.py:899-1031). Returns a `Video` from `candidates` (by reference)
+     * or `null`.
+     *
+     * Non-AUTO: first candidate where `this.match(candidate, incoming)` is true.
+     * AUTO: the exact 6-stage safe cascade (file identity → strict path → leaf-path
+     * uniqueness at increasing depth → pose matching → image matching → null).
+     *
+     * Async (DECISIONS D8): awaits FS + pixel helpers throughout.
+     */
+    findMatch(incoming: Video, candidates: Video[], opts?: {
+        labelsIncoming?: Labels | null;
+        labelsBase?: Labels | null;
+    }): Promise<Video | null>;
+    /**
+     * Try to match a video by comparing pose annotations (matching.py:1033-1091).
+     *
+     * Resolves `includePredictions` separately for incoming and EACH candidate;
+     * uses the reference-keyed frame cache; for each candidate computes the common
+     * frame-index intersection, requires `min(contentFrames, common.size)` matching
+     * sampled frames (sampling up to `contentFrames * 2`), and short-circuits the
+     * moment the count reaches `required`. Returns the matched candidate or `null`.
+     */
+    private _matchByPoses;
+    /**
+     * Try to match a video by comparing image content (matching.py:1093-1126).
+     *
+     * Only used when `compareImages` is true (expensive). Same control flow as
+     * {@link _matchByPoses} but over common EMBEDDED frame indices, using
+     * pixel-similarity (`imageSimilarityThreshold`). Returns the matched candidate
+     * or `null`.
+     */
+    private _matchByImages;
+}
+declare const STRUCTURE_SKELETON_MATCHER: SkeletonMatcher;
+declare const SUBSET_SKELETON_MATCHER: SkeletonMatcher;
+declare const OVERLAP_SKELETON_MATCHER: SkeletonMatcher;
+declare const DUPLICATE_MATCHER: InstanceMatcher;
+declare const IOU_MATCHER: InstanceMatcher;
+declare const IDENTITY_INSTANCE_MATCHER: InstanceMatcher;
+declare const NAME_TRACK_MATCHER: TrackMatcher;
+declare const IDENTITY_TRACK_MATCHER: TrackMatcher;
+declare const AUTO_VIDEO_MATCHER: VideoMatcher;
+declare const PATH_VIDEO_MATCHER: VideoMatcher;
+declare const BASENAME_VIDEO_MATCHER: VideoMatcher;
+declare const IMAGE_DEDUP_VIDEO_MATCHER: VideoMatcher;
+declare const SHAPE_VIDEO_MATCHER: VideoMatcher;
+
 /** Strategy for merging annotation lists between frames. */
 type MergeStrategy = "keep_both" | "keep_original" | "keep_new" | "replace_predictions" | "auto" | "update_tracks";
 /** Union of all annotation types stored on a LabeledFrame. */
@@ -626,6 +1122,23 @@ declare function _findAnnotationMatches(selfList: Annotation[], otherList: Annot
     otherIdx: number;
     score: number;
 }>;
+/**
+ * Resolve the `isNegative` flag for a merged frame
+ * (labeled_frame.py:204-226).
+ *
+ * A frame asserted as negative (background) by either side of a merge stays
+ * negative, unless the merge produced a real user pose -- a frame with a
+ * labeled animal is not a background frame. Predicted instances do not cancel
+ * the flag, keeping the predict -> merge-back workflow correct.
+ *
+ * @param selfNeg - The `isNegative` flag of the base frame.
+ * @param otherNeg - The `isNegative` flag of the incoming frame.
+ * @param merged - The merged instance list.
+ * @returns A tuple `[resolved, conflict]` where `resolved` is the merged
+ *   `isNegative` value and `conflict` is `true` if a negative flag was dropped
+ *   because the merge produced a user pose.
+ */
+declare function _resolveMergedIsNegative(selfNeg: boolean, otherNeg: boolean, merged: Array<Instance | PredictedInstance>): [boolean, boolean];
 declare class LabeledFrame {
     video: Video;
     frameIdx: number;
@@ -677,6 +1190,37 @@ declare class LabeledFrame {
      *   in "auto" and "update_tracks" strategies.
      */
     mergeAnnotations(other: LabeledFrame, strategy?: MergeStrategy, threshold?: number): void;
+    /**
+     * Merge instances from another frame into this frame
+     * (labeled_frame.py:530-702).
+     *
+     * The merged instance list is RETURNED (not assigned back) so the caller can
+     * decide what to do with it. Frame-level annotations (centroids, bboxes,
+     * masks, label images, rois) and the `isNegative` flag ARE updated on this
+     * frame in place.
+     *
+     * Instances added from `other` (in the auto/replace/update strategies) are
+     * the ORIGINAL `other` objects, NOT copies, so they alias the other frame's
+     * instances. Skeleton/track remap of merged instances is handled by the
+     * `Labels.merge` driver, not here.
+     *
+     * @param other - Another LabeledFrame to merge instances from.
+     * @param opts.instance - Matcher to use for finding duplicate instances. If
+     *   omitted, uses default spatial matching with 5px tolerance.
+     * @param opts.frame - The merge strategy string (default `"auto"`). One of:
+     *   `"auto"`, `"keep_original"`, `"keep_new"`, `"keep_both"`,
+     *   `"update_tracks"`, `"replace_predictions"`. Any other string falls
+     *   through to the auto branch.
+     * @returns A tuple `[mergedInstances, conflicts]` where `conflicts` is a list
+     *   of `[selfInst, otherInst, resolution]` tuples.
+     */
+    merge(other: LabeledFrame, opts?: {
+        instance?: InstanceMatcher;
+        frame?: string;
+    }): [
+        Array<Instance | PredictedInstance>,
+        Array<[Instance, Instance, string]>
+    ];
     /**
      * Append an annotation to this frame, routing to the correct list by type.
      *
@@ -913,6 +1457,22 @@ declare class LazyFrameList {
     get materializedCount(): number;
 }
 
+declare class LabelsSet {
+    labels: Map<string, Labels>;
+    constructor(entries?: Record<string, Labels>);
+    get size(): number;
+    get(key: string): Labels | undefined;
+    set(key: string, value: Labels): void;
+    delete(key: string): void;
+    keys(): IterableIterator<string>;
+    values(): IterableIterator<Labels>;
+    entries(): IterableIterator<[string, Labels]>;
+    [Symbol.iterator](): IterableIterator<[string, Labels]>;
+    static fromLabelsList(labelsList: Labels[], keys?: string[]): LabelsSet;
+    toArray(): Labels[];
+    keyArray(): string[];
+}
+
 declare class Labels {
     labeledFrames: LabeledFrame[];
     videos: Video[];
@@ -970,24 +1530,34 @@ declare class Labels {
     getTrackAnnotations(video: Video, track: Track): Array<Centroid | BoundingBox | SegmentationMask | ROI | LabelImage | Instance | PredictedInstance>;
     /** Force rebuild of all indices on next access. */
     reindex(): void;
-    /** Remove all predicted instances and predicted annotations from all frames. */
-    removePredictions(): void;
+    /**
+     * Remove all predicted instances and predicted annotations from all frames.
+     *
+     * Mirrors Python `Labels.remove_predictions` (labels.py:1684-1710).
+     *
+     * @param clean - If `true` (the default), also prune empty frames and unused
+     *   skeletons/tracks via {@link clean} with `frames`, `skeletons`, `tracks`
+     *   enabled and `emptyInstances`/`videos` disabled. Does NOT remove videos
+     *   with no labeled frames, nor instances with no visible points.
+     */
+    removePredictions(clean?: boolean): void;
     /**
      * Collapse structurally-equal skeletons into a single canonical entry.
      *
-     * Skeletons are partitioned via {@link Skeleton.matches} (same node count and
-     * node names in the same order). The first member of each equivalence class
-     * is kept as canonical; the rest are removed from `this.skeletons` and every
-     * instance referencing a non-canonical skeleton is reassigned to the canonical
-     * via direct property assignment. Points are positional, so reassignment is
-     * safe and does not change any point coordinates.
+     * Skeletons are partitioned via {@link Skeleton.matches} called with
+     * `requireSameOrder: true` (same node count, same node names IN THE SAME
+     * ORDER, same edge set, and same symmetry set). The first member of each
+     * equivalence class is kept as canonical; the rest are removed from
+     * `this.skeletons` and every instance referencing a non-canonical skeleton is
+     * reassigned to the canonical via direct property assignment. Points are
+     * positional and are NOT remapped, so order-identical matching is required to
+     * keep reassignment safe.
      *
      * Note: skeleton `name` is not part of `matches()` — the canonical's name wins.
      *
-     * Note: `matches()` compares only node count and node names in order — it does
-     * NOT compare `edges` or `symmetries`. If matched skeletons differ in topology,
-     * the canonical (first) skeleton's edges/symmetries are kept and the others are
-     * discarded.
+     * Note: skeletons that share node names but differ in node ORDER are treated
+     * as distinct here (they are not collapsed), since collapsing them would
+     * misalign instance points.
      *
      * Legacy `.slp` files often carry content-duplicate skeletons (a pre-1.5 Python
      * sleap quirk). Call this method after `loadSlp` if you want them collapsed —
@@ -1145,22 +1715,196 @@ declare class Labels {
         returnConfidence?: boolean;
         numFrames?: number;
     }): number[][][][];
-}
-
-declare class LabelsSet {
-    labels: Map<string, Labels>;
-    constructor(entries?: Record<string, Labels>);
-    get size(): number;
-    get(key: string): Labels | undefined;
-    set(key: string, value: Labels): void;
-    delete(key: string): void;
-    keys(): IterableIterator<string>;
-    values(): IterableIterator<Labels>;
-    entries(): IterableIterator<[string, Labels]>;
-    [Symbol.iterator](): IterableIterator<[string, Labels]>;
-    static fromLabelsList(labelsList: Labels[], keys?: string[]): LabelsSet;
-    toArray(): Labels[];
-    keyArray(): string[];
+    /**
+     * Update data structures based on contents.
+     *
+     * Repopulates `videos`, `skeletons`, and `tracks` from the labeled frames,
+     * their instances and nested annotations, and the suggestions. Existing
+     * entries are preserved (in order); only missing ones are appended.
+     *
+     * Mirrors Python `Labels.update` (labels.py:435-457).
+     */
+    update(): void;
+    /**
+     * Remap video and track references on a frame's annotations in place.
+     *
+     * Mirrors Python `Labels._remap_frame_annotations` (labels.py:3621-3648).
+     * Centroids/bboxes/masks: only `.track` is remapped. ROIs: both `.video` and
+     * `.track`. Label-image objects: nested `info.track` only. Membership is by
+     * reference via `Map.has`/`Map.get` (never a `?? default`), so a track/video
+     * absent from the map is left untouched.
+     *
+     * @param frame - LabeledFrame whose annotations should be remapped.
+     * @param videoMap - Map from old videos to new videos.
+     * @param trackMap - Map from old tracks to new tracks.
+     */
+    static _remapFrameAnnotations(frame: LabeledFrame, videoMap: Map<Video, Video>, trackMap: Map<Track, Track>): void;
+    /**
+     * Map an instance to use mapped skeleton and track, returning a NEW instance.
+     *
+     * Mirrors Python `Labels._map_instance` (labels.py:3650-3687). The source
+     * instance is never mutated: its points are deep-copied and the returned
+     * instance is a fresh object of the SAME exact type (`Instance` vs
+     * `PredictedInstance`, dispatched via `constructor ===`). Skeleton/track are
+     * resolved through the maps with `?? original` fallback.
+     *
+     * @param instance - Instance to map.
+     * @param skeletonMap - Map from old skeletons to new skeletons.
+     * @param trackMap - Map from old tracks to new tracks.
+     * @returns New instance with mapped skeleton and track.
+     */
+    _mapInstance(instance: Instance | PredictedInstance, skeletonMap: Map<Skeleton, Skeleton>, trackMap: Map<Track, Track>): Instance | PredictedInstance;
+    /**
+     * Merge another `Labels` object into this one in place.
+     *
+     * Faithful port of Python `Labels.merge` (labels.py:3149-3618). Runs the fixed
+     * 5-step pipeline (skeletons -> videos -> tracks -> frames -> suggestions),
+     * building reference-keyed maps FROM `other`'s objects TO `self`'s objects (or
+     * to a newly-appended `other` object), and returns a {@link MergeResult}.
+     *
+     * Async (DECISIONS D8): the AUTO video cascade awaits filesystem and pixel
+     * reads. Coercion of the matcher/error-mode arguments happens BEFORE the merge
+     * body, so a bad method/error-mode string propagates (it is NOT collected into
+     * the result).
+     *
+     * @param other - The `Labels` to merge into `self`.
+     * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE; string ->
+     *   validated; else used as-is).
+     * @param opts.video - Video matcher (`null` -> AUTO).
+     * @param opts.track - Track matcher (`null` -> NAME).
+     * @param opts.frame - The frame merge strategy as a RAW string (default
+     *   `"auto"`; NOT validated against the enum — an invalid value falls through
+     *   `LabeledFrame.merge`'s strategy chain into the AUTO branch).
+     * @param opts.instance - Instance matcher (`null` -> SPATIAL/5.0).
+     * @param opts.validate - If `true` (default), an unmatched skeleton under
+     *   STRICT raises `SkeletonMismatchError`.
+     * @param opts.progressCallback - Called `(current, total, message)` per frame
+     *   and once at the end.
+     * @param opts.errorMode - `"continue"` (default), `"strict"`, or `"warn"`.
+     */
+    merge(other: Labels, opts?: {
+        skeleton?: string | SkeletonMatcher | null;
+        video?: string | VideoMatcher | null;
+        track?: string | TrackMatcher | null;
+        frame?: string;
+        instance?: string | InstanceMatcher | null;
+        validate?: boolean;
+        progressCallback?: (current: number, total: number, message: string) => void;
+        errorMode?: string;
+    }): Promise<MergeResult>;
+    /**
+     * Build correspondence maps between this `Labels` and another WITHOUT mutating
+     * either (read-only twin of {@link merge}).
+     *
+     * Faithful port of Python `Labels.match` (labels.py:3020-3147). Coerces only
+     * the video/skeleton/track matchers (NO instance matcher, NO error mode). No
+     * lazy guard, no try/except, no provenance, no mutation. AUTO videos use the
+     * full `findMatch` cascade; every other method (including IMAGE_DEDUP/SHAPE)
+     * uses a simple first-match-wins loop. Unmatched -> `null`.
+     *
+     * Async (DECISIONS D8): the AUTO cascade awaits filesystem/pixel reads.
+     *
+     * @param other - The `Labels` to match against (maps `other` -> `self`).
+     * @param opts.video - Video matcher (`null` -> AUTO).
+     * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE).
+     * @param opts.track - Track matcher (`null` -> NAME).
+     */
+    match(other: Labels, opts?: {
+        video?: string | VideoMatcher | null;
+        skeleton?: string | SkeletonMatcher | null;
+        track?: string | TrackMatcher | null;
+    }): Promise<MatchResult>;
+    /**
+     * Resolve a foreign `Video` or path to the canonical `Video` in `this.videos`.
+     *
+     * Faithful port of Python `Labels.match_video` (labels.py:1216-1344). Uses its
+     * OWN simpler cascade (NOT `findMatch`). Method validation runs BEFORE the
+     * identity short-circuit. RAISES on ambiguity (>1 candidate), unlike
+     * {@link match} which silently takes the first.
+     *
+     * Async (DECISIONS D8): the file-identity tier awaits `isSameFile` / FS checks.
+     *
+     * @param videoOrPath - A `Video`, or a filename string (wrapped in an unopened
+     *   `Video`).
+     * @param method - `"auto"` (default), another method string, or a
+     *   `VideoMatcher`. AUTO (string or matcher) uses the tiered cascade.
+     * @returns The canonical `Video` from `this.videos`, or `null` if none match.
+     */
+    matchVideo(videoOrPath: Video | string, method?: string | VideoMatcher): Promise<Video | null>;
+    /**
+     * Remove empty frames, unused skeletons, tracks and videos.
+     *
+     * Mirrors Python `Labels.clean` (labels.py:1577-1682). In-place, returns
+     * void. This is an explicit opt-in operation (never auto-run on load).
+     *
+     * @param opts.frames - If `true` (default), remove empty frames. Negative
+     *   frames (`isNegative === true`) and annotation-only frames are preserved.
+     * @param opts.emptyInstances - If `true` (NOT default), remove instances with
+     *   no visible points (before the emptiness check).
+     * @param opts.skeletons - If `true` (default), remove unused skeletons.
+     * @param opts.tracks - If `true` (default), remove unused tracks and the
+     *   annotations/objects that reference removed tracks (track=null is always
+     *   preserved).
+     * @param opts.videos - If `true` (NOT default), remove videos with no labeled
+     *   frames.
+     */
+    clean(opts?: {
+        frames?: boolean;
+        emptyInstances?: boolean;
+        skeletons?: boolean;
+        tracks?: boolean;
+        videos?: boolean;
+    }): void;
+    /**
+     * Extract a set of frames into a new Labels object.
+     *
+     * Mirrors Python `Labels.extract` (labels.py:2482-2551). Copies the selected
+     * frames and their reachable graph (instances/skeletons/tracks/videos/
+     * annotations) with structural sharing (each shared object copied once), keeps
+     * the relative ordering of tracks/skeletons by NAME, copies/dedups suggestions
+     * for the extracted videos, and records the source labels in provenance.
+     *
+     * @param inds - Frame selection: an array of integer indices, an array of
+     *   `[Video, frameIdx]` tuples, or a single `Video` (all of its frames).
+     * @param copy - If `true` (default), deep-copy the frames and containing
+     *   objects; otherwise share references with this Labels.
+     * @returns A new `Labels` containing the selected frames.
+     */
+    extract(inds: number[] | Array<[Video, number]> | Video, copy?: boolean): Labels;
+    /**
+     * Resolve an extraction selection to a list of LabeledFrame references.
+     *
+     * Supports the subset of Python `__getitem__` selectors needed by
+     * `extract`/`split`: integer index arrays, `[Video, frameIdx]` tuple arrays,
+     * and a single `Video`. (Filename/path resolution requires `matchVideo`,
+     * which is added in a later phase.)
+     */
+    private _selectFrames;
+    /**
+     * Deep-copy a list of frames with structural sharing.
+     *
+     * Reproduces Python `deepcopy(lfs)`: shared Track/Skeleton/Video objects within
+     * the selected subgraph are copied exactly once (via memo maps), so references
+     * shared across frames/instances remain shared in the copy.
+     */
+    private _deepCopyFrames;
+    /**
+     * Separate the labels into two random splits.
+     *
+     * Mirrors Python `Labels.split` (labels.py:2553-2607) for the count/branch
+     * logic. Per DECISIONS D5, the index selection uses a deterministic seeded
+     * RNG (NOT NumPy PCG64) — counts and edge cases match Python exactly, but the
+     * specific frames chosen are not bit-identical to NumPy.
+     *
+     * @param n - Size of the first split. `>= 1` is an absolute frame count;
+     *   `< 1.0` is a fraction of the total (`max(trunc(n0*n), 1)`).
+     * @param seed - Optional integer seed for reproducibility within JS. When
+     *   omitted/null, a fixed default seed is used.
+     * @returns A `LabelsSet` with keys `"split1"` and `"split2"`.
+     */
+    split(n: number, seed?: number | null): LabelsSet;
+    /** Deterministic 32-bit RNG (mulberry32). Returns floats in [0, 1). */
+    private static _mulberry32;
 }
 
 declare class Mp4BoxVideoBackend implements VideoBackend {
@@ -1932,4 +2676,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AnnotationType, BoundingBox, type BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, FrameGroup, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, type MediaBunnyOptions, MediaBunnyVideoBackend, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, PALETTES, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SegmentationMask, type SegmentationMaskOptions, Skeleton, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, toDict, toNumpy, writeGeoJSON };
+export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BoundingBox, type BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, ConflictResolution, DUPLICATE_MATCHER, ErrorMode, FrameGroup, FrameStrategy, type FsResolver, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, MatchResult, type MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, type SegmentationMaskOptions, Skeleton, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, TrackMatchMethod, TrackMatcher, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, VideoMatchMethod, VideoMatcher, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, toDict, toNumpy, writeGeoJSON };

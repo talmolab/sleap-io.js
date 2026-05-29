@@ -5,8 +5,17 @@ function _registerCentroidFactory(factory) {
 }
 var Track = class {
   name;
-  constructor(name) {
+  constructor(name = "") {
     this.name = name;
+  }
+  matches(other, method = "name") {
+    if (method === "name") {
+      return this.name === other.name;
+    }
+    if (method === "identity") {
+      return this === other;
+    }
+    throw new Error("Unknown matching method: " + method);
   }
 };
 function pointsEmpty(length, names) {
@@ -154,27 +163,124 @@ var Instance = class _Instance {
   get isEmpty() {
     return this.points.every((point) => !point.visible || Number.isNaN(point.xy[0]));
   }
-  overlapsWith(other, iouThreshold = 0.1) {
+  /**
+   * Check if this instance has the same pose as another instance.
+   *
+   * Mirrors Python `Instance.same_pose_as` (instance.py:699-753).
+   *
+   * @param other - Another instance to compare with.
+   * @param tolerance - Maximum distance (in pixels) between corresponding points
+   *   for them to be considered the same. If `null`/`undefined`, uses exact
+   *   comparison including NaN==NaN handling.
+   * @returns `true` if the instances have the same pose within tolerance.
+   */
+  samePoseAs(other, tolerance) {
+    if (!this.skeleton.matches(other.skeleton)) return false;
+    const a = this.numpy();
+    const b = other.numpy();
+    if (tolerance == null) {
+      if (a.length !== b.length) return false;
+      for (let i = 0; i < a.length; i += 1) {
+        for (let j = 0; j < 2; j += 1) {
+          const av = a[i][j];
+          const bv = b[i][j];
+          const aNaN = Number.isNaN(av);
+          const bNaN = Number.isNaN(bv);
+          if (aNaN !== bNaN) return false;
+          if (!aNaN && av !== bv) return false;
+        }
+      }
+      return true;
+    }
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i += 1) {
+      for (let j = 0; j < 2; j += 1) {
+        if (Number.isNaN(a[i][j]) !== Number.isNaN(b[i][j])) return false;
+      }
+    }
+    const aVals = [];
+    const bVals = [];
+    for (let i = 0; i < a.length; i += 1) {
+      for (let j = 0; j < 2; j += 1) {
+        if (!Number.isNaN(a[i][j])) {
+          aVals.push(a[i][j]);
+          bVals.push(b[i][j]);
+        }
+      }
+    }
+    if (aVals.length === 0) return true;
+    for (let k = 0; k < aVals.length; k += 2) {
+      const dx = aVals[k] - bVals[k];
+      const dy = aVals[k + 1] - bVals[k + 1];
+      const distance = Math.hypot(dx, dy);
+      if (!(distance <= tolerance)) return false;
+    }
+    return true;
+  }
+  /**
+   * Check if this instance has the same identity (track) as another instance.
+   *
+   * Mirrors Python `Instance.same_identity_as` (instance.py:755-770). Compares
+   * tracks by reference identity, not by name.
+   *
+   * @param other - Another instance to compare with.
+   * @returns `true` if both instances share the same `Track` object.
+   */
+  sameIdentityAs(other) {
+    if (this.track == null || other.track == null) return false;
+    return this.track === other.track;
+  }
+  /**
+   * Check if this instance overlaps with another by bounding-box IoU.
+   *
+   * Mirrors Python `Instance.overlaps_with` (instance.py:772-830). Bounding
+   * boxes are computed over VISIBLE points; if either has none, returns false.
+   * If the boxes do not STRICTLY intersect on both axes (touching edges count
+   * as no overlap), returns false regardless of `iouThreshold` — this matches
+   * Python's `np.any(intersection_min >= intersection_max) -> False`
+   * short-circuit, which runs before the threshold comparison.
+   *
+   * @param other - Another instance to compare with.
+   * @param iouThreshold - Minimum IoU to count as overlapping (inclusive `>=`).
+   */
+  overlapsWith(other, iouThreshold = 0.5) {
     const boxA = this.boundingBox();
     const boxB = other.boundingBox();
     if (!boxA || !boxB) return false;
-    const iou = intersectionOverUnion(boxA, boxB);
+    const interMinX = Math.max(boxA[0][0], boxB[0][0]);
+    const interMinY = Math.max(boxA[0][1], boxB[0][1]);
+    const interMaxX = Math.min(boxA[1][0], boxB[1][0]);
+    const interMaxY = Math.min(boxA[1][1], boxB[1][1]);
+    if (interMinX >= interMaxX || interMinY >= interMaxY) return false;
+    const interArea = (interMaxX - interMinX) * (interMaxY - interMinY);
+    const areaA = (boxA[1][0] - boxA[0][0]) * (boxA[1][1] - boxA[0][1]);
+    const areaB = (boxB[1][0] - boxB[0][0]) * (boxB[1][1] - boxB[0][1]);
+    const union = areaA + areaB - interArea;
+    const iou = union > 0 ? interArea / union : 0;
     return iou >= iouThreshold;
   }
+  /**
+   * Get the bounding box of visible points.
+   *
+   * Mirrors Python `Instance.bounding_box` (instance.py:832-849).
+   *
+   * @returns `[[minX, minY], [maxX, maxY]]` over visible points, or `null` if
+   *   there are no visible points.
+   */
   boundingBox() {
     const xs = [];
     const ys = [];
     for (const point of this.points) {
-      if (Number.isNaN(point.xy[0]) || Number.isNaN(point.xy[1])) continue;
+      if (!point.visible) continue;
       xs.push(point.xy[0]);
       ys.push(point.xy[1]);
     }
-    if (!xs.length || !ys.length) return null;
+    if (!xs.length) return null;
     const minX = Math.min(...xs);
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
     const maxY = Math.max(...ys);
-    return [minX, minY, maxX, maxY];
+    return [[minX, minY], [maxX, maxY]];
   }
 };
 var PredictedInstance = class _PredictedInstance extends Instance {
@@ -251,20 +357,6 @@ function predictedPointsFromDict(pointsDict, skeleton) {
   }
   return points;
 }
-function intersectionOverUnion(boxA, boxB) {
-  const [ax1, ay1, ax2, ay2] = boxA;
-  const [bx1, by1, bx2, by2] = boxB;
-  const interX1 = Math.max(ax1, bx1);
-  const interY1 = Math.max(ay1, by1);
-  const interX2 = Math.min(ax2, bx2);
-  const interY2 = Math.min(ay2, by2);
-  const interArea = Math.max(0, interX2 - interX1) * Math.max(0, interY2 - interY1);
-  const areaA = Math.max(0, ax2 - ax1) * Math.max(0, ay2 - ay1);
-  const areaB = Math.max(0, bx2 - bx1) * Math.max(0, by2 - by1);
-  const union = areaA + areaB - interArea;
-  if (union === 0) return 0;
-  return interArea / union;
-}
 
 // src/model/skeleton.ts
 var Node = class {
@@ -304,6 +396,22 @@ var Symmetry = class {
     throw new Error("Symmetry index out of range.");
   }
 };
+var NAME_DELIM = "\0";
+function setsEqual(a, b) {
+  if (a.size !== b.size) return false;
+  for (const x of a) {
+    if (!b.has(x)) return false;
+  }
+  return true;
+}
+function edgeKey(source, destination) {
+  return source + NAME_DELIM + destination;
+}
+function symmetryKey(symmetry) {
+  const names = Array.from(symmetry.nodes).map((node) => node.name);
+  names.sort();
+  return names.join(NAME_DELIM);
+}
 var Skeleton = class {
   nodes;
   edges;
@@ -363,12 +471,74 @@ var Skeleton = class {
       return [nodes[0], nodes[1]];
     });
   }
-  matches(other) {
-    if (this.nodeNames.length !== other.nodeNames.length) return false;
-    for (let i = 0; i < this.nodeNames.length; i += 1) {
-      if (this.nodeNames[i] !== other.nodeNames[i]) return false;
+  /**
+   * Check if this skeleton matches another skeleton's structure.
+   *
+   * Two skeletons match if they have the same nodes (by name), the same edges
+   * (by directed source/destination name pairs), and the same symmetries (by
+   * unordered node-name pairs). All comparisons are by node NAME, never by Node
+   * identity. Two empty skeletons match.
+   *
+   * @param other Another skeleton to compare with.
+   * @param opts.requireSameOrder If true, node names must be in the same order;
+   *   if false (default), only the set of node names must match. Affects ONLY
+   *   the node-name check — edges and symmetries are always compared as
+   *   unordered sets.
+   * @returns True if the skeletons match, false otherwise.
+   */
+  matches(other, opts = {}) {
+    const requireSameOrder = opts.requireSameOrder ?? false;
+    if (this.nodes.length !== other.nodes.length) return false;
+    const selfNames = this.nodeNames;
+    const otherNames = other.nodeNames;
+    if (requireSameOrder) {
+      for (let i = 0; i < selfNames.length; i += 1) {
+        if (selfNames[i] !== otherNames[i]) return false;
+      }
+    } else {
+      if (!setsEqual(new Set(selfNames), new Set(otherNames))) return false;
     }
-    return true;
+    if (this.edges.length !== other.edges.length) return false;
+    const selfEdgeSet = new Set(
+      this.edges.map((edge) => edgeKey(edge.source.name, edge.destination.name))
+    );
+    const otherEdgeSet = new Set(
+      other.edges.map((edge) => edgeKey(edge.source.name, edge.destination.name))
+    );
+    if (!setsEqual(selfEdgeSet, otherEdgeSet)) return false;
+    if (this.symmetries.length !== other.symmetries.length) return false;
+    const selfSymSet = new Set(this.symmetries.map(symmetryKey));
+    const otherSymSet = new Set(other.symmetries.map(symmetryKey));
+    return setsEqual(selfSymSet, otherSymSet);
+  }
+  /**
+   * Calculate node overlap metrics with another skeleton.
+   *
+   * Node names are de-duplicated to sets first.
+   *
+   * @param other Another skeleton to compare with.
+   * @returns An object with similarity metrics:
+   *   - `nCommon`: Number of nodes in common.
+   *   - `nSelfOnly`: Number of nodes only in this skeleton.
+   *   - `nOtherOnly`: Number of nodes only in the other skeleton.
+   *   - `jaccard`: Jaccard similarity (intersection/union), 0 if union empty.
+   *   - `dice`: Dice coefficient (2*intersection/(nSelf+nOther)), 0 if both empty.
+   */
+  nodeSimilarities(other) {
+    const selfNodes = new Set(this.nodeNames);
+    const otherNodes = new Set(other.nodeNames);
+    let nCommon = 0;
+    for (const name of selfNodes) {
+      if (otherNodes.has(name)) nCommon += 1;
+    }
+    const sizeSelf = selfNodes.size;
+    const sizeOther = otherNodes.size;
+    const nSelfOnly = sizeSelf - nCommon;
+    const nOtherOnly = sizeOther - nCommon;
+    const nUnion = sizeSelf + sizeOther - nCommon;
+    const jaccard = nUnion > 0 ? nCommon / nUnion : 0;
+    const dice = sizeSelf + sizeOther > 0 ? 2 * nCommon / (sizeSelf + sizeOther) : 0;
+    return { nCommon, nSelfOnly, nOtherOnly, jaccard, dice };
   }
   addEdge(source, destination) {
     this.edges.push(new Edge(this.node(source), this.node(destination)));

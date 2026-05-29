@@ -1,14 +1,26 @@
 import {
+  AUTO_VIDEO_MATCHER,
   AnnotationType,
+  BASENAME_VIDEO_MATCHER,
   BoundingBox,
   CENTROID_SKELETON,
   Camera,
   CameraGroup,
   Centroid,
+  ConflictResolution,
+  DUPLICATE_MATCHER,
+  ErrorMode,
   FrameGroup,
+  FrameStrategy,
+  IDENTITY_INSTANCE_MATCHER,
+  IDENTITY_TRACK_MATCHER,
+  IMAGE_DEDUP_VIDEO_MATCHER,
+  IOU_MATCHER,
   Identity,
   InstanceContext,
   InstanceGroup,
+  InstanceMatchMethod,
+  InstanceMatcher,
   LabelImage,
   LabeledFrame,
   Labels,
@@ -16,10 +28,17 @@ import {
   LazyDataStore,
   LazyFrameList,
   MARKER_FUNCTIONS,
+  MatchResult,
   MediaBunnyVideoBackend,
+  MergeError,
+  MergeProgressBar,
+  MergeResult,
   Mp4BoxVideoBackend,
   NAMED_COLORS,
+  NAME_TRACK_MATCHER,
+  OVERLAP_SKELETON_MATCHER,
   PALETTES,
+  PATH_VIDEO_MATCHER,
   PredictedBoundingBox,
   PredictedCentroid,
   PredictedLabelImage,
@@ -28,21 +47,32 @@ import {
   ROI,
   RecordingSession,
   RenderContext,
+  SHAPE_VIDEO_MATCHER,
+  STRUCTURE_SKELETON_MATCHER,
+  SUBSET_SKELETON_MATCHER,
   SegmentationMask,
+  SkeletonMatchMethod,
+  SkeletonMatcher,
+  SkeletonMismatchError,
   StreamingH5File,
   StreamingHdf5VideoBackend,
   SuggestionFrame,
+  TrackMatchMethod,
+  TrackMatcher,
   UserBoundingBox,
   UserCentroid,
   UserLabelImage,
   UserROI,
   UserSegmentationMask,
   Video,
+  VideoMatchMethod,
+  VideoMatcher,
   _annotationCentroidXy,
   _findAnnotationMatches,
   _registerFileWriter,
   _registerMaskFactory,
   _registerNodeH5,
+  _resolveMergedIsNegative,
   createVideoBackend,
   decodeRle,
   decodeWkb,
@@ -86,10 +116,12 @@ import {
   saveSlp,
   saveSlpSet,
   saveSlpToBytes,
+  setDefaultFsResolver,
+  setFsResolver,
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-EMTHERFW.js";
+} from "./chunk-5XIIZIA5.js";
 import {
   Edge,
   Instance,
@@ -107,7 +139,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-HZEX4MKR.js";
+} from "./chunk-FQG2LKSM.js";
 
 // src/codecs/slp/h5-node.ts
 var modulePromise = null;
@@ -150,17 +182,44 @@ _registerFileWriter(async (filename, bytes) => {
   await writeFile(filename, bytes);
 });
 
-// src/io/trackmate.ts
+// src/model/node-fs-resolver.ts
 import * as fs from "fs";
+import * as nodePath from "path";
+var nodeFsResolver = {
+  async exists(path2) {
+    try {
+      await fs.promises.access(path2);
+      return true;
+    } catch {
+      return false;
+    }
+  },
+  async sameFile(path1, path2) {
+    const s1 = await fs.promises.stat(path1);
+    const s2 = await fs.promises.stat(path2);
+    return s1.dev === s2.dev && s1.ino === s2.ino;
+  },
+  async realpath(path2) {
+    try {
+      return await fs.promises.realpath(path2);
+    } catch {
+      return nodePath.resolve(path2);
+    }
+  }
+};
+setDefaultFsResolver(nodeFsResolver);
+
+// src/io/trackmate.ts
+import * as fs2 from "fs";
 import * as path from "path";
 var HEADER_ROWS = 4;
 var SPOTS_SIGNATURE = ["LABEL", "ID", "TRACK_ID", "QUALITY", "POSITION_X", "POSITION_Y"];
 function isTrackMateFile(filePath) {
   try {
-    const fd = fs.openSync(filePath, "r");
+    const fd = fs2.openSync(filePath, "r");
     const buf = Buffer.alloc(1024);
-    const bytesRead = fs.readSync(fd, buf, 0, 1024, 0);
-    fs.closeSync(fd);
+    const bytesRead = fs2.readSync(fd, buf, 0, 1024, 0);
+    fs2.closeSync(fd);
     const firstLine = buf.toString("utf-8", 0, bytesRead).split("\n")[0]?.trim() ?? "";
     const cols = firstLine.split(",");
     return SPOTS_SIGNATURE.every((sig, i) => cols[i] === sig);
@@ -176,17 +235,17 @@ function findSibling(spotsPath, suffix) {
   if (suffix.startsWith(".")) {
     for (const ext of [suffix, suffix + "f"]) {
       const candidate = path.join(dir, stem + ext);
-      if (fs.existsSync(candidate)) return candidate;
+      if (fs2.existsSync(candidate)) return candidate;
     }
   } else {
     const candidate = path.join(dir, stem + suffix + ".csv");
-    if (fs.existsSync(candidate)) return candidate;
+    if (fs2.existsSync(candidate)) return candidate;
   }
   return null;
 }
 function parseEdges(edgesPath) {
   const targetToCost = /* @__PURE__ */ new Map();
-  const content = fs.readFileSync(edgesPath, "utf-8");
+  const content = fs2.readFileSync(edgesPath, "utf-8");
   const lines = content.split("\n");
   if (lines.length <= HEADER_ROWS) return targetToCost;
   const header = lines[0].split(",");
@@ -206,7 +265,7 @@ function parseEdges(edgesPath) {
   return targetToCost;
 }
 function readTrackMateCsv(spotsPath, options) {
-  if (!fs.existsSync(spotsPath)) {
+  if (!fs2.existsSync(spotsPath)) {
     throw new Error(`Spots CSV not found: ${spotsPath}`);
   }
   const edgesPath = options?.edgesPath ?? findSibling(spotsPath, "_edges");
@@ -224,7 +283,7 @@ function readTrackMateCsv(spotsPath, options) {
     }
   }
   const targetToCost = edgesPath ? parseEdges(edgesPath) : /* @__PURE__ */ new Map();
-  const content = fs.readFileSync(spotsPath, "utf-8");
+  const content = fs2.readFileSync(spotsPath, "utf-8");
   const lines = content.split("\n");
   const header = lines[0]?.split(",") ?? [];
   if (header.length < SPOTS_SIGNATURE.length || !SPOTS_SIGNATURE.every((sig, i) => header[i] === sig)) {
@@ -599,10 +658,10 @@ async function saveImage(imageData, path2) {
 // src/rendering/video.ts
 async function checkFfmpeg() {
   const { spawn } = await import("child_process");
-  return new Promise((resolve) => {
+  return new Promise((resolve2) => {
     const proc = spawn("ffmpeg", ["-version"]);
-    proc.on("error", () => resolve(false));
-    proc.on("close", (code) => resolve(code === 0));
+    proc.on("error", () => resolve2(false));
+    proc.on("close", (code) => resolve2(code === 0));
   });
 }
 async function renderVideo(source, outputPath, options = {}) {
@@ -682,7 +741,7 @@ async function renderVideo(source, outputPath, options = {}) {
     const canWrite = ffmpeg.stdin.write(buffer);
     if (!canWrite) {
       await new Promise(
-        (resolve) => ffmpeg.stdin?.once("drain", resolve)
+        (resolve2) => ffmpeg.stdin?.once("drain", resolve2)
       );
     }
     if (options.onProgress) {
@@ -690,10 +749,10 @@ async function renderVideo(source, outputPath, options = {}) {
     }
   }
   ffmpeg.stdin?.end();
-  return new Promise((resolve, reject) => {
+  return new Promise((resolve2, reject) => {
     ffmpeg.on("close", (code) => {
       if (code === 0) {
-        resolve();
+        resolve2();
       } else {
         reject(new Error(`ffmpeg exited with code ${code}`));
       }
@@ -702,19 +761,31 @@ async function renderVideo(source, outputPath, options = {}) {
   });
 }
 export {
+  AUTO_VIDEO_MATCHER,
   AnnotationType,
+  BASENAME_VIDEO_MATCHER,
   BoundingBox,
   CENTROID_SKELETON,
   Camera,
   CameraGroup,
   Centroid,
+  ConflictResolution,
+  DUPLICATE_MATCHER,
   Edge,
+  ErrorMode,
   FrameGroup,
+  FrameStrategy,
+  IDENTITY_INSTANCE_MATCHER,
+  IDENTITY_TRACK_MATCHER,
+  IMAGE_DEDUP_VIDEO_MATCHER,
+  IOU_MATCHER,
   Identity,
   Instance,
   Instance3D,
   InstanceContext,
   InstanceGroup,
+  InstanceMatchMethod,
+  InstanceMatcher,
   LabelImage,
   LabeledFrame,
   Labels,
@@ -722,11 +793,18 @@ export {
   LazyDataStore,
   LazyFrameList,
   MARKER_FUNCTIONS,
+  MatchResult,
   MediaBunnyVideoBackend,
+  MergeError,
+  MergeProgressBar,
+  MergeResult,
   Mp4BoxVideoBackend,
   NAMED_COLORS,
+  NAME_TRACK_MATCHER,
   Node,
+  OVERLAP_SKELETON_MATCHER,
   PALETTES,
+  PATH_VIDEO_MATCHER,
   PredictedBoundingBox,
   PredictedCentroid,
   PredictedInstance,
@@ -737,23 +815,34 @@ export {
   ROI,
   RecordingSession,
   RenderContext,
+  SHAPE_VIDEO_MATCHER,
+  STRUCTURE_SKELETON_MATCHER,
+  SUBSET_SKELETON_MATCHER,
   SegmentationMask,
   Skeleton,
+  SkeletonMatchMethod,
+  SkeletonMatcher,
+  SkeletonMismatchError,
   StreamingH5File,
   StreamingHdf5VideoBackend,
   SuggestionFrame,
   Symmetry,
   Track,
+  TrackMatchMethod,
+  TrackMatcher,
   UserBoundingBox,
   UserCentroid,
   UserLabelImage,
   UserROI,
   UserSegmentationMask,
   Video,
+  VideoMatchMethod,
+  VideoMatcher,
   _annotationCentroidXy,
   _findAnnotationMatches,
   _registerCentroidFactory,
   _registerMaskFactory,
+  _resolveMergedIsNegative,
   checkFfmpeg,
   createVideoBackend,
   decodeRle,
@@ -810,6 +899,7 @@ export {
   saveSlp,
   saveSlpSet,
   saveSlpToBytes,
+  setFsResolver,
   toDataURL,
   toDict,
   toJPEG,

@@ -21,7 +21,7 @@ import {
   reconstructInstance3D,
   resolveCameraKey,
   resolveIdentity
-} from "./chunk-HZEX4MKR.js";
+} from "./chunk-FQG2LKSM.js";
 
 // src/model/centroid.ts
 var _centroidSkeleton = null;
@@ -1941,6 +1941,1070 @@ function normalizeLabelIdsByCategory(labelImages) {
   return categoryToId;
 }
 
+// src/model/matching.ts
+var SkeletonMatchMethod = {
+  EXACT: "exact",
+  STRUCTURE: "structure",
+  OVERLAP: "overlap",
+  SUBSET: "subset"
+};
+var InstanceMatchMethod = {
+  SPATIAL: "spatial",
+  IDENTITY: "identity",
+  IOU: "iou"
+};
+var TrackMatchMethod = {
+  NAME: "name",
+  IDENTITY: "identity"
+};
+var VideoMatchMethod = {
+  PATH: "path",
+  BASENAME: "basename",
+  CONTENT: "content",
+  AUTO: "auto",
+  IMAGE_DEDUP: "image_dedup",
+  SHAPE: "shape"
+};
+var FrameStrategy = {
+  AUTO: "auto",
+  KEEP_ORIGINAL: "keep_original",
+  KEEP_NEW: "keep_new",
+  KEEP_BOTH: "keep_both",
+  UPDATE_TRACKS: "update_tracks",
+  REPLACE_PREDICTIONS: "replace_predictions"
+};
+var ErrorMode = {
+  CONTINUE: "continue",
+  STRICT: "strict",
+  WARN: "warn"
+};
+function coerceEnum(enumObj, value, label) {
+  for (const member in enumObj) {
+    if (enumObj[member] === value) {
+      return enumObj[member];
+    }
+  }
+  throw new Error(`'${value}' is not a valid ${label}`);
+}
+function toSkeletonMatchMethod(value) {
+  return coerceEnum(SkeletonMatchMethod, value, "SkeletonMatchMethod");
+}
+function toInstanceMatchMethod(value) {
+  return coerceEnum(InstanceMatchMethod, value, "InstanceMatchMethod");
+}
+function toTrackMatchMethod(value) {
+  return coerceEnum(TrackMatchMethod, value, "TrackMatchMethod");
+}
+function toVideoMatchMethod(value) {
+  return coerceEnum(VideoMatchMethod, value, "VideoMatchMethod");
+}
+function toErrorMode(value) {
+  return coerceEnum(ErrorMode, value, "ErrorMode");
+}
+var ConflictResolution = class {
+  frame;
+  conflictType;
+  originalData;
+  newData;
+  resolution;
+  constructor(frame, conflictType, originalData, newData, resolution) {
+    this.frame = frame;
+    this.conflictType = conflictType;
+    this.originalData = originalData;
+    this.newData = newData;
+    this.resolution = resolution;
+  }
+};
+var MergeError = class extends Error {
+  details;
+  constructor(message, details) {
+    super(message);
+    this.name = "MergeError";
+    this.details = details ?? {};
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+var SkeletonMismatchError = class extends MergeError {
+  constructor(message, details) {
+    super(message, details);
+    this.name = "SkeletonMismatchError";
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+var MergeResult = class {
+  successful;
+  framesMerged;
+  instancesAdded;
+  instancesUpdated;
+  instancesSkipped;
+  conflicts;
+  errors;
+  constructor(successful, options = {}) {
+    this.successful = successful;
+    this.framesMerged = options.framesMerged ?? 0;
+    this.instancesAdded = options.instancesAdded ?? 0;
+    this.instancesUpdated = options.instancesUpdated ?? 0;
+    this.instancesSkipped = options.instancesSkipped ?? 0;
+    this.conflicts = options.conflicts ?? [];
+    this.errors = options.errors ?? [];
+  }
+  /**
+   * Generate a human-readable summary of the merge result (matching.py:1214-1242).
+   *
+   * Byte-exact: U+2713 (checkmark) / U+2717 (ballot X) prefix; 2-space indents
+   * for counts, 4-space "- " indents for error lines; optional int lines gated
+   * on `!== 0`; list lines gated on `.length > 0`; first-5 errors + overflow
+   * line. No trailing newline.
+   */
+  summary() {
+    const lines = [];
+    if (this.successful) {
+      lines.push("\u2713 Merge completed successfully");
+    } else {
+      lines.push("\u2717 Merge completed with errors");
+    }
+    lines.push(`  Frames merged: ${this.framesMerged}`);
+    lines.push(`  Instances added: ${this.instancesAdded}`);
+    if (this.instancesUpdated !== 0) {
+      lines.push(`  Instances updated: ${this.instancesUpdated}`);
+    }
+    if (this.instancesSkipped !== 0) {
+      lines.push(`  Instances skipped: ${this.instancesSkipped}`);
+    }
+    if (this.conflicts.length) {
+      lines.push(`  Conflicts resolved: ${this.conflicts.length}`);
+    }
+    if (this.errors.length) {
+      lines.push(`  Errors encountered: ${this.errors.length}`);
+      for (const error of this.errors.slice(0, 5)) {
+        lines.push(`    - ${error.message}`);
+      }
+      if (this.errors.length > 5) {
+        lines.push(`    ... and ${this.errors.length - 5} more`);
+      }
+    }
+    return lines.join("\n");
+  }
+};
+var MatchResult = class {
+  videoMap;
+  skeletonMap;
+  trackMap;
+  constructor(options = {}) {
+    this.videoMap = options.videoMap ?? /* @__PURE__ */ new Map();
+    this.skeletonMap = options.skeletonMap ?? /* @__PURE__ */ new Map();
+    this.trackMap = options.trackMap ?? /* @__PURE__ */ new Map();
+  }
+  /** Videos from `other` that had no match in `self` (insertion order). */
+  get unmatchedVideos() {
+    const out = [];
+    for (const [v, match] of this.videoMap) {
+      if (match == null) out.push(v);
+    }
+    return out;
+  }
+  /** Skeletons from `other` that had no match in `self` (insertion order). */
+  get unmatchedSkeletons() {
+    const out = [];
+    for (const [s, match] of this.skeletonMap) {
+      if (match == null) out.push(s);
+    }
+    return out;
+  }
+  /** Tracks from `other` that had no match in `self` (insertion order). */
+  get unmatchedTracks() {
+    const out = [];
+    for (const [t, match] of this.trackMap) {
+      if (match == null) out.push(t);
+    }
+    return out;
+  }
+  /** True if all videos from `other` were matched (empty map => true). */
+  get allVideosMatched() {
+    return this.unmatchedVideos.length === 0;
+  }
+  /** True if all skeletons from `other` were matched (empty map => true). */
+  get allSkeletonsMatched() {
+    return this.unmatchedSkeletons.length === 0;
+  }
+  /** True if all tracks from `other` were matched (empty map => true). */
+  get allTracksMatched() {
+    return this.unmatchedTracks.length === 0;
+  }
+  /** Number of videos successfully matched (counts `value != null`). */
+  get nVideosMatched() {
+    let n = 0;
+    for (const v of this.videoMap.values()) {
+      if (v != null) n += 1;
+    }
+    return n;
+  }
+  /** Number of skeletons successfully matched (counts `value != null`). */
+  get nSkeletonsMatched() {
+    let n = 0;
+    for (const s of this.skeletonMap.values()) {
+      if (s != null) n += 1;
+    }
+    return n;
+  }
+  /** Number of tracks successfully matched (counts `value != null`). */
+  get nTracksMatched() {
+    let n = 0;
+    for (const t of this.trackMap.values()) {
+      if (t != null) n += 1;
+    }
+    return n;
+  }
+  /**
+   * Generate a human-readable summary of the match result (matching.py:1319-1336).
+   *
+   * Three always-present count lines (no leading space). Only videos get an
+   * unmatched listing (first 5 + overflow), 2-space "- " indents. No trailing
+   * newline.
+   */
+  summary() {
+    const lines = [];
+    lines.push(`Videos: ${this.nVideosMatched}/${this.videoMap.size} matched`);
+    lines.push(
+      `Skeletons: ${this.nSkeletonsMatched}/${this.skeletonMap.size} matched`
+    );
+    lines.push(`Tracks: ${this.nTracksMatched}/${this.trackMap.size} matched`);
+    const unmatchedVideos = this.unmatchedVideos;
+    if (unmatchedVideos.length) {
+      lines.push("Unmatched videos:");
+      for (const v of unmatchedVideos.slice(0, 5)) {
+        const fn = typeof v.filename === "string" ? v.filename : v.filename[0];
+        lines.push(`  - ${fn}`);
+      }
+      if (unmatchedVideos.length > 5) {
+        lines.push(`  ... and ${unmatchedVideos.length - 5} more`);
+      }
+    }
+    return lines.join("\n");
+  }
+};
+var MergeProgressBar = class {
+  desc;
+  leave;
+  pbar;
+  constructor(desc = "Merging", leave = true) {
+    this.desc = desc;
+    this.leave = leave;
+    this.pbar = null;
+  }
+  /** Context-manager enter: returns self. */
+  enter() {
+    return this;
+  }
+  /** Context-manager exit: closes the (stub) bar. */
+  exit() {
+    this.pbar = null;
+  }
+  /** `using` support: dispose closes the (stub) bar. */
+  [Symbol.dispose]() {
+    this.exit();
+  }
+  /**
+   * Progress callback for merge operations. Creates the (stub) bar lazily only
+   * when `total` is truthy (nonzero), then records absolute progress. No-op
+   * presentation.
+   */
+  callback(current, total, message = "") {
+    if (this.pbar == null && total) {
+      this.pbar = { total, n: 0, desc: this.desc, leave: this.leave };
+    }
+    if (this.pbar != null) {
+      const bar = this.pbar;
+      bar.desc = message ? `${this.desc}: ${message}` : this.desc;
+      bar.n = current;
+    }
+  }
+};
+var _fsResolver = null;
+var _defaultFsResolver = null;
+function setFsResolver(resolver) {
+  _fsResolver = resolver;
+}
+function setDefaultFsResolver(resolver) {
+  _defaultFsResolver = resolver;
+}
+function getFsResolver() {
+  return _fsResolver ?? _defaultFsResolver;
+}
+function _getRootVideo(video) {
+  return video.originalVideo ?? video;
+}
+function hasKey(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+function _getEffectiveShape(video) {
+  if (video.originalVideo != null) {
+    const originalShape = _getEffectiveShape(video.originalVideo);
+    if (originalShape != null) {
+      return originalShape;
+    }
+  }
+  if (hasKey(video.backendMetadata, "shape")) {
+    return video.backendMetadata.shape;
+  }
+  return video.shape;
+}
+function shapesCompatible(video1, video2) {
+  const shape1 = _getEffectiveShape(video1);
+  const shape2 = _getEffectiveShape(video2);
+  if (shape1 == null || shape2 == null) {
+    return null;
+  }
+  return shape1[0] === shape2[0] && // frames
+  shape1[1] === shape2[1] && // height
+  shape1[2] === shape2[2];
+}
+function sanitizeFilename(filename) {
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(filename)) {
+    return filename;
+  }
+  let p = filename.replace(/\\/g, "/");
+  p = p.replace(/\/{2,}/g, "/");
+  if (p.length > 1 && p.endsWith("/")) {
+    p = p.slice(0, -1);
+  }
+  return p;
+}
+function posixParts(path) {
+  if (path === "") return [];
+  const isAbsolute = path.startsWith("/");
+  const segments = path.split("/").filter((seg) => seg !== "");
+  if (isAbsolute) {
+    return ["/", ...segments];
+  }
+  return segments;
+}
+function getPathParts(video) {
+  const root = _getRootVideo(video);
+  let fn = root.filename;
+  if (Array.isArray(fn)) {
+    fn = fn[0];
+  }
+  return posixParts(sanitizeFilename(fn));
+}
+async function _fileExists(filename) {
+  const fs = getFsResolver();
+  if (fs == null) {
+    return false;
+  }
+  if (Array.isArray(filename)) {
+    for (const f of filename) {
+      if (!await fs.exists(f)) return false;
+    }
+    return true;
+  }
+  return fs.exists(filename);
+}
+function videoDataset(video) {
+  const fromBackend = video.backend?.dataset;
+  if (fromBackend != null) return fromBackend;
+  const fromMeta = video.backendMetadata.dataset;
+  return typeof fromMeta === "string" ? fromMeta : null;
+}
+async function _isSameFileDirect(video1, video2) {
+  const fn1 = video1.filename;
+  const fn2 = video2.filename;
+  if (Array.isArray(fn1) && Array.isArray(fn2)) {
+    if (fn1.length !== fn2.length) return false;
+    for (let i = 0; i < fn1.length; i += 1) {
+      if (fn1[i] !== fn2[i]) return false;
+    }
+    return true;
+  }
+  if (Array.isArray(fn1) || Array.isArray(fn2)) {
+    return false;
+  }
+  const path1 = fn1;
+  const path2 = fn2;
+  const fs = getFsResolver();
+  let filesMatch = false;
+  if (fs != null) {
+    try {
+      if (await fs.exists(path1) && await fs.exists(path2)) {
+        filesMatch = await fs.sameFile(path1, path2);
+      }
+    } catch {
+    }
+  }
+  if (!filesMatch && fs != null) {
+    try {
+      if (await fs.realpath(path1) === await fs.realpath(path2)) {
+        filesMatch = true;
+      }
+    } catch {
+    }
+  }
+  if (!filesMatch) {
+    filesMatch = sanitizeFilename(path1) === sanitizeFilename(path2);
+  }
+  if (!filesMatch) {
+    return false;
+  }
+  const backend1 = video1.backend;
+  const backend2 = video2.backend;
+  if (backend1 != null && backend2 != null) {
+    const dataset1 = videoDataset(video1);
+    const dataset2 = videoDataset(video2);
+    if (dataset1 != null && dataset2 != null) {
+      return dataset1 === dataset2;
+    }
+  }
+  return true;
+}
+async function isSameFile(video1, video2) {
+  const root1 = _getRootVideo(video1);
+  const root2 = _getRootVideo(video2);
+  return _isSameFileDirect(root1, root2);
+}
+async function originalVideosConflict(video1, video2) {
+  const root1 = _getRootVideo(video1);
+  const root2 = _getRootVideo(video2);
+  const hasProvenance1 = video1.originalVideo != null || video1.sourceVideo != null;
+  const hasProvenance2 = video2.originalVideo != null || video2.sourceVideo != null;
+  if (!(hasProvenance1 && hasProvenance2)) {
+    return false;
+  }
+  if (await _isSameFileDirect(root1, root2)) {
+    return false;
+  }
+  if (!await _fileExists(root1.filename) && !await _fileExists(root2.filename)) {
+    return false;
+  }
+  return true;
+}
+function _getFrameInstances(labels, video, includePredictions) {
+  const result = /* @__PURE__ */ new Map();
+  for (const lf of labels.labeledFrames) {
+    if (lf.video !== video) {
+      continue;
+    }
+    const instances = [];
+    for (const inst of lf.instances) {
+      if (includePredictions || !(inst instanceof PredictedInstance)) {
+        instances.push(inst);
+      }
+    }
+    if (instances.length) {
+      result.set(lf.frameIdx, instances);
+    }
+  }
+  return result;
+}
+function _videoHasUserInstances(labels, video) {
+  for (const lf of labels.labeledFrames) {
+    if (lf.video !== video) {
+      continue;
+    }
+    for (const inst of lf.instances) {
+      if (!(inst instanceof PredictedInstance)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+function _resolveComparePredictions(comparePredictions, labels, video) {
+  if (comparePredictions === "auto") {
+    return !_videoHasUserInstances(labels, video);
+  }
+  return Boolean(comparePredictions);
+}
+function _frameHasMatchingPose(instancesA, instancesB) {
+  for (const instA of instancesA) {
+    const ptsA = instA.numpy();
+    for (const instB of instancesB) {
+      const ptsB = instB.numpy();
+      if (_posesIdentical(ptsA, ptsB)) {
+        return true;
+      }
+    }
+  }
+  return false;
+}
+function _posesIdentical(ptsA, ptsB) {
+  if (ptsA.length !== ptsB.length) return false;
+  for (let i = 0; i < ptsA.length; i += 1) {
+    if (ptsA[i].length !== ptsB[i].length) return false;
+  }
+  let anyValid = false;
+  for (let i = 0; i < ptsA.length; i += 1) {
+    for (let j = 0; j < ptsA[i].length; j += 1) {
+      const aNaN = Number.isNaN(ptsA[i][j]);
+      const bNaN = Number.isNaN(ptsB[i][j]);
+      if (aNaN !== bNaN) return false;
+      if (!aNaN) {
+        anyValid = true;
+        if (ptsA[i][j] !== ptsB[i][j]) return false;
+      }
+    }
+  }
+  if (!anyValid) return false;
+  return true;
+}
+function _sampleFrameIndices(indices, maxSamples) {
+  const list = [...indices].sort((a, b) => a - b);
+  if (list.length <= maxSamples) {
+    return list;
+  }
+  const step = list.length / maxSamples;
+  const out = [];
+  for (let i = 0; i < maxSamples; i += 1) {
+    out.push(list[Math.trunc(i * step)]);
+  }
+  return out;
+}
+function _getEmbeddedFrameIndices(video) {
+  const backend = video.backend;
+  if (backend == null) {
+    return null;
+  }
+  if ("embedded_frame_inds" in backend && backend.embedded_frame_inds != null) {
+    return [...backend.embedded_frame_inds];
+  }
+  if ("frame_map" in backend && backend.frame_map) {
+    const fm = backend.frame_map;
+    const keys = fm instanceof Map ? [...fm.keys()] : Object.keys(fm).map((k) => Number(k));
+    if (keys.length) {
+      return keys;
+    }
+    return null;
+  }
+  return null;
+}
+function _getCommonEmbeddedIndices(video1, video2) {
+  const inds1 = _getEmbeddedFrameIndices(video1);
+  const inds2 = _getEmbeddedFrameIndices(video2);
+  if (inds1 == null || inds2 == null) {
+    return /* @__PURE__ */ new Set();
+  }
+  const set2 = new Set(inds2);
+  const out = /* @__PURE__ */ new Set();
+  for (const i of inds1) {
+    if (set2.has(i)) out.add(i);
+  }
+  return out;
+}
+function _toGrayscaleFloat(frame) {
+  const img = frame;
+  if (typeof img.width === "number" && typeof img.height === "number" && img.data != null) {
+    const width = img.width;
+    const height = img.height;
+    const src = img.data;
+    const n = width * height;
+    const channels = src.length / n;
+    const out = new Float32Array(n);
+    if (channels === 1) {
+      for (let i = 0; i < n; i += 1) {
+        out[i] = src[i] / 255;
+      }
+    } else if (channels >= 3) {
+      for (let i = 0; i < n; i += 1) {
+        const base = i * channels;
+        const r = src[base];
+        const g = src[base + 1];
+        const b = src[base + 2];
+        out[i] = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+      }
+    } else if (channels === 2) {
+      for (let i = 0; i < n; i += 1) {
+        out[i] = src[i * 2] / 255;
+      }
+    } else {
+      throw new Error(
+        `Unexpected frame shape: [${height}, ${width}, ${channels}]`
+      );
+    }
+    return { width, height, data: out };
+  }
+  throw new Error("Unexpected frame shape: <unstructured frame>");
+}
+async function _framesSimilarByImage(video1, video2, frameIdx, threshold) {
+  try {
+    const frame1 = await video1.getFrame(frameIdx);
+    const frame2 = await video2.getFrame(frameIdx);
+    if (frame1 == null || frame2 == null) {
+      return false;
+    }
+    const gray1 = _toGrayscaleFloat(frame1);
+    const gray2 = _toGrayscaleFloat(frame2);
+    if (gray1.width !== gray2.width || gray1.height !== gray2.height) {
+      return false;
+    }
+    const n = gray1.data.length;
+    if (n === 0) {
+      return false;
+    }
+    let sum = 0;
+    for (let i = 0; i < n; i += 1) {
+      sum += Math.abs(gray1.data[i] - gray2.data[i]);
+    }
+    const diff = sum / n;
+    return diff <= threshold;
+  } catch {
+    return false;
+  }
+}
+var SkeletonMatcher = class {
+  method;
+  requireSameOrder;
+  minOverlap;
+  /**
+   * @param method - The matching method (default STRUCTURE). A bare string is
+   *   coerced to the enum value and validated (throws on unknown).
+   * @param options - `requireSameOrder` (default `false`), `minOverlap`
+   *   (default `0.5`).
+   */
+  constructor(method = SkeletonMatchMethod.STRUCTURE, options = {}) {
+    this.method = typeof method === "string" ? toSkeletonMatchMethod(method) : method;
+    this.requireSameOrder = options.requireSameOrder ?? false;
+    this.minOverlap = options.minOverlap ?? 0.5;
+  }
+  /**
+   * Check if two skeletons match according to the configured method
+   * (matching.py:667-684). Dispatch order is load-bearing.
+   */
+  match(skeleton1, skeleton2) {
+    if (this.method === SkeletonMatchMethod.EXACT) {
+      return skeleton1.matches(skeleton2, { requireSameOrder: true });
+    } else if (this.method === SkeletonMatchMethod.STRUCTURE) {
+      return skeleton1.matches(skeleton2, {
+        requireSameOrder: this.requireSameOrder
+      });
+    } else if (this.method === SkeletonMatchMethod.OVERLAP) {
+      const metrics = skeleton1.nodeSimilarities(skeleton2);
+      return metrics.jaccard >= this.minOverlap;
+    } else if (this.method === SkeletonMatchMethod.SUBSET) {
+      const nodes1 = new Set(skeleton1.nodeNames);
+      const nodes2 = new Set(skeleton2.nodeNames);
+      for (const name of nodes1) {
+        if (!nodes2.has(name)) return false;
+      }
+      return true;
+    } else {
+      throw new Error(`Unknown skeleton match method: ${this.method}`);
+    }
+  }
+};
+var InstanceMatcher = class {
+  method;
+  threshold;
+  /**
+   * @param method - The matching method (default SPATIAL). A bare string is
+   *   coerced + validated.
+   * @param options - `threshold` (default `5.0`).
+   */
+  constructor(method = InstanceMatchMethod.SPATIAL, options = {}) {
+    this.method = typeof method === "string" ? toInstanceMatchMethod(method) : method;
+    this.threshold = options.threshold ?? 5;
+  }
+  /**
+   * Check if two instances match according to the configured method
+   * (matching.py:705-714).
+   */
+  match(instance1, instance2) {
+    if (this.method === InstanceMatchMethod.SPATIAL) {
+      return instance1.samePoseAs(instance2, this.threshold);
+    } else if (this.method === InstanceMatchMethod.IDENTITY) {
+      return instance1.sameIdentityAs(instance2);
+    } else if (this.method === InstanceMatchMethod.IOU) {
+      return instance1.overlapsWith(instance2, this.threshold);
+    } else {
+      throw new Error(`Unknown instance match method: ${this.method}`);
+    }
+  }
+  /**
+   * Find all matching instances between two lists (matching.py:716-771).
+   *
+   * Returns the FULL Cartesian product of `[idx1, idx2, score]` triples for
+   * matching pairs (NOT greedy/one-to-one). Output order = nested-loop encounter
+   * order (`i` outer, `j` inner). The gate ({@link match}) and the score are
+   * computed by SEPARATE code paths, so a subclass that overrides `match()` to
+   * always-true still gets a correct (or zero) score.
+   */
+  findMatches(instances1, instances2) {
+    const matches = [];
+    for (let i = 0; i < instances1.length; i += 1) {
+      const inst1 = instances1[i];
+      for (let j = 0; j < instances2.length; j += 1) {
+        const inst2 = instances2[j];
+        if (this.match(inst1, inst2)) {
+          let score;
+          if (this.method === InstanceMatchMethod.SPATIAL) {
+            const pts1 = inst1.numpy();
+            const pts2 = inst2.numpy();
+            const distances = [];
+            const n = Math.min(pts1.length, pts2.length);
+            for (let k = 0; k < n; k += 1) {
+              const valid = !Number.isNaN(pts1[k][0]) && !Number.isNaN(pts2[k][0]);
+              if (valid) {
+                const dx = pts1[k][0] - pts2[k][0];
+                const dy = pts1[k][1] - pts2[k][1];
+                distances.push(Math.hypot(dx, dy));
+              }
+            }
+            if (distances.length) {
+              let sum = 0;
+              for (const d of distances) sum += d;
+              const mean = sum / distances.length;
+              score = 1 / (1 + mean);
+            } else {
+              score = 0;
+            }
+          } else if (this.method === InstanceMatchMethod.IOU) {
+            const bbox1 = inst1.boundingBox();
+            const bbox2 = inst2.boundingBox();
+            if (bbox1 != null && bbox2 != null) {
+              const interMinX = Math.max(bbox1[0][0], bbox2[0][0]);
+              const interMinY = Math.max(bbox1[0][1], bbox2[0][1]);
+              const interMaxX = Math.min(bbox1[1][0], bbox2[1][0]);
+              const interMaxY = Math.min(bbox1[1][1], bbox2[1][1]);
+              if (interMinX < interMaxX && interMinY < interMaxY) {
+                const interArea = (interMaxX - interMinX) * (interMaxY - interMinY);
+                const area1 = (bbox1[1][0] - bbox1[0][0]) * (bbox1[1][1] - bbox1[0][1]);
+                const area2 = (bbox2[1][0] - bbox2[0][0]) * (bbox2[1][1] - bbox2[0][1]);
+                const unionArea = area1 + area2 - interArea;
+                score = unionArea > 0 ? interArea / unionArea : 0;
+              } else {
+                score = 0;
+              }
+            } else {
+              score = 0;
+            }
+          } else {
+            score = 1;
+          }
+          matches.push([i, j, score]);
+        }
+      }
+    }
+    return matches;
+  }
+};
+var TrackMatcher = class {
+  method;
+  /**
+   * @param method - The matching method (default NAME). A bare string is coerced
+   *   + validated.
+   */
+  constructor(method = TrackMatchMethod.NAME) {
+    this.method = typeof method === "string" ? toTrackMatchMethod(method) : method;
+  }
+  /** Check if two tracks match according to the configured method. */
+  match(track1, track2) {
+    return track1.matches(track2, this.method);
+  }
+};
+var VideoMatcher = class {
+  method;
+  strict;
+  contentFrames;
+  comparePredictions;
+  compareImages;
+  imageSimilarityThreshold;
+  /** Fresh, reference-keyed per matcher; NOT a constructor argument. */
+  _frameCache;
+  /**
+   * @param method - The matching method (default AUTO). A bare string is coerced
+   *   + validated.
+   * @param options - `strict` (default `false`), `contentFrames` (default `3`),
+   *   `comparePredictions` (default `"auto"`), `compareImages` (default
+   *   `false`), `imageSimilarityThreshold` (default `0.05`).
+   */
+  constructor(method = VideoMatchMethod.AUTO, options = {}) {
+    this.method = typeof method === "string" ? toVideoMatchMethod(method) : method;
+    this.strict = options.strict ?? false;
+    this.contentFrames = options.contentFrames ?? 3;
+    this.comparePredictions = options.comparePredictions ?? "auto";
+    this.compareImages = options.compareImages ?? false;
+    this.imageSimilarityThreshold = options.imageSimilarityThreshold ?? 0.05;
+    this._frameCache = /* @__PURE__ */ new Map();
+  }
+  /**
+   * Get frame instances with reference-keyed caching (matching.py:834-850).
+   * Avoids recomputing the per-video frame map during a merge.
+   */
+  _getCachedFrameInstances(labels, video, includePredictions) {
+    let byVideo = this._frameCache.get(labels);
+    if (byVideo == null) {
+      byVideo = /* @__PURE__ */ new Map();
+      this._frameCache.set(labels, byVideo);
+    }
+    let byPred = byVideo.get(video);
+    if (byPred == null) {
+      byPred = /* @__PURE__ */ new Map();
+      byVideo.set(video, byPred);
+    }
+    let result = byPred.get(includePredictions);
+    if (result == null) {
+      result = _getFrameInstances(labels, video, includePredictions);
+      byPred.set(includePredictions, result);
+    }
+    return result;
+  }
+  /**
+   * Check if two videos match according to the configured method
+   * (matching.py:852-897) — PAIRWISE (NOT the full AUTO cascade).
+   *
+   * For AUTO this performs rejection checks + definitive identity + path match;
+   * for the full AUTO matching with leaf-uniqueness use {@link findMatch}.
+   *
+   * Async because the AUTO branch awaits `isSameFile` / `originalVideosConflict`.
+   */
+  async match(video1, video2) {
+    if (this.method === VideoMatchMethod.AUTO) {
+      if (shapesCompatible(video1, video2) === false) {
+        return false;
+      }
+      if (await originalVideosConflict(video1, video2)) {
+        return false;
+      }
+      if (await isSameFile(video1, video2)) {
+        return true;
+      }
+      if (video1.matchesPath(video2, true)) {
+        return true;
+      }
+      if (video1.matchesPath(video2, false)) {
+        return true;
+      }
+      return false;
+    } else if (this.method === VideoMatchMethod.PATH) {
+      return video1.matchesPath(video2, this.strict);
+    } else if (this.method === VideoMatchMethod.BASENAME) {
+      return video1.matchesPath(video2, false);
+    } else if (this.method === VideoMatchMethod.CONTENT) {
+      return video1.matchesContent(video2);
+    } else if (this.method === VideoMatchMethod.IMAGE_DEDUP) {
+      return video1.hasOverlappingImages(video2);
+    } else if (this.method === VideoMatchMethod.SHAPE) {
+      return video1.matchesShape(video2);
+    } else {
+      throw new Error(`Unknown video match method: ${this.method}`);
+    }
+  }
+  /**
+   * Find a matching video from `candidates` using the configured method
+   * (matching.py:899-1031). Returns a `Video` from `candidates` (by reference)
+   * or `null`.
+   *
+   * Non-AUTO: first candidate where `this.match(candidate, incoming)` is true.
+   * AUTO: the exact 6-stage safe cascade (file identity → strict path → leaf-path
+   * uniqueness at increasing depth → pose matching → image matching → null).
+   *
+   * Async (DECISIONS D8): awaits FS + pixel helpers throughout.
+   */
+  async findMatch(incoming, candidates, opts = {}) {
+    const labelsIncoming = opts.labelsIncoming ?? null;
+    const labelsBase = opts.labelsBase ?? null;
+    if (this.method !== VideoMatchMethod.AUTO) {
+      for (const candidate of candidates) {
+        if (await this.match(candidate, incoming)) {
+          return candidate;
+        }
+      }
+      return null;
+    }
+    const viable = [];
+    for (const candidate of candidates) {
+      if (shapesCompatible(candidate, incoming) === false) {
+        continue;
+      }
+      if (await originalVideosConflict(candidate, incoming)) {
+        continue;
+      }
+      viable.push(candidate);
+    }
+    for (const candidate of viable) {
+      if (await isSameFile(candidate, incoming)) {
+        return candidate;
+      }
+    }
+    for (const candidate of viable) {
+      if (candidate.matchesPath(incoming, true)) {
+        return candidate;
+      }
+    }
+    if (viable.length) {
+      const incomingParts = getPathParts(incoming);
+      const candidateParts = viable.map((v) => [
+        v,
+        getPathParts(v)
+      ]);
+      const allParts = candidates.map((v) => [
+        v,
+        getPathParts(v)
+      ]);
+      let maxAllLen = 0;
+      for (const [, p] of allParts) {
+        if (p.length > maxAllLen) maxAllLen = p.length;
+      }
+      const maxDepth = Math.max(incomingParts.length, maxAllLen);
+      for (let depth = 1; depth <= maxDepth; depth += 1) {
+        if (incomingParts.length < depth) continue;
+        const incomingLeaf = incomingParts.slice(-depth).join("/");
+        const matchesAtDepth = [];
+        for (const [candidate, parts] of candidateParts) {
+          if (parts.length < depth) continue;
+          const candidateLeaf = parts.slice(-depth).join("/");
+          if (candidateLeaf === incomingLeaf) {
+            matchesAtDepth.push(candidate);
+          }
+        }
+        if (matchesAtDepth.length === 1) {
+          return matchesAtDepth[0];
+        }
+      }
+    }
+    if (labelsIncoming != null && labelsBase != null) {
+      const m = await this._matchByPoses(
+        incoming,
+        viable,
+        labelsIncoming,
+        labelsBase
+      );
+      if (m != null) return m;
+    }
+    if (this.compareImages) {
+      const m = await this._matchByImages(incoming, viable);
+      if (m != null) return m;
+    }
+    return null;
+  }
+  /**
+   * Try to match a video by comparing pose annotations (matching.py:1033-1091).
+   *
+   * Resolves `includePredictions` separately for incoming and EACH candidate;
+   * uses the reference-keyed frame cache; for each candidate computes the common
+   * frame-index intersection, requires `min(contentFrames, common.size)` matching
+   * sampled frames (sampling up to `contentFrames * 2`), and short-circuits the
+   * moment the count reaches `required`. Returns the matched candidate or `null`.
+   */
+  async _matchByPoses(incoming, candidates, labelsIncoming, labelsBase) {
+    const includePreds = _resolveComparePredictions(
+      this.comparePredictions,
+      labelsIncoming,
+      incoming
+    );
+    const incomingFrames = this._getCachedFrameInstances(
+      labelsIncoming,
+      incoming,
+      includePreds
+    );
+    if (incomingFrames.size === 0) {
+      return null;
+    }
+    for (const candidate of candidates) {
+      const includePredsCand = _resolveComparePredictions(
+        this.comparePredictions,
+        labelsBase,
+        candidate
+      );
+      const candidateFrames = this._getCachedFrameInstances(
+        labelsBase,
+        candidate,
+        includePredsCand
+      );
+      if (candidateFrames.size === 0) {
+        continue;
+      }
+      const common = /* @__PURE__ */ new Set();
+      for (const idx of incomingFrames.keys()) {
+        if (candidateFrames.has(idx)) common.add(idx);
+      }
+      if (common.size === 0) {
+        continue;
+      }
+      const required = Math.min(this.contentFrames, common.size);
+      const samples = _sampleFrameIndices(common, this.contentFrames * 2);
+      let matching = 0;
+      for (const frameIdx of samples) {
+        const a = incomingFrames.get(frameIdx);
+        const b = candidateFrames.get(frameIdx);
+        if (a != null && b != null && _frameHasMatchingPose(a, b)) {
+          matching += 1;
+          if (matching >= required) {
+            return candidate;
+          }
+        }
+      }
+    }
+    return null;
+  }
+  /**
+   * Try to match a video by comparing image content (matching.py:1093-1126).
+   *
+   * Only used when `compareImages` is true (expensive). Same control flow as
+   * {@link _matchByPoses} but over common EMBEDDED frame indices, using
+   * pixel-similarity (`imageSimilarityThreshold`). Returns the matched candidate
+   * or `null`.
+   */
+  async _matchByImages(incoming, candidates) {
+    for (const candidate of candidates) {
+      const common = _getCommonEmbeddedIndices(incoming, candidate);
+      if (common.size === 0) {
+        continue;
+      }
+      const required = Math.min(this.contentFrames, common.size);
+      const samples = _sampleFrameIndices(common, this.contentFrames * 2);
+      let matching = 0;
+      for (const frameIdx of samples) {
+        if (await _framesSimilarByImage(
+          incoming,
+          candidate,
+          frameIdx,
+          this.imageSimilarityThreshold
+        )) {
+          matching += 1;
+          if (matching >= required) {
+            return candidate;
+          }
+        }
+      }
+    }
+    return null;
+  }
+};
+var STRUCTURE_SKELETON_MATCHER = new SkeletonMatcher(
+  SkeletonMatchMethod.STRUCTURE
+);
+var SUBSET_SKELETON_MATCHER = new SkeletonMatcher(
+  SkeletonMatchMethod.SUBSET
+);
+var OVERLAP_SKELETON_MATCHER = new SkeletonMatcher(
+  SkeletonMatchMethod.OVERLAP,
+  { minOverlap: 0.7 }
+);
+var DUPLICATE_MATCHER = new InstanceMatcher(
+  InstanceMatchMethod.SPATIAL,
+  { threshold: 5 }
+);
+var IOU_MATCHER = new InstanceMatcher(InstanceMatchMethod.IOU, {
+  threshold: 0.5
+});
+var IDENTITY_INSTANCE_MATCHER = new InstanceMatcher(
+  InstanceMatchMethod.IDENTITY
+);
+var NAME_TRACK_MATCHER = new TrackMatcher(TrackMatchMethod.NAME);
+var IDENTITY_TRACK_MATCHER = new TrackMatcher(
+  TrackMatchMethod.IDENTITY
+);
+var AUTO_VIDEO_MATCHER = new VideoMatcher(VideoMatchMethod.AUTO);
+var PATH_VIDEO_MATCHER = new VideoMatcher(VideoMatchMethod.PATH, {
+  strict: true
+});
+var BASENAME_VIDEO_MATCHER = new VideoMatcher(
+  VideoMatchMethod.BASENAME
+);
+var IMAGE_DEDUP_VIDEO_MATCHER = new VideoMatcher(
+  VideoMatchMethod.IMAGE_DEDUP
+);
+var SHAPE_VIDEO_MATCHER = new VideoMatcher(VideoMatchMethod.SHAPE);
+
 // src/model/labeled-frame.ts
 var ANNOTATION_ATTRS = [
   "centroids",
@@ -2053,6 +3117,11 @@ function _resolveAnnotationUpdateTracks(selfList, otherList, attr, threshold) {
     selfList[selfIdx].trackingScore = otherList[otherIdx].trackingScore;
   });
 }
+function _resolveMergedIsNegative(selfNeg, otherNeg, merged) {
+  const eitherNeg = selfNeg || otherNeg;
+  const hasUserPose = merged.some((inst) => inst.constructor === Instance);
+  return [eitherNeg && !hasUserPose, eitherNeg && hasUserPose];
+}
 var LabeledFrame = class {
   video;
   frameIdx;
@@ -2084,7 +3153,7 @@ var LabeledFrame = class {
     return this.instances[index];
   }
   get userInstances() {
-    return this.instances.filter((inst) => inst instanceof Instance);
+    return this.instances.filter((inst) => inst.constructor === Instance);
   }
   get predictedInstances() {
     return this.instances.filter((inst) => inst instanceof PredictedInstance);
@@ -2195,6 +3264,161 @@ var LabeledFrame = class {
     }
   }
   /**
+   * Merge instances from another frame into this frame
+   * (labeled_frame.py:530-702).
+   *
+   * The merged instance list is RETURNED (not assigned back) so the caller can
+   * decide what to do with it. Frame-level annotations (centroids, bboxes,
+   * masks, label images, rois) and the `isNegative` flag ARE updated on this
+   * frame in place.
+   *
+   * Instances added from `other` (in the auto/replace/update strategies) are
+   * the ORIGINAL `other` objects, NOT copies, so they alias the other frame's
+   * instances. Skeleton/track remap of merged instances is handled by the
+   * `Labels.merge` driver, not here.
+   *
+   * @param other - Another LabeledFrame to merge instances from.
+   * @param opts.instance - Matcher to use for finding duplicate instances. If
+   *   omitted, uses default spatial matching with 5px tolerance.
+   * @param opts.frame - The merge strategy string (default `"auto"`). One of:
+   *   `"auto"`, `"keep_original"`, `"keep_new"`, `"keep_both"`,
+   *   `"update_tracks"`, `"replace_predictions"`. Any other string falls
+   *   through to the auto branch.
+   * @returns A tuple `[mergedInstances, conflicts]` where `conflicts` is a list
+   *   of `[selfInst, otherInst, resolution]` tuples.
+   */
+  merge(other, opts = {}) {
+    const instanceMatcher = opts.instance ?? new InstanceMatcher(InstanceMatchMethod.SPATIAL, { threshold: 5 });
+    const frame = opts.frame ?? "auto";
+    const conflicts = [];
+    if (frame === "keep_original") {
+      this.mergeAnnotations(other, "keep_original");
+      [this.isNegative] = _resolveMergedIsNegative(
+        this.isNegative,
+        other.isNegative,
+        this.instances
+      );
+      return [this.instances.slice(), conflicts];
+    } else if (frame === "keep_new") {
+      this.mergeAnnotations(other, "keep_new");
+      [this.isNegative] = _resolveMergedIsNegative(
+        this.isNegative,
+        other.isNegative,
+        other.instances
+      );
+      return [other.instances.slice(), conflicts];
+    } else if (frame === "keep_both") {
+      this.mergeAnnotations(other, "keep_both");
+      [this.isNegative] = _resolveMergedIsNegative(
+        this.isNegative,
+        other.isNegative,
+        this.instances.concat(other.instances)
+      );
+      return [this.instances.concat(other.instances), conflicts];
+    } else if (frame === "update_tracks") {
+      const matches2 = instanceMatcher.findMatches(
+        this.instances,
+        other.instances
+      );
+      for (const [selfIdx, otherIdx] of matches2) {
+        this.instances[selfIdx].track = other.instances[otherIdx].track;
+        this.instances[selfIdx].trackingScore = other.instances[otherIdx].trackingScore;
+      }
+      this.mergeAnnotations(other, "update_tracks", instanceMatcher.threshold);
+      [this.isNegative] = _resolveMergedIsNegative(
+        this.isNegative,
+        other.isNegative,
+        this.instances
+      );
+      return [this.instances, conflicts];
+    } else if (frame === "replace_predictions") {
+      const merged = this.instances.filter(
+        (inst) => inst.constructor === Instance
+      );
+      for (const inst of other.instances) {
+        if (inst.constructor === PredictedInstance) {
+          merged.push(inst);
+        }
+      }
+      this.mergeAnnotations(other, "replace_predictions");
+      [this.isNegative] = _resolveMergedIsNegative(
+        this.isNegative,
+        other.isNegative,
+        merged
+      );
+      return [merged, []];
+    }
+    const mergedInstances = [];
+    const usedIndices = /* @__PURE__ */ new Set();
+    for (const inst of this.instances) {
+      if (inst.constructor === Instance) {
+        mergedInstances.push(inst);
+      }
+    }
+    const matches = instanceMatcher.findMatches(
+      this.instances,
+      other.instances
+    );
+    const otherToSelf = /* @__PURE__ */ new Map();
+    for (const [selfIdx, otherIdx, score] of matches) {
+      const existing = otherToSelf.get(otherIdx);
+      if (existing === void 0 || score > existing[1]) {
+        otherToSelf.set(otherIdx, [selfIdx, score]);
+      }
+    }
+    for (let otherIdx = 0; otherIdx < other.instances.length; otherIdx++) {
+      const otherInst = other.instances[otherIdx];
+      const entry = otherToSelf.get(otherIdx);
+      if (entry !== void 0) {
+        const selfIdx = entry[0];
+        const selfInst = this.instances[selfIdx];
+        const su = selfInst.constructor === Instance;
+        const ou = otherInst.constructor === Instance;
+        if (su && ou) {
+          conflicts.push([selfInst, otherInst, "kept_original"]);
+          usedIndices.add(selfIdx);
+        } else if (!su && ou) {
+          if (!usedIndices.has(selfIdx)) {
+            mergedInstances.push(otherInst);
+            usedIndices.add(selfIdx);
+          }
+        } else if (su && !ou) {
+          conflicts.push([selfInst, otherInst, "kept_user"]);
+          usedIndices.add(selfIdx);
+        } else {
+          if (!usedIndices.has(selfIdx)) {
+            mergedInstances.push(otherInst);
+            usedIndices.add(selfIdx);
+          }
+        }
+      } else {
+        mergedInstances.push(otherInst);
+      }
+    }
+    for (let selfIdx = 0; selfIdx < this.instances.length; selfIdx++) {
+      const selfInst = this.instances[selfIdx];
+      if (selfInst.constructor === PredictedInstance && !usedIndices.has(selfIdx)) {
+        let keep = true;
+        for (const [matchedSelfIdx] of otherToSelf.values()) {
+          if (matchedSelfIdx === selfIdx) {
+            keep = false;
+            break;
+          }
+        }
+        if (keep) {
+          mergedInstances.push(selfInst);
+        }
+      }
+    }
+    this.mergeAnnotations(other, "auto", instanceMatcher.threshold);
+    [this.isNegative] = _resolveMergedIsNegative(
+      this.isNegative,
+      other.isNegative,
+      mergedInstances
+    );
+    return [mergedInstances, conflicts];
+  }
+  /**
    * Append an annotation to this frame, routing to the correct list by type.
    *
    * @param annotation - Any annotation type: Instance, PredictedInstance,
@@ -2291,16 +3515,273 @@ var Video = class {
   close() {
     this.backend?.close();
   }
+  /**
+   * Check if this video has the same path as another video.
+   *
+   * Port of Python `Video.matches_path` (video.py:637-715). The public default
+   * is kept at `strict = true` (DECISIONS D1) because every merge/match call
+   * site passes `strict` explicitly, so the default is never load-bearing for
+   * parity; the LOGIC below mirrors Python exactly.
+   *
+   * @param other - Another video to compare with.
+   * @param strict - If `true`, require an exact (posix-normalized) path match.
+   *   If `false`, consider videos with the same basename as matching.
+   */
   matchesPath(other, strict = true) {
-    if (Array.isArray(this.filename) || Array.isArray(other.filename)) {
-      return JSON.stringify(this.filename) === JSON.stringify(other.filename);
+    const selfIsHdf5 = isHdf5Video(this);
+    const otherIsHdf5 = isHdf5Video(other);
+    if (selfIsHdf5 && otherIsHdf5) {
+      const selfSource = hdf5SourceFilename(this);
+      const otherSource = hdf5SourceFilename(other);
+      const selfDataset = hdf5Dataset(this);
+      const otherDataset = hdf5Dataset(other);
+      if (selfDataset !== null && otherDataset !== null) {
+        if (selfDataset !== otherDataset) {
+          return false;
+        }
+      }
+      if (selfSource !== null && otherSource !== null) {
+        if (strict) {
+          return toPosix(selfSource) === toPosix(otherSource);
+        }
+        return basename(selfSource) === basename(otherSource);
+      }
+      if (selfDataset !== null && otherDataset !== null) {
+        return selfDataset === otherDataset;
+      }
+      return false;
     }
-    if (strict) return this.filename === other.filename;
-    const basenameA = this.filename.split(/[/\\]/).pop();
-    const basenameB = other.filename.split(/[/\\]/).pop();
-    return basenameA === basenameB;
+    const selfIsList = Array.isArray(this.filename);
+    const otherIsList = Array.isArray(other.filename);
+    if (selfIsList && otherIsList) {
+      const selfList = this.filename;
+      const otherList = other.filename;
+      if (strict) {
+        return arraysEqual(selfList, otherList);
+      }
+      return arraysEqual(selfList.map(basename), otherList.map(basename));
+    }
+    if (selfIsList || otherIsList) {
+      return false;
+    }
+    const selfName = this.filename;
+    const otherName = other.filename;
+    if (strict) {
+      return toPosix(selfName) === toPosix(otherName);
+    }
+    return basename(selfName) === basename(otherName);
+  }
+  /**
+   * Check if this video has the same content as another video.
+   *
+   * Port of Python `Video.matches_content` (video.py:717-742). Compares the
+   * FULL 4-tuple shape (frames, height, width, channels) and the backend type
+   * name, NOT actual frame data.
+   *
+   * @param other - Another video to compare with.
+   * @returns `true` if the videos have the same shape and backend type.
+   */
+  matchesContent(other) {
+    if (!shapeTupleEqual(this.shape, other.shape)) {
+      return false;
+    }
+    if (this.backend === null && other.backend === null) {
+      return true;
+    }
+    if (this.backend === null || other.backend === null) {
+      return false;
+    }
+    return backendTypeName(this) === backendTypeName(other);
+  }
+  /**
+   * Check if this video has the same shape as another video.
+   *
+   * Port of Python `Video.matches_shape` (video.py:744-772). Compares only
+   * height, width, and channels (INCLUDING channels, EXCLUDING frames).
+   *
+   * @param other - Another video to compare with.
+   * @returns `true` if the videos have the same height, width, and channels.
+   */
+  matchesShape(other) {
+    const selfShape = this.backend === null && hasOwn(this.backendMetadata, "shape") ? this.backendMetadata.shape : this.shape;
+    const otherShape = other.backend === null && hasOwn(other.backendMetadata, "shape") ? other.backendMetadata.shape : other.shape;
+    if (selfShape == null || otherShape == null) {
+      return false;
+    }
+    return selfShape.length === otherShape.length && selfShape[1] === otherShape[1] && selfShape[2] === otherShape[2] && selfShape[3] === otherShape[3];
+  }
+  /**
+   * Check if this video has overlapping images with another video.
+   *
+   * Port of Python `Video.has_overlapping_images` (video.py:774-799). Only
+   * meaningful for image sequences (list filenames); compares basenames.
+   *
+   * @param other - Another video to compare with.
+   * @returns `true` if both are image sequences with at least one shared
+   *   image basename, `false` otherwise.
+   */
+  hasOverlappingImages(other) {
+    if (!Array.isArray(this.filename) || !Array.isArray(other.filename)) {
+      return false;
+    }
+    const selfBasenames = new Set(this.filename.map(basename));
+    for (const f of other.filename) {
+      if (selfBasenames.has(basename(f))) {
+        return true;
+      }
+    }
+    return false;
+  }
+  /**
+   * Whether this video is grayscale, or `null` if unknown.
+   *
+   * Port of Python `Video.grayscale` getter (video.py:225-239): if the shape is
+   * known, grayscale is `shape[-1] === 1`; otherwise fall back to a stored
+   * `backendMetadata["grayscale"]` value (real key-presence, so a stored `null`
+   * is returned as-is), else `null`. Used by `deduplicateWith` / `mergeWith` to
+   * carry the grayscale hint onto the newly created video.
+   */
+  get grayscale() {
+    const shape = this.shape;
+    if (shape != null) {
+      return shape[shape.length - 1] === 1;
+    }
+    if (hasOwn(this.backendMetadata, "grayscale")) {
+      return this.backendMetadata.grayscale ?? null;
+    }
+    return null;
+  }
+  /**
+   * Create a new video with duplicate images removed.
+   *
+   * Port of Python `Video.deduplicate_with` (video.py:801-840). Specific to
+   * image-sequence videos (ImageVideo: `filename` is a list). Images are
+   * considered duplicates when they share a basename. The returned video
+   * contains only the images from THIS video whose basename is not present in
+   * `other`, preserving this video's order.
+   *
+   * Return contract (matches Python exactly): returns `null` when ALL of this
+   * video's images are duplicates (Python returns `None`); otherwise returns a
+   * NEW `Video` (never `this`, never `other`) carrying the surviving image paths.
+   *
+   * @param other - Another image-sequence video to deduplicate against.
+   * @returns A new `Video` with the non-duplicate images, or `null` if every
+   *   image was a duplicate.
+   * @throws Error - If either video's `filename` is not a list (ImageVideo).
+   */
+  deduplicateWith(other) {
+    if (!Array.isArray(this.filename)) {
+      throw new Error("deduplicate_with only works with ImageVideo backends");
+    }
+    if (!Array.isArray(other.filename)) {
+      throw new Error("Other video must also be ImageVideo backend");
+    }
+    const otherBasenames = new Set(other.filename.map(basename));
+    const deduplicatedPaths = this.filename.filter(
+      (f) => !otherBasenames.has(basename(f))
+    );
+    if (deduplicatedPaths.length === 0) {
+      return null;
+    }
+    return makeImageSequenceVideo(deduplicatedPaths, this.grayscale);
+  }
+  /**
+   * Merge another video's images into this one.
+   *
+   * Port of Python `Video.merge_with` (video.py:842-883). Specific to
+   * image-sequence videos (ImageVideo: `filename` is a list). Returns a NEW
+   * `Video` containing all unique images (by basename) from both videos,
+   * preserving order: every unique image from THIS video first, then any image
+   * from `other` whose basename has not already been seen.
+   *
+   * @param other - Another image-sequence video to merge with.
+   * @returns A new `Video` with the de-duplicated union of both videos' images.
+   * @throws Error - If either video's `filename` is not a list (ImageVideo).
+   */
+  mergeWith(other) {
+    if (!Array.isArray(this.filename)) {
+      throw new Error("merge_with only works with ImageVideo backends");
+    }
+    if (!Array.isArray(other.filename)) {
+      throw new Error("Other video must also be ImageVideo backend");
+    }
+    const seenBasenames = /* @__PURE__ */ new Set();
+    const mergedPaths = [];
+    for (const path of this.filename) {
+      const name = basename(path);
+      if (!seenBasenames.has(name)) {
+        mergedPaths.push(path);
+        seenBasenames.add(name);
+      }
+    }
+    for (const path of other.filename) {
+      const name = basename(path);
+      if (!seenBasenames.has(name)) {
+        mergedPaths.push(path);
+        seenBasenames.add(name);
+      }
+    }
+    return makeImageSequenceVideo(mergedPaths, this.grayscale);
   }
 };
+function makeImageSequenceVideo(paths, grayscale) {
+  const backendMetadata = {};
+  if (grayscale != null) {
+    backendMetadata.grayscale = grayscale;
+  }
+  return new Video({
+    filename: paths,
+    backend: null,
+    backendMetadata,
+    openBackend: false
+  });
+}
+function basename(path) {
+  const parts = path.split(/[/\\]/);
+  return parts[parts.length - 1];
+}
+function toPosix(path) {
+  let p = path.replace(/\\/g, "/");
+  p = p.replace(/\/{2,}/g, "/");
+  if (p.length > 1 && p.endsWith("/")) {
+    p = p.slice(0, -1);
+  }
+  return p;
+}
+function arraysEqual(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+function shapeTupleEqual(a, b) {
+  if (a === null || b === null) return a === b;
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+function hasOwn(obj, key) {
+  return Object.prototype.hasOwnProperty.call(obj, key);
+}
+function hdf5Dataset(video) {
+  const fromBackend = video.backend?.dataset;
+  if (fromBackend != null) return fromBackend;
+  const fromMeta = video.backendMetadata.dataset;
+  return typeof fromMeta === "string" ? fromMeta : null;
+}
+function isHdf5Video(video) {
+  return hdf5Dataset(video) !== null;
+}
+function hdf5SourceFilename(video) {
+  const fn = video.sourceVideo?.filename;
+  return typeof fn === "string" ? fn : null;
+}
+function backendTypeName(video) {
+  return video.backend?.constructor?.name ?? "";
+}
 
 // src/video/mediabunny-video.ts
 import {
@@ -2944,7 +4425,109 @@ var LazyFrameList = class {
   }
 };
 
+// src/model/labels-set.ts
+var LabelsSet = class _LabelsSet {
+  labels;
+  constructor(entries) {
+    this.labels = new Map(Object.entries(entries ?? {}));
+  }
+  get size() {
+    return this.labels.size;
+  }
+  get(key) {
+    return this.labels.get(key);
+  }
+  set(key, value) {
+    this.labels.set(key, value);
+  }
+  delete(key) {
+    this.labels.delete(key);
+  }
+  keys() {
+    return this.labels.keys();
+  }
+  values() {
+    return this.labels.values();
+  }
+  entries() {
+    return this.labels.entries();
+  }
+  [Symbol.iterator]() {
+    return this.labels.entries();
+  }
+  static fromLabelsList(labelsList, keys) {
+    const set = new _LabelsSet();
+    for (let i = 0; i < labelsList.length; i++) {
+      const key = keys?.[i] ?? `labels_${i}`;
+      set.set(key, labelsList[i]);
+    }
+    return set;
+  }
+  toArray() {
+    return Array.from(this.labels.values());
+  }
+  keyArray() {
+    return Array.from(this.labels.keys());
+  }
+};
+
 // src/model/labels.ts
+var SLEAP_IO_VERSION = "0.3.1";
+function pathBasename(path) {
+  const parts = path.split(/[/\\]/);
+  return parts[parts.length - 1];
+}
+function coerceSkeletonMatcher(x) {
+  if (x == null) {
+    return new SkeletonMatcher(SkeletonMatchMethod.STRUCTURE);
+  }
+  if (typeof x === "string") {
+    return new SkeletonMatcher(toSkeletonMatchMethod(x));
+  }
+  return x;
+}
+function coerceVideoMatcher(x) {
+  if (x == null) {
+    return new VideoMatcher();
+  }
+  if (typeof x === "string") {
+    return new VideoMatcher(toVideoMatchMethod(x));
+  }
+  return x;
+}
+function coerceTrackMatcher(x) {
+  if (x == null) {
+    return new TrackMatcher();
+  }
+  if (typeof x === "string") {
+    return new TrackMatcher(toTrackMatchMethod(x));
+  }
+  return x;
+}
+function coerceInstanceMatcher(x) {
+  if (x == null) {
+    return new InstanceMatcher();
+  }
+  if (typeof x === "string") {
+    return new InstanceMatcher(toInstanceMatchMethod(x));
+  }
+  return x;
+}
+function localIsoStringWithoutZ() {
+  const d = /* @__PURE__ */ new Date();
+  const pad = (n, width = 2) => String(n).padStart(width, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}.${pad(d.getMilliseconds(), 3)}000`;
+}
+function filenameRepr(filename) {
+  const reprStr = (s) => {
+    const escaped = s.replace(/\\/g, "\\\\").replace(/'/g, "\\'");
+    return `'${escaped}'`;
+  };
+  if (Array.isArray(filename)) {
+    return `[${filename.map(reprStr).join(", ")}]`;
+  }
+  return reprStr(filename);
+}
 var Labels = class _Labels {
   labeledFrames;
   videos;
@@ -3166,30 +4749,49 @@ To use, first materialize:
   reindex() {
     this._invalidateIndices();
   }
-  /** Remove all predicted instances and predicted annotations from all frames. */
-  removePredictions() {
+  /**
+   * Remove all predicted instances and predicted annotations from all frames.
+   *
+   * Mirrors Python `Labels.remove_predictions` (labels.py:1684-1710).
+   *
+   * @param clean - If `true` (the default), also prune empty frames and unused
+   *   skeletons/tracks via {@link clean} with `frames`, `skeletons`, `tracks`
+   *   enabled and `emptyInstances`/`videos` disabled. Does NOT remove videos
+   *   with no labeled frames, nor instances with no visible points.
+   */
+  removePredictions(clean = true) {
     if (this._lazyFrameList) this.materialize();
     for (const lf of this.labeledFrames) {
       lf.removePredictions();
     }
     this._invalidateIndices();
+    if (clean) {
+      this.clean({
+        frames: true,
+        emptyInstances: false,
+        skeletons: true,
+        tracks: true,
+        videos: false
+      });
+    }
   }
   /**
    * Collapse structurally-equal skeletons into a single canonical entry.
    *
-   * Skeletons are partitioned via {@link Skeleton.matches} (same node count and
-   * node names in the same order). The first member of each equivalence class
-   * is kept as canonical; the rest are removed from `this.skeletons` and every
-   * instance referencing a non-canonical skeleton is reassigned to the canonical
-   * via direct property assignment. Points are positional, so reassignment is
-   * safe and does not change any point coordinates.
+   * Skeletons are partitioned via {@link Skeleton.matches} called with
+   * `requireSameOrder: true` (same node count, same node names IN THE SAME
+   * ORDER, same edge set, and same symmetry set). The first member of each
+   * equivalence class is kept as canonical; the rest are removed from
+   * `this.skeletons` and every instance referencing a non-canonical skeleton is
+   * reassigned to the canonical via direct property assignment. Points are
+   * positional and are NOT remapped, so order-identical matching is required to
+   * keep reassignment safe.
    *
    * Note: skeleton `name` is not part of `matches()` — the canonical's name wins.
    *
-   * Note: `matches()` compares only node count and node names in order — it does
-   * NOT compare `edges` or `symmetries`. If matched skeletons differ in topology,
-   * the canonical (first) skeleton's edges/symmetries are kept and the others are
-   * discarded.
+   * Note: skeletons that share node names but differ in node ORDER are treated
+   * as distinct here (they are not collapsed), since collapsing them would
+   * misalign instance points.
    *
    * Legacy `.slp` files often carry content-duplicate skeletons (a pre-1.5 Python
    * sleap quirk). Call this method after `loadSlp` if you want them collapsed —
@@ -3206,7 +4808,7 @@ To use, first materialize:
     const canonicals = [];
     const canonicalFor = /* @__PURE__ */ new Map();
     for (const skel of this.skeletons) {
-      const existing = canonicals.find((c) => skel.matches(c));
+      const existing = canonicals.find((c) => skel.matches(c, { requireSameOrder: true }));
       if (existing) {
         canonicalFor.set(skel, existing);
       } else {
@@ -3880,6 +5482,973 @@ To use, first materialize:
     }
     return videoArray;
   }
+  /**
+   * Update data structures based on contents.
+   *
+   * Repopulates `videos`, `skeletons`, and `tracks` from the labeled frames,
+   * their instances and nested annotations, and the suggestions. Existing
+   * entries are preserved (in order); only missing ones are appended.
+   *
+   * Mirrors Python `Labels.update` (labels.py:435-457).
+   */
+  update() {
+    if (this._lazyFrameList) this.materialize();
+    for (const lf of this.labeledFrames) {
+      if (!this.videos.includes(lf.video)) {
+        this.videos.push(lf.video);
+      }
+      for (const inst of lf.instances) {
+        if (!this.skeletons.includes(inst.skeleton)) {
+          this.skeletons.push(inst.skeleton);
+        }
+        if (inst.track != null && !this.tracks.includes(inst.track)) {
+          this.tracks.push(inst.track);
+        }
+      }
+      this._collectAnnotationTracks(lf);
+    }
+    for (const sf of this.suggestions) {
+      if (!this.videos.includes(sf.video)) {
+        this.videos.push(sf.video);
+      }
+    }
+  }
+  /**
+   * Remap video and track references on a frame's annotations in place.
+   *
+   * Mirrors Python `Labels._remap_frame_annotations` (labels.py:3621-3648).
+   * Centroids/bboxes/masks: only `.track` is remapped. ROIs: both `.video` and
+   * `.track`. Label-image objects: nested `info.track` only. Membership is by
+   * reference via `Map.has`/`Map.get` (never a `?? default`), so a track/video
+   * absent from the map is left untouched.
+   *
+   * @param frame - LabeledFrame whose annotations should be remapped.
+   * @param videoMap - Map from old videos to new videos.
+   * @param trackMap - Map from old tracks to new tracks.
+   */
+  static _remapFrameAnnotations(frame, videoMap, trackMap) {
+    for (const ann of [...frame.centroids, ...frame.bboxes, ...frame.masks]) {
+      if (ann.track != null && trackMap.has(ann.track)) {
+        ann.track = trackMap.get(ann.track);
+      }
+    }
+    for (const r of frame.rois) {
+      if (r.video != null && videoMap.has(r.video)) {
+        r.video = videoMap.get(r.video);
+      }
+      if (r.track != null && trackMap.has(r.track)) {
+        r.track = trackMap.get(r.track);
+      }
+    }
+    for (const li of frame.labelImages) {
+      for (const info of li.objects.values()) {
+        if (info.track != null && trackMap.has(info.track)) {
+          info.track = trackMap.get(info.track);
+        }
+      }
+    }
+  }
+  /**
+   * Map an instance to use mapped skeleton and track, returning a NEW instance.
+   *
+   * Mirrors Python `Labels._map_instance` (labels.py:3650-3687). The source
+   * instance is never mutated: its points are deep-copied and the returned
+   * instance is a fresh object of the SAME exact type (`Instance` vs
+   * `PredictedInstance`, dispatched via `constructor ===`). Skeleton/track are
+   * resolved through the maps with `?? original` fallback.
+   *
+   * @param instance - Instance to map.
+   * @param skeletonMap - Map from old skeletons to new skeletons.
+   * @param trackMap - Map from old tracks to new tracks.
+   * @returns New instance with mapped skeleton and track.
+   */
+  _mapInstance(instance, skeletonMap, trackMap) {
+    const mappedSkeleton = skeletonMap.get(instance.skeleton) ?? instance.skeleton;
+    const mappedTrack = instance.track ? trackMap.get(instance.track) ?? instance.track : null;
+    const newPoints = instance.points.map((p) => ({
+      ...p,
+      xy: [...p.xy]
+    }));
+    if (instance.constructor === PredictedInstance) {
+      const predicted = instance;
+      return new PredictedInstance({
+        points: newPoints,
+        skeleton: mappedSkeleton,
+        score: predicted.score,
+        track: mappedTrack,
+        trackingScore: predicted.trackingScore
+      });
+    }
+    return new Instance({
+      points: newPoints,
+      skeleton: mappedSkeleton,
+      track: mappedTrack,
+      trackingScore: instance.trackingScore,
+      fromPredicted: instance.fromPredicted
+    });
+  }
+  /**
+   * Merge another `Labels` object into this one in place.
+   *
+   * Faithful port of Python `Labels.merge` (labels.py:3149-3618). Runs the fixed
+   * 5-step pipeline (skeletons -> videos -> tracks -> frames -> suggestions),
+   * building reference-keyed maps FROM `other`'s objects TO `self`'s objects (or
+   * to a newly-appended `other` object), and returns a {@link MergeResult}.
+   *
+   * Async (DECISIONS D8): the AUTO video cascade awaits filesystem and pixel
+   * reads. Coercion of the matcher/error-mode arguments happens BEFORE the merge
+   * body, so a bad method/error-mode string propagates (it is NOT collected into
+   * the result).
+   *
+   * @param other - The `Labels` to merge into `self`.
+   * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE; string ->
+   *   validated; else used as-is).
+   * @param opts.video - Video matcher (`null` -> AUTO).
+   * @param opts.track - Track matcher (`null` -> NAME).
+   * @param opts.frame - The frame merge strategy as a RAW string (default
+   *   `"auto"`; NOT validated against the enum — an invalid value falls through
+   *   `LabeledFrame.merge`'s strategy chain into the AUTO branch).
+   * @param opts.instance - Instance matcher (`null` -> SPATIAL/5.0).
+   * @param opts.validate - If `true` (default), an unmatched skeleton under
+   *   STRICT raises `SkeletonMismatchError`.
+   * @param opts.progressCallback - Called `(current, total, message)` per frame
+   *   and once at the end.
+   * @param opts.errorMode - `"continue"` (default), `"strict"`, or `"warn"`.
+   */
+  async merge(other, opts = {}) {
+    const skeletonMatcher = coerceSkeletonMatcher(opts.skeleton);
+    const videoMatcher = coerceVideoMatcher(opts.video);
+    const trackMatcher = coerceTrackMatcher(opts.track);
+    const instanceMatcher = coerceInstanceMatcher(opts.instance);
+    const frame = opts.frame ?? "auto";
+    const validate = opts.validate ?? true;
+    const progressCallback = opts.progressCallback;
+    const errorModeEnum = toErrorMode(opts.errorMode ?? "continue");
+    if (this._lazyFrameList) this.materialize();
+    const result = new MergeResult(true);
+    if (!("merge_history" in this.provenance)) {
+      this.provenance.merge_history = [];
+    }
+    const mergeHistory = this.provenance.merge_history;
+    const mergeRecord = {
+      timestamp: localIsoStringWithoutZ(),
+      source_filename: other.provenance.filename ?? null,
+      target_filename: this.provenance.filename ?? null,
+      source_labels: {
+        n_frames: other.labeledFrames.length,
+        n_videos: other.videos.length,
+        n_skeletons: other.skeletons.length,
+        n_tracks: other.tracks.length
+      },
+      strategy: frame,
+      sleap_io_version: SLEAP_IO_VERSION
+    };
+    let total = 0;
+    try {
+      const skeletonMap = /* @__PURE__ */ new Map();
+      for (const otherSkel of other.skeletons) {
+        let matched = false;
+        for (const selfSkel of this.skeletons) {
+          if (skeletonMatcher.match(selfSkel, otherSkel)) {
+            skeletonMap.set(otherSkel, selfSkel);
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          if (validate && errorModeEnum === ErrorMode.STRICT) {
+            throw new SkeletonMismatchError(
+              `No matching skeleton found for ${otherSkel.name}`,
+              { skeleton: otherSkel }
+            );
+          } else if (errorModeEnum === ErrorMode.WARN) {
+            console.warn(`Warning: No matching skeleton for ${otherSkel.name}`);
+          }
+          this.skeletons.push(otherSkel);
+          skeletonMap.set(otherSkel, otherSkel);
+        }
+      }
+      const videoMap = /* @__PURE__ */ new Map();
+      const frameIdxMap = /* @__PURE__ */ new Map();
+      const setFrameIdx = (v, oldIdx, newVideo, newIdx) => {
+        let inner = frameIdxMap.get(v);
+        if (inner == null) {
+          inner = /* @__PURE__ */ new Map();
+          frameIdxMap.set(v, inner);
+        }
+        inner.set(oldIdx, [newVideo, newIdx]);
+      };
+      for (const otherVideo of other.videos) {
+        let matched = false;
+        if (videoMatcher.method === VideoMatchMethod.IMAGE_DEDUP || videoMatcher.method === VideoMatchMethod.SHAPE) {
+          for (const selfVideo of this.videos) {
+            if (await videoMatcher.match(selfVideo, otherVideo)) {
+              if (videoMatcher.method === VideoMatchMethod.IMAGE_DEDUP) {
+                const dedupedVideo = otherVideo.deduplicateWith(selfVideo);
+                if (dedupedVideo === null) {
+                  videoMap.set(otherVideo, selfVideo);
+                  if (Array.isArray(otherVideo.filename) && Array.isArray(selfVideo.filename)) {
+                    const otherBasenames = otherVideo.filename.map(pathBasename);
+                    const selfBasenames = selfVideo.filename.map(pathBasename);
+                    otherBasenames.forEach((bn, oldIdx) => {
+                      const newIdx = selfBasenames.indexOf(bn);
+                      if (newIdx !== -1) {
+                        setFrameIdx(otherVideo, oldIdx, selfVideo, newIdx);
+                      }
+                    });
+                  }
+                } else {
+                  this.videos.push(dedupedVideo);
+                  videoMap.set(otherVideo, dedupedVideo);
+                  if (Array.isArray(otherVideo.filename) && Array.isArray(dedupedVideo.filename)) {
+                    const otherBasenames = otherVideo.filename.map(pathBasename);
+                    const dedupedBasenames = dedupedVideo.filename.map(pathBasename);
+                    const selfBasenames = Array.isArray(selfVideo.filename) ? selfVideo.filename.map(pathBasename) : [];
+                    otherBasenames.forEach((bn, oldIdx) => {
+                      const dedupIdx = dedupedBasenames.indexOf(bn);
+                      if (dedupIdx !== -1) {
+                        setFrameIdx(otherVideo, oldIdx, dedupedVideo, dedupIdx);
+                      } else {
+                        const selfIdx = selfBasenames.indexOf(bn);
+                        if (selfIdx === -1) {
+                          throw new Error(
+                            "Unexpected basename mismatch, possible file corruption."
+                          );
+                        }
+                        setFrameIdx(otherVideo, oldIdx, selfVideo, selfIdx);
+                      }
+                    });
+                  }
+                }
+              } else {
+                const mergedVideo = selfVideo.mergeWith(otherVideo);
+                const selfVideoIdx = this.videos.indexOf(selfVideo);
+                this.videos[selfVideoIdx] = mergedVideo;
+                videoMap.set(otherVideo, mergedVideo);
+                videoMap.set(selfVideo, mergedVideo);
+                if (Array.isArray(otherVideo.filename) && Array.isArray(mergedVideo.filename)) {
+                  const otherBasenames = otherVideo.filename.map(pathBasename);
+                  const mergedBasenames = mergedVideo.filename.map(pathBasename);
+                  otherBasenames.forEach((bn, oldIdx) => {
+                    const newIdx = mergedBasenames.indexOf(bn);
+                    if (newIdx !== -1) {
+                      setFrameIdx(otherVideo, oldIdx, mergedVideo, newIdx);
+                    }
+                  });
+                }
+              }
+              matched = true;
+              break;
+            }
+          }
+        } else {
+          const matchedVideo = await videoMatcher.findMatch(
+            otherVideo,
+            this.videos,
+            { labelsIncoming: other, labelsBase: this }
+          );
+          if (matchedVideo !== null) {
+            videoMap.set(otherVideo, matchedVideo);
+            matched = true;
+          }
+        }
+        if (!matched) {
+          this.videos.push(otherVideo);
+          videoMap.set(otherVideo, otherVideo);
+        }
+      }
+      const trackMap = /* @__PURE__ */ new Map();
+      for (const otherTrack of other.tracks) {
+        let matched = false;
+        for (const selfTrack of this.tracks) {
+          if (trackMatcher.match(selfTrack, otherTrack)) {
+            trackMap.set(otherTrack, selfTrack);
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) {
+          this.tracks.push(otherTrack);
+          trackMap.set(otherTrack, otherTrack);
+        }
+      }
+      total = other.labeledFrames.length;
+      for (let idx = 0; idx < total; idx++) {
+        const otherFrame = other.labeledFrames[idx];
+        progressCallback?.(idx, total, `Merging frame ${idx + 1}/${total}`);
+        let mappedVideo;
+        let mappedFrameIdx;
+        const inner = frameIdxMap.get(otherFrame.video);
+        const mapped = inner?.get(otherFrame.frameIdx);
+        if (mapped != null) {
+          [mappedVideo, mappedFrameIdx] = mapped;
+        } else {
+          mappedVideo = videoMap.get(otherFrame.video) ?? otherFrame.video;
+          mappedFrameIdx = otherFrame.frameIdx;
+        }
+        const matching = this.find({
+          video: mappedVideo,
+          frameIdx: mappedFrameIdx
+        });
+        if (matching.length === 0) {
+          const newFrame = new LabeledFrame({
+            video: mappedVideo,
+            frameIdx: mappedFrameIdx,
+            instances: [],
+            isNegative: otherFrame.isNegative
+          });
+          for (const inst of otherFrame.instances) {
+            newFrame.instances.push(
+              this._mapInstance(inst, skeletonMap, trackMap)
+            );
+            result.instancesAdded += 1;
+          }
+          newFrame.mergeAnnotations(otherFrame);
+          _Labels._remapFrameAnnotations(newFrame, videoMap, trackMap);
+          this.append(newFrame);
+          result.framesMerged += 1;
+        } else {
+          const selfFrame = matching[0];
+          const selfWasNegative = selfFrame.isNegative;
+          const [rawMerged, conflicts] = selfFrame.merge(otherFrame, {
+            instance: instanceMatcher,
+            frame
+          });
+          const mergedInstances = rawMerged.map(
+            (inst) => skeletonMap.has(inst.skeleton) ? this._mapInstance(inst, skeletonMap, trackMap) : inst
+          );
+          const nBefore = selfFrame.instances.length;
+          const nAfter = mergedInstances.length;
+          result.instancesAdded += Math.max(0, nAfter - nBefore);
+          for (const [orig, nw, resolution] of conflicts) {
+            result.conflicts.push(
+              new ConflictResolution(
+                selfFrame,
+                "instance_conflict",
+                orig,
+                nw,
+                resolution
+              )
+            );
+          }
+          const [, negativeConflict] = _resolveMergedIsNegative(
+            selfWasNegative,
+            otherFrame.isNegative,
+            mergedInstances
+          );
+          if (negativeConflict) {
+            result.conflicts.push(
+              new ConflictResolution(
+                selfFrame,
+                "negative_flag_conflict",
+                selfWasNegative,
+                otherFrame.isNegative,
+                "dropped_for_user_pose"
+              )
+            );
+          }
+          selfFrame.instances = mergedInstances;
+          _Labels._remapFrameAnnotations(selfFrame, videoMap, trackMap);
+          result.framesMerged += 1;
+        }
+      }
+      for (const otherSuggestion of other.suggestions) {
+        const mappedVideo = videoMap.get(otherSuggestion.video) ?? otherSuggestion.video;
+        let exists = false;
+        for (const selfSuggestion of this.suggestions) {
+          if (selfSuggestion.video === mappedVideo && selfSuggestion.frameIdx === otherSuggestion.frameIdx) {
+            exists = true;
+            break;
+          }
+        }
+        if (!exists) {
+          this.suggestions.push(
+            new SuggestionFrame({
+              video: mappedVideo,
+              frameIdx: otherSuggestion.frameIdx
+            })
+          );
+        }
+      }
+      mergeRecord.result = {
+        frames_merged: result.framesMerged,
+        instances_added: result.instancesAdded,
+        conflicts: result.conflicts.length
+        // COUNT, not the list
+      };
+      mergeHistory.push(mergeRecord);
+    } catch (e) {
+      if (e instanceof MergeError) {
+        result.successful = false;
+        result.errors.push(e);
+        if (errorModeEnum === ErrorMode.STRICT) throw e;
+      } else {
+        result.successful = false;
+        const err = e;
+        result.errors.push(
+          new MergeError(String(err?.message ?? e), {
+            exception: err?.constructor?.name
+          })
+        );
+        if (errorModeEnum === ErrorMode.STRICT) throw e;
+      }
+    }
+    this._invalidateIndices();
+    progressCallback?.(total, total, "Merge complete");
+    return result;
+  }
+  /**
+   * Build correspondence maps between this `Labels` and another WITHOUT mutating
+   * either (read-only twin of {@link merge}).
+   *
+   * Faithful port of Python `Labels.match` (labels.py:3020-3147). Coerces only
+   * the video/skeleton/track matchers (NO instance matcher, NO error mode). No
+   * lazy guard, no try/except, no provenance, no mutation. AUTO videos use the
+   * full `findMatch` cascade; every other method (including IMAGE_DEDUP/SHAPE)
+   * uses a simple first-match-wins loop. Unmatched -> `null`.
+   *
+   * Async (DECISIONS D8): the AUTO cascade awaits filesystem/pixel reads.
+   *
+   * @param other - The `Labels` to match against (maps `other` -> `self`).
+   * @param opts.video - Video matcher (`null` -> AUTO).
+   * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE).
+   * @param opts.track - Track matcher (`null` -> NAME).
+   */
+  async match(other, opts = {}) {
+    const skeletonMatcher = coerceSkeletonMatcher(opts.skeleton);
+    const videoMatcher = coerceVideoMatcher(opts.video);
+    const trackMatcher = coerceTrackMatcher(opts.track);
+    const result = new MatchResult();
+    for (const otherSkel of other.skeletons) {
+      let matchedSkel = null;
+      for (const selfSkel of this.skeletons) {
+        if (skeletonMatcher.match(selfSkel, otherSkel)) {
+          matchedSkel = selfSkel;
+          break;
+        }
+      }
+      result.skeletonMap.set(otherSkel, matchedSkel);
+    }
+    for (const otherVideo of other.videos) {
+      let matchedVideo;
+      if (videoMatcher.method === VideoMatchMethod.AUTO) {
+        matchedVideo = await videoMatcher.findMatch(otherVideo, this.videos, {
+          labelsIncoming: other,
+          labelsBase: this
+        });
+      } else {
+        matchedVideo = null;
+        for (const selfVideo of this.videos) {
+          if (await videoMatcher.match(selfVideo, otherVideo)) {
+            matchedVideo = selfVideo;
+            break;
+          }
+        }
+      }
+      result.videoMap.set(otherVideo, matchedVideo);
+    }
+    for (const otherTrack of other.tracks) {
+      let matchedTrack = null;
+      for (const selfTrack of this.tracks) {
+        if (trackMatcher.match(selfTrack, otherTrack)) {
+          matchedTrack = selfTrack;
+          break;
+        }
+      }
+      result.trackMap.set(otherTrack, matchedTrack);
+    }
+    return result;
+  }
+  /**
+   * Resolve a foreign `Video` or path to the canonical `Video` in `this.videos`.
+   *
+   * Faithful port of Python `Labels.match_video` (labels.py:1216-1344). Uses its
+   * OWN simpler cascade (NOT `findMatch`). Method validation runs BEFORE the
+   * identity short-circuit. RAISES on ambiguity (>1 candidate), unlike
+   * {@link match} which silently takes the first.
+   *
+   * Async (DECISIONS D8): the file-identity tier awaits `isSameFile` / FS checks.
+   *
+   * @param videoOrPath - A `Video`, or a filename string (wrapped in an unopened
+   *   `Video`).
+   * @param method - `"auto"` (default), another method string, or a
+   *   `VideoMatcher`. AUTO (string or matcher) uses the tiered cascade.
+   * @returns The canonical `Video` from `this.videos`, or `null` if none match.
+   */
+  async matchVideo(videoOrPath, method = "auto") {
+    let query;
+    if (videoOrPath instanceof Video) {
+      query = videoOrPath;
+    } else if (typeof videoOrPath === "string") {
+      query = new Video({ filename: videoOrPath, openBackend: false });
+    } else {
+      throw new TypeError(
+        `match_video() expects a Video, str, or Path, got ${videoOrPath?.constructor?.name ?? typeof videoOrPath}.`
+      );
+    }
+    let matcher;
+    if (typeof method === "string") {
+      const methodEnum = toVideoMatchMethod(method);
+      matcher = methodEnum === VideoMatchMethod.AUTO ? null : new VideoMatcher(methodEnum);
+    } else if (method instanceof VideoMatcher) {
+      matcher = method.method === VideoMatchMethod.AUTO ? null : method;
+    } else {
+      throw new TypeError(
+        `match_video() expects method to be a str or VideoMatcher, got ${method?.constructor?.name ?? typeof method}.`
+      );
+    }
+    for (const video of this.videos) {
+      if (video === query) return video;
+    }
+    const ambiguous = (candidates, by) => {
+      const names = candidates.map((v) => filenameRepr(v.filename)).join(", ");
+      return new Error(
+        `Ambiguous video match for ${filenameRepr(query.filename)}: matched ${candidates.length} videos ${by}: ${names}.`
+      );
+    };
+    if (matcher === null) {
+      const definitive = [];
+      for (const v of this.videos) {
+        if (await isSameFile(v, query) || v.matchesPath(query, true)) {
+          definitive.push(v);
+        }
+      }
+      if (definitive.length > 1) {
+        throw ambiguous(definitive, "by file identity");
+      }
+      if (definitive.length) {
+        return definitive[0];
+      }
+      const byBasename = this.videos.filter((v) => v.matchesPath(query, false));
+      if (byBasename.length > 1) {
+        throw ambiguous(byBasename, "by basename");
+      }
+      return byBasename.length ? byBasename[0] : null;
+    }
+    const matches = [];
+    for (const v of this.videos) {
+      if (await matcher.match(v, query)) matches.push(v);
+    }
+    if (matches.length > 1) {
+      throw ambiguous(matches, `with method '${matcher.method}'`);
+    }
+    return matches.length ? matches[0] : null;
+  }
+  /**
+   * Remove empty frames, unused skeletons, tracks and videos.
+   *
+   * Mirrors Python `Labels.clean` (labels.py:1577-1682). In-place, returns
+   * void. This is an explicit opt-in operation (never auto-run on load).
+   *
+   * @param opts.frames - If `true` (default), remove empty frames. Negative
+   *   frames (`isNegative === true`) and annotation-only frames are preserved.
+   * @param opts.emptyInstances - If `true` (NOT default), remove instances with
+   *   no visible points (before the emptiness check).
+   * @param opts.skeletons - If `true` (default), remove unused skeletons.
+   * @param opts.tracks - If `true` (default), remove unused tracks and the
+   *   annotations/objects that reference removed tracks (track=null is always
+   *   preserved).
+   * @param opts.videos - If `true` (NOT default), remove videos with no labeled
+   *   frames.
+   */
+  clean(opts) {
+    if (this._lazyFrameList) this.materialize();
+    const frames = opts?.frames ?? true;
+    const emptyInstances = opts?.emptyInstances ?? false;
+    const skeletons = opts?.skeletons ?? true;
+    const tracks = opts?.tracks ?? true;
+    const videos = opts?.videos ?? false;
+    const usedSkeletons = [];
+    const usedTracks = [];
+    const usedVideos = [];
+    const keptFrames = [];
+    for (const lf of this.labeledFrames) {
+      if (emptyInstances) {
+        lf.removeEmptyInstances();
+      }
+      const hasAnnotations = lf.centroids.length > 0 || lf.bboxes.length > 0 || lf.masks.length > 0 || lf.labelImages.length > 0 || lf.rois.length > 0;
+      if (frames && lf.instances.length === 0 && !lf.isNegative && !hasAnnotations) {
+        continue;
+      }
+      if (videos && !usedVideos.includes(lf.video)) {
+        usedVideos.push(lf.video);
+      }
+      if (skeletons || tracks) {
+        for (const inst of lf.instances) {
+          if (skeletons && !usedSkeletons.includes(inst.skeleton)) {
+            usedSkeletons.push(inst.skeleton);
+          }
+          if (tracks && inst.track != null && !usedTracks.includes(inst.track)) {
+            usedTracks.push(inst.track);
+          }
+        }
+      }
+      if (tracks) {
+        for (const ann of [
+          ...lf.centroids,
+          ...lf.bboxes,
+          ...lf.masks,
+          ...lf.rois
+        ]) {
+          if (ann.track != null && !usedTracks.includes(ann.track)) {
+            usedTracks.push(ann.track);
+          }
+        }
+        for (const li of lf.labelImages) {
+          for (const info of li.objects.values()) {
+            if (info.track != null && !usedTracks.includes(info.track)) {
+              usedTracks.push(info.track);
+            }
+          }
+        }
+      }
+      if (frames) {
+        keptFrames.push(lf);
+      }
+    }
+    if (videos) {
+      this.videos = this.videos.filter((v) => usedVideos.includes(v));
+    }
+    if (skeletons) {
+      this.skeletons = this.skeletons.filter((s) => usedSkeletons.includes(s));
+    }
+    if (tracks) {
+      this.tracks = this.tracks.filter((t) => usedTracks.includes(t));
+      const validTracks = new Set(this.tracks);
+      const targetFrames = frames ? keptFrames : this.labeledFrames;
+      for (const lf of targetFrames) {
+        if (lf.centroids.length) {
+          lf.centroids = lf.centroids.filter(
+            (a) => a.track == null || validTracks.has(a.track)
+          );
+        }
+        if (lf.bboxes.length) {
+          lf.bboxes = lf.bboxes.filter(
+            (a) => a.track == null || validTracks.has(a.track)
+          );
+        }
+        if (lf.masks.length) {
+          lf.masks = lf.masks.filter(
+            (a) => a.track == null || validTracks.has(a.track)
+          );
+        }
+        if (lf.rois.length) {
+          lf.rois = lf.rois.filter(
+            (a) => a.track == null || validTracks.has(a.track)
+          );
+        }
+        if (lf.labelImages.length) {
+          for (const li of lf.labelImages) {
+            if (li.objects.size) {
+              const kept = new Map(li.objects);
+              for (const [k, v] of li.objects) {
+                if (!(v.track == null || validTracks.has(v.track))) {
+                  kept.delete(k);
+                }
+              }
+              li.objects = kept;
+            }
+          }
+        }
+      }
+    }
+    if (frames) {
+      this.labeledFrames = keptFrames;
+    }
+    this._invalidateIndices();
+  }
+  /**
+   * Extract a set of frames into a new Labels object.
+   *
+   * Mirrors Python `Labels.extract` (labels.py:2482-2551). Copies the selected
+   * frames and their reachable graph (instances/skeletons/tracks/videos/
+   * annotations) with structural sharing (each shared object copied once), keeps
+   * the relative ordering of tracks/skeletons by NAME, copies/dedups suggestions
+   * for the extracted videos, and records the source labels in provenance.
+   *
+   * @param inds - Frame selection: an array of integer indices, an array of
+   *   `[Video, frameIdx]` tuples, or a single `Video` (all of its frames).
+   * @param copy - If `true` (default), deep-copy the frames and containing
+   *   objects; otherwise share references with this Labels.
+   * @returns A new `Labels` containing the selected frames.
+   */
+  extract(inds, copy = true) {
+    if (this._lazyFrameList) this.materialize();
+    let lfs = this._selectFrames(inds);
+    if (copy) {
+      lfs = this._deepCopyFrames(lfs);
+    }
+    const labels = new _Labels({ labeledFrames: lfs });
+    const trackToInd = /* @__PURE__ */ new Map();
+    this.tracks.forEach((t, i) => trackToInd.set(t.name, i));
+    labels.tracks = labels.tracks.map((t, i) => [t, i]).sort((a, b) => {
+      const ka = trackToInd.get(a[0].name) ?? 0;
+      const kb = trackToInd.get(b[0].name) ?? 0;
+      return ka === kb ? a[1] - b[1] : ka - kb;
+    }).map(([t]) => t);
+    const skelToInd = /* @__PURE__ */ new Map();
+    this.skeletons.forEach((s, i) => skelToInd.set(s.name ?? "", i));
+    labels.skeletons = labels.skeletons.map((s, i) => [s, i]).sort((a, b) => {
+      const ka = skelToInd.get(a[0].name ?? "") ?? 0;
+      const kb = skelToInd.get(b[0].name ?? "") ?? 0;
+      return ka === kb ? a[1] - b[1] : ka - kb;
+    }).map(([s]) => s);
+    const extractedVideos = new Set(
+      this._selectFrames(inds).map((lf) => lf.video)
+    );
+    let suggestions = this.suggestions.filter(
+      (sf) => extractedVideos.has(sf.video)
+    );
+    if (copy) {
+      suggestions = suggestions.map(
+        (sf) => new SuggestionFrame({
+          video: sf.video,
+          frameIdx: sf.frameIdx,
+          group: sf.group,
+          metadata: { ...sf.metadata }
+        })
+      );
+    }
+    for (const sf of suggestions) {
+      for (const vid of labels.videos) {
+        if (vid.matchesContent(sf.video) && vid.matchesPath(sf.video)) {
+          sf.video = vid;
+          break;
+        }
+      }
+    }
+    labels.suggestions.push(...suggestions);
+    labels.update();
+    labels.provenance = { ...labels.provenance };
+    labels.provenance.source_labels = this.provenance.filename ?? null;
+    return labels;
+  }
+  /**
+   * Resolve an extraction selection to a list of LabeledFrame references.
+   *
+   * Supports the subset of Python `__getitem__` selectors needed by
+   * `extract`/`split`: integer index arrays, `[Video, frameIdx]` tuple arrays,
+   * and a single `Video`. (Filename/path resolution requires `matchVideo`,
+   * which is added in a later phase.)
+   */
+  _selectFrames(inds) {
+    if (inds instanceof Video) {
+      return this.find({ video: inds });
+    }
+    if (Array.isArray(inds)) {
+      if (inds.length === 0) return [];
+      if (Array.isArray(inds[0])) {
+        const tuples = inds;
+        const result = [];
+        for (const [video, frameIdx] of tuples) {
+          const res = this.find({ video, frameIdx });
+          if (res.length === 1) {
+            result.push(res[0]);
+          } else if (res.length === 0) {
+            throw new Error(
+              `No labeled frames found for video ${video} and frame index ${frameIdx}.`
+            );
+          }
+        }
+        return result;
+      }
+      return inds.map((i) => this.labeledFrames[i]);
+    }
+    return [];
+  }
+  /**
+   * Deep-copy a list of frames with structural sharing.
+   *
+   * Reproduces Python `deepcopy(lfs)`: shared Track/Skeleton/Video objects within
+   * the selected subgraph are copied exactly once (via memo maps), so references
+   * shared across frames/instances remain shared in the copy.
+   */
+  _deepCopyFrames(frames) {
+    const videoMap = /* @__PURE__ */ new Map();
+    const skeletonMap = /* @__PURE__ */ new Map();
+    const trackMap = /* @__PURE__ */ new Map();
+    const mapVideo = (v) => {
+      let nv = videoMap.get(v);
+      if (!nv) {
+        nv = new Video({
+          filename: Array.isArray(v.filename) ? [...v.filename] : v.filename,
+          backendMetadata: { ...v.backendMetadata },
+          openBackend: v.openBackend,
+          embedded: v.hasEmbeddedImages
+        });
+        nv.shape = v.shape;
+        nv.fps = v.fps;
+        videoMap.set(v, nv);
+      }
+      return nv;
+    };
+    const mapSkeleton = (s) => {
+      let ns = skeletonMap.get(s);
+      if (!ns) {
+        const nodeMap = /* @__PURE__ */ new Map();
+        const newNodes = s.nodes.map((n) => {
+          const nn = new Node(n.name);
+          nodeMap.set(n, nn);
+          return nn;
+        });
+        const newEdges = s.edges.map(
+          (e) => new Edge(nodeMap.get(e.source), nodeMap.get(e.destination))
+        );
+        const newSymmetries = s.symmetries.map((sym) => {
+          const nodes = [...sym.nodes];
+          return new Symmetry([
+            nodeMap.get(nodes[0]),
+            nodeMap.get(nodes[1])
+          ]);
+        });
+        ns = new Skeleton({
+          nodes: newNodes,
+          edges: newEdges,
+          symmetries: newSymmetries,
+          name: s.name
+        });
+        skeletonMap.set(s, ns);
+      }
+      return ns;
+    };
+    const mapTrack = (t) => {
+      if (t == null) return null;
+      let nt = trackMap.get(t);
+      if (!nt) {
+        nt = new Track(t.name);
+        trackMap.set(t, nt);
+      }
+      return nt;
+    };
+    const cloneInstance = (inst) => {
+      const newPoints = inst.points.map((p) => ({
+        ...p,
+        xy: [...p.xy]
+      }));
+      const newSkeleton = mapSkeleton(inst.skeleton);
+      const newTrack = mapTrack(inst.track);
+      if (inst.constructor === PredictedInstance) {
+        const predicted = inst;
+        return new PredictedInstance({
+          points: newPoints,
+          skeleton: newSkeleton,
+          track: newTrack,
+          score: predicted.score,
+          trackingScore: predicted.trackingScore
+        });
+      }
+      return new Instance({
+        points: newPoints,
+        skeleton: newSkeleton,
+        track: newTrack,
+        trackingScore: inst.trackingScore
+      });
+    };
+    const cloneAncillary = (items) => items.map((item) => {
+      const clone = Object.create(
+        Object.getPrototypeOf(item),
+        Object.getOwnPropertyDescriptors(item)
+      );
+      const anyClone = clone;
+      if ("video" in anyClone && anyClone.video != null) {
+        anyClone.video = mapVideo(anyClone.video);
+      }
+      if ("track" in anyClone && anyClone.track != null) {
+        anyClone.track = mapTrack(anyClone.track);
+      }
+      if ("instance" in anyClone) {
+        anyClone.instance = null;
+      }
+      if ("objects" in anyClone && anyClone.objects instanceof Map) {
+        const oldObjects = anyClone.objects;
+        const newObjects = /* @__PURE__ */ new Map();
+        for (const [id, info] of oldObjects) {
+          const newInfo = { ...info };
+          if (newInfo.track != null) {
+            newInfo.track = mapTrack(newInfo.track);
+          }
+          newInfo.instance = null;
+          newObjects.set(id, newInfo);
+        }
+        anyClone.objects = newObjects;
+      }
+      return clone;
+    });
+    return frames.map(
+      (f) => new LabeledFrame({
+        video: mapVideo(f.video),
+        frameIdx: f.frameIdx,
+        instances: f.instances.map(cloneInstance),
+        isNegative: f.isNegative,
+        centroids: cloneAncillary(f.centroids),
+        bboxes: cloneAncillary(f.bboxes),
+        masks: cloneAncillary(f.masks),
+        labelImages: cloneAncillary(f.labelImages),
+        rois: cloneAncillary(f.rois)
+      })
+    );
+  }
+  /**
+   * Separate the labels into two random splits.
+   *
+   * Mirrors Python `Labels.split` (labels.py:2553-2607) for the count/branch
+   * logic. Per DECISIONS D5, the index selection uses a deterministic seeded
+   * RNG (NOT NumPy PCG64) — counts and edge cases match Python exactly, but the
+   * specific frames chosen are not bit-identical to NumPy.
+   *
+   * @param n - Size of the first split. `>= 1` is an absolute frame count;
+   *   `< 1.0` is a fraction of the total (`max(trunc(n0*n), 1)`).
+   * @param seed - Optional integer seed for reproducibility within JS. When
+   *   omitted/null, a fixed default seed is used.
+   * @returns A `LabelsSet` with keys `"split1"` and `"split2"`.
+   */
+  split(n, seed) {
+    if (this._lazyFrameList) this.materialize();
+    const n0 = this.labeledFrames.length;
+    if (n0 === 0) {
+      return new LabelsSet({ split1: this, split2: this });
+    }
+    let n1;
+    if (n < 1) {
+      n1 = Math.max(Math.trunc(n0 * n), 1);
+    } else {
+      n1 = Math.trunc(n);
+    }
+    const rng = _Labels._mulberry32(seed == null ? 2654435769 : seed >>> 0);
+    const pool = Array.from({ length: n0 }, (_, i) => i);
+    const take = Math.min(n1, n0);
+    for (let i = 0; i < take; i += 1) {
+      const j = i + Math.floor(rng() * (n0 - i));
+      const tmp = pool[i];
+      pool[i] = pool[j];
+      pool[j] = tmp;
+    }
+    const inds1 = pool.slice(0, take);
+    let inds2;
+    if (n0 === 1) {
+      inds2 = [0];
+    } else {
+      const inds1Set = new Set(inds1);
+      inds2 = [];
+      for (let i = 0; i < n0; i += 1) {
+        if (!inds1Set.has(i)) inds2.push(i);
+      }
+    }
+    const split1 = this.extract(inds1, true);
+    const split2 = this.extract(inds2, true);
+    return new LabelsSet({ split1, split2 });
+  }
+  /** Deterministic 32-bit RNG (mulberry32). Returns floats in [0, 1). */
+  static _mulberry32(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a |= 0;
+      a = a + 1831565813 | 0;
+      let t = Math.imul(a ^ a >>> 15, 1 | a);
+      t = t + Math.imul(t ^ t >>> 7, 61 | t) ^ t;
+      return ((t ^ t >>> 14) >>> 0) / 4294967296;
+    };
+  }
 };
 
 // src/video/media-video.ts
@@ -4160,52 +6729,6 @@ function validateDict(data) {
     }
   }
 }
-
-// src/model/labels-set.ts
-var LabelsSet = class _LabelsSet {
-  labels;
-  constructor(entries) {
-    this.labels = new Map(Object.entries(entries ?? {}));
-  }
-  get size() {
-    return this.labels.size;
-  }
-  get(key) {
-    return this.labels.get(key);
-  }
-  set(key, value) {
-    this.labels.set(key, value);
-  }
-  delete(key) {
-    this.labels.delete(key);
-  }
-  keys() {
-    return this.labels.keys();
-  }
-  values() {
-    return this.labels.values();
-  }
-  entries() {
-    return this.labels.entries();
-  }
-  [Symbol.iterator]() {
-    return this.labels.entries();
-  }
-  static fromLabelsList(labelsList, keys) {
-    const set = new _LabelsSet();
-    for (let i = 0; i < labelsList.length; i++) {
-      const key = keys?.[i] ?? `labels_${i}`;
-      set.set(key, labelsList[i]);
-    }
-    return set;
-  }
-  toArray() {
-    return Array.from(this.labels.values());
-  }
-  keyArray() {
-    return Array.from(this.labels.keys());
-  }
-};
 
 // src/model/camera.ts
 function rodriguesTransformation(input) {
@@ -9717,8 +12240,40 @@ export {
   UserLabelImage,
   PredictedLabelImage,
   normalizeLabelIds,
+  SkeletonMatchMethod,
+  InstanceMatchMethod,
+  TrackMatchMethod,
+  VideoMatchMethod,
+  FrameStrategy,
+  ErrorMode,
+  ConflictResolution,
+  MergeError,
+  SkeletonMismatchError,
+  MergeResult,
+  MatchResult,
+  MergeProgressBar,
+  setFsResolver,
+  setDefaultFsResolver,
+  SkeletonMatcher,
+  InstanceMatcher,
+  TrackMatcher,
+  VideoMatcher,
+  STRUCTURE_SKELETON_MATCHER,
+  SUBSET_SKELETON_MATCHER,
+  OVERLAP_SKELETON_MATCHER,
+  DUPLICATE_MATCHER,
+  IOU_MATCHER,
+  IDENTITY_INSTANCE_MATCHER,
+  NAME_TRACK_MATCHER,
+  IDENTITY_TRACK_MATCHER,
+  AUTO_VIDEO_MATCHER,
+  PATH_VIDEO_MATCHER,
+  BASENAME_VIDEO_MATCHER,
+  IMAGE_DEDUP_VIDEO_MATCHER,
+  SHAPE_VIDEO_MATCHER,
   _annotationCentroidXy,
   _findAnnotationMatches,
+  _resolveMergedIsNegative,
   LabeledFrame,
   SuggestionFrame,
   Video,
@@ -9730,8 +12285,8 @@ export {
   labelsFromNumpy,
   LazyDataStore,
   LazyFrameList,
-  Labels,
   LabelsSet,
+  Labels,
   rodriguesTransformation,
   Camera,
   CameraGroup,
