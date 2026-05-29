@@ -319,19 +319,20 @@ export class Labels {
   /**
    * Collapse structurally-equal skeletons into a single canonical entry.
    *
-   * Skeletons are partitioned via {@link Skeleton.matches} (same node count and
-   * node names in the same order). The first member of each equivalence class
-   * is kept as canonical; the rest are removed from `this.skeletons` and every
-   * instance referencing a non-canonical skeleton is reassigned to the canonical
-   * via direct property assignment. Points are positional, so reassignment is
-   * safe and does not change any point coordinates.
+   * Skeletons are partitioned via {@link Skeleton.matches} called with
+   * `requireSameOrder: true` (same node count, same node names IN THE SAME
+   * ORDER, same edge set, and same symmetry set). The first member of each
+   * equivalence class is kept as canonical; the rest are removed from
+   * `this.skeletons` and every instance referencing a non-canonical skeleton is
+   * reassigned to the canonical via direct property assignment. Points are
+   * positional and are NOT remapped, so order-identical matching is required to
+   * keep reassignment safe.
    *
    * Note: skeleton `name` is not part of `matches()` — the canonical's name wins.
    *
-   * Note: `matches()` compares only node count and node names in order — it does
-   * NOT compare `edges` or `symmetries`. If matched skeletons differ in topology,
-   * the canonical (first) skeleton's edges/symmetries are kept and the others are
-   * discarded.
+   * Note: skeletons that share node names but differ in node ORDER are treated
+   * as distinct here (they are not collapsed), since collapsing them would
+   * misalign instance points.
    *
    * Legacy `.slp` files often carry content-duplicate skeletons (a pre-1.5 Python
    * sleap quirk). Call this method after `loadSlp` if you want them collapsed —
@@ -349,7 +350,10 @@ export class Labels {
     const canonicals: Skeleton[] = [];
     const canonicalFor = new Map<Skeleton, Skeleton>();
     for (const skel of this.skeletons) {
-      const existing = canonicals.find((c) => skel.matches(c));
+      // requireSameOrder: true — dedup reassigns instances to the canonical
+      // skeleton without remapping point positions, so only skeletons whose
+      // node ORDER also matches can be safely collapsed (points are positional).
+      const existing = canonicals.find((c) => skel.matches(c, { requireSameOrder: true }));
       if (existing) {
         canonicalFor.set(skel, existing);
       } else {
