@@ -163,12 +163,12 @@ async function openH5FileNode(module, source) {
     return { file, close: () => file.close() };
   }
   if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
-    const { writeFileSync, unlinkSync } = await import("fs");
+    const { writeFileSync: writeFileSync2, unlinkSync } = await import("fs");
     const { tmpdir } = await import("os");
-    const { join: join2 } = await import("path");
+    const { join: join3 } = await import("path");
     const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join2(tmpdir(), `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
-    writeFileSync(tempPath, data);
+    const tempPath = join3(tmpdir(), `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
+    writeFileSync2(tempPath, data);
     const file = new module.File(tempPath, "r");
     return {
       file,
@@ -190,19 +190,19 @@ _registerNodeFileOps({
     const { writeFile } = await import("fs/promises");
     await writeFile(filename, bytes);
   },
-  fileExists: async (path2) => {
-    const { existsSync: existsSync2 } = await import("fs");
-    return existsSync2(path2);
+  fileExists: async (path3) => {
+    const { existsSync: existsSync3 } = await import("fs");
+    return existsSync3(path3);
   },
   readPackageVersion: async () => {
     try {
       const { readFile } = await import("fs/promises");
       const { fileURLToPath } = await import("url");
-      const { dirname: dirname2, join: join2 } = await import("path");
-      const here = dirname2(fileURLToPath(import.meta.url));
+      const { dirname: dirname3, join: join3 } = await import("path");
+      const here = dirname3(fileURLToPath(import.meta.url));
       const candidates = [
-        join2(here, "..", "..", "..", "package.json"),
-        join2(here, "..", "..", "..", "..", "package.json")
+        join3(here, "..", "..", "..", "package.json"),
+        join3(here, "..", "..", "..", "..", "package.json")
       ];
       for (const candidate of candidates) {
         try {
@@ -222,24 +222,24 @@ _registerNodeFileOps({
 import * as fs from "fs";
 import * as nodePath from "path";
 var nodeFsResolver = {
-  async exists(path2) {
+  async exists(path3) {
     try {
-      await fs.promises.access(path2);
+      await fs.promises.access(path3);
       return true;
     } catch {
       return false;
     }
   },
-  async sameFile(path1, path2) {
+  async sameFile(path1, path22) {
     const s1 = await fs.promises.stat(path1);
-    const s2 = await fs.promises.stat(path2);
+    const s2 = await fs.promises.stat(path22);
     return s1.dev === s2.dev && s1.ino === s2.ino;
   },
-  async realpath(path2) {
+  async realpath(path3) {
     try {
-      return await fs.promises.realpath(path2);
+      return await fs.promises.realpath(path3);
     } catch {
-      return nodePath.resolve(path2);
+      return nodePath.resolve(path3);
     }
   }
 };
@@ -385,6 +385,851 @@ function readTrackMateCsv(spotsPath, options) {
 }
 function loadTrackMate(filename, options) {
   return readTrackMateCsv(filename, options);
+}
+
+// src/io/ultralytics.ts
+import * as fs3 from "fs";
+import * as path2 from "path";
+import YAML from "yaml";
+import { deflate } from "pako";
+var READ_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp"];
+var IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".gif"];
+function parseDataYaml(yamlPath) {
+  const text = fs3.readFileSync(yamlPath, "utf-8");
+  return YAML.parse(text) ?? {};
+}
+function classNamesFromConfig(config) {
+  const raw = config["names"];
+  const result = /* @__PURE__ */ new Map();
+  if (Array.isArray(raw)) {
+    raw.forEach((name, i) => result.set(i, String(name)));
+  } else if (raw && typeof raw === "object") {
+    for (const [k, v] of Object.entries(raw)) {
+      const id = Number(k);
+      if (Number.isFinite(id)) result.set(id, String(v));
+    }
+  }
+  return result;
+}
+function createSkeletonFromConfig(config) {
+  const kptShape = config["kpt_shape"] ?? [1, 3];
+  const numKeypoints = kptShape[0];
+  const nodeNames = config["node_names"] ?? Array.from({ length: numKeypoints }, (_, i) => `point_${i}`);
+  const nodes = nodeNames.slice(0, numKeypoints).map((name) => new Node(String(name)));
+  const edges = [];
+  const connections = config["skeleton"] ?? [];
+  for (const connection of connections) {
+    if (Array.isArray(connection) && connection.length === 2) {
+      const [srcIdx, dstIdx] = connection;
+      if (srcIdx >= 0 && srcIdx < nodes.length && dstIdx >= 0 && dstIdx < nodes.length) {
+        edges.push(new Edge(nodes[srcIdx], nodes[dstIdx]));
+      }
+    }
+  }
+  return new Skeleton({ nodes, edges, name: "ultralytics_skeleton" });
+}
+function detectLineFormat(parts) {
+  const n = parts.length;
+  if (n === 5) return "detection";
+  if (n === 6) return "detection_conf";
+  const remainder = n - 5;
+  if (remainder > 0 && remainder % 3 === 0) return "pose";
+  if ((n - 1) % 2 === 0 && n > 5) return "segmentation";
+  return "pose";
+}
+function normalizeCoordinates(instance, imageShape) {
+  const [height, width] = imageShape;
+  const normalized = [];
+  for (const point of instance.points) {
+    const [x, y] = point.xy;
+    if (point.visible && !Number.isNaN(x)) {
+      normalized.push([x / width, y / height, 2]);
+    } else {
+      normalized.push([0, 0, 0]);
+    }
+  }
+  return normalized;
+}
+function denormalizeCoordinates(normalizedPoints, imageShape) {
+  const [height, width] = imageShape;
+  return normalizedPoints.map(([xNorm, yNorm, visibility]) => {
+    if (visibility > 0) {
+      return [xNorm * width, yNorm * height, 1];
+    }
+    return [Number.NaN, Number.NaN, 0];
+  });
+}
+function parseLabelFile(labelPath, skeleton, imageShape, options) {
+  const classNames = options?.classNames;
+  const instances = [];
+  const rois = [];
+  const bboxes = [];
+  const content = fs3.readFileSync(labelPath, "utf-8");
+  const lines = content.split(/\r?\n/);
+  const [heightPx, widthPx] = imageShape;
+  for (let lineNum = 0; lineNum < lines.length; lineNum++) {
+    const line = lines[lineNum].trim();
+    if (!line || line.startsWith("#")) continue;
+    try {
+      const parts = line.split(/\s+/);
+      if (parts.length < 5) {
+        console.warn(`Invalid line ${lineNum} in ${labelPath}: insufficient data`);
+        continue;
+      }
+      const fmt = detectLineFormat(parts);
+      const classId = parseStrictInt(parts[0]);
+      const category = classNames ? classNames.get(classId) ?? "" : "";
+      if (fmt === "detection" || fmt === "detection_conf") {
+        const xCenterNorm = parseStrictFloat(parts[1]);
+        const yCenterNorm = parseStrictFloat(parts[2]);
+        const wNorm = parseStrictFloat(parts[3]);
+        const hNorm = parseStrictFloat(parts[4]);
+        const xCenterPx = xCenterNorm * widthPx;
+        const yCenterPx = yCenterNorm * heightPx;
+        const wPx = wNorm * widthPx;
+        const hPx = hNorm * heightPx;
+        const x1 = xCenterPx - wPx / 2;
+        const y1 = yCenterPx - hPx / 2;
+        if (fmt === "detection_conf") {
+          const score = parseStrictFloat(parts[5]);
+          bboxes.push(
+            new PredictedBoundingBox({ x1, y1, x2: x1 + wPx, y2: y1 + hPx, category, score })
+          );
+        } else {
+          bboxes.push(new UserBoundingBox({ x1, y1, x2: x1 + wPx, y2: y1 + hPx, category }));
+        }
+      } else if (fmt === "segmentation") {
+        const coordValues = parts.slice(1).map(parseStrictFloat);
+        const coords = [];
+        for (let i = 0; i + 1 < coordValues.length; i += 2) {
+          coords.push([coordValues[i] * widthPx, coordValues[i + 1] * heightPx]);
+        }
+        rois.push(UserROI.fromPolygon(coords, { category }));
+      } else {
+        parts.slice(1, 5).forEach(parseStrictFloat);
+        const keypointData = parts.slice(5);
+        if (keypointData.length % 3 !== 0) {
+          console.warn(`Invalid keypoint data in ${labelPath} line ${lineNum}`);
+          continue;
+        }
+        const numKeypoints = keypointData.length / 3;
+        if (numKeypoints !== skeleton.nodes.length) {
+          console.warn(
+            `Keypoint count mismatch: expected ${skeleton.nodes.length}, got ${numKeypoints} in ${labelPath} line ${lineNum}`
+          );
+          continue;
+        }
+        const points = [];
+        for (let i = 0; i < numKeypoints; i++) {
+          const xNorm = parseStrictFloat(keypointData[i * 3]);
+          const yNorm = parseStrictFloat(keypointData[i * 3 + 1]);
+          const visibility = parseStrictInt(keypointData[i * 3 + 2]);
+          if (visibility === 0) {
+            points.push([Number.NaN, Number.NaN, 0]);
+          } else {
+            points.push([xNorm * widthPx, yNorm * heightPx, 1]);
+          }
+        }
+        instances.push(Instance.fromNumpy({ pointsData: points, skeleton }));
+      }
+    } catch (e) {
+      console.warn(`Error parsing line ${lineNum} in ${labelPath}: ${e.message}`);
+      continue;
+    }
+  }
+  return { instances, rois, bboxes };
+}
+function writeLabelFile(labelPath, frame, skeleton, imageShape, classId = 0) {
+  const [heightPx, widthPx] = imageShape;
+  const out = [];
+  for (const instance of frame.instances) {
+    if (instance.points.length !== skeleton.nodes.length) {
+      console.warn(
+        `Instance has ${instance.points.length} points, skeleton has ${skeleton.nodes.length} nodes. Skipping.`
+      );
+      continue;
+    }
+    const visibleXy = [];
+    for (const point of instance.points) {
+      if (point.visible && !Number.isNaN(point.xy[0])) {
+        visibleXy.push([point.xy[0], point.xy[1]]);
+      }
+    }
+    if (visibleXy.length === 0) continue;
+    const xs = visibleXy.map((p) => p[0]);
+    const ys = visibleXy.map((p) => p[1]);
+    const padding = 10;
+    const xMin = Math.max(0, Math.min(...xs) - padding);
+    const yMin = Math.max(0, Math.min(...ys) - padding);
+    const xMax = Math.min(widthPx, Math.max(...xs) + padding);
+    const yMax = Math.min(heightPx, Math.max(...ys) + padding);
+    const xCenterNorm = (xMin + xMax) / 2 / widthPx;
+    const yCenterNorm = (yMin + yMax) / 2 / heightPx;
+    const widthNorm = (xMax - xMin) / widthPx;
+    const heightNorm = (yMax - yMin) / heightPx;
+    const lineParts = [
+      String(classId),
+      fmt6(xCenterNorm),
+      fmt6(yCenterNorm),
+      fmt6(widthNorm),
+      fmt6(heightNorm)
+    ];
+    for (const point of instance.points) {
+      const [x, y] = point.xy;
+      if (point.visible && !Number.isNaN(x)) {
+        lineParts.push(fmt6(x / widthPx), fmt6(y / heightPx), "2");
+      } else {
+        lineParts.push("0.000000", "0.000000", "0");
+      }
+    }
+    out.push(lineParts.join(" "));
+  }
+  fs3.writeFileSync(labelPath, out.length ? out.join("\n") + "\n" : "");
+}
+function writeRoiLabelFile(labelPath, rois, imageShape, nameToId) {
+  const [heightPx, widthPx] = imageShape;
+  const explodedRois = [];
+  for (const roi of rois) explodedRois.push(...roi.explode());
+  const out = [];
+  for (const roi of explodedRois) {
+    const classId = nameToId.get(roi.category) ?? 0;
+    if (!roi.isBbox) {
+      const geom = roi.geometry;
+      if (geom.type === "Polygon") {
+        if (geom.coordinates.length > 1) {
+          console.warn(
+            `ROI polygon has ${geom.coordinates.length - 1} interior ring(s) (holes) that will be dropped. YOLO segmentation format does not support polygon holes.`
+          );
+        }
+        const ring = geom.coordinates[0] ?? [];
+        const coords = ring.slice(0, -1);
+        const lineParts = [String(classId)];
+        for (const [x, y] of coords) {
+          lineParts.push(fmt6(x / widthPx), fmt6(y / heightPx));
+        }
+        out.push(lineParts.join(" "));
+      }
+    } else {
+      const { minX, minY, maxX, maxY } = roi.bounds;
+      const xCenter = (minX + maxX) / 2 / widthPx;
+      const yCenter = (minY + maxY) / 2 / heightPx;
+      const w = (maxX - minX) / widthPx;
+      const h = (maxY - minY) / heightPx;
+      out.push(
+        [String(classId), fmt6(xCenter), fmt6(yCenter), fmt6(w), fmt6(h)].join(" ")
+      );
+    }
+  }
+  fs3.writeFileSync(labelPath, out.length ? out.join("\n") + "\n" : "");
+}
+function writeBboxLabelFile(labelPath, bboxes, imageShape, nameToId) {
+  const [heightPx, widthPx] = imageShape;
+  const out = [];
+  for (const bbox of bboxes) {
+    const classId = nameToId.get(bbox.category) ?? 0;
+    const lineParts = [
+      String(classId),
+      fmt6(bbox.xCenter / widthPx),
+      fmt6(bbox.yCenter / heightPx),
+      fmt6(bbox.width / widthPx),
+      fmt6(bbox.height / heightPx)
+    ];
+    if (bbox instanceof PredictedBoundingBox) {
+      lineParts.push(fmt6(bbox.score));
+    }
+    out.push(lineParts.join(" "));
+  }
+  fs3.writeFileSync(labelPath, out.length ? out.join("\n") + "\n" : "");
+}
+function createDataYaml(yamlPath, skeleton, splitRatios, options) {
+  const task = options?.task ?? "pose";
+  const classNames = options?.classNames ?? /* @__PURE__ */ new Map([[0, "animal"]]);
+  const config = {
+    path: ".",
+    names: classNames
+  };
+  if (task !== "pose") {
+    config["task"] = task;
+  } else if (skeleton !== null) {
+    const connections = [];
+    for (const edge of skeleton.edges) {
+      connections.push([skeleton.index(edge.source), skeleton.index(edge.destination)]);
+    }
+    config["kpt_shape"] = [skeleton.nodes.length, 3];
+    config["flip_idx"] = Array.from({ length: skeleton.nodes.length }, (_, i) => i);
+    config["skeleton"] = connections;
+    config["node_names"] = skeleton.nodes.map((node) => node.name);
+  }
+  for (const splitName of Object.keys(splitRatios)) {
+    config[splitName] = `${splitName}/images`;
+  }
+  fs3.writeFileSync(yamlPath, YAML.stringify(config));
+}
+function buildClassNamesFromRois(rois) {
+  return buildClassNames(rois.map((roi) => roi.category));
+}
+function buildClassNamesFromBboxes(bboxes) {
+  return buildClassNames(bboxes.map((bbox) => bbox.category));
+}
+function buildClassNames(categories) {
+  const distinct = Array.from(new Set(categories.filter((c) => c))).sort();
+  const result = /* @__PURE__ */ new Map();
+  if (distinct.length === 0) {
+    result.set(0, "object");
+    return result;
+  }
+  distinct.forEach((name, i) => result.set(i, name));
+  return result;
+}
+function readLabels(datasetPath, options) {
+  const split = options?.split ?? "train";
+  const imageSize = options?.imageSize ?? [480, 640];
+  let skeleton = options?.skeleton ?? null;
+  let dataYamlPath;
+  let root;
+  if (path2.basename(datasetPath) === "data.yaml") {
+    dataYamlPath = datasetPath;
+    root = path2.dirname(datasetPath);
+  } else {
+    root = datasetPath;
+    dataYamlPath = path2.join(datasetPath, "data.yaml");
+  }
+  if (!fs3.existsSync(dataYamlPath)) {
+    throw new Error(`data.yaml not found at ${dataYamlPath}`);
+  }
+  const config = parseDataYaml(dataYamlPath);
+  if (skeleton === null && "kpt_shape" in config) {
+    skeleton = createSkeletonFromConfig(config);
+  }
+  const classNames = classNamesFromConfig(config);
+  const splitPath = config[split] ?? `${split}/images`;
+  const imagesDir = path2.join(root, splitPath);
+  const labelsDir = path2.join(root, splitPath.replace(/\/images/g, "/labels"));
+  if (!fs3.existsSync(imagesDir)) {
+    throw new Error(`Images directory not found: ${imagesDir}`);
+  }
+  if (!fs3.existsSync(labelsDir)) {
+    throw new Error(`Labels directory not found: ${labelsDir}`);
+  }
+  const labeledFrames = [];
+  const tracks = /* @__PURE__ */ new Map();
+  const imageFiles = fs3.readdirSync(imagesDir).filter((name) => READ_IMAGE_EXTENSIONS.includes(path2.extname(name).toLowerCase())).sort();
+  for (const imageName of imageFiles) {
+    const imageFile = path2.join(imagesDir, imageName);
+    const stem = path2.basename(imageName, path2.extname(imageName));
+    const labelFile = path2.join(labelsDir, `${stem}.txt`);
+    const video = new Video({ filename: imageFile, openBackend: false });
+    let instances = [];
+    let rois = [];
+    let bboxes = [];
+    if (fs3.existsSync(labelFile)) {
+      const imgShape = probeImageSize(imageFile) ?? imageSize;
+      const parseSkeleton = skeleton ?? new Skeleton({ nodes: [] });
+      ({ instances, rois, bboxes } = parseLabelFile(labelFile, parseSkeleton, imgShape, {
+        classNames,
+        video,
+        frameIdx: 0
+      }));
+      for (let i = 0; i < instances.length; i++) {
+        const trackName = `track_${i}`;
+        let track = tracks.get(trackName);
+        if (!track) {
+          track = new Track(trackName);
+          tracks.set(trackName, track);
+        }
+        instances[i].track = track;
+      }
+    }
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances });
+    frame.rois.push(...rois);
+    frame.bboxes.push(...bboxes);
+    labeledFrames.push(frame);
+  }
+  const skeletons = skeleton !== null ? [skeleton] : [];
+  return new Labels({
+    labeledFrames,
+    skeletons,
+    tracks: Array.from(tracks.values()),
+    provenance: { source: root, split }
+  });
+}
+function readLabelsSet(datasetPath, options) {
+  const imageSize = options?.imageSize;
+  let skeleton = options?.skeleton ?? null;
+  let splits = options?.splits;
+  if (!splits) {
+    splits = [];
+    for (const splitName of ["train", "val", "test", "valid"]) {
+      if (fs3.existsSync(path2.join(datasetPath, splitName))) {
+        splits.push(splitName);
+      }
+    }
+    if (splits.length === 0) {
+      throw new Error(`No splits found in dataset path: ${datasetPath}`);
+    }
+  }
+  if (skeleton === null) {
+    const dataYamlPath = path2.join(datasetPath, "data.yaml");
+    if (fs3.existsSync(dataYamlPath)) {
+      const dataConfig = parseDataYaml(dataYamlPath);
+      if ("node_names" in dataConfig && "skeleton" in dataConfig) {
+        try {
+          const nodeNames = dataConfig["node_names"];
+          const connections = dataConfig["skeleton"];
+          const nodes = nodeNames.map((name) => new Node(String(name)));
+          const edges = [];
+          for (const connection of connections) {
+            if (Array.isArray(connection) && connection.length === 2) {
+              const [srcIdx, dstIdx] = connection;
+              if (srcIdx >= 0 && srcIdx < nodes.length && dstIdx >= 0 && dstIdx < nodes.length) {
+                edges.push(new Edge(nodes[srcIdx], nodes[dstIdx]));
+              }
+            }
+          }
+          skeleton = new Skeleton({ nodes, edges });
+        } catch {
+        }
+      }
+      if (skeleton === null && "kpt_shape" in dataConfig) {
+        const kptShape = dataConfig["kpt_shape"];
+        if (Array.isArray(kptShape) && kptShape.length >= 2) {
+          const nKeypoints = kptShape[0];
+          const nodes = Array.from({ length: nKeypoints }, (_, i) => new Node(String(i)));
+          skeleton = new Skeleton({ nodes });
+        }
+      }
+    }
+  }
+  const entries = {};
+  for (const split of splits) {
+    try {
+      entries[split] = readLabels(datasetPath, { split, skeleton, imageSize });
+    } catch {
+      continue;
+    }
+  }
+  if (Object.keys(entries).length === 0) {
+    throw new Error(`Could not load any splits from dataset: ${datasetPath}`);
+  }
+  return new LabelsSet(entries);
+}
+async function writeLabels(labels, datasetPath, options) {
+  const splitRatios = options?.splitRatios ?? { train: 0.8, val: 0.2 };
+  const classId = options?.classId ?? 0;
+  const imageFormat = options?.imageFormat ?? "png";
+  const imageQuality = options?.imageQuality ?? null;
+  const task = options?.task ?? "pose";
+  fs3.mkdirSync(datasetPath, { recursive: true });
+  const totalRatio = Object.values(splitRatios).reduce((a, b) => a + b, 0);
+  if (Math.abs(totalRatio - 1) > 1e-8 + 1e-5) {
+    throw new Error(`Split ratios must sum to 1.0, got ${totalRatio}`);
+  }
+  let skeleton;
+  if (task === "pose") {
+    if (labels.skeletons.length === 0) {
+      throw new Error("Labels must have at least one skeleton for pose task");
+    }
+    skeleton = labels.skeletons[0];
+  } else {
+    skeleton = null;
+  }
+  let classNames;
+  if (task === "detect") {
+    classNames = buildClassNamesFromBboxes(labels.bboxes);
+  } else if (task === "segment") {
+    classNames = buildClassNamesFromRois(labels.rois);
+  } else {
+    classNames = /* @__PURE__ */ new Map([[0, "animal"]]);
+  }
+  createDataYaml(path2.join(datasetPath, "data.yaml"), skeleton, splitRatios, {
+    task,
+    classNames
+  });
+  if (task === "detect") {
+    writeBboxLabels(labels, datasetPath, splitRatios, classNames, imageFormat, imageQuality);
+    return;
+  }
+  if (task === "segment") {
+    writeRoiLabels(labels, datasetPath, splitRatios, classNames, imageFormat, imageQuality);
+    return;
+  }
+  let splitLabels;
+  const splitNames = Object.keys(splitRatios);
+  if (splitNames.length === 1) {
+    splitLabels = { [splitNames[0]]: labels };
+  } else {
+    splitLabels = createSplitsFromLabels(labels, splitRatios);
+  }
+  for (const [splitName, splitData] of Object.entries(splitLabels)) {
+    const imagesDir = path2.join(datasetPath, splitName, "images");
+    const labelsDir = path2.join(datasetPath, splitName, "labels");
+    fs3.mkdirSync(imagesDir, { recursive: true });
+    fs3.mkdirSync(labelsDir, { recursive: true });
+    const frames = splitData.labeledFrames;
+    for (let lfIdx = 0; lfIdx < frames.length; lfIdx++) {
+      const frame = frames[lfIdx];
+      const written = await writeFrameImage(frame, imagesDir, lfIdx, imageFormat, imageQuality);
+      if (written === null) {
+        console.warn(`Could not load frame ${frame.frameIdx} from video, skipping.`);
+        continue;
+      }
+      const labelPath = path2.join(labelsDir, `${pad7(lfIdx)}.txt`);
+      writeLabelFile(labelPath, frame, skeleton, written.shape, classId);
+    }
+  }
+}
+function writeBboxLabels(labels, datasetPath, splitRatios, classNames, imageFormat, imageQuality) {
+  const nameToId = invertClassNames(classNames);
+  const itemsByVideo = /* @__PURE__ */ new Map();
+  const videoByKey = /* @__PURE__ */ new Map();
+  for (const lf of labels.labeledFrames) {
+    if (lf.bboxes.length) {
+      const key = videoKey(lf.video);
+      if (!itemsByVideo.has(key)) {
+        itemsByVideo.set(key, []);
+        videoByKey.set(key, lf.video);
+      }
+      itemsByVideo.get(key).push(...lf.bboxes);
+    }
+  }
+  writeGroupedLabels(
+    itemsByVideo,
+    videoByKey,
+    datasetPath,
+    splitRatios,
+    imageFormat,
+    imageQuality,
+    (labelPath, items, shape) => writeBboxLabelFile(labelPath, items, shape, nameToId)
+  );
+}
+function writeRoiLabels(labels, datasetPath, splitRatios, classNames, imageFormat, imageQuality) {
+  const nameToId = invertClassNames(classNames);
+  const itemsByVideo = /* @__PURE__ */ new Map();
+  const videoByKey = /* @__PURE__ */ new Map();
+  for (const lf of labels.labeledFrames) {
+    if (lf.rois.length) {
+      const key = videoKey(lf.video);
+      if (!itemsByVideo.has(key)) {
+        itemsByVideo.set(key, []);
+        videoByKey.set(key, lf.video);
+      }
+      itemsByVideo.get(key).push(...lf.rois);
+    }
+  }
+  writeGroupedLabels(
+    itemsByVideo,
+    videoByKey,
+    datasetPath,
+    splitRatios,
+    imageFormat,
+    imageQuality,
+    (labelPath, items, shape) => writeRoiLabelFile(labelPath, items, shape, nameToId)
+  );
+}
+function writeGroupedLabels(itemsByVideo, videoByKey, datasetPath, splitRatios, imageFormat, imageQuality, writeLabel) {
+  const videoKeys = Array.from(itemsByVideo.keys()).sort();
+  const nVideos = videoKeys.length;
+  const splitNames = Object.keys(splitRatios);
+  const boundaries = [];
+  let cumulative = 0;
+  for (const name of splitNames) {
+    cumulative += splitRatios[name];
+    boundaries.push(roundHalfToEven(cumulative * nVideos));
+  }
+  let startIdx = 0;
+  for (let splitIdx = 0; splitIdx < splitNames.length; splitIdx++) {
+    const splitName = splitNames[splitIdx];
+    const endIdx = boundaries[splitIdx];
+    const splitVideoKeys = videoKeys.slice(startIdx, endIdx);
+    startIdx = endIdx;
+    if (splitVideoKeys.length === 0) continue;
+    const imagesDir = path2.join(datasetPath, splitName, "images");
+    const labelsDir = path2.join(datasetPath, splitName, "labels");
+    fs3.mkdirSync(imagesDir, { recursive: true });
+    fs3.mkdirSync(labelsDir, { recursive: true });
+    for (let lfIdx = 0; lfIdx < splitVideoKeys.length; lfIdx++) {
+      const key = splitVideoKeys[lfIdx];
+      const video = videoByKey.get(key);
+      const items = itemsByVideo.get(key);
+      const written = copyImageFileFrom(video, imagesDir, lfIdx);
+      if (written === null) {
+        console.warn(`Error processing ${key}, skipping.`);
+        continue;
+      }
+      const labelPath = path2.join(labelsDir, `${pad7(lfIdx)}.txt`);
+      writeLabel(labelPath, items, written.shape);
+    }
+  }
+}
+function createSplitsFromLabels(labels, splitRatios) {
+  const splitNames = Object.keys(splitRatios);
+  if (splitNames.length === 2) {
+    const ratio = splitRatios[splitNames[0]];
+    const set = labels.split(ratio);
+    return {
+      [splitNames[0]]: set.get("split1"),
+      [splitNames[1]]: set.get("split2")
+    };
+  }
+  if (splitNames.length === 3) {
+    const total = labels.labeledFrames.length;
+    const trainRatio = splitRatios["train"] ?? 0.6;
+    const valRatio = splitRatios["val"] ?? 0.2;
+    const testRatio = splitRatios["test"] ?? 0.2;
+    const trainSet = labels.split(trainRatio);
+    const train = trainSet.get("split1");
+    let rest = trainSet.get("split2");
+    let nTest = testRatio;
+    if (nTest < 1) {
+      nTest = testRatio * total / Math.max(1, rest.labeledFrames.length);
+    }
+    const testSet = rest.split(nTest);
+    const test = testSet.get("split1");
+    rest = testSet.get("split2");
+    let nVal = valRatio;
+    if (nVal < 1) {
+      nVal = valRatio * total / Math.max(1, rest.labeledFrames.length);
+    }
+    const val = nVal === 1 ? rest : rest.split(nVal).get("split1");
+    return { train, val, test };
+  }
+  return { [splitNames[0]]: labels };
+}
+function loadUltralytics(datasetPath, options) {
+  return readLabels(datasetPath, options);
+}
+async function saveUltralytics(labels, datasetPath, options) {
+  return writeLabels(labels, datasetPath, options);
+}
+async function writeFrameImage(frame, imagesDir, lfIdx, imageFormat, imageQuality) {
+  const copied = copyImageFileFrom(frame.video, imagesDir, lfIdx);
+  if (copied !== null) return copied;
+  try {
+    const img = await frame.image;
+    if (isImageData(img)) {
+      const png = encodePng(img.data, img.width, img.height, imageQuality);
+      const imagePath = path2.join(imagesDir, `${pad7(lfIdx)}.png`);
+      fs3.writeFileSync(imagePath, png);
+      return { imagePath, shape: [img.height, img.width] };
+    }
+  } catch {
+  }
+  void imageFormat;
+  return null;
+}
+function copyImageFileFrom(video, imagesDir, lfIdx) {
+  const filename = Array.isArray(video.filename) ? video.filename[0] : video.filename;
+  if (typeof filename !== "string" || filename.length === 0) return null;
+  const ext = path2.extname(filename).toLowerCase();
+  if (!IMAGE_EXTENSIONS.includes(ext)) return null;
+  if (!fs3.existsSync(filename)) return null;
+  const shape = probeImageSize(filename);
+  if (shape === null) return null;
+  const imagePath = path2.join(imagesDir, `${pad7(lfIdx)}${ext}`);
+  fs3.copyFileSync(filename, imagePath);
+  return { imagePath, shape };
+}
+function probeImageSize(filePath) {
+  let fd = null;
+  try {
+    fd = fs3.openSync(filePath, "r");
+    const head = Buffer.alloc(32);
+    const n = fs3.readSync(fd, head, 0, 32, 0);
+    if (n < 2) return null;
+    if (head[0] === 137 && head[1] === 80 && head[2] === 78 && head[3] === 71) {
+      const width = head.readUInt32BE(16);
+      const height = head.readUInt32BE(20);
+      return [height, width];
+    }
+    if (head[0] === 71 && head[1] === 73 && head[2] === 70) {
+      const width = head.readUInt16LE(6);
+      const height = head.readUInt16LE(8);
+      return [height, width];
+    }
+    if (head[0] === 66 && head[1] === 77) {
+      const width = head.readInt32LE(18);
+      const height = Math.abs(head.readInt32LE(22));
+      return [height, width];
+    }
+    if (head[0] === 73 && head[1] === 73 && head[2] === 42 || head[0] === 77 && head[1] === 77 && head[3] === 42) {
+      return probeTiffSize(fd);
+    }
+    if (head[0] === 255 && head[1] === 216) {
+      return probeJpegSize(fd);
+    }
+    return null;
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        fs3.closeSync(fd);
+      } catch {
+      }
+    }
+  }
+}
+function probeJpegSize(fd) {
+  const stat = fs3.fstatSync(fd);
+  const buf = Buffer.alloc(stat.size);
+  fs3.readSync(fd, buf, 0, stat.size, 0);
+  let offset = 2;
+  while (offset + 9 < buf.length) {
+    if (buf[offset] !== 255) {
+      offset++;
+      continue;
+    }
+    const marker = buf[offset + 1];
+    if (marker === 216 || marker === 217 || marker >= 208 && marker <= 215) {
+      offset += 2;
+      continue;
+    }
+    const segLen = buf.readUInt16BE(offset + 2);
+    const isSof = marker >= 192 && marker <= 207 && marker !== 196 && marker !== 200 && marker !== 204;
+    if (isSof) {
+      const height = buf.readUInt16BE(offset + 5);
+      const width = buf.readUInt16BE(offset + 7);
+      return [height, width];
+    }
+    offset += 2 + segLen;
+  }
+  return null;
+}
+function probeTiffSize(fd) {
+  const stat = fs3.fstatSync(fd);
+  const size = Math.min(stat.size, 65536);
+  const buf = Buffer.alloc(size);
+  fs3.readSync(fd, buf, 0, size, 0);
+  const le = buf[0] === 73;
+  const readU16 = (o) => le ? buf.readUInt16LE(o) : buf.readUInt16BE(o);
+  const readU32 = (o) => le ? buf.readUInt32LE(o) : buf.readUInt32BE(o);
+  const ifdOffset = readU32(4);
+  if (ifdOffset + 2 > buf.length) return null;
+  const numEntries = readU16(ifdOffset);
+  let width = 0;
+  let height = 0;
+  for (let i = 0; i < numEntries; i++) {
+    const entry = ifdOffset + 2 + i * 12;
+    if (entry + 12 > buf.length) break;
+    const tag = readU16(entry);
+    const type = readU16(entry + 2);
+    const value = type === 3 ? readU16(entry + 8) : readU32(entry + 8);
+    if (tag === 256) width = value;
+    if (tag === 257) height = value;
+  }
+  if (width > 0 && height > 0) return [height, width];
+  return null;
+}
+function isImageData(img) {
+  return !!img && typeof img === "object" && typeof img.width === "number" && typeof img.height === "number" && !!img.data && typeof img.data.length === "number";
+}
+function encodePng(rgba, width, height, compressLevel = null) {
+  const level = compressLevel == null ? 6 : Math.min(9, Math.max(0, compressLevel));
+  const stride = width * 4;
+  const raw = new Uint8Array((stride + 1) * height);
+  for (let y = 0; y < height; y++) {
+    raw[y * (stride + 1)] = 0;
+    raw.set(rgba.subarray(y * stride, y * stride + stride), y * (stride + 1) + 1);
+  }
+  const compressed = deflate(raw, { level });
+  const ihdr = new Uint8Array(13);
+  const dv = new DataView(ihdr.buffer);
+  dv.setUint32(0, width);
+  dv.setUint32(4, height);
+  ihdr[8] = 8;
+  ihdr[9] = 6;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const chunks = [
+    signature,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", compressed),
+    pngChunk("IEND", new Uint8Array(0))
+  ];
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
+function pngChunk(type, data) {
+  const typeBytes = new Uint8Array([
+    type.charCodeAt(0),
+    type.charCodeAt(1),
+    type.charCodeAt(2),
+    type.charCodeAt(3)
+  ]);
+  const out = new Uint8Array(12 + data.length);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, data.length);
+  out.set(typeBytes, 4);
+  out.set(data, 8);
+  const crcInput = new Uint8Array(4 + data.length);
+  crcInput.set(typeBytes, 0);
+  crcInput.set(data, 4);
+  dv.setUint32(8 + data.length, crc32(crcInput));
+  return out;
+}
+var CRC_TABLE = null;
+function crc32(bytes) {
+  if (CRC_TABLE === null) {
+    CRC_TABLE = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) {
+        c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+      }
+      CRC_TABLE[n] = c >>> 0;
+    }
+  }
+  let crc = 4294967295;
+  for (let i = 0; i < bytes.length; i++) {
+    crc = CRC_TABLE[(crc ^ bytes[i]) & 255] ^ crc >>> 8;
+  }
+  return (crc ^ 4294967295) >>> 0;
+}
+function fmt6(x) {
+  return x.toFixed(6);
+}
+function pad7(i) {
+  return String(i).padStart(7, "0");
+}
+function roundHalfToEven(x) {
+  const floor = Math.floor(x);
+  const diff = x - floor;
+  if (diff < 0.5) return floor;
+  if (diff > 0.5) return floor + 1;
+  return floor % 2 === 0 ? floor : floor + 1;
+}
+function parseStrictInt(s) {
+  if (!/^[+-]?\d+$/.test(s.trim())) {
+    throw new Error(`invalid integer: ${s}`);
+  }
+  return parseInt(s, 10);
+}
+function parseStrictFloat(s) {
+  const t = s.trim();
+  if (/^[+-]?(inf|infinity)$/i.test(t)) {
+    return t.startsWith("-") ? -Infinity : Infinity;
+  }
+  if (/^[+-]?nan$/i.test(t)) return Number.NaN;
+  if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(t)) {
+    throw new Error(`invalid float: ${s}`);
+  }
+  return Number(t);
+}
+function videoKey(video) {
+  return Array.isArray(video.filename) ? String(video.filename[0]) : String(video.filename);
+}
+function invertClassNames(classNames) {
+  const result = /* @__PURE__ */ new Map();
+  for (const [id, name] of classNames) result.set(name, id);
+  return result;
 }
 
 // src/rendering/render.ts
@@ -683,12 +1528,12 @@ async function toDataURL(imageData, format = "png") {
   ctx.putImageData(imageData, 0, 0);
   return canvas.toDataURL(`image/${format}`);
 }
-async function saveImage(imageData, path2) {
+async function saveImage(imageData, path3) {
   const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   ctx.putImageData(imageData, 0, 0);
-  await canvas.saveAs(path2);
+  await canvas.saveAs(path3);
 }
 
 // src/rendering/video.ts
@@ -879,17 +1724,26 @@ export {
   _registerCentroidFactory,
   _registerMaskFactory,
   _resolveMergedIsNegative,
+  buildClassNamesFromBboxes,
+  buildClassNamesFromRois,
   checkFfmpeg,
+  classNamesFromConfig,
+  createDataYaml,
+  createSkeletonFromConfig,
+  createSplitsFromLabels,
   createVideoBackend,
   decodeRle,
   decodeWkb,
   decodeYamlSkeleton,
+  denormalizeCoordinates,
+  detectLineFormat,
   determineColorScheme,
   drawCircle,
   drawCross,
   drawDiamond,
   drawSquare,
   drawTriangle,
+  encodePng,
   encodeRle,
   encodeWkb,
   encodeYamlSkeleton,
@@ -907,19 +1761,26 @@ export {
   loadSlp,
   loadSlpSet,
   loadTrackMate,
+  loadUltralytics,
   loadVideo,
   makeCameraFromDict,
+  normalizeCoordinates,
   normalizeLabelIds,
   openH5Worker,
   openStreamingH5,
+  parseDataYaml,
+  parseLabelFile,
   pointsEmpty,
   pointsFromArray,
   pointsFromDict,
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict,
+  probeImageSize,
   rasterizeGeometry,
   readGeoJSON,
+  readLabels,
+  readLabelsSet,
   readSkeletonJson,
   readSlpStreaming,
   readTrackMateCsv,
@@ -938,11 +1799,16 @@ export {
   saveSlp,
   saveSlpSet,
   saveSlpToBytes,
+  saveUltralytics,
   setFsResolver,
   toDataURL,
   toDict,
   toJPEG,
   toNumpy,
   toPNG,
-  writeGeoJSON
+  writeBboxLabelFile,
+  writeGeoJSON,
+  writeLabelFile,
+  writeLabels,
+  writeRoiLabelFile
 };

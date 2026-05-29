@@ -1,5 +1,5 @@
-import { T as Track, I as Instance, k as Skeleton, P as PredictedInstance } from './instance-DM1Nsppv.js';
-export { E as Edge, N as Node, j as NodeOrIndex, a as Point, c as PointsArray, b as PredictedPoint, d as PredictedPointsArray, S as Symmetry, _ as _registerCentroidFactory, p as pointsEmpty, f as pointsFromArray, h as pointsFromDict, e as predictedPointsEmpty, g as predictedPointsFromArray, i as predictedPointsFromDict } from './instance-DM1Nsppv.js';
+import { T as Track, I as Instance, S as Skeleton, P as PredictedInstance } from './instance-DLj547bw.js';
+export { E as Edge, N as Node, k as NodeOrIndex, b as Point, d as PointsArray, c as PredictedPoint, e as PredictedPointsArray, a as Symmetry, _ as _registerCentroidFactory, p as pointsEmpty, g as pointsFromArray, i as pointsFromDict, f as predictedPointsEmpty, h as predictedPointsFromArray, j as predictedPointsFromDict } from './instance-DLj547bw.js';
 
 type VideoFrame = ImageData | ImageBitmap | Uint8Array | ArrayBuffer;
 interface VideoBackend {

@@ -446,6 +446,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ultralytics-yolo-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      Ultralytics YOLO I/O
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skeleton-codecs" class="md-nav__link">
     <span class="md-ellipsis">
       Skeleton Codecs
@@ -637,6 +646,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#ultralytics-yolo-io" class="md-nav__link">
+    <span class="md-ellipsis">
+      Ultralytics YOLO I/O
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#skeleton-codecs" class="md-nav__link">
     <span class="md-ellipsis">
       Skeleton Codecs
@@ -728,6 +746,13 @@
 <span class="w">  </span><span class="nx">readTrackMateCsv</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">loadTrackMate</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">isTrackMateFile</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">loadUltralytics</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">saveUltralytics</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">readLabels</span><span class="w"> </span><span class="kr">as</span><span class="w"> </span><span class="nx">readUltralytics</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">writeLabels</span><span class="w"> </span><span class="kr">as</span><span class="w"> </span><span class="nx">writeUltralytics</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">readLabelsSet</span><span class="w"> </span><span class="kr">as</span><span class="w"> </span><span class="nx">readUltralyticsSet</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">parseLabelFile</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">detectLineFormat</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Identity</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">Instance3D</span><span class="p">,</span>
 <span class="w">  </span><span class="nx">PredictedInstance3D</span><span class="p">,</span>
@@ -1442,6 +1467,32 @@
 <p>TrackMate CSV format:
 - <code>*_spots.csv</code> — spot detections with <code>POSITION_X</code>, <code>POSITION_Y</code>, <code>POSITION_Z</code>, <code>FRAME</code>, <code>QUALITY</code>, <code>TRACK_ID</code>
 - <code>*_edges.csv</code> — frame-to-frame linkages; <code>LINK_COST</code> is stored as <code>trackingScore</code> on target centroids</p>
+<h2 id="ultralytics-yolo-io">Ultralytics YOLO I/O<a class="headerlink" href="#ultralytics-yolo-io" title="Permanent link">&para;</a></h2>
+<p>Read and write <a href="https://docs.ultralytics.com/datasets/">Ultralytics YOLO</a> datasets — pose, detection, and segmentation. A dataset is a directory of <code>data.yaml</code> + per-split <code>images/</code> and <code>labels/</code>. The format of each label line is auto-detected by value count. Node.js only (directory-based I/O).</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadUltralytics</span><span class="p">,</span><span class="w"> </span><span class="nx">saveUltralytics</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Load a split (auto-detects pose/detection/segmentation per line)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">loadUltralytics</span><span class="p">(</span><span class="s2">&quot;path/to/yolo_dataset&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">split</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;train&quot;</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">labeledFrames</span><span class="p">;</span><span class="w">  </span><span class="c1">// pose instances (5 + 3k value lines)</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">bboxes</span><span class="p">;</span><span class="w">         </span><span class="c1">// UserBoundingBox / PredictedBoundingBox (5 / 6 value lines)</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">rois</span><span class="p">;</span><span class="w">           </span><span class="c1">// UserROI from segmentation polygons</span>
+
+<span class="c1">// Pointing at data.yaml directly also works</span>
+<span class="nx">loadUltralytics</span><span class="p">(</span><span class="s2">&quot;path/to/yolo_dataset/data.yaml&quot;</span><span class="p">);</span>
+
+<span class="c1">// Write a dataset (default task &quot;pose&quot;; also &quot;detect&quot; / &quot;segment&quot;)</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveUltralytics</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;out_dir&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">splitRatios</span><span class="o">:</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">train</span><span class="o">:</span><span class="w"> </span><span class="kt">0.8</span><span class="p">,</span><span class="w"> </span><span class="nx">val</span><span class="o">:</span><span class="w"> </span><span class="kt">0.2</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="p">});</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveUltralytics</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;out_dir&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">task</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;detect&quot;</span><span class="w"> </span><span class="p">});</span><span class="w">   </span><span class="c1">// writes labels.bboxes</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveUltralytics</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;out_dir&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">task</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;segment&quot;</span><span class="w"> </span><span class="p">});</span><span class="w">  </span><span class="c1">// writes labels.rois</span>
+</code></pre></div>
+<p>Lower-level helpers are also exported: <code>parseLabelFile(path, skeleton, [h, w], { classNames })</code> returns <code>{ instances, rois, bboxes }</code>; <code>detectLineFormat(parts)</code> returns <code>"detection" | "detection_conf" | "segmentation" | "pose"</code>; plus <code>writeLabelFile</code>, <code>writeBboxLabelFile</code>, <code>writeRoiLabelFile</code>, <code>readLabelsSet</code>, <code>parseDataYaml</code>, <code>createDataYaml</code>, and <code>createSkeletonFromConfig</code>.</p>
+<p>Label-line formats (coordinates normalized to <code>[0, 1]</code>):
+- <strong>Detection</strong> — <code>class_id x_center y_center width height [confidence]</code> → <code>UserBoundingBox</code> (5 values) or <code>PredictedBoundingBox</code> (6 values).
+- <strong>Segmentation</strong> — <code>class_id x1 y1 x2 y2 … xn yn</code> → <code>UserROI</code> polygon (multi-polygons are exploded on write; interior holes are dropped with a warning).
+- <strong>Pose</strong> — <code>class_id x_center y_center width height x1 y1 v1 … xn yn vn</code> → <code>Instance</code> (visibility <code>0</code> = invisible, <code>1</code>/<code>2</code> = visible).</p>
+<blockquote>
+<p><strong>Image I/O note:</strong> image dimensions are read from the file header (PNG/JPEG/GIF/BMP/TIFF) rather than by decoding pixels. On write, frames backed by an on-disk image file are copied verbatim; frames yielding raw <code>ImageData</code> pixels are encoded to PNG; otherwise the frame is skipped with a warning. The <code>imageFormat</code>/<code>imageQuality</code> options apply only to the raw-pixel PNG path.</p>
+</blockquote>
 <h2 id="skeleton-codecs">Skeleton Codecs<a class="headerlink" href="#skeleton-codecs" title="Permanent link">&para;</a></h2>
 <h3 id="json-jsonpickle-format">JSON (jsonpickle format)<a class="headerlink" href="#json-jsonpickle-format" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">readSkeletonJson</span><span class="p">,</span><span class="w"> </span><span class="nx">isSkeletonJson</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
