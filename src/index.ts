@@ -45,3 +45,45 @@ export {
 
 // Streaming SLP reader (uses Web Worker, recommended for browser)
 export { readSlpStreaming } from "./codecs/slp/read-streaming.js";
+
+// Merge/matching public API (issue #90).
+// Named re-exports (not `export *`) so the underscore-prefixed internal helpers
+// and other module-private utilities in matching.ts stay private.
+export {
+  // Enums (value + type).
+  SkeletonMatchMethod,
+  InstanceMatchMethod,
+  TrackMatchMethod,
+  VideoMatchMethod,
+  FrameStrategy,
+  ErrorMode,
+  // Matcher classes.
+  SkeletonMatcher,
+  InstanceMatcher,
+  TrackMatcher,
+  VideoMatcher,
+  // Result & error types.
+  ConflictResolution,
+  MergeError,
+  SkeletonMismatchError,
+  MergeResult,
+  MatchResult,
+  MergeProgressBar,
+  // Preconfigured matcher singletons.
+  STRUCTURE_SKELETON_MATCHER,
+  SUBSET_SKELETON_MATCHER,
+  OVERLAP_SKELETON_MATCHER,
+  DUPLICATE_MATCHER,
+  IOU_MATCHER,
+  IDENTITY_INSTANCE_MATCHER,
+  NAME_TRACK_MATCHER,
+  IDENTITY_TRACK_MATCHER,
+  AUTO_VIDEO_MATCHER,
+  PATH_VIDEO_MATCHER,
+  BASENAME_VIDEO_MATCHER,
+  IMAGE_DEDUP_VIDEO_MATCHER,
+  SHAPE_VIDEO_MATCHER,
+  // Filesystem resolver injection (for tests/browser).
+  setFsResolver,
+  type FsResolver,
+} from "./model/matching.js";

@@ -232,6 +232,143 @@ export class Video {
     }
     return false;
   }
+
+  /**
+   * Whether this video is grayscale, or `null` if unknown.
+   *
+   * Port of Python `Video.grayscale` getter (video.py:225-239): if the shape is
+   * known, grayscale is `shape[-1] === 1`; otherwise fall back to a stored
+   * `backendMetadata["grayscale"]` value (real key-presence, so a stored `null`
+   * is returned as-is), else `null`. Used by `deduplicateWith` / `mergeWith` to
+   * carry the grayscale hint onto the newly created video.
+   */
+  get grayscale(): boolean | null {
+    const shape = this.shape;
+    if (shape != null) {
+      return shape[shape.length - 1] === 1;
+    }
+    if (hasOwn(this.backendMetadata, "grayscale")) {
+      return (this.backendMetadata.grayscale as boolean | null) ?? null;
+    }
+    return null;
+  }
+
+  /**
+   * Create a new video with duplicate images removed.
+   *
+   * Port of Python `Video.deduplicate_with` (video.py:801-840). Specific to
+   * image-sequence videos (ImageVideo: `filename` is a list). Images are
+   * considered duplicates when they share a basename. The returned video
+   * contains only the images from THIS video whose basename is not present in
+   * `other`, preserving this video's order.
+   *
+   * Return contract (matches Python exactly): returns `null` when ALL of this
+   * video's images are duplicates (Python returns `None`); otherwise returns a
+   * NEW `Video` (never `this`, never `other`) carrying the surviving image paths.
+   *
+   * @param other - Another image-sequence video to deduplicate against.
+   * @returns A new `Video` with the non-duplicate images, or `null` if every
+   *   image was a duplicate.
+   * @throws Error - If either video's `filename` is not a list (ImageVideo).
+   */
+  deduplicateWith(other: Video): Video | null {
+    if (!Array.isArray(this.filename)) {
+      throw new Error("deduplicate_with only works with ImageVideo backends");
+    }
+    if (!Array.isArray(other.filename)) {
+      throw new Error("Other video must also be ImageVideo backend");
+    }
+
+    // Basenames present in the other video.
+    const otherBasenames = new Set((other.filename as string[]).map(basename));
+
+    // Keep only this video's images whose basename is not a duplicate.
+    const deduplicatedPaths = (this.filename as string[]).filter(
+      (f) => !otherBasenames.has(basename(f))
+    );
+
+    if (deduplicatedPaths.length === 0) {
+      // All images were duplicates.
+      return null;
+    }
+
+    return makeImageSequenceVideo(deduplicatedPaths, this.grayscale);
+  }
+
+  /**
+   * Merge another video's images into this one.
+   *
+   * Port of Python `Video.merge_with` (video.py:842-883). Specific to
+   * image-sequence videos (ImageVideo: `filename` is a list). Returns a NEW
+   * `Video` containing all unique images (by basename) from both videos,
+   * preserving order: every unique image from THIS video first, then any image
+   * from `other` whose basename has not already been seen.
+   *
+   * @param other - Another image-sequence video to merge with.
+   * @returns A new `Video` with the de-duplicated union of both videos' images.
+   * @throws Error - If either video's `filename` is not a list (ImageVideo).
+   */
+  mergeWith(other: Video): Video {
+    if (!Array.isArray(this.filename)) {
+      throw new Error("merge_with only works with ImageVideo backends");
+    }
+    if (!Array.isArray(other.filename)) {
+      throw new Error("Other video must also be ImageVideo backend");
+    }
+
+    // All unique images by basename, preserving order (self first, then other).
+    const seenBasenames = new Set<string>();
+    const mergedPaths: string[] = [];
+
+    for (const path of this.filename as string[]) {
+      const name = basename(path);
+      if (!seenBasenames.has(name)) {
+        mergedPaths.push(path);
+        seenBasenames.add(name);
+      }
+    }
+
+    for (const path of other.filename as string[]) {
+      const name = basename(path);
+      if (!seenBasenames.has(name)) {
+        mergedPaths.push(path);
+        seenBasenames.add(name);
+      }
+    }
+
+    return makeImageSequenceVideo(mergedPaths, this.grayscale);
+  }
+}
+
+/**
+ * Construct a new image-sequence `Video` from a list of image paths, carrying a
+ * grayscale hint.
+ *
+ * Stands in for Python `Video.from_filename(paths, grayscale=...)` (video.py:153-201)
+ * as used by `deduplicate_with` / `merge_with`. Python's `from_filename` opens a
+ * VideoBackend (which re-derives `filename` from the backend) and forwards the
+ * grayscale flag to it. JS has no generic backend-opening path that works without
+ * filesystem/image I/O, so we DEGRADE GRACEFULLY: build a plain `Video` whose
+ * `filename` is the (unchanged) path list and persist the grayscale hint into
+ * `backendMetadata` (where a real backend would expose it). `backend` stays `null`
+ * and `openBackend` is `false` so no I/O is implied. The merge STEP-2
+ * IMAGE_DEDUP / SHAPE callers only consume the resulting `filename`/basenames, so
+ * this is behaviorally faithful for the matching subsystem.
+ */
+function makeImageSequenceVideo(
+  paths: string[],
+  grayscale: boolean | null
+): Video {
+  const backendMetadata: Record<string, unknown> = {};
+  if (grayscale != null) {
+    backendMetadata.grayscale = grayscale;
+  }
+  return new Video({
+    filename: paths,
+    backend: null,
+    backendMetadata,
+    openBackend: false,
+  });
 }
 
 /** Final path component, splitting on BOTH "/" and "\\" (cross-platform). */
