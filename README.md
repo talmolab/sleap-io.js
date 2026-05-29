@@ -17,6 +17,7 @@ JavaScript/TypeScript utilities for reading and writing SLEAP `.slp` files with 
 - Core data model (`Labels`, `LabeledFrame`, `Instance`, `Skeleton`, `Video`, `Centroid`, `Identity`, `Instance3D`, etc.).
 - ROI, segmentation mask, bounding box, and label image annotations with GeoJSON I/O.
 - Ultralytics YOLO dataset reader/writer (pose, detection, segmentation; Node.js).
+- JABS (Jackson Lab) pose-file reader (predicted poses + static-object ROIs; Node.js).
 - 3D pose data structures with cross-library interop (Python sleap-io, luc3d).
 - Video backends accept `string`, `File`, or `Blob` sources.
 - Browser-safe: Node.js-only dependencies (`skia-canvas`, `child_process`) are dynamically imported, so bundlers can tree-shake them.
@@ -56,6 +57,19 @@ await saveUltralytics(labels, "/tmp/yolo_out", { splitRatios: { train: 0.8, val:
 ```
 
 Node.js only (directory-based datasets). See [docs/api.md](docs/api.md#ultralytics-yolo-io) for label-line formats and lower-level helpers.
+
+### Load JABS pose files
+
+```ts
+import { loadJabs } from "@talmolab/sleap-io.js";
+
+// Read a JABS pose file (HDF5). Returns PredictedInstance objects.
+const labels = await loadJabs("/path/to/recording_pose_est_v5.h5");
+labels.labeledFrames;  // PredictedInstance poses, one Track per JABS identity
+labels.staticRois;     // arena corners / lixit / food hopper as UserROI (source: "jabs")
+```
+
+Node.js only (JABS files are HDF5). Pose versions 2–6 are supported.
 
 ### Load video
 
