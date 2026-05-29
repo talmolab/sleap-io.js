@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 

@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Port of Labels.extract() / split() Python tests.
  *
@@ -21,7 +20,7 @@
  *   videos are NOT identity-equal to the source but DO match by content/path,
  *   and that the suggestion video is the SAME object as the extracted LF video.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { Instance, Track } from "../../src/model/instance.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 import { Video } from "../../src/model/video.js";

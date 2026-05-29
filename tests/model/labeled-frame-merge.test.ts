@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Port of GROUP A from the Python merge integration suite.
  *
@@ -14,7 +13,7 @@
  * - Python `is` identity assertions become `toBe(...)`; `in` membership becomes
  *   `.includes(...)`.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import {
   Instance,
   PredictedInstance,

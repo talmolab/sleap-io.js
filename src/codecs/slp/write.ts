@@ -34,6 +34,25 @@ export function _registerFileWriter(
 const FORMAT_ID = 1.4;
 const textEncoder = new TextEncoder();
 
+/**
+ * Ensure the in-memory staging directory used for SLP output exists in h5wasm's
+ * Emscripten filesystem.
+ *
+ * We stage the SLP at `/tmp/...` inside the wasm FS and read the bytes back.
+ * Node's h5wasm build pre-creates `/tmp`, but Bun's does not — there, opening a
+ * `File` at `/tmp/...` yields an invalid file id, so every subsequent
+ * `create_dataset`/`file.get`/attribute call fails. Creating the directory up
+ * front fixes Bun and is a no-op elsewhere: `mkdir` throws when the directory
+ * already exists, which we ignore.
+ */
+function ensureH5StagingDir(module: Awaited<ReturnType<typeof getH5Module>>): void {
+  try {
+    getH5FileSystem(module).mkdir?.("/tmp");
+  } catch {
+    // Directory already exists (Node/browser) — nothing to do.
+  }
+}
+
 /** Write a string as a fixed-length HDF5 string attribute (H5T_STRING).
  *  h5py reads fixed-length strings as `bytes`, so Python's `.decode()` works.
  *  Using `S<n>` dtype avoids variable-length strings (returned as `str`)
@@ -446,6 +465,7 @@ export async function saveSlpToBytes(
 
       if (proceedWithFastPath) {
         const module = await getH5Module();
+        ensureH5StagingDir(module);
         const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
         const file = new module.File(memPath, "w");
         try {
@@ -498,6 +518,7 @@ export async function saveSlpToBytes(
   }
 
   const module = await getH5Module();
+  ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
 
   // If embedding, we need to determine frames per video and prepare embedded data

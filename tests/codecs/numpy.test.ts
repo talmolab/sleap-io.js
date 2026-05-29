@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { loadSlp } from "../../src/io/main.js";
 import { toNumpy, fromNumpy } from "../../src/codecs/numpy.js";
 import { Labels } from "../../src/model/labels.js";

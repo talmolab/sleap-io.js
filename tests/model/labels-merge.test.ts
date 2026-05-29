@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 //
 // Port of Python `tests/model/test_merging_integration.py` (sleap-io @ 054cce39f),
 // covering the end-to-end Labels.merge() integration scenarios:
@@ -21,7 +20,7 @@
 // All assertions reproduce the PYTHON expected values. Identity (`is`) -> toBe;
 // value/membership (`==` / `in`) -> the model's value predicates / includes.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import os from "node:os";
 import path from "node:path";
 import fs from "node:fs";

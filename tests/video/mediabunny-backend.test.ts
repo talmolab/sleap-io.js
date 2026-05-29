@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 
 const mockPackets = [
   { timestamp: 0.0 },

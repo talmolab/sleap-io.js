@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Port of the InstanceMatcher / Instance pose-matching tests from the Python
  * suite `tests/model/test_matching.py` (pinned @ 054cce39f).
@@ -17,7 +16,7 @@
  * Every assertion encodes the PYTHON expectation. `InstanceMatcher.match()` and
  * `findMatches()` are synchronous in both implementations, so no `await`.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import {
   InstanceMatcher,
   InstanceMatchMethod,

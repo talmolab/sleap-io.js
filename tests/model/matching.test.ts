@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Ported from sleap-io Python `tests/model/test_matching.py` (pinned @ 054cce39f).
  *
@@ -14,7 +13,7 @@
  *
  * Assertions reflect the PYTHON expected behavior, not the current JS behavior.
  */
-import { describe, expect, it } from "vitest";
+import { describe, expect, it } from "../bun-test";
 import {
   AUTO_VIDEO_MATCHER,
   BASENAME_VIDEO_MATCHER,

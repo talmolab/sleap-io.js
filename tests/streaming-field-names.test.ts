@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Regression tests for the streaming reader's compound-dtype field-name
  * extraction (issues #113 / PR #114).
@@ -16,7 +15,7 @@
  * pre-existing branches against regression. The array-of-pairs fixtures below
  * are the exact shapes h5wasm 0.10.x emits for the repo's Python .slp fixtures.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { getFieldNamesFromMeta } from "../src/codecs/slp/read-streaming.js";
 
 describe("getFieldNamesFromMeta — h5wasm 0.10.x array-of-pairs compound dtype (#113/#114)", () => {

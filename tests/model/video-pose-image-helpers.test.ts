@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Port of test_matching.py pose / image / helper-function coverage tests
  * (issue #90). Ground truth: C:/Users/Talmo/code/sleap-io tests/model/test_matching.py
@@ -13,7 +12,7 @@
  * - GROUP 23 — TestHelperFunctionsCoverage (_get_frame_instances,
  *   _video_has_user_instances, backend-without-attrs).
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import {
   _posesIdentical,
   _frameHasMatchingPose,

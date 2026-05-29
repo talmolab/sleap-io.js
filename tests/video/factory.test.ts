@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 
 // Mock mediabunny to throw immediately so we can detect routing
 vi.mock("mediabunny", () => ({

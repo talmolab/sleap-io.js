@@ -98,12 +98,27 @@ await loadSlp(url, { h5: { stream: "auto", filenameHint: "session.slp" } });
 The demo in `demo/` loads the built package from `dist/`. Build first, then serve the repo with a static server and open `demo/index.html`:
 
 ```bash
-npm run build
+bun run build
 ```
+
+## Development
+
+This repo uses [Bun](https://bun.com) (pinned to `bun@1.3.14` via the `packageManager` field) as its package manager, script runner, and test runner. After [installing Bun](https://bun.com/docs/installation):
+
+```bash
+bun install          # install dependencies (uses the committed bun.lock)
+bun run build        # bundle to dist/ with tsup
+bun run lint         # type-check with tsc --noEmit
+bun test             # run the unit suite (bun's native test runner)
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for more detail on the toolchain.
+
+> The published package is plain ESM on the npm registry, so consumers can install it with any package manager (`npm`, `pnpm`, `yarn`, or `bun`) — the `npm install` line above works as-is.
 
 ## Release & Publishing
 
-This package uses npm Trusted Publishing. The first publish must be done manually to unlock the npm package settings:
+Day-to-day development uses Bun, but releases still publish to the **npm registry** (`bun publish` does not support npm's OIDC trusted publishing / provenance). The first publish must be done manually to unlock the npm package settings:
 
 1. First-time publish (one-time):
 

@@ -5,11 +5,16 @@
  * are free of Node-specific module references (h5wasm/node, node:fs,
  * node:os, node:path, fs, createRequire).
  */
-/* @vitest-environment node */
-import { describe, it, expect, beforeAll } from "vitest";
+import { describe, it, expect, beforeAll, setDefaultTimeout } from "./bun-test";
 import { readFileSync, existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { execSync } from "node:child_process";
+
+// When `dist/` is missing this suite builds it in `beforeAll` (tsup + dts takes
+// a few seconds), which exceeds bun's 5s default. Give the hook headroom; when
+// `dist/` already exists (CI builds first, and local dev usually has it) the
+// build is skipped and the suite finishes near-instantly.
+setDefaultTimeout(120_000);
 
 const distDir = resolve(import.meta.dirname, "../dist");
 
@@ -57,7 +62,7 @@ describe("Browser bundle isolation (issue #70)", () => {
   beforeAll(() => {
     // Ensure dist is built
     if (!existsSync(join(distDir, "index.browser.js"))) {
-      execSync("npm run build", { cwd: resolve(distDir, ".."), stdio: "pipe" });
+      execSync("bun run build", { cwd: resolve(distDir, ".."), stdio: "pipe" });
     }
     browserFiles = collectBrowserChunks();
   });

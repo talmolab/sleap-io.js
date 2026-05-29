@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Port of test_matching.py result/error/progress-bar groups:
  *   GROUP 5  — TestMergeResult (lines 236-294): summary byte-exact substrings.
@@ -13,7 +12,7 @@
  * Python ref: C:/Users/Talmo/code/sleap-io/tests/model/test_matching.py
  * MergeResult/MatchResult/MergeProgressBar impl: sleap_io/model/matching.py:1192-1389.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import {
   MergeResult,
   MergeError,

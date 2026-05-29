@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { Labels } from "../../src/model/labels.js";
 import { LabeledFrame } from "../../src/model/labeled-frame.js";
 import { Video } from "../../src/model/video.js";

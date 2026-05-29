@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { decodeYamlSkeleton, encodeYamlSkeleton } from "../../src/codecs/skeleton-yaml.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 import { readFile } from "node:fs/promises";

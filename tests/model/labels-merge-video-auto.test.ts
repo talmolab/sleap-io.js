@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 //
 // Port of the AUTO video-matching subset of Python
 // `tests/model/test_merging_integration.py` (sleap-io @ 054cce39f):
@@ -16,7 +15,7 @@
 // matchVideo-equivalent) — here expressed through identity since the merged
 // frame must reference the SAME existing video object.
 
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { Labels } from "../../src/model/labels.js";
 import { LabeledFrame } from "../../src/model/labeled-frame.js";
 import { PredictedInstance } from "../../src/model/instance.js";

@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 /**
  * Port of test_matching.py GROUP 6 (TestEnums, lines 297-324) plus the
  * "unknown enum string at construction throws" behavior implied by the
@@ -11,7 +10,7 @@
  *
  * Python ref: C:/Users/Talmo/code/sleap-io/tests/model/test_matching.py
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import {
   SkeletonMatchMethod,
   InstanceMatchMethod,

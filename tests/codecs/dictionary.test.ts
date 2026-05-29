@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { loadSlp } from "../../src/io/main.js";
 import { toDict, fromDict } from "../../src/codecs/dictionary.js";
 import { Instance, PredictedInstance, Track } from "../../src/model/instance.js";

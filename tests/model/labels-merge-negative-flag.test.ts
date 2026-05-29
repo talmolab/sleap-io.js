@@ -1,4 +1,3 @@
-/* @vitest-environment node */
 //
 // Issue #108 / Python sleap-io PR #432: preserve `isNegative` when merging
 // colliding and new frames, emitting a `negative_flag_conflict` when a user pose
@@ -8,7 +7,7 @@
 // ConflictResolution emission. Rule:
 //   merged.isNegative = (self.isNegative || other.isNegative) && !hasUserPose
 // (a PredictedInstance does NOT count as a user pose -> does not veto.)
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "../bun-test";
 import { Labels } from "../../src/model/labels.js";
 import { LabeledFrame } from "../../src/model/labeled-frame.js";
 import { Instance, PredictedInstance } from "../../src/model/instance.js";

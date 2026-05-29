@@ -1,5 +1,4 @@
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { BoundingBox, UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
 import "../src/model/mask.js"; // Ensure mask factory is registered
 

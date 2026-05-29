@@ -6,8 +6,7 @@
  * - File writer provider is registered and functional
  * - The provider pattern produces the same results as before
  */
-/* @vitest-environment node */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { getH5Module, openH5File } from "../src/codecs/slp/h5.js";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
 import { writeSlp } from "../src/codecs/slp/write.js";

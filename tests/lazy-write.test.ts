@@ -6,7 +6,7 @@
  * fast path that pulls raw column data + per-frame annotation maps directly
  * from `LazyDataStore`.
  */
-import { describe, it, expect } from "vitest";
+import { describe, it, expect } from "./bun-test";
 import { Labels } from "../src/model/labels.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
 import { Instance, PredictedInstance, Track } from "../src/model/instance.js";
