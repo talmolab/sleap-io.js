@@ -2,6 +2,9 @@
 // This side-effect import ensures the Node entry uses h5wasm/node and native fs,
 // while the browser entry (index.browser.ts) never touches these modules.
 import "./codecs/slp/h5-node.js";
+// Register the Node `fs`-backed default resolver for merge/matching video
+// file-identity checks (kept out of the browser-reachable graph; issue #70).
+import "./model/node-fs-resolver.js";
 
 export * from "./model/labels.js";
 export * from "./model/labeled-frame.js";

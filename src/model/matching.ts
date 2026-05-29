@@ -497,68 +497,31 @@ export interface FsResolver {
 }
 
 let _fsResolver: FsResolver | null = null;
-let _nodeFsResolverPromise: Promise<FsResolver | null> | null = null;
+let _defaultFsResolver: FsResolver | null = null;
 
 /**
  * Override the filesystem resolver (DECISIONS D7). Pass `null` to clear the
- * explicit override and fall back to the default Node `fs` resolver. Tests and
- * the browser entry point use this to inject a stub.
+ * explicit override and fall back to the registered default — the Node `fs`
+ * resolver in Node builds/tests, or none in the browser bundle (which degrades
+ * to the conservative "cannot verify" path). Tests use this to inject a stub.
  */
 export function setFsResolver(resolver: FsResolver | null): void {
   _fsResolver = resolver;
 }
 
-/** The currently-injected resolver, if any (no default applied). */
-export function getFsResolver(): FsResolver | null {
-  return _fsResolver;
+/**
+ * Register the DEFAULT FS resolver used when no override is set. Called by the
+ * Node-only `node-fs-resolver` module (which the Node entry point and the test
+ * setup import). The browser bundle never imports that module, so no `node:fs`
+ * reference enters the browser-reachable module graph (issue #70).
+ */
+export function setDefaultFsResolver(resolver: FsResolver | null): void {
+  _defaultFsResolver = resolver;
 }
 
-/**
- * Resolve the active FS resolver: an explicit override if set, else the lazy
- * Node `fs`-backed default, else `null` (browser/no-FS => conservative path).
- */
-async function resolveFs(): Promise<FsResolver | null> {
-  if (_fsResolver != null) return _fsResolver;
-  if (_nodeFsResolverPromise == null) {
-    _nodeFsResolverPromise = (async (): Promise<FsResolver | null> => {
-      try {
-        const fs = await import("node:fs");
-        const fsp = fs.promises;
-        return {
-          async exists(path: string): Promise<boolean> {
-            try {
-              await fsp.access(path);
-              return true;
-            } catch {
-              return false;
-            }
-          },
-          async sameFile(path1: string, path2: string): Promise<boolean> {
-            // os.path.samefile parity: compare dev + ino. Throws (propagated)
-            // if either stat fails so the caller's try/catch falls through.
-            const s1 = await fsp.stat(path1);
-            const s2 = await fsp.stat(path2);
-            return s1.dev === s2.dev && s1.ino === s2.ino;
-          },
-          async realpath(path: string): Promise<string> {
-            try {
-              return await fsp.realpath(path);
-            } catch {
-              // File does not exist: fall back to a plain absolute resolution
-              // (Node `path.resolve`), mirroring Python `Path.resolve()` on a
-              // non-existent path.
-              const nodePath = await import("node:path");
-              return nodePath.resolve(path);
-            }
-          },
-        } satisfies FsResolver;
-      } catch {
-        // No Node `fs` (browser bundle): degrade to the conservative resolver.
-        return null;
-      }
-    })();
-  }
-  return _nodeFsResolverPromise;
+/** The effective FS resolver: the explicit override if set, else the default. */
+export function getFsResolver(): FsResolver | null {
+  return _fsResolver ?? _defaultFsResolver;
 }
 
 // =============================================================================
@@ -703,7 +666,7 @@ export function getPathParts(video: Video): string[] {
 export async function _fileExists(
   filename: string | string[],
 ): Promise<boolean> {
-  const fs = await resolveFs();
+  const fs = getFsResolver();
   if (fs == null) {
     // Cannot verify: conservative answer.
     return false;
@@ -761,7 +724,7 @@ export async function _isSameFileDirect(
   // Both are single file paths.
   const path1 = fn1 as string;
   const path2 = fn2 as string;
-  const fs = await resolveFs();
+  const fs = getFsResolver();
 
   let filesMatch = false;
 
