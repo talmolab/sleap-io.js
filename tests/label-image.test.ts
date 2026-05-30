@@ -328,14 +328,21 @@ describe("LabelImage", () => {
   });
 
   describe("fromArray", () => {
-    it("creates from Int32Array with auto-created tracks", () => {
+    it("creates from Int32Array with no tracks by default (PR #387 parity)", () => {
       const flat = new Int32Array([0, 1, 2, 0, 3, 0]);
       const li = LabelImage.fromArray(flat, 2, 3);
       expect(li.height).toBe(2);
       expect(li.width).toBe(3);
       expect(li.labelIds).toEqual([1, 2, 3]);
       expect(li.nObjects).toBe(3);
-      // Auto-created tracks should have string names
+      // Objects exist but carry no tracks unless opted in.
+      expect(li.tracks).toEqual([]);
+      expect(li.objects.get(1)!.track).toBeNull();
+    });
+
+    it("auto-creates tracks when createTracks is true", () => {
+      const flat = new Int32Array([0, 1, 2, 0, 3, 0]);
+      const li = LabelImage.fromArray(flat, 2, 3, { createTracks: true });
       const tracks = li.tracks;
       expect(tracks).toHaveLength(3);
       expect(tracks[0].name).toBe("1");
@@ -582,9 +589,9 @@ describe("LabelImage", () => {
       expect(li.labelIds).toEqual([3, 7, 15]);
     });
 
-    it("fromArray with sparse IDs auto-creates tracks", () => {
+    it("fromArray with createTracks names tracks by sparse label ID", () => {
       const flat = new Int32Array([0, 3, 7, 0, 15, 0]);
-      const li = LabelImage.fromArray(flat, 2, 3);
+      const li = LabelImage.fromArray(flat, 2, 3, { createTracks: true });
       expect(li.labelIds).toEqual([3, 7, 15]);
       const tracks = li.tracks;
       expect(tracks).toHaveLength(3);
@@ -639,6 +646,10 @@ describe("LabelImage.fromStack", () => {
     expect(result).toHaveLength(2);
     expect(result[0].height).toBe(2);
     expect(result[0].width).toBe(2);
+    // No tracks by default (the createTracks:false default is honored through
+    // the fromArray delegation; PR #387 parity).
+    expect(result[0].tracks).toEqual([]);
+    expect(result[1].tracks).toEqual([]);
   });
 
   it("createTracks auto-creates shared Track objects", () => {
