@@ -7,6 +7,8 @@ import "./codecs/slp/h5-node.js";
 import "./model/node-fs-resolver.js";
 // Register the Node `fs`-backed byte source for reading .seq files from a path.
 import "./video/seq-node.js";
+// Register the Node `fs`-backed TIFF reader for loadLabelImages() path inputs.
+import "./io/label-images-node.js";
 
 export * from "./model/labels.js";
 export * from "./model/labeled-frame.js";

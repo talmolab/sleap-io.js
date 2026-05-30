@@ -8,6 +8,16 @@ import { createVideoBackend, VideoBackendType } from "../video/factory.js";
 import { OpenH5Options, SlpSource, isStreamingSupported } from "../codecs/slp/h5.js";
 import { readLabels as readAnalysisH5, writeLabels as writeAnalysisH5 } from "./analysis-h5.js";
 
+// TIFF label-image reader (browser-safe core; Node path reading is registered
+// via the side-effect import of ./label-images-node.js in the Node entry).
+export {
+  loadLabelImages,
+  setLabelImageFileReader,
+  type PagesAs,
+  type LoadLabelImagesOptions,
+  type LabelImageFileReader,
+} from "./label-images.js";
+
 function isNode(): boolean {
   return typeof process !== "undefined" && !!process.versions?.node;
 }
