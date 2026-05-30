@@ -11631,6 +11631,240 @@ async function writeLabels(labels, filename, options) {
   await nodeWriteFile(filename, bytes);
 }
 
+// src/io/label-images.ts
+var fileReader = null;
+function setLabelImageFileReader(fn) {
+  fileReader = fn;
+}
+var warnedMessages = /* @__PURE__ */ new Set();
+async function decodeTiff(bytes, opts) {
+  let mod;
+  try {
+    mod = await import("tiff");
+  } catch {
+    throw new Error(
+      "Reading TIFF label images requires the optional `tiff` package. Install it with: npm install tiff"
+    );
+  }
+  try {
+    return mod.decode(bytes, opts);
+  } catch (err) {
+    const m = String(err?.message ?? "");
+    if (/bit\s*depth/i.test(m) && /(32|64)/.test(m)) {
+      throw new Error(
+        `32-bit integer TIFFs are not yet supported (${m}). Re-export the label image as uint16, or split into <=65535 objects.`
+      );
+    }
+    throw err;
+  }
+}
+async function loadLabelImages(source, options = {}) {
+  const pagesAs = options.pagesAs ?? "auto";
+  if (pagesAs !== "auto" && pagesAs !== "time" && pagesAs !== "classes") {
+    throw new Error(
+      `pagesAs must be 'auto', 'time', or 'classes'; got ${JSON.stringify(pagesAs)}.`
+    );
+  }
+  const isBlob = typeof Blob !== "undefined" && source instanceof Blob;
+  if (isBlob) {
+    const bytes = new Uint8Array(await source.arrayBuffer());
+    const src2 = options.source ?? source.name ?? "";
+    return decodeSingleFile(bytes, pagesAs, options, src2);
+  }
+  if (!fileReader) {
+    throw new Error(
+      "Reading TIFF label images from a path requires the Node entry point (`@talmolab/sleap-io.js`). In the browser, pass a File/Blob instead."
+    );
+  }
+  const read = await fileReader(source);
+  const src = options.source ?? source;
+  if (read instanceof Uint8Array) {
+    return decodeSingleFile(read, pagesAs, options, src);
+  }
+  return decodeDirectory(read.files, pagesAs, options, src);
+}
+async function decodeSingleFile(bytes, pagesAs, options, source) {
+  const meta = await decodeTiff(bytes, { ignoreImageData: true });
+  const nPages = meta.length;
+  if (nPages === 0) return [];
+  for (const ifd of meta) validatePageDtype(ifd);
+  let layout;
+  if (pagesAs === "time") layout = "TYX";
+  else if (pagesAs === "classes") layout = "CYX";
+  else layout = inferAxes(meta[0].imageDescription, nPages);
+  if (layout === "TCYX") {
+    throw new Error(
+      "4D TCYX (time + channel) TIFF stacks are not yet supported. Pass pagesAs: 'time' or 'classes' explicitly, or split the stack by channel."
+    );
+  }
+  const pageIndices = normalizeFrames(options.frames, nPages);
+  if (pageIndices.length === 0) return [];
+  const ifds = await decodeTiff(bytes, { pages: pageIndices });
+  const pages = ifds.map(pageTo2D);
+  if (layout === "CYX") {
+    return [buildClassStack(pages, options, source)];
+  }
+  if (pagesAs === "auto" && layout === "unknown" && nPages > 1 && pagesCouldBeClassStack(pages)) {
+    warnAmbiguous(source, nPages, dtypeName(meta[0]));
+  }
+  return buildTimeStack(pages, options, source);
+}
+async function decodeDirectory(files, pagesAs, options, source) {
+  if (files.length === 0) return [];
+  const fileIndices = normalizeFrames(options.frames, files.length);
+  const pages = [];
+  for (const i of fileIndices) {
+    const ifds = await decodeTiff(files[i], { pages: [0] });
+    if (ifds.length === 0) continue;
+    validatePageDtype(ifds[0]);
+    pages.push(pageTo2D(ifds[0]));
+  }
+  if (pages.length === 0) return [];
+  if (pagesAs === "classes") return [buildClassStack(pages, options, source)];
+  return buildTimeStack(pages, options, source);
+}
+function validatePageDtype(ifd) {
+  if (ifd.samplesPerPixel !== 1) {
+    throw new Error(
+      `Expected a single-channel (2D) label-image page, got ${ifd.samplesPerPixel} samples per pixel. Multi-channel/RGB TIFFs are not supported.`
+    );
+  }
+  const fmt = ifd.sampleFormat ?? 1;
+  if (fmt === 3) {
+    throw new Error(
+      `Floating-point TIFFs are not supported as label images (bitsPerSample=${ifd.bitsPerSample}). Re-export as uint8 or uint16.`
+    );
+  }
+  if (fmt === 2) {
+    throw new Error(
+      "Signed-integer TIFFs are not supported as label images. Re-export as uint8 or uint16."
+    );
+  }
+  if (ifd.bitsPerSample !== 8 && ifd.bitsPerSample !== 16) {
+    throw new Error(
+      `Only 8- and 16-bit unsigned label images are supported (got ${ifd.bitsPerSample}-bit). Re-export as uint16, or split into <=65535 objects.`
+    );
+  }
+}
+function dtypeName(ifd) {
+  const fmt = ifd.sampleFormat ?? 1;
+  const kind = fmt === 3 ? "float" : fmt === 2 ? "int" : "uint";
+  return `${kind}${ifd.bitsPerSample}`;
+}
+function inferAxes(description, nPages) {
+  if (nPages === 1) return "YX";
+  if (!description) return "unknown";
+  const dims = parseImageJDims(description) ?? parseOmeDims(description);
+  if (!dims) return "unknown";
+  return dimsToLayout(dims.c, dims.z, dims.t);
+}
+function dimsToLayout(c, z, t) {
+  const time = Math.max(z, 1) * Math.max(t, 1);
+  if (c > 1 && time <= 1) return "CYX";
+  if (c <= 1 && time > 1) return "TYX";
+  if (c > 1 && time > 1) return "TCYX";
+  return "unknown";
+}
+function parseImageJDims(desc) {
+  if (!/(^|\n)ImageJ=/.test(desc)) return null;
+  const get = (key) => {
+    const m = desc.match(new RegExp(`(?:^|\\n)${key}=(\\d+)`));
+    return m ? parseInt(m[1], 10) : 1;
+  };
+  return { c: get("channels"), z: get("slices"), t: get("frames") };
+}
+function parseOmeDims(desc) {
+  if (!/<\s*OME[\s>]|openmicroscopy\.org/i.test(desc)) return null;
+  const pixels = desc.match(/<\s*Pixels\b[^>]*>/i);
+  const attrs = pixels ? pixels[0] : desc;
+  const get = (attr) => {
+    const m = attrs.match(new RegExp(`${attr}\\s*=\\s*["'](\\d+)["']`, "i"));
+    return m ? parseInt(m[1], 10) : 1;
+  };
+  return { c: get("SizeC"), z: get("SizeZ"), t: get("SizeT") };
+}
+function inferLabelIdsFromPages(pages) {
+  const ids = [];
+  for (const page of pages) {
+    const positive = /* @__PURE__ */ new Set();
+    for (const row of page) {
+      for (const v of row) {
+        if (v > 0) {
+          positive.add(v);
+          if (positive.size > 1) return null;
+        }
+      }
+    }
+    if (positive.size !== 1) return null;
+    ids.push(positive.values().next().value);
+  }
+  if (new Set(ids).size !== ids.length) return null;
+  return ids;
+}
+function pagesCouldBeClassStack(pages) {
+  for (const page of pages) {
+    const positive = /* @__PURE__ */ new Set();
+    for (const row of page) {
+      for (const v of row) {
+        if (v > 0) {
+          positive.add(v);
+          if (positive.size >= 2) return false;
+        }
+      }
+    }
+  }
+  return true;
+}
+function buildTimeStack(pages, options, source) {
+  return LabelImage.fromStack({
+    data: pages,
+    tracks: options.tracks ?? null,
+    categories: options.categories ?? null,
+    createTracks: options.createTracks ?? false,
+    source
+  });
+}
+function buildClassStack(pages, options, source) {
+  const labelIds = inferLabelIdsFromPages(pages);
+  const masks = pages.map((page) => page.map((row) => row.map((v) => v > 0 ? 1 : 0)));
+  const categories = coerceCategoriesToList(options.categories, pages.length);
+  return LabelImage.fromBinaryMasks(masks, {
+    labelIds: labelIds ?? void 0,
+    categories: categories ?? void 0,
+    source
+  });
+}
+function coerceCategoriesToList(categories, n) {
+  if (categories == null) return null;
+  let list;
+  if (Array.isArray(categories)) {
+    list = Array.from({ length: n }, (_, i) => categories[i] ?? "");
+  } else {
+    list = Array.from({ length: n }, (_, i) => categories.get(i + 1) ?? "");
+  }
+  return list.some((c) => c !== "") ? list : null;
+}
+function normalizeFrames(frames, n) {
+  if (frames == null) return Array.from({ length: n }, (_, i) => i);
+  return frames.filter((i) => i >= 0 && i < n);
+}
+function pageTo2D(ifd) {
+  const { width, height, data } = ifd;
+  const out = new Array(height);
+  for (let r = 0; r < height; r++) {
+    const row = new Array(width);
+    for (let c = 0; c < width; c++) row[c] = data[r * width + c];
+    out[r] = row;
+  }
+  return out;
+}
+function warnAmbiguous(path, nPages, dtype) {
+  const msg = `Loaded ${nPages} frames from multi-page TIFF ${path} with no axis metadata (dtype=${dtype}). Assuming pages are time. If pages represent classes for a single frame, pass pagesAs: 'classes' to route through fromBinaryMasks with categories.`;
+  if (warnedMessages.has(msg)) return;
+  warnedMessages.add(msg);
+  console.warn(msg);
+}
+
 // src/codecs/slp/read.ts
 import { inflate } from "pako";
 var textDecoder2 = new TextDecoder();
@@ -13860,6 +14094,8 @@ export {
   _registerFileWriter,
   saveSlpToBytes,
   isAnalysisH5File,
+  setLabelImageFileReader,
+  loadLabelImages,
   loadSlp,
   saveSlp,
   loadAnalysisH5,

@@ -101,6 +101,7 @@ import {
   isTrainingConfig,
   labelsFromNumpy,
   loadAnalysisH5,
+  loadLabelImages,
   loadSlp,
   loadSlpSet,
   loadVideo,
@@ -127,10 +128,11 @@ import {
   saveSlpSet,
   saveSlpToBytes,
   setFsResolver,
+  setLabelImageFileReader,
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-TWR45M5P.js";
+} from "./chunk-SBO3BLYH.js";
 import {
   Edge,
   Instance,
@@ -262,6 +264,7 @@ export {
   isTrainingConfig,
   labelsFromNumpy,
   loadAnalysisH5,
+  loadLabelImages,
   loadSlp,
   loadSlpSet,
   loadVideo,
@@ -294,6 +297,7 @@ export {
   saveSlpSet,
   saveSlpToBytes,
   setFsResolver,
+  setLabelImageFileReader,
   toDict,
   toNumpy,
   writeGeoJSON

@@ -2379,6 +2379,49 @@ type OpenH5Options = {
     filenameHint?: string;
 };
 
+/** How TIFF pages map onto LabelImage frames. Mirrors Python `pages_as`. */
+type PagesAs = "auto" | "time" | "classes";
+interface LoadLabelImagesOptions {
+    /** Page→frame mapping. Default `"auto"` (parity with Python). */
+    pagesAs?: PagesAs;
+    /**
+     * Auto-create one Track per unique non-zero label ID (shared across frames).
+     * Default `false` — pure-segmentation parity with `LabelImage.fromArray`
+     * (PR #387). Ignored in `classes` mode (matches Python). Time mode only.
+     */
+    createTracks?: boolean;
+    /** Explicit Track assignment by label ID (`Map`) or positional (`Track[]`). Time mode. */
+    tracks?: Map<number, Track> | Track[] | null;
+    /**
+     * Explicit category assignment. `Map<id,string>` (by label ID) in time mode;
+     * `string[]` (positional, one per class) in classes mode.
+     */
+    categories?: Map<number, string> | string[] | null;
+    /** Decode only this subset of pages (0-based), in order. Default: all pages. */
+    frames?: number[] | null;
+    /** Source string stored on each LabelImage. Defaults to filename / blob name. */
+    source?: string;
+}
+/**
+ * Reader for a `.tif`/`.tiff` path (Node only). Returns the file bytes, or a
+ * list of per-file byte arrays for a directory. Registered by
+ * `label-images-node.ts`; absent in the browser graph (issue #70).
+ */
+type LabelImageFileReader = (path: string) => Promise<Uint8Array | {
+    files: Uint8Array[];
+}>;
+/** Register the Node `node:fs`-backed TIFF path reader. */
+declare function setLabelImageFileReader(fn: LabelImageFileReader | null): void;
+/**
+ * Load dense integer label images from a TIFF file (or a directory of TIFFs on
+ * Node). Mirrors Python `read_label_images`.
+ *
+ * @param source Node: a path string (file or directory). Browser: a `File`/`Blob`.
+ * @returns One `UserLabelImage` per page in `time`/`auto`(→time) mode, or a
+ *   single-element array in `classes` mode.
+ */
+declare function loadLabelImages(source: string | File | Blob, options?: LoadLabelImagesOptions): Promise<UserLabelImage[]>;
+
 type SlpWriteOptions = {
     embed?: boolean | string;
     restoreOriginalVideos?: boolean;
@@ -3086,4 +3129,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BlobByteSource, BoundingBox, type BoundingBoxOptions, type ByteSource, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, ConflictResolution, DUPLICATE_MATCHER, type DrawTrailsOptions, ErrorMode, FrameGroup, FrameStrategy, type FsResolver, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, MatchResult, type MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, type SegmentationMaskOptions, SeqHeader, SeqIndex, SeqVideoBackend, Skeleton, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, TrackMatchMethod, TrackMatcher, type Trail, type TrailTarget, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, VideoMatchMethod, VideoMatcher, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, collectTracks, computeTrails, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTrails, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isAnalysisH5File, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadAnalysisH5, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, nTrailPaletteColors, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, resolveTrailNode, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveAnalysisH5, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, toDict, toNumpy, writeGeoJSON };
+export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BlobByteSource, BoundingBox, type BoundingBoxOptions, type ByteSource, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, ConflictResolution, DUPLICATE_MATCHER, type DrawTrailsOptions, ErrorMode, FrameGroup, FrameStrategy, type FsResolver, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, type LabelImageFileReader, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, type LoadLabelImagesOptions, MARKER_FUNCTIONS, type MarkerShape, MatchResult, type MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, type PagesAs, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, type SegmentationMaskOptions, SeqHeader, SeqIndex, SeqVideoBackend, Skeleton, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, TrackMatchMethod, TrackMatcher, type Trail, type TrailTarget, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, VideoMatchMethod, VideoMatcher, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, collectTracks, computeTrails, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTrails, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isAnalysisH5File, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadAnalysisH5, loadLabelImages, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, nTrailPaletteColors, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, resolveTrailNode, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveAnalysisH5, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, setLabelImageFileReader, toDict, toNumpy, writeGeoJSON };
