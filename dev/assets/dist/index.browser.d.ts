@@ -569,12 +569,18 @@ declare class LabelImage {
     /**
      * Create a LabelImage from a flat Int32Array or 2D number array.
      *
-     * Tracks are auto-created when not provided. When provided as an array,
-     * they are assigned positionally starting at label ID 1.
+     * Tracks are NOT created by default (mirrors Python `LabelImage.from_numpy`
+     * after sleap-io PR #387): pure segmentation workflows (e.g. Cellpose) produce
+     * instances that don't need tracking. Pass `createTracks: true` to auto-create
+     * one Track per unique non-zero label ID, or provide `tracks` explicitly. When
+     * provided as an array, tracks are assigned positionally starting at label
+     * ID 1; as a `Map`, by label ID. Providing `tracks` takes precedence over
+     * `createTracks`.
      */
     static fromArray(data: Int32Array | number[][], height: number, width: number, options?: {
         tracks?: Track[] | Map<number, Track>;
         categories?: string[] | Map<number, string>;
+        createTracks?: boolean;
         source?: string;
     }): UserLabelImage;
     /** Create a LabelImage by compositing an array of SegmentationMasks. */
