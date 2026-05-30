@@ -2694,6 +2694,33 @@ interface RenderOptions {
     showNodes?: boolean;
     showEdges?: boolean;
     scale?: number;
+    showTrails?: boolean;
+    trailLength?: number;
+    trailNode?: string | string[];
+    trailWidth?: number;
+    trailAlphaFade?: boolean;
+    trailAlpha?: number;
+    trailColor?: ColorSpec | null;
+    /**
+     * Advanced: temporal context for trails when `source` is a single
+     * `LabeledFrame`. Pass all of the video's labeled frames (a `Map` keyed by
+     * frame index is the efficient form; an array is also accepted). Auto-derived
+     * when `source` is a `Labels`, and populated per video by `renderVideo`.
+     */
+    trailFrames?: LabeledFrame[] | Map<number, LabeledFrame>;
+    /**
+     * Advanced: canonical track list used to key and color trails (mirrors
+     * Python keying off `Labels.tracks`). Auto-derived from `Labels.tracks` for a
+     * `Labels` source; populated by `renderVideo` for a `Labels` source. Falls
+     * back to the tracks discovered in `trailFrames` when omitted.
+     */
+    trailTracks?: Track[];
+    /**
+     * Advanced: shared cache mapping an instance to its extracted points, reused
+     * across the overlapping trail windows of consecutive frames. Populated once
+     * per render by `renderVideo` to avoid recomputing instance points.
+     */
+    trailPtsCache?: Map<Instance | PredictedInstance, number[][]>;
     background?: "transparent" | ColorSpec;
     image?: ImageData | null;
     width?: number;
@@ -2765,6 +2792,125 @@ declare const MARKER_FUNCTIONS: Record<MarkerShape, DrawMarkerFn>;
  * Get the drawing function for a marker shape.
  */
 declare function getMarkerFunction(shape: MarkerShape): DrawMarkerFn;
+/** Options for {@link drawTrails}. */
+interface DrawTrailsOptions {
+    /** RGB color used when `colors` is not provided. Default `[0, 255, 0]`. */
+    color?: RGB;
+    /** Per-trail RGB colors. If set, must match `trails` in length; overrides `color`. */
+    colors?: RGB[];
+    /** Trail line width in pixels (before `scale`). Default `2`. */
+    lineWidth?: number;
+    /** Fade opacity from faint (oldest segment) to opaque (newest). Default `true`. */
+    alphaFade?: boolean;
+    /** Global opacity multiplier (0–1). Default `1`. */
+    alpha?: number;
+    /** Output scale factor applied to coordinates and line width. Default `1`. */
+    scale?: number;
+    /** `[ox, oy]` offset subtracted from coordinates (for cropped images). Default `[0, 0]`. */
+    offset?: [number, number];
+}
+/**
+ * Draw motion trails as fading polylines on a canvas.
+ *
+ * Each trail is a polyline tracing a node or centroid position across past
+ * frames. Segments are drawn individually so opacity can fade from faint
+ * (oldest) to opaque (newest); non-finite points break the line into gaps.
+ *
+ * Port of Python sleap-io `draw_trails` (PR #434). The Python version rasterizes
+ * into a separate `kSrc` buffer so overlapping joints take the newest segment's
+ * alpha instead of accumulating it. This canvas port instead strokes each
+ * segment directly with per-segment alpha — the same approach the pose-edge
+ * renderer already uses — so overlapping joints may blend slightly. The visual
+ * difference is negligible for trails and keeps the implementation idiomatic.
+ *
+ * @param ctx - Canvas 2D context. Coordinates are drawn pre-scaled by `scale`.
+ * @param trails - List of trails, each an array of `[x, y]` points ordered
+ *   oldest → newest. `NaN` rows break the polyline so missing detections leave
+ *   gaps.
+ * @param options - See {@link DrawTrailsOptions}.
+ * @throws If `colors` is provided and its length does not match `trails`.
+ */
+declare function drawTrails(ctx: CanvasRenderingContext2D, trails: Array<Array<[number, number] | number[]>>, options?: DrawTrailsOptions): void;
+
+/**
+ * A resolved trail target: `null` means the instance centroid, a number is a
+ * node index into the instance's points.
+ */
+type TrailTarget = number | null;
+/** A single trail: `[x, y]` points ordered oldest → newest. `NaN` marks gaps. */
+type Trail = Array<[number, number]>;
+/**
+ * Resolve a `trailNode` specification to a list of trail targets.
+ *
+ * Mirrors Python `_resolve_trail_node`.
+ *
+ * @param trailNode - `"centroid"`, a node name, or a list of node names (one
+ *   trail per node). Matching of `"centroid"` is case-insensitive.
+ * @param skeleton - Skeleton used to resolve node names to indices.
+ * @returns One target per requested node — `null` (centroid) or a node index.
+ * @throws If a node name is not present in the skeleton.
+ */
+declare function resolveTrailNode(trailNode: string | string[], skeleton: Skeleton): TrailTarget[];
+/**
+ * Number of palette colors needed for motion trails.
+ *
+ * Mirrors Python `_n_trail_palette_colors`. Trails are colored by track when
+ * tracks are present, otherwise by instance position index; in the latter case
+ * the palette is sized to the largest instance count over the frames so the
+ * coloring stays stable across a render.
+ *
+ * @param hasTracks - Whether the data has track assignments.
+ * @param nTracks - Total number of tracks (used when `hasTracks` is true).
+ * @param frames - Frames to scan for the peak instance count (used when
+ *   `hasTracks` is false).
+ * @returns The palette size, always at least 1.
+ */
+declare function nTrailPaletteColors(hasTracks: boolean, nTracks: number, frames: Iterable<LabeledFrame>): number;
+/**
+ * Collect the distinct tracks appearing across the given frames, in first-
+ * appearance order.
+ *
+ * Used as the canonical track list for a `LabeledFrame` source (e.g. inside
+ * `renderVideo`) when the project's `Labels.tracks` list is not directly
+ * available. For a `Labels` source the renderer uses `Labels.tracks` instead,
+ * matching how Python keys trails off `source.tracks`.
+ */
+declare function collectTracks(frames: Iterable<LabeledFrame>): Track[];
+/**
+ * Compute motion-trail polylines ending at a given frame.
+ *
+ * Mirrors Python `_compute_trails`. Trails are keyed by track (tracked data) or
+ * instance position index (untracked) and colored from `paletteColors`.
+ *
+ * @param opts.frameIdx - Current frame index (the trail ends here).
+ * @param opts.frameIdxToLf - Map from frame index to LabeledFrame.
+ * @param opts.trailLength - Number of past frames behind the current frame. The
+ *   trail spans frames `[frameIdx - trailLength, frameIdx]` inclusive.
+ * @param opts.trailTargets - Targets from {@link resolveTrailNode}.
+ * @param opts.trackIndexMap - Track → index map, used to key trails by track
+ *   and to assign colors.
+ * @param opts.paletteColors - Color palette indexed by track index (tracked) or
+ *   instance index (untracked).
+ * @param opts.hasTracks - Whether the data has track assignments. When false,
+ *   trails are keyed by instance position index instead of track.
+ * @param opts.ptsCache - Optional cache from instance to its extracted points,
+ *   reused across the overlapping trail windows of consecutive frames.
+ * @returns `{ trails, colors }` parallel arrays. Each trail has
+ *   `trailLength + 1` points (oldest → newest, `NaN` for missing positions).
+ */
+declare function computeTrails(opts: {
+    frameIdx: number;
+    frameIdxToLf: Map<number, LabeledFrame>;
+    trailLength: number;
+    trailTargets: TrailTarget[];
+    trackIndexMap: Map<Track, number>;
+    paletteColors: RGB[];
+    hasTracks: boolean;
+    ptsCache?: Map<Instance | PredictedInstance, number[][]>;
+}): {
+    trails: Trail[];
+    colors: RGB[];
+};
 
 /**
  * Streaming SLP file reader using HTTP range requests.
@@ -2822,4 +2968,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BoundingBox, type BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, ConflictResolution, DUPLICATE_MATCHER, ErrorMode, FrameGroup, FrameStrategy, type FsResolver, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, MatchResult, type MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, type SegmentationMaskOptions, Skeleton, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, TrackMatchMethod, TrackMatcher, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, VideoMatchMethod, VideoMatcher, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isAnalysisH5File, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadAnalysisH5, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveAnalysisH5, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, toDict, toNumpy, writeGeoJSON };
+export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BoundingBox, type BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, ConflictResolution, DUPLICATE_MATCHER, type DrawTrailsOptions, ErrorMode, FrameGroup, FrameStrategy, type FsResolver, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, MatchResult, type MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, type SegmentationMaskOptions, Skeleton, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, TrackMatchMethod, TrackMatcher, type Trail, type TrailTarget, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, VideoMatchMethod, VideoMatcher, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, collectTracks, computeTrails, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTrails, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isAnalysisH5File, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadAnalysisH5, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, nTrailPaletteColors, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, resolveTrailNode, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveAnalysisH5, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, toDict, toNumpy, writeGeoJSON };

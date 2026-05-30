@@ -484,6 +484,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#motion-trails" class="md-nav__link">
+    <span class="md-ellipsis">
+      Motion Trails
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#export-utilities" class="md-nav__link">
     <span class="md-ellipsis">
       Export Utilities
@@ -611,6 +620,15 @@
   <a href="#video-rendering" class="md-nav__link">
     <span class="md-ellipsis">
       Video Rendering
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#motion-trails" class="md-nav__link">
+    <span class="md-ellipsis">
+      Motion Trails
     </span>
   </a>
   
@@ -1037,6 +1055,68 @@
 <span class="p">});</span>
 </code></pre></div>
 <hr />
+<h2 id="motion-trails">Motion Trails<a class="headerlink" href="#motion-trails" title="Permanent link">&para;</a></h2>
+<p>Motion trails trace a node or centroid trajectory over the last N frames, so you
+can see how animals moved through the rendered output. Trails are drawn behind
+the poses and fade from faint (oldest) to opaque (newest).</p>
+<p>Because trails need temporal context, they are only drawn when the source is a
+<code>Labels</code> object (siblings are looked up via <code>Labels.find</code>) or when sibling frames
+are supplied via <code>trailFrames</code>. They are a no-op for an instance-array source.</p>
+<h3 id="video-with-centroid-trails">Video with centroid trails<a class="headerlink" href="#video-with-centroid-trails" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">await</span><span class="w"> </span><span class="nx">renderVideo</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">showTrails</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">trailLength</span><span class="o">:</span><span class="w"> </span><span class="kt">10</span><span class="p">,</span><span class="w">        </span><span class="c1">// past frames behind the current frame</span>
+<span class="w">  </span><span class="nx">trailNode</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;centroid&quot;</span><span class="p">,</span><span class="w">  </span><span class="c1">// &quot;centroid&quot;, a node name, or a list of node names</span>
+<span class="w">  </span><span class="nx">trailWidth</span><span class="o">:</span><span class="w"> </span><span class="kt">2</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">trailAlphaFade</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span><span class="w">   </span><span class="c1">// fade oldest -&gt; newest</span>
+<span class="p">});</span>
+</code></pre></div>
+<h3 id="single-image-with-trails">Single image with trails<a class="headerlink" href="#single-image-with-trails" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">,</span><span class="w"> </span><span class="nx">saveImage</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="c1">// Trail the head and thorax nodes (one trail per node, sharing the pose color).</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">img</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">width</span><span class="o">:</span><span class="w"> </span><span class="kt">640</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">height</span><span class="o">:</span><span class="w"> </span><span class="kt">480</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">background</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;black&quot;</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">showTrails</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">trailNode</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="s2">&quot;head&quot;</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;thorax&quot;</span><span class="p">],</span>
+<span class="p">});</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveImage</span><span class="p">(</span><span class="nx">img</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;trails.png&quot;</span><span class="p">);</span>
+</code></pre></div>
+<h3 id="faint-uniform-colored-trails">Faint, uniform-colored trails<a class="headerlink" href="#faint-uniform-colored-trails" title="Permanent link">&para;</a></h3>
+<div class="highlight"><pre><span></span><code><span class="k">await</span><span class="w"> </span><span class="nx">renderVideo</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;output.mp4&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">showTrails</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">trailColor</span><span class="o">:</span><span class="w"> </span><span class="s2">&quot;white&quot;</span><span class="p">,</span><span class="w">    </span><span class="c1">// overrides the per-track palette</span>
+<span class="w">  </span><span class="nx">trailAlpha</span><span class="o">:</span><span class="w"> </span><span class="kt">0.5</span><span class="p">,</span><span class="w">        </span><span class="c1">// global opacity multiplier</span>
+<span class="w">  </span><span class="nx">trailAlphaFade</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="p">,</span><span class="w">  </span><span class="c1">// uniform opacity instead of a fade</span>
+<span class="p">});</span>
+</code></pre></div>
+<p>By default trails are colored to match the poses (by track, or by instance index
+when untracked). Set <code>trailColor</code> to any color spec to force a single color.</p>
+<h3 id="drawing-trails-on-your-own-canvas-browser">Drawing trails on your own canvas (browser)<a class="headerlink" href="#drawing-trails-on-your-own-canvas-browser" title="Permanent link">&para;</a></h3>
+<p><code>renderImage</code>/<code>renderVideo</code> are Node-only (they depend on <code>skia-canvas</code>/ffmpeg),
+but the trail building blocks are browser-safe and composable:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">resolveTrailNode</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">computeTrails</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">drawTrails</span><span class="p">,</span>
+<span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">targets</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">resolveTrailNode</span><span class="p">(</span><span class="s2">&quot;centroid&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">skeleton</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">framesByIdx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="nb">Map</span><span class="p">(</span><span class="nx">labels</span><span class="p">.</span><span class="nx">find</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="w"> </span><span class="p">}).</span><span class="nx">map</span><span class="p">((</span><span class="nx">lf</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">[</span><span class="nx">lf</span><span class="p">.</span><span class="nx">frameIdx</span><span class="p">,</span><span class="w"> </span><span class="nx">lf</span><span class="p">]));</span>
+<span class="kd">const</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">trails</span><span class="p">,</span><span class="w"> </span><span class="nx">colors</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">computeTrails</span><span class="p">({</span>
+<span class="w">  </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">100</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">frameIdxToLf</span><span class="o">:</span><span class="w"> </span><span class="kt">framesByIdx</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">trailLength</span><span class="o">:</span><span class="w"> </span><span class="kt">10</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">trailTargets</span><span class="o">:</span><span class="w"> </span><span class="kt">targets</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">trackIndexMap</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">paletteColors</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">hasTracks</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="p">,</span>
+<span class="p">});</span>
+<span class="nx">drawTrails</span><span class="p">(</span><span class="nx">ctx</span><span class="p">,</span><span class="w"> </span><span class="nx">trails</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">colors</span><span class="p">,</span><span class="w"> </span><span class="nx">lineWidth</span><span class="o">:</span><span class="w"> </span><span class="kt">2</span><span class="p">,</span><span class="w"> </span><span class="nx">alphaFade</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+</code></pre></div>
+<hr />
 <h2 id="export-utilities">Export Utilities<a class="headerlink" href="#export-utilities" title="Permanent link">&para;</a></h2>
 <h3 id="save-to-file">Save to file<a class="headerlink" href="#save-to-file" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">renderImage</span><span class="p">,</span><span class="w"> </span><span class="nx">saveImage</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
@@ -1076,6 +1156,13 @@
 - <code>options.showNodes</code>: Draw nodes (default: <code>true</code>)
 - <code>options.showEdges</code>: Draw edges (default: <code>true</code>)
 - <code>options.scale</code>: Output scale factor (default: <code>1</code>)
+- <code>options.showTrails</code>: Draw motion trails (default: <code>false</code>; only for a <code>Labels</code> source or with <code>trailFrames</code>)
+- <code>options.trailLength</code>: Past frames behind the current frame (default: <code>10</code>)
+- <code>options.trailNode</code>: <code>"centroid"</code>, a node name, or a list of node names (default: <code>"centroid"</code>)
+- <code>options.trailWidth</code>: Trail line width in pixels (default: <code>2</code>)
+- <code>options.trailAlphaFade</code>: Fade oldest → newest (default: <code>true</code>)
+- <code>options.trailAlpha</code>: Global trail opacity 0-1 (default: <code>1</code>)
+- <code>options.trailColor</code>: Uniform trail color spec, or <code>null</code> to match poses (default: <code>null</code>)
 - <code>options.background</code>: <code>"transparent"</code> or color spec
 - <code>options.image</code>: Background <code>ImageData</code>
 - <code>options.preRenderCallback</code>: <code>(ctx: RenderContext) =&gt; void</code>

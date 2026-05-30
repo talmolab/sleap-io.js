@@ -74,6 +74,8 @@ import {
   _registerNodeFileOps,
   _registerNodeH5,
   _resolveMergedIsNegative,
+  collectTracks,
+  computeTrails,
   createVideoBackend,
   decodeRle,
   decodeWkb,
@@ -83,6 +85,7 @@ import {
   drawCross,
   drawDiamond,
   drawSquare,
+  drawTrails,
   drawTriangle,
   encodeRle,
   encodeWkb,
@@ -101,6 +104,7 @@ import {
   loadSlpSet,
   loadVideo,
   makeCameraFromDict,
+  nTrailPaletteColors,
   nodeFileExists,
   normalizeLabelIds,
   openH5File,
@@ -114,6 +118,7 @@ import {
   readTrainingConfigSkeletons,
   resizeNearest,
   resolveColor,
+  resolveTrailNode,
   rgbToCSS,
   rodriguesTransformation,
   roisFromGeoJSON,
@@ -127,7 +132,7 @@ import {
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-XLBPJVN5.js";
+} from "./chunk-RU4JADIK.js";
 import {
   Edge,
   Instance,
@@ -1467,13 +1472,22 @@ var DEFAULT_OPTIONS = {
   showNodes: true,
   showEdges: true,
   scale: 1,
-  background: "transparent"
+  background: "transparent",
+  // Motion trails (off by default; appearance-neutral when enabled).
+  showTrails: false,
+  trailLength: 10,
+  trailNode: "centroid",
+  trailWidth: 2,
+  trailAlphaFade: true,
+  trailAlpha: 1,
+  trailColor: null
 };
 var DEFAULT_COLOR = PALETTES.standard[0];
 async function renderImage(source, options = {}) {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } = extractSourceData(source, opts);
-  if (instances.length === 0 && !opts.image && !hasNonInstanceAnnotations(source)) {
+  const trailsPossible = opts.showTrails && opts.trailLength > 0 && !Array.isArray(source);
+  if (instances.length === 0 && !opts.image && !hasNonInstanceAnnotations(source) && !trailsPossible) {
     throw new Error(
       "No instances to render and no background image provided"
     );
@@ -1528,6 +1542,56 @@ async function renderImage(source, options = {}) {
   );
   if (opts.preRenderCallback) {
     opts.preRenderCallback(renderCtx);
+  }
+  if (trailsPossible) {
+    const labelsFrame = source;
+    const framesByIdx = resolveTrailFrames(
+      labelsFrame,
+      frameIdx,
+      options.trailFrames
+    );
+    const trailSkeleton = skeleton ?? firstSkeletonIn(framesByIdx);
+    if (framesByIdx && framesByIdx.size > 0 && trailSkeleton) {
+      const trailTracks = "labeledFrames" in labelsFrame ? labelsFrame.tracks : options.trailTracks ?? collectTracks(framesByIdx.values());
+      const trailHasTracks = trailTracks.length > 0;
+      const trailTrackIndexMap = new Map(trailTracks.map((t, i) => [t, i]));
+      const nColors = nTrailPaletteColors(
+        trailHasTracks,
+        trailTracks.length,
+        framesByIdx.values()
+      );
+      const trailPalette = getPalette(opts.palette, nColors);
+      const trailTargets = resolveTrailNode(opts.trailNode, trailSkeleton);
+      const { trails, colors: trailColors } = computeTrails({
+        frameIdx,
+        frameIdxToLf: framesByIdx,
+        trailLength: opts.trailLength,
+        trailTargets,
+        trackIndexMap: trailTrackIndexMap,
+        paletteColors: trailPalette,
+        hasTracks: trailHasTracks,
+        ptsCache: options.trailPtsCache
+      });
+      if (trails.length > 0) {
+        const trailDrawOpts = {
+          lineWidth: opts.trailWidth,
+          alphaFade: opts.trailAlphaFade,
+          alpha: opts.trailAlpha,
+          scale: opts.scale,
+          offset: [0, 0]
+        };
+        if (opts.trailColor != null) {
+          trailDrawOpts.color = resolveColor(opts.trailColor);
+        } else {
+          trailDrawOpts.colors = trailColors;
+        }
+        drawTrails(
+          ctx,
+          trails,
+          trailDrawOpts
+        );
+      }
+    }
   }
   const drawMarker = getMarkerFunction(opts.markerShape);
   const scaledMarkerSize = opts.markerSize * opts.scale;
@@ -1601,6 +1665,31 @@ function hasNonInstanceAnnotations(source) {
   const lf = "labeledFrames" in source ? source.labeledFrames[0] : source;
   if (!lf) return false;
   return (lf.labelImages?.length ?? 0) > 0 || (lf.masks?.length ?? 0) > 0 || (lf.bboxes?.length ?? 0) > 0 || (lf.rois?.length ?? 0) > 0 || (lf.centroids?.length ?? 0) > 0;
+}
+function resolveTrailFrames(source, frameIdx, trailFrames) {
+  if ("labeledFrames" in source) {
+    const rendered = source.labeledFrames[0];
+    if (!rendered) return null;
+    const map = /* @__PURE__ */ new Map();
+    for (const lf of source.find({ video: rendered.video })) {
+      map.set(lf.frameIdx, lf);
+    }
+    return map;
+  }
+  if (trailFrames instanceof Map) return trailFrames;
+  if (Array.isArray(trailFrames)) {
+    const map = /* @__PURE__ */ new Map();
+    for (const lf of trailFrames) map.set(lf.frameIdx, lf);
+    return map;
+  }
+  return /* @__PURE__ */ new Map([[frameIdx, source]]);
+}
+function firstSkeletonIn(framesByIdx) {
+  if (!framesByIdx) return null;
+  for (const lf of framesByIdx.values()) {
+    if (lf.instances.length > 0) return lf.instances[0].skeleton;
+  }
+  return null;
 }
 function extractSourceData(source, options) {
   if (Array.isArray(source)) {
@@ -1788,7 +1877,26 @@ async function renderVideo(source, outputPath, options = {}) {
   if (selectedFrames.length === 0) {
     throw new Error("No frames to render");
   }
-  const firstImage = await renderImage(selectedFrames[0], options);
+  const framesByVideo = /* @__PURE__ */ new Map();
+  const trailPtsCache = options.showTrails ? /* @__PURE__ */ new Map() : void 0;
+  const canonicalTracks = Array.isArray(source) ? void 0 : source.tracks;
+  if (options.showTrails) {
+    for (const lf of frames) {
+      let videoFrames = framesByVideo.get(lf.video);
+      if (!videoFrames) {
+        videoFrames = /* @__PURE__ */ new Map();
+        framesByVideo.set(lf.video, videoFrames);
+      }
+      videoFrames.set(lf.frameIdx, lf);
+    }
+  }
+  const optsForFrame = (frame) => options.showTrails ? {
+    ...options,
+    trailFrames: framesByVideo.get(frame.video),
+    trailTracks: options.trailTracks ?? canonicalTracks,
+    trailPtsCache
+  } : options;
+  const firstImage = await renderImage(selectedFrames[0], optsForFrame(selectedFrames[0]));
   const width = firstImage.width;
   const height = firstImage.height;
   const fps = options.fps ?? 30;
@@ -1838,7 +1946,7 @@ async function renderVideo(source, outputPath, options = {}) {
       throw ffmpegError;
     }
     const frame = selectedFrames[i];
-    const imageData = await renderImage(frame, options);
+    const imageData = await renderImage(frame, optsForFrame(frame));
     const buffer = Buffer.from(imageData.data.buffer);
     if (!ffmpeg.stdin) {
       throw new Error("ffmpeg stdin not available");
@@ -1956,6 +2064,8 @@ export {
   buildClassNamesFromRois,
   checkFfmpeg,
   classNamesFromConfig,
+  collectTracks,
+  computeTrails,
   createDataYaml,
   createSkeletonFromConfig,
   createSplitsFromLabels,
@@ -1970,6 +2080,7 @@ export {
   drawCross,
   drawDiamond,
   drawSquare,
+  drawTrails,
   drawTriangle,
   encodePng,
   encodeRle,
@@ -1995,6 +2106,7 @@ export {
   makeCameraFromDict,
   makeJabsDefaultSkeleton,
   makeSimpleSkeleton,
+  nTrailPaletteColors,
   normalizeCoordinates,
   normalizeLabelIds,
   openH5Worker,
@@ -2022,6 +2134,7 @@ export {
   renderVideo,
   resizeNearest,
   resolveColor,
+  resolveTrailNode,
   rgbToCSS,
   rodriguesTransformation,
   roisFromGeoJSON,

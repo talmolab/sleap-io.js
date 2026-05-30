@@ -13055,6 +13055,179 @@ var MARKER_FUNCTIONS = {
 function getMarkerFunction(shape) {
   return MARKER_FUNCTIONS[shape];
 }
+function drawTrails(ctx, trails, options = {}) {
+  if (trails.length === 0) return;
+  const {
+    color = [0, 255, 0],
+    colors,
+    lineWidth = 2,
+    alphaFade = true,
+    alpha = 1,
+    scale = 1,
+    offset = [0, 0]
+  } = options;
+  if (colors !== void 0 && colors.length !== trails.length) {
+    throw new Error(
+      `colors has length ${colors.length} but there are ${trails.length} trails; they must be the same length.`
+    );
+  }
+  const [ox, oy] = offset;
+  const scaledWidth = lineWidth * scale;
+  const prevLineCap = ctx.lineCap;
+  ctx.lineCap = "round";
+  ctx.lineWidth = scaledWidth;
+  for (let i = 0; i < trails.length; i++) {
+    const trail = trails[i];
+    const c = colors !== void 0 ? colors[i] : color;
+    const nPoints = trail.length;
+    if (nPoints < 2) continue;
+    const nSegments = nPoints - 1;
+    for (let k = 0; k < nSegments; k++) {
+      const [x0, y0] = trail[k];
+      const [x1, y1] = trail[k + 1];
+      if (!Number.isFinite(x0) || !Number.isFinite(y0) || !Number.isFinite(x1) || !Number.isFinite(y1)) {
+        continue;
+      }
+      const segFrac = alphaFade ? Math.max((k + 1) / nSegments, 0.05) : 1;
+      const segAlpha = Math.max(0, Math.min(1, segFrac * alpha));
+      ctx.strokeStyle = rgbToCSS(c, segAlpha);
+      ctx.beginPath();
+      ctx.moveTo((x0 - ox) * scale, (y0 - oy) * scale);
+      ctx.lineTo((x1 - ox) * scale, (y1 - oy) * scale);
+      ctx.stroke();
+    }
+  }
+  ctx.lineCap = prevLineCap;
+}
+
+// src/rendering/trails.ts
+function resolveTrailNode(trailNode, skeleton) {
+  const names = typeof trailNode === "string" ? [trailNode] : [...trailNode];
+  return names.map((name) => {
+    if (typeof name === "string" && name.toLowerCase() === "centroid") {
+      return null;
+    }
+    try {
+      return skeleton.index(name);
+    } catch {
+      throw new Error(
+        `Unknown trailNode ${JSON.stringify(name)}; skeleton nodes: ${JSON.stringify(
+          skeleton.nodeNames
+        )}`
+      );
+    }
+  });
+}
+function nTrailPaletteColors(hasTracks, nTracks, frames) {
+  if (hasTracks) {
+    return Math.max(nTracks, 1);
+  }
+  let peak = 1;
+  for (const lf of frames) {
+    peak = Math.max(peak, lf.instances.length);
+  }
+  return Math.max(peak, 1);
+}
+function collectTracks2(frames) {
+  const seen = /* @__PURE__ */ new Set();
+  const tracks = [];
+  for (const lf of frames) {
+    for (const inst of lf.instances) {
+      if (inst.track != null && !seen.has(inst.track)) {
+        seen.add(inst.track);
+        tracks.push(inst.track);
+      }
+    }
+  }
+  return tracks;
+}
+function computeTrails(opts) {
+  const {
+    frameIdx,
+    frameIdxToLf,
+    trailLength,
+    trailTargets,
+    trackIndexMap,
+    paletteColors,
+    hasTracks,
+    ptsCache
+  } = opts;
+  const frameStart = frameIdx - trailLength;
+  const nPoints = trailLength + 1;
+  const trailData = /* @__PURE__ */ new Map();
+  for (let j = 0; j < nPoints; j++) {
+    const f = frameStart + j;
+    const lf = frameIdxToLf.get(f);
+    if (!lf) continue;
+    const insts = lf.instances;
+    for (let instIdx = 0; instIdx < insts.length; instIdx++) {
+      const inst = insts[instIdx];
+      let keyIdx;
+      if (hasTracks) {
+        if (inst.track == null) continue;
+        const k = trackIndexMap.get(inst.track);
+        if (k === void 0) continue;
+        keyIdx = k;
+      } else {
+        keyIdx = instIdx;
+      }
+      let pts;
+      if (ptsCache) {
+        const cached = ptsCache.get(inst);
+        if (cached) {
+          pts = cached;
+        } else {
+          pts = inst.numpy();
+          ptsCache.set(inst, pts);
+        }
+      } else {
+        pts = inst.numpy();
+      }
+      for (let tIdx = 0; tIdx < trailTargets.length; tIdx++) {
+        const target = trailTargets[tIdx];
+        let coord;
+        if (target === null) {
+          let sumX = 0;
+          let sumY = 0;
+          let count = 0;
+          for (const p of pts) {
+            if (!Number.isNaN(p[0])) {
+              sumX += p[0];
+              sumY += p[1];
+              count++;
+            }
+          }
+          coord = count > 0 ? [sumX / count, sumY / count] : [NaN, NaN];
+        } else if (target < pts.length) {
+          coord = [pts[target][0], pts[target][1]];
+        } else {
+          coord = [NaN, NaN];
+        }
+        const dkey = `${keyIdx}:${tIdx}`;
+        let entry = trailData.get(dkey);
+        if (!entry) {
+          const arr = Array.from(
+            { length: nPoints },
+            () => [NaN, NaN]
+          );
+          entry = { arr, keyIdx };
+          trailData.set(dkey, entry);
+        }
+        entry.arr[j] = coord;
+      }
+    }
+  }
+  const trails = [];
+  const colors = [];
+  for (const { arr, keyIdx } of trailData.values()) {
+    if (!arr.some((p) => Number.isFinite(p[0]) || Number.isFinite(p[1]))) {
+      continue;
+    }
+    trails.push(arr);
+    colors.push(paletteColors[keyIdx % paletteColors.length]);
+  }
+  return { trails, colors };
+}
 
 // src/rendering/context.ts
 var RenderContext = class {
@@ -13268,6 +13441,11 @@ export {
   drawCross,
   MARKER_FUNCTIONS,
   getMarkerFunction,
+  drawTrails,
+  resolveTrailNode,
+  nTrailPaletteColors,
+  collectTracks2 as collectTracks,
+  computeTrails,
   RenderContext,
   InstanceContext
 };

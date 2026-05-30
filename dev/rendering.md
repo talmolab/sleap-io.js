@@ -377,6 +377,86 @@ await renderVideo(labels, "output.mp4", {
 
 ---
 
+## Motion Trails
+
+Motion trails trace a node or centroid trajectory over the last N frames, so you
+can see how animals moved through the rendered output. Trails are drawn behind
+the poses and fade from faint (oldest) to opaque (newest).
+
+Because trails need temporal context, they are only drawn when the source is a
+`Labels` object (siblings are looked up via `Labels.find`) or when sibling frames
+are supplied via `trailFrames`. They are a no-op for an instance-array source.
+
+### Video with centroid trails
+
+```ts
+await renderVideo(labels, "output.mp4", {
+  showTrails: true,
+  trailLength: 10,        // past frames behind the current frame
+  trailNode: "centroid",  // "centroid", a node name, or a list of node names
+  trailWidth: 2,
+  trailAlphaFade: true,   // fade oldest -> newest
+});
+```
+
+### Single image with trails
+
+```ts
+import { renderImage, saveImage } from "@talmolab/sleap-io.js";
+
+// Trail the head and thorax nodes (one trail per node, sharing the pose color).
+const img = await renderImage(labels, {
+  width: 640,
+  height: 480,
+  background: "black",
+  showTrails: true,
+  trailNode: ["head", "thorax"],
+});
+await saveImage(img, "trails.png");
+```
+
+### Faint, uniform-colored trails
+
+```ts
+await renderVideo(labels, "output.mp4", {
+  showTrails: true,
+  trailColor: "white",    // overrides the per-track palette
+  trailAlpha: 0.5,        // global opacity multiplier
+  trailAlphaFade: false,  // uniform opacity instead of a fade
+});
+```
+
+By default trails are colored to match the poses (by track, or by instance index
+when untracked). Set `trailColor` to any color spec to force a single color.
+
+### Drawing trails on your own canvas (browser)
+
+`renderImage`/`renderVideo` are Node-only (they depend on `skia-canvas`/ffmpeg),
+but the trail building blocks are browser-safe and composable:
+
+```ts
+import {
+  resolveTrailNode,
+  computeTrails,
+  drawTrails,
+} from "@talmolab/sleap-io.js";
+
+const targets = resolveTrailNode("centroid", skeleton);
+const framesByIdx = new Map(labels.find({ video }).map((lf) => [lf.frameIdx, lf]));
+const { trails, colors } = computeTrails({
+  frameIdx: 100,
+  frameIdxToLf: framesByIdx,
+  trailLength: 10,
+  trailTargets: targets,
+  trackIndexMap,
+  paletteColors,
+  hasTracks: true,
+});
+drawTrails(ctx, trails, { colors, lineWidth: 2, alphaFade: true });
+```
+
+---
+
 ## Export Utilities
 
 ### Save to file
@@ -430,6 +510,13 @@ Render poses from a `Labels`, `LabeledFrame`, or array of `Instance`/`PredictedI
 - `options.showNodes`: Draw nodes (default: `true`)
 - `options.showEdges`: Draw edges (default: `true`)
 - `options.scale`: Output scale factor (default: `1`)
+- `options.showTrails`: Draw motion trails (default: `false`; only for a `Labels` source or with `trailFrames`)
+- `options.trailLength`: Past frames behind the current frame (default: `10`)
+- `options.trailNode`: `"centroid"`, a node name, or a list of node names (default: `"centroid"`)
+- `options.trailWidth`: Trail line width in pixels (default: `2`)
+- `options.trailAlphaFade`: Fade oldest → newest (default: `true`)
+- `options.trailAlpha`: Global trail opacity 0-1 (default: `1`)
+- `options.trailColor`: Uniform trail color spec, or `null` to match poses (default: `null`)
 - `options.background`: `"transparent"` or color spec
 - `options.image`: Background `ImageData`
 - `options.preRenderCallback`: `(ctx: RenderContext) => void`
