@@ -37,6 +37,33 @@ const video = await loadVideo("path/to/video.mp4");
 const frame = await video.getFrame(0);  // Returns ImageData or raw bytes
 ```
 
+#### Norpix `.seq` files
+
+Norpix StreamPix `.seq` files (common in behavioral neuroscience) are supported
+natively — no conversion needed. Uncompressed (raw grayscale / BGR) and
+compressed (JPEG, PNG) codecs are read; Bayer codecs are not supported. Decoding
+JPEG/PNG frames requires an image decoder (a browser, or the optional
+`skia-canvas` package on Node).
+
+```ts
+import { loadVideo, SeqVideoBackend } from "@talmolab/sleap-io.js";
+
+const video = await loadVideo("recording.seq");
+const frame = await video.getFrame(0);        // ImageData (RGBA)
+console.log(video.shape);                      // [frames, height, width, channels]
+console.log(video.fps);                        // auto-computed from frame timestamps
+
+// Per-frame timestamps (seconds since the Unix epoch):
+const seq = video.backend as SeqVideoBackend;
+const timestamps = await seq.getTimestamps();
+```
+
+In the browser, pass a `File`/`Blob` instead of a path:
+
+```ts
+const video = await loadVideo(fileFromInput); // fileFromInput: File ending in .seq
+```
+
 ### Server-Side Rendering
 
 For server-side skeleton rendering (e.g., generating thumbnails):
