@@ -5,6 +5,8 @@ import "./codecs/slp/h5-node.js";
 // Register the Node `fs`-backed default resolver for merge/matching video
 // file-identity checks (kept out of the browser-reachable graph; issue #70).
 import "./model/node-fs-resolver.js";
+// Register the Node `fs`-backed byte source for reading .seq files from a path.
+import "./video/seq-node.js";
 
 export * from "./model/labels.js";
 export * from "./model/labeled-frame.js";
@@ -26,6 +28,13 @@ export * from "./video/backend.js";
 export * from "./video/mp4box-video.js";
 export * from "./video/mediabunny-video.js";
 export * from "./video/streaming-hdf5-video.js";
+export {
+  SeqVideoBackend,
+  SeqHeader,
+  SeqIndex,
+  BlobByteSource,
+  type ByteSource,
+} from "./video/seq-video.js";
 export { createVideoBackend, type VideoBackendType } from "./video/factory.js";
 export * from "./io/main.js";
 export * from "./io/geojson.js";

@@ -3,6 +3,7 @@ import { Hdf5VideoBackend } from "./hdf5-video.js";
 import { MediaVideoBackend } from "./media-video.js";
 import { Mp4BoxVideoBackend } from "./mp4box-video.js";
 import { MediaBunnyVideoBackend } from "./mediabunny-video.js";
+import { SeqVideoBackend } from "./seq-video.js";
 import { openH5File } from "../codecs/slp/h5.js";
 
 /** Supported video backend identifiers for user selection. */
@@ -47,6 +48,12 @@ export async function createVideoBackend(
       shape: options?.shape,
       fps: options?.fps,
     });
+  }
+
+  // Norpix .seq files use the dedicated SeqVideo backend (not overridable; no
+  // other backend can read the format).
+  if (ext === "seq") {
+    return SeqVideoBackend.create(source);
   }
 
   // User-specified backend override

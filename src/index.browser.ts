@@ -23,6 +23,13 @@ export * from "./video/backend.js";
 export * from "./video/mp4box-video.js";
 export * from "./video/mediabunny-video.js";
 export * from "./video/streaming-hdf5-video.js";
+export {
+  SeqVideoBackend,
+  SeqHeader,
+  SeqIndex,
+  BlobByteSource,
+  type ByteSource,
+} from "./video/seq-video.js";
 export { createVideoBackend, type VideoBackendType } from "./video/factory.js";
 export * from "./io/main.js";
 export * from "./io/geojson.js";
