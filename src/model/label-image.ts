@@ -245,8 +245,13 @@ export class LabelImage {
   /**
    * Create a LabelImage from a flat Int32Array or 2D number array.
    *
-   * Tracks are auto-created when not provided. When provided as an array,
-   * they are assigned positionally starting at label ID 1.
+   * Tracks are NOT created by default (mirrors Python `LabelImage.from_numpy`
+   * after sleap-io PR #387): pure segmentation workflows (e.g. Cellpose) produce
+   * instances that don't need tracking. Pass `createTracks: true` to auto-create
+   * one Track per unique non-zero label ID, or provide `tracks` explicitly. When
+   * provided as an array, tracks are assigned positionally starting at label
+   * ID 1; as a `Map`, by label ID. Providing `tracks` takes precedence over
+   * `createTracks`.
    */
   static fromArray(
     data: Int32Array | number[][],
@@ -255,6 +260,7 @@ export class LabelImage {
     options?: {
       tracks?: Track[] | Map<number, Track>;
       categories?: string[] | Map<number, string>;
+      createTracks?: boolean;
       source?: string;
     },
   ): UserLabelImage {
@@ -282,9 +288,11 @@ export class LabelImage {
     const trackMap = new Map<number, Track>();
     const tracks = options?.tracks;
     if (tracks === undefined) {
-      // Auto-create tracks
-      for (const lid of sortedIds) {
-        trackMap.set(lid, new Track(String(lid)));
+      // No tracks by default; opt in via `createTracks` (PR #387 parity).
+      if (options?.createTracks) {
+        for (const lid of sortedIds) {
+          trackMap.set(lid, new Track(String(lid)));
+        }
       }
     } else if (Array.isArray(tracks)) {
       for (let i = 0; i < tracks.length; i++) {

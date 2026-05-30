@@ -627,12 +627,18 @@ Dense integer label images for instance segmentation workflows (Cellpose, StarDi
 ### Creating Label Images
 
 ```ts
-// From a 2D integer array
+// From a 2D integer array. Tracks are NOT created by default — pass them
+// explicitly, or set `createTracks: true` to auto-create one per label ID.
 const li = LabelImage.fromArray(
   new Int32Array([0, 0, 1, 1, 0, 2, 2, 0, 0]),
   3, 3,  // height, width
   { tracks: [trackA, trackB] },
 );
+
+// Pure segmentation (no tracking): omit tracks (objects carry track = null).
+const segLi = LabelImage.fromArray(maskData, 480, 640);
+// Opt in to auto-created tracks named by label ID:
+const trackedLi = LabelImage.fromArray(maskData, 480, 640, { createTracks: true });
 
 // From segmentation masks (composites multiple binary masks)
 const li2 = LabelImage.fromMasks(masks);
