@@ -3,6 +3,8 @@
 import type { ChildProcess } from "child_process";
 import type { Labels } from "../model/labels.js";
 import type { LabeledFrame } from "../model/labeled-frame.js";
+import type { Video } from "../model/video.js";
+import type { Instance, PredictedInstance } from "../model/instance.js";
 import type { VideoOptions } from "./types.js";
 import { renderImage } from "./render.js";
 
@@ -59,8 +61,39 @@ export async function renderVideo(
     throw new Error("No frames to render");
   }
 
+  // Build per-video temporal context for motion trails once (keyed by frame
+  // index), using ALL source frames so a trail can reach back before the
+  // selected range. Each rendered frame then gets its video's frame map.
+  const framesByVideo = new Map<Video, Map<number, LabeledFrame>>();
+  // Shared points cache + canonical track list (computed once, like Python's
+  // render_video) so trail colors are stable across the whole pass and we avoid
+  // re-extracting instance points across overlapping trail windows.
+  const trailPtsCache = options.showTrails
+    ? new Map<Instance | PredictedInstance, number[][]>()
+    : undefined;
+  const canonicalTracks = Array.isArray(source) ? undefined : source.tracks;
+  if (options.showTrails) {
+    for (const lf of frames) {
+      let videoFrames = framesByVideo.get(lf.video);
+      if (!videoFrames) {
+        videoFrames = new Map<number, LabeledFrame>();
+        framesByVideo.set(lf.video, videoFrames);
+      }
+      videoFrames.set(lf.frameIdx, lf);
+    }
+  }
+  const optsForFrame = (frame: LabeledFrame): VideoOptions =>
+    options.showTrails
+      ? {
+          ...options,
+          trailFrames: framesByVideo.get(frame.video),
+          trailTracks: options.trailTracks ?? canonicalTracks,
+          trailPtsCache,
+        }
+      : options;
+
   // Get frame dimensions from first frame
-  const firstImage = await renderImage(selectedFrames[0], options);
+  const firstImage = await renderImage(selectedFrames[0], optsForFrame(selectedFrames[0]));
   const width = firstImage.width;
   const height = firstImage.height;
 
@@ -121,7 +154,7 @@ export async function renderVideo(
     }
 
     const frame = selectedFrames[i];
-    const imageData = await renderImage(frame, options);
+    const imageData = await renderImage(frame, optsForFrame(frame));
 
     // Write raw RGBA data to ffmpeg stdin
     const buffer = Buffer.from(imageData.data.buffer);
