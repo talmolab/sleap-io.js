@@ -29,9 +29,20 @@ export {
   drawDiamond,
   drawTriangle,
   drawCross,
+  drawTrails,
   getMarkerFunction,
   MARKER_FUNCTIONS,
 } from "./shapes.js";
+export type { DrawTrailsOptions } from "./shapes.js";
+
+// Motion-trail helpers
+export {
+  resolveTrailNode,
+  computeTrails,
+  nTrailPaletteColors,
+  collectTracks,
+} from "./trails.js";
+export type { TrailTarget, Trail } from "./trails.js";
 
 // Context classes
 export { RenderContext, InstanceContext } from "./context.js";

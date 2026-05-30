@@ -2,6 +2,8 @@
 
 import type { RenderContext } from "./context.js";
 import type { InstanceContext } from "./context.js";
+import type { LabeledFrame } from "../model/labeled-frame.js";
+import type { Instance, PredictedInstance, Track } from "../model/instance.js";
 
 /** RGB color as [r, g, b] with values 0-255 */
 export type RGB = [number, number, number];
@@ -51,6 +53,38 @@ export interface RenderOptions {
   showNodes?: boolean; // Default: true
   showEdges?: boolean; // Default: true
   scale?: number; // Default: 1.0
+
+  // Motion trails (trace a node/centroid trajectory over the last N frames).
+  // Trails need temporal context, so they are only drawn when `source` is a
+  // `Labels` object or when `trailFrames` provides sibling frames; they are a
+  // no-op for an instance-list source.
+  showTrails?: boolean; // Default: false
+  trailLength?: number; // Default: 10 (past frames behind the current frame)
+  trailNode?: string | string[]; // Default: "centroid" (or a node name / list)
+  trailWidth?: number; // Default: 2.0 (line width in pixels)
+  trailAlphaFade?: boolean; // Default: true (fade oldest -> newest)
+  trailAlpha?: number; // Default: 1.0 (global opacity multiplier, 0-1)
+  trailColor?: ColorSpec | null; // Default: null (match pose colors)
+  /**
+   * Advanced: temporal context for trails when `source` is a single
+   * `LabeledFrame`. Pass all of the video's labeled frames (a `Map` keyed by
+   * frame index is the efficient form; an array is also accepted). Auto-derived
+   * when `source` is a `Labels`, and populated per video by `renderVideo`.
+   */
+  trailFrames?: LabeledFrame[] | Map<number, LabeledFrame>;
+  /**
+   * Advanced: canonical track list used to key and color trails (mirrors
+   * Python keying off `Labels.tracks`). Auto-derived from `Labels.tracks` for a
+   * `Labels` source; populated by `renderVideo` for a `Labels` source. Falls
+   * back to the tracks discovered in `trailFrames` when omitted.
+   */
+  trailTracks?: Track[];
+  /**
+   * Advanced: shared cache mapping an instance to its extracted points, reused
+   * across the overlapping trail windows of consecutive frames. Populated once
+   * per render by `renderVideo` to avoid recomputing instance points.
+   */
+  trailPtsCache?: Map<Instance | PredictedInstance, number[][]>;
 
   // Background
   background?: "transparent" | ColorSpec;

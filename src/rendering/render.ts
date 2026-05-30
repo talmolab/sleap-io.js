@@ -12,7 +12,14 @@ import {
   determineColorScheme,
   PALETTES,
 } from "./colors.js";
-import { getMarkerFunction } from "./shapes.js";
+import { getMarkerFunction, drawTrails } from "./shapes.js";
+import type { DrawTrailsOptions } from "./shapes.js";
+import {
+  resolveTrailNode,
+  computeTrails,
+  nTrailPaletteColors,
+  collectTracks,
+} from "./trails.js";
 import { RenderContext, InstanceContext } from "./context.js";
 
 // Default options
@@ -25,6 +32,9 @@ const DEFAULT_OPTIONS: Required<
     | "perInstanceCallback"
     | "width"
     | "height"
+    | "trailFrames"
+    | "trailTracks"
+    | "trailPtsCache"
   >
 > = {
   colorBy: "auto",
@@ -37,6 +47,14 @@ const DEFAULT_OPTIONS: Required<
   showEdges: true,
   scale: 1,
   background: "transparent",
+  // Motion trails (off by default; appearance-neutral when enabled).
+  showTrails: false,
+  trailLength: 10,
+  trailNode: "centroid",
+  trailWidth: 2,
+  trailAlphaFade: true,
+  trailAlpha: 1,
+  trailColor: null,
 };
 
 /** Default fallback color */
@@ -70,10 +88,17 @@ export async function renderImage(
   const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } =
     extractSourceData(source, opts);
 
+  // Motion trails can contribute frames even when the current frame is empty
+  // (past frames supply the trail), so they relax the "nothing to render" guard
+  // for a Labels / LabeledFrame source. Mirrors Python PR #434.
+  const trailsPossible =
+    opts.showTrails && opts.trailLength > 0 && !Array.isArray(source);
+
   if (
     instances.length === 0 &&
     !opts.image &&
-    !hasNonInstanceAnnotations(source)
+    !hasNonInstanceAnnotations(source) &&
+    !trailsPossible
   ) {
     throw new Error(
       "No instances to render and no background image provided"
@@ -153,6 +178,69 @@ export async function renderImage(
   // Pre-render callback
   if (opts.preRenderCallback) {
     opts.preRenderCallback(renderCtx);
+  }
+
+  // Draw motion trails behind the poses. Trails need temporal context, so they
+  // are only drawn for a Labels source (siblings come from `find`) or when the
+  // caller passes `trailFrames`; they are skipped for an instance-list source.
+  if (trailsPossible) {
+    const labelsFrame = source as Labels | LabeledFrame;
+    const framesByIdx = resolveTrailFrames(
+      labelsFrame,
+      frameIdx,
+      options.trailFrames
+    );
+    // The current frame may be empty, so fall back to a skeleton from the trail
+    // context for resolving node-name targets.
+    const trailSkeleton = skeleton ?? firstSkeletonIn(framesByIdx);
+    if (framesByIdx && framesByIdx.size > 0 && trailSkeleton) {
+      // Key/color trails off the project track list (matches Python keying off
+      // `Labels.tracks`): full list for a Labels source, the caller-provided
+      // `trailTracks`, or the tracks discovered in the trail context.
+      const trailTracks =
+        "labeledFrames" in labelsFrame
+          ? labelsFrame.tracks
+          : options.trailTracks ?? collectTracks(framesByIdx.values());
+      const trailHasTracks = trailTracks.length > 0;
+      const trailTrackIndexMap = new Map(trailTracks.map((t, i) => [t, i]));
+      const nColors = nTrailPaletteColors(
+        trailHasTracks,
+        trailTracks.length,
+        framesByIdx.values()
+      );
+      const trailPalette = getPalette(opts.palette as PaletteName, nColors);
+      const trailTargets = resolveTrailNode(opts.trailNode, trailSkeleton);
+      const { trails, colors: trailColors } = computeTrails({
+        frameIdx,
+        frameIdxToLf: framesByIdx,
+        trailLength: opts.trailLength,
+        trailTargets,
+        trackIndexMap: trailTrackIndexMap,
+        paletteColors: trailPalette,
+        hasTracks: trailHasTracks,
+        ptsCache: options.trailPtsCache,
+      });
+      if (trails.length > 0) {
+        const trailDrawOpts: DrawTrailsOptions = {
+          lineWidth: opts.trailWidth,
+          alphaFade: opts.trailAlphaFade,
+          alpha: opts.trailAlpha,
+          scale: opts.scale,
+          offset: [0, 0],
+        };
+        // A uniform trailColor overrides the per-track palette colors.
+        if (opts.trailColor != null) {
+          trailDrawOpts.color = resolveColor(opts.trailColor);
+        } else {
+          trailDrawOpts.colors = trailColors;
+        }
+        drawTrails(
+          ctx as unknown as CanvasRenderingContext2D,
+          trails,
+          trailDrawOpts
+        );
+      }
+    }
   }
 
   // Render each instance
@@ -285,6 +373,51 @@ function hasNonInstanceAnnotations(
     (lf.rois?.length ?? 0) > 0 ||
     (lf.centroids?.length ?? 0) > 0
   );
+}
+
+/**
+ * Resolve the temporal frame context used to compute motion trails.
+ *
+ * - For a `Labels` source, gathers all labeled frames of the rendered video
+ *   (the frame at `labeledFrames[0]`), keyed by frame index.
+ * - For a `LabeledFrame` source, uses the caller-supplied `trailFrames` (a `Map`
+ *   keyed by frame index, or an array), falling back to just the rendered frame
+ *   when no context is provided.
+ *
+ * Returns `null` when there is no usable context (e.g. an empty `Labels`).
+ */
+function resolveTrailFrames(
+  source: Labels | LabeledFrame,
+  frameIdx: number,
+  trailFrames?: LabeledFrame[] | Map<number, LabeledFrame>
+): Map<number, LabeledFrame> | null {
+  if ("labeledFrames" in source) {
+    const rendered = source.labeledFrames[0];
+    if (!rendered) return null;
+    const map = new Map<number, LabeledFrame>();
+    for (const lf of source.find({ video: rendered.video })) {
+      map.set(lf.frameIdx, lf);
+    }
+    return map;
+  }
+  if (trailFrames instanceof Map) return trailFrames;
+  if (Array.isArray(trailFrames)) {
+    const map = new Map<number, LabeledFrame>();
+    for (const lf of trailFrames) map.set(lf.frameIdx, lf);
+    return map;
+  }
+  return new Map([[frameIdx, source]]);
+}
+
+/** First instance skeleton found across the trail context frames, or `null`. */
+function firstSkeletonIn(
+  framesByIdx: Map<number, LabeledFrame> | null
+): Skeleton | null {
+  if (!framesByIdx) return null;
+  for (const lf of framesByIdx.values()) {
+    if (lf.instances.length > 0) return lf.instances[0].skeleton;
+  }
+  return null;
 }
 
 /**
