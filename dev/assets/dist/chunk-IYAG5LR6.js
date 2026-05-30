@@ -7684,6 +7684,440 @@ function decodeRawFrame(bytes, shape, channelOrder) {
   return new ImageData(rgba, width, height);
 }
 
+// src/video/seq-video.ts
+var IMAGE_FORMAT_CODES = {
+  100: "monoraw",
+  // Grayscale uncompressed
+  200: "raw",
+  // Color BGR uncompressed
+  101: "brgb8",
+  // Bayer pattern raw
+  102: "monojpg",
+  // Grayscale JPEG compressed
+  201: "jpg",
+  // Color JPEG compressed
+  103: "jbrgb",
+  // Bayer JPEG compressed
+  1: "monopng",
+  // Grayscale PNG compressed
+  2: "png"
+  // Color PNG compressed
+};
+var COMPRESSED_CODECS = /* @__PURE__ */ new Set(["monojpg", "jpg", "jbrgb", "monopng", "png"]);
+var BAYER_CODECS = /* @__PURE__ */ new Set(["brgb8", "jbrgb"]);
+var HEADER_SIZE = 1024;
+var MAGIC = 65261;
+var BlobByteSource = class {
+  blob;
+  constructor(blob) {
+    this.blob = blob;
+  }
+  async size() {
+    return this.blob.size;
+  }
+  async read(offset, length) {
+    const end = Math.min(offset + length, this.blob.size);
+    if (end <= offset) return new Uint8Array(0);
+    const buf = await this.blob.slice(offset, end).arrayBuffer();
+    return new Uint8Array(buf);
+  }
+  close() {
+  }
+};
+var fileByteSourceFactory = null;
+function setSeqFileByteSourceFactory(factory) {
+  fileByteSourceFactory = factory;
+}
+function createFileByteSource(path) {
+  if (!fileByteSourceFactory) {
+    throw new Error(
+      "Reading .seq files from a path requires the Node entry point (`@talmolab/sleap-io.js`). In the browser, pass a File/Blob instead."
+    );
+  }
+  return fileByteSourceFactory(path);
+}
+var SeqHeader = class _SeqHeader {
+  magic = MAGIC;
+  name = "Norpix seq";
+  version = 0;
+  headerSize = HEADER_SIZE;
+  description = "";
+  width = 0;
+  height = 0;
+  bitDepth = 8;
+  bitDepthReal = 8;
+  imageSizeBytes = 0;
+  imageFormat = 100;
+  numFrames = 0;
+  trueImageSize = 0;
+  fps = 30;
+  codec = "";
+  /** Human-readable codec name (e.g. `"monoraw"`). */
+  get codecName() {
+    return IMAGE_FORMAT_CODES[this.imageFormat] ?? `unknown(${this.imageFormat})`;
+  }
+  /** Whether frames use variable-length compression (JPEG/PNG). */
+  get isCompressed() {
+    return COMPRESSED_CODECS.has(this.codecName);
+  }
+  /** Number of color channels (`bitDepth / bitDepthReal`). */
+  get numChannels() {
+    return Math.floor(this.bitDepth / (this.bitDepthReal || 8));
+  }
+  /**
+   * Parse the 1024-byte header from a byte buffer.
+   *
+   * @throws If the buffer is too small or has an invalid magic number.
+   */
+  static fromBytes(raw) {
+    if (raw.length < HEADER_SIZE) {
+      throw new Error("File too small to contain a valid .seq header");
+    }
+    const dv = new DataView(raw.buffer, raw.byteOffset, raw.byteLength);
+    const magic = dv.getUint32(0, true);
+    if (magic !== MAGIC) {
+      throw new Error(
+        `Invalid .seq magic: 0x${magic.toString(16).toUpperCase()} (expected 0x${MAGIC.toString(16).toUpperCase()})`
+      );
+    }
+    const readU16String = (start, count) => {
+      let s = "";
+      for (let i = 0; i < count; i++) {
+        const c = dv.getUint16(start + i * 2, true);
+        if (c > 0 && c < 128) s += String.fromCharCode(c);
+      }
+      return s.trim();
+    };
+    const header = new _SeqHeader();
+    header.magic = magic;
+    header.name = readU16String(4, 10);
+    header.version = dv.getInt32(28, true);
+    header.headerSize = dv.getUint32(32, true);
+    header.description = readU16String(36, 256);
+    header.width = dv.getUint32(548, true);
+    header.height = dv.getUint32(552, true);
+    header.bitDepth = dv.getUint32(556, true);
+    header.bitDepthReal = dv.getUint32(560, true);
+    header.imageSizeBytes = dv.getUint32(564, true);
+    header.imageFormat = dv.getUint32(568, true);
+    header.numFrames = dv.getUint32(572, true);
+    header.trueImageSize = dv.getUint32(580, true);
+    header.fps = dv.getFloat64(584, true);
+    header.codec = `imageFormat${String(header.imageFormat).padStart(3, "0")}`;
+    return header;
+  }
+};
+var JPEG_SOI = [255, 216];
+var PNG_SIG = [137, 80];
+var SeqIndex = class _SeqIndex {
+  offsets;
+  numFrames;
+  /** Per-frame timestamp size in bytes (6 for version < 5, else 8). */
+  timestampSize;
+  constructor(offsets, numFrames, timestampSize) {
+    this.offsets = offsets;
+    this.numFrames = numFrames;
+    this.timestampSize = timestampSize;
+  }
+  /** Byte offset for a frame. @throws If out of range. */
+  frameOffset(frame) {
+    if (frame < 0 || frame >= this.numFrames) {
+      throw new Error(`Frame ${frame} out of range [0, ${this.numFrames})`);
+    }
+    return this.offsets[frame];
+  }
+  /** Build the index for uncompressed formats (constant frame stride). */
+  static buildUncompressed(header) {
+    const offsets = [];
+    for (let i = 0; i < header.numFrames; i++) {
+      offsets.push(HEADER_SIZE + i * header.trueImageSize);
+    }
+    return new _SeqIndex(offsets, header.numFrames, header.version >= 5 ? 8 : 6);
+  }
+  /**
+   * Build the index for compressed formats by scanning the file.
+   *
+   * Compressed frames are variable-length, so the file is scanned sequentially:
+   * each frame begins with a uint32 size; the next frame is located by probing
+   * for the next `size + magic` past the timestamp, allowing small even padding.
+   */
+  static async buildCompressed(source, header) {
+    const fileSize = await source.size();
+    const nMax = header.numFrames > 0 ? header.numFrames : 1e7;
+    const tsSize = header.version >= 5 ? 8 : 6;
+    let extra = null;
+    const readU32 = async (pos) => {
+      const b = await source.read(pos, 4);
+      if (b.length < 4) return null;
+      return new DataView(b.buffer, b.byteOffset, 4).getUint32(0, true);
+    };
+    const offsets = [HEADER_SIZE];
+    for (let i = 1; i < nMax; i++) {
+      const prev = offsets[i - 1];
+      const frameSize = await readU32(prev);
+      if (frameSize === null) break;
+      if (frameSize === 0 || frameSize > fileSize) break;
+      let nextOffset;
+      if (extra !== null) {
+        nextOffset = prev + frameSize + extra;
+      } else {
+        const searchStart = prev + frameSize + tsSize;
+        let found = false;
+        nextOffset = 0;
+        for (let pad = 0; pad < 32; pad += 2) {
+          const candidate = searchStart + pad;
+          if (candidate + 6 > fileSize) break;
+          const probe = await source.read(candidate, 6);
+          if (probe.length < 6) break;
+          const candSize = new DataView(
+            probe.buffer,
+            probe.byteOffset,
+            6
+          ).getUint32(0, true);
+          const m0 = probe[4];
+          const m1 = probe[5];
+          const isMagic = m0 === JPEG_SOI[0] && m1 === JPEG_SOI[1] || m0 === PNG_SIG[0] && m1 === PNG_SIG[1];
+          if (candSize > 0 && candSize < fileSize && isMagic) {
+            extra = tsSize + pad;
+            nextOffset = candidate;
+            found = true;
+            break;
+          }
+        }
+        if (!found) break;
+      }
+      if (nextOffset >= fileSize) break;
+      const check = await source.read(nextOffset, 6);
+      if (check.length < 6) break;
+      const checkSize = new DataView(check.buffer, check.byteOffset, 6).getUint32(
+        0,
+        true
+      );
+      if (checkSize === 0 || checkSize > fileSize) break;
+      offsets.push(nextOffset);
+    }
+    return new _SeqIndex(offsets, offsets.length, tsSize);
+  }
+};
+var hasGlobalImageData = typeof globalThis !== "undefined" && typeof globalThis.ImageData !== "undefined";
+async function makeImageData(rgba, width, height) {
+  if (hasGlobalImageData) {
+    return new ImageData(rgba, width, height);
+  }
+  try {
+    const sc = await import("skia-canvas");
+    return new sc.ImageData(rgba, width, height);
+  } catch {
+    return { data: rgba, width, height, colorSpace: "srgb" };
+  }
+}
+async function decodeEncoded(bytes) {
+  if (typeof createImageBitmap !== "undefined" && typeof OffscreenCanvas !== "undefined") {
+    const safe = new Uint8Array(bytes);
+    const bitmap = await createImageBitmap(new Blob([safe.buffer]));
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("Failed to get 2D context for .seq frame decode");
+    ctx.drawImage(bitmap, 0, 0);
+    return ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  }
+  try {
+    const sc = await import("skia-canvas");
+    const src = typeof Buffer !== "undefined" ? Buffer.from(bytes) : bytes;
+    const img = await sc.loadImage(src);
+    const Canvas = sc.Canvas;
+    const canvas = new Canvas(img.width, img.height);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    return ctx.getImageData(0, 0, img.width, img.height);
+  } catch (err) {
+    throw new Error(
+      `Decoding JPEG/PNG frames in .seq files requires an image decoder (a browser, or the optional \`skia-canvas\` package on Node). Original error: ${err.message}`
+    );
+  }
+}
+var SeqVideoBackend = class _SeqVideoBackend {
+  filename;
+  dataset = null;
+  shape;
+  fps;
+  source;
+  headerData;
+  index;
+  constructor(filename, source, header, index, fps) {
+    this.filename = filename;
+    this.source = source;
+    this.headerData = header;
+    this.index = index;
+    this.fps = fps;
+    const channels = header.numChannels === 1 ? 1 : 3;
+    this.shape = [index.numFrames, header.height, header.width, channels];
+  }
+  /** Open a `.seq` file from a path (Node) or a `File`/`Blob` (browser). */
+  static async create(source) {
+    const isBlob = typeof Blob !== "undefined" && source instanceof Blob;
+    const filename = isBlob ? source.name ?? "" : source;
+    const byteSource = isBlob ? new BlobByteSource(source) : createFileByteSource(source);
+    try {
+      const header = SeqHeader.fromBytes(await byteSource.read(0, HEADER_SIZE));
+      if (BAYER_CODECS.has(header.codecName)) {
+        throw new Error(
+          `Bayer codec '${header.codecName}' is not supported in .seq files. Convert the file to a standard format first.`
+        );
+      }
+      const index = header.isCompressed ? await SeqIndex.buildCompressed(byteSource, header) : SeqIndex.buildUncompressed(header);
+      const fps = await computeFps(
+        byteSource,
+        header,
+        index,
+        (i, h) => readTimestamp(byteSource, h, index, i)
+      );
+      return new _SeqVideoBackend(filename, byteSource, header, index, fps);
+    } catch (err) {
+      byteSource.close();
+      throw err;
+    }
+  }
+  /** The parsed `.seq` header. */
+  get header() {
+    return this.headerData;
+  }
+  /** Number of frames in the video. */
+  get numFrames() {
+    return this.index.numFrames;
+  }
+  async getFrame(frameIndex) {
+    let idx = frameIndex;
+    if (idx < 0) idx = this.index.numFrames + idx;
+    if (idx < 0 || idx >= this.index.numFrames) return null;
+    const data = await readFrameData(this.source, this.headerData, this.index, idx);
+    return decodeFrame(this.headerData, data);
+  }
+  /**
+   * Absolute per-frame timestamps as seconds since the Unix epoch (Python
+   * `get_timestamps` parity).
+   */
+  async getTimestamps() {
+    const out = [];
+    for (let i = 0; i < this.index.numFrames; i++) {
+      out.push(await readTimestamp(this.source, this.headerData, this.index, i));
+    }
+    return out;
+  }
+  /** Absolute timestamp (seconds since epoch) for a single frame. */
+  async getTimestamp(frameIndex) {
+    let idx = frameIndex;
+    if (idx < 0) idx = this.index.numFrames + idx;
+    if (idx < 0 || idx >= this.index.numFrames) {
+      throw new Error(
+        `Frame ${frameIndex} out of range [0, ${this.index.numFrames})`
+      );
+    }
+    return readTimestamp(this.source, this.headerData, this.index, idx);
+  }
+  /**
+   * Presentation times in seconds relative to the first frame (consistent with
+   * the other backends' {@link VideoBackend.getFrameTimes}). For absolute
+   * timestamps use {@link getTimestamps}.
+   */
+  async getFrameTimes() {
+    const ts = await this.getTimestamps();
+    if (ts.length === 0) return null;
+    const t0 = ts[0];
+    return ts.map((t) => t - t0);
+  }
+  close() {
+    this.source.close();
+  }
+};
+async function readCompressedFrameSize(source, offset) {
+  const sizeBytes = await source.read(offset, 4);
+  return new DataView(sizeBytes.buffer, sizeBytes.byteOffset, 4).getUint32(0, true);
+}
+async function readFrameData(source, header, index, frameIdx) {
+  const offset = index.frameOffset(frameIdx);
+  if (header.isCompressed) {
+    const nbytes = await readCompressedFrameSize(source, offset);
+    return source.read(offset + 4, nbytes - 4);
+  }
+  return source.read(offset, header.imageSizeBytes);
+}
+async function readTimestamp(source, header, index, frameIdx) {
+  const offset = index.frameOffset(frameIdx);
+  const tsPos = header.isCompressed ? offset + await readCompressedFrameSize(source, offset) : offset + header.imageSizeBytes;
+  const buf = await source.read(tsPos, index.timestampSize);
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const sec = dv.getUint32(0, true);
+  const ms = dv.getUint16(4, true);
+  let result = sec + ms / 1e3;
+  if (index.timestampSize === 8) {
+    const us = dv.getUint16(6, true);
+    result += us / 1e6;
+  }
+  return result;
+}
+async function decodeFrame(header, data) {
+  const codec = header.codecName;
+  const h = header.height;
+  const w = header.width;
+  const nch = header.numChannels;
+  if (codec === "monoraw" || codec === "raw") {
+    const rgba = new Uint8ClampedArray(w * h * 4);
+    if (nch === 1) {
+      for (let i = 0; i < w * h; i++) {
+        const gray = data[i] ?? 0;
+        const o = i * 4;
+        rgba[o] = gray;
+        rgba[o + 1] = gray;
+        rgba[o + 2] = gray;
+        rgba[o + 3] = 255;
+      }
+    } else {
+      for (let i = 0; i < w * h; i++) {
+        const base = i * nch;
+        const o = i * 4;
+        rgba[o] = data[base + 2] ?? 0;
+        rgba[o + 1] = data[base + 1] ?? 0;
+        rgba[o + 2] = data[base] ?? 0;
+        rgba[o + 3] = 255;
+      }
+    }
+    return makeImageData(rgba, w, h);
+  }
+  if (codec === "monojpg" || codec === "jpg" || codec === "monopng" || codec === "png") {
+    return decodeEncoded(data);
+  }
+  throw new Error(`Unsupported .seq codec: ${codec}`);
+}
+async function computeFps(source, header, index, read) {
+  const fallback = header.fps >= 1 ? header.fps : void 0;
+  try {
+    const n = Math.min(100, index.numFrames);
+    if (n < 2) return fallback;
+    const ts = [];
+    for (let i = 0; i < n; i++) ts.push(await read(i, header));
+    const ds = [];
+    for (let i = 1; i < ts.length; i++) ds.push(ts[i] - ts[i - 1]);
+    const median = medianOf(ds);
+    const filtered = ds.filter((d) => Math.abs(d - median) < 5e-3);
+    if (filtered.length > 0) {
+      const mean = filtered.reduce((a, b) => a + b, 0) / filtered.length;
+      const computed = 1 / mean;
+      if (Number.isFinite(computed) && computed >= 1) {
+        return computed;
+      }
+    }
+  } catch {
+  }
+  return fallback;
+}
+function medianOf(values) {
+  if (values.length === 0) return NaN;
+  const sorted = [...values].sort((a, b) => a - b);
+  const mid = Math.floor(sorted.length / 2);
+  return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
+}
+
 // src/codecs/slp/h5-worker.ts
 var H5_WORKER_CODE = `
 // h5wasm streaming worker
@@ -8542,6 +8976,9 @@ async function createVideoBackend(source, options) {
       shape: options?.shape,
       fps: options?.fps
     });
+  }
+  if (ext === "seq") {
+    return SeqVideoBackend.create(source);
   }
   if (options?.backend === "mediabunny") {
     if (isBlob) return MediaBunnyVideoBackend.fromBlob(source, filename);
@@ -13398,6 +13835,11 @@ export {
   Identity,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
+  BlobByteSource,
+  setSeqFileByteSourceFactory,
+  SeqHeader,
+  SeqIndex,
+  SeqVideoBackend,
   StreamingH5File,
   isStreamingSupported,
   openStreamingH5,

@@ -2,6 +2,7 @@ import {
   AUTO_VIDEO_MATCHER,
   AnnotationType,
   BASENAME_VIDEO_MATCHER,
+  BlobByteSource,
   BoundingBox,
   CENTROID_SKELETON,
   Camera,
@@ -51,6 +52,9 @@ import {
   STRUCTURE_SKELETON_MATCHER,
   SUBSET_SKELETON_MATCHER,
   SegmentationMask,
+  SeqHeader,
+  SeqIndex,
+  SeqVideoBackend,
   SkeletonMatchMethod,
   SkeletonMatcher,
   SkeletonMismatchError,
@@ -129,10 +133,11 @@ import {
   saveSlpToBytes,
   setDefaultFsResolver,
   setFsResolver,
+  setSeqFileByteSourceFactory,
   toDict,
   toNumpy,
   writeGeoJSON
-} from "./chunk-RU4JADIK.js";
+} from "./chunk-IYAG5LR6.js";
 import {
   Edge,
   Instance,
@@ -252,17 +257,54 @@ var nodeFsResolver = {
 };
 setDefaultFsResolver(nodeFsResolver);
 
-// src/io/trackmate.ts
+// src/video/seq-node.ts
 import * as fs2 from "fs";
+var NodeFileByteSource = class {
+  path;
+  fd = null;
+  fileSize = null;
+  constructor(path3) {
+    this.path = path3;
+  }
+  ensureOpen() {
+    if (this.fd === null) {
+      this.fd = fs2.openSync(this.path, "r");
+    }
+    return this.fd;
+  }
+  async size() {
+    if (this.fileSize === null) {
+      this.fileSize = fs2.statSync(this.path).size;
+    }
+    return this.fileSize;
+  }
+  async read(offset, length) {
+    if (length <= 0) return new Uint8Array(0);
+    const fd = this.ensureOpen();
+    const buf = Buffer.alloc(length);
+    const bytesRead = fs2.readSync(fd, buf, 0, length, offset);
+    return new Uint8Array(buf.subarray(0, bytesRead));
+  }
+  close() {
+    if (this.fd !== null) {
+      fs2.closeSync(this.fd);
+      this.fd = null;
+    }
+  }
+};
+setSeqFileByteSourceFactory((path3) => new NodeFileByteSource(path3));
+
+// src/io/trackmate.ts
+import * as fs3 from "fs";
 import * as path from "path";
 var HEADER_ROWS = 4;
 var SPOTS_SIGNATURE = ["LABEL", "ID", "TRACK_ID", "QUALITY", "POSITION_X", "POSITION_Y"];
 function isTrackMateFile(filePath) {
   try {
-    const fd = fs2.openSync(filePath, "r");
+    const fd = fs3.openSync(filePath, "r");
     const buf = Buffer.alloc(1024);
-    const bytesRead = fs2.readSync(fd, buf, 0, 1024, 0);
-    fs2.closeSync(fd);
+    const bytesRead = fs3.readSync(fd, buf, 0, 1024, 0);
+    fs3.closeSync(fd);
     const firstLine = buf.toString("utf-8", 0, bytesRead).split("\n")[0]?.trim() ?? "";
     const cols = firstLine.split(",");
     return SPOTS_SIGNATURE.every((sig, i) => cols[i] === sig);
@@ -278,17 +320,17 @@ function findSibling(spotsPath, suffix) {
   if (suffix.startsWith(".")) {
     for (const ext of [suffix, suffix + "f"]) {
       const candidate = path.join(dir, stem + ext);
-      if (fs2.existsSync(candidate)) return candidate;
+      if (fs3.existsSync(candidate)) return candidate;
     }
   } else {
     const candidate = path.join(dir, stem + suffix + ".csv");
-    if (fs2.existsSync(candidate)) return candidate;
+    if (fs3.existsSync(candidate)) return candidate;
   }
   return null;
 }
 function parseEdges(edgesPath) {
   const targetToCost = /* @__PURE__ */ new Map();
-  const content = fs2.readFileSync(edgesPath, "utf-8");
+  const content = fs3.readFileSync(edgesPath, "utf-8");
   const lines = content.split("\n");
   if (lines.length <= HEADER_ROWS) return targetToCost;
   const header = lines[0].split(",");
@@ -308,7 +350,7 @@ function parseEdges(edgesPath) {
   return targetToCost;
 }
 function readTrackMateCsv(spotsPath, options) {
-  if (!fs2.existsSync(spotsPath)) {
+  if (!fs3.existsSync(spotsPath)) {
     throw new Error(`Spots CSV not found: ${spotsPath}`);
   }
   const edgesPath = options?.edgesPath ?? findSibling(spotsPath, "_edges");
@@ -326,7 +368,7 @@ function readTrackMateCsv(spotsPath, options) {
     }
   }
   const targetToCost = edgesPath ? parseEdges(edgesPath) : /* @__PURE__ */ new Map();
-  const content = fs2.readFileSync(spotsPath, "utf-8");
+  const content = fs3.readFileSync(spotsPath, "utf-8");
   const lines = content.split("\n");
   const header = lines[0]?.split(",") ?? [];
   if (header.length < SPOTS_SIGNATURE.length || !SPOTS_SIGNATURE.every((sig, i) => header[i] === sig)) {
@@ -395,14 +437,14 @@ function loadTrackMate(filename, options) {
 }
 
 // src/io/ultralytics.ts
-import * as fs3 from "fs";
+import * as fs4 from "fs";
 import * as path2 from "path";
 import YAML from "yaml";
 import { deflate } from "pako";
 var READ_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp"];
 var IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".gif"];
 function parseDataYaml(yamlPath) {
-  const text = fs3.readFileSync(yamlPath, "utf-8");
+  const text = fs4.readFileSync(yamlPath, "utf-8");
   return YAML.parse(text) ?? {};
 }
 function classNamesFromConfig(config) {
@@ -471,7 +513,7 @@ function parseLabelFile(labelPath, skeleton, imageShape, options) {
   const instances = [];
   const rois = [];
   const bboxes = [];
-  const content = fs3.readFileSync(labelPath, "utf-8");
+  const content = fs4.readFileSync(labelPath, "utf-8");
   const lines = content.split(/\r?\n/);
   const [heightPx, widthPx] = imageShape;
   for (let lineNum = 0; lineNum < lines.length; lineNum++) {
@@ -591,7 +633,7 @@ function writeLabelFile(labelPath, frame, skeleton, imageShape, classId = 0) {
     }
     out.push(lineParts.join(" "));
   }
-  fs3.writeFileSync(labelPath, out.length ? out.join("\n") + "\n" : "");
+  fs4.writeFileSync(labelPath, out.length ? out.join("\n") + "\n" : "");
 }
 function writeRoiLabelFile(labelPath, rois, imageShape, nameToId) {
   const [heightPx, widthPx] = imageShape;
@@ -627,7 +669,7 @@ function writeRoiLabelFile(labelPath, rois, imageShape, nameToId) {
       );
     }
   }
-  fs3.writeFileSync(labelPath, out.length ? out.join("\n") + "\n" : "");
+  fs4.writeFileSync(labelPath, out.length ? out.join("\n") + "\n" : "");
 }
 function writeBboxLabelFile(labelPath, bboxes, imageShape, nameToId) {
   const [heightPx, widthPx] = imageShape;
@@ -646,7 +688,7 @@ function writeBboxLabelFile(labelPath, bboxes, imageShape, nameToId) {
     }
     out.push(lineParts.join(" "));
   }
-  fs3.writeFileSync(labelPath, out.length ? out.join("\n") + "\n" : "");
+  fs4.writeFileSync(labelPath, out.length ? out.join("\n") + "\n" : "");
 }
 function createDataYaml(yamlPath, skeleton, splitRatios, options) {
   const task = options?.task ?? "pose";
@@ -670,7 +712,7 @@ function createDataYaml(yamlPath, skeleton, splitRatios, options) {
   for (const splitName of Object.keys(splitRatios)) {
     config[splitName] = `${splitName}/images`;
   }
-  fs3.writeFileSync(yamlPath, YAML.stringify(config));
+  fs4.writeFileSync(yamlPath, YAML.stringify(config));
 }
 function buildClassNamesFromRois(rois) {
   return buildClassNames(rois.map((roi) => roi.category));
@@ -701,7 +743,7 @@ function readLabels(datasetPath, options) {
     root = datasetPath;
     dataYamlPath = path2.join(datasetPath, "data.yaml");
   }
-  if (!fs3.existsSync(dataYamlPath)) {
+  if (!fs4.existsSync(dataYamlPath)) {
     throw new Error(`data.yaml not found at ${dataYamlPath}`);
   }
   const config = parseDataYaml(dataYamlPath);
@@ -712,15 +754,15 @@ function readLabels(datasetPath, options) {
   const splitPath = config[split] ?? `${split}/images`;
   const imagesDir = path2.join(root, splitPath);
   const labelsDir = path2.join(root, splitPath.replace(/\/images/g, "/labels"));
-  if (!fs3.existsSync(imagesDir)) {
+  if (!fs4.existsSync(imagesDir)) {
     throw new Error(`Images directory not found: ${imagesDir}`);
   }
-  if (!fs3.existsSync(labelsDir)) {
+  if (!fs4.existsSync(labelsDir)) {
     throw new Error(`Labels directory not found: ${labelsDir}`);
   }
   const labeledFrames = [];
   const tracks = /* @__PURE__ */ new Map();
-  const imageFiles = fs3.readdirSync(imagesDir).filter((name) => READ_IMAGE_EXTENSIONS.includes(path2.extname(name).toLowerCase())).sort();
+  const imageFiles = fs4.readdirSync(imagesDir).filter((name) => READ_IMAGE_EXTENSIONS.includes(path2.extname(name).toLowerCase())).sort();
   for (const imageName of imageFiles) {
     const imageFile = path2.join(imagesDir, imageName);
     const stem = path2.basename(imageName, path2.extname(imageName));
@@ -729,7 +771,7 @@ function readLabels(datasetPath, options) {
     let instances = [];
     let rois = [];
     let bboxes = [];
-    if (fs3.existsSync(labelFile)) {
+    if (fs4.existsSync(labelFile)) {
       const imgShape = probeImageSize(imageFile) ?? imageSize;
       const parseSkeleton = skeleton ?? new Skeleton({ nodes: [] });
       ({ instances, rois, bboxes } = parseLabelFile(labelFile, parseSkeleton, imgShape, {
@@ -767,7 +809,7 @@ function readLabelsSet(datasetPath, options) {
   if (!splits) {
     splits = [];
     for (const splitName of ["train", "val", "test", "valid"]) {
-      if (fs3.existsSync(path2.join(datasetPath, splitName))) {
+      if (fs4.existsSync(path2.join(datasetPath, splitName))) {
         splits.push(splitName);
       }
     }
@@ -777,7 +819,7 @@ function readLabelsSet(datasetPath, options) {
   }
   if (skeleton === null) {
     const dataYamlPath = path2.join(datasetPath, "data.yaml");
-    if (fs3.existsSync(dataYamlPath)) {
+    if (fs4.existsSync(dataYamlPath)) {
       const dataConfig = parseDataYaml(dataYamlPath);
       if ("node_names" in dataConfig && "skeleton" in dataConfig) {
         try {
@@ -826,7 +868,7 @@ async function writeLabels(labels, datasetPath, options) {
   const imageFormat = options?.imageFormat ?? "png";
   const imageQuality = options?.imageQuality ?? null;
   const task = options?.task ?? "pose";
-  fs3.mkdirSync(datasetPath, { recursive: true });
+  fs4.mkdirSync(datasetPath, { recursive: true });
   const totalRatio = Object.values(splitRatios).reduce((a, b) => a + b, 0);
   if (Math.abs(totalRatio - 1) > 1e-8 + 1e-5) {
     throw new Error(`Split ratios must sum to 1.0, got ${totalRatio}`);
@@ -870,8 +912,8 @@ async function writeLabels(labels, datasetPath, options) {
   for (const [splitName, splitData] of Object.entries(splitLabels)) {
     const imagesDir = path2.join(datasetPath, splitName, "images");
     const labelsDir = path2.join(datasetPath, splitName, "labels");
-    fs3.mkdirSync(imagesDir, { recursive: true });
-    fs3.mkdirSync(labelsDir, { recursive: true });
+    fs4.mkdirSync(imagesDir, { recursive: true });
+    fs4.mkdirSync(labelsDir, { recursive: true });
     const frames = splitData.labeledFrames;
     for (let lfIdx = 0; lfIdx < frames.length; lfIdx++) {
       const frame = frames[lfIdx];
@@ -952,8 +994,8 @@ function writeGroupedLabels(itemsByVideo, videoByKey, datasetPath, splitRatios, 
     if (splitVideoKeys.length === 0) continue;
     const imagesDir = path2.join(datasetPath, splitName, "images");
     const labelsDir = path2.join(datasetPath, splitName, "labels");
-    fs3.mkdirSync(imagesDir, { recursive: true });
-    fs3.mkdirSync(labelsDir, { recursive: true });
+    fs4.mkdirSync(imagesDir, { recursive: true });
+    fs4.mkdirSync(labelsDir, { recursive: true });
     for (let lfIdx = 0; lfIdx < splitVideoKeys.length; lfIdx++) {
       const key = splitVideoKeys[lfIdx];
       const video = videoByKey.get(key);
@@ -1016,7 +1058,7 @@ async function writeFrameImage(frame, imagesDir, lfIdx, imageFormat, imageQualit
     if (isImageData(img)) {
       const png = encodePng(img.data, img.width, img.height, imageQuality);
       const imagePath = path2.join(imagesDir, `${pad7(lfIdx)}.png`);
-      fs3.writeFileSync(imagePath, png);
+      fs4.writeFileSync(imagePath, png);
       return { imagePath, shape: [img.height, img.width] };
     }
   } catch {
@@ -1029,19 +1071,19 @@ function copyImageFileFrom(video, imagesDir, lfIdx) {
   if (typeof filename !== "string" || filename.length === 0) return null;
   const ext = path2.extname(filename).toLowerCase();
   if (!IMAGE_EXTENSIONS.includes(ext)) return null;
-  if (!fs3.existsSync(filename)) return null;
+  if (!fs4.existsSync(filename)) return null;
   const shape = probeImageSize(filename);
   if (shape === null) return null;
   const imagePath = path2.join(imagesDir, `${pad7(lfIdx)}${ext}`);
-  fs3.copyFileSync(filename, imagePath);
+  fs4.copyFileSync(filename, imagePath);
   return { imagePath, shape };
 }
 function probeImageSize(filePath) {
   let fd = null;
   try {
-    fd = fs3.openSync(filePath, "r");
+    fd = fs4.openSync(filePath, "r");
     const head = Buffer.alloc(32);
-    const n = fs3.readSync(fd, head, 0, 32, 0);
+    const n = fs4.readSync(fd, head, 0, 32, 0);
     if (n < 2) return null;
     if (head[0] === 137 && head[1] === 80 && head[2] === 78 && head[3] === 71) {
       const width = head.readUInt32BE(16);
@@ -1070,16 +1112,16 @@ function probeImageSize(filePath) {
   } finally {
     if (fd !== null) {
       try {
-        fs3.closeSync(fd);
+        fs4.closeSync(fd);
       } catch {
       }
     }
   }
 }
 function probeJpegSize(fd) {
-  const stat = fs3.fstatSync(fd);
+  const stat = fs4.fstatSync(fd);
   const buf = Buffer.alloc(stat.size);
-  fs3.readSync(fd, buf, 0, stat.size, 0);
+  fs4.readSync(fd, buf, 0, stat.size, 0);
   let offset = 2;
   while (offset + 9 < buf.length) {
     if (buf[offset] !== 255) {
@@ -1103,10 +1145,10 @@ function probeJpegSize(fd) {
   return null;
 }
 function probeTiffSize(fd) {
-  const stat = fs3.fstatSync(fd);
+  const stat = fs4.fstatSync(fd);
   const size = Math.min(stat.size, 65536);
   const buf = Buffer.alloc(size);
-  fs3.readSync(fd, buf, 0, size, 0);
+  fs4.readSync(fd, buf, 0, size, 0);
   const le = buf[0] === 73;
   const readU16 = (o) => le ? buf.readUInt16LE(o) : buf.readUInt16BE(o);
   const readU32 = (o) => le ? buf.readUInt32LE(o) : buf.readUInt32BE(o);
@@ -1977,6 +2019,7 @@ export {
   AUTO_VIDEO_MATCHER,
   AnnotationType,
   BASENAME_VIDEO_MATCHER,
+  BlobByteSource,
   BoundingBox,
   CENTROID_SKELETON,
   Camera,
@@ -2036,6 +2079,9 @@ export {
   STRUCTURE_SKELETON_MATCHER,
   SUBSET_SKELETON_MATCHER,
   SegmentationMask,
+  SeqHeader,
+  SeqIndex,
+  SeqVideoBackend,
   Skeleton,
   SkeletonMatchMethod,
   SkeletonMatcher,

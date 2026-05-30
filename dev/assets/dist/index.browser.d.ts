@@ -2233,6 +2233,118 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
     close(): void;
 }
 
+/**
+ * Random-access reader over the bytes of a `.seq` file. Implementations: a
+ * `Blob` (browser) and an injected `node:fs`-backed source (Node, registered by
+ * `seq-node.ts`).
+ */
+interface ByteSource {
+    /** Total size of the source in bytes. */
+    size(): Promise<number>;
+    /** Read `length` bytes starting at `offset` (clamped to EOF). */
+    read(offset: number, length: number): Promise<Uint8Array>;
+    /** Release any underlying handle. */
+    close(): void;
+}
+/** `Blob`/`File`-backed byte source (browser-safe). */
+declare class BlobByteSource implements ByteSource {
+    private blob;
+    constructor(blob: Blob);
+    size(): Promise<number>;
+    read(offset: number, length: number): Promise<Uint8Array>;
+    close(): void;
+}
+/** Parsed header of a Norpix `.seq` file (port of Python `SeqHeader`). */
+declare class SeqHeader {
+    magic: number;
+    name: string;
+    version: number;
+    headerSize: number;
+    description: string;
+    width: number;
+    height: number;
+    bitDepth: number;
+    bitDepthReal: number;
+    imageSizeBytes: number;
+    imageFormat: number;
+    numFrames: number;
+    trueImageSize: number;
+    fps: number;
+    codec: string;
+    /** Human-readable codec name (e.g. `"monoraw"`). */
+    get codecName(): string;
+    /** Whether frames use variable-length compression (JPEG/PNG). */
+    get isCompressed(): boolean;
+    /** Number of color channels (`bitDepth / bitDepthReal`). */
+    get numChannels(): number;
+    /**
+     * Parse the 1024-byte header from a byte buffer.
+     *
+     * @throws If the buffer is too small or has an invalid magic number.
+     */
+    static fromBytes(raw: Uint8Array): SeqHeader;
+}
+/** Frame seek index for a `.seq` file (port of Python `SeqIndex`). */
+declare class SeqIndex {
+    offsets: number[];
+    numFrames: number;
+    /** Per-frame timestamp size in bytes (6 for version < 5, else 8). */
+    timestampSize: number;
+    constructor(offsets: number[], numFrames: number, timestampSize: number);
+    /** Byte offset for a frame. @throws If out of range. */
+    frameOffset(frame: number): number;
+    /** Build the index for uncompressed formats (constant frame stride). */
+    static buildUncompressed(header: SeqHeader): SeqIndex;
+    /**
+     * Build the index for compressed formats by scanning the file.
+     *
+     * Compressed frames are variable-length, so the file is scanned sequentially:
+     * each frame begins with a uint32 size; the next frame is located by probing
+     * for the next `size + magic` past the timestamp, allowing small even padding.
+     */
+    static buildCompressed(source: ByteSource, header: SeqHeader): Promise<SeqIndex>;
+}
+/**
+ * Video backend for reading Norpix `.seq` files.
+ *
+ * Supported codecs: `monoraw` (grayscale raw), `raw` (BGR raw → RGB),
+ * `monojpg`/`jpg` (JPEG), `monopng`/`png` (PNG). Bayer codecs are unsupported.
+ *
+ * Construct via {@link SeqVideoBackend.create} (async; parses the header, builds
+ * the seek index, and computes FPS from timestamps).
+ */
+declare class SeqVideoBackend implements VideoBackend {
+    filename: string;
+    dataset?: string | null;
+    shape: [number, number, number, number];
+    fps?: number;
+    private source;
+    private headerData;
+    private index;
+    private constructor();
+    /** Open a `.seq` file from a path (Node) or a `File`/`Blob` (browser). */
+    static create(source: string | File | Blob): Promise<SeqVideoBackend>;
+    /** The parsed `.seq` header. */
+    get header(): SeqHeader;
+    /** Number of frames in the video. */
+    get numFrames(): number;
+    getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    /**
+     * Absolute per-frame timestamps as seconds since the Unix epoch (Python
+     * `get_timestamps` parity).
+     */
+    getTimestamps(): Promise<number[]>;
+    /** Absolute timestamp (seconds since epoch) for a single frame. */
+    getTimestamp(frameIndex: number): Promise<number>;
+    /**
+     * Presentation times in seconds relative to the first frame (consistent with
+     * the other backends' {@link VideoBackend.getFrameTimes}). For absolute
+     * timestamps use {@link getTimestamps}.
+     */
+    getFrameTimes(): Promise<number[] | null>;
+    close(): void;
+}
+
 /** Supported video backend identifiers for user selection. */
 type VideoBackendType = "mp4box" | "mediabunny" | "media";
 declare function createVideoBackend(source: string | File | Blob, options?: {
@@ -2968,4 +3080,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BoundingBox, type BoundingBoxOptions, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, ConflictResolution, DUPLICATE_MATCHER, type DrawTrailsOptions, ErrorMode, FrameGroup, FrameStrategy, type FsResolver, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, MatchResult, type MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, type SegmentationMaskOptions, Skeleton, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, TrackMatchMethod, TrackMatcher, type Trail, type TrailTarget, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, VideoMatchMethod, VideoMatcher, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, collectTracks, computeTrails, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTrails, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isAnalysisH5File, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadAnalysisH5, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, nTrailPaletteColors, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, resolveTrailNode, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveAnalysisH5, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, toDict, toNumpy, writeGeoJSON };
+export { AUTO_VIDEO_MATCHER, AnnotationType, BASENAME_VIDEO_MATCHER, BlobByteSource, BoundingBox, type BoundingBoxOptions, type ByteSource, CENTROID_SKELETON, Camera, CameraGroup, Centroid, type CentroidOptions, type ColorScheme, type ColorSpec, ConflictResolution, DUPLICATE_MATCHER, type DrawTrailsOptions, ErrorMode, FrameGroup, FrameStrategy, type FsResolver, type GeoJSONFeature, type GeoJSONFeatureCollection, type Geometry, IDENTITY_INSTANCE_MATCHER, IDENTITY_TRACK_MATCHER, IMAGE_DEDUP_VIDEO_MATCHER, IOU_MATCHER, Identity, Instance, Instance3D, InstanceContext, InstanceGroup, InstanceMatchMethod, InstanceMatcher, LabelImage, type LabelImageObjectInfo, type LabelImageOptions, LabeledFrame, Labels, type LabelsDict, LabelsSet, LazyDataStore, LazyFrameList, MARKER_FUNCTIONS, type MarkerShape, MatchResult, type MediaBunnyOptions, MediaBunnyVideoBackend, MergeError, MergeProgressBar, MergeResult, type MergeStrategy, Mp4BoxVideoBackend, NAMED_COLORS, NAME_TRACK_MATCHER, OVERLAP_SKELETON_MATCHER, PALETTES, PATH_VIDEO_MATCHER, type PaletteName, PredictedBoundingBox, PredictedCentroid, PredictedInstance, PredictedInstance3D, PredictedLabelImage, PredictedROI, PredictedSegmentationMask, type RGB, type RGBA, ROI, type ROIOptions, RecordingSession, RenderContext, type RenderOptions, SHAPE_VIDEO_MATCHER, STRUCTURE_SKELETON_MATCHER, SUBSET_SKELETON_MATCHER, SegmentationMask, type SegmentationMaskOptions, SeqHeader, SeqIndex, SeqVideoBackend, Skeleton, SkeletonMatchMethod, SkeletonMatcher, SkeletonMismatchError, StreamingH5File, type StreamingH5Source, StreamingHdf5VideoBackend, SuggestionFrame, Track, TrackMatchMethod, TrackMatcher, type Trail, type TrailTarget, UserBoundingBox, UserCentroid, UserLabelImage, UserROI, UserSegmentationMask, Video, type VideoBackend, type VideoBackendType, type VideoFrame, VideoMatchMethod, VideoMatcher, type VideoOptions, _annotationCentroidXy, _findAnnotationMatches, _registerMaskFactory, _resolveMergedIsNegative, collectTracks, computeTrails, createVideoBackend, decodeRle, decodeWkb, decodeYamlSkeleton, determineColorScheme, drawCircle, drawCross, drawDiamond, drawSquare, drawTrails, drawTriangle, encodeRle, encodeWkb, encodeYamlSkeleton, fromDict, fromNumpy, getCentroidSkeleton, getMarkerFunction, getPalette, isAnalysisH5File, isStreamingSupported, isTrainingConfig, labelsFromNumpy, loadAnalysisH5, loadSlp, loadSlpSet, loadVideo, makeCameraFromDict, nTrailPaletteColors, normalizeLabelIds, openH5Worker, openStreamingH5, rasterizeGeometry, readGeoJSON, readSkeletonJson, readSlpStreaming, readTrainingConfigSkeleton, readTrainingConfigSkeletons, resizeNearest, resolveColor, resolveTrailNode, rgbToCSS, rodriguesTransformation, roisFromGeoJSON, roisToGeoJSON, saveAnalysisH5, saveSlp, saveSlpSet, saveSlpToBytes, setFsResolver, toDict, toNumpy, writeGeoJSON };
