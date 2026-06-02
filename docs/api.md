@@ -146,6 +146,41 @@ video.fps = 30;
 - `getFrame(index, signal?)` accepts an optional `AbortSignal` to cancel in-flight decodes.
 - `getFrameTimes()` returns `null` if the backend does not implement it.
 
+#### Virtual crops
+
+`Video.crop` returns a virtual, on-read cropped view (no pixels are copied or
+re-encoded). See [Virtual Cropping](cropping.md) for the full guide.
+
+```ts
+const view = full.crop([320, 200, 576, 456]); // [x1, y1, x2, y2], x2/y2 exclusive
+view.shape; // [frames, 256, 256, channels]
+view.cropRect; // [320, 200, 576, 456]
+view.isCropped; // true
+view.cropFill; // 0
+view.sourceVideo === full; // true
+
+// Region specs (exactly one): explicit rect, bbox, roi, or center+size.
+full.crop(null, { bbox: [x1, y1, x2, y2] });
+full.crop(null, { roi: myRoi, margin: 8 });
+full.crop(null, { center: [cx, cy], size: [128, 128], fill: 0 });
+
+// Coordinate helpers (identity passthrough on an uncropped video):
+const local = view.toCropCoords(sourcePts); // subtract (x1, y1)
+const back = view.toSourceCoords(local); // add (x1, y1)
+```
+
+- `Video.crop(crop?, opts?)` — one region spec across `crop` / `opts.bbox` /
+  `opts.roi` / (`opts.center` + `opts.size`); plus `opts.margin`, `opts.fill`
+  (out-of-bounds pad value, default `0`), and `opts.shareDecode` (default `true`,
+  reuse the source decoder for mosaics).
+- `Video.fromCrop(video, crop?, opts?)` — static wrapper around `video.crop(...)`
+  (`video` must be a `Video`; path strings are unsupported in the JS port).
+- Getters: `isCropped`, `cropRect` (`[x1,y1,x2,y2] | null`), `cropFill`.
+- `toCropCoords(pts)` / `toSourceCoords(pts)` — NaN-preserving copies; accept
+  `[x,y]` pairs or a flat interleaved buffer.
+- Standalone primitives: `cropPoints`, `uncropPoints`, `cropFrame`, and the
+  `CropVideoBackend` class are all exported (browser-safe).
+
 ### `Mp4BoxVideoBackend`
 Browser-only backend for `.mp4` with WebCodecs + mp4box. Supports range requests when the server honors `Range` and falls back to full download.
 
@@ -605,7 +640,9 @@ Static ROIs (video-level, e.g. arena boundaries) live on `labels.staticRois`. Us
 labels.addStaticRoi(arenaRoi);
 ```
 
-The SLP format version is set automatically based on content:
+#### SLP format versions
+
+The SLP format version (`format_id`) is set automatically based on content:
 
 | Version | Trigger |
 |---------|---------|
@@ -617,6 +654,31 @@ The SLP format version is set automatically based on content:
 | 2.0 | BBox corner-based format |
 | 2.1 | Spatial metadata (scale/offset) |
 | 2.2 | Chunked label image storage |
+| 2.3 | Virtual video crops present |
+
+##### Virtual Crops (Format 2.3+)
+
+A [virtually-cropped video](cropping.md) stores its crop rect in a dedicated
+top-level `/video_crops` dataset (a single JSON string), written **only when at
+least one video is cropped**. Its `videos_json` entry describes the **uncropped
+source**, and its `source_video` is the uncropped original — so a reader that does
+not understand `/video_crops` simply loads the full-frame source (a graceful, lossy
+degrade, never an error).
+
+```json
+[
+  { "video": 2, "crop": [128, 96, 384, 352], "fill": 0 },
+  { "video": 5, "crop": [0, 0, 256, 256], "fill": 0 }
+]
+```
+
+- `video` — integer index into the `videos_json` video list.
+- `crop` — `[x1, y1, x2, y2]` in **source** pixel coordinates, `x2`/`y2` exclusive.
+- `fill` — out-of-bounds fill value (regions outside the source are padded, not
+  clamped).
+
+The presence of any crop bumps `format_id` to `2.3`. Files with no crops are
+byte-identical to earlier versions (no `/video_crops` dataset, no version bump).
 
 ## Label Images (Dense Segmentation)
 

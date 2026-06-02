@@ -67,3 +67,4 @@ nav:
   - API: api.md
   - Lite Mode: lite.md
   - Rendering: rendering.md
+  - Virtual Cropping: cropping.md
