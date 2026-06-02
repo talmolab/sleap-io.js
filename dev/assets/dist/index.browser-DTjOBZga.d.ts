@@ -11,6 +11,167 @@ interface VideoBackend {
     close(): void;
 }
 
+/**
+ * Point coordinate transformation functions for virtual cropping.
+ *
+ * Ported from Python `sleap_io/transform/points.py` ({@link crop_points},
+ * {@link uncrop_points}). These adjust landmark coordinates to match a cropped
+ * video frame. Both operations are copy-based (the input is never mutated) and
+ * NaN-preserving (`NaN ± c` stays `NaN` naturally).
+ *
+ * Browser-safe: no Node-only imports.
+ */
+/**
+ * A crop rectangle as `[x1, y1, x2, y2]` in source pixel coordinates.
+ *
+ * `x2`/`y2` are EXCLUSIVE (so the cropped width is `x2 - x1` and height is
+ * `y2 - y1`), matching the Python `(x1, y1, x2, y2)` convention.
+ */
+type CropRect = [number, number, number, number];
+/**
+ * A flat interleaved coordinate buffer `[x0, y0, x1, y1, ...]` (even lanes are
+ * x, odd lanes are y). Matches the typed-array layout used by point buffers.
+ */
+type FlatPoints = Float64Array | Float32Array | number[];
+/** An array of `[x, y]` coordinate pairs (the `(..., 2)` numpy analog). */
+type PointPairs = ReadonlyArray<readonly [number, number]>;
+/**
+ * Adjust point coordinates for a crop transformation.
+ *
+ * Subtracts the crop origin `(x1, y1)` from every coordinate, mapping source
+ * coordinates into the crop-local frame. NaN coordinates are preserved.
+ *
+ * Accepts either a flat interleaved buffer (`[x, y, x, y, ...]`, typed or
+ * plain array) or an array of `[x, y]` pairs, and returns the same kind.
+ *
+ * @param points Source-frame coordinates.
+ * @param crop Crop region `[x1, y1, x2, y2]` (x2/y2 exclusive).
+ * @returns Crop-local coordinates (a copy; input unmutated).
+ */
+declare function cropPoints<T extends FlatPoints>(points: T, crop: CropRect): T;
+declare function cropPoints(points: PointPairs, crop: CropRect): [number, number][];
+/**
+ * Map crop-local point coordinates back to source coordinates.
+ *
+ * Inverse of {@link cropPoints}: adds the crop origin `(x1, y1)` to every
+ * coordinate. NaN coordinates are preserved.
+ *
+ * @param points Crop-local coordinates.
+ * @param crop Crop region `[x1, y1, x2, y2]` (x2/y2 exclusive).
+ * @returns Source-frame coordinates (a copy; input unmutated).
+ */
+declare function uncropPoints<T extends FlatPoints>(points: T, crop: CropRect): T;
+declare function uncropPoints(points: PointPairs, crop: CropRect): [number, number][];
+
+/**
+ * Frame-level crop transform for virtual cropping.
+ *
+ * Ported from Python `sleap_io/transform/frame.py` ({@link crop_frame}). Crops a
+ * decoded frame to a rectangle, padding any out-of-bounds region with a fill
+ * value (the OOB region is padded, NOT clamped — pixels outside the source are
+ * the fill value, not the nearest edge pixel).
+ *
+ * This function is PURE and synchronous: it reads pixels directly. It therefore
+ * cannot accept a raw `ImageBitmap` (whose pixels are not synchronously
+ * readable) and throws a clear error if given one — the video backend is
+ * responsible for rasterizing an `ImageBitmap` to `ImageData` first.
+ *
+ * Browser-safe: no Node-only imports.
+ */
+
+/**
+ * A raw pixel buffer with explicit dimensions and channel count. Channels are
+ * interleaved (e.g. `[r, g, b, a, r, g, b, ...]` for `channels: 4`, or a single
+ * lane per pixel for grayscale `channels: 1`). `channels` defaults to 1.
+ */
+interface RawFrame {
+    data: Uint8Array | Uint8ClampedArray;
+    width: number;
+    height: number;
+    channels?: number;
+}
+/**
+ * Anything {@link cropFrame} can read pixels from: a browser `ImageData`
+ * (always 4-channel RGBA) or a {@link RawFrame} with a threaded channel count.
+ */
+type FrameLike = ImageData | RawFrame;
+/**
+ * Per-pixel fill for out-of-bounds regions: a single scalar applied to every
+ * channel, or one value per channel.
+ */
+type Fill = number | number[];
+/**
+ * Crop a decoded frame to `crop`, padding out-of-bounds regions with `fill`.
+ *
+ * Mirrors Python `crop_frame`: the source rectangle is clamped to the frame
+ * bounds (so a crop lying wholly off one axis yields an empty source slice
+ * rather than a negative extent), an output buffer of the cropped size is
+ * allocated and filled with `fill`, and the valid source slice is pasted at
+ * `(srcX1 - x1, srcY1 - y1)`. The channel count is preserved from the input.
+ *
+ * @param frame Decoded source frame (`ImageData` RGBA or a {@link RawFrame}).
+ *   A raw `ImageBitmap` is rejected — rasterize it first.
+ * @param crop Crop region `[x1, y1, x2, y2]` (x2/y2 exclusive).
+ * @param fill OOB pad value (scalar applied to all channels, or per-channel).
+ * @returns For an `ImageData` input, an `ImageData`-shaped RGBA result; for a
+ *   {@link RawFrame} input, a {@link RawFrame} with the same channel count.
+ */
+declare function cropFrame(frame: ImageData, crop: CropRect, fill?: Fill): ImageData;
+declare function cropFrame(frame: RawFrame, crop: CropRect, fill?: Fill): RawFrame;
+
+/**
+ * Bounding-box / region specs accepted by {@link Video.crop} and
+ * {@link Video.fromCrop} (in addition to an explicit `crop` rect).
+ *
+ * Exactly one region spec must be provided across `crop` (the positional rect),
+ * `bbox`, `roi`, or the (`center`, `size`) pair. Mirrors the keyword arguments
+ * of Python `Video.crop` / `_resolve_crop_rect`.
+ */
+interface CropOptions {
+    /** A bounding box `[x1, y1, x2, y2]`; bounds may be float (floor/ceil). */
+    bbox?: [number, number, number, number];
+    /**
+     * An object exposing axis-aligned `.bounds` as `[minx, miny, maxx, maxy]`
+     * (e.g. a shapely-like geometry). `margin` is applied symmetrically around it.
+     */
+    roi?: {
+        bounds: [number, number, number, number];
+    };
+    /** Window center `[cx, cy]` (used with `size`). */
+    center?: [number, number];
+    /** Fixed output `[width, height]` (used with `center`). */
+    size?: [number, number];
+    /** Pixels added around the `roi` bounds on every side. Default `0`. */
+    margin?: number;
+    /** Fill value for out-of-bounds regions. Default `0`. */
+    fill?: Fill;
+    /**
+     * If `true` (the default), reuse this video's backend as the shared inner so a
+     * mosaic of tiles over one file decodes each source frame once; in that case
+     * the new tile does NOT own the shared decoder. Maps to
+     * `ownsInner = !shareDecode` on {@link CropVideoBackend.wrap}.
+     */
+    shareDecode?: boolean;
+}
+/**
+ * Resolve a crop region spec into an integer `[x1, y1, x2, y2]` rect.
+ *
+ * Port of Python `_resolve_crop_rect` (video.py:24-99). Exactly one region spec
+ * must be provided: an explicit `crop` rect, a `bbox`, a `roi` (its axis-aligned
+ * bounds + `margin`), or a (`center`, `size`) pair for a fixed-shape centered
+ * window. Float bounds are rounded OUTWARD (floor of the mins, ceil of the maxs)
+ * so the integer rect always *contains* the requested region; the centered
+ * window uses `round` so the output shape is exactly `size`. Truncation toward
+ * zero is never used for the float paths (the explicit `crop` path matches
+ * Python's `int()` truncation).
+ *
+ * @param crop Explicit crop region `[x1, y1, x2, y2]`, x2/y2 exclusive.
+ * @param opts One of `bbox` / `roi` / (`center` + `size`), plus `margin`.
+ * @returns An integer crop region `[x1, y1, x2, y2]`, possibly out of bounds.
+ * @throws Error If not exactly one region spec is provided, `center`/`size` are
+ *   not given together, or the resolved rect is inverted (`x2 < x1`/`y2 < y1`).
+ */
+declare function resolveCropRect(crop?: CropRect | null, opts?: CropOptions): CropRect;
 declare class Video {
     filename: string | string[];
     backend: VideoBackend | null;
@@ -37,6 +198,88 @@ declare class Video {
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
     getFrameTimes(): Promise<number[] | null>;
     close(): void;
+    /**
+     * Return a virtual, on-read cropped view of this video.
+     *
+     * Port of Python `Video.crop` (video.py:304-389). Exactly one region spec must
+     * be given: an explicit `crop` rect (the positional argument), or one of
+     * `bbox` / `roi` / (`center` + `size`) via {@link CropOptions}. The returned
+     * `Video` shares no pixels with this one; frames are decoded on read and
+     * cropped, with out-of-bounds regions pad-filled with `fill` (never clamped),
+     * so the output shape is always exactly `[y2 - y1, x2 - x1]`.
+     *
+     * The crop composes (FLATTENS when fills agree and the region is in-bounds)
+     * with any existing crop via {@link CropVideoBackend.wrap}. `sourceVideo` is
+     * set to this video for provenance, and `backendMetadata` is seeded with the
+     * cropped `shape`, the uncropped `source_shape`, the composed `crop` rect, and
+     * `crop_fill` so a closed re-serialize and a close/open round-trip keep the
+     * crop. When `shareDecode` (the default), the new crop reuses this video's
+     * backend as the shared inner (the new tile does NOT own the decoder).
+     *
+     * @param crop Explicit crop region `[x1, y1, x2, y2]`, x2/y2 exclusive.
+     * @param opts One of `bbox` / `roi` / (`center` + `size`), plus `margin`,
+     *   `fill`, and `shareDecode`.
+     * @returns A new `Video` exposing the cropped view.
+     * @throws Error If there is no backend to crop, or the region spec is invalid.
+     */
+    crop(crop?: CropRect | null, opts?: CropOptions): Video;
+    /**
+     * Crop a `Video` and return a virtual cropped view.
+     *
+     * Port of Python `Video.from_crop` (video.py:391-440). Accepts the same region
+     * specs as {@link crop}. Unlike Python (which can open a path via
+     * `from_filename`), the JS port has no generic filesystem-backed open facade,
+     * so `video` must already be a `Video` with a backend; passing a path string
+     * throws.
+     *
+     * @param video An existing `Video` to crop.
+     * @param crop Explicit crop region `[x1, y1, x2, y2]`, x2/y2 exclusive.
+     * @param opts One of `bbox` / `roi` / (`center` + `size`), plus `margin`,
+     *   `fill`, and `shareDecode`.
+     * @returns A new `Video` exposing the cropped view.
+     * @throws Error If `video` is a path string (unsupported in the JS port).
+     */
+    static fromCrop(video: Video | string, crop?: CropRect | null, opts?: CropOptions): Video;
+    /**
+     * Return this video's crop rect `[x1, y1, x2, y2]` or `null`.
+     *
+     * Port of Python `Video._crop_tuple` (video.py:442-454). Reads `backend.crop`
+     * when the backend is a {@link CropVideoBackend} (open path), else
+     * `backendMetadata.crop` (closed path), else `null` (uncropped).
+     */
+    _cropTuple(): CropRect | null;
+    /**
+     * Return this video's crop fill value (open: backend; closed: metadata).
+     *
+     * Port of Python `Video._crop_fill` (video.py:456-465). Returns `0` for an
+     * uncropped video.
+     */
+    _cropFill(): Fill;
+    /** Whether this video is a virtual crop of another video. */
+    get isCropped(): boolean;
+    /** Crop rect `[x1, y1, x2, y2]` in source coords, or `null` if uncropped. */
+    get cropRect(): CropRect | null;
+    /** The out-of-bounds fill value for this video's crop (`0` if uncropped). */
+    get cropFill(): Fill;
+    /**
+     * Map source-frame `(x, y)` coordinates into this video's cropped frame.
+     *
+     * Port of Python `Video.to_crop_coords` (video.py:482-494). If this video is
+     * not cropped, a copy of `points` is returned unchanged (NaN preserved).
+     * Accepts a flat interleaved buffer or an array of `[x, y]` pairs and returns
+     * the same kind.
+     */
+    toCropCoords<T extends FlatPoints>(points: T): T;
+    toCropCoords(points: PointPairs): [number, number][];
+    /**
+     * Map cropped-frame `(x, y)` coordinates back to source-frame coordinates.
+     *
+     * Port of Python `Video.to_source_coords` (video.py:496-510). Inverse of
+     * {@link toCropCoords}. If this video is not cropped, a copy of `points` is
+     * returned unchanged (NaN preserved).
+     */
+    toSourceCoords<T extends FlatPoints>(points: T): T;
+    toSourceCoords(points: PointPairs): [number, number][];
     /**
      * Check if this video has the same path as another video.
      *
@@ -2364,6 +2607,133 @@ declare function createVideoBackend(source: string | File | Blob, options?: {
     backend?: VideoBackendType;
 }): Promise<VideoBackend>;
 
+/** Options for {@link CropVideoBackend.wrap}. */
+interface CropWrapOptions {
+    /** The backend to wrap (may itself be a `CropVideoBackend`). */
+    inner: VideoBackend;
+    /** Outer crop region `[x1, y1, x2, y2]` (x2/y2 exclusive), in inner coords. */
+    crop: CropRect;
+    /** OOB pad value (scalar applied to all channels, or per-channel). Default 0. */
+    fill?: Fill;
+    /** Whether `close()` cascades to `inner.close()`. Default `true`. */
+    ownsInner?: boolean;
+}
+/**
+ * Virtual, axis-aligned, on-read crop of an inner {@link VideoBackend}.
+ *
+ * Implements the {@link VideoBackend} interface, reporting a cropped
+ * `[F, h, w, c]` view: {@link getFrame} decodes the inner full frame, normalizes
+ * it to readable pixels (rasterizing an opaque `ImageBitmap` / decoding
+ * undecoded encoded bytes as needed), then applies the pure {@link cropFrame}
+ * primitive. The frame count is unchanged (a crop is spatial).
+ *
+ * Always construct via {@link CropVideoBackend.wrap} (never the raw constructor)
+ * so the "inner is never a crop" invariant and the fill-aware flatten law hold
+ * by construction.
+ */
+declare class CropVideoBackend implements VideoBackend {
+    /** Derived from `inner.filename`. */
+    filename: string | string[];
+    /**
+     * The wrapped source backend. Decodes full frames; this wrapper crops them.
+     * Invariant: `inner` is never itself a `CropVideoBackend` (enforced by
+     * {@link wrap}).
+     */
+    readonly inner: VideoBackend;
+    /** Crop region `[x1, y1, x2, y2]`, x2/y2 exclusive (source px, may be OOB). */
+    readonly crop: CropRect;
+    /** Fill value for out-of-bounds regions, forwarded to `cropFrame`. */
+    readonly fill: Fill;
+    /**
+     * Whether this wrapper owns the inner backend's decode handle. When `true`
+     * (the default), {@link close} cascades to `inner.close()`; when `false` (a
+     * shared-decode mosaic tile), it does not, so closing one tile does not tear
+     * down siblings sharing the inner.
+     */
+    readonly ownsInner: boolean;
+    /**
+     * Private-by-convention constructor: prefer {@link CropVideoBackend.wrap},
+     * which enforces the flatten law and the "inner is never a crop" invariant.
+     */
+    private constructor();
+    /**
+     * Wrap `inner` in a crop view, flattening crop-of-crop when safe.
+     *
+     * Flattens (composes into a single wrapper) ONLY when `inner` is itself a
+     * `CropVideoBackend`, the fills agree, AND the outer crop lies fully within
+     * the inner cropped frame `[0, iw] x [0, ih]` (`iw = ix2 - ix1`,
+     * `ih = iy2 - iy1`). Otherwise it nests, preserving byte-parity:
+     *
+     * - Different fills: the inner crop's materialized pad of value `inner.fill`
+     *   would be silently replaced after a flatten.
+     * - Outer crop exceeds the inner frame: a flatten would read real source
+     *   pixels where the nested view pads with `fill`.
+     *
+     * The flatten composition law expresses the outer rect in source coordinates:
+     * `(ix1 + ox1, iy1 + oy1, ix1 + ox2, iy1 + oy2)`. A flattened `inner` is
+     * always unwrapped to `inner.inner` so the "inner is never a crop" invariant
+     * holds.
+     */
+    static wrap(options: CropWrapOptions): CropVideoBackend;
+    /** Inner backend's dataset name (delegated; `null`/`undefined` if absent). */
+    get dataset(): string | null | undefined;
+    /** Inner backend's frame rate (delegated). */
+    get fps(): number | undefined;
+    /**
+     * Cropped frame shape `[F, h, w, c]`.
+     *
+     * Frame count and channel count come from the inner (a crop is spatial and
+     * channel-preserving); height/width are the crop extents. Returns `undefined`
+     * only when the inner has no resolved shape.
+     */
+    get shape(): [number, number, number, number] | undefined;
+    /**
+     * Read a single cropped frame.
+     *
+     * Decodes the inner full frame, normalizes it to readable pixels (rasterizing
+     * an opaque `ImageBitmap`, decoding undecoded encoded bytes, or wrapping raw
+     * pixel bytes), then applies {@link cropFrame} with this wrapper's crop/fill.
+     * Returns `null` when the inner returns `null` (no such frame).
+     */
+    getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    /**
+     * Normalize any {@link VideoFrame} into something {@link cropFrame} can read
+     * pixels from synchronously: an `ImageData` or a {@link RawFrame}.
+     *
+     * - `ImageData`-shaped: returned as-is.
+     * - `ImageBitmap`: rasterized to `ImageData` (OffscreenCanvas / skia-canvas).
+     * - Encoded bytes (PNG/JPEG): decoded to `ImageData`.
+     * - Raw pixel bytes: wrapped as a {@link RawFrame} using the inner shape's
+     *   width/height/channels.
+     */
+    private toReadable;
+    /** Inner backend's per-frame presentation times (delegated; a crop is spatial). */
+    getFrameTimes(): Promise<number[] | null>;
+    /**
+     * Map source-frame `(x, y)` coordinates into the cropped frame.
+     *
+     * Translates by `-(x1, y1)` (copy-based, NaN-preserving). Accepts a flat
+     * interleaved buffer or an array of `[x, y]` pairs and returns the same kind.
+     */
+    toCropCoords<T extends FlatPoints>(points: T): T;
+    toCropCoords(points: PointPairs): [number, number][];
+    /**
+     * Map cropped-frame `(x, y)` coordinates back to source coordinates.
+     *
+     * Inverse of {@link toCropCoords}: translates by `+(x1, y1)` (copy-based,
+     * NaN-preserving).
+     */
+    toSourceCoords<T extends FlatPoints>(points: T): T;
+    toSourceCoords(points: PointPairs): [number, number][];
+    /**
+     * Release this wrapper's handle and the inner's, if owned.
+     *
+     * Cascades to `inner.close()` only when {@link ownsInner} (a shared-decode
+     * mosaic tile leaves the shared inner open for its siblings).
+     */
+    close(): void;
+}
+
 type SlpSource = string | ArrayBuffer | Uint8Array | File | FileSystemFileHandle;
 type StreamMode = "auto" | "range" | "download";
 type OpenH5Options = {
@@ -3284,4 +3654,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { type MergeStrategy as $, STRUCTURE_SKELETON_MATCHER as A, BoundingBox as B, ConflictResolution as C, SUBSET_SKELETON_MATCHER as D, ErrorMode as E, FrameStrategy as F, DUPLICATE_MATCHER as G, IOU_MATCHER as H, InstanceMatchMethod as I, IDENTITY_INSTANCE_MATCHER as J, IDENTITY_TRACK_MATCHER as K, Labels as L, MergeError as M, NAME_TRACK_MATCHER as N, OVERLAP_SKELETON_MATCHER as O, AUTO_VIDEO_MATCHER as P, PATH_VIDEO_MATCHER as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, BASENAME_VIDEO_MATCHER as W, IMAGE_DEDUP_VIDEO_MATCHER as X, SHAPE_VIDEO_MATCHER as Y, setFsResolver as Z, type FsResolver as _, LabeledFrame as a, type LabelImageFileReader as a$, _annotationCentroidXy as a0, _findAnnotationMatches as a1, _resolveMergedIsNegative as a2, SuggestionFrame as a3, rodriguesTransformation as a4, Camera as a5, CameraGroup as a6, InstanceGroup as a7, FrameGroup as a8, RecordingSession as a9, type CentroidOptions as aA, Centroid as aB, UserCentroid as aC, PredictedCentroid as aD, type LabelImageObjectInfo as aE, type LabelImageOptions as aF, LabelImage as aG, UserLabelImage as aH, PredictedLabelImage as aI, normalizeLabelIds as aJ, type VideoFrame as aK, type VideoBackend as aL, Mp4BoxVideoBackend as aM, type MediaBunnyOptions as aN, MediaBunnyVideoBackend as aO, StreamingHdf5VideoBackend as aP, loadSlp as aQ, saveSlp as aR, loadAnalysisH5 as aS, saveAnalysisH5 as aT, loadSlpSet as aU, saveSlpSet as aV, loadVideo as aW, loadLabelImages as aX, setLabelImageFileReader as aY, type PagesAs as aZ, type LoadLabelImagesOptions as a_, makeCameraFromDict as aa, Identity as ab, Instance3D as ac, PredictedInstance3D as ad, LazyDataStore as ae, LazyFrameList as af, _registerMaskFactory as ag, AnnotationType as ah, type Geometry as ai, type ROIOptions as aj, rasterizeGeometry as ak, encodeWkb as al, decodeWkb as am, PredictedROI as an, encodeRle as ao, decodeRle as ap, resizeNearest as aq, type SegmentationMaskOptions as ar, SegmentationMask as as, UserSegmentationMask as at, PredictedSegmentationMask as au, type BoundingBoxOptions as av, UserBoundingBox as aw, PredictedBoundingBox as ax, getCentroidSkeleton as ay, CENTROID_SKELETON as az, LabelsSet as b, saveSlpToBytes as b0, isAnalysisH5File as b1, type GeoJSONFeature as b2, type GeoJSONFeatureCollection as b3, roisToGeoJSON as b4, roisFromGeoJSON as b5, writeGeoJSON as b6, readGeoJSON as b7, type LabelsDict as b8, toDict as b9, drawDiamond as bA, drawTriangle as bB, drawCross as bC, drawTrails as bD, getMarkerFunction as bE, MARKER_FUNCTIONS as bF, type DrawTrailsOptions as bG, resolveTrailNode as bH, computeTrails as bI, nTrailPaletteColors as bJ, collectTracks as bK, type TrailTarget as bL, type Trail as bM, RenderContext as bN, InstanceContext as bO, drawMasks as bP, drawLabelImage as bQ, drawBboxes as bR, drawRois as bS, applyOverlay as bT, type RawLabelImage as bU, fromDict as ba, toNumpy as bb, fromNumpy as bc, labelsFromNumpy as bd, decodeYamlSkeleton as be, encodeYamlSkeleton as bf, readSkeletonJson as bg, readTrainingConfigSkeletons as bh, readTrainingConfigSkeleton as bi, isTrainingConfig as bj, type RGB as bk, type RGBA as bl, type ColorSpec as bm, type ColorScheme as bn, type PaletteName as bo, type MarkerShape as bp, type Overlay as bq, type VideoOverlay as br, NAMED_COLORS as bs, PALETTES as bt, getPalette as bu, resolveColor as bv, rgbToCSS as bw, determineColorScheme as bx, drawCircle as by, drawSquare as bz, type RenderOptions as c, type VideoOptions as d, SeqHeader as e, SeqIndex as f, BlobByteSource as g, type ByteSource as h, createVideoBackend as i, type VideoBackendType as j, StreamingH5File as k, openH5Worker as l, isStreamingSupported as m, type StreamingH5Source as n, openStreamingH5 as o, SkeletonMatchMethod as p, VideoMatchMethod as q, readSlpStreaming as r, SkeletonMatcher as s, InstanceMatcher as t, TrackMatcher as u, VideoMatcher as v, SkeletonMismatchError as w, MergeResult as x, MatchResult as y, MergeProgressBar as z };
+export { setFsResolver as $, MatchResult as A, BoundingBox as B, CropVideoBackend as C, MergeProgressBar as D, ErrorMode as E, FrameStrategy as F, STRUCTURE_SKELETON_MATCHER as G, SUBSET_SKELETON_MATCHER as H, InstanceMatchMethod as I, DUPLICATE_MATCHER as J, IOU_MATCHER as K, Labels as L, MergeError as M, IDENTITY_INSTANCE_MATCHER as N, OVERLAP_SKELETON_MATCHER as O, NAME_TRACK_MATCHER as P, IDENTITY_TRACK_MATCHER as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, AUTO_VIDEO_MATCHER as W, PATH_VIDEO_MATCHER as X, BASENAME_VIDEO_MATCHER as Y, IMAGE_DEDUP_VIDEO_MATCHER as Z, SHAPE_VIDEO_MATCHER as _, LabeledFrame as a, loadLabelImages as a$, type FsResolver as a0, type MergeStrategy as a1, _annotationCentroidXy as a2, _findAnnotationMatches as a3, _resolveMergedIsNegative as a4, type CropOptions as a5, resolveCropRect as a6, SuggestionFrame as a7, rodriguesTransformation as a8, Camera as a9, UserBoundingBox as aA, PredictedBoundingBox as aB, getCentroidSkeleton as aC, CENTROID_SKELETON as aD, type CentroidOptions as aE, Centroid as aF, UserCentroid as aG, PredictedCentroid as aH, type LabelImageObjectInfo as aI, type LabelImageOptions as aJ, LabelImage as aK, UserLabelImage as aL, PredictedLabelImage as aM, normalizeLabelIds as aN, type VideoFrame as aO, type VideoBackend as aP, Mp4BoxVideoBackend as aQ, type MediaBunnyOptions as aR, MediaBunnyVideoBackend as aS, StreamingHdf5VideoBackend as aT, loadSlp as aU, saveSlp as aV, loadAnalysisH5 as aW, saveAnalysisH5 as aX, loadSlpSet as aY, saveSlpSet as aZ, loadVideo as a_, CameraGroup as aa, InstanceGroup as ab, FrameGroup as ac, RecordingSession as ad, makeCameraFromDict as ae, Identity as af, Instance3D as ag, PredictedInstance3D as ah, LazyDataStore as ai, LazyFrameList as aj, _registerMaskFactory as ak, AnnotationType as al, type Geometry as am, type ROIOptions as an, rasterizeGeometry as ao, encodeWkb as ap, decodeWkb as aq, PredictedROI as ar, encodeRle as as, decodeRle as at, resizeNearest as au, type SegmentationMaskOptions as av, SegmentationMask as aw, UserSegmentationMask as ax, PredictedSegmentationMask as ay, type BoundingBoxOptions as az, LabelsSet as b, type CropRect as b$, setLabelImageFileReader as b0, type PagesAs as b1, type LoadLabelImagesOptions as b2, type LabelImageFileReader as b3, saveSlpToBytes as b4, isAnalysisH5File as b5, type GeoJSONFeature as b6, type GeoJSONFeatureCollection as b7, roisToGeoJSON as b8, roisFromGeoJSON as b9, rgbToCSS as bA, determineColorScheme as bB, drawCircle as bC, drawSquare as bD, drawDiamond as bE, drawTriangle as bF, drawCross as bG, drawTrails as bH, getMarkerFunction as bI, MARKER_FUNCTIONS as bJ, type DrawTrailsOptions as bK, resolveTrailNode as bL, computeTrails as bM, nTrailPaletteColors as bN, collectTracks as bO, type TrailTarget as bP, type Trail as bQ, RenderContext as bR, InstanceContext as bS, drawMasks as bT, drawLabelImage as bU, drawBboxes as bV, drawRois as bW, applyOverlay as bX, type RawLabelImage as bY, cropPoints as bZ, uncropPoints as b_, writeGeoJSON as ba, readGeoJSON as bb, type LabelsDict as bc, toDict as bd, fromDict as be, toNumpy as bf, fromNumpy as bg, labelsFromNumpy as bh, decodeYamlSkeleton as bi, encodeYamlSkeleton as bj, readSkeletonJson as bk, readTrainingConfigSkeletons as bl, readTrainingConfigSkeleton as bm, isTrainingConfig as bn, type RGB as bo, type RGBA as bp, type ColorSpec as bq, type ColorScheme as br, type PaletteName as bs, type MarkerShape as bt, type Overlay as bu, type VideoOverlay as bv, NAMED_COLORS as bw, PALETTES as bx, getPalette as by, resolveColor as bz, type RenderOptions as c, type FlatPoints as c0, type PointPairs as c1, cropFrame as c2, type FrameLike as c3, type RawFrame as c4, type Fill as c5, type VideoOptions as d, SeqHeader as e, SeqIndex as f, BlobByteSource as g, type ByteSource as h, createVideoBackend as i, type VideoBackendType as j, type CropWrapOptions as k, StreamingH5File as l, openH5Worker as m, isStreamingSupported as n, openStreamingH5 as o, type StreamingH5Source as p, SkeletonMatchMethod as q, readSlpStreaming as r, VideoMatchMethod as s, SkeletonMatcher as t, InstanceMatcher as u, TrackMatcher as v, VideoMatcher as w, ConflictResolution as x, SkeletonMismatchError as y, MergeResult as z };

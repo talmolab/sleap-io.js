@@ -547,6 +547,26 @@
   
 
     
+      
+      
+  
+  
+  
+  
+    <li class="md-nav__item">
+      <a href="../cropping/" class="md-nav__link">
+        
+  
+  <span class="md-ellipsis">
+    Virtual Cropping
+  </span>
+  
+
+      </a>
+    </li>
+  
+
+    
   </ul>
 </nav>
                   </div>
@@ -858,6 +878,38 @@
 <li><code>shape</code> and <code>fps</code> have both getters and setters.</li>
 <li><code>getFrame(index, signal?)</code> accepts an optional <code>AbortSignal</code> to cancel in-flight decodes.</li>
 <li><code>getFrameTimes()</code> returns <code>null</code> if the backend does not implement it.</li>
+</ul>
+<h4 id="virtual-crops">Virtual crops<a class="headerlink" href="#virtual-crops" title="Permanent link">&para;</a></h4>
+<p><code>Video.crop</code> returns a virtual, on-read cropped view (no pixels are copied or
+re-encoded). See <a href="../cropping/">Virtual Cropping</a> for the full guide.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">view</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">full</span><span class="p">.</span><span class="nx">crop</span><span class="p">([</span><span class="mf">320</span><span class="p">,</span><span class="w"> </span><span class="mf">200</span><span class="p">,</span><span class="w"> </span><span class="mf">576</span><span class="p">,</span><span class="w"> </span><span class="mf">456</span><span class="p">]);</span><span class="w"> </span><span class="c1">// [x1, y1, x2, y2], x2/y2 exclusive</span>
+<span class="nx">view</span><span class="p">.</span><span class="nx">shape</span><span class="p">;</span><span class="w"> </span><span class="c1">// [frames, 256, 256, channels]</span>
+<span class="nx">view</span><span class="p">.</span><span class="nx">cropRect</span><span class="p">;</span><span class="w"> </span><span class="c1">// [320, 200, 576, 456]</span>
+<span class="nx">view</span><span class="p">.</span><span class="nx">isCropped</span><span class="p">;</span><span class="w"> </span><span class="c1">// true</span>
+<span class="nx">view</span><span class="p">.</span><span class="nx">cropFill</span><span class="p">;</span><span class="w"> </span><span class="c1">// 0</span>
+<span class="nx">view</span><span class="p">.</span><span class="nx">sourceVideo</span><span class="w"> </span><span class="o">===</span><span class="w"> </span><span class="nx">full</span><span class="p">;</span><span class="w"> </span><span class="c1">// true</span>
+
+<span class="c1">// Region specs (exactly one): explicit rect, bbox, roi, or center+size.</span>
+<span class="nx">full</span><span class="p">.</span><span class="nx">crop</span><span class="p">(</span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">bbox</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">x1</span><span class="p">,</span><span class="w"> </span><span class="nx">y1</span><span class="p">,</span><span class="w"> </span><span class="nx">x2</span><span class="p">,</span><span class="w"> </span><span class="nx">y2</span><span class="p">]</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">full</span><span class="p">.</span><span class="nx">crop</span><span class="p">(</span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">roi</span><span class="o">:</span><span class="w"> </span><span class="kt">myRoi</span><span class="p">,</span><span class="w"> </span><span class="nx">margin</span><span class="o">:</span><span class="w"> </span><span class="kt">8</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">full</span><span class="p">.</span><span class="nx">crop</span><span class="p">(</span><span class="kc">null</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">center</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="nx">cx</span><span class="p">,</span><span class="w"> </span><span class="nx">cy</span><span class="p">],</span><span class="w"> </span><span class="nx">size</span><span class="o">:</span><span class="w"> </span><span class="p">[</span><span class="mf">128</span><span class="p">,</span><span class="w"> </span><span class="mf">128</span><span class="p">],</span><span class="w"> </span><span class="nx">fill</span><span class="o">:</span><span class="w"> </span><span class="kt">0</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Coordinate helpers (identity passthrough on an uncropped video):</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">local</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">view</span><span class="p">.</span><span class="nx">toCropCoords</span><span class="p">(</span><span class="nx">sourcePts</span><span class="p">);</span><span class="w"> </span><span class="c1">// subtract (x1, y1)</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">back</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">view</span><span class="p">.</span><span class="nx">toSourceCoords</span><span class="p">(</span><span class="nx">local</span><span class="p">);</span><span class="w"> </span><span class="c1">// add (x1, y1)</span>
+</code></pre></div>
+<ul>
+<li><code>Video.crop(crop?, opts?)</code> — one region spec across <code>crop</code> / <code>opts.bbox</code> /
+  <code>opts.roi</code> / (<code>opts.center</code> + <code>opts.size</code>); plus <code>opts.margin</code>, <code>opts.fill</code>
+  (out-of-bounds pad value, default <code>0</code>), and <code>opts.shareDecode</code> (default <code>true</code>,
+  reuse the source decoder for mosaics).</li>
+<li><code>Video.fromCrop(video, crop?, opts?)</code> — static wrapper around <code>video.crop(...)</code>
+  (<code>video</code> must be a <code>Video</code>; path strings are unsupported in the JS port).</li>
+<li>Getters: <code>isCropped</code>, <code>cropRect</code> (<code>[x1,y1,x2,y2] | null</code>), <code>cropFill</code>.</li>
+<li><code>toCropCoords(pts)</code> / <code>toSourceCoords(pts)</code> — NaN-preserving copies; accept
+  <code>[x,y]</code> pairs or a flat interleaved buffer.</li>
+<li>Standalone primitives: <code>cropPoints</code>, <code>uncropPoints</code>, <code>cropFrame</code>, and the
+  <code>CropVideoBackend</code> class are all exported (browser-safe).</li>
 </ul>
 <h3 id="mp4boxvideobackend"><code>Mp4BoxVideoBackend</code><a class="headerlink" href="#mp4boxvideobackend" title="Permanent link">&para;</a></h3>
 <p>Browser-only backend for <code>.mp4</code> with WebCodecs + mp4box. Supports range requests when the server honors <code>Range</code> and falls back to full download.</p>
@@ -1274,7 +1326,8 @@
 <p>Static ROIs (video-level, e.g. arena boundaries) live on <code>labels.staticRois</code>. Use <code>labels.addStaticRoi(roi)</code> to add one — the method also registers the ROI's track on <code>labels.tracks</code> if present:</p>
 <div class="highlight"><pre><span></span><code><span class="nx">labels</span><span class="p">.</span><span class="nx">addStaticRoi</span><span class="p">(</span><span class="nx">arenaRoi</span><span class="p">);</span>
 </code></pre></div>
-<p>The SLP format version is set automatically based on content:</p>
+<h4 id="slp-format-versions">SLP format versions<a class="headerlink" href="#slp-format-versions" title="Permanent link">&para;</a></h4>
+<p>The SLP format version (<code>format_id</code>) is set automatically based on content:</p>
 <table>
 <thead>
 <tr>
@@ -1315,8 +1368,32 @@
 <td>2.2</td>
 <td>Chunked label image storage</td>
 </tr>
+<tr>
+<td>2.3</td>
+<td>Virtual video crops present</td>
+</tr>
 </tbody>
 </table>
+<h5 id="virtual-crops-format-23">Virtual Crops (Format 2.3+)<a class="headerlink" href="#virtual-crops-format-23" title="Permanent link">&para;</a></h5>
+<p>A <a href="../cropping/">virtually-cropped video</a> stores its crop rect in a dedicated
+top-level <code>/video_crops</code> dataset (a single JSON string), written <strong>only when at
+least one video is cropped</strong>. Its <code>videos_json</code> entry describes the <strong>uncropped
+source</strong>, and its <code>source_video</code> is the uncropped original — so a reader that does
+not understand <code>/video_crops</code> simply loads the full-frame source (a graceful, lossy
+degrade, never an error).</p>
+<div class="highlight"><pre><span></span><code><span class="p">[</span>
+<span class="w">  </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;video&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">2</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;crop&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">128</span><span class="p">,</span><span class="w"> </span><span class="mi">96</span><span class="p">,</span><span class="w"> </span><span class="mi">384</span><span class="p">,</span><span class="w"> </span><span class="mi">352</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;fill&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">},</span>
+<span class="w">  </span><span class="p">{</span><span class="w"> </span><span class="nt">&quot;video&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">5</span><span class="p">,</span><span class="w"> </span><span class="nt">&quot;crop&quot;</span><span class="p">:</span><span class="w"> </span><span class="p">[</span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">0</span><span class="p">,</span><span class="w"> </span><span class="mi">256</span><span class="p">,</span><span class="w"> </span><span class="mi">256</span><span class="p">],</span><span class="w"> </span><span class="nt">&quot;fill&quot;</span><span class="p">:</span><span class="w"> </span><span class="mi">0</span><span class="w"> </span><span class="p">}</span>
+<span class="p">]</span>
+</code></pre></div>
+<ul>
+<li><code>video</code> — integer index into the <code>videos_json</code> video list.</li>
+<li><code>crop</code> — <code>[x1, y1, x2, y2]</code> in <strong>source</strong> pixel coordinates, <code>x2</code>/<code>y2</code> exclusive.</li>
+<li><code>fill</code> — out-of-bounds fill value (regions outside the source are padded, not
+  clamped).</li>
+</ul>
+<p>The presence of any crop bumps <code>format_id</code> to <code>2.3</code>. Files with no crops are
+byte-identical to earlier versions (no <code>/video_crops</code> dataset, no version bump).</p>
 <h2 id="label-images-dense-segmentation">Label Images (Dense Segmentation)<a class="headerlink" href="#label-images-dense-segmentation" title="Permanent link">&para;</a></h2>
 <p>Dense integer label images for instance segmentation workflows (Cellpose, StarDist, SAM, Mask R-CNN output). Each pixel stores an object ID (0 = background, positive integers = objects) with per-object metadata (track, category, name).</p>
 <p><code>LabelImage</code> is abstract; use <code>UserLabelImage</code> or <code>PredictedLabelImage</code>, or use the static factory methods which return <code>UserLabelImage</code>.</p>

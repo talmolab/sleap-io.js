@@ -2266,6 +2266,10 @@ function shapesCompatible(video1, video2) {
   shape1[1] === shape2[1] && // height
   shape1[2] === shape2[2];
 }
+function basename(path) {
+  const parts = path.split(/[/\\]/);
+  return parts[parts.length - 1];
+}
 function sanitizeFilename(filename) {
   if (/^[a-zA-Z][a-zA-Z0-9+.-]*:\/\//.test(filename)) {
     return filename;
@@ -2363,10 +2367,27 @@ async function _isSameFileDirect(video1, video2) {
   }
   return true;
 }
+function _cropKey(video) {
+  const fn = video._cropTuple;
+  if (typeof fn !== "function") {
+    return null;
+  }
+  const crop = fn.call(video);
+  return crop != null ? [...crop] : null;
+}
+function _cropKeysEqual(key1, key2) {
+  if (key1 == null || key2 == null) {
+    return key1 === key2;
+  }
+  return key1[0] === key2[0] && key1[1] === key2[1] && key1[2] === key2[2] && key1[3] === key2[3];
+}
 async function isSameFile(video1, video2) {
   const root1 = _getRootVideo(video1);
   const root2 = _getRootVideo(video2);
-  return _isSameFileDirect(root1, root2);
+  if (!await _isSameFileDirect(root1, root2)) {
+    return false;
+  }
+  return _cropKeysEqual(_cropKey(video1), _cropKey(video2));
 }
 async function originalVideosConflict(video1, video2) {
   const root1 = _getRootVideo(video1);
@@ -2383,6 +2404,22 @@ async function originalVideosConflict(video1, video2) {
     return false;
   }
   return true;
+}
+async function _sameFileDifferentCrop(video1, video2) {
+  if (_cropKeysEqual(_cropKey(video1), _cropKey(video2))) {
+    return false;
+  }
+  const root1 = _getRootVideo(video1);
+  const root2 = _getRootVideo(video2);
+  if (await _isSameFileDirect(root1, root2)) {
+    return true;
+  }
+  const fn1 = root1.filename;
+  const fn2 = root2.filename;
+  if (Array.isArray(fn1) || Array.isArray(fn2)) {
+    return false;
+  }
+  return basename(fn1) === basename(fn2);
 }
 function _getFrameInstances(labels, video, includePredictions) {
   const result = /* @__PURE__ */ new Map();
@@ -2770,6 +2807,9 @@ var VideoMatcher = class {
       if (await originalVideosConflict(video1, video2)) {
         return false;
       }
+      if (await _sameFileDifferentCrop(video1, video2)) {
+        return false;
+      }
       if (await isSameFile(video1, video2)) {
         return true;
       }
@@ -2822,6 +2862,9 @@ var VideoMatcher = class {
         continue;
       }
       if (await originalVideosConflict(candidate, incoming)) {
+        continue;
+      }
+      if (await _sameFileDifferentCrop(candidate, incoming)) {
         continue;
       }
       viable.push(candidate);
@@ -3470,8 +3513,422 @@ var SuggestionFrame = class {
   }
 };
 
+// src/transform/frame.ts
+function isImageData(frame) {
+  return frame.channels === void 0;
+}
+function isImageBitmap(value) {
+  if (typeof ImageBitmap !== "undefined" && value instanceof ImageBitmap) {
+    return true;
+  }
+  const v = value;
+  return v != null && typeof v.width === "number" && typeof v.height === "number" && typeof v.close === "function" && v.data === void 0;
+}
+function frameInfo(frame) {
+  if (isImageData(frame)) {
+    return {
+      data: frame.data,
+      width: frame.width,
+      height: frame.height,
+      channels: 4
+    };
+  }
+  return {
+    data: frame.data,
+    width: frame.width,
+    height: frame.height,
+    channels: frame.channels ?? 1
+  };
+}
+function resolveFill(fill, channels) {
+  if (Array.isArray(fill)) {
+    if (fill.length === channels) return [...fill];
+    if (fill.length === 1) return new Array(channels).fill(fill[0]);
+    const out = new Array(channels);
+    for (let c = 0; c < channels; c++) {
+      out[c] = c < fill.length ? fill[c] : fill[fill.length - 1] ?? 0;
+    }
+    return out;
+  }
+  return new Array(channels).fill(fill);
+}
+function asImageData(data, width, height) {
+  if (typeof globalThis !== "undefined" && typeof globalThis.ImageData !== "undefined") {
+    return new ImageData(data, width, height);
+  }
+  return { data, width, height, colorSpace: "srgb" };
+}
+function cropFrame(frame, crop, fill = 0) {
+  if (isImageBitmap(frame)) {
+    throw new Error(
+      "cropFrame cannot crop a raw ImageBitmap: its pixels are not synchronously readable. Rasterize it to an ImageData (e.g. via OffscreenCanvas or skia-canvas) before cropping. This is handled by CropVideoBackend.getFrame."
+    );
+  }
+  const { data, width: w, height: h, channels } = frameInfo(frame);
+  const [x1, y1, x2, y2] = crop;
+  const cropW = x2 - x1;
+  const cropH = y2 - y1;
+  const srcX1 = Math.max(0, x1);
+  const srcY1 = Math.max(0, y1);
+  const srcX2 = Math.max(srcX1, Math.min(w, x2));
+  const srcY2 = Math.max(srcY1, Math.min(h, y2));
+  const fills = resolveFill(fill, channels);
+  const needsPad = x1 < 0 || y1 < 0 || x2 > w || y2 > h;
+  const outLen = cropW * cropH * channels;
+  const out = data instanceof Uint8ClampedArray ? new Uint8ClampedArray(outLen) : new Uint8Array(outLen);
+  if (needsPad) {
+    for (let i = 0; i < outLen; i += channels) {
+      for (let c = 0; c < channels; c++) out[i + c] = fills[c];
+    }
+  }
+  const pasteX1 = srcX1 - x1;
+  const pasteY1 = srcY1 - y1;
+  const sliceW = srcX2 - srcX1;
+  const sliceH = srcY2 - srcY1;
+  for (let row = 0; row < sliceH; row++) {
+    const srcRowStart = ((srcY1 + row) * w + srcX1) * channels;
+    const dstRowStart = ((pasteY1 + row) * cropW + pasteX1) * channels;
+    const rowLen = sliceW * channels;
+    out.set(data.subarray(srcRowStart, srcRowStart + rowLen), dstRowStart);
+  }
+  if (isImageData(frame)) {
+    return asImageData(out, cropW, cropH);
+  }
+  return { data: out, width: cropW, height: cropH, channels };
+}
+
+// src/transform/points.ts
+function offsetFlat(points, dx, dy) {
+  if (Array.isArray(points)) {
+    const out2 = points.slice();
+    for (let i = 0; i + 1 < out2.length; i += 2) {
+      out2[i] = points[i] + dx;
+      out2[i + 1] = points[i + 1] + dy;
+    }
+    return out2;
+  }
+  const typed = points;
+  const out = typed.slice();
+  for (let i = 0; i + 1 < out.length; i += 2) {
+    out[i] = typed[i] + dx;
+    out[i + 1] = typed[i + 1] + dy;
+  }
+  return out;
+}
+function offsetPairs(points, dx, dy) {
+  return points.map(([x, y]) => [x + dx, y + dy]);
+}
+function cropPoints(points, crop) {
+  const [x1, y1] = crop;
+  if (isPairs(points)) {
+    return offsetPairs(points, -x1, -y1);
+  }
+  return offsetFlat(points, -x1, -y1);
+}
+function uncropPoints(points, crop) {
+  const [x1, y1] = crop;
+  if (isPairs(points)) {
+    return offsetPairs(points, x1, y1);
+  }
+  return offsetFlat(points, x1, y1);
+}
+function isPairs(points) {
+  return Array.isArray(points) && points.length > 0 && Array.isArray(points[0]);
+}
+
+// src/video/crop-backend.ts
+function normFill(fill) {
+  if (Array.isArray(fill)) {
+    return "[" + fill.map((v) => String(Math.trunc(v))).join(",") + "]";
+  }
+  return String(Math.trunc(fill));
+}
+function isImageBitmap2(value) {
+  if (typeof ImageBitmap !== "undefined" && value instanceof ImageBitmap) {
+    return true;
+  }
+  const v = value;
+  return v != null && typeof v.width === "number" && typeof v.height === "number" && typeof v.close === "function" && v.data === void 0;
+}
+function isImageDataLike(value) {
+  const v = value;
+  return v != null && typeof v.width === "number" && typeof v.height === "number" && (v.data instanceof Uint8ClampedArray || v.data instanceof Uint8Array);
+}
+function isEncodedBytes(bytes) {
+  if (bytes.length < 4) return false;
+  const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+  const png = bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
+  return jpeg || png;
+}
+async function rasterizeBitmap(bitmap) {
+  if (typeof OffscreenCanvas !== "undefined") {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Failed to get 2D context to rasterize a cropped frame");
+    }
+    ctx.drawImage(bitmap, 0, 0);
+    return ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  }
+  try {
+    const sc = await import("skia-canvas");
+    const Canvas = sc.Canvas;
+    const canvas = new Canvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, 0, 0);
+    return ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  } catch (err) {
+    throw new Error(
+      `Cropping a frame returned as an ImageBitmap requires an image rasterizer (a browser with OffscreenCanvas, or the optional \`skia-canvas\` package on Node). Original error: ${err.message}`
+    );
+  }
+}
+async function decodeEncoded(bytes) {
+  if (typeof createImageBitmap !== "undefined" && typeof OffscreenCanvas !== "undefined") {
+    const safe = new Uint8Array(bytes);
+    const bitmap = await createImageBitmap(new Blob([safe.buffer]));
+    return rasterizeBitmap(bitmap);
+  }
+  try {
+    const sc = await import("skia-canvas");
+    const src = typeof Buffer !== "undefined" ? Buffer.from(bytes) : bytes;
+    const img = await sc.loadImage(src);
+    const Canvas = sc.Canvas;
+    const canvas = new Canvas(img.width, img.height);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    return ctx.getImageData(0, 0, img.width, img.height);
+  } catch (err) {
+    throw new Error(
+      `Cropping a frame returned as undecoded JPEG/PNG bytes requires an image decoder (a browser, or the optional \`skia-canvas\` package on Node). Original error: ${err.message}`
+    );
+  }
+}
+var CropVideoBackend = class _CropVideoBackend {
+  /** Derived from `inner.filename`. */
+  filename;
+  /**
+   * The wrapped source backend. Decodes full frames; this wrapper crops them.
+   * Invariant: `inner` is never itself a `CropVideoBackend` (enforced by
+   * {@link wrap}).
+   */
+  inner;
+  /** Crop region `[x1, y1, x2, y2]`, x2/y2 exclusive (source px, may be OOB). */
+  crop;
+  /** Fill value for out-of-bounds regions, forwarded to `cropFrame`. */
+  fill;
+  /**
+   * Whether this wrapper owns the inner backend's decode handle. When `true`
+   * (the default), {@link close} cascades to `inner.close()`; when `false` (a
+   * shared-decode mosaic tile), it does not, so closing one tile does not tear
+   * down siblings sharing the inner.
+   */
+  ownsInner;
+  /**
+   * Private-by-convention constructor: prefer {@link CropVideoBackend.wrap},
+   * which enforces the flatten law and the "inner is never a crop" invariant.
+   */
+  constructor(inner, crop, fill, ownsInner) {
+    this.inner = inner;
+    this.crop = [
+      Math.trunc(crop[0]),
+      Math.trunc(crop[1]),
+      Math.trunc(crop[2]),
+      Math.trunc(crop[3])
+    ];
+    this.fill = Array.isArray(fill) ? fill.map((v) => Math.trunc(v)) : fill;
+    this.ownsInner = ownsInner;
+    this.filename = inner.filename;
+  }
+  /**
+   * Wrap `inner` in a crop view, flattening crop-of-crop when safe.
+   *
+   * Flattens (composes into a single wrapper) ONLY when `inner` is itself a
+   * `CropVideoBackend`, the fills agree, AND the outer crop lies fully within
+   * the inner cropped frame `[0, iw] x [0, ih]` (`iw = ix2 - ix1`,
+   * `ih = iy2 - iy1`). Otherwise it nests, preserving byte-parity:
+   *
+   * - Different fills: the inner crop's materialized pad of value `inner.fill`
+   *   would be silently replaced after a flatten.
+   * - Outer crop exceeds the inner frame: a flatten would read real source
+   *   pixels where the nested view pads with `fill`.
+   *
+   * The flatten composition law expresses the outer rect in source coordinates:
+   * `(ix1 + ox1, iy1 + oy1, ix1 + ox2, iy1 + oy2)`. A flattened `inner` is
+   * always unwrapped to `inner.inner` so the "inner is never a crop" invariant
+   * holds.
+   */
+  static wrap(options) {
+    let { inner } = options;
+    let crop = [
+      Math.trunc(options.crop[0]),
+      Math.trunc(options.crop[1]),
+      Math.trunc(options.crop[2]),
+      Math.trunc(options.crop[3])
+    ];
+    const fill = options.fill ?? 0;
+    const ownsInner = options.ownsInner ?? true;
+    if (inner instanceof _CropVideoBackend && normFill(inner.fill) === normFill(fill)) {
+      const [ix1, iy1, ix2, iy2] = inner.crop;
+      const [ox1, oy1, ox2, oy2] = crop;
+      const iw = ix2 - ix1;
+      const ih = iy2 - iy1;
+      if (0 <= ox1 && 0 <= oy1 && ox2 <= iw && oy2 <= ih) {
+        crop = [ix1 + ox1, iy1 + oy1, ix1 + ox2, iy1 + oy2];
+        inner = inner.inner;
+      }
+    }
+    return new _CropVideoBackend(inner, crop, fill, ownsInner);
+  }
+  /** Inner backend's dataset name (delegated; `null`/`undefined` if absent). */
+  get dataset() {
+    return this.inner.dataset;
+  }
+  /** Inner backend's frame rate (delegated). */
+  get fps() {
+    return this.inner.fps;
+  }
+  /**
+   * Cropped frame shape `[F, h, w, c]`.
+   *
+   * Frame count and channel count come from the inner (a crop is spatial and
+   * channel-preserving); height/width are the crop extents. Returns `undefined`
+   * only when the inner has no resolved shape.
+   */
+  get shape() {
+    const innerShape = this.inner.shape;
+    if (!innerShape) return void 0;
+    const [x1, y1, x2, y2] = this.crop;
+    return [innerShape[0], y2 - y1, x2 - x1, innerShape[3]];
+  }
+  /**
+   * Read a single cropped frame.
+   *
+   * Decodes the inner full frame, normalizes it to readable pixels (rasterizing
+   * an opaque `ImageBitmap`, decoding undecoded encoded bytes, or wrapping raw
+   * pixel bytes), then applies {@link cropFrame} with this wrapper's crop/fill.
+   * Returns `null` when the inner returns `null` (no such frame).
+   */
+  async getFrame(frameIndex) {
+    const src = await this.inner.getFrame(frameIndex);
+    if (src == null) return null;
+    const readable = await this.toReadable(src);
+    return cropFrame(readable, this.crop, this.fill);
+  }
+  /**
+   * Normalize any {@link VideoFrame} into something {@link cropFrame} can read
+   * pixels from synchronously: an `ImageData` or a {@link RawFrame}.
+   *
+   * - `ImageData`-shaped: returned as-is.
+   * - `ImageBitmap`: rasterized to `ImageData` (OffscreenCanvas / skia-canvas).
+   * - Encoded bytes (PNG/JPEG): decoded to `ImageData`.
+   * - Raw pixel bytes: wrapped as a {@link RawFrame} using the inner shape's
+   *   width/height/channels.
+   */
+  async toReadable(frame) {
+    if (isImageBitmap2(frame)) {
+      return rasterizeBitmap(frame);
+    }
+    if (isImageDataLike(frame)) {
+      return frame;
+    }
+    const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
+    if (isEncodedBytes(bytes)) {
+      return decodeEncoded(bytes);
+    }
+    const innerShape = this.inner.shape;
+    if (!innerShape) {
+      throw new Error(
+        "CropVideoBackend.getFrame received raw pixel bytes but the inner backend has no resolved shape to interpret them. Provide a shape on the inner backend, or use a backend that returns decoded frames."
+      );
+    }
+    const [, height, width, channels] = innerShape;
+    const raw = {
+      data: bytes,
+      width,
+      height,
+      channels
+    };
+    return raw;
+  }
+  /** Inner backend's per-frame presentation times (delegated; a crop is spatial). */
+  async getFrameTimes() {
+    if (typeof this.inner.getFrameTimes === "function") {
+      return this.inner.getFrameTimes();
+    }
+    return null;
+  }
+  toCropCoords(points) {
+    return cropPoints(points, this.crop);
+  }
+  toSourceCoords(points) {
+    return uncropPoints(points, this.crop);
+  }
+  /**
+   * Release this wrapper's handle and the inner's, if owned.
+   *
+   * Cascades to `inner.close()` only when {@link ownsInner} (a shared-decode
+   * mosaic tile leaves the shared inner open for its siblings).
+   */
+  close() {
+    if (this.ownsInner) {
+      this.inner.close();
+    }
+  }
+};
+
 // src/model/video.ts
-var Video = class {
+function resolveCropRect(crop, opts = {}) {
+  const { bbox, roi, center, size, margin = 0 } = opts;
+  if (center == null !== (size == null)) {
+    throw new Error(
+      `center and size must be provided together for a centered window; got center=${JSON.stringify(center)}, size=${JSON.stringify(size)}.`
+    );
+  }
+  const hasCenterSize = center != null && size != null;
+  const nSpecs = (crop != null ? 1 : 0) + (bbox != null ? 1 : 0) + (roi != null ? 1 : 0) + (hasCenterSize ? 1 : 0);
+  if (nSpecs !== 1) {
+    throw new Error(
+      `Exactly one of {crop, bbox, roi, (center, size)} must be provided to specify a crop region, got ${nSpecs}. For a centered window, pass both center and size.`
+    );
+  }
+  let x1;
+  let y1;
+  let x2;
+  let y2;
+  if (crop != null) {
+    x1 = Math.trunc(crop[0]);
+    y1 = Math.trunc(crop[1]);
+    x2 = Math.trunc(crop[2]);
+    y2 = Math.trunc(crop[3]);
+  } else if (bbox != null) {
+    const [bx1, by1, bx2, by2] = bbox;
+    x1 = Math.floor(bx1);
+    y1 = Math.floor(by1);
+    x2 = Math.ceil(bx2);
+    y2 = Math.ceil(by2);
+  } else if (roi != null) {
+    const [minx, miny, maxx, maxy] = roi.bounds;
+    x1 = Math.floor(minx) - margin;
+    y1 = Math.floor(miny) - margin;
+    x2 = Math.ceil(maxx) + margin;
+    y2 = Math.ceil(maxy) + margin;
+  } else {
+    const [cx, cy] = center;
+    const [w, h] = size;
+    x1 = Math.round(cx - w / 2);
+    y1 = Math.round(cy - h / 2);
+    x2 = x1 + Math.round(w);
+    y2 = y1 + Math.round(h);
+  }
+  if (x2 < x1 || y2 < y1) {
+    throw new Error(
+      `Inverted crop rect: x2 (${x2}) < x1 (${x1}) or y2 (${y2}) < y1 (${y1}). Crop bounds must satisfy x2 >= x1 and y2 >= y1.`
+    );
+  }
+  return [x1, y1, x2, y2];
+}
+var Video = class _Video {
   filename;
   backend;
   backendMetadata;
@@ -3523,6 +3980,144 @@ var Video = class {
     this.backend?.close();
   }
   /**
+   * Return a virtual, on-read cropped view of this video.
+   *
+   * Port of Python `Video.crop` (video.py:304-389). Exactly one region spec must
+   * be given: an explicit `crop` rect (the positional argument), or one of
+   * `bbox` / `roi` / (`center` + `size`) via {@link CropOptions}. The returned
+   * `Video` shares no pixels with this one; frames are decoded on read and
+   * cropped, with out-of-bounds regions pad-filled with `fill` (never clamped),
+   * so the output shape is always exactly `[y2 - y1, x2 - x1]`.
+   *
+   * The crop composes (FLATTENS when fills agree and the region is in-bounds)
+   * with any existing crop via {@link CropVideoBackend.wrap}. `sourceVideo` is
+   * set to this video for provenance, and `backendMetadata` is seeded with the
+   * cropped `shape`, the uncropped `source_shape`, the composed `crop` rect, and
+   * `crop_fill` so a closed re-serialize and a close/open round-trip keep the
+   * crop. When `shareDecode` (the default), the new crop reuses this video's
+   * backend as the shared inner (the new tile does NOT own the decoder).
+   *
+   * @param crop Explicit crop region `[x1, y1, x2, y2]`, x2/y2 exclusive.
+   * @param opts One of `bbox` / `roi` / (`center` + `size`), plus `margin`,
+   *   `fill`, and `shareDecode`.
+   * @returns A new `Video` exposing the cropped view.
+   * @throws Error If there is no backend to crop, or the region spec is invalid.
+   */
+  crop(crop, opts = {}) {
+    const rect = resolveCropRect(crop, opts);
+    if (this.backend == null) {
+      throw new Error(
+        "Cannot crop a video with no open backend. Provide a backend (the JS port has no filesystem auto-open) before cropping."
+      );
+    }
+    const fill = opts.fill ?? 0;
+    const shareDecode = opts.shareDecode ?? true;
+    const inner = this.backend;
+    const croppedBackend = CropVideoBackend.wrap({
+      inner,
+      crop: rect,
+      fill,
+      ownsInner: !shareDecode
+    });
+    const [x1, y1, x2, y2] = croppedBackend.crop;
+    const srcShape = this.shape;
+    const cropped = new _Video({
+      filename: this.filename,
+      backend: croppedBackend,
+      sourceVideo: this,
+      openBackend: this.openBackend
+    });
+    cropped.backendMetadata = {
+      ...this.backendMetadata,
+      shape: srcShape != null ? [srcShape[0], y2 - y1, x2 - x1, srcShape[3]] : null,
+      // The uncropped source shape, so a closed re-serialize keeps videos_json
+      // describing the full frame even without a live sourceVideo.
+      source_shape: srcShape != null ? [...srcShape] : null,
+      // COMPOSED source rect from wrap: keeps open/closed crop keys identical and
+      // root-canonical, and survives close()->open().
+      crop: [...croppedBackend.crop],
+      crop_fill: croppedBackend.fill
+    };
+    return cropped;
+  }
+  /**
+   * Crop a `Video` and return a virtual cropped view.
+   *
+   * Port of Python `Video.from_crop` (video.py:391-440). Accepts the same region
+   * specs as {@link crop}. Unlike Python (which can open a path via
+   * `from_filename`), the JS port has no generic filesystem-backed open facade,
+   * so `video` must already be a `Video` with a backend; passing a path string
+   * throws.
+   *
+   * @param video An existing `Video` to crop.
+   * @param crop Explicit crop region `[x1, y1, x2, y2]`, x2/y2 exclusive.
+   * @param opts One of `bbox` / `roi` / (`center` + `size`), plus `margin`,
+   *   `fill`, and `shareDecode`.
+   * @returns A new `Video` exposing the cropped view.
+   * @throws Error If `video` is a path string (unsupported in the JS port).
+   */
+  static fromCrop(video, crop, opts = {}) {
+    if (typeof video === "string") {
+      throw new Error(
+        "Video.fromCrop does not support opening a path string in the JS port (there is no filesystem auto-open). Construct a Video with a backend first, then call Video.fromCrop(video, ...) or video.crop(...)."
+      );
+    }
+    return video.crop(crop, opts);
+  }
+  /**
+   * Return this video's crop rect `[x1, y1, x2, y2]` or `null`.
+   *
+   * Port of Python `Video._crop_tuple` (video.py:442-454). Reads `backend.crop`
+   * when the backend is a {@link CropVideoBackend} (open path), else
+   * `backendMetadata.crop` (closed path), else `null` (uncropped).
+   */
+  _cropTuple() {
+    if (this.backend instanceof CropVideoBackend) {
+      return [...this.backend.crop];
+    }
+    const crop = this.backendMetadata.crop;
+    return crop != null ? [...crop] : null;
+  }
+  /**
+   * Return this video's crop fill value (open: backend; closed: metadata).
+   *
+   * Port of Python `Video._crop_fill` (video.py:456-465). Returns `0` for an
+   * uncropped video.
+   */
+  _cropFill() {
+    if (this.backend instanceof CropVideoBackend) {
+      return this.backend.fill;
+    }
+    const fill = this.backendMetadata.crop_fill;
+    return fill ?? 0;
+  }
+  /** Whether this video is a virtual crop of another video. */
+  get isCropped() {
+    return this._cropTuple() !== null;
+  }
+  /** Crop rect `[x1, y1, x2, y2]` in source coords, or `null` if uncropped. */
+  get cropRect() {
+    return this._cropTuple();
+  }
+  /** The out-of-bounds fill value for this video's crop (`0` if uncropped). */
+  get cropFill() {
+    return this._cropFill();
+  }
+  toCropCoords(points) {
+    const crop = this._cropTuple();
+    if (crop === null) {
+      return copyPoints(points);
+    }
+    return cropPoints(points, crop);
+  }
+  toSourceCoords(points) {
+    const crop = this._cropTuple();
+    if (crop === null) {
+      return copyPoints(points);
+    }
+    return uncropPoints(points, crop);
+  }
+  /**
    * Check if this video has the same path as another video.
    *
    * Port of Python `Video.matches_path` (video.py:637-715). The public default
@@ -3551,7 +4146,7 @@ var Video = class {
         if (strict) {
           return toPosix(selfSource) === toPosix(otherSource);
         }
-        return basename(selfSource) === basename(otherSource);
+        return basename2(selfSource) === basename2(otherSource);
       }
       if (selfDataset !== null && otherDataset !== null) {
         return selfDataset === otherDataset;
@@ -3566,7 +4161,7 @@ var Video = class {
       if (strict) {
         return arraysEqual(selfList, otherList);
       }
-      return arraysEqual(selfList.map(basename), otherList.map(basename));
+      return arraysEqual(selfList.map(basename2), otherList.map(basename2));
     }
     if (selfIsList || otherIsList) {
       return false;
@@ -3576,7 +4171,7 @@ var Video = class {
     if (strict) {
       return toPosix(selfName) === toPosix(otherName);
     }
-    return basename(selfName) === basename(otherName);
+    return basename2(selfName) === basename2(otherName);
   }
   /**
    * Check if this video has the same content as another video.
@@ -3631,9 +4226,9 @@ var Video = class {
     if (!Array.isArray(this.filename) || !Array.isArray(other.filename)) {
       return false;
     }
-    const selfBasenames = new Set(this.filename.map(basename));
+    const selfBasenames = new Set(this.filename.map(basename2));
     for (const f of other.filename) {
-      if (selfBasenames.has(basename(f))) {
+      if (selfBasenames.has(basename2(f))) {
         return true;
       }
     }
@@ -3683,9 +4278,9 @@ var Video = class {
     if (!Array.isArray(other.filename)) {
       throw new Error("Other video must also be ImageVideo backend");
     }
-    const otherBasenames = new Set(other.filename.map(basename));
+    const otherBasenames = new Set(other.filename.map(basename2));
     const deduplicatedPaths = this.filename.filter(
-      (f) => !otherBasenames.has(basename(f))
+      (f) => !otherBasenames.has(basename2(f))
     );
     if (deduplicatedPaths.length === 0) {
       return null;
@@ -3715,14 +4310,14 @@ var Video = class {
     const seenBasenames = /* @__PURE__ */ new Set();
     const mergedPaths = [];
     for (const path of this.filename) {
-      const name = basename(path);
+      const name = basename2(path);
       if (!seenBasenames.has(name)) {
         mergedPaths.push(path);
         seenBasenames.add(name);
       }
     }
     for (const path of other.filename) {
-      const name = basename(path);
+      const name = basename2(path);
       if (!seenBasenames.has(name)) {
         mergedPaths.push(path);
         seenBasenames.add(name);
@@ -3743,7 +4338,18 @@ function makeImageSequenceVideo(paths, grayscale) {
     openBackend: false
   });
 }
-function basename(path) {
+function copyPoints(points) {
+  if (Array.isArray(points)) {
+    if (points.length > 0 && Array.isArray(points[0])) {
+      return points.map(
+        ([x, y]) => [x, y]
+      );
+    }
+    return points.slice();
+  }
+  return points.slice();
+}
+function basename2(path) {
   const parts = path.split(/[/\\]/);
   return parts[parts.length - 1];
 }
@@ -7918,7 +8524,7 @@ async function makeImageData(rgba, width, height) {
     return { data: rgba, width, height, colorSpace: "srgb" };
   }
 }
-async function decodeEncoded(bytes) {
+async function decodeEncoded2(bytes) {
   if (typeof createImageBitmap !== "undefined" && typeof OffscreenCanvas !== "undefined") {
     const safe = new Uint8Array(bytes);
     const bitmap = await createImageBitmap(new Blob([safe.buffer]));
@@ -8092,7 +8698,7 @@ async function decodeFrame(header, data) {
     return makeImageData(rgba, w, h);
   }
   if (codec === "monojpg" || codec === "jpg" || codec === "monopng" || codec === "png") {
-    return decodeEncoded(data);
+    return decodeEncoded2(data);
   }
   throw new Error(`Unsupported .seq codec: ${codec}`);
 }
@@ -9038,7 +9644,8 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   const labelsPath = filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
   const skeletons = parseSkeletons(metadataJson);
   const tracks = await readTracksStreaming(file);
-  const videos = await readVideosStreaming(file, labelsPath, openVideos, formatId);
+  const videoCrops = await readVideoCropsStreaming(file);
+  const videos = await readVideosStreaming(file, labelsPath, openVideos, formatId, videoCrops);
   const suggestions = await readSuggestionsStreaming(file, videos);
   const framesData = await readStructDatasetStreaming(file, "frames");
   const instancesData = await readStructDatasetStreaming(file, "instances");
@@ -9078,7 +9685,47 @@ async function readTracksStreaming(file) {
     return [];
   }
 }
-async function readVideosStreaming(file, labelsPath, openVideos = false, formatId = 1) {
+async function readVideoCropsStreaming(file) {
+  const out = /* @__PURE__ */ new Map();
+  try {
+    const keys = file.keys();
+    if (!keys.includes("video_crops")) return out;
+    const data = await file.getDatasetValue("video_crops");
+    let raw = data.value;
+    if (Array.isArray(raw)) raw = raw[0];
+    let json;
+    if (typeof raw === "string") {
+      json = raw;
+    } else if (raw instanceof Uint8Array) {
+      json = new TextDecoder().decode(raw);
+    } else if (raw != null) {
+      json = String(raw);
+    } else {
+      return out;
+    }
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return out;
+    for (const entry of parsed) {
+      if (!entry || typeof entry !== "object") continue;
+      const videoIdx = Number(entry.video);
+      const cropArr = entry.crop;
+      if (!Array.isArray(cropArr) || cropArr.length !== 4) continue;
+      const crop = [
+        Number(cropArr[0]),
+        Number(cropArr[1]),
+        Number(cropArr[2]),
+        Number(cropArr[3])
+      ];
+      const fillRaw = entry.fill;
+      const fill = Array.isArray(fillRaw) ? fillRaw.map((v) => Number(v)) : Number(fillRaw ?? 0);
+      out.set(videoIdx, { crop, fill });
+    }
+    return out;
+  } catch {
+    return out;
+  }
+}
+async function readVideosStreaming(file, labelsPath, openVideos = false, formatId = 1, videoCrops) {
   try {
     const keys = file.keys();
     if (!keys.includes("videos_json")) return [];
@@ -9140,16 +9787,35 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
           await backend.probeShape(frameCount ?? void 0);
         }
       }
+      let videoBackend = backend;
+      const backendMetadata = {
+        dataset: datasetPath,
+        format,
+        shape,
+        fps: meta.fps,
+        channel_order: channelOrder
+      };
+      const cropEntry = videoCrops?.get(videoIndex);
+      if (cropEntry) {
+        const [cx1, cy1, cx2, cy2] = cropEntry.crop;
+        if (openVideos && videoBackend) {
+          videoBackend = CropVideoBackend.wrap({
+            inner: videoBackend,
+            crop: cropEntry.crop,
+            fill: cropEntry.fill
+          });
+        }
+        if (shape && shape.length === 4) {
+          backendMetadata.source_shape = [...shape];
+          backendMetadata.shape = [shape[0], cy2 - cy1, cx2 - cx1, shape[3]];
+        }
+        backendMetadata.crop = [...cropEntry.crop];
+        backendMetadata.crop_fill = cropEntry.fill;
+      }
       videos.push(new Video({
         filename: meta.filename,
-        backend,
-        backendMetadata: {
-          dataset: datasetPath,
-          format,
-          shape,
-          fps: meta.fps,
-          channel_order: channelOrder
-        },
+        backend: videoBackend,
+        backendMetadata,
         sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
         openBackend: openVideos && meta.embedded,
         embedded: meta.embedded
@@ -9644,6 +10310,7 @@ function writeSlpToFile(file, labels, embeddedVideoData) {
   } else {
     writeVideos(file, labels.videos);
   }
+  writeVideoCrops(file, labels.videos);
   writeTracks(file, labels.tracks);
   writeSuggestions(file, labels.suggestions, labels.videos);
   writeIdentities(file, labels.identities);
@@ -9814,6 +10481,7 @@ function writeSlpToFileLazy(file, labels) {
   }
   writeMetadata(file, labels);
   writeVideos(file, labels.videos);
+  writeVideoCrops(file, labels.videos);
   writeTracks(file, labels.tracks);
   writeSuggestions(file, labels.suggestions, labels.videos);
   writeIdentities(file, labels.identities);
@@ -9994,6 +10662,9 @@ function writeMetadata(file, labels) {
   if (hasSpatialTransform) {
     formatId = Math.max(formatId, 2.1);
   }
+  if (labels.videos.some((v) => v._cropTuple() !== null)) {
+    formatId = Math.max(formatId, 2.3);
+  }
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
@@ -10064,9 +10735,40 @@ function writeVideos(file, videos) {
 function serializeVideo(video) {
   const backend = { ...video.backendMetadata ?? {} };
   if (backend.filename == null) backend.filename = video.filename;
-  if (backend.dataset == null && video.backend?.dataset) backend.dataset = video.backend.dataset;
-  if (backend.shape == null && video.backend?.shape) backend.shape = video.backend.shape;
-  if (backend.fps == null && video.backend?.fps != null) backend.fps = video.backend.fps;
+  const liveBackend = video.backend;
+  if (liveBackend instanceof CropVideoBackend) {
+    const inner = liveBackend.inner;
+    if (inner instanceof CropVideoBackend) {
+      throw new Error(
+        "Cannot serialize a nested crop-of-crop video: the /video_crops format stores a single crop per video. Flatten the crop (use matching fills and an in-bounds region) before saving."
+      );
+    }
+    const innerShape = inner.shape ?? backend.source_shape ?? video.sourceVideo?.shape;
+    if (innerShape != null) backend.shape = [...innerShape];
+    else delete backend.shape;
+    if (inner.dataset != null) backend.dataset = inner.dataset;
+    if (inner.fps != null) backend.fps = inner.fps;
+  } else if (liveBackend == null && "crop" in backend) {
+    let srcShape = null;
+    if (video.sourceVideo?.shape != null) {
+      srcShape = [...video.sourceVideo.shape];
+    } else if (backend.source_shape != null) {
+      srcShape = [...backend.source_shape];
+    }
+    if (srcShape == null) {
+      throw new Error(
+        "Cannot serialize closed cropped video: the uncropped source shape is unavailable (no source_video and no recorded source_shape), so videos_json cannot describe the full frame."
+      );
+    }
+    backend.shape = srcShape;
+  } else {
+    if (backend.dataset == null && liveBackend?.dataset) backend.dataset = liveBackend.dataset;
+    if (backend.shape == null && liveBackend?.shape) backend.shape = liveBackend.shape;
+    if (backend.fps == null && liveBackend?.fps != null) backend.fps = liveBackend.fps;
+  }
+  delete backend.crop;
+  delete backend.crop_fill;
+  delete backend.source_shape;
   const entry = {
     filename: video.filename,
     backend
@@ -10075,6 +10777,17 @@ function serializeVideo(video) {
     entry.source_video = { filename: video.sourceVideo.filename };
   }
   return entry;
+}
+function writeVideoCrops(file, videos) {
+  const crops = [];
+  for (let i = 0; i < videos.length; i++) {
+    const rect = videos[i]._cropTuple();
+    if (rect == null) continue;
+    crops.push({ video: i, crop: [...rect], fill: videos[i]._cropFill() });
+  }
+  if (crops.length === 0) return;
+  const payload = JSON.stringify(crops);
+  file.create_dataset({ name: "video_crops", data: [payload] });
 }
 function writeTracks(file, tracks) {
   const payload = tracks.map((track) => JSON.stringify([SPAWNED_ON, track.name]));
@@ -10415,8 +11128,10 @@ function writeEmbeddedVideos(file, labels, embeddedVideoData) {
         format: embedData.format,
         channel_order: embedData.channelOrder
       };
-      if (video.backend?.shape) backend.shape = video.backend.shape;
-      if (video.backend?.fps != null) backend.fps = video.backend.fps;
+      const inner = video.backend instanceof CropVideoBackend ? video.backend.inner : video.backend;
+      const innerShape = inner?.shape ?? video.backendMetadata?.source_shape;
+      if (innerShape) backend.shape = innerShape;
+      if (inner?.fps != null) backend.fps = inner.fps;
       const entry = {
         filename: ".",
         backend
@@ -11881,7 +12596,8 @@ async function readSlp(source, options) {
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
-    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId);
+    const videoCrops = readVideoCrops(file);
+    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId, videoCrops);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
     const framesData = normalizeStructDataset(file.get("frames"));
     const instancesData = normalizeStructDataset(file.get("instances"));
@@ -12006,7 +12722,8 @@ async function readSlpLazy(source, options) {
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
-    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId);
+    const videoCrops = readVideoCrops(file);
+    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId, videoCrops);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
     const framesData = normalizeStructDataset(file.get("frames"));
     const instancesData = normalizeStructDataset(file.get("instances"));
@@ -12144,7 +12861,49 @@ function readTracks(dataset) {
   }
   return tracks;
 }
-async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
+function readVideoCrops(file) {
+  const out = /* @__PURE__ */ new Map();
+  const keys = file.keys?.() ?? [];
+  if (!keys.includes("video_crops")) return out;
+  const ds = file.get("video_crops");
+  if (!ds) return out;
+  let raw = ds.value;
+  if (Array.isArray(raw)) raw = raw[0];
+  let json;
+  if (typeof raw === "string") {
+    json = raw;
+  } else if (raw instanceof Uint8Array) {
+    json = textDecoder2.decode(raw);
+  } else if (raw != null) {
+    json = String(raw);
+  } else {
+    return out;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return out;
+  }
+  if (!Array.isArray(parsed)) return out;
+  for (const entry of parsed) {
+    if (!entry || typeof entry !== "object") continue;
+    const videoIdx = Number(entry.video);
+    const cropArr = entry.crop;
+    if (!Array.isArray(cropArr) || cropArr.length !== 4) continue;
+    const crop = [
+      Number(cropArr[0]),
+      Number(cropArr[1]),
+      Number(cropArr[2]),
+      Number(cropArr[3])
+    ];
+    const fillRaw = entry.fill;
+    const fill = Array.isArray(fillRaw) ? fillRaw.map((v) => Number(v)) : Number(fillRaw ?? 0);
+    out.set(videoIdx, { crop, fill });
+  }
+  return out;
+}
+async function readVideos(dataset, labelsPath, openVideos, file, formatId, videoCrops) {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const videos = [];
@@ -12197,11 +12956,31 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId) {
       });
     }
     const sourceVideo = parsed.source_video ? new Video({ filename: parsed.source_video.filename ?? "" }) : null;
+    const cropEntry = videoCrops?.get(videoIndex);
+    let backendMetadata = shape !== backendMeta.shape ? { ...backendMeta, shape } : backendMeta;
+    if (cropEntry) {
+      const [cx1, cy1, cx2, cy2] = cropEntry.crop;
+      if (openVideos && backend) {
+        backend = CropVideoBackend.wrap({
+          inner: backend,
+          crop: cropEntry.crop,
+          fill: cropEntry.fill
+        });
+      }
+      backendMetadata = { ...backendMetadata };
+      const innerShape = backendMetadata.shape;
+      if (innerShape && innerShape.length === 4) {
+        backendMetadata.source_shape = [...innerShape];
+        backendMetadata.shape = [innerShape[0], cy2 - cy1, cx2 - cx1, innerShape[3]];
+      }
+      backendMetadata.crop = [...cropEntry.crop];
+      backendMetadata.crop_fill = cropEntry.fill;
+    }
     videos.push(
       new Video({
         filename,
         backend,
-        backendMetadata: shape !== backendMeta.shape ? { ...backendMeta, shape } : backendMeta,
+        backendMetadata,
         sourceVideo,
         openBackend: openVideos,
         embedded
@@ -14055,6 +14834,11 @@ export {
   _resolveMergedIsNegative,
   LabeledFrame,
   SuggestionFrame,
+  cropFrame,
+  cropPoints,
+  uncropPoints,
+  CropVideoBackend,
+  resolveCropRect,
   Video,
   MediaBunnyVideoBackend,
   toDict,

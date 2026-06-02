@@ -9,6 +9,7 @@ import {
   CameraGroup,
   Centroid,
   ConflictResolution,
+  CropVideoBackend,
   DUPLICATE_MATCHER,
   ErrorMode,
   FrameGroup,
@@ -78,6 +79,8 @@ import {
   collectTracks,
   computeTrails,
   createVideoBackend,
+  cropFrame,
+  cropPoints,
   decodeRle,
   decodeWkb,
   decodeYamlSkeleton,
@@ -118,6 +121,7 @@ import {
   readTrainingConfigSkeletons,
   resizeNearest,
   resolveColor,
+  resolveCropRect,
   resolveTrailNode,
   rgbToCSS,
   rodriguesTransformation,
@@ -131,8 +135,9 @@ import {
   setLabelImageFileReader,
   toDict,
   toNumpy,
+  uncropPoints,
   writeGeoJSON
-} from "./chunk-SBO3BLYH.js";
+} from "./chunk-YYFW73PZ.js";
 import {
   Edge,
   Instance,
@@ -162,6 +167,7 @@ export {
   CameraGroup,
   Centroid,
   ConflictResolution,
+  CropVideoBackend,
   DUPLICATE_MATCHER,
   Edge,
   ErrorMode,
@@ -241,6 +247,8 @@ export {
   collectTracks,
   computeTrails,
   createVideoBackend,
+  cropFrame,
+  cropPoints,
   decodeRle,
   decodeWkb,
   decodeYamlSkeleton,
@@ -287,6 +295,7 @@ export {
   readTrainingConfigSkeletons,
   resizeNearest,
   resolveColor,
+  resolveCropRect,
   resolveTrailNode,
   rgbToCSS,
   rodriguesTransformation,
@@ -300,5 +309,6 @@ export {
   setLabelImageFileReader,
   toDict,
   toNumpy,
+  uncropPoints,
   writeGeoJSON
 };
