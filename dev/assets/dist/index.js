@@ -1521,6 +1521,453 @@ async function loadJabs(labelsPath, options) {
   }
 }
 
+// src/rendering/overlays.ts
+import { createRequire } from "module";
+var requireCjs = createRequire(import.meta.url);
+var _skiaCanvas = null;
+function getSkiaCanvas() {
+  if (_skiaCanvas === null) {
+    _skiaCanvas = requireCjs("skia-canvas");
+  }
+  return _skiaCanvas;
+}
+function blendChannel(dst, src, alpha) {
+  return Math.trunc(dst * (1 - alpha) + src * alpha);
+}
+function clampAlpha(alpha) {
+  if (!Number.isFinite(alpha)) return 0;
+  return alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+}
+function pickColor(colors, i, fallback) {
+  if (colors === null || colors.length === 0) return fallback;
+  return colors[i % colors.length];
+}
+function drawMasks(image, masks, opts) {
+  const color = opts?.color ?? [255, 0, 0];
+  const colors = opts?.colors ?? null;
+  const alpha = clampAlpha(opts?.alpha ?? 0.3);
+  const imgW = image.width;
+  const imgH = image.height;
+  const pixels = image.data;
+  for (let i = 0; i < masks.length; i++) {
+    const mask = masks[i];
+    const maskColor = pickColor(colors, i, color);
+    const maskData = mask.data;
+    let region;
+    let x0;
+    let y0;
+    let drawW;
+    let drawH;
+    if (mask.hasSpatialTransform) {
+      const ext = mask.imageExtent;
+      const targetH = ext.height;
+      const targetW = ext.width;
+      const resized = resizeNearest(
+        maskData,
+        mask.height,
+        mask.width,
+        targetH,
+        targetW
+      );
+      const ox = Math.trunc(mask.offset[0]);
+      const oy = Math.trunc(mask.offset[1]);
+      y0 = Math.max(0, oy);
+      x0 = Math.max(0, ox);
+      const y1 = Math.min(imgH, oy + targetH);
+      const x1 = Math.min(imgW, ox + targetW);
+      if (y1 <= y0 || x1 <= x0) continue;
+      drawH = y1 - y0;
+      drawW = x1 - x0;
+      const my0 = y0 - oy;
+      const mx0 = x0 - ox;
+      region = new Uint8Array(drawH * drawW);
+      for (let r = 0; r < drawH; r++) {
+        const srcRow = (my0 + r) * targetW + mx0;
+        region.set(resized.subarray(srcRow, srcRow + drawW), r * drawW);
+      }
+    } else {
+      drawH = Math.min(mask.height, imgH);
+      drawW = Math.min(mask.width, imgW);
+      x0 = 0;
+      y0 = 0;
+      region = new Uint8Array(drawH * drawW);
+      for (let r = 0; r < drawH; r++) {
+        const srcRow = r * mask.width;
+        region.set(maskData.subarray(srcRow, srcRow + drawW), r * drawW);
+      }
+    }
+    const [cr, cg, cb] = maskColor;
+    for (let r = 0; r < drawH; r++) {
+      for (let c = 0; c < drawW; c++) {
+        if (region[r * drawW + c] === 0) continue;
+        const px = ((y0 + r) * imgW + (x0 + c)) * 4;
+        pixels[px] = blendChannel(pixels[px], cr, alpha);
+        pixels[px + 1] = blendChannel(pixels[px + 1], cg, alpha);
+        pixels[px + 2] = blendChannel(pixels[px + 2], cb, alpha);
+      }
+    }
+  }
+  return image;
+}
+function drawLabelImage(image, labels, opts) {
+  const alpha = clampAlpha(opts?.alpha ?? 0.3);
+  const palette = opts?.palette ?? "distinct";
+  const outline = opts?.outline ?? false;
+  const outlineWidth = opts?.outlineWidth ?? 1;
+  const outlineColor = opts?.outlineColor ?? null;
+  const labData = labels.data;
+  const labH = labels.height;
+  const labW = labels.width;
+  const scale = opts?.scale ?? labels.scale ?? [1, 1];
+  const offset = opts?.offset ?? labels.offset ?? [0, 0];
+  let maxId = 0;
+  let hasFg = false;
+  for (let i = 0; i < labData.length; i++) {
+    const v = labData[i];
+    if (v > 0) {
+      hasFg = true;
+      if (v > maxId) maxId = v;
+    }
+  }
+  if (!hasFg) return image;
+  const paletteColors = getPalette(palette, maxId + 1);
+  const lut = new Float32Array((maxId + 1) * 3);
+  for (let id = 1; id <= maxId; id++) {
+    const col = paletteColors[id % paletteColors.length];
+    lut[id * 3] = col[0];
+    lut[id * 3 + 1] = col[1];
+    lut[id * 3 + 2] = col[2];
+  }
+  const imgW = image.width;
+  const imgH = image.height;
+  const pixels = image.data;
+  const hasTransform = scale[0] !== 1 || scale[1] !== 1 || offset[0] !== 0 || offset[1] !== 0;
+  let region;
+  let x0;
+  let y0;
+  let drawW;
+  let drawH;
+  if (hasTransform) {
+    const sx = scale[0];
+    const sy = scale[1];
+    const targetH = Math.trunc(labH / sy);
+    const targetW = Math.trunc(labW / sx);
+    const resized = resizeNearest(labData, labH, labW, targetH, targetW);
+    const ox = Math.trunc(offset[0]);
+    const oy = Math.trunc(offset[1]);
+    y0 = Math.max(0, oy);
+    x0 = Math.max(0, ox);
+    const y1 = Math.min(imgH, oy + targetH);
+    const x1 = Math.min(imgW, ox + targetW);
+    if (y1 <= y0 || x1 <= x0) return image;
+    drawH = y1 - y0;
+    drawW = x1 - x0;
+    const my0 = y0 - oy;
+    const mx0 = x0 - ox;
+    region = new Int32Array(drawH * drawW);
+    for (let r = 0; r < drawH; r++) {
+      const srcRow = (my0 + r) * targetW + mx0;
+      region.set(resized.subarray(srcRow, srcRow + drawW), r * drawW);
+    }
+  } else {
+    drawH = Math.min(labH, imgH);
+    drawW = Math.min(labW, imgW);
+    x0 = 0;
+    y0 = 0;
+    region = new Int32Array(drawH * drawW);
+    for (let r = 0; r < drawH; r++) {
+      const srcRow = r * labW;
+      region.set(labData.subarray(srcRow, srcRow + drawW), r * drawW);
+    }
+  }
+  for (let r = 0; r < drawH; r++) {
+    for (let c = 0; c < drawW; c++) {
+      const lab = region[r * drawW + c];
+      if (lab <= 0) continue;
+      const safe = lab > maxId ? maxId : lab;
+      const li = safe * 3;
+      const px = ((y0 + r) * imgW + (x0 + c)) * 4;
+      pixels[px] = Math.trunc(pixels[px] * (1 - alpha) + lut[li] * alpha);
+      pixels[px + 1] = Math.trunc(
+        pixels[px + 1] * (1 - alpha) + lut[li + 1] * alpha
+      );
+      pixels[px + 2] = Math.trunc(
+        pixels[px + 2] * (1 - alpha) + lut[li + 2] * alpha
+      );
+    }
+  }
+  if (outline) {
+    drawLabelOutlines(
+      image,
+      region,
+      x0,
+      y0,
+      drawH,
+      drawW,
+      outlineWidth,
+      outlineColor,
+      lut,
+      maxId
+    );
+  }
+  return image;
+}
+function drawLabelOutlines(image, region, x0, y0, drawH, drawW, outlineWidth, outlineColor, lut, maxId) {
+  const imgW = image.width;
+  const pixels = image.data;
+  const edges = new Uint8Array(drawH * drawW);
+  const at = (r, c) => region[r * drawW + c];
+  for (let r = 0; r < drawH; r++) {
+    for (let c = 0; c < drawW; c++) {
+      const v = at(r, c);
+      let edge = false;
+      if (c + 1 < drawW && v !== at(r, c + 1)) edge = true;
+      if (!edge && c - 1 >= 0 && v !== at(r, c - 1)) edge = true;
+      if (!edge && r + 1 < drawH && v !== at(r + 1, c)) edge = true;
+      if (!edge && r - 1 >= 0 && v !== at(r - 1, c)) edge = true;
+      if (edge && v > 0) edges[r * drawW + c] = 1;
+    }
+  }
+  let finalEdges = edges;
+  if (outlineWidth > 1) {
+    const pad = Math.trunc(outlineWidth / 2);
+    const dilated = new Uint8Array(drawH * drawW);
+    for (let dy = -pad; dy <= pad; dy++) {
+      for (let dx = -pad; dx <= pad; dx++) {
+        const sy = Math.max(0, dy);
+        const ey = drawH + Math.min(0, dy);
+        const sx = Math.max(0, dx);
+        const ex = drawW + Math.min(0, dx);
+        const oy = Math.max(0, -dy);
+        const ox = Math.max(0, -dx);
+        for (let r = sy; r < ey; r++) {
+          for (let c = sx; c < ex; c++) {
+            if (edges[(oy + (r - sy)) * drawW + (ox + (c - sx))]) {
+              dilated[r * drawW + c] = 1;
+            }
+          }
+        }
+      }
+    }
+    for (let i = 0; i < dilated.length; i++) {
+      if (dilated[i] && region[i] > 0) dilated[i] = 1;
+      else dilated[i] = 0;
+    }
+    finalEdges = dilated;
+  }
+  for (let r = 0; r < drawH; r++) {
+    for (let c = 0; c < drawW; c++) {
+      if (!finalEdges[r * drawW + c]) continue;
+      const px = ((y0 + r) * imgW + (x0 + c)) * 4;
+      if (outlineColor !== null) {
+        pixels[px] = outlineColor[0];
+        pixels[px + 1] = outlineColor[1];
+        pixels[px + 2] = outlineColor[2];
+      } else {
+        const lab = region[r * drawW + c];
+        const safe = lab > maxId ? maxId : lab;
+        const li = safe * 3;
+        pixels[px] = Math.trunc(lut[li] * 0.6);
+        pixels[px + 1] = Math.trunc(lut[li + 1] * 0.6);
+        pixels[px + 2] = Math.trunc(lut[li + 2] * 0.6);
+      }
+    }
+  }
+}
+function configureStroke(ctx, rgb, lineWidth) {
+  ctx.strokeStyle = rgbToCSS(rgb);
+  ctx.lineWidth = lineWidth;
+  ctx.lineCap = "square";
+}
+function drawBboxes(image, bboxes, opts) {
+  if (bboxes.length === 0) return image;
+  const color = opts?.color ?? [0, 255, 0];
+  const colors = opts?.colors ?? null;
+  const lineWidth = opts?.lineWidth ?? 2;
+  const fillAlpha = clampAlpha(opts?.fillAlpha ?? 0);
+  return withVectorCanvas(image, (ctx) => {
+    for (let i = 0; i < bboxes.length; i++) {
+      const bbox = bboxes[i];
+      const c = pickColor(colors, i, color);
+      const corners = bbox.corners;
+      if (corners.length === 0) continue;
+      ctx.beginPath();
+      ctx.moveTo(corners[0][0], corners[0][1]);
+      for (let j = 1; j < corners.length; j++) {
+        ctx.lineTo(corners[j][0], corners[j][1]);
+      }
+      ctx.closePath();
+      if (fillAlpha > 0) {
+        ctx.fillStyle = rgbToCSS(c, fillAlpha);
+        ctx.fill();
+      }
+      configureStroke(ctx, c, lineWidth);
+      ctx.stroke();
+      if (bbox.isPredicted) {
+        const score = bbox.score;
+        ctx.font = "12px sans-serif";
+        ctx.fillStyle = rgbToCSS(c);
+        ctx.fillText(score.toFixed(2), corners[0][0], corners[0][1] - 5);
+      }
+    }
+  });
+}
+function drawRois(image, rois, opts) {
+  if (rois.length === 0) return image;
+  const color = opts?.color ?? [0, 255, 0];
+  const colors = opts?.colors ?? null;
+  const lineWidth = opts?.lineWidth ?? 2;
+  const fillAlpha = clampAlpha(opts?.fillAlpha ?? 0);
+  return withVectorCanvas(image, (ctx) => {
+    for (let i = 0; i < rois.length; i++) {
+      const c = pickColor(colors, i, color);
+      drawGeometry(ctx, rois[i].geometry, c, lineWidth, fillAlpha);
+    }
+  });
+}
+function drawGeometry(ctx, geometry, rgb, lineWidth, fillAlpha) {
+  switch (geometry.type) {
+    case "Polygon": {
+      polygonToPath(ctx, geometry.coordinates);
+      if (fillAlpha > 0) {
+        ctx.fillStyle = rgbToCSS(rgb, fillAlpha);
+        ctx.fill("evenodd");
+      }
+      configureStroke(ctx, rgb, lineWidth);
+      ctx.stroke();
+      break;
+    }
+    case "MultiPolygon": {
+      for (const polygon of geometry.coordinates) {
+        polygonToPath(ctx, polygon);
+        if (fillAlpha > 0) {
+          ctx.fillStyle = rgbToCSS(rgb, fillAlpha);
+          ctx.fill("evenodd");
+        }
+        configureStroke(ctx, rgb, lineWidth);
+        ctx.stroke();
+      }
+      break;
+    }
+    case "Point": {
+      const radius = Math.max(lineWidth, 2);
+      ctx.beginPath();
+      ctx.arc(geometry.coordinates[0], geometry.coordinates[1], radius, 0, Math.PI * 2);
+      ctx.fillStyle = rgbToCSS(rgb);
+      ctx.fill();
+      break;
+    }
+    case "MultiPoint": {
+      const radius = Math.max(lineWidth, 2);
+      ctx.fillStyle = rgbToCSS(rgb);
+      for (const pt of geometry.coordinates) {
+        ctx.beginPath();
+        ctx.arc(pt[0], pt[1], radius, 0, Math.PI * 2);
+        ctx.fill();
+      }
+      break;
+    }
+    case "LineString": {
+      const coords = geometry.coordinates;
+      if (coords.length > 0) {
+        ctx.beginPath();
+        ctx.moveTo(coords[0][0], coords[0][1]);
+        for (let i = 1; i < coords.length; i++) {
+          ctx.lineTo(coords[i][0], coords[i][1]);
+        }
+        configureStroke(ctx, rgb, lineWidth);
+        ctx.stroke();
+      }
+      break;
+    }
+    case "GeometryCollection": {
+      for (const sub of geometry.geometries) {
+        drawGeometry(ctx, sub, rgb, lineWidth, fillAlpha);
+      }
+      break;
+    }
+  }
+}
+function polygonToPath(ctx, rings) {
+  ctx.beginPath();
+  for (const ring of rings) {
+    if (ring.length === 0) continue;
+    ctx.moveTo(ring[0][0], ring[0][1]);
+    for (let i = 1; i < ring.length; i++) {
+      ctx.lineTo(ring[i][0], ring[i][1]);
+    }
+    ctx.closePath();
+  }
+}
+function withVectorCanvas(image, draw) {
+  const { Canvas } = getSkiaCanvas();
+  const canvas = new Canvas(image.width, image.height);
+  const ctx = canvas.getContext("2d");
+  ctx.putImageData(image, 0, 0);
+  draw(ctx);
+  const result = ctx.getImageData(0, 0, image.width, image.height);
+  const src = result.data;
+  const dst = image.data;
+  for (let i = 0; i < dst.length; i += 4) {
+    dst[i] = src[i];
+    dst[i + 1] = src[i + 1];
+    dst[i + 2] = src[i + 2];
+    dst[i + 3] = 255;
+  }
+  return image;
+}
+function isLabelImageLike(value) {
+  return typeof value === "object" && value !== null && "data" in value && value.data instanceof Int32Array && "width" in value && "height" in value;
+}
+function isSegmentationMask(value) {
+  return typeof value === "object" && value !== null && "rleCounts" in value && "hasSpatialTransform" in value;
+}
+function isBoundingBox(value) {
+  return typeof value === "object" && value !== null && "corners" in value && "x1" in value && "x2" in value;
+}
+function isROI(value) {
+  return typeof value === "object" && value !== null && "geometry" in value && typeof value.geometry === "object";
+}
+function applyOverlay(image, overlay, opts) {
+  const alpha = clampAlpha(opts?.alpha ?? 0.3);
+  const palette = opts?.palette ?? "distinct";
+  const outline = opts?.outline ?? false;
+  const outlineWidth = opts?.outlineWidth ?? 1;
+  const outlineColor = opts?.outlineColor ?? null;
+  if (!Array.isArray(overlay)) {
+    if (isLabelImageLike(overlay)) {
+      drawLabelImage(image, overlay, {
+        alpha,
+        palette,
+        outline,
+        outlineWidth,
+        outlineColor
+      });
+    }
+    return image;
+  }
+  if (overlay.length === 0) return image;
+  const first = overlay[0];
+  if (isLabelImageLike(first)) {
+    throw new TypeError(
+      "Pass individual LabelImage objects to applyOverlay, not a list. Per-frame dispatch from a list[LabelImage] should happen at the renderVideo level."
+    );
+  }
+  const colors = getPalette(palette, overlay.length);
+  if (isSegmentationMask(first)) {
+    drawMasks(image, overlay, { colors, alpha });
+  } else if (isROI(first)) {
+    drawRois(image, overlay, { colors, fillAlpha: alpha });
+  } else if (isBoundingBox(first)) {
+    drawBboxes(image, overlay, { colors, fillAlpha: alpha });
+  } else {
+    throw new TypeError(
+      `Unsupported overlay element type: ${first?.constructor?.name ?? typeof first}. Expected SegmentationMask, ROI, or BoundingBox.`
+    );
+  }
+  return image;
+}
+
 // src/rendering/render.ts
 var DEFAULT_OPTIONS = {
   colorBy: "auto",
@@ -1540,7 +1987,14 @@ var DEFAULT_OPTIONS = {
   trailWidth: 2,
   trailAlphaFade: true,
   trailAlpha: 1,
-  trailColor: null
+  trailColor: null,
+  // Segmentation / annotation overlay (off by default). Mirrors Python
+  // render_image overlay params (overlay=None, overlay_alpha=0.3, etc.).
+  overlayAlpha: 0.3,
+  overlayPalette: "distinct",
+  overlayOutline: false,
+  overlayOutlineWidth: 1,
+  overlayOutlineColor: null
 };
 var DEFAULT_COLOR = PALETTES.standard[0];
 async function renderImage(source, options = {}) {
@@ -1577,6 +2031,37 @@ async function renderImage(source, options = {}) {
     const bgColor = resolveColor(opts.background);
     ctx.fillStyle = rgbToCSS(bgColor);
     ctx.fillRect(0, 0, scaledWidth, scaledHeight);
+  }
+  if (opts.overlay !== void 0 && opts.overlay !== null) {
+    const overlayOpts = {
+      alpha: opts.overlayAlpha,
+      palette: opts.overlayPalette,
+      outline: opts.overlayOutline,
+      outlineWidth: opts.overlayOutlineWidth,
+      outlineColor: opts.overlayOutlineColor
+    };
+    if (opts.scale === 1) {
+      const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
+      applyOverlay(
+        imageData,
+        opts.overlay,
+        overlayOpts
+      );
+      ctx.putImageData(imageData, 0, 0);
+    } else {
+      const srcCanvas = new Canvas(width, height);
+      const srcCtx = srcCanvas.getContext("2d");
+      srcCtx.drawImage(canvas, 0, 0, width, height);
+      const imageData = srcCtx.getImageData(0, 0, width, height);
+      applyOverlay(
+        imageData,
+        opts.overlay,
+        overlayOpts
+      );
+      srcCtx.putImageData(imageData, 0, 0);
+      ctx.clearRect(0, 0, scaledWidth, scaledHeight);
+      ctx.drawImage(srcCanvas, 0, 0, scaledWidth, scaledHeight);
+    }
   }
   const edgeInds = skeleton?.edgeIndices ?? [];
   const nodeNames = skeleton?.nodeNames ?? [];
@@ -1937,6 +2422,15 @@ async function renderVideo(source, outputPath, options = {}) {
   if (selectedFrames.length === 0) {
     throw new Error("No frames to render");
   }
+  let videoOverlay = options.overlay;
+  if (videoOverlay === void 0 && !Array.isArray(source) && source.labelImages.length > 0) {
+    const targetVideo = selectedFrames[0].video;
+    const videoLabelImages = source.getLabelImages({ video: targetVideo });
+    if (videoLabelImages.length > 0) {
+      videoOverlay = videoLabelImages;
+    }
+  }
+  const overlayForFrame = makeOverlayResolver(videoOverlay);
   const framesByVideo = /* @__PURE__ */ new Map();
   const trailPtsCache = options.showTrails ? /* @__PURE__ */ new Map() : void 0;
   const canonicalTracks = Array.isArray(source) ? void 0 : source.tracks;
@@ -1950,13 +2444,19 @@ async function renderVideo(source, outputPath, options = {}) {
       videoFrames.set(lf.frameIdx, lf);
     }
   }
-  const optsForFrame = (frame) => options.showTrails ? {
-    ...options,
-    trailFrames: framesByVideo.get(frame.video),
-    trailTracks: options.trailTracks ?? canonicalTracks,
-    trailPtsCache
-  } : options;
-  const firstImage = await renderImage(selectedFrames[0], optsForFrame(selectedFrames[0]));
+  const optsForFrame = (frame, position) => {
+    const { overlay: _ignored, ...rest } = options;
+    void _ignored;
+    const base = options.showTrails ? {
+      ...rest,
+      trailFrames: framesByVideo.get(frame.video),
+      trailTracks: options.trailTracks ?? canonicalTracks,
+      trailPtsCache
+    } : { ...rest };
+    base.overlay = overlayForFrame(frame, position);
+    return base;
+  };
+  const firstImage = await renderImage(selectedFrames[0], optsForFrame(selectedFrames[0], 0));
   const width = firstImage.width;
   const height = firstImage.height;
   const fps = options.fps ?? 30;
@@ -2006,7 +2506,7 @@ async function renderVideo(source, outputPath, options = {}) {
       throw ffmpegError;
     }
     const frame = selectedFrames[i];
-    const imageData = await renderImage(frame, optsForFrame(frame));
+    const imageData = await renderImage(frame, optsForFrame(frame, i));
     const buffer = Buffer.from(imageData.data.buffer);
     if (!ffmpeg.stdin) {
       throw new Error("ffmpeg stdin not available");
@@ -2032,6 +2532,31 @@ async function renderVideo(source, outputPath, options = {}) {
     });
     ffmpeg.on("error", reject);
   });
+}
+function isLabelImageLike2(value) {
+  return typeof value === "object" && value !== null && "data" in value && value.data instanceof Int32Array;
+}
+function isLabelImageList(value) {
+  return Array.isArray(value) && value.length > 0 && isLabelImageLike2(value[0]);
+}
+function makeOverlayResolver(overlay) {
+  if (overlay === void 0) {
+    return () => void 0;
+  }
+  if (typeof overlay === "function") {
+    const fn = overlay;
+    return (frame) => fn(frame.frameIdx);
+  }
+  if (overlay instanceof Map) {
+    const map = overlay;
+    return (frame) => map.get(frame.frameIdx);
+  }
+  if (isLabelImageList(overlay)) {
+    const list = overlay;
+    return (_frame, position) => position < list.length ? list[position] : void 0;
+  }
+  const staticOverlay = overlay;
+  return () => staticOverlay;
 }
 export {
   AUTO_VIDEO_MATCHER,
@@ -2124,6 +2649,7 @@ export {
   _registerCentroidFactory,
   _registerMaskFactory,
   _resolveMergedIsNegative,
+  applyOverlay,
   buildClassNamesFromBboxes,
   buildClassNamesFromRois,
   checkFfmpeg,
@@ -2140,9 +2666,13 @@ export {
   denormalizeCoordinates,
   detectLineFormat,
   determineColorScheme,
+  drawBboxes,
   drawCircle,
   drawCross,
   drawDiamond,
+  drawLabelImage,
+  drawMasks,
+  drawRois,
   drawSquare,
   drawTrails,
   drawTriangle,
