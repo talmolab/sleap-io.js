@@ -7,6 +7,9 @@ import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
 import { createVideoBackend } from "../../video/factory.js";
+import { CropVideoBackend } from "../../video/crop-backend.js";
+import type { CropRect } from "../../transform/points.js";
+import type { Fill } from "../../transform/frame.js";
 import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
@@ -38,7 +41,8 @@ export async function readSlp(
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
-    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId);
+    const videoCrops = readVideoCrops(file);
+    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId, videoCrops);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
     const framesData = normalizeStructDataset(file.get("frames"));
@@ -196,7 +200,8 @@ export async function readSlpLazy(
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
-    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId);
+    const videoCrops = readVideoCrops(file);
+    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId, videoCrops);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
     // Read raw data but don't build frames yet
@@ -364,7 +369,72 @@ function readTracks(dataset: any): Track[] {
   return tracks;
 }
 
-async function readVideos(dataset: any, labelsPath: string, openVideos: boolean, file: any, formatId: number): Promise<Video[]> {
+/** A single `/video_crops` entry: the crop rect and OOB fill for one video. */
+interface VideoCropEntry {
+  crop: CropRect;
+  fill: Fill;
+}
+
+/**
+ * Read the top-level `/video_crops` dataset (SLP format 2.3) into a map keyed by
+ * video index. Port of Python `read_video_crops` (slp.py:649-680).
+ *
+ * The dataset holds a single JSON string (the array form written by
+ * {@link writeVideoCrops}, or the scalar `np.bytes_` form Python writes) listing
+ * `{ video, crop: [x1,y1,x2,y2], fill }` entries, one per cropped video. It is
+ * absent on old/uncropped files, in which case an empty map is returned so the
+ * loader falls back to the uncropped source. h5wasm surfaces the value as a
+ * plain string (Python's scalar S-dtype), a length-1 array of strings (the JS
+ * vlen-array form), or raw bytes — all three are normalized here.
+ */
+function readVideoCrops(file: any): Map<number, VideoCropEntry> {
+  const out = new Map<number, VideoCropEntry>();
+  const keys = file.keys?.() ?? [];
+  if (!keys.includes("video_crops")) return out;
+  const ds = file.get("video_crops");
+  if (!ds) return out;
+
+  let raw: unknown = ds.value;
+  if (Array.isArray(raw)) raw = raw[0];
+  let json: string;
+  if (typeof raw === "string") {
+    json = raw;
+  } else if (raw instanceof Uint8Array) {
+    json = textDecoder.decode(raw);
+  } else if (raw != null) {
+    json = String(raw);
+  } else {
+    return out;
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(json);
+  } catch {
+    return out;
+  }
+  if (!Array.isArray(parsed)) return out;
+  for (const entry of parsed as Array<Record<string, unknown>>) {
+    if (!entry || typeof entry !== "object") continue;
+    const videoIdx = Number(entry.video);
+    const cropArr = entry.crop as number[] | undefined;
+    if (!Array.isArray(cropArr) || cropArr.length !== 4) continue;
+    const crop: CropRect = [
+      Number(cropArr[0]),
+      Number(cropArr[1]),
+      Number(cropArr[2]),
+      Number(cropArr[3]),
+    ];
+    const fillRaw = entry.fill;
+    const fill: Fill = Array.isArray(fillRaw)
+      ? (fillRaw as number[]).map((v) => Number(v))
+      : Number(fillRaw ?? 0);
+    out.set(videoIdx, { crop, fill });
+  }
+  return out;
+}
+
+async function readVideos(dataset: any, labelsPath: string, openVideos: boolean, file: any, formatId: number, videoCrops?: Map<number, VideoCropEntry>): Promise<Video[]> {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const videos: Video[] = [];
@@ -442,11 +512,39 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
 
     const sourceVideo = parsed.source_video ? new Video({ filename: parsed.source_video.filename ?? "" }) : null;
 
+    // Crop reconstruction (SLP 2.3): the backend just built from videos_json is
+    // the UNCROPPED inner. If a /video_crops entry exists for this index, wrap it
+    // in a CropVideoBackend (open path) and ALWAYS seed crop/source_shape/shape/
+    // crop_fill on backendMetadata so the closed (openVideos=false) path reports
+    // the cropped view too. Port of Python make_video (slp.py:380-416).
+    const cropEntry = videoCrops?.get(videoIndex);
+    let backendMetadata: Record<string, unknown> =
+      shape !== backendMeta.shape ? { ...backendMeta, shape } : backendMeta;
+    if (cropEntry) {
+      const [cx1, cy1, cx2, cy2] = cropEntry.crop;
+      if (openVideos && backend) {
+        backend = CropVideoBackend.wrap({
+          inner: backend,
+          crop: cropEntry.crop,
+          fill: cropEntry.fill,
+        });
+      }
+      // Copy before overwriting so a shared metadata dict is never mutated.
+      backendMetadata = { ...backendMetadata };
+      const innerShape = backendMetadata.shape as number[] | undefined;
+      if (innerShape && innerShape.length === 4) {
+        backendMetadata.source_shape = [...innerShape];
+        backendMetadata.shape = [innerShape[0], cy2 - cy1, cx2 - cx1, innerShape[3]];
+      }
+      backendMetadata.crop = [...cropEntry.crop];
+      backendMetadata.crop_fill = cropEntry.fill;
+    }
+
     videos.push(
       new Video({
         filename,
         backend,
-        backendMetadata: shape !== backendMeta.shape ? { ...backendMeta, shape } : backendMeta,
+        backendMetadata,
         sourceVideo,
         openBackend: openVideos,
         embedded,

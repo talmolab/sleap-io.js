@@ -1,4 +1,132 @@
 import { VideoBackend, VideoFrame } from "../video/backend.js";
+import { CropVideoBackend } from "../video/crop-backend.js";
+import {
+  cropPoints,
+  uncropPoints,
+  type CropRect,
+  type FlatPoints,
+  type PointPairs,
+} from "../transform/points.js";
+import type { Fill } from "../transform/frame.js";
+
+/**
+ * Bounding-box / region specs accepted by {@link Video.crop} and
+ * {@link Video.fromCrop} (in addition to an explicit `crop` rect).
+ *
+ * Exactly one region spec must be provided across `crop` (the positional rect),
+ * `bbox`, `roi`, or the (`center`, `size`) pair. Mirrors the keyword arguments
+ * of Python `Video.crop` / `_resolve_crop_rect`.
+ */
+export interface CropOptions {
+  /** A bounding box `[x1, y1, x2, y2]`; bounds may be float (floor/ceil). */
+  bbox?: [number, number, number, number];
+  /**
+   * An object exposing axis-aligned `.bounds` as `[minx, miny, maxx, maxy]`
+   * (e.g. a shapely-like geometry). `margin` is applied symmetrically around it.
+   */
+  roi?: { bounds: [number, number, number, number] };
+  /** Window center `[cx, cy]` (used with `size`). */
+  center?: [number, number];
+  /** Fixed output `[width, height]` (used with `center`). */
+  size?: [number, number];
+  /** Pixels added around the `roi` bounds on every side. Default `0`. */
+  margin?: number;
+  /** Fill value for out-of-bounds regions. Default `0`. */
+  fill?: Fill;
+  /**
+   * If `true` (the default), reuse this video's backend as the shared inner so a
+   * mosaic of tiles over one file decodes each source frame once; in that case
+   * the new tile does NOT own the shared decoder. Maps to
+   * `ownsInner = !shareDecode` on {@link CropVideoBackend.wrap}.
+   */
+  shareDecode?: boolean;
+}
+
+/**
+ * Resolve a crop region spec into an integer `[x1, y1, x2, y2]` rect.
+ *
+ * Port of Python `_resolve_crop_rect` (video.py:24-99). Exactly one region spec
+ * must be provided: an explicit `crop` rect, a `bbox`, a `roi` (its axis-aligned
+ * bounds + `margin`), or a (`center`, `size`) pair for a fixed-shape centered
+ * window. Float bounds are rounded OUTWARD (floor of the mins, ceil of the maxs)
+ * so the integer rect always *contains* the requested region; the centered
+ * window uses `round` so the output shape is exactly `size`. Truncation toward
+ * zero is never used for the float paths (the explicit `crop` path matches
+ * Python's `int()` truncation).
+ *
+ * @param crop Explicit crop region `[x1, y1, x2, y2]`, x2/y2 exclusive.
+ * @param opts One of `bbox` / `roi` / (`center` + `size`), plus `margin`.
+ * @returns An integer crop region `[x1, y1, x2, y2]`, possibly out of bounds.
+ * @throws Error If not exactly one region spec is provided, `center`/`size` are
+ *   not given together, or the resolved rect is inverted (`x2 < x1`/`y2 < y1`).
+ */
+export function resolveCropRect(
+  crop?: CropRect | null,
+  opts: CropOptions = {}
+): CropRect {
+  const { bbox, roi, center, size, margin = 0 } = opts;
+
+  // `center` and `size` must be given together (both or neither).
+  if ((center == null) !== (size == null)) {
+    throw new Error(
+      "center and size must be provided together for a centered window; " +
+        `got center=${JSON.stringify(center)}, size=${JSON.stringify(size)}.`
+    );
+  }
+  const hasCenterSize = center != null && size != null;
+  const nSpecs =
+    (crop != null ? 1 : 0) +
+    (bbox != null ? 1 : 0) +
+    (roi != null ? 1 : 0) +
+    (hasCenterSize ? 1 : 0);
+  if (nSpecs !== 1) {
+    throw new Error(
+      "Exactly one of {crop, bbox, roi, (center, size)} must be provided " +
+        `to specify a crop region, got ${nSpecs}. For a centered window, ` +
+        "pass both center and size."
+    );
+  }
+
+  let x1: number;
+  let y1: number;
+  let x2: number;
+  let y2: number;
+  if (crop != null) {
+    // `int()` truncation toward zero (matches Python's `int(v)`).
+    x1 = Math.trunc(crop[0]);
+    y1 = Math.trunc(crop[1]);
+    x2 = Math.trunc(crop[2]);
+    y2 = Math.trunc(crop[3]);
+  } else if (bbox != null) {
+    const [bx1, by1, bx2, by2] = bbox;
+    x1 = Math.floor(bx1);
+    y1 = Math.floor(by1);
+    x2 = Math.ceil(bx2);
+    y2 = Math.ceil(by2);
+  } else if (roi != null) {
+    const [minx, miny, maxx, maxy] = roi.bounds;
+    x1 = Math.floor(minx) - margin;
+    y1 = Math.floor(miny) - margin;
+    x2 = Math.ceil(maxx) + margin;
+    y2 = Math.ceil(maxy) + margin;
+  } else {
+    // Centered window with fixed output shape.
+    const [cx, cy] = center as [number, number];
+    const [w, h] = size as [number, number];
+    x1 = Math.round(cx - w / 2);
+    y1 = Math.round(cy - h / 2);
+    x2 = x1 + Math.round(w);
+    y2 = y1 + Math.round(h);
+  }
+
+  if (x2 < x1 || y2 < y1) {
+    throw new Error(
+      `Inverted crop rect: x2 (${x2}) < x1 (${x1}) or y2 (${y2}) < y1 (${y1}). ` +
+        "Crop bounds must satisfy x2 >= x1 and y2 >= y1."
+    );
+  }
+  return [x1, y1, x2, y2];
+}
 
 export class Video {
   filename: string | string[];
@@ -67,6 +195,192 @@ export class Video {
 
   close(): void {
     this.backend?.close();
+  }
+
+  /**
+   * Return a virtual, on-read cropped view of this video.
+   *
+   * Port of Python `Video.crop` (video.py:304-389). Exactly one region spec must
+   * be given: an explicit `crop` rect (the positional argument), or one of
+   * `bbox` / `roi` / (`center` + `size`) via {@link CropOptions}. The returned
+   * `Video` shares no pixels with this one; frames are decoded on read and
+   * cropped, with out-of-bounds regions pad-filled with `fill` (never clamped),
+   * so the output shape is always exactly `[y2 - y1, x2 - x1]`.
+   *
+   * The crop composes (FLATTENS when fills agree and the region is in-bounds)
+   * with any existing crop via {@link CropVideoBackend.wrap}. `sourceVideo` is
+   * set to this video for provenance, and `backendMetadata` is seeded with the
+   * cropped `shape`, the uncropped `source_shape`, the composed `crop` rect, and
+   * `crop_fill` so a closed re-serialize and a close/open round-trip keep the
+   * crop. When `shareDecode` (the default), the new crop reuses this video's
+   * backend as the shared inner (the new tile does NOT own the decoder).
+   *
+   * @param crop Explicit crop region `[x1, y1, x2, y2]`, x2/y2 exclusive.
+   * @param opts One of `bbox` / `roi` / (`center` + `size`), plus `margin`,
+   *   `fill`, and `shareDecode`.
+   * @returns A new `Video` exposing the cropped view.
+   * @throws Error If there is no backend to crop, or the region spec is invalid.
+   */
+  crop(crop?: CropRect | null, opts: CropOptions = {}): Video {
+    const rect = resolveCropRect(crop, opts);
+    if (this.backend == null) {
+      throw new Error(
+        "Cannot crop a video with no open backend. Provide a backend (the JS " +
+          "port has no filesystem auto-open) before cropping."
+      );
+    }
+    const fill: Fill = opts.fill ?? 0;
+    const shareDecode = opts.shareDecode ?? true;
+    const inner = this.backend;
+    const croppedBackend = CropVideoBackend.wrap({
+      inner,
+      crop: rect,
+      fill,
+      ownsInner: !shareDecode,
+    });
+
+    const [x1, y1, x2, y2] = croppedBackend.crop;
+    const srcShape = this.shape;
+    const cropped = new Video({
+      filename: this.filename,
+      backend: croppedBackend,
+      sourceVideo: this,
+      openBackend: this.openBackend,
+    });
+    cropped.backendMetadata = {
+      ...this.backendMetadata,
+      shape:
+        srcShape != null
+          ? ([srcShape[0], y2 - y1, x2 - x1, srcShape[3]] as [
+              number,
+              number,
+              number,
+              number,
+            ])
+          : null,
+      // The uncropped source shape, so a closed re-serialize keeps videos_json
+      // describing the full frame even without a live sourceVideo.
+      source_shape: srcShape != null ? [...srcShape] : null,
+      // COMPOSED source rect from wrap: keeps open/closed crop keys identical and
+      // root-canonical, and survives close()->open().
+      crop: [...croppedBackend.crop],
+      crop_fill: croppedBackend.fill,
+    };
+    return cropped;
+  }
+
+  /**
+   * Crop a `Video` and return a virtual cropped view.
+   *
+   * Port of Python `Video.from_crop` (video.py:391-440). Accepts the same region
+   * specs as {@link crop}. Unlike Python (which can open a path via
+   * `from_filename`), the JS port has no generic filesystem-backed open facade,
+   * so `video` must already be a `Video` with a backend; passing a path string
+   * throws.
+   *
+   * @param video An existing `Video` to crop.
+   * @param crop Explicit crop region `[x1, y1, x2, y2]`, x2/y2 exclusive.
+   * @param opts One of `bbox` / `roi` / (`center` + `size`), plus `margin`,
+   *   `fill`, and `shareDecode`.
+   * @returns A new `Video` exposing the cropped view.
+   * @throws Error If `video` is a path string (unsupported in the JS port).
+   */
+  static fromCrop(
+    video: Video | string,
+    crop?: CropRect | null,
+    opts: CropOptions = {}
+  ): Video {
+    if (typeof video === "string") {
+      throw new Error(
+        "Video.fromCrop does not support opening a path string in the JS port " +
+          "(there is no filesystem auto-open). Construct a Video with a backend " +
+          "first, then call Video.fromCrop(video, ...) or video.crop(...)."
+      );
+    }
+    return video.crop(crop, opts);
+  }
+
+  /**
+   * Return this video's crop rect `[x1, y1, x2, y2]` or `null`.
+   *
+   * Port of Python `Video._crop_tuple` (video.py:442-454). Reads `backend.crop`
+   * when the backend is a {@link CropVideoBackend} (open path), else
+   * `backendMetadata.crop` (closed path), else `null` (uncropped).
+   */
+  _cropTuple(): CropRect | null {
+    if (this.backend instanceof CropVideoBackend) {
+      return [...this.backend.crop] as CropRect;
+    }
+    const crop = this.backendMetadata.crop;
+    return crop != null ? ([...(crop as number[])] as CropRect) : null;
+  }
+
+  /**
+   * Return this video's crop fill value (open: backend; closed: metadata).
+   *
+   * Port of Python `Video._crop_fill` (video.py:456-465). Returns `0` for an
+   * uncropped video.
+   */
+  _cropFill(): Fill {
+    if (this.backend instanceof CropVideoBackend) {
+      return this.backend.fill;
+    }
+    const fill = this.backendMetadata.crop_fill;
+    return (fill as Fill | undefined) ?? 0;
+  }
+
+  /** Whether this video is a virtual crop of another video. */
+  get isCropped(): boolean {
+    return this._cropTuple() !== null;
+  }
+
+  /** Crop rect `[x1, y1, x2, y2]` in source coords, or `null` if uncropped. */
+  get cropRect(): CropRect | null {
+    return this._cropTuple();
+  }
+
+  /** The out-of-bounds fill value for this video's crop (`0` if uncropped). */
+  get cropFill(): Fill {
+    return this._cropFill();
+  }
+
+  /**
+   * Map source-frame `(x, y)` coordinates into this video's cropped frame.
+   *
+   * Port of Python `Video.to_crop_coords` (video.py:482-494). If this video is
+   * not cropped, a copy of `points` is returned unchanged (NaN preserved).
+   * Accepts a flat interleaved buffer or an array of `[x, y]` pairs and returns
+   * the same kind.
+   */
+  toCropCoords<T extends FlatPoints>(points: T): T;
+  toCropCoords(points: PointPairs): [number, number][];
+  toCropCoords(
+    points: FlatPoints | PointPairs
+  ): FlatPoints | [number, number][] {
+    const crop = this._cropTuple();
+    if (crop === null) {
+      return copyPoints(points);
+    }
+    return cropPoints(points as FlatPoints, crop);
+  }
+
+  /**
+   * Map cropped-frame `(x, y)` coordinates back to source-frame coordinates.
+   *
+   * Port of Python `Video.to_source_coords` (video.py:496-510). Inverse of
+   * {@link toCropCoords}. If this video is not cropped, a copy of `points` is
+   * returned unchanged (NaN preserved).
+   */
+  toSourceCoords<T extends FlatPoints>(points: T): T;
+  toSourceCoords(points: PointPairs): [number, number][];
+  toSourceCoords(
+    points: FlatPoints | PointPairs
+  ): FlatPoints | [number, number][] {
+    const crop = this._cropTuple();
+    if (crop === null) {
+      return copyPoints(points);
+    }
+    return uncropPoints(points as FlatPoints, crop);
   }
 
   /**
@@ -369,6 +683,26 @@ function makeImageSequenceVideo(
     backendMetadata,
     openBackend: false,
   });
+}
+
+/**
+ * Copy a coordinate buffer/pair-array without mutating the input, preserving its
+ * concrete kind (typed array subtype, plain number[], or array-of-pairs). Used
+ * by {@link Video.toCropCoords}/{@link Video.toSourceCoords} for the uncropped
+ * passthrough (Python `points.copy()`).
+ */
+function copyPoints(
+  points: FlatPoints | PointPairs
+): FlatPoints | [number, number][] {
+  if (Array.isArray(points)) {
+    if (points.length > 0 && Array.isArray(points[0])) {
+      return (points as unknown as PointPairs).map(
+        ([x, y]) => [x, y] as [number, number]
+      );
+    }
+    return (points as number[]).slice();
+  }
+  return (points as Float64Array | Float32Array).slice();
 }
 
 /** Final path component, splitting on BOTH "/" and "\\" (cross-platform). */

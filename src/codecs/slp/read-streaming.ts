@@ -19,6 +19,9 @@ import { Video } from "../../model/video.js";
 import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
+import { CropVideoBackend } from "../../video/crop-backend.js";
+import type { CropRect } from "../../transform/points.js";
+import type { Fill } from "../../transform/frame.js";
 
 /**
  * Options for streaming SLP file loading.
@@ -122,8 +125,11 @@ async function readFromStreamingFile(
   // Read tracks
   const tracks = await readTracksStreaming(file);
 
+  // Read per-video crop records (SLP 2.3; empty on old/uncropped files).
+  const videoCrops = await readVideoCropsStreaming(file);
+
   // Read video metadata (and optionally create backends for embedded videos)
-  const videos = await readVideosStreaming(file, labelsPath, openVideos, formatId);
+  const videos = await readVideosStreaming(file, labelsPath, openVideos, formatId, videoCrops);
 
   // Read suggestions
   const suggestions = await readSuggestionsStreaming(file, videos);
@@ -180,6 +186,72 @@ async function readTracksStreaming(file: StreamingH5File): Promise<Track[]> {
   }
 }
 
+/** A single `/video_crops` entry: the crop rect and OOB fill for one video. */
+interface VideoCropEntry {
+  crop: CropRect;
+  fill: Fill;
+}
+
+/**
+ * Read the top-level `/video_crops` dataset (SLP format 2.3) into a map keyed by
+ * video index. Streaming mirror of `readVideoCrops` (read.ts). Absent on old/
+ * uncropped files, in which case an empty map is returned.
+ *
+ * Exported for testing the h5wasm payload-form normalization (string, length-1
+ * array, raw bytes); not part of the public API.
+ */
+export async function readVideoCropsStreaming(
+  file: StreamingH5File
+): Promise<Map<number, VideoCropEntry>> {
+  const out = new Map<number, VideoCropEntry>();
+  try {
+    const keys = file.keys();
+    if (!keys.includes("video_crops")) return out;
+
+    const data = await file.getDatasetValue("video_crops");
+    let raw: unknown = data.value;
+    // h5wasm surfaces the vlen-string `/video_crops` payload as: (a) a plain
+    // string, (b) a length-1 array of strings (the vlen form), or (c) raw
+    // bytes (Uint8Array). Mirror the non-streaming readVideoCrops logic exactly:
+    // unwrap the length-1 array, then decode raw bytes directly. Do NOT flatten
+    // a Uint8Array via Array.from (that would extract a single byte value).
+    if (Array.isArray(raw)) raw = raw[0];
+    let json: string;
+    if (typeof raw === "string") {
+      json = raw;
+    } else if (raw instanceof Uint8Array) {
+      json = new TextDecoder().decode(raw);
+    } else if (raw != null) {
+      json = String(raw);
+    } else {
+      return out;
+    }
+
+    const parsed = JSON.parse(json);
+    if (!Array.isArray(parsed)) return out;
+    for (const entry of parsed as Array<Record<string, unknown>>) {
+      if (!entry || typeof entry !== "object") continue;
+      const videoIdx = Number(entry.video);
+      const cropArr = entry.crop as number[] | undefined;
+      if (!Array.isArray(cropArr) || cropArr.length !== 4) continue;
+      const crop: CropRect = [
+        Number(cropArr[0]),
+        Number(cropArr[1]),
+        Number(cropArr[2]),
+        Number(cropArr[3]),
+      ];
+      const fillRaw = entry.fill;
+      const fill: Fill = Array.isArray(fillRaw)
+        ? (fillRaw as number[]).map((v) => Number(v))
+        : Number(fillRaw ?? 0);
+      out.set(videoIdx, { crop, fill });
+    }
+    return out;
+  } catch {
+    return out;
+  }
+}
+
 /**
  * Read video metadata from videos_json dataset.
  * When openVideos is true, creates StreamingHdf5VideoBackend for embedded videos.
@@ -188,7 +260,8 @@ async function readVideosStreaming(
   file: StreamingH5File,
   labelsPath: string,
   openVideos: boolean = false,
-  formatId: number = 1.0
+  formatId: number = 1.0,
+  videoCrops?: Map<number, VideoCropEntry>
 ): Promise<Video[]> {
   try {
     const keys = file.keys();
@@ -285,16 +358,40 @@ async function readVideosStreaming(
         }
       }
 
+      let videoBackend: typeof backend | CropVideoBackend = backend;
+      const backendMetadata: Record<string, unknown> = {
+        dataset: datasetPath,
+        format,
+        shape,
+        fps: meta.fps,
+        channel_order: channelOrder,
+      };
+
+      // Crop reconstruction (SLP 2.3): wrap the uncropped inner backend and seed
+      // crop/source_shape/shape/crop_fill so streaming reads report the cropped
+      // view identically to the eager reader. Mirrors read.ts readVideos.
+      const cropEntry = videoCrops?.get(videoIndex);
+      if (cropEntry) {
+        const [cx1, cy1, cx2, cy2] = cropEntry.crop;
+        if (openVideos && videoBackend) {
+          videoBackend = CropVideoBackend.wrap({
+            inner: videoBackend,
+            crop: cropEntry.crop,
+            fill: cropEntry.fill,
+          });
+        }
+        if (shape && shape.length === 4) {
+          backendMetadata.source_shape = [...shape];
+          backendMetadata.shape = [shape[0], cy2 - cy1, cx2 - cx1, shape[3]];
+        }
+        backendMetadata.crop = [...cropEntry.crop];
+        backendMetadata.crop_fill = cropEntry.fill;
+      }
+
       videos.push(new Video({
         filename: meta.filename,
-        backend,
-        backendMetadata: {
-          dataset: datasetPath,
-          format,
-          shape,
-          fps: meta.fps,
-          channel_order: channelOrder,
-        },
+        backend: videoBackend,
+        backendMetadata,
         sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
         openBackend: openVideos && meta.embedded,
         embedded: meta.embedded,

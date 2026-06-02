@@ -38,6 +38,11 @@ export {
   type ByteSource,
 } from "./video/seq-video.js";
 export { createVideoBackend, type VideoBackendType } from "./video/factory.js";
+// CropRect is re-exported transitively via ./transform/index.js (single source).
+export {
+  CropVideoBackend,
+  type CropWrapOptions,
+} from "./video/crop-backend.js";
 export * from "./io/main.js";
 export * from "./io/geojson.js";
 export * from "./io/trackmate.js";
@@ -49,6 +54,7 @@ export * from "./codecs/skeleton-yaml.js";
 export * from "./codecs/skeleton-json.js";
 export * from "./codecs/training-config.js";
 export * from "./rendering/index.js";
+export * from "./transform/index.js";
 
 // Streaming HDF5 utilities for advanced use cases
 export {

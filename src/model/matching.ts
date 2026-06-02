@@ -774,8 +774,54 @@ export async function _isSameFileDirect(
 }
 
 /**
- * Check if two videos refer to the same underlying file (matching.py:507-528).
- * Resolves both to their chain roots, then defers to {@link _isSameFileDirect}.
+ * Return a video's crop rect as an identity key, or `null` (matching.py:507-524).
+ *
+ * The per-video crop identity used to disambiguate distinct crops (e.g. mosaic
+ * tiles) of one underlying source file. Reads the composed source-coordinate
+ * crop rect via {@link Video._cropTuple} (which prefers `backend.crop` on an
+ * open `CropVideoBackend` and falls back to `backendMetadata["crop"]` when
+ * closed). `null` when the video is not cropped (or does not expose
+ * `_cropTuple`).
+ */
+export function _cropKey(
+  video: Video,
+): [number, number, number, number] | null {
+  const fn = (video as { _cropTuple?: () => unknown })._cropTuple;
+  if (typeof fn !== "function") {
+    return null;
+  }
+  const crop = fn.call(video);
+  return crop != null
+    ? ([...(crop as number[])] as [number, number, number, number])
+    : null;
+}
+
+/** Equality on two crop keys (element-wise; both `null` => equal). */
+function _cropKeysEqual(
+  key1: [number, number, number, number] | null,
+  key2: [number, number, number, number] | null,
+): boolean {
+  if (key1 == null || key2 == null) {
+    return key1 === key2; // both null => equal; one null => unequal
+  }
+  return (
+    key1[0] === key2[0] &&
+    key1[1] === key2[1] &&
+    key1[2] === key2[2] &&
+    key1[3] === key2[3]
+  );
+}
+
+/**
+ * Check if two videos refer to the same underlying file (matching.py:527-559).
+ *
+ * Resolves both to their chain roots and defers to {@link _isSameFileDirect};
+ * then ALSO requires equal crop keys so two distinct crops of one source file
+ * (e.g. mosaic tiles) are NOT collapsed into one video. The crop keys are read
+ * from the ORIGINAL videos (not the resolved roots): two tiles share one
+ * uncropped source whose own crop key is `null`, so the disambiguation must use
+ * each video's own crop rect. For non-cropped videos both keys are `null`, so
+ * behavior is unchanged.
  */
 export async function isSameFile(
   video1: Video,
@@ -783,7 +829,11 @@ export async function isSameFile(
 ): Promise<boolean> {
   const root1 = _getRootVideo(video1);
   const root2 = _getRootVideo(video2);
-  return _isSameFileDirect(root1, root2);
+  if (!(await _isSameFileDirect(root1, root2))) {
+    return false;
+  }
+  // Same underlying file: distinct crops of it are distinct videos.
+  return _cropKeysEqual(_cropKey(video1), _cropKey(video2));
 }
 
 /**
@@ -828,6 +878,44 @@ export async function originalVideosConflict(
 
   // At least one file exists and they don't match - conflict.
   return true;
+}
+
+/**
+ * Check if two videos are the same source file but DIFFERENT crops
+ * (matching.py:678-712). Used for REJECTION in the AUTO cascade.
+ *
+ * The definitive disambiguation for mosaic tiles: two distinct crops of one
+ * physical file share a root file (so the file-identity / strict-path / leaf
+ * rungs would otherwise collapse them) but have different crop rects, making
+ * them genuinely different videos.
+ *
+ * Returns `true` ONLY when the two videos resolve to the same underlying root
+ * file (verifiable identity OR matching root basename) AND their crop keys
+ * differ. For non-cropped videos (both keys `null`) this is always `false`, so
+ * behavior for non-crop videos is unchanged.
+ */
+export async function _sameFileDifferentCrop(
+  video1: Video,
+  video2: Video,
+): Promise<boolean> {
+  if (_cropKeysEqual(_cropKey(video1), _cropKey(video2))) {
+    return false;
+  }
+
+  const root1 = _getRootVideo(video1);
+  const root2 = _getRootVideo(video2);
+  if (await _isSameFileDirect(root1, root2)) {
+    return true;
+  }
+
+  // Even without verifiable file identity, a shared root basename means the
+  // path/leaf rungs could re-match the pair; differing crops still disambiguate.
+  const fn1 = root1.filename;
+  const fn2 = root2.filename;
+  if (Array.isArray(fn1) || Array.isArray(fn2)) {
+    return false;
+  }
+  return basename(fn1) === basename(fn2);
 }
 
 // =============================================================================
@@ -1481,7 +1569,13 @@ export class VideoMatcher {
       if (await originalVideosConflict(video1, video2)) {
         return false;
       }
-      // Definitive: same file identity.
+      // Rejection: same source file but different crop (mosaic tiles). Must run
+      // before any path rung, which would otherwise re-match the shared root
+      // file. For non-crop videos this is always false.
+      if (await _sameFileDifferentCrop(video1, video2)) {
+        return false;
+      }
+      // Definitive: same file identity (crop-aware).
       if (await isSameFile(video1, video2)) {
         return true;
       }
@@ -1550,6 +1644,13 @@ export class VideoMatcher {
       }
       // REJECTION 2: provenance conflict.
       if (await originalVideosConflict(candidate, incoming)) {
+        continue;
+      }
+      // REJECTION 3: same source file, different crop. Distinct crops (mosaic
+      // tiles) of one physical file share a root file, so dropping them here
+      // prevents the file-identity, strict-path, and leaf-uniqueness rungs from
+      // collapsing them. For non-crop candidates this is always false.
+      if (await _sameFileDifferentCrop(candidate, incoming)) {
         continue;
       }
       viable.push(candidate);

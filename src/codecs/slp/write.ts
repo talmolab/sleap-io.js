@@ -6,6 +6,7 @@ import { RecordingSession, Camera, InstanceGroup, FrameGroup } from "../../model
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
+import { CropVideoBackend } from "../../video/crop-backend.js";
 import { getH5Module, getH5FileSystem, ensureH5StagingDir } from "./h5.js";
 import { ROI, PredictedROI, encodeWkb } from "../../model/roi.js";
 import { SegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
@@ -81,6 +82,7 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   } else {
     writeVideos(file, labels.videos);
   }
+  writeVideoCrops(file, labels.videos);
 
   writeTracks(file, labels.tracks);
   writeSuggestions(file, labels.suggestions, labels.videos);
@@ -311,6 +313,7 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
 
   writeMetadata(file, labels);
   writeVideos(file, labels.videos);
+  writeVideoCrops(file, labels.videos);
   writeTracks(file, labels.tracks);
   writeSuggestions(file, labels.suggestions, labels.videos);
   writeIdentities(file, labels.identities);
@@ -581,6 +584,14 @@ function writeMetadata(file: any, labels: Labels): void {
     formatId = Math.max(formatId, 2.1);
   }
 
+  // v2.3: virtual on-read video crops (/video_crops dataset). Bumped ONLY when a
+  // video is cropped, so uncropped files keep their lower format_id. 2.3 is
+  // purely additive — old readers (<= 2.2) skip /video_crops and read the
+  // uncropped videos_json safely. Port of Python write_metadata (slp.py:1891-1895).
+  if (labels.videos.some((v) => v._cropTuple() !== null)) {
+    formatId = Math.max(formatId, 2.3);
+  }
+
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
@@ -665,9 +676,59 @@ function writeVideos(file: any, videos: Video[]): void {
 function serializeVideo(video: Video): Record<string, unknown> {
   const backend = { ...(video.backendMetadata ?? {}) } as Record<string, unknown>;
   if (backend.filename == null) backend.filename = video.filename;
-  if (backend.dataset == null && video.backend?.dataset) backend.dataset = video.backend.dataset;
-  if (backend.shape == null && video.backend?.shape) backend.shape = video.backend.shape;
-  if (backend.fps == null && video.backend?.fps != null) backend.fps = video.backend.fps;
+
+  // Crop unwrap (SLP 2.3): a cropped Video serializes as its UNCROPPED inner so
+  // videos_json describes the full frame and old readers never hit an unknown
+  // wrapper type. The crop rides /video_crops (see writeVideoCrops); it must NOT
+  // enter videos_json. Port of Python video_to_dict (slp.py:503-580).
+  const liveBackend = video.backend;
+  if (liveBackend instanceof CropVideoBackend) {
+    const inner = liveBackend.inner;
+    if (inner instanceof CropVideoBackend) {
+      // A nested (un-flattened) crop-of-crop can't be represented by the
+      // single-crop-per-video /video_crops schema. wrap() only nests when fills
+      // differ or the outer rect exceeds the inner frame.
+      throw new Error(
+        "Cannot serialize a nested crop-of-crop video: the /video_crops format " +
+          "stores a single crop per video. Flatten the crop (use matching fills " +
+          "and an in-bounds region) before saving."
+      );
+    }
+    // Serialize the inner's full-frame shape/dataset/fps, not the cropped facade.
+    const innerShape =
+      inner.shape ?? (backend.source_shape as number[] | undefined) ?? video.sourceVideo?.shape;
+    if (innerShape != null) backend.shape = [...innerShape];
+    else delete backend.shape;
+    if (inner.dataset != null) backend.dataset = inner.dataset;
+    if (inner.fps != null) backend.fps = inner.fps;
+  } else if (liveBackend == null && "crop" in backend) {
+    // Closed cropped path: backendMetadata carries the CROPPED shape plus a crop
+    // record. Restore the UNCROPPED source shape so videos_json describes the
+    // full frame; refuse to emit a self-inconsistent entry when unavailable.
+    let srcShape: number[] | null = null;
+    if (video.sourceVideo?.shape != null) {
+      srcShape = [...video.sourceVideo.shape];
+    } else if (backend.source_shape != null) {
+      srcShape = [...(backend.source_shape as number[])];
+    }
+    if (srcShape == null) {
+      throw new Error(
+        "Cannot serialize closed cropped video: the uncropped source shape is " +
+          "unavailable (no source_video and no recorded source_shape), so " +
+          "videos_json cannot describe the full frame."
+      );
+    }
+    backend.shape = srcShape;
+  } else {
+    if (backend.dataset == null && liveBackend?.dataset) backend.dataset = liveBackend.dataset;
+    if (backend.shape == null && liveBackend?.shape) backend.shape = liveBackend.shape;
+    if (backend.fps == null && liveBackend?.fps != null) backend.fps = liveBackend.fps;
+  }
+
+  // Strip crop keys from videos_json regardless of path (they ride /video_crops).
+  delete backend.crop;
+  delete backend.crop_fill;
+  delete backend.source_shape;
 
   const entry: Record<string, unknown> = {
     filename: video.filename,
@@ -679,6 +740,32 @@ function serializeVideo(video: Video): Record<string, unknown> {
   }
 
   return entry;
+}
+
+/**
+ * Write the top-level `/video_crops` dataset (SLP format 2.3) when at least one
+ * video carries a virtual crop. Port of Python `write_video_crops`
+ * (slp.py:683-711).
+ *
+ * Emits one `{ video, crop: [x1,y1,x2,y2], fill }` entry per cropped video in
+ * `videos` order, encoded as a single compact JSON string in a length-1 vlen
+ * string array — the only h5wasm-producible form accepted by Python's
+ * `read_video_crops` (the scalar `np.bytes_` form Python writes is read-equivalent).
+ * The dataset is omitted entirely when no video is cropped so uncropped files
+ * stay byte-identical and old readers never see an unknown dataset.
+ */
+function writeVideoCrops(file: any, videos: Video[]): void {
+  const crops: Array<Record<string, unknown>> = [];
+  for (let i = 0; i < videos.length; i++) {
+    const rect = videos[i]._cropTuple();
+    if (rect == null) continue;
+    crops.push({ video: i, crop: [...rect], fill: videos[i]._cropFill() });
+  }
+  if (crops.length === 0) return;
+  // JSON.stringify uses no spaces by default, matching Python's
+  // json.dumps(separators=(",",":")) byte-for-byte.
+  const payload = JSON.stringify(crops);
+  file.create_dataset({ name: "video_crops", data: [payload] });
 }
 
 function writeTracks(file: any, tracks: Array<{ name: string }>): void {
@@ -1101,8 +1188,16 @@ function writeEmbeddedVideos(
         format: embedData.format,
         channel_order: embedData.channelOrder,
       };
-      if (video.backend?.shape) backend.shape = video.backend.shape;
-      if (video.backend?.fps != null) backend.fps = video.backend.fps;
+      // For a cropped video, videos_json must describe the UNCROPPED inner frame
+      // (the crop rides /video_crops and is re-applied once on read); read the
+      // shape/fps from the inner backend, not the cropped facade.
+      const inner =
+        video.backend instanceof CropVideoBackend ? video.backend.inner : video.backend;
+      const innerShape =
+        inner?.shape ??
+        (video.backendMetadata?.source_shape as number[] | undefined);
+      if (innerShape) backend.shape = innerShape;
+      if (inner?.fps != null) backend.fps = inner.fps;
 
       const entry: Record<string, unknown> = {
         filename: ".",
