@@ -10,6 +10,8 @@ export type {
   MarkerShape,
   RenderOptions,
   VideoOptions,
+  Overlay,
+  VideoOverlay,
 } from "./types.js";
 
 // Color utilities
@@ -58,3 +60,14 @@ export {
 
 // Video rendering
 export { renderVideo, checkFfmpeg } from "./video.js";
+
+// Overlay drawing (Node-only raster/vector overlays for segmentation masks,
+// label images, bounding boxes, and ROIs). Not exported from the browser entry.
+export {
+  drawMasks,
+  drawLabelImage,
+  drawBboxes,
+  drawRois,
+  applyOverlay,
+} from "./overlays.js";
+export type { RawLabelImage } from "./overlays.js";

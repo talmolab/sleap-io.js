@@ -21,6 +21,7 @@ import {
   collectTracks,
 } from "./trails.js";
 import { RenderContext, InstanceContext } from "./context.js";
+import { applyOverlay } from "./overlays.js";
 
 // Default options
 const DEFAULT_OPTIONS: Required<
@@ -35,6 +36,9 @@ const DEFAULT_OPTIONS: Required<
     | "trailFrames"
     | "trailTracks"
     | "trailPtsCache"
+    // `overlay` is absence-checked (undefined = no overlay), so it has no
+    // default value; `overlayOutlineColor` is null by default below.
+    | "overlay"
   >
 > = {
   colorBy: "auto",
@@ -55,6 +59,13 @@ const DEFAULT_OPTIONS: Required<
   trailAlphaFade: true,
   trailAlpha: 1,
   trailColor: null,
+  // Segmentation / annotation overlay (off by default). Mirrors Python
+  // render_image overlay params (overlay=None, overlay_alpha=0.3, etc.).
+  overlayAlpha: 0.3,
+  overlayPalette: "distinct",
+  overlayOutline: false,
+  overlayOutlineWidth: 1,
+  overlayOutlineColor: null,
 };
 
 /** Default fallback color */
@@ -142,6 +153,58 @@ export async function renderImage(
     const bgColor = resolveColor(opts.background);
     ctx.fillStyle = rgbToCSS(bgColor);
     ctx.fillRect(0, 0, scaledWidth, scaledHeight);
+  }
+
+  // Apply the annotation overlay AFTER the background and BEFORE trails/poses,
+  // mirroring Python render_image (core.py L1159-1180: overlay applied on the
+  // base frame, before trails/centroids/poses).
+  //
+  // Scale handling: overlay annotation coordinates (mask/label-image pixels,
+  // bbox corners, ROI geometry) are in SOURCE pixels. Python applies the
+  // overlay to the un-scaled base frame and then scales the whole result, so
+  // poses (drawn here at `x * scale`) stay aligned with the overlay. We
+  // replicate that equivalent: read the canvas at source resolution, blend the
+  // overlay in source space, then scale-composite back onto the (possibly
+  // scaled) canvas. When `scale === 1` this is an in-place read/blend/write.
+  if (opts.overlay !== undefined && opts.overlay !== null) {
+    const overlayOpts = {
+      alpha: opts.overlayAlpha,
+      palette: opts.overlayPalette,
+      outline: opts.overlayOutline,
+      outlineWidth: opts.overlayOutlineWidth,
+      outlineColor: opts.overlayOutlineColor,
+    };
+    if (opts.scale === 1) {
+      // Fast path: blend directly on the scaled canvas (== source resolution).
+      const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
+      applyOverlay(
+        imageData as unknown as ImageData,
+        opts.overlay,
+        overlayOpts,
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ctx.putImageData(imageData as any, 0, 0);
+    } else {
+      // Scaled path: render the current background at source resolution onto a
+      // temporary canvas, blend the overlay there (source-pixel coords), then
+      // draw it scaled onto the main canvas so it lines up with the poses.
+      const srcCanvas = new Canvas(width, height);
+      const srcCtx = srcCanvas.getContext("2d");
+      // Downscale the already-drawn (scaled) background into source space.
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      srcCtx.drawImage(canvas as any, 0, 0, width, height);
+      const imageData = srcCtx.getImageData(0, 0, width, height);
+      applyOverlay(
+        imageData as unknown as ImageData,
+        opts.overlay,
+        overlayOpts,
+      );
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      srcCtx.putImageData(imageData as any, 0, 0);
+      ctx.clearRect(0, 0, scaledWidth, scaledHeight);
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      ctx.drawImage(srcCanvas as any, 0, 0, scaledWidth, scaledHeight);
+    }
   }
 
   // Get skeleton info

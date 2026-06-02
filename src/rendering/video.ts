@@ -5,7 +5,13 @@ import type { Labels } from "../model/labels.js";
 import type { LabeledFrame } from "../model/labeled-frame.js";
 import type { Video } from "../model/video.js";
 import type { Instance, PredictedInstance } from "../model/instance.js";
-import type { VideoOptions } from "./types.js";
+import type { LabelImage } from "../model/label-image.js";
+import type {
+  Overlay,
+  RenderOptions,
+  VideoOptions,
+  VideoOverlay,
+} from "./types.js";
 import { renderImage } from "./render.js";
 
 /**
@@ -61,6 +67,25 @@ export async function renderVideo(
     throw new Error("No frames to render");
   }
 
+  // Resolve the per-frame overlay parameter (mirrors Python render_video,
+  // core.py L1719-1754). Auto-detect: when no explicit overlay is given and a
+  // Labels source has label images for the rendered video, use them as a
+  // per-frame LabelImage[] (indexed by render position). Mirrors core.py
+  // L1549-1556.
+  let videoOverlay: VideoOverlay | undefined = options.overlay;
+  if (
+    videoOverlay === undefined &&
+    !Array.isArray(source) &&
+    source.labelImages.length > 0
+  ) {
+    const targetVideo = selectedFrames[0].video;
+    const videoLabelImages = source.getLabelImages({ video: targetVideo });
+    if (videoLabelImages.length > 0) {
+      videoOverlay = videoLabelImages;
+    }
+  }
+  const overlayForFrame = makeOverlayResolver(videoOverlay);
+
   // Build per-video temporal context for motion trails once (keyed by frame
   // index), using ALL source frames so a trail can reach back before the
   // selected range. Each rendered frame then gets its video's frame map.
@@ -82,18 +107,29 @@ export async function renderVideo(
       videoFrames.set(lf.frameIdx, lf);
     }
   }
-  const optsForFrame = (frame: LabeledFrame): VideoOptions =>
-    options.showTrails
+  // Build the per-frame render options. Overlay is resolved per frame (static
+  // value, position-indexed list, frame-index-keyed Map, or callable) and
+  // passed through as the single-frame `overlay` that renderImage understands.
+  const optsForFrame = (frame: LabeledFrame, position: number): RenderOptions => {
+    // Strip the video-level (per-frame) `overlay` so the spread does not leak a
+    // `VideoOverlay` into the single-frame `RenderOptions`; it is replaced by
+    // the resolved single-frame overlay below.
+    const { overlay: _ignored, ...rest } = options;
+    void _ignored;
+    const base: RenderOptions = options.showTrails
       ? {
-          ...options,
+          ...rest,
           trailFrames: framesByVideo.get(frame.video),
           trailTracks: options.trailTracks ?? canonicalTracks,
           trailPtsCache,
         }
-      : options;
+      : { ...rest };
+    base.overlay = overlayForFrame(frame, position);
+    return base;
+  };
 
   // Get frame dimensions from first frame
-  const firstImage = await renderImage(selectedFrames[0], optsForFrame(selectedFrames[0]));
+  const firstImage = await renderImage(selectedFrames[0], optsForFrame(selectedFrames[0], 0));
   const width = firstImage.width;
   const height = firstImage.height;
 
@@ -154,7 +190,7 @@ export async function renderVideo(
     }
 
     const frame = selectedFrames[i];
-    const imageData = await renderImage(frame, optsForFrame(frame));
+    const imageData = await renderImage(frame, optsForFrame(frame, i));
 
     // Write raw RGBA data to ffmpeg stdin
     const buffer = Buffer.from(imageData.data.buffer);
@@ -192,4 +228,60 @@ export async function renderVideo(
 
     ffmpeg.on("error", reject);
   });
+}
+
+/** Whether a value is a `LabelImage`-like object (Int32Array-backed `data`). */
+function isLabelImageLike(value: unknown): value is LabelImage {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "data" in value &&
+    (value as { data: unknown }).data instanceof Int32Array
+  );
+}
+
+/** Whether a value is a non-empty `LabelImage[]` (per-frame, position-indexed). */
+function isLabelImageList(value: unknown): value is LabelImage[] {
+  return Array.isArray(value) && value.length > 0 && isLabelImageLike(value[0]);
+}
+
+/**
+ * Build a per-frame overlay resolver from the (already auto-detected) video
+ * overlay parameter. Mirrors Python `_get_frame_overlay` (core.py L1732-1754):
+ *
+ * - `undefined` -> no overlay on any frame.
+ * - callable `(frameIdx) => Overlay | undefined` -> invoked with the source
+ *   frame index for each frame.
+ * - `Map<number, Overlay>` -> keyed by the source frame index
+ *   (`LabeledFrame.frameIdx`); missing keys yield no overlay.
+ * - `LabelImage[]` -> indexed by the frame's render position; out-of-range
+ *   positions yield no overlay.
+ * - any other static {@link Overlay} (single `LabelImage`, or a list of
+ *   `SegmentationMask` / `ROI` / `BoundingBox`) -> applied to every frame.
+ *
+ * The resolver returns the single-frame `Overlay` consumed by renderImage.
+ */
+function makeOverlayResolver(
+  overlay: VideoOverlay | undefined,
+): (frame: LabeledFrame, position: number) => Overlay | undefined {
+  if (overlay === undefined) {
+    return () => undefined;
+  }
+  if (typeof overlay === "function") {
+    const fn = overlay as (frameIdx: number) => Overlay | undefined;
+    return (frame) => fn(frame.frameIdx);
+  }
+  if (overlay instanceof Map) {
+    const map = overlay as Map<number, Overlay>;
+    return (frame) => map.get(frame.frameIdx);
+  }
+  if (isLabelImageList(overlay)) {
+    const list = overlay;
+    return (_frame, position) =>
+      position < list.length ? list[position] : undefined;
+  }
+  // Static overlay (single LabelImage or a list of masks/rois/bboxes) applied
+  // to every frame.
+  const staticOverlay = overlay as Overlay;
+  return () => staticOverlay;
 }

@@ -4,6 +4,26 @@ import type { RenderContext } from "./context.js";
 import type { InstanceContext } from "./context.js";
 import type { LabeledFrame } from "../model/labeled-frame.js";
 import type { Instance, PredictedInstance, Track } from "../model/instance.js";
+import type { SegmentationMask } from "../model/mask.js";
+import type { LabelImage } from "../model/label-image.js";
+import type { BoundingBox } from "../model/bbox.js";
+import type { ROI } from "../model/roi.js";
+import type { RawLabelImage } from "./overlays.js";
+
+/**
+ * A single-frame annotation overlay applied before poses are drawn.
+ *
+ * Mirrors Python `_apply_overlay` dispatch (core.py L473-566): a `LabelImage`
+ * (or a raw `Int32Array`-backed object) routes to the label-image raster path;
+ * a list of `SegmentationMask` / `ROI` / `BoundingBox` routes to the
+ * corresponding draw function with per-item palette colors.
+ */
+export type Overlay =
+  | LabelImage
+  | RawLabelImage
+  | SegmentationMask[]
+  | ROI[]
+  | BoundingBox[];
 
 /** RGB color as [r, g, b] with values 0-255 */
 export type RGB = [number, number, number];
@@ -90,6 +110,23 @@ export interface RenderOptions {
   background?: "transparent" | ColorSpec;
   image?: ImageData | null;
 
+  // Segmentation / annotation overlay (applied AFTER the background and BEFORE
+  // trails and poses, mirroring Python render_image L1159-1180). Node-only:
+  // overlay drawing lives in the raster render path and is not part of the
+  // browser entry. See `applyOverlay` in overlays.ts.
+  /**
+   * Annotation overlay drawn behind the poses: a single `LabelImage` (or a raw
+   * `Int32Array`-backed object), or a list of `SegmentationMask` / `ROI` /
+   * `BoundingBox`. Overlay coordinates are in source pixels and are scaled to
+   * match the poses (see `scale`). Default: undefined (no overlay).
+   */
+  overlay?: Overlay;
+  overlayAlpha?: number; // Default: 0.3 (fill opacity, 0-1)
+  overlayPalette?: PaletteName | string; // Default: "distinct"
+  overlayOutline?: boolean; // Default: false (label images only)
+  overlayOutlineWidth?: number; // Default: 1 (pixels, label images only)
+  overlayOutlineColor?: RGB | null; // Default: null (darkened per-label color)
+
   // Frame size (required if no image provided)
   width?: number;
   height?: number;
@@ -100,8 +137,35 @@ export interface RenderOptions {
   perInstanceCallback?: (ctx: InstanceContext) => void;
 }
 
+/**
+ * Per-frame overlay resolved for each rendered frame of a video.
+ *
+ * Mirrors Python render_video overlay dispatch (core.py L1719-1754):
+ * - A static {@link Overlay} (single `LabelImage` or a list of masks/rois/bboxes)
+ *   is applied to every frame.
+ * - `LabelImage[]` is indexed by the position of the frame in the render
+ *   sequence (one label image per frame); out-of-range frames get no overlay.
+ * - A `Map<number, Overlay>` is keyed by the source frame index
+ *   (`LabeledFrame.frameIdx`); missing keys get no overlay.
+ * - A callable `(frameIdx) => Overlay | undefined` is invoked per frame with the
+ *   source frame index, returning that frame's overlay (or `undefined`).
+ */
+export type VideoOverlay =
+  | Overlay
+  | LabelImage[]
+  | Map<number, Overlay>
+  | ((frameIdx: number) => Overlay | undefined);
+
 /** Video rendering options (extends RenderOptions) */
-export interface VideoOptions extends RenderOptions {
+export interface VideoOptions extends Omit<RenderOptions, "overlay"> {
+  /**
+   * Per-frame annotation overlay. See {@link VideoOverlay}. A single static
+   * overlay applies to every frame; a `LabelImage[]` is indexed by render
+   * position; a `Map` is keyed by source frame index; a callable is invoked per
+   * frame. Mirrors Python render_video (core.py L1719-1754).
+   */
+  overlay?: VideoOverlay;
+
   // Frame selection
   frameInds?: number[];
   start?: number;
