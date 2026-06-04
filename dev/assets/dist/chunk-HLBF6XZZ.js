@@ -3789,6 +3789,14 @@ var CropVideoBackend = class _CropVideoBackend {
     return this.inner.fps;
   }
   /**
+   * Inner backend's embedded frame numbers (delegated). A crop is spatial and
+   * frame-preserving, so the embedded set is exactly the inner's. Without this,
+   * a cropped `pkg.slp` would report no embedded set (see {@link VideoBackend.frameNumbers}).
+   */
+  get frameNumbers() {
+    return this.inner.frameNumbers;
+  }
+  /**
    * Cropped frame shape `[F, h, w, c]`.
    *
    * Frame count and channel count come from the inner (a crop is spatial and
@@ -3947,6 +3955,18 @@ var Video = class _Video {
   }
   get hasEmbeddedImages() {
     return this._embedded;
+  }
+  /**
+   * Sorted, de-duplicated source frame numbers that have an available image, or
+   * `null` when every frame is available (continuous video) or the set is
+   * unknown / the backend is closed. For an embedded-image video (`pkg.slp`)
+   * the backend exposes the stored `frame_numbers`; callers should treat `null`
+   * as "no restriction" (all frames imaged).
+   */
+  get embeddedFrameIndices() {
+    const nums = this.backend?.frameNumbers;
+    if (!nums || nums.length === 0) return null;
+    return [...new Set(nums)].sort((a, b) => a - b);
   }
   get originalVideo() {
     if (!this.sourceVideo) return null;
@@ -8163,6 +8183,8 @@ var StreamingHdf5VideoBackend = class {
   dataset;
   shape;
   fps;
+  /** Source frame numbers with a stored image (storage order). */
+  frameNumbers;
   h5file;
   datasetPath;
   frameNumberToIndex;
@@ -8177,6 +8199,7 @@ var StreamingHdf5VideoBackend = class {
     this.datasetPath = options.datasetPath;
     this.dataset = options.datasetPath;
     const frameNumbers = options.frameNumbers ?? [];
+    this.frameNumbers = frameNumbers;
     this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";
@@ -9319,6 +9342,8 @@ var Hdf5VideoBackend = class {
   dataset;
   shape;
   fps;
+  /** Source frame numbers with a stored image (storage order). */
+  frameNumbers;
   file;
   datasetPath;
   frameNumberToIndex;
@@ -9332,6 +9357,7 @@ var Hdf5VideoBackend = class {
     this.datasetPath = options.datasetPath;
     this.dataset = options.datasetPath;
     const frameNumbers = options.frameNumbers ?? [];
+    this.frameNumbers = frameNumbers;
     this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";

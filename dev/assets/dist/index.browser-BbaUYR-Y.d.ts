@@ -6,6 +6,12 @@ interface VideoBackend {
     shape?: [number, number, number, number];
     fps?: number;
     dataset?: string | null;
+    /**
+     * Embedded-image (HDF5 / `pkg.slp`) backends: the source frame numbers that
+     * have a stored image, in storage order. Left unset by continuous-video
+     * backends (mp4 / seq / image-sequence), where every frame is decodable.
+     */
+    frameNumbers?: number[];
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
     getFrameTimes?(): Promise<number[] | null>;
     close(): void;
@@ -190,6 +196,14 @@ declare class Video {
         embedded?: boolean;
     });
     get hasEmbeddedImages(): boolean;
+    /**
+     * Sorted, de-duplicated source frame numbers that have an available image, or
+     * `null` when every frame is available (continuous video) or the set is
+     * unknown / the backend is closed. For an embedded-image video (`pkg.slp`)
+     * the backend exposes the stored `frame_numbers`; callers should treat `null`
+     * as "no restriction" (all frames imaged).
+     */
+    get embeddedFrameIndices(): number[] | null;
     get originalVideo(): Video | null;
     get shape(): [number, number, number, number] | null;
     set shape(value: [number, number, number, number] | null);
@@ -2455,6 +2469,8 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
     dataset?: string | null;
     shape?: [number, number, number, number];
     fps?: number;
+    /** Source frame numbers with a stored image (storage order). */
+    frameNumbers: number[];
     private h5file;
     private datasetPath;
     private frameNumberToIndex;
@@ -2679,6 +2695,12 @@ declare class CropVideoBackend implements VideoBackend {
     get dataset(): string | null | undefined;
     /** Inner backend's frame rate (delegated). */
     get fps(): number | undefined;
+    /**
+     * Inner backend's embedded frame numbers (delegated). A crop is spatial and
+     * frame-preserving, so the embedded set is exactly the inner's. Without this,
+     * a cropped `pkg.slp` would report no embedded set (see {@link VideoBackend.frameNumbers}).
+     */
+    get frameNumbers(): number[] | undefined;
     /**
      * Cropped frame shape `[F, h, w, c]`.
      *
