@@ -8,6 +8,7 @@ import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
 import { createVideoBackend } from "../../video/factory.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
+import { resolveSourceFrameCount } from "./frame-count.js";
 import type { CropRect } from "../../transform/points.js";
 import type { Fill } from "../../transform/frame.js";
 import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
@@ -467,6 +468,9 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
     let format = backendMeta.format as string | undefined;
     let channelOrderFromAttrs: string | undefined;
     let frameCountFromAttrs: number | undefined;
+    let heightFromAttrs: number | undefined;
+    let widthFromAttrs: number | undefined;
+    let channelsFromAttrs: number | undefined;
     if (datasetPath) {
       const videoDs = file.get(datasetPath);
       if (videoDs) {
@@ -479,15 +483,41 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
         if (framesNum !== undefined && framesNum > 0) {
           frameCountFromAttrs = framesNum;
         }
+        // Height/width/channels from dataset attrs, used when JSON metadata is
+        // missing (common for pkg.slp). Mirrors read-streaming.ts.
+        const h = attrToNumber(attrs.height);
+        if (h !== undefined && h > 0) heightFromAttrs = h;
+        const w = attrToNumber(attrs.width);
+        if (w !== undefined && w > 0) widthFromAttrs = w;
+        const c = attrToNumber(attrs.channels);
+        if (c !== undefined && c > 0) channelsFromAttrs = c;
       }
     }
 
-    // Compose shape: prefer frames attribute for [0] (source video total),
-    // keep height/width/channels from JSON shape when present.
+    // Read frame_numbers up front so the source frame count can be resolved
+    // synchronously (the dataset itself only holds a subset; see below). Reused
+    // by the backend below so it is not read twice.
+    const frameNumbers = datasetPath ? readFrameNumbers(file, datasetPath) : [];
+
+    // Compose shape. Dimensions prefer the videos_json shape, falling back to
+    // the dataset attrs (pkg.slp files often carry height/width/channels as
+    // attrs with no JSON shape). The source frame count (seekbar extent) comes
+    // from the `frames` attr, then videos_json, then max(frame_numbers)+1 — the
+    // last keeps multi-video pkg.slp files written without a `frames` attr
+    // (older PyQt SLEAP) resolving an extent instead of reporting none. Mirrors
+    // read-streaming.ts so the eager and streaming readers stay in parity.
     const jsonShape = backendMeta.shape as number[] | undefined;
+    const height = jsonShape?.[1] ?? heightFromAttrs;
+    const width = jsonShape?.[2] ?? widthFromAttrs;
+    const channels = jsonShape?.[3] ?? channelsFromAttrs;
+    const frameCount = resolveSourceFrameCount({
+      framesAttr: frameCountFromAttrs,
+      jsonFrameCount: jsonShape?.[0],
+      frameNumbers,
+    });
     const shape: [number, number, number, number] | undefined =
-      jsonShape && jsonShape.length === 4
-        ? [frameCountFromAttrs ?? jsonShape[0], jsonShape[1], jsonShape[2], jsonShape[3]]
+      height && width && channels
+        ? [frameCount ?? 0, height, width, channels]
         : undefined;
 
     // Determine channel order with priority:
@@ -501,7 +531,7 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
       backend = await createVideoBackend(filename, {
         dataset: datasetPath ?? undefined,
         embedded,
-        frameNumbers: readFrameNumbers(file, datasetPath),
+        frameNumbers,
         frameSizes: readFrameSizes(file, datasetPath),
         format,
         channelOrder,
