@@ -299,6 +299,15 @@ export class CropVideoBackend implements VideoBackend {
   }
 
   /**
+   * Inner backend's embedded frame numbers (delegated). A crop is spatial and
+   * frame-preserving, so the embedded set is exactly the inner's. Without this,
+   * a cropped `pkg.slp` would report no embedded set (see {@link VideoBackend.frameNumbers}).
+   */
+  get frameNumbers(): number[] | undefined {
+    return this.inner.frameNumbers;
+  }
+
+  /**
    * Cropped frame shape `[F, h, w, c]`.
    *
    * Frame count and channel count come from the inner (a crop is spatial and
