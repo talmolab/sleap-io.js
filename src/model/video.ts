@@ -158,6 +158,19 @@ export class Video {
     return this._embedded;
   }
 
+  /**
+   * Sorted, de-duplicated source frame numbers that have an available image, or
+   * `null` when every frame is available (continuous video) or the set is
+   * unknown / the backend is closed. For an embedded-image video (`pkg.slp`)
+   * the backend exposes the stored `frame_numbers`; callers should treat `null`
+   * as "no restriction" (all frames imaged).
+   */
+  get embeddedFrameIndices(): number[] | null {
+    const nums = this.backend?.frameNumbers;
+    if (!nums || nums.length === 0) return null;
+    return [...new Set(nums)].sort((a, b) => a - b);
+  }
+
   get originalVideo(): Video | null {
     if (!this.sourceVideo) return null;
     let current = this.sourceVideo;

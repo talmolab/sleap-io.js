@@ -28,6 +28,8 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
   dataset?: string | null;
   shape?: [number, number, number, number];
   fps?: number;
+  /** Source frame numbers with a stored image (storage order). */
+  frameNumbers: number[];
   private h5file: StreamingH5File;
   private datasetPath: string;
   private frameNumberToIndex: Map<number, number>;
@@ -54,6 +56,7 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     this.dataset = options.datasetPath;
     // Build O(1) lookup map from frame numbers
     const frameNumbers = options.frameNumbers ?? [];
+    this.frameNumbers = frameNumbers;
     this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";
