@@ -145,19 +145,27 @@ describe("readEmbeddedFrameBytes", () => {
     expect(calls.length).toBe(1);
   });
 
-  it("vlen: slices a single element and unwraps the blob", async () => {
+  it("vlen: reads the whole dataset once and caches it (h5wasm vlen hyperslab is unsafe)", async () => {
+    // h5wasm's single-element hyperslab slice of a variable-length dataset is
+    // memory-unsafe: selecting a SUBSET of the global-heap-backed elements
+    // throws "memory access out of bounds" (browser worker) / aborts (Node),
+    // intermittently, depending on heap state. Reading the WHOLE dataset (all
+    // elements) is reliable. So vlen must read whole + cache, never sub-slice.
+    const blobs = [int8([0x89, 0x50, 0x01]), int8([0x89, 0x50, 0x02]), int8([0x89, 0x50, 0x03])];
     const { reader, calls } = fakeReader({
-      shape: [2],
-      frameCount: 2, // == 2 -> vlen
+      shape: [3],
+      frameCount: 3, // == length -> vlen
       format: "png",
       onSlice: (slice) => {
-        expect(slice).toEqual([[1, 2]]);
-        return [int8([0x89, 0x50, 0xff])]; // array holding one blob
+        // A sub-range hyperslab is exactly what crashes h5wasm — never attempt it.
+        if (slice !== undefined) throw new Error("memory access out of bounds");
+        return blobs; // whole read returns every blob, reliably
       },
     });
-    const out = await readEmbeddedFrameBytes(reader, 1);
-    expect(Array.from(out!)).toEqual([0x89, 0x50, 0xff]);
-    expect(calls.length).toBe(1);
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 0))!)).toEqual([0x89, 0x50, 0x01]);
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 2))!)).toEqual([0x89, 0x50, 0x03]);
+    // Whole dataset read exactly once (cached across frames); no sub-slice.
+    expect(calls).toEqual([undefined]);
   });
 
   it("legacy fallback: 1D concat without frame_sizes scans once and caches", async () => {
@@ -367,8 +375,8 @@ describe("Hdf5VideoBackend single-frame slicing (2D padded)", () => {
   });
 });
 
-describe("Hdf5VideoBackend single-frame slicing (real vlen pkg.slp)", () => {
-  it("slices a single vlen element without reading the whole dataset", async () => {
+describe("Hdf5VideoBackend frame reads (real vlen pkg.slp)", () => {
+  it("reads the whole vlen dataset once and caches it (h5wasm vlen hyperslab is unsafe)", async () => {
     const bytes = fs.readFileSync(path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"));
     const { file: rawFile, close } = await openH5File(new Uint8Array(bytes));
     const { file, spy } = wrapWithSpy(rawFile, close);
@@ -386,10 +394,15 @@ describe("Hdf5VideoBackend single-frame slicing (real vlen pkg.slp)", () => {
     const out = (await backend.getFrame(frameNumbers[0])) as Uint8Array;
     expect(out).toBeInstanceOf(Uint8Array);
     expect(out.length).toBeGreaterThan(0);
-    // It is a real PNG blob, sliced — and the whole vlen array was never read.
+    // A real PNG blob, read via the whole-dataset path — a per-element vlen
+    // hyperslab slice is memory-unsafe in h5wasm, so it is never attempted.
     expect(Array.from(out.subarray(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
-    expect(spy.value).toBe(0);
-    expect(spy.slice).toBeGreaterThan(0);
+    expect(spy.slice).toBe(0);
+    expect(spy.value).toBeGreaterThan(0);
+
+    // A second read is served from cache — the whole dataset is read only once.
+    await backend.getFrame(frameNumbers[0]);
+    expect(spy.value).toBe(1);
 
     file._close();
   });

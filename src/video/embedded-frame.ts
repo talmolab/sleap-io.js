@@ -228,11 +228,26 @@ export async function readEmbeddedFrameBytes(
     return encoded ? trimPaddedRow(row, reader.frameSizes?.[index]) : row;
   }
 
-  // vlen: h5wasm slices a single element -> an array holding one blob.
+  // vlen: read the WHOLE dataset once and index into the cached blob array.
+  //
+  // h5wasm's hyperslab *sub-selection* of a variable-length dataset is
+  // memory-unsafe: requesting a single element (`[[index, index+1]]`) selects a
+  // subset of the global-heap-backed blobs and intermittently throws "memory
+  // access out of bounds" (browser Web Worker) or aborts the WASM runtime
+  // (Node), depending on heap state. Reading the whole dataset (`dataset.value`,
+  // all elements) goes through a different, reliable code path. This costs one
+  // video's worth of embedded images in memory (cached on `reader.legacy.whole`,
+  // freed on backend `close()`) — the per-frame slice optimization from #135
+  // simply does not apply to vlen, where slicing is broken. Legacy pkg.slp files
+  // (older PyQt SLEAP) use this layout; without this, getFrame returns null and
+  // the frame renders black.
   if (layout === "vlen") {
-    const { value } = await reader.readSlice([[index, index + 1]]);
-    const entry = Array.isArray(value) ? value[0] : value;
-    return asUint8Array(entry);
+    if (!reader.legacy.whole) {
+      const { value } = await reader.readSlice();
+      reader.legacy.whole = Array.isArray(value) ? value : [];
+    }
+    const whole = reader.legacy.whole;
+    return Array.isArray(whole) ? asUint8Array(whole[index]) : null;
   }
 
   // 1D concatenated with known sizes: exact byte-range slice.
