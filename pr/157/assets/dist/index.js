@@ -73,6 +73,7 @@ import {
   VideoMatchMethod,
   VideoMatcher,
   _annotationCentroidXy,
+  _findAnnotationLinkMatches,
   _findAnnotationMatches,
   _registerFileWriter,
   _registerMaskFactory,
@@ -144,7 +145,7 @@ import {
   toNumpy,
   uncropPoints,
   writeGeoJSON
-} from "./chunk-AB3VXTPL.js";
+} from "./chunk-LQOLNMZI.js";
 import {
   Edge,
   Instance,
@@ -2651,6 +2652,7 @@ export {
   VideoMatchMethod,
   VideoMatcher,
   _annotationCentroidXy,
+  _findAnnotationLinkMatches,
   _findAnnotationMatches,
   _registerCentroidFactory,
   _registerMaskFactory,

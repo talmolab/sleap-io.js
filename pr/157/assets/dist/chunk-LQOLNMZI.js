@@ -1076,7 +1076,10 @@ var SegmentationMask = class _SegmentationMask {
         scoreMap: resampledScoreMap
       });
     }
-    return new UserSegmentationMask(baseOpts);
+    return new UserSegmentationMask({
+      ...baseOpts,
+      fromPredicted: this instanceof UserSegmentationMask ? this.fromPredicted : null
+    });
   }
   get bbox() {
     const flat = this.data;
@@ -1163,12 +1166,13 @@ var SegmentationMask = class _SegmentationMask {
 };
 var UserSegmentationMask = class extends SegmentationMask {
   /**
-   * In-memory provenance link to the `PredictedSegmentationMask` this user mask
-   * was adopted from, set by {@link PredictedSegmentationMask.toUser}.
+   * Provenance link to the `PredictedSegmentationMask` this user mask was
+   * adopted from, set by {@link PredictedSegmentationMask.toUser}.
    *
-   * This mirrors `Instance.fromPredicted`, but unlike instances it is an
-   * in-memory-only link: it is intentionally NOT persisted to the SLP format,
-   * so it becomes `null` after a save/load round-trip.
+   * Mirroring `Instance.fromPredicted`, this link is persisted to the SLP
+   * format as an index into the saved mask list. It survives a save/load
+   * round-trip as long as the source prediction is also saved (in the same or
+   * another frame). Files written before this column existed load it as `null`.
    */
   fromPredicted;
   constructor(options) {
@@ -1207,9 +1211,10 @@ var PredictedSegmentationMask = class extends SegmentationMask {
    * the RLE raster and the `scale`/`offset` tuples are copied so the user mask
    * owns independent buffers.
    *
-   * Mirrors `Instance.fromPredicted` semantics, but the resulting
-   * `fromPredicted` link is in-memory only: it is intentionally NOT persisted
-   * to the SLP format and will be `null` after a save/load round-trip.
+   * Mirrors `Instance.fromPredicted` semantics: the resulting `fromPredicted`
+   * link is persisted to the SLP format as an index into the saved mask list,
+   * and survives a save/load round-trip as long as the source prediction is
+   * also saved. Files written before this column existed load it as `null`.
    *
    * @param link - When `true` (default), set the returned mask's
    *   `fromPredicted` to this predicted mask. When `false`, leave it `null`.
@@ -3160,6 +3165,30 @@ function _findAnnotationMatches(selfList, otherList, attr, threshold) {
   }
   return matches;
 }
+function _findAnnotationLinkMatches(selfList, otherList) {
+  const matches = [];
+  const selfIdToIdx = /* @__PURE__ */ new Map();
+  for (let i = 0; i < selfList.length; i++) selfIdToIdx.set(selfList[i], i);
+  const otherIdToIdx = /* @__PURE__ */ new Map();
+  for (let j = 0; j < otherList.length; j++) otherIdToIdx.set(otherList[j], j);
+  for (let i = 0; i < selfList.length; i++) {
+    const src = selfList[i].fromPredicted;
+    if (src == null) continue;
+    const j = otherIdToIdx.get(src);
+    if (j !== void 0) {
+      matches.push({ selfIdx: i, otherIdx: j, score: Infinity });
+    }
+  }
+  for (let j = 0; j < otherList.length; j++) {
+    const src = otherList[j].fromPredicted;
+    if (src == null) continue;
+    const i = selfIdToIdx.get(src);
+    if (i !== void 0) {
+      matches.push({ selfIdx: i, otherIdx: j, score: Infinity });
+    }
+  }
+  return matches;
+}
 function _resolveAnnotationAuto(selfList, otherList, attr, threshold) {
   const merged = [];
   const usedSelfIndices = /* @__PURE__ */ new Set();
@@ -3168,7 +3197,8 @@ function _resolveAnnotationAuto(selfList, otherList, attr, threshold) {
       merged.push(ann);
     }
   }
-  const matches = _findAnnotationMatches(selfList, otherList, attr, threshold);
+  const matches = _findAnnotationLinkMatches(selfList, otherList);
+  matches.push(..._findAnnotationMatches(selfList, otherList, attr, threshold));
   matches.sort((a, b) => b.score - a.score);
   const matchedSelf = /* @__PURE__ */ new Set();
   const matchedOther = /* @__PURE__ */ new Set();
@@ -3285,6 +3315,38 @@ var LabeledFrame = class {
       return this.predictedInstances.filter((inst) => !inst.track || !usedTracks.has(inst.track));
     }
     return this.predictedInstances.filter((inst) => !usedPredicted.has(inst));
+  }
+  /**
+   * Predicted masks in this frame that have not been adopted by a user mask.
+   *
+   * The mask analogue of {@link unusedPredictions}. A prediction is considered
+   * adopted (and therefore excluded) when a user mask in the same frame:
+   *   1. links to it via `fromPredicted` (checked FIRST, by object identity), or
+   *   2. lacking such a link, spatially overlaps it (bbox-centroid within 5 px,
+   *      the auto-merge default).
+   *
+   * Predictions that no user mask claims by either rule are returned, e.g. for
+   * surfacing them in a proofreading UI.
+   */
+  get unusedPredictedMasks() {
+    const predicted = this.masks.filter(
+      (m) => m instanceof PredictedSegmentationMask
+    );
+    if (!predicted.length) return [];
+    const userMasks = this.masks.filter((m) => !m.isPredicted);
+    const adopted = /* @__PURE__ */ new Set();
+    for (const u of userMasks) {
+      const src = u.fromPredicted;
+      if (src != null) adopted.add(src);
+    }
+    const remaining = predicted.filter((m) => !adopted.has(m));
+    if (remaining.length && userMasks.length) {
+      const matches = _findAnnotationMatches(remaining, userMasks, "masks", 5);
+      for (const { selfIdx } of matches) {
+        adopted.add(remaining[selfIdx]);
+      }
+    }
+    return predicted.filter((m) => !adopted.has(m));
   }
   removePredictions() {
     this.instances = this.instances.filter((inst) => !(inst instanceof PredictedInstance));
@@ -8177,6 +8239,36 @@ function asUint8Array(value) {
   }
   return null;
 }
+function readVlenElementManual(Module, dataset, index) {
+  if (!Module || !Module._malloc || !Module.HEAPU8 || !Module.get_dataset_data) {
+    return null;
+  }
+  const md = dataset.metadata;
+  const vlenClass = Module.H5T_class_t?.H5T_VLEN.value;
+  const isVlen = md?.vlen === true || vlenClass != null && md?.type === vlenClass;
+  if (!isVlen || md?.size !== 8) return null;
+  const dataPtr = Module._malloc(md.size);
+  if (!dataPtr) return null;
+  try {
+    Module.get_dataset_data(
+      dataset.file_id,
+      dataset.path,
+      [1n],
+      [BigInt(index)],
+      [1n],
+      BigInt(dataPtr)
+    );
+    const u32 = new Uint32Array(Module.HEAPU8.buffer, Number(dataPtr), 2);
+    const len = u32[0];
+    const blobPtr = u32[1];
+    if (!blobPtr) return new Uint8Array(0);
+    const out = Module.HEAPU8.slice(blobPtr, blobPtr + len);
+    Module._free(blobPtr);
+    return out;
+  } finally {
+    Module._free(dataPtr);
+  }
+}
 async function readEmbeddedFrameBytes(reader, index) {
   if (index < 0) return null;
   const meta = await reader.getMeta();
@@ -8190,9 +8282,16 @@ async function readEmbeddedFrameBytes(reader, index) {
     return encoded ? trimPaddedRow(row, reader.frameSizes?.[index]) : row;
   }
   if (layout === "vlen") {
-    const { value } = await reader.readSlice([[index, index + 1]]);
-    const entry = Array.isArray(value) ? value[0] : value;
-    return asUint8Array(entry);
+    if (reader.readVlenElement) {
+      const out = await reader.readVlenElement(index);
+      if (out) return out;
+    }
+    if (!reader.legacy.whole) {
+      const { value } = await reader.readSlice();
+      reader.legacy.whole = Array.isArray(value) ? value : [];
+    }
+    const whole2 = reader.legacy.whole;
+    return Array.isArray(whole2) ? asUint8Array(whole2[index]) : null;
   }
   if (layout === "concat" && reader.frameSizes && reader.frameSizes.length > index) {
     const offsets2 = reader.legacy.offsets ??= computeOffsetsFromSizes(reader.frameSizes);
@@ -8316,6 +8415,15 @@ var StreamingHdf5VideoBackend = class {
       readSlice: async (slice) => {
         const data = await this.h5file.getDatasetValue(this.datasetPath, slice);
         return { value: data.value, shape: data.shape };
+      },
+      readVlenElement: async (index) => {
+        const data = await this.h5file.getDatasetValue(this.datasetPath, [
+          [index, index + 1]
+        ]);
+        const value = data.value;
+        if (value instanceof Uint8Array) return value;
+        if (Array.isArray(value)) return asUint8Array(value[index]);
+        return asUint8Array(value);
       }
     };
   }
@@ -9072,7 +9180,54 @@ function getDatasetValue(path, slice) {
   const dataset = currentFile.get(path);
   if (!dataset) throw new Error('Dataset not found: ' + path);
 
-  // Get value or slice
+  // Variable-length (vlen) datasets: h5wasm's high-level dataset.slice() corrupts
+  // the heap here \u2014 its post-read reclaim walks the FULL dataset dataspace over a
+  // single-element buffer (intermittent "memory access out of bounds" / abort).
+  // So NEVER call dataset.slice() on a vlen dataset. For a single-element slice we
+  // read the one hvl_t manually and free only that element (mirrors
+  // readVlenElementManual in ../../video/embedded-frame.ts \u2014 keep them in lockstep).
+  const M = h5wasmModule && h5wasmModule.Module;
+  const md = dataset.metadata;
+  const vlenClass = (M && M.H5T_class_t && M.H5T_class_t.H5T_VLEN) ? M.H5T_class_t.H5T_VLEN.value : 9;
+  const isVlen = !!(md && (md.vlen === true || md.type === vlenClass));
+  if (isVlen) {
+    const single = slice && Array.isArray(slice) && slice.length === 1 &&
+      Array.isArray(slice[0]) && slice[0].length === 2;
+    if (single && md.size === 8 && M && M._malloc && M.get_dataset_data && M.HEAPU8) {
+      const index = slice[0][0];
+      const dataPtr = M._malloc(md.size);
+      let out;
+      try {
+        M.get_dataset_data(dataset.file_id, dataset.path, [1n], [BigInt(index)], [1n], BigInt(dataPtr));
+        // HEAPU32 isn't exported; build the view over HEAPU8.buffer each call
+        // (heap growth can detach the previous ArrayBuffer).
+        const u32 = new Uint32Array(M.HEAPU8.buffer, Number(dataPtr), 2);
+        const len = u32[0];
+        const blobPtr = u32[1];
+        out = blobPtr ? M.HEAPU8.slice(blobPtr, blobPtr + len) : new Uint8Array(0);
+        if (blobPtr) M._free(blobPtr); // free ONLY the inner blob
+      } finally {
+        M._free(dataPtr);
+      }
+      return {
+        value: { type: 'typedarray', dtype: 'Uint8Array', buffer: out.buffer, byteOffset: out.byteOffset, length: out.length },
+        shape: dataset.shape,
+        dtype: dataset.dtype,
+        transferables: [out.buffer]
+      };
+    }
+    // Can't do the manual single-element read (whole read, or unexpected hvl_t
+    // size). Read the whole vlen dataset (safe) and return the array of blobs;
+    // the caller indexes into it. structuredClone copies it (no transfer).
+    return {
+      value: dataset.value,
+      shape: dataset.shape,
+      dtype: dataset.dtype,
+      transferables: []
+    };
+  }
+
+  // Non-vlen: hyperslab slice or whole read as requested.
   let value;
   if (slice && Array.isArray(slice)) {
     value = dataset.slice(slice);
@@ -9387,117 +9542,6 @@ async function openH5Worker(source, options) {
   return file;
 }
 
-// src/video/hdf5-video.ts
-var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
-var Hdf5VideoBackend = class {
-  filename;
-  dataset;
-  shape;
-  fps;
-  /** Source frame numbers with a stored image (storage order). */
-  frameNumbers;
-  file;
-  datasetPath;
-  frameNumberToIndex;
-  format;
-  channelOrder;
-  frameSizes;
-  legacy;
-  constructor(options) {
-    this.filename = options.filename;
-    this.file = options.file;
-    this.datasetPath = options.datasetPath;
-    this.dataset = options.datasetPath;
-    const frameNumbers = options.frameNumbers ?? [];
-    this.frameNumbers = frameNumbers;
-    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
-    this.format = options.format ?? "png";
-    this.channelOrder = options.channelOrder ?? "RGB";
-    this.shape = options.shape;
-    this.fps = options.fps;
-    this.frameSizes = options.frameSizes;
-    this.legacy = { whole: null, offsets: null };
-  }
-  async getFrame(frameIndex) {
-    const dataset = this.file.get(this.datasetPath);
-    if (!dataset) return null;
-    const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
-    if (index === void 0) return null;
-    const rawBytes = await readEmbeddedFrameBytes(this.buildReader(dataset), index);
-    if (!rawBytes || rawBytes.length === 0) return null;
-    if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes2(rawBytes, this.format, this.channelOrder);
-      return decoded ?? rawBytes;
-    }
-    const image = decodeRawFrame2(rawBytes, this.shape, this.channelOrder);
-    return image ?? rawBytes;
-  }
-  /** Build a single-frame reader bound to an open h5wasm dataset object. */
-  buildReader(dataset) {
-    return {
-      frameCount: this.frameNumberToIndex.size,
-      format: this.format,
-      frameSizes: this.frameSizes,
-      legacy: this.legacy,
-      getMeta: async () => ({ shape: dataset.shape ?? [], dtype: dataset.dtype }),
-      readSlice: async (slice) => {
-        const value = slice ? dataset.slice(slice) : dataset.value;
-        return { value, shape: dataset.shape ?? [] };
-      }
-    };
-  }
-  close() {
-    this.legacy.whole = null;
-    this.legacy.offsets = null;
-  }
-};
-async function decodeImageBytes2(bytes, format, channelOrder) {
-  if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
-  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
-  const safeBytes = new Uint8Array(bytes);
-  const blob = new Blob([safeBytes.buffer], { type: mime });
-  const bitmap = await createImageBitmap(blob);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  if (!useBgr) {
-    return bitmap;
-  }
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return bitmap;
-  ctx.drawImage(bitmap, 0, 0);
-  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const b = data[i + 2];
-    data[i] = b;
-    data[i + 2] = r;
-  }
-  return imageData;
-}
-function decodeRawFrame2(bytes, shape, channelOrder) {
-  if (!isBrowser4 || !shape) return null;
-  const [, height, width, channels] = shape;
-  if (!height || !width || !channels) return null;
-  const expectedLength = height * width * channels;
-  if (bytes.length < expectedLength) return null;
-  const rgba = new Uint8ClampedArray(width * height * 4);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  for (let i = 0; i < width * height; i += 1) {
-    const base = i * channels;
-    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
-    const g = bytes[base + 1] ?? 0;
-    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
-    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
-    const out = i * 4;
-    rgba[out] = r;
-    rgba[out + 1] = g;
-    rgba[out + 2] = b;
-    rgba[out + 3] = a;
-  }
-  return new ImageData(rgba, width, height);
-}
-
 // src/codecs/slp/h5.ts
 var _nodeGetModule = null;
 var _nodeOpenFile = null;
@@ -9540,6 +9584,10 @@ async function getH5Module() {
     })();
   }
   return modulePromise;
+}
+async function getH5EmscriptenModule() {
+  const ns = await getH5Module();
+  return ns.Module ?? null;
 }
 async function openH5File(source, options) {
   const module = await getH5Module();
@@ -9644,6 +9692,121 @@ function ensureH5StagingDir(module) {
     getH5FileSystem(module).mkdir?.("/tmp");
   } catch {
   }
+}
+
+// src/video/hdf5-video.ts
+var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
+var Hdf5VideoBackend = class {
+  filename;
+  dataset;
+  shape;
+  fps;
+  /** Source frame numbers with a stored image (storage order). */
+  frameNumbers;
+  file;
+  datasetPath;
+  frameNumberToIndex;
+  format;
+  channelOrder;
+  frameSizes;
+  legacy;
+  constructor(options) {
+    this.filename = options.filename;
+    this.file = options.file;
+    this.datasetPath = options.datasetPath;
+    this.dataset = options.datasetPath;
+    const frameNumbers = options.frameNumbers ?? [];
+    this.frameNumbers = frameNumbers;
+    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
+    this.format = options.format ?? "png";
+    this.channelOrder = options.channelOrder ?? "RGB";
+    this.shape = options.shape;
+    this.fps = options.fps;
+    this.frameSizes = options.frameSizes;
+    this.legacy = { whole: null, offsets: null };
+  }
+  async getFrame(frameIndex) {
+    const dataset = this.file.get(this.datasetPath);
+    if (!dataset) return null;
+    const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
+    if (index === void 0) return null;
+    const rawBytes = await readEmbeddedFrameBytes(this.buildReader(dataset), index);
+    if (!rawBytes || rawBytes.length === 0) return null;
+    if (isEncodedFormat(this.format)) {
+      const decoded = await decodeImageBytes2(rawBytes, this.format, this.channelOrder);
+      return decoded ?? rawBytes;
+    }
+    const image = decodeRawFrame2(rawBytes, this.shape, this.channelOrder);
+    return image ?? rawBytes;
+  }
+  /** Build a single-frame reader bound to an open h5wasm dataset object. */
+  buildReader(dataset) {
+    return {
+      frameCount: this.frameNumberToIndex.size,
+      format: this.format,
+      frameSizes: this.frameSizes,
+      legacy: this.legacy,
+      getMeta: async () => ({ shape: dataset.shape ?? [], dtype: dataset.dtype }),
+      readSlice: async (slice) => {
+        const value = slice ? dataset.slice(slice) : dataset.value;
+        return { value, shape: dataset.shape ?? [] };
+      },
+      readVlenElement: async (index) => {
+        const Module = await getH5EmscriptenModule();
+        return readVlenElementManual(Module, dataset, index);
+      }
+    };
+  }
+  close() {
+    this.legacy.whole = null;
+    this.legacy.offsets = null;
+  }
+};
+async function decodeImageBytes2(bytes, format, channelOrder) {
+  if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
+  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
+  const safeBytes = new Uint8Array(bytes);
+  const blob = new Blob([safeBytes.buffer], { type: mime });
+  const bitmap = await createImageBitmap(blob);
+  const useBgr = channelOrder.toUpperCase() === "BGR";
+  if (!useBgr) {
+    return bitmap;
+  }
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return bitmap;
+  ctx.drawImage(bitmap, 0, 0);
+  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const b = data[i + 2];
+    data[i] = b;
+    data[i + 2] = r;
+  }
+  return imageData;
+}
+function decodeRawFrame2(bytes, shape, channelOrder) {
+  if (!isBrowser4 || !shape) return null;
+  const [, height, width, channels] = shape;
+  if (!height || !width || !channels) return null;
+  const expectedLength = height * width * channels;
+  if (bytes.length < expectedLength) return null;
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  const useBgr = channelOrder.toUpperCase() === "BGR";
+  for (let i = 0; i < width * height; i += 1) {
+    const base = i * channels;
+    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
+    const g = bytes[base + 1] ?? 0;
+    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
+    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
+    const out = i * 4;
+    rgba[out] = r;
+    rgba[out + 1] = g;
+    rgba[out + 2] = b;
+    rgba[out + 3] = a;
+  }
+  return new ImageData(rgba, width, height);
 }
 
 // src/video/factory.ts
@@ -10743,6 +10906,13 @@ function writeMetadata(file, labels) {
   if (labels.videos.some((v) => v._cropTuple() !== null)) {
     formatId = Math.max(formatId, 2.3);
   }
+  const savedMasks = labels.masks;
+  const savedMaskSet = new Set(savedMasks);
+  if (savedMasks.some(
+    (m) => m.fromPredicted != null && savedMaskSet.has(m.fromPredicted)
+  )) {
+    formatId = Math.max(formatId, 2.4);
+  }
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
@@ -11340,6 +11510,8 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
   const scoreMapIndexRows = [];
   const scoreMapChunks = [];
   let smOffset = 0;
+  const maskIdToIdx = /* @__PURE__ */ new Map();
+  masks.forEach((m, i) => maskIdToIdx.set(m, i));
   for (let i = 0; i < masks.length; i++) {
     const mask = masks[i];
     const rleBytes = new Uint8Array(mask.rleCounts.length * 4);
@@ -11358,6 +11530,8 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
     const isPredicted = mask.isPredicted ? 1 : 0;
     const instanceIdx = mask.instance ? instances.indexOf(mask.instance) : mask._instanceIdx ?? -1;
     const maskTrackingScore = mask.trackingScore ?? Number.NaN;
+    const fromPredictedSrc = mask.fromPredicted ?? null;
+    const fromPredictedIdx = fromPredictedSrc != null ? maskIdToIdx.get(fromPredictedSrc) ?? -1 : -1;
     rows.push([
       mask.height,
       mask.width,
@@ -11374,7 +11548,8 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
       mask.scale[0],
       mask.scale[1],
       mask.offset[0],
-      mask.offset[1]
+      mask.offset[1],
+      fromPredictedIdx
     ]);
     categories.push(mask.category);
     names.push(mask.name);
@@ -11398,7 +11573,7 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
     file,
     "masks",
     rows,
-    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "tracking_score", "scale_x", "scale_y", "offset_x", "offset_y"],
+    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "tracking_score", "scale_x", "scale_y", "offset_x", "offset_y", "from_predicted"],
     "<f8"
   );
   writeStringDataset(file, "mask_categories", categories);
@@ -13526,12 +13701,14 @@ function readMasks(file, _videos, tracks) {
   const scoreCol = masksData.score ?? [];
   const instanceCol = masksData.instance ?? [];
   const maskTrackingScoreCol = masksData.tracking_score ?? [];
+  const fromPredictedCol = masksData.from_predicted ?? [];
   const scaleXCol = masksData.scale_x ?? [];
   const scaleYCol = masksData.scale_y ?? [];
   const offsetXCol = masksData.offset_x ?? [];
   const offsetYCol = masksData.offset_y ?? [];
   const scoreMaps = readScoreMaps(file, "mask_score_map_index", "mask_score_maps");
   const masks = [];
+  const fromPredictedPairs = [];
   for (let i = 0; i < heights.length; i++) {
     const rleStart = Number(rleStarts[i]);
     const rleEnd = Number(rleEnds[i]);
@@ -13576,12 +13753,19 @@ function readMasks(file, _videos, tracks) {
       });
     } else {
       mask = new UserSegmentationMask(baseOptions);
+      const fpIdx = fromPredictedCol.length > i ? Number(fromPredictedCol[i]) : -1;
+      if (fpIdx >= 0) fromPredictedPairs.push([i, fpIdx]);
     }
     const instIdx = instanceCol.length > i ? Number(instanceCol[i]) : -1;
     if (instIdx >= 0) {
       mask._instanceIdx = instIdx;
     }
     masks.push([mask, videoIdx, frameIdxVal]);
+  }
+  for (const [i, fpIdx] of fromPredictedPairs) {
+    if (fpIdx >= 0 && fpIdx < masks.length) {
+      masks[i][0].fromPredicted = masks[fpIdx][0];
+    }
   }
   return masks;
 }
@@ -14909,6 +15093,7 @@ export {
   SHAPE_VIDEO_MATCHER,
   _annotationCentroidXy,
   _findAnnotationMatches,
+  _findAnnotationLinkMatches,
   _resolveMergedIsNegative,
   LabeledFrame,
   SuggestionFrame,
