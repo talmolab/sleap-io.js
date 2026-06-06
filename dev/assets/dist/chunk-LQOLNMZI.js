@@ -1076,7 +1076,10 @@ var SegmentationMask = class _SegmentationMask {
         scoreMap: resampledScoreMap
       });
     }
-    return new UserSegmentationMask(baseOpts);
+    return new UserSegmentationMask({
+      ...baseOpts,
+      fromPredicted: this instanceof UserSegmentationMask ? this.fromPredicted : null
+    });
   }
   get bbox() {
     const flat = this.data;
@@ -1162,6 +1165,20 @@ var SegmentationMask = class _SegmentationMask {
   }
 };
 var UserSegmentationMask = class extends SegmentationMask {
+  /**
+   * Provenance link to the `PredictedSegmentationMask` this user mask was
+   * adopted from, set by {@link PredictedSegmentationMask.toUser}.
+   *
+   * Mirroring `Instance.fromPredicted`, this link is persisted to the SLP
+   * format as an index into the saved mask list. It survives a save/load
+   * round-trip as long as the source prediction is also saved (in the same or
+   * another frame). Files written before this column existed load it as `null`.
+   */
+  fromPredicted;
+  constructor(options) {
+    super(options);
+    this.fromPredicted = options.fromPredicted ?? null;
+  }
 };
 var PredictedSegmentationMask = class extends SegmentationMask {
   score;
@@ -1179,6 +1196,46 @@ var PredictedSegmentationMask = class extends SegmentationMask {
   }
   get isPredicted() {
     return true;
+  }
+  /**
+   * Adopt this predicted mask as a user-annotated mask (human-in-the-loop).
+   *
+   * Returns a NEW {@link UserSegmentationMask} that carries an independent
+   * COPY of the RLE raster (via `rleCounts.slice()`) plus the metadata
+   * (`name`, `category`, `source`, `track`, `trackingScore`, `instance`,
+   * `scale`, `offset`). Prediction-only fields (`score`, `scoreMap`,
+   * `scoreMapScale`, `scoreMapOffset`) are dropped. The internal
+   * `_instanceIdx` is carried over.
+   *
+   * The `track` and `instance` references are SHARED (not deep-copied), while
+   * the RLE raster and the `scale`/`offset` tuples are copied so the user mask
+   * owns independent buffers.
+   *
+   * Mirrors `Instance.fromPredicted` semantics: the resulting `fromPredicted`
+   * link is persisted to the SLP format as an index into the saved mask list,
+   * and survives a save/load round-trip as long as the source prediction is
+   * also saved. Files written before this column existed load it as `null`.
+   *
+   * @param link - When `true` (default), set the returned mask's
+   *   `fromPredicted` to this predicted mask. When `false`, leave it `null`.
+   */
+  toUser(link = true) {
+    const user = new UserSegmentationMask({
+      rleCounts: this.rleCounts.slice(),
+      height: this.height,
+      width: this.width,
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      track: this.track,
+      trackingScore: this.trackingScore,
+      instance: this.instance,
+      scale: [this.scale[0], this.scale[1]],
+      offset: [this.offset[0], this.offset[1]],
+      fromPredicted: link ? this : null
+    });
+    user._instanceIdx = this._instanceIdx;
+    return user;
   }
 };
 _registerMaskFactory(
@@ -3108,6 +3165,30 @@ function _findAnnotationMatches(selfList, otherList, attr, threshold) {
   }
   return matches;
 }
+function _findAnnotationLinkMatches(selfList, otherList) {
+  const matches = [];
+  const selfIdToIdx = /* @__PURE__ */ new Map();
+  for (let i = 0; i < selfList.length; i++) selfIdToIdx.set(selfList[i], i);
+  const otherIdToIdx = /* @__PURE__ */ new Map();
+  for (let j = 0; j < otherList.length; j++) otherIdToIdx.set(otherList[j], j);
+  for (let i = 0; i < selfList.length; i++) {
+    const src = selfList[i].fromPredicted;
+    if (src == null) continue;
+    const j = otherIdToIdx.get(src);
+    if (j !== void 0) {
+      matches.push({ selfIdx: i, otherIdx: j, score: Infinity });
+    }
+  }
+  for (let j = 0; j < otherList.length; j++) {
+    const src = otherList[j].fromPredicted;
+    if (src == null) continue;
+    const i = selfIdToIdx.get(src);
+    if (i !== void 0) {
+      matches.push({ selfIdx: i, otherIdx: j, score: Infinity });
+    }
+  }
+  return matches;
+}
 function _resolveAnnotationAuto(selfList, otherList, attr, threshold) {
   const merged = [];
   const usedSelfIndices = /* @__PURE__ */ new Set();
@@ -3116,7 +3197,8 @@ function _resolveAnnotationAuto(selfList, otherList, attr, threshold) {
       merged.push(ann);
     }
   }
-  const matches = _findAnnotationMatches(selfList, otherList, attr, threshold);
+  const matches = _findAnnotationLinkMatches(selfList, otherList);
+  matches.push(..._findAnnotationMatches(selfList, otherList, attr, threshold));
   matches.sort((a, b) => b.score - a.score);
   const matchedSelf = /* @__PURE__ */ new Set();
   const matchedOther = /* @__PURE__ */ new Set();
@@ -3233,6 +3315,38 @@ var LabeledFrame = class {
       return this.predictedInstances.filter((inst) => !inst.track || !usedTracks.has(inst.track));
     }
     return this.predictedInstances.filter((inst) => !usedPredicted.has(inst));
+  }
+  /**
+   * Predicted masks in this frame that have not been adopted by a user mask.
+   *
+   * The mask analogue of {@link unusedPredictions}. A prediction is considered
+   * adopted (and therefore excluded) when a user mask in the same frame:
+   *   1. links to it via `fromPredicted` (checked FIRST, by object identity), or
+   *   2. lacking such a link, spatially overlaps it (bbox-centroid within 5 px,
+   *      the auto-merge default).
+   *
+   * Predictions that no user mask claims by either rule are returned, e.g. for
+   * surfacing them in a proofreading UI.
+   */
+  get unusedPredictedMasks() {
+    const predicted = this.masks.filter(
+      (m) => m instanceof PredictedSegmentationMask
+    );
+    if (!predicted.length) return [];
+    const userMasks = this.masks.filter((m) => !m.isPredicted);
+    const adopted = /* @__PURE__ */ new Set();
+    for (const u of userMasks) {
+      const src = u.fromPredicted;
+      if (src != null) adopted.add(src);
+    }
+    const remaining = predicted.filter((m) => !adopted.has(m));
+    if (remaining.length && userMasks.length) {
+      const matches = _findAnnotationMatches(remaining, userMasks, "masks", 5);
+      for (const { selfIdx } of matches) {
+        adopted.add(remaining[selfIdx]);
+      }
+    }
+    return predicted.filter((m) => !adopted.has(m));
   }
   removePredictions() {
     this.instances = this.instances.filter((inst) => !(inst instanceof PredictedInstance));
@@ -10792,6 +10906,13 @@ function writeMetadata(file, labels) {
   if (labels.videos.some((v) => v._cropTuple() !== null)) {
     formatId = Math.max(formatId, 2.3);
   }
+  const savedMasks = labels.masks;
+  const savedMaskSet = new Set(savedMasks);
+  if (savedMasks.some(
+    (m) => m.fromPredicted != null && savedMaskSet.has(m.fromPredicted)
+  )) {
+    formatId = Math.max(formatId, 2.4);
+  }
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
@@ -11389,6 +11510,8 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
   const scoreMapIndexRows = [];
   const scoreMapChunks = [];
   let smOffset = 0;
+  const maskIdToIdx = /* @__PURE__ */ new Map();
+  masks.forEach((m, i) => maskIdToIdx.set(m, i));
   for (let i = 0; i < masks.length; i++) {
     const mask = masks[i];
     const rleBytes = new Uint8Array(mask.rleCounts.length * 4);
@@ -11407,6 +11530,8 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
     const isPredicted = mask.isPredicted ? 1 : 0;
     const instanceIdx = mask.instance ? instances.indexOf(mask.instance) : mask._instanceIdx ?? -1;
     const maskTrackingScore = mask.trackingScore ?? Number.NaN;
+    const fromPredictedSrc = mask.fromPredicted ?? null;
+    const fromPredictedIdx = fromPredictedSrc != null ? maskIdToIdx.get(fromPredictedSrc) ?? -1 : -1;
     rows.push([
       mask.height,
       mask.width,
@@ -11423,7 +11548,8 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
       mask.scale[0],
       mask.scale[1],
       mask.offset[0],
-      mask.offset[1]
+      mask.offset[1],
+      fromPredictedIdx
     ]);
     categories.push(mask.category);
     names.push(mask.name);
@@ -11447,7 +11573,7 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
     file,
     "masks",
     rows,
-    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "tracking_score", "scale_x", "scale_y", "offset_x", "offset_y"],
+    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "tracking_score", "scale_x", "scale_y", "offset_x", "offset_y", "from_predicted"],
     "<f8"
   );
   writeStringDataset(file, "mask_categories", categories);
@@ -13575,12 +13701,14 @@ function readMasks(file, _videos, tracks) {
   const scoreCol = masksData.score ?? [];
   const instanceCol = masksData.instance ?? [];
   const maskTrackingScoreCol = masksData.tracking_score ?? [];
+  const fromPredictedCol = masksData.from_predicted ?? [];
   const scaleXCol = masksData.scale_x ?? [];
   const scaleYCol = masksData.scale_y ?? [];
   const offsetXCol = masksData.offset_x ?? [];
   const offsetYCol = masksData.offset_y ?? [];
   const scoreMaps = readScoreMaps(file, "mask_score_map_index", "mask_score_maps");
   const masks = [];
+  const fromPredictedPairs = [];
   for (let i = 0; i < heights.length; i++) {
     const rleStart = Number(rleStarts[i]);
     const rleEnd = Number(rleEnds[i]);
@@ -13625,12 +13753,19 @@ function readMasks(file, _videos, tracks) {
       });
     } else {
       mask = new UserSegmentationMask(baseOptions);
+      const fpIdx = fromPredictedCol.length > i ? Number(fromPredictedCol[i]) : -1;
+      if (fpIdx >= 0) fromPredictedPairs.push([i, fpIdx]);
     }
     const instIdx = instanceCol.length > i ? Number(instanceCol[i]) : -1;
     if (instIdx >= 0) {
       mask._instanceIdx = instIdx;
     }
     masks.push([mask, videoIdx, frameIdxVal]);
+  }
+  for (const [i, fpIdx] of fromPredictedPairs) {
+    if (fpIdx >= 0 && fpIdx < masks.length) {
+      masks[i][0].fromPredicted = masks[fpIdx][0];
+    }
   }
   return masks;
 }
@@ -14958,6 +15093,7 @@ export {
   SHAPE_VIDEO_MATCHER,
   _annotationCentroidXy,
   _findAnnotationMatches,
+  _findAnnotationLinkMatches,
   _resolveMergedIsNegative,
   LabeledFrame,
   SuggestionFrame,

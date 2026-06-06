@@ -638,8 +638,27 @@ declare class SegmentationMask {
     /** Convert the mask to a bounding-box polygon ROI. */
     toPolygon(): ROI;
 }
+interface UserSegmentationMaskOptions extends SegmentationMaskOptions {
+    /**
+     * Provenance link to the predicted mask this was adopted from. Persisted to
+     * the SLP format as an index into the saved mask list (see
+     * {@link UserSegmentationMask.fromPredicted}).
+     */
+    fromPredicted?: PredictedSegmentationMask | null;
+}
 /** User-annotated segmentation mask (no prediction score). */
 declare class UserSegmentationMask extends SegmentationMask {
+    /**
+     * Provenance link to the `PredictedSegmentationMask` this user mask was
+     * adopted from, set by {@link PredictedSegmentationMask.toUser}.
+     *
+     * Mirroring `Instance.fromPredicted`, this link is persisted to the SLP
+     * format as an index into the saved mask list. It survives a save/load
+     * round-trip as long as the source prediction is also saved (in the same or
+     * another frame). Files written before this column existed load it as `null`.
+     */
+    fromPredicted: PredictedSegmentationMask | null;
+    constructor(options: UserSegmentationMaskOptions);
 }
 /** Predicted segmentation mask with a confidence score and optional score map. */
 declare class PredictedSegmentationMask extends SegmentationMask {
@@ -656,6 +675,29 @@ declare class PredictedSegmentationMask extends SegmentationMask {
         scoreMapOffset?: [number, number];
     });
     get isPredicted(): boolean;
+    /**
+     * Adopt this predicted mask as a user-annotated mask (human-in-the-loop).
+     *
+     * Returns a NEW {@link UserSegmentationMask} that carries an independent
+     * COPY of the RLE raster (via `rleCounts.slice()`) plus the metadata
+     * (`name`, `category`, `source`, `track`, `trackingScore`, `instance`,
+     * `scale`, `offset`). Prediction-only fields (`score`, `scoreMap`,
+     * `scoreMapScale`, `scoreMapOffset`) are dropped. The internal
+     * `_instanceIdx` is carried over.
+     *
+     * The `track` and `instance` references are SHARED (not deep-copied), while
+     * the RLE raster and the `scale`/`offset` tuples are copied so the user mask
+     * owns independent buffers.
+     *
+     * Mirrors `Instance.fromPredicted` semantics: the resulting `fromPredicted`
+     * link is persisted to the SLP format as an index into the saved mask list,
+     * and survives a save/load round-trip as long as the source prediction is
+     * also saved. Files written before this column existed load it as `null`.
+     *
+     * @param link - When `true` (default), set the returned mask's
+     *   `fromPredicted` to this predicted mask. When `false`, leave it `null`.
+     */
+    toUser(link?: boolean): UserSegmentationMask;
 }
 
 /** Options for constructing a BoundingBox. */
@@ -1385,6 +1427,28 @@ declare function _findAnnotationMatches(selfList: Annotation[], otherList: Annot
     score: number;
 }>;
 /**
+ * Find provenance-link matches between two annotation lists.
+ *
+ * A user annotation in one list is "linked" to a prediction in the other list
+ * when its `fromPredicted` reference points (by object identity) at that
+ * prediction. Such matches are scored `Infinity` so the greedy 1:1 pass in
+ * {@link _resolveAnnotationAuto} prefers them and bypasses the spatial distance
+ * threshold entirely (an explicit link always beats spatial proximity).
+ *
+ * Generic over modality via `(ann as any).fromPredicted`: only segmentation
+ * masks carry a `fromPredicted` link today, so other annotation types produce
+ * zero link matches and behave exactly as before.
+ *
+ * @returns List of {selfIdx, otherIdx, score} with score = Infinity. Links are
+ *   detected in both directions (a user in self pointing into other, and a user
+ *   in other pointing into self).
+ */
+declare function _findAnnotationLinkMatches(selfList: Annotation[], otherList: Annotation[]): Array<{
+    selfIdx: number;
+    otherIdx: number;
+    score: number;
+}>;
+/**
  * Resolve the `isNegative` flag for a merged frame
  * (labeled_frame.py:204-226).
  *
@@ -1432,6 +1496,19 @@ declare class LabeledFrame {
     numpy(): number[][][];
     get image(): Promise<ImageData | ImageBitmap | ArrayBuffer | Uint8Array | null>;
     get unusedPredictions(): PredictedInstance[];
+    /**
+     * Predicted masks in this frame that have not been adopted by a user mask.
+     *
+     * The mask analogue of {@link unusedPredictions}. A prediction is considered
+     * adopted (and therefore excluded) when a user mask in the same frame:
+     *   1. links to it via `fromPredicted` (checked FIRST, by object identity), or
+     *   2. lacking such a link, spatially overlaps it (bbox-centroid within 5 px,
+     *      the auto-merge default).
+     *
+     * Predictions that no user mask claims by either rule are returned, e.g. for
+     * surfacing them in a proofreading UI.
+     */
+    get unusedPredictedMasks(): PredictedSegmentationMask[];
     removePredictions(): void;
     /**
      * Merge annotation lists from another frame into this frame.
@@ -3676,4 +3753,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { setFsResolver as $, MatchResult as A, BoundingBox as B, CropVideoBackend as C, MergeProgressBar as D, ErrorMode as E, FrameStrategy as F, STRUCTURE_SKELETON_MATCHER as G, SUBSET_SKELETON_MATCHER as H, InstanceMatchMethod as I, DUPLICATE_MATCHER as J, IOU_MATCHER as K, Labels as L, MergeError as M, IDENTITY_INSTANCE_MATCHER as N, OVERLAP_SKELETON_MATCHER as O, NAME_TRACK_MATCHER as P, IDENTITY_TRACK_MATCHER as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, AUTO_VIDEO_MATCHER as W, PATH_VIDEO_MATCHER as X, BASENAME_VIDEO_MATCHER as Y, IMAGE_DEDUP_VIDEO_MATCHER as Z, SHAPE_VIDEO_MATCHER as _, LabeledFrame as a, loadLabelImages as a$, type FsResolver as a0, type MergeStrategy as a1, _annotationCentroidXy as a2, _findAnnotationMatches as a3, _resolveMergedIsNegative as a4, type CropOptions as a5, resolveCropRect as a6, SuggestionFrame as a7, rodriguesTransformation as a8, Camera as a9, UserBoundingBox as aA, PredictedBoundingBox as aB, getCentroidSkeleton as aC, CENTROID_SKELETON as aD, type CentroidOptions as aE, Centroid as aF, UserCentroid as aG, PredictedCentroid as aH, type LabelImageObjectInfo as aI, type LabelImageOptions as aJ, LabelImage as aK, UserLabelImage as aL, PredictedLabelImage as aM, normalizeLabelIds as aN, type VideoFrame as aO, type VideoBackend as aP, Mp4BoxVideoBackend as aQ, type MediaBunnyOptions as aR, MediaBunnyVideoBackend as aS, StreamingHdf5VideoBackend as aT, loadSlp as aU, saveSlp as aV, loadAnalysisH5 as aW, saveAnalysisH5 as aX, loadSlpSet as aY, saveSlpSet as aZ, loadVideo as a_, CameraGroup as aa, InstanceGroup as ab, FrameGroup as ac, RecordingSession as ad, makeCameraFromDict as ae, Identity as af, Instance3D as ag, PredictedInstance3D as ah, LazyDataStore as ai, LazyFrameList as aj, _registerMaskFactory as ak, AnnotationType as al, type Geometry as am, type ROIOptions as an, rasterizeGeometry as ao, encodeWkb as ap, decodeWkb as aq, PredictedROI as ar, encodeRle as as, decodeRle as at, resizeNearest as au, type SegmentationMaskOptions as av, SegmentationMask as aw, UserSegmentationMask as ax, PredictedSegmentationMask as ay, type BoundingBoxOptions as az, LabelsSet as b, type CropRect as b$, setLabelImageFileReader as b0, type PagesAs as b1, type LoadLabelImagesOptions as b2, type LabelImageFileReader as b3, saveSlpToBytes as b4, isAnalysisH5File as b5, type GeoJSONFeature as b6, type GeoJSONFeatureCollection as b7, roisToGeoJSON as b8, roisFromGeoJSON as b9, rgbToCSS as bA, determineColorScheme as bB, drawCircle as bC, drawSquare as bD, drawDiamond as bE, drawTriangle as bF, drawCross as bG, drawTrails as bH, getMarkerFunction as bI, MARKER_FUNCTIONS as bJ, type DrawTrailsOptions as bK, resolveTrailNode as bL, computeTrails as bM, nTrailPaletteColors as bN, collectTracks as bO, type TrailTarget as bP, type Trail as bQ, RenderContext as bR, InstanceContext as bS, drawMasks as bT, drawLabelImage as bU, drawBboxes as bV, drawRois as bW, applyOverlay as bX, type RawLabelImage as bY, cropPoints as bZ, uncropPoints as b_, writeGeoJSON as ba, readGeoJSON as bb, type LabelsDict as bc, toDict as bd, fromDict as be, toNumpy as bf, fromNumpy as bg, labelsFromNumpy as bh, decodeYamlSkeleton as bi, encodeYamlSkeleton as bj, readSkeletonJson as bk, readTrainingConfigSkeletons as bl, readTrainingConfigSkeleton as bm, isTrainingConfig as bn, type RGB as bo, type RGBA as bp, type ColorSpec as bq, type ColorScheme as br, type PaletteName as bs, type MarkerShape as bt, type Overlay as bu, type VideoOverlay as bv, NAMED_COLORS as bw, PALETTES as bx, getPalette as by, resolveColor as bz, type RenderOptions as c, type FlatPoints as c0, type PointPairs as c1, cropFrame as c2, type FrameLike as c3, type RawFrame as c4, type Fill as c5, type VideoOptions as d, SeqHeader as e, SeqIndex as f, BlobByteSource as g, type ByteSource as h, createVideoBackend as i, type VideoBackendType as j, type CropWrapOptions as k, StreamingH5File as l, openH5Worker as m, isStreamingSupported as n, openStreamingH5 as o, type StreamingH5Source as p, SkeletonMatchMethod as q, readSlpStreaming as r, VideoMatchMethod as s, SkeletonMatcher as t, InstanceMatcher as u, TrackMatcher as v, VideoMatcher as w, ConflictResolution as x, SkeletonMismatchError as y, MergeResult as z };
+export { setFsResolver as $, MatchResult as A, BoundingBox as B, CropVideoBackend as C, MergeProgressBar as D, ErrorMode as E, FrameStrategy as F, STRUCTURE_SKELETON_MATCHER as G, SUBSET_SKELETON_MATCHER as H, InstanceMatchMethod as I, DUPLICATE_MATCHER as J, IOU_MATCHER as K, Labels as L, MergeError as M, IDENTITY_INSTANCE_MATCHER as N, OVERLAP_SKELETON_MATCHER as O, NAME_TRACK_MATCHER as P, IDENTITY_TRACK_MATCHER as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, AUTO_VIDEO_MATCHER as W, PATH_VIDEO_MATCHER as X, BASENAME_VIDEO_MATCHER as Y, IMAGE_DEDUP_VIDEO_MATCHER as Z, SHAPE_VIDEO_MATCHER as _, LabeledFrame as a, saveSlpSet as a$, type FsResolver as a0, type MergeStrategy as a1, _annotationCentroidXy as a2, _findAnnotationMatches as a3, _findAnnotationLinkMatches as a4, _resolveMergedIsNegative as a5, type CropOptions as a6, resolveCropRect as a7, SuggestionFrame as a8, rodriguesTransformation as a9, PredictedSegmentationMask as aA, type BoundingBoxOptions as aB, UserBoundingBox as aC, PredictedBoundingBox as aD, getCentroidSkeleton as aE, CENTROID_SKELETON as aF, type CentroidOptions as aG, Centroid as aH, UserCentroid as aI, PredictedCentroid as aJ, type LabelImageObjectInfo as aK, type LabelImageOptions as aL, LabelImage as aM, UserLabelImage as aN, PredictedLabelImage as aO, normalizeLabelIds as aP, type VideoFrame as aQ, type VideoBackend as aR, Mp4BoxVideoBackend as aS, type MediaBunnyOptions as aT, MediaBunnyVideoBackend as aU, StreamingHdf5VideoBackend as aV, loadSlp as aW, saveSlp as aX, loadAnalysisH5 as aY, saveAnalysisH5 as aZ, loadSlpSet as a_, Camera as aa, CameraGroup as ab, InstanceGroup as ac, FrameGroup as ad, RecordingSession as ae, makeCameraFromDict as af, Identity as ag, Instance3D as ah, PredictedInstance3D as ai, LazyDataStore as aj, LazyFrameList as ak, _registerMaskFactory as al, AnnotationType as am, type Geometry as an, type ROIOptions as ao, rasterizeGeometry as ap, encodeWkb as aq, decodeWkb as ar, PredictedROI as as, encodeRle as at, decodeRle as au, resizeNearest as av, type SegmentationMaskOptions as aw, SegmentationMask as ax, type UserSegmentationMaskOptions as ay, UserSegmentationMask as az, LabelsSet as b, cropPoints as b$, loadVideo as b0, loadLabelImages as b1, setLabelImageFileReader as b2, type PagesAs as b3, type LoadLabelImagesOptions as b4, type LabelImageFileReader as b5, saveSlpToBytes as b6, isAnalysisH5File as b7, type GeoJSONFeature as b8, type GeoJSONFeatureCollection as b9, getPalette as bA, resolveColor as bB, rgbToCSS as bC, determineColorScheme as bD, drawCircle as bE, drawSquare as bF, drawDiamond as bG, drawTriangle as bH, drawCross as bI, drawTrails as bJ, getMarkerFunction as bK, MARKER_FUNCTIONS as bL, type DrawTrailsOptions as bM, resolveTrailNode as bN, computeTrails as bO, nTrailPaletteColors as bP, collectTracks as bQ, type TrailTarget as bR, type Trail as bS, RenderContext as bT, InstanceContext as bU, drawMasks as bV, drawLabelImage as bW, drawBboxes as bX, drawRois as bY, applyOverlay as bZ, type RawLabelImage as b_, roisToGeoJSON as ba, roisFromGeoJSON as bb, writeGeoJSON as bc, readGeoJSON as bd, type LabelsDict as be, toDict as bf, fromDict as bg, toNumpy as bh, fromNumpy as bi, labelsFromNumpy as bj, decodeYamlSkeleton as bk, encodeYamlSkeleton as bl, readSkeletonJson as bm, readTrainingConfigSkeletons as bn, readTrainingConfigSkeleton as bo, isTrainingConfig as bp, type RGB as bq, type RGBA as br, type ColorSpec as bs, type ColorScheme as bt, type PaletteName as bu, type MarkerShape as bv, type Overlay as bw, type VideoOverlay as bx, NAMED_COLORS as by, PALETTES as bz, type RenderOptions as c, uncropPoints as c0, type CropRect as c1, type FlatPoints as c2, type PointPairs as c3, cropFrame as c4, type FrameLike as c5, type RawFrame as c6, type Fill as c7, type VideoOptions as d, SeqHeader as e, SeqIndex as f, BlobByteSource as g, type ByteSource as h, createVideoBackend as i, type VideoBackendType as j, type CropWrapOptions as k, StreamingH5File as l, openH5Worker as m, isStreamingSupported as n, openStreamingH5 as o, type StreamingH5Source as p, SkeletonMatchMethod as q, readSlpStreaming as r, VideoMatchMethod as s, SkeletonMatcher as t, InstanceMatcher as u, TrackMatcher as v, VideoMatcher as w, ConflictResolution as x, SkeletonMismatchError as y, MergeResult as z };

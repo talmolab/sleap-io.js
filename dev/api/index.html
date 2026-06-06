@@ -1036,6 +1036,7 @@ re-encoded). See <a href="../cropping/">Virtual Cropping</a> for the full guide.
 </tbody>
 </table>
 <p>The <code>auto</code> and <code>update_tracks</code> strategies compare centroid distances against <code>threshold</code> (default <code>5.0</code> px). Empty masks and ROIs whose centroid is <code>null</code> are skipped by the matcher.</p>
+<p>Under <code>"auto"</code>, mask merging honors the <code>fromPredicted</code> provenance link <em>before</em> spatial matching: if a user mask in either frame links to a predicted mask in the other (by object identity), that pair is matched regardless of distance, and only falls back to centroid proximity when no link exists. Other annotation modalities have no <code>fromPredicted</code> link, so they are unaffected.</p>
 <p>The strategy argument is typed as <code>MergeStrategy</code>, re-exported from the package root for type-safe call sites:</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="kr">type</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">MergeStrategy</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
 
@@ -1163,6 +1164,31 @@ re-encoded). See <a href="../cropping/">Virtual Cropping</a> for the full guide.
 <span class="c1">// Convert to BoundingBox object (with metadata)</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">bb</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">toBbox</span><span class="p">();</span>
 </code></pre></div>
+<p><strong>Adopting predictions (human-in-the-loop).</strong> <code>PredictedSegmentationMask.toUser()</code>
+mirrors <code>Instance.fromPredicted</code>: it returns a new <code>UserSegmentationMask</code> that
+copies the RLE raster and carries over metadata (<code>name</code>, <code>category</code>, <code>source</code>,
+<code>track</code>, <code>trackingScore</code>, <code>instance</code>, <code>scale</code>, <code>offset</code>) while dropping
+prediction-only fields (<code>score</code>, <code>scoreMap</code>). It sets <code>fromPredicted</code> on the
+returned mask as a provenance link.</p>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">userMask</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">pred</span><span class="p">.</span><span class="nx">toUser</span><span class="p">();</span><span class="w">      </span><span class="c1">// userMask.fromPredicted === pred</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">detached</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">pred</span><span class="p">.</span><span class="nx">toUser</span><span class="p">(</span><span class="kc">false</span><span class="p">);</span><span class="w"> </span><span class="c1">// detached.fromPredicted === null</span>
+</code></pre></div>
+<blockquote>
+<p><strong>Note:</strong> like <code>Instance.fromPredicted</code>, the mask's <code>fromPredicted</code> link IS
+persisted to the SLP format. It is stored as an index into the saved mask list
+and re-linked on read, so it survives a save/load round-trip as long as the
+source prediction is also saved (in the same or another frame). If the source
+prediction is not saved, the link loads as <code>null</code>. Recording at least one link
+bumps the SLP <code>format_id</code> to 2.4; the column is always written and reads are
+presence-gated, so files written before this column existed load the link as
+<code>null</code>.</p>
+</blockquote>
+<p><code>LabeledFrame.unusedPredictedMasks</code> returns the predicted masks in a frame that
+no user mask has adopted — the mask analogue of <code>LabeledFrame.unusedPredictions</code>.
+A prediction is adopted when a user mask in the same frame links to it via
+<code>fromPredicted</code> (checked first, by identity) or, lacking a link, spatially
+overlaps it (bbox-centroid within 5 px). The remaining unclaimed predictions are
+returned, e.g. for surfacing unreviewed detections in a proofreading UI.</p>
 <h3 id="boundingbox"><code>BoundingBox</code><a class="headerlink" href="#boundingbox" title="Permanent link">&para;</a></h3>
 <p>Axis-aligned or rotated bounding box for detection/tracking workflows. <code>BoundingBox</code> is abstract; use <code>UserBoundingBox</code> or <code>PredictedBoundingBox</code> for direct construction.</p>
 <p>Bounding boxes use corner coordinates (<code>x1</code>, <code>y1</code>, <code>x2</code>, <code>y2</code>) as their primary storage. Center-based properties (<code>xCenter</code>, <code>yCenter</code>, <code>width</code>, <code>height</code>) are available as computed getters.</p>
@@ -1371,6 +1397,10 @@ re-encoded). See <a href="../cropping/">Virtual Cropping</a> for the full guide.
 <tr>
 <td>2.3</td>
 <td>Virtual video crops present</td>
+</tr>
+<tr>
+<td>2.4</td>
+<td>Persisted mask <code>fromPredicted</code> provenance link</td>
 </tr>
 </tbody>
 </table>
