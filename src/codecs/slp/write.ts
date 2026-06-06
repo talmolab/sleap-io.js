@@ -1607,12 +1607,30 @@ function writeRois(
     wkbFlat.set(chunk, offset);
     offset += chunk.length;
   }
-  file.create_dataset({
-    name: "roi_wkb",
-    data: wkbFlat,
-    shape: [wkbFlat.length],
-    dtype: "<B",
-  });
+  // gzip-compress the packed WKB blob (Python #465). Transparent on read:
+  // h5wasm/.value and Python h5py natively decompress the HDF5 deflate filter.
+  // h5wasm throws "cannot specify compression without chunks" and rejects a
+  // 0-size chunk dim, so only enable the filter when there are bytes to write;
+  // writeRois early-returns on empty input, but the length>0 guard is the safe
+  // pattern (mirrors Python keeping empty datasets uncompressed).
+  if (wkbFlat.length > 0) {
+    file.create_dataset({
+      name: "roi_wkb",
+      data: wkbFlat,
+      shape: [wkbFlat.length],
+      dtype: "<B",
+      chunks: [wkbFlat.length],
+      compression: "gzip",
+      compression_opts: 1,
+    });
+  } else {
+    file.create_dataset({
+      name: "roi_wkb",
+      data: wkbFlat,
+      shape: [wkbFlat.length],
+      dtype: "<B",
+    });
+  }
 }
 
 function writeMasks(
@@ -1771,12 +1789,30 @@ function writeMasks(
     rleFlat.set(chunk, offset);
     offset += chunk.length;
   }
-  file.create_dataset({
-    name: "mask_rle",
-    data: rleFlat,
-    shape: [rleFlat.length],
-    dtype: "<B",
-  });
+  // gzip-compress the packed RLE blob (Python #464). Transparent on read:
+  // h5wasm/.value and Python h5py natively decompress the HDF5 deflate filter.
+  // A fully-empty mask raster encodes to a zero-length RLE, so rleFlat can be
+  // empty even when masks are present; h5wasm rejects a 0-size chunk dim and
+  // throws "cannot specify compression without chunks", so only enable the
+  // filter when there are bytes (mirrors Python keeping empty mask_rle raw).
+  if (rleFlat.length > 0) {
+    file.create_dataset({
+      name: "mask_rle",
+      data: rleFlat,
+      shape: [rleFlat.length],
+      dtype: "<B",
+      chunks: [rleFlat.length],
+      compression: "gzip",
+      compression_opts: 1,
+    });
+  } else {
+    file.create_dataset({
+      name: "mask_rle",
+      data: rleFlat,
+      shape: [rleFlat.length],
+      dtype: "<B",
+    });
+  }
 
   // Write score maps
   if (scoreMapIndexRows.length > 0) {
