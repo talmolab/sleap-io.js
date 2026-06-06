@@ -8125,6 +8125,36 @@ function asUint8Array(value) {
   }
   return null;
 }
+function readVlenElementManual(Module, dataset, index) {
+  if (!Module || !Module._malloc || !Module.HEAPU8 || !Module.get_dataset_data) {
+    return null;
+  }
+  const md = dataset.metadata;
+  const vlenClass = Module.H5T_class_t?.H5T_VLEN.value;
+  const isVlen = md?.vlen === true || vlenClass != null && md?.type === vlenClass;
+  if (!isVlen || md?.size !== 8) return null;
+  const dataPtr = Module._malloc(md.size);
+  if (!dataPtr) return null;
+  try {
+    Module.get_dataset_data(
+      dataset.file_id,
+      dataset.path,
+      [1n],
+      [BigInt(index)],
+      [1n],
+      BigInt(dataPtr)
+    );
+    const u32 = new Uint32Array(Module.HEAPU8.buffer, Number(dataPtr), 2);
+    const len = u32[0];
+    const blobPtr = u32[1];
+    if (!blobPtr) return new Uint8Array(0);
+    const out = Module.HEAPU8.slice(blobPtr, blobPtr + len);
+    Module._free(blobPtr);
+    return out;
+  } finally {
+    Module._free(dataPtr);
+  }
+}
 async function readEmbeddedFrameBytes(reader, index) {
   if (index < 0) return null;
   const meta = await reader.getMeta();
@@ -8138,9 +8168,16 @@ async function readEmbeddedFrameBytes(reader, index) {
     return encoded ? trimPaddedRow(row, reader.frameSizes?.[index]) : row;
   }
   if (layout === "vlen") {
-    const { value } = await reader.readSlice([[index, index + 1]]);
-    const entry = Array.isArray(value) ? value[0] : value;
-    return asUint8Array(entry);
+    if (reader.readVlenElement) {
+      const out = await reader.readVlenElement(index);
+      if (out) return out;
+    }
+    if (!reader.legacy.whole) {
+      const { value } = await reader.readSlice();
+      reader.legacy.whole = Array.isArray(value) ? value : [];
+    }
+    const whole2 = reader.legacy.whole;
+    return Array.isArray(whole2) ? asUint8Array(whole2[index]) : null;
   }
   if (layout === "concat" && reader.frameSizes && reader.frameSizes.length > index) {
     const offsets2 = reader.legacy.offsets ??= computeOffsetsFromSizes(reader.frameSizes);
@@ -8264,6 +8301,15 @@ var StreamingHdf5VideoBackend = class {
       readSlice: async (slice) => {
         const data = await this.h5file.getDatasetValue(this.datasetPath, slice);
         return { value: data.value, shape: data.shape };
+      },
+      readVlenElement: async (index) => {
+        const data = await this.h5file.getDatasetValue(this.datasetPath, [
+          [index, index + 1]
+        ]);
+        const value = data.value;
+        if (value instanceof Uint8Array) return value;
+        if (Array.isArray(value)) return asUint8Array(value[index]);
+        return asUint8Array(value);
       }
     };
   }
@@ -9020,7 +9066,54 @@ function getDatasetValue(path, slice) {
   const dataset = currentFile.get(path);
   if (!dataset) throw new Error('Dataset not found: ' + path);
 
-  // Get value or slice
+  // Variable-length (vlen) datasets: h5wasm's high-level dataset.slice() corrupts
+  // the heap here \u2014 its post-read reclaim walks the FULL dataset dataspace over a
+  // single-element buffer (intermittent "memory access out of bounds" / abort).
+  // So NEVER call dataset.slice() on a vlen dataset. For a single-element slice we
+  // read the one hvl_t manually and free only that element (mirrors
+  // readVlenElementManual in ../../video/embedded-frame.ts \u2014 keep them in lockstep).
+  const M = h5wasmModule && h5wasmModule.Module;
+  const md = dataset.metadata;
+  const vlenClass = (M && M.H5T_class_t && M.H5T_class_t.H5T_VLEN) ? M.H5T_class_t.H5T_VLEN.value : 9;
+  const isVlen = !!(md && (md.vlen === true || md.type === vlenClass));
+  if (isVlen) {
+    const single = slice && Array.isArray(slice) && slice.length === 1 &&
+      Array.isArray(slice[0]) && slice[0].length === 2;
+    if (single && md.size === 8 && M && M._malloc && M.get_dataset_data && M.HEAPU8) {
+      const index = slice[0][0];
+      const dataPtr = M._malloc(md.size);
+      let out;
+      try {
+        M.get_dataset_data(dataset.file_id, dataset.path, [1n], [BigInt(index)], [1n], BigInt(dataPtr));
+        // HEAPU32 isn't exported; build the view over HEAPU8.buffer each call
+        // (heap growth can detach the previous ArrayBuffer).
+        const u32 = new Uint32Array(M.HEAPU8.buffer, Number(dataPtr), 2);
+        const len = u32[0];
+        const blobPtr = u32[1];
+        out = blobPtr ? M.HEAPU8.slice(blobPtr, blobPtr + len) : new Uint8Array(0);
+        if (blobPtr) M._free(blobPtr); // free ONLY the inner blob
+      } finally {
+        M._free(dataPtr);
+      }
+      return {
+        value: { type: 'typedarray', dtype: 'Uint8Array', buffer: out.buffer, byteOffset: out.byteOffset, length: out.length },
+        shape: dataset.shape,
+        dtype: dataset.dtype,
+        transferables: [out.buffer]
+      };
+    }
+    // Can't do the manual single-element read (whole read, or unexpected hvl_t
+    // size). Read the whole vlen dataset (safe) and return the array of blobs;
+    // the caller indexes into it. structuredClone copies it (no transfer).
+    return {
+      value: dataset.value,
+      shape: dataset.shape,
+      dtype: dataset.dtype,
+      transferables: []
+    };
+  }
+
+  // Non-vlen: hyperslab slice or whole read as requested.
   let value;
   if (slice && Array.isArray(slice)) {
     value = dataset.slice(slice);
@@ -9335,117 +9428,6 @@ async function openH5Worker(source, options) {
   return file;
 }
 
-// src/video/hdf5-video.ts
-var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
-var Hdf5VideoBackend = class {
-  filename;
-  dataset;
-  shape;
-  fps;
-  /** Source frame numbers with a stored image (storage order). */
-  frameNumbers;
-  file;
-  datasetPath;
-  frameNumberToIndex;
-  format;
-  channelOrder;
-  frameSizes;
-  legacy;
-  constructor(options) {
-    this.filename = options.filename;
-    this.file = options.file;
-    this.datasetPath = options.datasetPath;
-    this.dataset = options.datasetPath;
-    const frameNumbers = options.frameNumbers ?? [];
-    this.frameNumbers = frameNumbers;
-    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
-    this.format = options.format ?? "png";
-    this.channelOrder = options.channelOrder ?? "RGB";
-    this.shape = options.shape;
-    this.fps = options.fps;
-    this.frameSizes = options.frameSizes;
-    this.legacy = { whole: null, offsets: null };
-  }
-  async getFrame(frameIndex) {
-    const dataset = this.file.get(this.datasetPath);
-    if (!dataset) return null;
-    const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
-    if (index === void 0) return null;
-    const rawBytes = await readEmbeddedFrameBytes(this.buildReader(dataset), index);
-    if (!rawBytes || rawBytes.length === 0) return null;
-    if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes2(rawBytes, this.format, this.channelOrder);
-      return decoded ?? rawBytes;
-    }
-    const image = decodeRawFrame2(rawBytes, this.shape, this.channelOrder);
-    return image ?? rawBytes;
-  }
-  /** Build a single-frame reader bound to an open h5wasm dataset object. */
-  buildReader(dataset) {
-    return {
-      frameCount: this.frameNumberToIndex.size,
-      format: this.format,
-      frameSizes: this.frameSizes,
-      legacy: this.legacy,
-      getMeta: async () => ({ shape: dataset.shape ?? [], dtype: dataset.dtype }),
-      readSlice: async (slice) => {
-        const value = slice ? dataset.slice(slice) : dataset.value;
-        return { value, shape: dataset.shape ?? [] };
-      }
-    };
-  }
-  close() {
-    this.legacy.whole = null;
-    this.legacy.offsets = null;
-  }
-};
-async function decodeImageBytes2(bytes, format, channelOrder) {
-  if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
-  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
-  const safeBytes = new Uint8Array(bytes);
-  const blob = new Blob([safeBytes.buffer], { type: mime });
-  const bitmap = await createImageBitmap(blob);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  if (!useBgr) {
-    return bitmap;
-  }
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return bitmap;
-  ctx.drawImage(bitmap, 0, 0);
-  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const b = data[i + 2];
-    data[i] = b;
-    data[i + 2] = r;
-  }
-  return imageData;
-}
-function decodeRawFrame2(bytes, shape, channelOrder) {
-  if (!isBrowser4 || !shape) return null;
-  const [, height, width, channels] = shape;
-  if (!height || !width || !channels) return null;
-  const expectedLength = height * width * channels;
-  if (bytes.length < expectedLength) return null;
-  const rgba = new Uint8ClampedArray(width * height * 4);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  for (let i = 0; i < width * height; i += 1) {
-    const base = i * channels;
-    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
-    const g = bytes[base + 1] ?? 0;
-    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
-    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
-    const out = i * 4;
-    rgba[out] = r;
-    rgba[out + 1] = g;
-    rgba[out + 2] = b;
-    rgba[out + 3] = a;
-  }
-  return new ImageData(rgba, width, height);
-}
-
 // src/codecs/slp/h5.ts
 var _nodeGetModule = null;
 var _nodeOpenFile = null;
@@ -9488,6 +9470,10 @@ async function getH5Module() {
     })();
   }
   return modulePromise;
+}
+async function getH5EmscriptenModule() {
+  const ns = await getH5Module();
+  return ns.Module ?? null;
 }
 async function openH5File(source, options) {
   const module = await getH5Module();
@@ -9592,6 +9578,121 @@ function ensureH5StagingDir(module) {
     getH5FileSystem(module).mkdir?.("/tmp");
   } catch {
   }
+}
+
+// src/video/hdf5-video.ts
+var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
+var Hdf5VideoBackend = class {
+  filename;
+  dataset;
+  shape;
+  fps;
+  /** Source frame numbers with a stored image (storage order). */
+  frameNumbers;
+  file;
+  datasetPath;
+  frameNumberToIndex;
+  format;
+  channelOrder;
+  frameSizes;
+  legacy;
+  constructor(options) {
+    this.filename = options.filename;
+    this.file = options.file;
+    this.datasetPath = options.datasetPath;
+    this.dataset = options.datasetPath;
+    const frameNumbers = options.frameNumbers ?? [];
+    this.frameNumbers = frameNumbers;
+    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
+    this.format = options.format ?? "png";
+    this.channelOrder = options.channelOrder ?? "RGB";
+    this.shape = options.shape;
+    this.fps = options.fps;
+    this.frameSizes = options.frameSizes;
+    this.legacy = { whole: null, offsets: null };
+  }
+  async getFrame(frameIndex) {
+    const dataset = this.file.get(this.datasetPath);
+    if (!dataset) return null;
+    const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
+    if (index === void 0) return null;
+    const rawBytes = await readEmbeddedFrameBytes(this.buildReader(dataset), index);
+    if (!rawBytes || rawBytes.length === 0) return null;
+    if (isEncodedFormat(this.format)) {
+      const decoded = await decodeImageBytes2(rawBytes, this.format, this.channelOrder);
+      return decoded ?? rawBytes;
+    }
+    const image = decodeRawFrame2(rawBytes, this.shape, this.channelOrder);
+    return image ?? rawBytes;
+  }
+  /** Build a single-frame reader bound to an open h5wasm dataset object. */
+  buildReader(dataset) {
+    return {
+      frameCount: this.frameNumberToIndex.size,
+      format: this.format,
+      frameSizes: this.frameSizes,
+      legacy: this.legacy,
+      getMeta: async () => ({ shape: dataset.shape ?? [], dtype: dataset.dtype }),
+      readSlice: async (slice) => {
+        const value = slice ? dataset.slice(slice) : dataset.value;
+        return { value, shape: dataset.shape ?? [] };
+      },
+      readVlenElement: async (index) => {
+        const Module = await getH5EmscriptenModule();
+        return readVlenElementManual(Module, dataset, index);
+      }
+    };
+  }
+  close() {
+    this.legacy.whole = null;
+    this.legacy.offsets = null;
+  }
+};
+async function decodeImageBytes2(bytes, format, channelOrder) {
+  if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
+  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
+  const safeBytes = new Uint8Array(bytes);
+  const blob = new Blob([safeBytes.buffer], { type: mime });
+  const bitmap = await createImageBitmap(blob);
+  const useBgr = channelOrder.toUpperCase() === "BGR";
+  if (!useBgr) {
+    return bitmap;
+  }
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return bitmap;
+  ctx.drawImage(bitmap, 0, 0);
+  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  const data = imageData.data;
+  for (let i = 0; i < data.length; i += 4) {
+    const r = data[i];
+    const b = data[i + 2];
+    data[i] = b;
+    data[i + 2] = r;
+  }
+  return imageData;
+}
+function decodeRawFrame2(bytes, shape, channelOrder) {
+  if (!isBrowser4 || !shape) return null;
+  const [, height, width, channels] = shape;
+  if (!height || !width || !channels) return null;
+  const expectedLength = height * width * channels;
+  if (bytes.length < expectedLength) return null;
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  const useBgr = channelOrder.toUpperCase() === "BGR";
+  for (let i = 0; i < width * height; i += 1) {
+    const base = i * channels;
+    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
+    const g = bytes[base + 1] ?? 0;
+    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
+    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
+    const out = i * 4;
+    rgba[out] = r;
+    rgba[out + 1] = g;
+    rgba[out + 2] = b;
+    rgba[out + 3] = a;
+  }
+  return new ImageData(rgba, width, height);
 }
 
 // src/video/factory.ts
