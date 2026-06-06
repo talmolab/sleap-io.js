@@ -1,11 +1,14 @@
 import { VideoBackend, VideoFrame } from "./backend.js";
+import { getH5EmscriptenModule } from "../codecs/slp/h5.js";
 import {
   type EmbeddedFrameReader,
+  type H5wasmModule,
   type Hdf5Slice,
   type LegacyFrameCache,
   type SliceReadResult,
   isEncodedFormat,
   readEmbeddedFrameBytes,
+  readVlenElementManual,
 } from "./embedded-frame.js";
 
 const isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
@@ -92,6 +95,10 @@ export class Hdf5VideoBackend implements VideoBackend {
       readSlice: async (slice?: Hdf5Slice): Promise<SliceReadResult> => {
         const value = slice ? dataset.slice(slice) : dataset.value;
         return { value, shape: dataset.shape ?? [] };
+      },
+      readVlenElement: async (index: number): Promise<Uint8Array | null> => {
+        const Module = (await getH5EmscriptenModule()) as H5wasmModule | null;
+        return readVlenElementManual(Module, dataset, index);
       },
     };
   }

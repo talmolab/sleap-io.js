@@ -5,6 +5,7 @@ import {
   type Hdf5Slice,
   type LegacyFrameCache,
   type SliceReadResult,
+  asUint8Array,
   isEncodedFormat,
   readEmbeddedFrameBytes,
 } from "./embedded-frame.js";
@@ -132,6 +133,18 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
       readSlice: async (slice?: Hdf5Slice): Promise<SliceReadResult> => {
         const data = await this.h5file.getDatasetValue(this.datasetPath, slice);
         return { value: data.value, shape: data.shape };
+      },
+      readVlenElement: async (index: number): Promise<Uint8Array | null> => {
+        // The worker reads the single vlen element manually (the safe path) and
+        // returns one Uint8Array. If it cannot (e.g. unexpected hvl_t size) it
+        // returns the whole array of blobs instead; index into it.
+        const data = await this.h5file.getDatasetValue(this.datasetPath, [
+          [index, index + 1],
+        ]);
+        const value = data.value;
+        if (value instanceof Uint8Array) return value;
+        if (Array.isArray(value)) return asUint8Array(value[index]);
+        return asUint8Array(value);
       },
     };
   }

@@ -278,7 +278,54 @@ function getDatasetValue(path, slice) {
   const dataset = currentFile.get(path);
   if (!dataset) throw new Error('Dataset not found: ' + path);
 
-  // Get value or slice
+  // Variable-length (vlen) datasets: h5wasm's high-level dataset.slice() corrupts
+  // the heap here — its post-read reclaim walks the FULL dataset dataspace over a
+  // single-element buffer (intermittent "memory access out of bounds" / abort).
+  // So NEVER call dataset.slice() on a vlen dataset. For a single-element slice we
+  // read the one hvl_t manually and free only that element (mirrors
+  // readVlenElementManual in ../../video/embedded-frame.ts — keep them in lockstep).
+  const M = h5wasmModule && h5wasmModule.Module;
+  const md = dataset.metadata;
+  const vlenClass = (M && M.H5T_class_t && M.H5T_class_t.H5T_VLEN) ? M.H5T_class_t.H5T_VLEN.value : 9;
+  const isVlen = !!(md && (md.vlen === true || md.type === vlenClass));
+  if (isVlen) {
+    const single = slice && Array.isArray(slice) && slice.length === 1 &&
+      Array.isArray(slice[0]) && slice[0].length === 2;
+    if (single && md.size === 8 && M && M._malloc && M.get_dataset_data && M.HEAPU8) {
+      const index = slice[0][0];
+      const dataPtr = M._malloc(md.size);
+      let out;
+      try {
+        M.get_dataset_data(dataset.file_id, dataset.path, [1n], [BigInt(index)], [1n], BigInt(dataPtr));
+        // HEAPU32 isn't exported; build the view over HEAPU8.buffer each call
+        // (heap growth can detach the previous ArrayBuffer).
+        const u32 = new Uint32Array(M.HEAPU8.buffer, Number(dataPtr), 2);
+        const len = u32[0];
+        const blobPtr = u32[1];
+        out = blobPtr ? M.HEAPU8.slice(blobPtr, blobPtr + len) : new Uint8Array(0);
+        if (blobPtr) M._free(blobPtr); // free ONLY the inner blob
+      } finally {
+        M._free(dataPtr);
+      }
+      return {
+        value: { type: 'typedarray', dtype: 'Uint8Array', buffer: out.buffer, byteOffset: out.byteOffset, length: out.length },
+        shape: dataset.shape,
+        dtype: dataset.dtype,
+        transferables: [out.buffer]
+      };
+    }
+    // Can't do the manual single-element read (whole read, or unexpected hvl_t
+    // size). Read the whole vlen dataset (safe) and return the array of blobs;
+    // the caller indexes into it. structuredClone copies it (no transfer).
+    return {
+      value: dataset.value,
+      shape: dataset.shape,
+      dtype: dataset.dtype,
+      transferables: []
+    };
+  }
+
+  // Non-vlen: hyperslab slice or whole read as requested.
   let value;
   if (slice && Array.isArray(slice)) {
     value = dataset.slice(slice);

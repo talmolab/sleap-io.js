@@ -14,7 +14,9 @@
  *  - `padded`  — 2D `[N, M]` (Python writer): row `i` is one encoded image plus
  *                trailing zero padding. Slice row `i`, trim the padding.
  *  - `vlen`    — 1D `[N]` variable-length blobs (legacy pkg.slp): element `i` is
- *                one encoded image. h5wasm slices a single element directly.
+ *                one encoded image. Read via a manual single-element `hvl_t` read
+ *                ({@link readVlenElementManual}); h5wasm's own sliced-vlen path
+ *                corrupts the heap, so it is never used.
  *  - `concat`  — 1D `[totalBytes]` (JS writer): all frames concatenated. Needs
  *                `frame_sizes` to byte-range slice; otherwise the legacy
  *                magic-byte scan fallback applies.
@@ -200,8 +202,105 @@ export interface EmbeddedFrameReader {
   getMeta(): Promise<{ shape: number[]; dtype: string }>;
   /** Read a hyperslab slice; omit `slice` to read the whole dataset. */
   readSlice(slice?: Hdf5Slice): Promise<SliceReadResult>;
+  /**
+   * Read a single variable-length (vlen) element by index, safely (without
+   * h5wasm's broken sliced-vlen reclaim — see {@link readVlenElementManual}).
+   * Returns the element bytes, or `null` if the backend cannot do the manual
+   * read so the caller falls back to the whole-dataset read. Optional: backends
+   * without Module access omit it.
+   */
+  readVlenElement?(index: number): Promise<Uint8Array | null>;
   /** Mutable cache shared across calls for the legacy fallback path. */
   legacy: LegacyFrameCache;
+}
+
+/** Minimal Emscripten `Module` surface needed for a manual vlen element read. */
+export interface H5wasmModule {
+  _malloc(size: number): number;
+  _free(ptr: number): void;
+  HEAPU8: Uint8Array;
+  get_dataset_data(
+    fileId: unknown,
+    path: string,
+    count: bigint[],
+    offset: bigint[],
+    strides: bigint[],
+    dataPtr: bigint
+  ): unknown;
+  /** HDF5 datatype class enum; `H5T_VLEN.value` is the vlen class id. */
+  H5T_class_t?: { H5T_VLEN: { value: number } };
+}
+
+/** Minimal h5wasm `Dataset` surface needed for a manual vlen element read. */
+export interface H5wasmVlenDataset {
+  file_id: unknown;
+  path: string;
+  metadata: { size: number; vlen?: boolean; type?: number };
+}
+
+/**
+ * Read a single variable-length (vlen) element `[index]` directly through the
+ * Emscripten {@link H5wasmModule}, bypassing h5wasm's high-level
+ * `Dataset.slice()`.
+ *
+ * WHY: `Dataset.slice([[i, i + 1]])` reads the one element correctly but then
+ * calls `reclaim_vlen_memory`, which `H5Treclaim`s the dataset's FULL N-element
+ * dataspace over a buffer that holds only ONE `hvl_t` — freeing N−1 garbage
+ * pointers past the buffer end. That intermittently throws "memory access out of
+ * bounds" / aborts the WASM runtime. (Full reads via `dataset.value` are safe
+ * only because their buffer holds all N elements, matching the reclaim space.)
+ * This helper performs the same read h5wasm does, then frees ONLY the one inner
+ * blob it read — the reclaim scoped to a single element. No whole-dataset cache,
+ * so memory stays bounded to the current frame. The upstream h5wasm fix is
+ * tracked in `scratch/vlen/upstream-fix.md`.
+ *
+ * @returns the element's bytes (a fresh, JS-owned copy); an empty array for a
+ * null/zero-length element; or `null` if the manual read is not applicable
+ * (no Module, or not a wasm32 vlen dataset) so the caller can fall back.
+ */
+export function readVlenElementManual(
+  Module: H5wasmModule | null | undefined,
+  dataset: H5wasmVlenDataset,
+  index: number
+): Uint8Array | null {
+  if (!Module || !Module._malloc || !Module.HEAPU8 || !Module.get_dataset_data) {
+    return null;
+  }
+  const md = dataset.metadata;
+  // Only a wasm32 `hvl_t { size_t len; void* ptr }` (4 + 4 = 8 bytes) is
+  // supported. Guard on both the vlen class and the 8-byte element size so a
+  // misclassified dataset (or a future wasm64 build) safely falls back instead
+  // of misreading. `metadata.vlen` is often false even for genuine vlen
+  // datasets, so the datatype-class check carries the detection.
+  const vlenClass = Module.H5T_class_t?.H5T_VLEN.value;
+  const isVlen = md?.vlen === true || (vlenClass != null && md?.type === vlenClass);
+  if (!isVlen || md?.size !== 8) return null;
+
+  const dataPtr = Module._malloc(md.size);
+  if (!dataPtr) return null;
+  try {
+    // count=[1], offset=[index], strides=[1] — exactly one element.
+    Module.get_dataset_data(
+      dataset.file_id,
+      dataset.path,
+      [1n],
+      [BigInt(index)],
+      [1n],
+      BigInt(dataPtr)
+    );
+    // `HEAPU32` is not exported by h5wasm; build a u32 view over `HEAPU8.buffer`.
+    // Rebuild it every call — wasm heap growth can detach the prior ArrayBuffer.
+    const u32 = new Uint32Array(Module.HEAPU8.buffer, Number(dataPtr), 2);
+    const len = u32[0];
+    const blobPtr = u32[1];
+    if (!blobPtr) return new Uint8Array(0);
+    // Base element size is 1: these vlen datasets hold uint8 encoded-image bytes.
+    const out = Module.HEAPU8.slice(blobPtr, blobPtr + len);
+    Module._free(blobPtr); // free ONLY the inner blob — the per-element reclaim
+    return out;
+  } finally {
+    Module._free(dataPtr);
+  }
 }
 
 /**
@@ -228,11 +327,26 @@ export async function readEmbeddedFrameBytes(
     return encoded ? trimPaddedRow(row, reader.frameSizes?.[index]) : row;
   }
 
-  // vlen: h5wasm slices a single element -> an array holding one blob.
+  // vlen (legacy pkg.slp): one encoded image per element. h5wasm's high-level
+  // single-element slice is memory-unsafe here — its post-read vlen reclaim
+  // walks the FULL dataset dataspace over a one-element buffer and corrupts the
+  // heap (intermittent "memory access out of bounds" / WASM abort). So read the
+  // one element via the backend's safe `readVlenElement` (a manual `hvl_t` read
+  // that frees only that element — see {@link readVlenElementManual}). If the
+  // backend can't (no Module access / unexpected layout), fall back to reading
+  // the whole dataset once and caching it: higher memory, but never the crashing
+  // per-element slice. See `scratch/vlen/upstream-fix.md`, issue #135, PR #156.
   if (layout === "vlen") {
-    const { value } = await reader.readSlice([[index, index + 1]]);
-    const entry = Array.isArray(value) ? value[0] : value;
-    return asUint8Array(entry);
+    if (reader.readVlenElement) {
+      const out = await reader.readVlenElement(index);
+      if (out) return out;
+    }
+    if (!reader.legacy.whole) {
+      const { value } = await reader.readSlice();
+      reader.legacy.whole = Array.isArray(value) ? value : [];
+    }
+    const whole = reader.legacy.whole;
+    return Array.isArray(whole) ? asUint8Array(whole[index]) : null;
   }
 
   // 1D concatenated with known sizes: exact byte-range slice.
