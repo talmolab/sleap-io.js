@@ -128,6 +128,73 @@ describe("SLP ROI/Mask I/O", () => {
     }
   });
 
+  it("does not persist mask fromPredicted across SLP round-trip", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [10, 20] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    // Build a 100x100 binary mask raster shared by both masks.
+    const maskData = new Uint8Array(100 * 100);
+    for (let r = 10; r < 30; r++) {
+      for (let c = 20; c < 50; c++) {
+        maskData[r * 100 + c] = 1;
+      }
+    }
+    const { encodeRle } = await import("../src/model/mask.js");
+    const rle = encodeRle(maskData, 100, 100);
+
+    // A predicted mask and the user mask adopted from it via toUser().
+    const predMask = new PredictedSegmentationMask({
+      rleCounts: rle.slice(),
+      height: 100,
+      width: 100,
+      score: 0.9,
+      name: "mask1",
+      category: "cell",
+      source: "model",
+    });
+    const userMask = predMask.toUser(true);
+
+    // In-memory provenance link exists before save.
+    expect(userMask.fromPredicted).toBe(predMask);
+
+    const lfMask = new LabeledFrame({
+      video,
+      frameIdx: 3,
+      masks: [predMask, userMask],
+    });
+    const labels = new Labels({
+      labeledFrames: [frame, lfMask],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    const loaded = await roundTrip(labels);
+    loaded.materialize();
+
+    // Both masks survive: exactly one predicted, one user.
+    expect(loaded.masks.length).toBe(2);
+    const loadedPred = loaded.masks.find(
+      (m): m is PredictedSegmentationMask => m instanceof PredictedSegmentationMask,
+    )!;
+    const loadedUser = loaded.masks.find(
+      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
+    )!;
+    expect(loadedPred).toBeDefined();
+    expect(loadedUser).toBeDefined();
+
+    // Predicted mask keeps its score and raster.
+    expect(loadedPred.score).toBeCloseTo(0.9);
+    expect(loadedPred.data).toEqual(maskData);
+
+    // User mask raster is intact.
+    expect(loadedUser.data).toEqual(maskData);
+
+    // The provenance link is intentionally not persisted -> null after load.
+    expect(loadedUser.fromPredicted).toBeNull();
+  });
+
   it("backward compat: reads file with no ROIs/masks as empty arrays", async () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });

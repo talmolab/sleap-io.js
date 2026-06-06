@@ -448,6 +448,22 @@ const roi = mask.toPolygon();
 const bb = mask.toBbox();
 ```
 
+**Adopting predictions (human-in-the-loop).** `PredictedSegmentationMask.toUser()`
+mirrors `Instance.fromPredicted`: it returns a new `UserSegmentationMask` that
+copies the RLE raster and carries over metadata (`name`, `category`, `source`,
+`track`, `trackingScore`, `instance`, `scale`, `offset`) while dropping
+prediction-only fields (`score`, `scoreMap`). It sets `fromPredicted` on the
+returned mask as an in-memory provenance link.
+
+```ts
+const userMask = pred.toUser();      // userMask.fromPredicted === pred
+const detached = pred.toUser(false); // detached.fromPredicted === null
+```
+
+> **Note:** unlike `Instance.fromPredicted` (which IS persisted), the mask's
+> `fromPredicted` link is in-memory only and is intentionally NOT written to the
+> SLP format — it becomes `null` after a save/load round-trip.
+
 ### `BoundingBox`
 Axis-aligned or rotated bounding box for detection/tracking workflows. `BoundingBox` is abstract; use `UserBoundingBox` or `PredictedBoundingBox` for direct construction.
 

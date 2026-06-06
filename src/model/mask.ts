@@ -363,8 +363,28 @@ export class SegmentationMask {
   }
 }
 
+export interface UserSegmentationMaskOptions extends SegmentationMaskOptions {
+  /** In-memory provenance link to the predicted mask this was adopted from. */
+  fromPredicted?: PredictedSegmentationMask | null;
+}
+
 /** User-annotated segmentation mask (no prediction score). */
-export class UserSegmentationMask extends SegmentationMask {}
+export class UserSegmentationMask extends SegmentationMask {
+  /**
+   * In-memory provenance link to the `PredictedSegmentationMask` this user mask
+   * was adopted from, set by {@link PredictedSegmentationMask.toUser}.
+   *
+   * This mirrors `Instance.fromPredicted`, but unlike instances it is an
+   * in-memory-only link: it is intentionally NOT persisted to the SLP format,
+   * so it becomes `null` after a save/load round-trip.
+   */
+  fromPredicted: PredictedSegmentationMask | null;
+
+  constructor(options: UserSegmentationMaskOptions) {
+    super(options);
+    this.fromPredicted = options.fromPredicted ?? null;
+  }
+}
 
 /** Predicted segmentation mask with a confidence score and optional score map. */
 export class PredictedSegmentationMask extends SegmentationMask {
@@ -392,6 +412,46 @@ export class PredictedSegmentationMask extends SegmentationMask {
 
   get isPredicted(): boolean {
     return true;
+  }
+
+  /**
+   * Adopt this predicted mask as a user-annotated mask (human-in-the-loop).
+   *
+   * Returns a NEW {@link UserSegmentationMask} that carries an independent
+   * COPY of the RLE raster (via `rleCounts.slice()`) plus the metadata
+   * (`name`, `category`, `source`, `track`, `trackingScore`, `instance`,
+   * `scale`, `offset`). Prediction-only fields (`score`, `scoreMap`,
+   * `scoreMapScale`, `scoreMapOffset`) are dropped. The internal
+   * `_instanceIdx` is carried over.
+   *
+   * The `track` and `instance` references are SHARED (not deep-copied), while
+   * the RLE raster and the `scale`/`offset` tuples are copied so the user mask
+   * owns independent buffers.
+   *
+   * Mirrors `Instance.fromPredicted` semantics, but the resulting
+   * `fromPredicted` link is in-memory only: it is intentionally NOT persisted
+   * to the SLP format and will be `null` after a save/load round-trip.
+   *
+   * @param link - When `true` (default), set the returned mask's
+   *   `fromPredicted` to this predicted mask. When `false`, leave it `null`.
+   */
+  toUser(link = true): UserSegmentationMask {
+    const user = new UserSegmentationMask({
+      rleCounts: this.rleCounts.slice(),
+      height: this.height,
+      width: this.width,
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      track: this.track,
+      trackingScore: this.trackingScore,
+      instance: this.instance,
+      scale: [this.scale[0], this.scale[1]],
+      offset: [this.offset[0], this.offset[1]],
+      fromPredicted: link ? this : null,
+    });
+    user._instanceIdx = this._instanceIdx;
+    return user;
   }
 }
 
