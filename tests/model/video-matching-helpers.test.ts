@@ -26,6 +26,10 @@ import { mkdtemp, rm } from "node:fs/promises";
 
 import { Video } from "../../src/model/video.js";
 import type { VideoBackend, VideoFrame } from "../../src/video/backend.js";
+import { Labels } from "../../src/model/labels.js";
+import { LabeledFrame } from "../../src/model/labeled-frame.js";
+import { Instance, PredictedInstance } from "../../src/model/instance.js";
+import { Skeleton } from "../../src/model/skeleton.js";
 import {
   VideoMatcher,
   VideoMatchMethod,
@@ -35,6 +39,7 @@ import {
   _getRootVideo,
   _fileExists,
   originalVideosConflict,
+  shapesCompatible,
   sanitizeFilename,
   setFsResolver,
 } from "../../src/model/matching.js";
@@ -194,11 +199,11 @@ describe("VideoMatcher coverage gaps (GROUP 12)", () => {
   });
 
   // PY test_get_effective_shape_with_original_video (1090-1113)
-  it("_getEffectiveShape follows originalVideo chain", () => {
+  it("_getEffectiveShape follows sourceVideo chain", () => {
     const original = makeVideo("/data/original.mp4", [100, 480, 640, 3]);
     const embedded = makeVideo("embedded.pkg.slp", undefined, original);
 
-    // original_video is computed from source_video chain.
+    // Single-level chain: nearest source IS the root.
     expect(embedded.originalVideo).toBe(original);
 
     const shape = _getEffectiveShape(embedded);
@@ -583,5 +588,250 @@ describe("Video.hasOverlappingImages (image_dedup semantics)", () => {
     const single = makeVideo("/a/video.mp4");
     expect(video1.hasOverlappingImages(single)).toBe(false);
     expect(single.hasOverlappingImages(video1)).toBe(false);
+  });
+});
+
+// =============================================================================
+// Embedded subset shape matching (#476)
+// =============================================================================
+//
+// Port of Python `TestEmbeddedSubsetShapeMatching` (tests/model/test_matching.py,
+// added by PR #476 "resolve effective shape through source chain so embedded
+// subsets match", upstream issue #473).
+//
+// THE WORKFLOW: embed a SUBSET of user-labeled frames (e.g. 27 of 80) into a
+// `.pkg.slp`, run prediction against the RESTORED original source (80 frames),
+// then match GT vs predictions. Before the fix, `_getEffectiveShape` jumped to
+// the chain ROOT (`originalVideo`); when the root shape was unknown it fell back
+// to the video's OWN subset frame count, so the 27-frame subset and 80-frame
+// restored original reported different frame counts and were REJECTED on the
+// permissive `shapesCompatible` pre-filter BEFORE the definitive `isSameFile`
+// identity check ever ran. The fix walks `sourceVideo` nearest-first so the
+// subset borrows its source's full (80,...) shape.
+//
+// Tests 1-8 and 10 are pure in-memory and port directly via `makeVideo`; 11-12
+// are end-to-end via in-memory `Labels.match`/`Labels.merge`. Python tests 9
+// (`test_distinct_crops_not_collapsed`) and 13
+// (`test_embed_subset_restore_original_match_pipeline`) require a real video
+// fixture + full `.pkg.slp` embed/restore round-trip I/O and are NOT ported here
+// (fixture-dependent); the in-memory cases fully cover the fix's logic.
+
+describe("Embedded subset shape matching (#476)", () => {
+  // Mirrors Python `_subset_chain()`: root has an UNKNOWN shape, the restored
+  // original knows (80,...), and the embedded subset knows (27,...).
+  function subsetChain(): { root: Video; restored: Video; embedded: Video } {
+    const root = makeVideo("labeling/original.pkg.slp"); // unknown shape
+    const restored = makeVideo(
+      "restored_source.pkg.slp",
+      [80, 1024, 1024, 1],
+      root,
+    );
+    const embedded = makeVideo(
+      "embedded_subset.pkg.slp",
+      [27, 1024, 1024, 1],
+      restored,
+    );
+    return { root, restored, embedded };
+  }
+
+  // PY test_effective_shape_uses_nearest_known_source (THE core fix test)
+  it("effective shape uses the nearest known source, not own subset count", () => {
+    const { restored, embedded } = subsetChain();
+    // Subset resolves to the nearest source's 80-frame shape, NOT its own 27.
+    expect(_getEffectiveShape(embedded)).toEqual([80, 1024, 1024, 1]);
+    expect(_getEffectiveShape(restored)).toEqual([80, 1024, 1024, 1]);
+  });
+
+  // PY test_shapes_compatible_subset_vs_source
+  it("subset and source are shape-compatible and same file", async () => {
+    const { restored, embedded } = subsetChain();
+    expect(shapesCompatible(embedded, restored)).toBe(true);
+    expect(await isSameFile(embedded, restored)).toBe(true);
+  });
+
+  // PY test_find_match_restored_finds_embedded_subset
+  it("AUTO find_match: restored original finds embedded subset", async () => {
+    const { restored, embedded } = subsetChain();
+    const matcher = new VideoMatcher(VideoMatchMethod.AUTO);
+    expect(await matcher.findMatch(restored, [embedded])).toBe(embedded);
+  });
+
+  // PY test_find_match_embedded_subset_finds_restored
+  it("AUTO find_match: embedded subset finds restored original", async () => {
+    const { restored, embedded } = subsetChain();
+    const matcher = new VideoMatcher(VideoMatchMethod.AUTO);
+    expect(await matcher.findMatch(embedded, [restored])).toBe(restored);
+  });
+
+  // PY test_pairwise_match_subset_restored_both_directions
+  it("AUTO pairwise match: subset <-> restored both directions", async () => {
+    const { restored, embedded } = subsetChain();
+    const matcher = new VideoMatcher(VideoMatchMethod.AUTO);
+    expect(await matcher.match(embedded, restored)).toBe(true);
+    expect(await matcher.match(restored, embedded)).toBe(true);
+  });
+
+  // PY test_different_files_incompatible_shape_still_rejected (GUARD)
+  it("unrelated files with incompatible shapes are still rejected", async () => {
+    const a = makeVideo("/data/a.mp4", [100, 480, 640, 3]);
+    const b = makeVideo("/data/b.mp4", [50, 480, 640, 3]); // no source chain
+    const matcher = new VideoMatcher(VideoMatchMethod.AUTO);
+    expect(await matcher.findMatch(a, [b])).toBeNull();
+    expect(await matcher.match(a, b)).toBe(false);
+  });
+
+  // PY test_same_file_siblings_no_source_chain_still_rejected_on_shape (GUARD)
+  // Genuine same-file siblings with NO source relationship keep their OWN shapes
+  // and stay shape-rejected — only a video WITH a sourceVideo borrows its
+  // source's shape. The dataset fields are incidental; the shapes drive the
+  // rejection (shapesCompatible / find_match / match do not consult dataset).
+  it("same-file siblings without a source chain stay shape-rejected", async () => {
+    const v0 = makeVideo("project.pkg.slp", [4, 384, 384, 1]);
+    v0.backendMetadata.dataset = "video0/video";
+    const v1 = makeVideo("project.pkg.slp", [1, 320, 560, 3]);
+    v1.backendMetadata.dataset = "video1/video";
+
+    expect(shapesCompatible(v0, v1)).toBe(false);
+    const matcher = new VideoMatcher(VideoMatchMethod.AUTO);
+    expect(await matcher.findMatch(v1, [v0])).toBeNull();
+    expect(await matcher.match(v0, v1)).toBe(false);
+  });
+
+  // PY test_provenance_conflict_still_rejected (GUARD)
+  // Same shape, but distinct provenance roots -> not a match. In JS,
+  // originalVideosConflict is FS-gated (the /data/*.mp4 roots do not exist), so
+  // rejection lands on leaf-path uniqueness: the roots have DIFFERENT basenames
+  // (v1.mp4 vs v2.mp4) so neither the embedded nor root basenames collide ->
+  // null / false either way.
+  it("distinct provenance roots with same shape are rejected", async () => {
+    const root1 = makeVideo("/data/v1.mp4");
+    const e1 = makeVideo("e1.pkg.slp", [100, 480, 640, 3], root1);
+    const root2 = makeVideo("/data/v2.mp4");
+    const e2 = makeVideo("e2.pkg.slp", [100, 480, 640, 3], root2);
+
+    const matcher = new VideoMatcher(VideoMatchMethod.AUTO);
+    expect(await matcher.findMatch(e1, [e2])).toBeNull();
+    expect(await matcher.match(e1, e2)).toBe(false);
+  });
+
+  // PY test_find_match_imagevideo_same_file_subset
+  it("ImageVideo same-file subset matches its source (list filenames)", async () => {
+    const images = ["f0.png", "f1.png", "f2.png", "f3.png"];
+    const root = makeVideo([...images]); // distinct array copies
+    const restored = makeVideo([...images], [4, 128, 128, 1], root);
+    const embedded = makeVideo([...images], [2, 128, 128, 1], restored);
+
+    expect(shapesCompatible(embedded, restored)).toBe(true);
+    expect(await isSameFile(embedded, restored)).toBe(true);
+
+    const matcher = new VideoMatcher(VideoMatchMethod.AUTO);
+    expect(await matcher.findMatch(restored, [embedded])).toBe(embedded);
+    expect(await matcher.match(embedded, restored)).toBe(true);
+  });
+
+  // PY test_labels_match_embedded_subset_to_restored_original (end-to-end)
+  it("Labels.match: embedded-subset GT matches restored-original predictions", async () => {
+    const skeleton = new Skeleton(["a", "b"]);
+    const { restored, embedded } = subsetChain();
+
+    const gt = new Labels({
+      videos: [embedded],
+      skeletons: [skeleton],
+      labeledFrames: [0, 5, 10].map(
+        (frameIdx) =>
+          new LabeledFrame({
+            video: embedded,
+            frameIdx,
+            instances: [
+              Instance.fromNumpy({
+                pointsData: [
+                  [1, 1],
+                  [2, 2],
+                ],
+                skeleton,
+              }),
+            ],
+          }),
+      ),
+    });
+
+    const pr = new Labels({
+      videos: [restored],
+      skeletons: [skeleton],
+      labeledFrames: [0, 5, 10].map(
+        (frameIdx) =>
+          new LabeledFrame({
+            video: restored,
+            frameIdx,
+            instances: [
+              PredictedInstance.fromNumpy({
+                pointsData: [
+                  [1, 1],
+                  [2, 2],
+                ],
+                score: 1,
+                skeleton,
+              }),
+            ],
+          }),
+      ),
+    });
+
+    const result = await gt.match(pr);
+    // Map is keyed by OTHER (pr) -> SELF (gt): restored -> embedded.
+    expect(result.videoMap.get(restored)).toBe(embedded);
+    expect(result.allVideosMatched).toBe(true);
+  });
+
+  // PY test_labels_merge_restored_preds_into_subset_gt_dedups_video (end-to-end)
+  it("Labels.merge: restored predictions merge into subset GT without dup video", async () => {
+    const skeleton = new Skeleton(["a", "b"]);
+    const { restored, embedded } = subsetChain();
+
+    const gt = new Labels({
+      videos: [embedded],
+      skeletons: [skeleton],
+      labeledFrames: [
+        new LabeledFrame({
+          video: embedded,
+          frameIdx: 0,
+          instances: [
+            Instance.fromNumpy({
+              pointsData: [
+                [1, 1],
+                [2, 2],
+              ],
+              skeleton,
+            }),
+          ],
+        }),
+      ],
+    });
+
+    const pr = new Labels({
+      videos: [restored],
+      skeletons: [skeleton],
+      labeledFrames: [
+        new LabeledFrame({
+          video: restored,
+          frameIdx: 1,
+          instances: [
+            PredictedInstance.fromNumpy({
+              pointsData: [
+                [3, 3],
+                [4, 4],
+              ],
+              score: 1,
+              skeleton,
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await gt.merge(pr);
+    // Same file is not duplicated on merge.
+    expect(gt.videos.length).toBe(1);
+    expect(gt.labeledFrames.length).toBe(2);
   });
 });

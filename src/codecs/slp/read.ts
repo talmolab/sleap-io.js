@@ -685,6 +685,11 @@ async function readVideos(
       }
     }
 
+    // NOTE: source_video is reconstructed filename-only, so the source's shape
+    // is dropped on reload. This leaves _getEffectiveShape() with no source
+    // shape for a reloaded embedded subset, keeping the embedded-subset ->
+    // restore-original matching workflow broken across save/load. Tracked in
+    // #160 (a follow-up to the in-memory #476 source-chain fix).
     const sourceVideo = parsed.source_video
       ? new Video({ filename: parsed.source_video.filename ?? "" })
       : null;
