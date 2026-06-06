@@ -8,7 +8,8 @@ import {
   resizeNearest,
 } from "../src/model/mask.js";
 import { UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
-import { Track } from "../src/model/instance.js";
+import { Track, Instance } from "../src/model/instance.js";
+import { Skeleton } from "../src/model/skeleton.js";
 import { Video } from "../src/model/video.js";
 
 function makeMask2D(height: number, width: number, fill?: (r: number, c: number) => boolean): Uint8Array {
@@ -228,6 +229,148 @@ describe("Abstract base and subclasses", () => {
   });
 });
 
+describe("PredictedSegmentationMask.toUser", () => {
+  function makePred(
+    fill: (r: number, c: number) => boolean = () => true,
+    extra: Record<string, unknown> = {},
+  ): PredictedSegmentationMask {
+    const rle = encodeRle(makeMask2D(5, 5, fill), 5, 5);
+    return new PredictedSegmentationMask({
+      rleCounts: rle,
+      height: 5,
+      width: 5,
+      score: 0.85,
+      ...extra,
+    });
+  }
+
+  it("basic: returns a UserSegmentationMask with matching raster", () => {
+    const pred = makePred();
+    const user = pred.toUser();
+    expect(user).toBeInstanceOf(UserSegmentationMask);
+    expect(user.isPredicted).toBe(false);
+    expect(user.height).toBe(pred.height);
+    expect(user.width).toBe(pred.width);
+    expect(user.data).toEqual(pred.data);
+  });
+
+  it("metadata: shares track, preserves trackingScore/category/name/source", () => {
+    const track = new Track("t1");
+    const pred = makePred(() => true, {
+      track,
+      trackingScore: 0.42,
+      category: "cell",
+      name: "obj1",
+      source: "model",
+    });
+    const user = pred.toUser();
+    expect(user.track).toBe(track);
+    expect(user.trackingScore).toBe(0.42);
+    expect(user.category).toBe("cell");
+    expect(user.name).toBe("obj1");
+    expect(user.source).toBe("model");
+  });
+
+  it("drops score and scoreMap", () => {
+    const scoreMap = new Float32Array(25).fill(0.5);
+    const pred = makePred(() => true, { scoreMap });
+    const user = pred.toUser();
+    expect((user as any).score).toBeUndefined();
+    expect((user as any).scoreMap).toBeUndefined();
+    expect(user.isPredicted).toBe(false);
+  });
+
+  it("sets fromPredicted to the source mask", () => {
+    const pred = makePred();
+    const user = pred.toUser();
+    expect(user.fromPredicted).toBe(pred);
+  });
+
+  it("link=false leaves fromPredicted null", () => {
+    const pred = makePred();
+    const user = pred.toUser(false);
+    expect(user.fromPredicted).toBeNull();
+  });
+
+  it("preserves scale/offset verbatim without applying to raster", () => {
+    const pred = makePred(() => true, { scale: [0.5, 0.5], offset: [10, 20] });
+    const user = pred.toUser();
+    expect(user.scale).toEqual([0.5, 0.5]);
+    expect(user.offset).toEqual([10, 20]);
+    expect(user.data).toEqual(pred.data);
+    expect(user.area).toBe(pred.area);
+  });
+
+  it("copies scale/offset into independent tuples", () => {
+    const pred = makePred(() => true, { scale: [0.5, 0.5], offset: [10, 20] });
+    const user = pred.toUser();
+    // Fresh arrays, not shared references with the source prediction.
+    expect(user.scale).not.toBe(pred.scale);
+    expect(user.offset).not.toBe(pred.offset);
+    // Mutating the user copy must not leak back into the prediction.
+    user.scale[0] = 9;
+    user.offset[0] = 99;
+    expect(pred.scale).toEqual([0.5, 0.5]);
+    expect(pred.offset).toEqual([10, 20]);
+  });
+
+  it("preserves the instance reference", () => {
+    const skeleton = new Skeleton(["A", "B"]);
+    const instance = Instance.fromArray([[0, 0], [1, 1]], skeleton);
+    const pred = makePred(() => true, { instance });
+    const user = pred.toUser();
+    expect(user.instance).toBe(instance);
+  });
+
+  it("preserves _instanceIdx", () => {
+    const pred = makePred();
+    pred._instanceIdx = 3;
+    const user = pred.toUser();
+    expect(user._instanceIdx).toBe(3);
+  });
+
+  it("copies rleCounts into an independent buffer", () => {
+    const pred = makePred();
+    const user = pred.toUser();
+    expect(user.rleCounts).not.toBe(pred.rleCounts);
+    expect(user.rleCounts).toEqual(pred.rleCounts);
+    const before = pred.rleCounts[0];
+    user.rleCounts[0] = user.rleCounts[0] + 7;
+    expect(pred.rleCounts[0]).toBe(before);
+  });
+
+  it("handles an empty mask", () => {
+    const pred = makePred(() => false);
+    const user = pred.toUser();
+    expect(user.area).toBe(0);
+    expect(user.fromPredicted).toBe(pred);
+  });
+
+  it("UserSegmentationMask has no toUser method", () => {
+    const user = SegmentationMask.fromArray(makeMask2D(5, 5), 5, 5);
+    expect((user as any).toUser).toBeUndefined();
+  });
+
+  it("fromPredicted defaults to null on a directly constructed user mask", () => {
+    const fromArray = SegmentationMask.fromArray(makeMask2D(5, 5), 5, 5);
+    expect(fromArray.fromPredicted).toBeNull();
+    const direct = new UserSegmentationMask({
+      rleCounts: encodeRle(makeMask2D(5, 5), 5, 5),
+      height: 5,
+      width: 5,
+    });
+    expect(direct.fromPredicted).toBeNull();
+  });
+
+  it("returns distinct masks sharing the same fromPredicted link", () => {
+    const pred = makePred();
+    const user1 = pred.toUser();
+    const user2 = pred.toUser();
+    expect(user1).not.toBe(user2);
+    expect(user1.fromPredicted).toBe(user2.fromPredicted);
+  });
+});
+
 describe("Scale/offset spatial metadata", () => {
   it("default scale/offset is identity", () => {
     const mask = SegmentationMask.fromArray(makeMask2D(5, 5), 5, 5);
@@ -317,6 +460,28 @@ describe("Scale/offset spatial metadata", () => {
     expect(pm.score).toBe(0.9);
     expect(pm.scoreMap).not.toBeNull();
     expect(pm.scoreMap!.length).toBe(4); // 2*2
+  });
+
+  it("resampled preserves fromPredicted on a linked user mask", () => {
+    const rle = encodeRle(makeMask2D(4, 4, () => true), 4, 4);
+    const pred = new PredictedSegmentationMask({
+      rleCounts: rle, height: 4, width: 4, score: 0.9,
+    });
+    const user = pred.toUser(); // links fromPredicted to pred
+    const resampled = user.resampled(2, 2);
+    expect(resampled).toBeInstanceOf(UserSegmentationMask);
+    // The provenance link is carried onto the resampled copy (mirrors
+    // track/instance preservation).
+    expect((resampled as UserSegmentationMask).fromPredicted).toBe(pred);
+  });
+
+  it("resampled leaves fromPredicted null on an unlinked user mask", () => {
+    const rle = encodeRle(makeMask2D(4, 4, () => true), 4, 4);
+    const user = new UserSegmentationMask({ rleCounts: rle, height: 4, width: 4 });
+    expect(user.fromPredicted).toBeNull();
+    const resampled = user.resampled(2, 2);
+    expect(resampled).toBeInstanceOf(UserSegmentationMask);
+    expect((resampled as UserSegmentationMask).fromPredicted).toBeNull();
   });
 });
 

@@ -29,6 +29,11 @@ import {
   InstanceMatcher,
   InstanceMatchMethod,
 } from "../../src/model/matching.js";
+import {
+  UserSegmentationMask,
+  PredictedSegmentationMask,
+  encodeRle,
+} from "../../src/model/mask.js";
 
 describe("LabeledFrame.merge", () => {
   // A1 — test_merge_keep_original (test_merging_integration.py:19-39)
@@ -369,5 +374,197 @@ describe("_resolveMergedIsNegative", () => {
     expect(
       _resolveMergedIsNegative(true, true, [predInst(), userInst()]),
     ).toEqual([false, true]);
+  });
+});
+
+// Port of GROUND TRUTH talmolab/sleap-io PR #478 (mask unused_predictions +
+// link-first mask merge): in-memory model/merge logic only, no format change.
+describe("LabeledFrame.unusedPredictedMasks", () => {
+  const video = new Video({ filename: "test.mp4", openBackend: false });
+
+  // 5x5 raster with a 3x3 block at rows/cols 1..3 -> bbox centroid ~ (2.5, 2.5)
+  // before any offset; offset shifts the centroid directly.
+  function rle3x3(): Uint32Array {
+    const flat = new Uint8Array(25);
+    for (let r = 1; r < 4; r++) for (let c = 1; c < 4; c++) flat[r * 5 + c] = 1;
+    return encodeRle(flat, 5, 5);
+  }
+
+  function makePred(offset: [number, number] = [0, 0]): PredictedSegmentationMask {
+    return new PredictedSegmentationMask({
+      rleCounts: rle3x3(),
+      height: 5,
+      width: 5,
+      score: 0.9,
+      offset,
+    });
+  }
+
+  function makeUser(offset: [number, number] = [0, 0]): UserSegmentationMask {
+    return new UserSegmentationMask({
+      rleCounts: rle3x3(),
+      height: 5,
+      width: 5,
+      offset,
+    });
+  }
+
+  it("none_when_no_predictions: a frame with only a user mask -> []", () => {
+    const lf = new LabeledFrame({ video, frameIdx: 0, masks: [makeUser()] });
+    expect(lf.unusedPredictedMasks).toEqual([]);
+  });
+
+  it("unadopted_reported: a lone predicted mask -> [pred]", () => {
+    const pred = makePred();
+    const lf = new LabeledFrame({ video, frameIdx: 0, masks: [pred] });
+    expect(lf.unusedPredictedMasks).toEqual([pred]);
+  });
+
+  it("excludes_linked: pred + pred.toUser() (linked) -> []", () => {
+    const pred = makePred();
+    const user = pred.toUser(); // user.fromPredicted === pred
+    const lf = new LabeledFrame({ video, frameIdx: 0, masks: [pred, user] });
+    expect(lf.unusedPredictedMasks).toEqual([]);
+  });
+
+  it("link_overrides_distance: linked user moved far away still adopts the pred -> []", () => {
+    const pred = makePred();
+    const user = pred.toUser();
+    // Move the user mask far from the prediction; the link still adopts it.
+    user.offset = [500, 500];
+    const lf = new LabeledFrame({ video, frameIdx: 0, masks: [pred, user] });
+    expect(lf.unusedPredictedMasks).toEqual([]);
+  });
+
+  it("spatial_fallback: an unlinked user mask overlapping within 5 px adopts the pred -> []", () => {
+    const pred = makePred();
+    // Independent (unlinked) user mask at ~2 px offset -> within the 5 px default.
+    const user = makeUser([2, 0]);
+    expect(user.fromPredicted).toBeNull();
+    const lf = new LabeledFrame({ video, frameIdx: 0, masks: [pred, user] });
+    expect(lf.unusedPredictedMasks).toEqual([]);
+  });
+
+  it("mixed: adopted + user-only + far orphan -> [orphan]", () => {
+    const adopted = makePred();
+    const user = adopted.toUser(); // adopts `adopted` via the link
+    const orphan = makePred([500, 500]); // far from any user mask
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      masks: [adopted, user, orphan],
+    });
+    expect(lf.unusedPredictedMasks).toEqual([orphan]);
+  });
+});
+
+describe("LabeledFrame.mergeAnnotations link-first mask merge (auto)", () => {
+  const video = new Video({ filename: "test.mp4", openBackend: false });
+
+  function rle3x3(): Uint32Array {
+    const flat = new Uint8Array(25);
+    for (let r = 1; r < 4; r++) for (let c = 1; c < 4; c++) flat[r * 5 + c] = 1;
+    return encodeRle(flat, 5, 5);
+  }
+
+  function makePred(offset: [number, number] = [0, 0]): PredictedSegmentationMask {
+    return new PredictedSegmentationMask({
+      rleCounts: rle3x3(),
+      height: 5,
+      width: 5,
+      score: 0.9,
+      offset,
+    });
+  }
+
+  it("link_overrides_distance: self pred + other far-moved user adopted from it -> 1 user mask", () => {
+    const pred = makePred();
+    const user = pred.toUser();
+    user.offset = [500, 500]; // far from the prediction spatially
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, masks: [pred] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, masks: [user] });
+
+    lf1.mergeAnnotations(lf2, "auto");
+
+    // The link matches pred<->user despite the distance: the prediction is
+    // replaced by the user mask, leaving exactly one (user) mask.
+    expect(lf1.masks.length).toBe(1);
+    expect(lf1.masks[0].isPredicted).toBe(false);
+  });
+
+  it("link_self_side: self holds the user correction linked to other's pred -> 1 user mask", () => {
+    const pred = makePred();
+    const user = pred.toUser();
+    user.offset = [500, 500];
+    // Self holds the user mask, other holds the prediction (opposite sides).
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, masks: [user] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, masks: [pred] });
+
+    lf1.mergeAnnotations(lf2, "auto");
+
+    expect(lf1.masks.length).toBe(1);
+    expect(lf1.masks[0].isPredicted).toBe(false);
+    expect(lf1.masks[0]).toBe(user);
+  });
+
+  it("link_beats_spatial_decoy: user replaces its true source, decoy pred on top of user stays predicted", () => {
+    const trueSource = makePred([500, 500]); // far away true source
+    const user = trueSource.toUser(); // linked to trueSource, sits at [500,500]
+    const decoy = makePred([500, 500]); // unrelated pred spatially on top of user
+    const lf1 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      masks: [trueSource, decoy],
+    });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, masks: [user] });
+
+    lf1.mergeAnnotations(lf2, "auto");
+
+    // The link pairs user<->trueSource (greedy 1:1 with Infinity score), so the
+    // decoy is NOT matched to the user and survives as a prediction. trueSource
+    // is replaced by the user mask.
+    expect(lf1.masks.length).toBe(2);
+    const users = lf1.masks.filter((m) => !m.isPredicted);
+    const preds = lf1.masks.filter((m) => m.isPredicted);
+    expect(users.length).toBe(1);
+    expect(preds.length).toBe(1);
+    expect(preds[0]).toBe(decoy);
+  });
+
+  it("link_multiple_pairs: two independent cross-frame links both resolve -> 2 user masks", () => {
+    const predA = makePred([0, 0]);
+    const userA = predA.toUser();
+    userA.offset = [500, 500];
+    const predB = makePred([1000, 1000]);
+    const userB = predB.toUser();
+    userB.offset = [2000, 2000];
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, masks: [predA, predB] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, masks: [userA, userB] });
+
+    lf1.mergeAnnotations(lf2, "auto");
+
+    // Both predictions are replaced by their linked user corrections.
+    expect(lf1.masks.length).toBe(2);
+    expect(lf1.masks.every((m) => !m.isPredicted)).toBe(true);
+  });
+
+  it("link_source_absent: both users link to an external pred (in neither frame), far apart -> both kept", () => {
+    // External prediction belongs to neither frame's mask list.
+    const external = makePred();
+    const userA = external.toUser();
+    userA.offset = [0, 0];
+    const userB = external.toUser();
+    userB.offset = [500, 500]; // far from userA so no spatial match either
+
+    const lf1 = new LabeledFrame({ video, frameIdx: 0, masks: [userA] });
+    const lf2 = new LabeledFrame({ video, frameIdx: 0, masks: [userB] });
+
+    lf1.mergeAnnotations(lf2, "auto");
+
+    // Neither user links to a mask present in the OTHER frame, and they are far
+    // apart, so no match -> both user masks are kept.
+    expect(lf1.masks.length).toBe(2);
+    expect(lf1.masks.every((m) => !m.isPredicted)).toBe(true);
   });
 });

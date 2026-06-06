@@ -9,7 +9,7 @@ import { Video } from "../../model/video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
 import { getH5Module, getH5FileSystem, ensureH5StagingDir } from "./h5.js";
 import { ROI, PredictedROI, encodeWkb } from "../../model/roi.js";
-import { SegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
+import { SegmentationMask, UserSegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
 import { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
 import { Centroid, PredictedCentroid } from "../../model/centroid.js";
 import { LabelImage, PredictedLabelImage } from "../../model/label-image.js";
@@ -590,6 +590,25 @@ function writeMetadata(file: any, labels: Labels): void {
   // uncropped videos_json safely. Port of Python write_metadata (slp.py:1891-1895).
   if (labels.videos.some((v) => v._cropTuple() !== null)) {
     formatId = Math.max(formatId, 2.3);
+  }
+
+  // v2.4: persisted mask from_predicted provenance link. Bumped ONLY when some
+  // user mask actually records a *resolvable* link — i.e. its source prediction
+  // is itself in the saved mask list (object identity), mirroring the persisted
+  // from_predicted index being >= 0. A dangling link (source omitted from the
+  // saved frames) writes -1 and must NOT bump the format. The from_predicted
+  // column is always written; reads are presence-gated so pre-2.4 files load the
+  // link as null.
+  const savedMasks = labels.masks;
+  const savedMaskSet = new Set<SegmentationMask>(savedMasks);
+  if (
+    savedMasks.some(
+      (m) =>
+        (m as UserSegmentationMask).fromPredicted != null &&
+        savedMaskSet.has((m as UserSegmentationMask).fromPredicted as SegmentationMask),
+    )
+  ) {
+    formatId = Math.max(formatId, 2.4);
   }
 
   file.create_group("metadata");
@@ -1368,6 +1387,13 @@ function writeMasks(
   const scoreMapChunks: Uint8Array[] = [];
   let smOffset = 0;
 
+  // Map each mask object to its position in the flat list so a user mask's
+  // `fromPredicted` link can be resolved to a global index (mirrors instance
+  // from_predicted). Keyed by the object itself (object identity) — the JS
+  // analog of Python's id(mask).
+  const maskIdToIdx = new Map<SegmentationMask, number>();
+  masks.forEach((m, i) => maskIdToIdx.set(m, i));
+
   for (let i = 0; i < masks.length; i++) {
     const mask = masks[i];
     // Convert Uint32Array RLE counts to bytes (little-endian)
@@ -1389,10 +1415,19 @@ function writeMasks(
     const instanceIdx = mask.instance ? instances.indexOf(mask.instance as Instance) : (mask._instanceIdx ?? -1);
     const maskTrackingScore = mask.trackingScore ?? Number.NaN;
 
+    // Resolve the from_predicted provenance link to a global index into the
+    // flat mask list. -1 sentinel when there is no link or the source
+    // prediction is absent from the saved list (Map miss). Only user masks
+    // carry fromPredicted; predicted masks always resolve to -1.
+    const fromPredictedSrc = (mask as UserSegmentationMask).fromPredicted ?? null;
+    const fromPredictedIdx =
+      fromPredictedSrc != null ? (maskIdToIdx.get(fromPredictedSrc) ?? -1) : -1;
+
     rows.push([
       mask.height, mask.width, 2, videoIdx, frameIdx, trackIdx,
       score, rleStart, rleEnd, isPredicted, instanceIdx, maskTrackingScore,
       mask.scale[0], mask.scale[1], mask.offset[0], mask.offset[1],
+      fromPredictedIdx,
     ]);
     categories.push(mask.category);
     names.push(mask.name);
@@ -1416,7 +1451,7 @@ function writeMasks(
   }
 
   createMatrixDataset(file, "masks", rows,
-    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "tracking_score", "scale_x", "scale_y", "offset_x", "offset_y"], "<f8");
+    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "tracking_score", "scale_x", "scale_y", "offset_x", "offset_y", "from_predicted"], "<f8");
 
   // Write string metadata as datasets at root level (v1.9+)
   writeStringDataset(file, "mask_categories", categories);
