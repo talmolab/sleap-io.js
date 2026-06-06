@@ -18,12 +18,14 @@ import {
 } from "../../src/model/bbox";
 import { UserROI } from "../../src/model/roi";
 import { Skeleton } from "../../src/model/skeleton";
-import { Instance } from "../../src/model/instance";
+import { Instance, Track } from "../../src/model/instance";
 import { LabeledFrame } from "../../src/model/labeled-frame";
+import { Labels } from "../../src/model/labels";
 import { Video } from "../../src/model/video";
-import { PALETTES } from "../../src/rendering/colors";
+import { PALETTES, getPalette } from "../../src/rendering/colors";
 
 const DISTINCT = PALETTES.distinct;
+const STANDARD = PALETTES.standard;
 
 // ---------------------------------------------------------------------------
 // Fixture helpers
@@ -1038,6 +1040,38 @@ describe("applyOverlay", () => {
     applyOverlay(img, [] as SegmentationMask[]);
     expect(Array.from(img.data)).toEqual(before);
   });
+
+  it("uses an explicit colors override over the positional palette (PR #470)", async () => {
+    const img = await makeImage(12, 12, [255, 255, 255]);
+    const m0 = UserSegmentationMask.fromArray(squareMask(12, 12, 0, 0, 4, 4), 12, 12);
+    const m1 = UserSegmentationMask.fromArray(squareMask(12, 12, 6, 6, 10, 10), 12, 12);
+
+    // Override colors: element 0 -> blue, element 1 -> red (NOT the distinct
+    // palette order). This proves the override wins over getPalette positional.
+    applyOverlay(img, [m0, m1], {
+      alpha: 0.5,
+      palette: "distinct",
+      colors: [
+        [0, 0, 255],
+        [255, 0, 0],
+      ],
+    });
+
+    expectRGBNear(pixel(img, 1, 1), blendRGB([255, 255, 255], [0, 0, 255], 0.5));
+    expectRGBNear(pixel(img, 7, 7), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
+  });
+
+  it("falls back to the positional palette when colors is omitted/null (PR #470)", async () => {
+    const img = await makeImage(12, 12, [255, 255, 255]);
+    const m0 = UserSegmentationMask.fromArray(squareMask(12, 12, 0, 0, 4, 4), 12, 12);
+    const m1 = UserSegmentationMask.fromArray(squareMask(12, 12, 6, 6, 10, 10), 12, 12);
+
+    applyOverlay(img, [m0, m1], { alpha: 0.4, palette: "distinct", colors: null });
+
+    // Same as the default-palette dispatch above: [0] then [1].
+    expectRGBNear(pixel(img, 1, 1), blendRGB([255, 255, 255], DISTINCT[0], 0.4));
+    expectRGBNear(pixel(img, 7, 7), blendRGB([255, 255, 255], DISTINCT[1], 0.4));
+  });
 });
 
 // ===========================================================================
@@ -1204,6 +1238,437 @@ describe("renderImage with overlay", () => {
       4,
     );
   });
+
+  // -------------------------------------------------------------------------
+  // PR #462: auto-draw lf.masks when no overlay is passed
+  // -------------------------------------------------------------------------
+
+  it("auto-draws lf.masks when no overlay option is given (PR #462)", async () => {
+    const video = createVideo();
+    const mask = UserSegmentationMask.fromArray(
+      squareMask(40, 40, 10, 10, 25, 25),
+      40,
+      40,
+    );
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [],
+      masks: [mask],
+    });
+
+    // NOTE: no `overlay` option — masks must be auto-resolved from lf.masks.
+    const img = await renderImage(frame, {
+      width: 40,
+      height: 40,
+      background: [255, 255, 255],
+      overlayAlpha: 0.5,
+      overlayPalette: "distinct",
+    });
+
+    // Masked region blended toward distinct[0]; background untouched.
+    expectRGBNear(
+      pixel(img, 15, 15),
+      blendRGB([255, 255, 255], DISTINCT[0], 0.5),
+      4,
+    );
+    expectRGBNear(pixel(img, 0, 0), [255, 255, 255]);
+  });
+
+  it("auto-draws lf.masks for a Labels source via the first frame (PR #462)", async () => {
+    const video = createVideo();
+    const mask = UserSegmentationMask.fromArray(
+      squareMask(40, 40, 12, 12, 20, 20),
+      40,
+      40,
+    );
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [],
+      masks: [mask],
+    });
+    const labels = new Labels({ labeledFrames: [frame] });
+
+    const img = await renderImage(labels, {
+      width: 40,
+      height: 40,
+      background: [255, 255, 255],
+      overlayAlpha: 0.5,
+      overlayPalette: "distinct",
+    });
+
+    expectRGBNear(
+      pixel(img, 15, 15),
+      blendRGB([255, 255, 255], DISTINCT[0], 0.5),
+      4,
+    );
+  });
+
+  it("explicit overlay still wins over lf.masks (PR #462)", async () => {
+    const video = createVideo();
+    // lf carries maskA (region rows/cols 2-8), but the explicit overlay draws
+    // maskB (region 12-18). Only the explicit one should be drawn.
+    const maskA = UserSegmentationMask.fromArray(
+      squareMask(20, 20, 2, 2, 8, 8),
+      20,
+      20,
+    );
+    const maskB = UserSegmentationMask.fromArray(
+      squareMask(20, 20, 12, 12, 18, 18),
+      20,
+      20,
+    );
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [],
+      masks: [maskA],
+    });
+
+    const img = await renderImage(frame, {
+      width: 20,
+      height: 20,
+      background: [255, 255, 255],
+      overlay: [maskB],
+      overlayAlpha: 0.5,
+    });
+
+    // Explicit maskB region is blended; the lf.masks (maskA) region is NOT.
+    expectRGBNear(
+      pixel(img, 15, 15),
+      blendRGB([255, 255, 255], DISTINCT[0], 0.5),
+      4,
+    );
+    expectRGBNear(pixel(img, 4, 4), [255, 255, 255]);
+  });
+
+  it("does not auto-draw when the frame has no masks (PR #462)", async () => {
+    const video = createVideo();
+    const skeleton = createTestSkeleton();
+    const instance = new Instance({
+      points: { head: [5, 5], tail: [15, 15] },
+      skeleton,
+    });
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instance],
+      masks: [],
+    });
+
+    const img = await renderImage(frame, {
+      width: 20,
+      height: 20,
+      background: [255, 255, 255],
+      showNodes: false,
+      showEdges: false,
+    });
+
+    // No masks -> nothing to auto-draw; the whole background stays white.
+    expectRGBNear(pixel(img, 10, 10), [255, 255, 255]);
+    expectRGBNear(pixel(img, 0, 0), [255, 255, 255]);
+  });
+
+  // -------------------------------------------------------------------------
+  // PR #470: color overlay annotations by track identity
+  // -------------------------------------------------------------------------
+
+  it("colors masks by track identity under colorBy:'track' (PR #470)", async () => {
+    const video = createVideo();
+    const skeleton = createTestSkeleton();
+    const trackA = new Track("A");
+    const trackB = new Track("B");
+
+    // Two tracked instances so the track index order is [trackA, trackB].
+    const instA = new Instance({
+      points: { head: [3, 3], tail: [5, 5] },
+      skeleton,
+      track: trackA,
+    });
+    const instB = new Instance({
+      points: { head: [30, 30], tail: [32, 32] },
+      skeleton,
+      track: trackB,
+    });
+
+    // maskA -> trackB, maskB -> trackA: deliberately reverse the LIST order vs
+    // the track order to prove coloring follows .track, not list position.
+    const maskA = UserSegmentationMask.fromArray(
+      squareMask(40, 40, 10, 10, 16, 16),
+      40,
+      40,
+    );
+    maskA.track = trackB;
+    const maskB = UserSegmentationMask.fromArray(
+      squareMask(40, 40, 22, 22, 28, 28),
+      40,
+      40,
+    );
+    maskB.track = trackA;
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instA, instB],
+      masks: [maskA, maskB],
+    });
+
+    const img = await renderImage(frame, {
+      width: 40,
+      height: 40,
+      background: [255, 255, 255],
+      colorBy: "track",
+      overlayAlpha: 0.5,
+      // Pose palette ("standard") differs from overlayPalette ("distinct"): the
+      // track-colored masks must use the POSE palette so they match the poses,
+      // NOT the positional overlayPalette (PR #470). Asserting against
+      // "standard" here would fail under the old overlayPalette-based coloring.
+      palette: "standard",
+      overlayPalette: "distinct",
+      showNodes: false,
+      showEdges: false,
+    });
+
+    // Track index map: trackA=0, trackB=1 (instance discovery order).
+    const posePalette = getPalette("standard", 2);
+    const overlayPalette = getPalette("distinct", 2);
+    // maskA carries trackB (index 1); maskB carries trackA (index 0).
+    expectRGBNear(
+      pixel(img, 12, 12),
+      blendRGB([255, 255, 255], posePalette[1], 0.5),
+      4,
+    );
+    expectRGBNear(
+      pixel(img, 24, 24),
+      blendRGB([255, 255, 255], posePalette[0], 0.5),
+      4,
+    );
+    // Guard: the mask is NOT colored from the positional overlayPalette (would
+    // be the old buggy behavior). standard[1] and distinct[1] are distinct sets.
+    const buggy = blendRGB([255, 255, 255], overlayPalette[1], 0.5);
+    const actual = pixel(img, 12, 12);
+    const dist =
+      Math.abs(actual[0] - buggy[0]) +
+      Math.abs(actual[1] - buggy[1]) +
+      Math.abs(actual[2] - buggy[2]);
+    expect(dist).toBeGreaterThan(10);
+  });
+
+  it("aligns a mask track color slot with its pose track color slot (PR #470)", async () => {
+    const video = createVideo();
+    const skeleton = createTestSkeleton();
+    const trackA = new Track("A");
+    const trackB = new Track("B");
+
+    // Pose for trackB drawn at a node we can sample; trackA at another node.
+    const instA = new Instance({
+      points: { head: [3, 3], tail: [4, 4] },
+      skeleton,
+      track: trackA,
+    });
+    const instB = new Instance({
+      points: { head: [35, 35], tail: [36, 36] },
+      skeleton,
+      track: trackB,
+    });
+    const maskB = UserSegmentationMask.fromArray(
+      squareMask(40, 40, 20, 20, 26, 26),
+      40,
+      40,
+    );
+    maskB.track = trackB;
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instA, instB],
+      masks: [maskB],
+    });
+
+    const img = await renderImage(frame, {
+      width: 40,
+      height: 40,
+      background: [255, 255, 255],
+      colorBy: "track",
+      overlayAlpha: 0.5,
+      overlayPalette: "distinct",
+      palette: "standard",
+      showNodes: true,
+      showEdges: false,
+      markerSize: 3,
+    });
+
+    // trackB is index 1. PR #470: the mask uses the POSE palette ("standard"),
+    // NOT overlayPalette ("distinct"), so its fill is the blend of STANDARD[1]
+    // — the exact track color the pose node uses (sampled below). The mask fill
+    // (alpha 0.5) blends STANDARD[1] over the white background.
+    expectRGBNear(
+      pixel(img, 22, 22),
+      blendRGB([255, 255, 255], STANDARD[1], 0.5),
+      4,
+    );
+    // Pose node for trackB near (35,35) is opaque STANDARD[1] (alpha default 1).
+    let poseColored = false;
+    for (let y = 33; y < 38 && !poseColored; y++) {
+      for (let x = 33; x < 38; x++) {
+        const [r, g, b] = pixel(img, x, y);
+        if (
+          Math.abs(r - STANDARD[1][0]) <= 4 &&
+          Math.abs(g - STANDARD[1][1]) <= 4 &&
+          Math.abs(b - STANDARD[1][2]) <= 4
+        ) {
+          poseColored = true;
+          break;
+        }
+      }
+    }
+    expect(poseColored).toBe(true);
+  });
+
+  it("untracked mask falls back to the first track color under colorBy:'track' (PR #470)", async () => {
+    const video = createVideo();
+    const skeleton = createTestSkeleton();
+    const trackA = new Track("A");
+    const trackB = new Track("B");
+    const instA = new Instance({
+      points: { head: [3, 3], tail: [4, 4] },
+      skeleton,
+      track: trackA,
+    });
+    const instB = new Instance({
+      points: { head: [35, 35], tail: [36, 36] },
+      skeleton,
+      track: trackB,
+    });
+    // Mask with NO track -> should fall back to palette[0].
+    const mask = UserSegmentationMask.fromArray(
+      squareMask(40, 40, 18, 18, 24, 24),
+      40,
+      40,
+    );
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instA, instB],
+      masks: [mask],
+    });
+
+    const img = await renderImage(frame, {
+      width: 40,
+      height: 40,
+      background: [255, 255, 255],
+      colorBy: "track",
+      overlayAlpha: 0.5,
+      palette: "standard",
+      overlayPalette: "distinct",
+      showNodes: false,
+      showEdges: false,
+    });
+
+    // Untracked -> first POSE-palette color (PR #470 colors overlays from the
+    // pose palette, not overlayPalette).
+    const posePalette = getPalette("standard", 2);
+    expectRGBNear(
+      pixel(img, 20, 20),
+      blendRGB([255, 255, 255], posePalette[0], 0.5),
+      4,
+    );
+  });
+
+  it("keeps positional overlay coloring when scheme != track (PR #470)", async () => {
+    const video = createVideo();
+    const skeleton = createTestSkeleton();
+    const trackA = new Track("A");
+    const trackB = new Track("B");
+    // Tracked instances exist, but colorBy:'instance' forces non-track scheme.
+    const instA = new Instance({
+      points: { head: [3, 3], tail: [4, 4] },
+      skeleton,
+      track: trackA,
+    });
+    // maskA carries trackB, maskB carries trackA: if track-coloring leaked in,
+    // their colors would swap. Positional coloring must keep [0] then [1].
+    const maskA = UserSegmentationMask.fromArray(
+      squareMask(40, 40, 10, 10, 16, 16),
+      40,
+      40,
+    );
+    maskA.track = trackB;
+    const maskB = UserSegmentationMask.fromArray(
+      squareMask(40, 40, 22, 22, 28, 28),
+      40,
+      40,
+    );
+    maskB.track = trackA;
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instA],
+      masks: [maskA, maskB],
+    });
+
+    const img = await renderImage(frame, {
+      width: 40,
+      height: 40,
+      background: [255, 255, 255],
+      colorBy: "instance",
+      overlayAlpha: 0.5,
+      overlayPalette: "distinct",
+      showNodes: false,
+      showEdges: false,
+    });
+
+    // Positional palette: list element 0 (maskA) -> [0], element 1 (maskB) -> [1].
+    expectRGBNear(
+      pixel(img, 12, 12),
+      blendRGB([255, 255, 255], DISTINCT[0], 0.5),
+      4,
+    );
+    expectRGBNear(
+      pixel(img, 24, 24),
+      blendRGB([255, 255, 255], DISTINCT[1], 0.5),
+      4,
+    );
+  });
+
+  it("forced colorBy:'track' with no tracks stays positional (PR #470 guard)", async () => {
+    const video = createVideo();
+    const skeleton = createTestSkeleton();
+    // Instances and masks, but NO tracks anywhere. Forcing colorBy:'track'
+    // must NOT collapse every mask onto the first color — it falls back to
+    // positional overlayPalette coloring (mirrors Python's has_tracks gate).
+    const inst = new Instance({ points: { head: [3, 3], tail: [4, 4] }, skeleton });
+    const maskA = UserSegmentationMask.fromArray(
+      squareMask(40, 40, 10, 10, 16, 16),
+      40,
+      40,
+    );
+    const maskB = UserSegmentationMask.fromArray(
+      squareMask(40, 40, 22, 22, 28, 28),
+      40,
+      40,
+    );
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [inst],
+      masks: [maskA, maskB],
+    });
+
+    const img = await renderImage(frame, {
+      width: 40,
+      height: 40,
+      background: [255, 255, 255],
+      colorBy: "track",
+      overlayAlpha: 0.5,
+      overlayPalette: "distinct",
+      showNodes: false,
+      showEdges: false,
+    });
+
+    // Positional overlayPalette: maskA -> [0], maskB -> [1] (NOT both [0]).
+    expectRGBNear(pixel(img, 12, 12), blendRGB([255, 255, 255], DISTINCT[0], 0.5), 4);
+    expectRGBNear(pixel(img, 24, 24), blendRGB([255, 255, 255], DISTINCT[1], 0.5), 4);
+  });
 });
 
 // ===========================================================================
@@ -1337,5 +1802,31 @@ describe("renderVideo per-frame overlay", () => {
     expectRGBNear(pixel(imgB, 3, 3), [255, 255, 255]);
     expectRGBNear(pixel(imgB, 15, 15), blendRGB([255, 255, 255], DISTINCT[0], 0.5), 4);
     expectRGBNear(pixel(imgA, 15, 15), [255, 255, 255]);
+  });
+
+  it("auto-detects masks for a Labels source when no overlay is passed (PR #462)", async () => {
+    const { checkFfmpeg } = await import("../../src/rendering/video");
+    if (!(await checkFfmpeg())) return; // skip when ffmpeg unavailable
+
+    const video = new Video({ filename: "v.mp4" });
+    const f0 = frameWithMask(video, 0, [2, 2, 8, 8]);
+    const f1 = frameWithMask(video, 1, [10, 10, 18, 18]);
+    const labels = new Labels({ labeledFrames: [f0, f1] });
+
+    // No `overlay` option: renderVideo must auto-resolve masks per frame via
+    // Labels.getMasks({ video, frameIdx }).
+    const tmp = `/tmp/overlay-auto-masks-${Date.now()}.mp4`;
+    await expect(
+      renderVideo(labels, tmp, {
+        width: 20,
+        height: 20,
+        background: [255, 255, 255],
+        overlayAlpha: 0.5,
+      }),
+    ).resolves.toBeUndefined();
+
+    const fs = await import("node:fs");
+    expect(fs.existsSync(tmp)).toBe(true);
+    fs.unlinkSync(tmp);
   });
 });

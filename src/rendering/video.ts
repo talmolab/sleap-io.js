@@ -84,6 +84,22 @@ export async function renderVideo(
       videoOverlay = videoLabelImages;
     }
   }
+  // PR #462: auto-resolve masks per frame when no explicit overlay and no label
+  // images were resolved (label images take precedence — resolved first, above).
+  // Mirrors Python render_video (`overlay = lambda fidx:
+  // labels.get_masks(video=target_video, frame_idx=fidx)`), only wired up when
+  // the target video actually has masks. The callable is keyed by SOURCE frame
+  // index (makeOverlayResolver passes `frame.frameIdx`), so per-frame masks line
+  // up regardless of render position. Track-color (PR #470) is then applied
+  // inside renderImage on the resolved per-frame masks.
+  if (videoOverlay === undefined && !Array.isArray(source)) {
+    const targetVideo = selectedFrames[0].video;
+    const labels = source;
+    if (labels.getMasks({ video: targetVideo }).length > 0) {
+      videoOverlay = (frameIdx: number): Overlay =>
+        labels.getMasks({ video: targetVideo, frameIdx });
+    }
+  }
   const overlayForFrame = makeOverlayResolver(videoOverlay);
 
   // Build per-video temporal context for motion trails once (keyed by frame

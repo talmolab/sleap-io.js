@@ -4,7 +4,13 @@ import type { Labels } from "../model/labels.js";
 import type { LabeledFrame } from "../model/labeled-frame.js";
 import type { Instance, PredictedInstance, Track } from "../model/instance.js";
 import type { Skeleton } from "../model/skeleton.js";
-import type { RenderOptions, RGB, ColorScheme, PaletteName } from "./types.js";
+import type {
+  RenderOptions,
+  RGB,
+  ColorScheme,
+  PaletteName,
+  Overlay,
+} from "./types.js";
 import {
   getPalette,
   resolveColor,
@@ -79,6 +85,11 @@ interface SourceData {
   frameIdx: number;
   tracks: Track[];
   trackIndexMap: Map<Track, number>;
+  /**
+   * The resolved LabeledFrame being rendered (null for an instance-list source
+   * or an empty Labels). Used to auto-resolve a masks overlay (PR #462).
+   */
+  lf: LabeledFrame | null;
 }
 
 /**
@@ -96,8 +107,18 @@ export async function renderImage(
   const opts = { ...DEFAULT_OPTIONS, ...options };
 
   // Extract instances and metadata from source
-  const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } =
+  const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap, lf } =
     extractSourceData(source, opts);
+
+  // PR #462: auto-resolve a masks overlay. When no overlay is explicitly given
+  // and the rendered LabeledFrame carries masks, use them as the overlay. An
+  // explicit overlay always wins, and ONLY masks are auto-resolved (not label
+  // images) — mirroring Python render_image (core.py: `overlay = list(lf.masks)`
+  // when `overlay is None and lf is not None and lf.masks`). Array sources have
+  // no lf, so they never auto-resolve.
+  if ((opts.overlay === undefined || opts.overlay === null) && lf && lf.masks.length > 0) {
+    opts.overlay = [...lf.masks];
+  }
 
   // Motion trails can contribute frames even when the current frame is empty
   // (past frames supply the trail), so they relax the "nothing to render" guard
@@ -155,6 +176,15 @@ export async function renderImage(
     ctx.fillRect(0, 0, scaledWidth, scaledHeight);
   }
 
+  // Determine color scheme. Hoisted ABOVE the overlay block (PR #470) so the
+  // overlay and the poses share the SAME resolved scheme: when it resolves to
+  // "track", the overlay annotations are colored by their track identity to
+  // match their pose colors. hasTracks is derived from INSTANCES only (mirrors
+  // Python), so an annotation-only frame under colorBy:"auto" stays "instance"
+  // and overlays keep positional coloring.
+  const hasTracks = instances.some((inst) => inst.track != null);
+  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
+
   // Apply the annotation overlay AFTER the background and BEFORE trails/poses,
   // mirroring Python render_image (core.py L1159-1180: overlay applied on the
   // base frame, before trails/centroids/poses).
@@ -167,12 +197,28 @@ export async function renderImage(
   // overlay in source space, then scale-composite back onto the (possibly
   // scaled) canvas. When `scale === 1` this is an in-place read/blend/write.
   if (opts.overlay !== undefined && opts.overlay !== null) {
+    // PR #470: color the overlay by track identity when the resolved scheme is
+    // "track" and the overlay is a non-empty list of track-carrying elements
+    // (masks / rois / bboxes — NOT label images). Each element's track maps
+    // through the SAME trackIndexMap AND the SAME pose `palette` the poses use
+    // (NOT overlayPalette), so an animal's mask is the exact color of its pose.
+    // Untracked elements fall back to the first palette color. Otherwise colors
+    // stays undefined and applyOverlay keeps its positional overlayPalette
+    // default (unchanged behavior). Mirrors Python `get_palette(palette, ...)`.
+    const overlayColors = resolveOverlayTrackColors(
+      colorScheme,
+      opts.overlay,
+      opts.palette,
+      tracks,
+      trackIndexMap
+    );
     const overlayOpts = {
       alpha: opts.overlayAlpha,
       palette: opts.overlayPalette,
       outline: opts.overlayOutline,
       outlineWidth: opts.overlayOutlineWidth,
       outlineColor: opts.overlayOutlineColor,
+      colors: overlayColors,
     };
     if (opts.scale === 1) {
       // Fast path: blend directly on the scaled canvas (== source resolution).
@@ -210,10 +256,6 @@ export async function renderImage(
   // Get skeleton info
   const edgeInds = skeleton?.edgeIndices ?? [];
   const nodeNames = skeleton?.nodeNames ?? [];
-
-  // Determine color scheme
-  const hasTracks = instances.some((inst) => inst.track != null);
-  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
 
   // Build color map
   const colors = buildColorMap(
@@ -511,6 +553,7 @@ function extractSourceData(
       frameIdx: 0,
       tracks,
       trackIndexMap,
+      lf: null,
     };
   }
 
@@ -549,6 +592,7 @@ function extractSourceData(
       frameIdx: frame.frameIdx,
       tracks,
       trackIndexMap,
+      lf: frame,
     };
   }
 
@@ -565,6 +609,7 @@ function extractSourceData(
       frameIdx: 0,
       tracks,
       trackIndexMap,
+      lf: null,
     };
   }
 
@@ -599,6 +644,7 @@ function extractSourceData(
     frameIdx: firstFrame.frameIdx,
     tracks,
     trackIndexMap,
+    lf: firstFrame,
   };
 }
 
@@ -664,6 +710,56 @@ function buildColorMap(
         ),
       };
   }
+}
+
+/**
+ * Build per-element overlay colors keyed by track identity (PR #470).
+ *
+ * Returns `null` (leaving applyOverlay's positional-palette default in place)
+ * unless ALL of the following hold:
+ *  - the resolved color scheme is "track",
+ *  - the overlay is a non-empty array (a single LabelImage is excluded), and
+ *  - its elements carry tracks (masks / rois / bboxes — label-image lists, whose
+ *    elements are Int32Array-backed, are excluded so they keep their own LUT).
+ *
+ * Each element's `.track` is mapped through the SAME `trackIndexMap` AND the
+ * SAME pose `palette` the poses use (a palette of `max(tracks.length, 1)`
+ * colors); untracked elements fall back to the first color. The caller passes
+ * the pose `palette` (NOT `overlayPalette`) here, mirroring Python
+ * `get_palette(palette, ...)`, so an annotation is the exact color of its pose.
+ */
+function resolveOverlayTrackColors(
+  scheme: ColorScheme,
+  overlay: Overlay,
+  paletteName: string,
+  tracks: Track[],
+  trackIndexMap: Map<Track, number>
+): RGB[] | null {
+  if (scheme !== "track") return null;
+  // No tracks → keep positional coloring (mirrors Python's `has_tracks` gate),
+  // so a forced colorBy:"track" on track-less data doesn't collapse every
+  // overlay element onto the first palette color.
+  if (tracks.length === 0) return null;
+  if (!Array.isArray(overlay) || overlay.length === 0) return null;
+  // Label-image lists are Int32Array-backed; skip them (Python ignores colors
+  // for label-image overlays).
+  const first = overlay[0] as { data?: unknown };
+  if (first?.data instanceof Int32Array) return null;
+
+  const nTracks = Math.max(1, tracks.length);
+  const palette = getPalette(paletteName as PaletteName, nTracks);
+
+  return (overlay as Array<{ track?: Track | null }>).map((el) => {
+    const track = el.track;
+    if (track) {
+      const trackIdx = trackIndexMap.get(track);
+      if (trackIdx !== undefined) {
+        return palette[trackIdx % palette.length];
+      }
+    }
+    // Untracked elements fall back to the first palette color.
+    return palette[0];
+  });
 }
 
 // Export utilities
