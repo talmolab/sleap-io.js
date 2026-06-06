@@ -1,6 +1,7 @@
 import { describe, it, expect } from "../bun-test";
 import {
   type EmbeddedFrameReader,
+  type H5wasmModule,
   type Hdf5Slice,
   PNG_MAGIC,
   JPEG_MAGIC,
@@ -9,6 +10,7 @@ import {
   computeOffsetsFromSizes,
   findEncodedFrameOffsets,
   readEmbeddedFrameBytes,
+  readVlenElementManual,
   rowSlice,
   trimPaddedRow,
 } from "../../src/video/embedded-frame.js";
@@ -35,8 +37,15 @@ function fakeReader(opts: {
   format: string;
   frameSizes?: number[];
   onSlice: (slice: Hdf5Slice | undefined) => unknown;
-}): { reader: EmbeddedFrameReader; calls: Array<Hdf5Slice | undefined> } {
+  /** When provided, the reader exposes `readVlenElement` (the safe vlen path). */
+  onVlenElement?: (index: number) => Uint8Array | null;
+}): {
+  reader: EmbeddedFrameReader;
+  calls: Array<Hdf5Slice | undefined>;
+  vlenCalls: number[];
+} {
   const calls: Array<Hdf5Slice | undefined> = [];
+  const vlenCalls: number[] = [];
   const reader: EmbeddedFrameReader = {
     frameCount: opts.frameCount,
     format: opts.format,
@@ -48,7 +57,13 @@ function fakeReader(opts: {
       return { value: opts.onSlice(slice), shape: opts.shape };
     },
   };
-  return { reader, calls };
+  if (opts.onVlenElement) {
+    reader.readVlenElement = async (index: number) => {
+      vlenCalls.push(index);
+      return opts.onVlenElement!(index);
+    };
+  }
+  return { reader, calls, vlenCalls };
 }
 
 // ---------------------------------------------------------------------------
@@ -145,19 +160,47 @@ describe("readEmbeddedFrameBytes", () => {
     expect(calls.length).toBe(1);
   });
 
-  it("vlen: slices a single element and unwraps the blob", async () => {
-    const { reader, calls } = fakeReader({
+  it("vlen: reads the one element via readVlenElement, never slicing", async () => {
+    // h5wasm's single-element vlen slice corrupts the heap, so the backend's
+    // safe per-element read (readVlenElement) is used and `readSlice` is never
+    // called for the vlen layout.
+    const blobs = [
+      Uint8Array.from([0x89, 0x50, 0x01]),
+      Uint8Array.from([0x89, 0x50, 0x02]),
+    ];
+    const { reader, calls, vlenCalls } = fakeReader({
       shape: [2],
       frameCount: 2, // == 2 -> vlen
       format: "png",
+      onSlice: () => {
+        throw new Error("readSlice must not be called for vlen when readVlenElement exists");
+      },
+      onVlenElement: (i) => blobs[i],
+    });
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 1))!)).toEqual([0x89, 0x50, 0x02]);
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 0))!)).toEqual([0x89, 0x50, 0x01]);
+    expect(vlenCalls).toEqual([1, 0]);
+    expect(calls.length).toBe(0); // no hyperslab slice, no whole read
+  });
+
+  it("vlen fallback: no readVlenElement -> whole read once, cached, no per-element slice", async () => {
+    // When the backend can't do the manual read (no Module access), the vlen
+    // layout falls back to a single whole-dataset read + cache — never the
+    // crashing per-element hyperslab slice.
+    const blobs = [int8([0x89, 0x50, 0x01]), int8([0x89, 0x50, 0x02]), int8([0x89, 0x50, 0x03])];
+    const { reader, calls } = fakeReader({
+      shape: [3],
+      frameCount: 3, // == length -> vlen
+      format: "png",
       onSlice: (slice) => {
-        expect(slice).toEqual([[1, 2]]);
-        return [int8([0x89, 0x50, 0xff])]; // array holding one blob
+        // Only the whole-dataset read (no slice arg) is allowed.
+        if (slice !== undefined) throw new Error("vlen fallback must not sub-slice");
+        return blobs;
       },
     });
-    const out = await readEmbeddedFrameBytes(reader, 1);
-    expect(Array.from(out!)).toEqual([0x89, 0x50, 0xff]);
-    expect(calls.length).toBe(1);
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 0))!)).toEqual([0x89, 0x50, 0x01]);
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 2))!)).toEqual([0x89, 0x50, 0x03]);
+    expect(calls).toEqual([undefined]); // whole read exactly once, then cached
   });
 
   it("legacy fallback: 1D concat without frame_sizes scans once and caches", async () => {
@@ -211,6 +254,100 @@ describe("readEmbeddedFrameBytes", () => {
     expect(Array.from((await readEmbeddedFrameBytes(reader, 0))!)).toEqual(Array.from(frameA));
     expect(Array.from((await readEmbeddedFrameBytes(reader, 1))!)).toEqual(Array.from(frameB));
     expect(calls.length).toBe(1); // read whole once, cached
+  });
+});
+
+// ---------------------------------------------------------------------------
+// readVlenElementManual — the manual single-element hvl_t read (synthetic heap)
+// ---------------------------------------------------------------------------
+
+/**
+ * A synthetic Emscripten Module backed by a real ArrayBuffer "heap" and a bump
+ * allocator. `get_dataset_data` lays out one element's `hvl_t {len, ptr}` at the
+ * destination pointer and copies the blob bytes into the heap, exactly as
+ * h5wasm's native read would. Lets us test the hvl_t parsing and — critically —
+ * that the inner blob pointer is freed, with no real WASM.
+ */
+function fakeModule(blobs: Uint8Array[]): {
+  Module: H5wasmModule;
+  freed: number[];
+  malloced: number[];
+} {
+  const heap = new Uint8Array(1 << 16);
+  const u32 = new Uint32Array(heap.buffer);
+  let next = 8; // never hand out 0 (it means NULL)
+  const freed: number[] = [];
+  const malloced: number[] = [];
+  const alloc = (n: number): number => {
+    const ptr = next;
+    next += Math.ceil(n / 8) * 8 || 8; // keep 8-byte alignment for u32 views
+    return ptr;
+  };
+  const Module: H5wasmModule = {
+    HEAPU8: heap,
+    H5T_class_t: { H5T_VLEN: { value: 9 } },
+    _malloc: (n: number) => {
+      const ptr = alloc(n);
+      malloced.push(ptr);
+      return ptr;
+    },
+    _free: (ptr: number) => {
+      freed.push(ptr);
+    },
+    get_dataset_data: (_fileId, _path, _count, offset, _strides, dataPtr) => {
+      const index = Number(offset[0]);
+      const blob = blobs[index];
+      // The native read allocates the blob on the heap (HDF5's vlen allocator =
+      // malloc); record it so the inner-free invariant is meaningful.
+      const blobPtr = alloc(blob.length);
+      malloced.push(blobPtr);
+      heap.set(blob, blobPtr);
+      const hvl = Number(dataPtr) >> 2;
+      u32[hvl] = blob.length; // len
+      u32[hvl + 1] = blobPtr; // ptr
+      return 0;
+    },
+  };
+  return { Module, freed, malloced };
+}
+
+describe("readVlenElementManual", () => {
+  const vlenDs = { file_id: 0, path: "/video0/video", metadata: { size: 8, type: 9 } };
+
+  it("reads one element, copies the bytes, and frees the inner blob + struct", () => {
+    const blobs = [
+      Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0xaa]),
+      Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0xbb, 0xcc]),
+    ];
+    const { Module, freed, malloced } = fakeModule(blobs);
+
+    const out1 = readVlenElementManual(Module, vlenDs, 1)!;
+    expect(Array.from(out1)).toEqual([0x89, 0x50, 0x4e, 0x47, 0xbb, 0xcc]);
+    // Everything malloced this call was freed -> no leak (the bug's inner-blob leak).
+    expect([...freed].sort()).toEqual([...malloced].sort());
+
+    const out0 = readVlenElementManual(Module, vlenDs, 0)!;
+    expect(Array.from(out0)).toEqual([0x89, 0x50, 0x4e, 0x47, 0xaa]);
+    // The returned buffer is a copy: mutating the heap must not affect it.
+    Module.HEAPU8.fill(0);
+    expect(Array.from(out0)).toEqual([0x89, 0x50, 0x4e, 0x47, 0xaa]);
+  });
+
+  it("returns an empty array for a null (zero-pointer) element", () => {
+    const { Module } = fakeModule([new Uint8Array(0)]);
+    const out = readVlenElementManual(Module, vlenDs, 0)!;
+    expect(out).toBeInstanceOf(Uint8Array);
+    expect(out.length).toBe(0);
+  });
+
+  it("returns null (falls back) when not a wasm32 vlen dataset", () => {
+    const { Module } = fakeModule([Uint8Array.from([1, 2, 3])]);
+    // Wrong hvl_t size.
+    expect(readVlenElementManual(Module, { file_id: 0, path: "x", metadata: { size: 16, type: 9 } }, 0)).toBeNull();
+    // Not the vlen datatype class (and vlen flag false).
+    expect(readVlenElementManual(Module, { file_id: 0, path: "x", metadata: { size: 8, type: 0 } }, 0)).toBeNull();
+    // No Module.
+    expect(readVlenElementManual(null, vlenDs, 0)).toBeNull();
   });
 });
 
@@ -367,8 +504,8 @@ describe("Hdf5VideoBackend single-frame slicing (2D padded)", () => {
   });
 });
 
-describe("Hdf5VideoBackend single-frame slicing (real vlen pkg.slp)", () => {
-  it("slices a single vlen element without reading the whole dataset", async () => {
+describe("Hdf5VideoBackend frame reads (real vlen pkg.slp)", () => {
+  it("reads a vlen element via the manual hvl_t path — neither slice() nor value", async () => {
     const bytes = fs.readFileSync(path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"));
     const { file: rawFile, close } = await openH5File(new Uint8Array(bytes));
     const { file, spy } = wrapWithSpy(rawFile, close);
@@ -386,10 +523,72 @@ describe("Hdf5VideoBackend single-frame slicing (real vlen pkg.slp)", () => {
     const out = (await backend.getFrame(frameNumbers[0])) as Uint8Array;
     expect(out).toBeInstanceOf(Uint8Array);
     expect(out.length).toBeGreaterThan(0);
-    // It is a real PNG blob, sliced — and the whole vlen array was never read.
+    // A real PNG blob, read via the manual single-element hvl_t path. The crashing
+    // high-level slice() is never called, and the whole vlen dataset is never read.
     expect(Array.from(out.subarray(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
+    expect(spy.slice).toBe(0);
     expect(spy.value).toBe(0);
-    expect(spy.slice).toBeGreaterThan(0);
+
+    // Byte-for-byte identical to the same element from the safe whole-dataset read.
+    const whole = rawFile.get("video0/video").value as Int8Array[];
+    const ref = new Uint8Array(whole[0].buffer, whole[0].byteOffset, whole[0].length);
+    expect(out.length).toBe(ref.length);
+    expect(Array.from(out.subarray(0, 16))).toEqual(Array.from(ref.subarray(0, 16)));
+
+    file._close();
+  });
+
+  // The committed fixture is a synthetic N>1 vlen-of-int8 file (generated with
+  // h5py via tests/data/slp/gen_vlen_multiframe_fixture.py — h5wasm can only
+  // WRITE vlen strings, so it cannot synthesize this layout at runtime). It
+  // faithfully reproduces the abort: a raw `dataset.slice([[i, i+1]])` on it
+  // aborts the WASM runtime (verified out-of-band), whereas the manual hvl_t read
+  // does not. This is the regression guard for the N>1 case that minimal_instance
+  // (N=1) can't cover, since a 1-element slice happens to select the whole dataset.
+  it("multi-frame (N>1) vlen: reads every frame via the manual path, byte-identical, flat heap", async () => {
+    const bytes = fs.readFileSync(path.join(fixtureRoot, "slp", "vlen_multiframe.pkg.slp"));
+    const { file: rawFile, close } = await openH5File(new Uint8Array(bytes));
+    const { file, spy } = wrapWithSpy(rawFile, close);
+
+    const ds = rawFile.get("video0/video");
+    expect(ds.shape).toEqual([5]); // N>1 vlen (this is what aborts via slice())
+    expect(ds.metadata.size).toBe(8); // wasm32 hvl_t
+    const whole = ds.value as Int8Array[]; // safe whole-read ground truth (off the raw file)
+
+    const frameNumbers = Array.from(rawFile.get("video0/frame_numbers").value).map((v: any) => Number(v));
+    const backend = new Hdf5VideoBackend({
+      filename: ".",
+      file,
+      datasetPath: "video0/video",
+      frameNumbers,
+      format: "png",
+      channelOrder: "RGB",
+    });
+
+    // Every frame: a real PNG blob of its own (varying) length, byte-identical to
+    // the whole-read — and NO abort (the whole point of the fix).
+    for (let i = 0; i < frameNumbers.length; i++) {
+      const out = (await backend.getFrame(frameNumbers[i])) as Uint8Array;
+      const ref = new Uint8Array(whole[i].buffer, whole[i].byteOffset, whole[i].length);
+      expect(Array.from(out.subarray(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
+      expect(out.length).toBe(ref.length);
+      expect(Array.from(out)).toEqual(Array.from(ref));
+    }
+    // Per-element lengths genuinely vary (it is vlen, not 2D-padded/concat).
+    expect([...new Set(frameNumbers.map((_, i) => whole[i].length))].length).toBeGreaterThan(1);
+
+    // The crashing high-level slice() is never called, and the whole vlen dataset
+    // is never read through the backend — only the manual per-element read.
+    expect(spy.slice).toBe(0);
+    expect(spy.value).toBe(0);
+
+    // Memory: the manual read frees the inner blob each call, so the wasm heap
+    // stays flat across many reads (guards against a reintroduced leak or a
+    // whole-dataset read on the hot path).
+    const mod: any = await getH5Module();
+    const heap0 = mod.Module.HEAPU8.byteLength;
+    for (let r = 0; r < 300; r++) await backend.getFrame(frameNumbers[r % frameNumbers.length]);
+    expect(mod.Module.HEAPU8.byteLength).toBe(heap0);
 
     file._close();
   });

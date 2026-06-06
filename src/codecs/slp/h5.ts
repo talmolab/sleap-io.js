@@ -113,6 +113,29 @@ export async function getH5Module(): Promise<H5Module> {
   return modulePromise;
 }
 
+/**
+ * The underlying Emscripten `Module` from h5wasm — its low-level
+ * `_malloc`/`_free`/`HEAPU8`/`get_dataset_data` surface — or `null` if it cannot
+ * be reached (older/renamed h5wasm build).
+ *
+ * Exposed for the variable-length (vlen) embedded-frame read path, which must
+ * bypass h5wasm's high-level `Dataset.slice()`: after a sliced read, h5wasm's
+ * `reclaim_vlen_memory` reclaims the dataset's FULL dataspace over a single-
+ * element buffer and corrupts the heap (intermittent "memory access out of
+ * bounds" / WASM abort). See {@link readVlenElementManual} in
+ * `../../video/embedded-frame.ts` and `scratch/vlen/upstream-fix.md`.
+ *
+ * `Module` is a real named export of both `h5wasm` (ESM) and `h5wasm/node`, and
+ * `h5wasm.Module` exists on the IIFE build used by the worker, so this resolves
+ * in Node, the browser, and the streaming worker alike.
+ *
+ * @internal
+ */
+export async function getH5EmscriptenModule(): Promise<unknown> {
+  const ns = await getH5Module();
+  return (ns as unknown as { Module?: unknown }).Module ?? null;
+}
+
 export async function openH5File(
   source: SlpSource,
   options?: OpenH5Options
