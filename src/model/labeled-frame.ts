@@ -2,7 +2,7 @@ import { Instance, PredictedInstance } from "./instance.js";
 import { Video } from "./video.js";
 import { Centroid } from "./centroid.js";
 import { BoundingBox } from "./bbox.js";
-import { SegmentationMask } from "./mask.js";
+import { SegmentationMask, PredictedSegmentationMask } from "./mask.js";
 import { LabelImage } from "./label-image.js";
 import { ROI } from "./roi.js";
 import { InstanceMatcher, InstanceMatchMethod } from "./matching.js";
@@ -104,6 +104,58 @@ export function _findAnnotationMatches(
 }
 
 /**
+ * Find provenance-link matches between two annotation lists.
+ *
+ * A user annotation in one list is "linked" to a prediction in the other list
+ * when its `fromPredicted` reference points (by object identity) at that
+ * prediction. Such matches are scored `Infinity` so the greedy 1:1 pass in
+ * {@link _resolveAnnotationAuto} prefers them and bypasses the spatial distance
+ * threshold entirely (an explicit link always beats spatial proximity).
+ *
+ * Generic over modality via `(ann as any).fromPredicted`: only segmentation
+ * masks carry a `fromPredicted` link today, so other annotation types produce
+ * zero link matches and behave exactly as before.
+ *
+ * @returns List of {selfIdx, otherIdx, score} with score = Infinity. Links are
+ *   detected in both directions (a user in self pointing into other, and a user
+ *   in other pointing into self).
+ */
+export function _findAnnotationLinkMatches(
+  selfList: Annotation[],
+  otherList: Annotation[],
+): Array<{ selfIdx: number; otherIdx: number; score: number }> {
+  const matches: Array<{ selfIdx: number; otherIdx: number; score: number }> =
+    [];
+  // Object-identity index maps (the JS analog of Python's id()).
+  const selfIdToIdx = new Map<Annotation, number>();
+  for (let i = 0; i < selfList.length; i++) selfIdToIdx.set(selfList[i], i);
+  const otherIdToIdx = new Map<Annotation, number>();
+  for (let j = 0; j < otherList.length; j++) otherIdToIdx.set(otherList[j], j);
+
+  // self -> other: a user annotation in self links to a prediction in other.
+  for (let i = 0; i < selfList.length; i++) {
+    const src = (selfList[i] as any).fromPredicted;
+    if (src == null) continue;
+    const j = otherIdToIdx.get(src);
+    if (j !== undefined) {
+      matches.push({ selfIdx: i, otherIdx: j, score: Infinity });
+    }
+  }
+
+  // other -> self: a user annotation in other links to a prediction in self.
+  for (let j = 0; j < otherList.length; j++) {
+    const src = (otherList[j] as any).fromPredicted;
+    if (src == null) continue;
+    const i = selfIdToIdx.get(src);
+    if (i !== undefined) {
+      matches.push({ selfIdx: i, otherIdx: j, score: Infinity });
+    }
+  }
+
+  return matches;
+}
+
+/**
  * Apply auto merge resolution to a list of annotations.
  *
  * Mirrors the instance auto-merge cascade: keep user from self, spatially
@@ -126,11 +178,18 @@ function _resolveAnnotationAuto(
     }
   }
 
-  // 2. Find spatial matches
-  const matches = _findAnnotationMatches(selfList, otherList, attr, threshold);
+  // 2. Find matches, link-first then spatial fallback. Provenance-link matches
+  // (score Infinity) are seeded first so the greedy 1:1 pass below prefers them
+  // and bypasses the distance threshold; spatial matches are appended as the
+  // fallback for annotations with no explicit fromPredicted link.
+  const matches = _findAnnotationLinkMatches(selfList, otherList);
+  matches.push(..._findAnnotationMatches(selfList, otherList, attr, threshold));
 
   // 3. Greedy one-to-one matching: sort by score descending, assign each
-  // self/other index at most once so no annotation is silently dropped.
+  // self/other index at most once so no annotation is silently dropped. An
+  // Infinity-scored link always sorts ahead of any finite spatial score; two
+  // link matches compare equal (their relative order is irrelevant since each
+  // resolves a distinct index pair).
   matches.sort((a, b) => b.score - a.score);
   const matchedSelf = new Set<number>();
   const matchedOther = new Set<number>();
@@ -324,6 +383,47 @@ export class LabeledFrame {
     }
 
     return this.predictedInstances.filter((inst) => !usedPredicted.has(inst));
+  }
+
+  /**
+   * Predicted masks in this frame that have not been adopted by a user mask.
+   *
+   * The mask analogue of {@link unusedPredictions}. A prediction is considered
+   * adopted (and therefore excluded) when a user mask in the same frame:
+   *   1. links to it via `fromPredicted` (checked FIRST, by object identity), or
+   *   2. lacking such a link, spatially overlaps it (bbox-centroid within 5 px,
+   *      the auto-merge default).
+   *
+   * Predictions that no user mask claims by either rule are returned, e.g. for
+   * surfacing them in a proofreading UI.
+   */
+  get unusedPredictedMasks(): PredictedSegmentationMask[] {
+    const predicted = this.masks.filter(
+      (m) => m instanceof PredictedSegmentationMask,
+    ) as PredictedSegmentationMask[];
+    if (!predicted.length) return [];
+
+    const userMasks = this.masks.filter((m) => !m.isPredicted);
+    const adopted = new Set<SegmentationMask>();
+
+    // 1. Link-first: any prediction explicitly referenced by a user mask's
+    // fromPredicted is adopted (by object identity).
+    for (const u of userMasks) {
+      const src = (u as any).fromPredicted;
+      if (src != null) adopted.add(src);
+    }
+
+    // 2. Spatial fallback: remaining (unlinked) predictions adopted by any user
+    // mask whose bbox centroid is within 5 px.
+    const remaining = predicted.filter((m) => !adopted.has(m));
+    if (remaining.length && userMasks.length) {
+      const matches = _findAnnotationMatches(remaining, userMasks, "masks", 5.0);
+      for (const { selfIdx } of matches) {
+        adopted.add(remaining[selfIdx]);
+      }
+    }
+
+    return predicted.filter((m) => !adopted.has(m));
   }
 
   removePredictions(): void {

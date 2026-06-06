@@ -10,10 +10,42 @@ import { UserLabelImage, PredictedLabelImage } from "../src/model/label-image.js
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
 import { readSlp } from "../src/codecs/slp/read.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
+import { ready, File as H5File } from "h5wasm/node";
 
 async function roundTrip(labels: Labels): Promise<Labels> {
   const bytes = await saveSlpToBytes(labels);
   return readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+}
+
+/** Read the metadata `format_id` attr from saved SLP bytes via h5wasm. */
+async function readFormatId(bytes: Uint8Array): Promise<number> {
+  const module = await ready;
+  const memPath = `/tmp/slp_fmt_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+  module.FS.writeFile(memPath, bytes);
+  const file = new H5File(memPath, "r");
+  try {
+    const fmtAttr = (file.get("metadata") as { attrs: Record<string, { value?: number }> })
+      .attrs["format_id"];
+    return Number(fmtAttr?.value ?? fmtAttr);
+  } finally {
+    file.close();
+    module.FS.unlink(memPath);
+  }
+}
+
+/** Build a flat row-major binary mask raster. */
+function makeMaskRaster(
+  height: number,
+  width: number,
+  fill: (r: number, c: number) => boolean,
+): Uint8Array {
+  const flat = new Uint8Array(height * width);
+  for (let r = 0; r < height; r++) {
+    for (let c = 0; c < width; c++) {
+      flat[r * width + c] = fill(r, c) ? 1 : 0;
+    }
+  }
+  return flat;
 }
 
 describe("SLP ROI/Mask I/O", () => {
@@ -128,19 +160,14 @@ describe("SLP ROI/Mask I/O", () => {
     }
   });
 
-  it("does not persist mask fromPredicted across SLP round-trip", async () => {
+  it("persists mask fromPredicted across SLP round-trip", async () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });
     const inst = new Instance({ points: { A: [10, 20] }, skeleton });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
     // Build a 100x100 binary mask raster shared by both masks.
-    const maskData = new Uint8Array(100 * 100);
-    for (let r = 10; r < 30; r++) {
-      for (let c = 20; c < 50; c++) {
-        maskData[r * 100 + c] = 1;
-      }
-    }
+    const maskData = makeMaskRaster(100, 100, (r, c) => r >= 10 && r < 30 && c >= 20 && c < 50);
     const { encodeRle } = await import("../src/model/mask.js");
     const rle = encodeRle(maskData, 100, 100);
 
@@ -170,7 +197,11 @@ describe("SLP ROI/Mask I/O", () => {
       skeletons: [skeleton],
     });
 
-    const loaded = await roundTrip(labels);
+    const bytes = await saveSlpToBytes(labels);
+    // Recording a link bumps the format to 2.4.
+    expect(await readFormatId(bytes)).toBeGreaterThanOrEqual(2.4);
+
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
     loaded.materialize();
 
     // Both masks survive: exactly one predicted, one user.
@@ -191,7 +222,412 @@ describe("SLP ROI/Mask I/O", () => {
     // User mask raster is intact.
     expect(loadedUser.data).toEqual(maskData);
 
-    // The provenance link is intentionally not persisted -> null after load.
+    // The provenance link is persisted as an index into the saved mask list and
+    // re-linked to the loaded predicted mask after read.
+    expect(loadedUser.fromPredicted).toBe(loadedPred);
+  });
+
+  it("leaves mask fromPredicted null when toUser(false) (no link, format stays < 2.4)", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [10, 20] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const maskData = makeMaskRaster(40, 40, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const { encodeRle } = await import("../src/model/mask.js");
+    const rle = encodeRle(maskData, 40, 40);
+
+    const predMask = new PredictedSegmentationMask({
+      rleCounts: rle.slice(),
+      height: 40,
+      width: 40,
+      score: 0.5,
+    });
+    // Adopt WITHOUT linking.
+    const userMask = predMask.toUser(false);
+    expect(userMask.fromPredicted).toBeNull();
+
+    const lfMask = new LabeledFrame({ video, frameIdx: 1, masks: [predMask, userMask] });
+    const labels = new Labels({
+      labeledFrames: [frame, lfMask],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    const bytes = await saveSlpToBytes(labels);
+    // No mask records a link -> format must NOT be bumped to 2.4.
+    expect(await readFormatId(bytes)).toBeLessThan(2.4);
+
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    loaded.materialize();
+    const loadedUser = loaded.masks.find(
+      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
+    )!;
+    expect(loadedUser.fromPredicted).toBeNull();
+  });
+
+  it("re-links multiple user masks sharing one source prediction", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [10, 20] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const maskData = makeMaskRaster(50, 50, (r, c) => r >= 10 && r < 25 && c >= 10 && c < 25);
+    const { encodeRle } = await import("../src/model/mask.js");
+    const rle = encodeRle(maskData, 50, 50);
+
+    const predMask = new PredictedSegmentationMask({
+      rleCounts: rle.slice(),
+      height: 50,
+      width: 50,
+      score: 0.8,
+    });
+    // Two user masks both adopt the same prediction.
+    const userA = predMask.toUser(true);
+    const userB = predMask.toUser(true);
+    expect(userA.fromPredicted).toBe(predMask);
+    expect(userB.fromPredicted).toBe(predMask);
+
+    const lfMask = new LabeledFrame({
+      video,
+      frameIdx: 2,
+      masks: [predMask, userA, userB],
+    });
+    const labels = new Labels({
+      labeledFrames: [frame, lfMask],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    const loaded = await roundTrip(labels);
+    loaded.materialize();
+
+    const loadedPred = loaded.masks.find(
+      (m): m is PredictedSegmentationMask => m instanceof PredictedSegmentationMask,
+    )!;
+    const loadedUsers = loaded.masks.filter(
+      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
+    );
+    expect(loadedUsers.length).toBe(2);
+    // Both user masks re-link to the SAME loaded prediction object.
+    for (const u of loadedUsers) {
+      expect(u.fromPredicted).toBe(loadedPred);
+    }
+  });
+
+  it("loads fromPredicted as null when the source prediction is not saved (dangling)", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [10, 20] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const maskData = makeMaskRaster(40, 40, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const { encodeRle } = await import("../src/model/mask.js");
+    const rle = encodeRle(maskData, 40, 40);
+
+    const predMask = new PredictedSegmentationMask({
+      rleCounts: rle.slice(),
+      height: 40,
+      width: 40,
+      score: 0.5,
+    });
+    const userMask = predMask.toUser(true);
+    expect(userMask.fromPredicted).toBe(predMask);
+
+    // Only the USER mask is saved; the source prediction is omitted from the
+    // frame, so write resolves the link to -1 (Map miss).
+    const lfMask = new LabeledFrame({ video, frameIdx: 1, masks: [userMask] });
+    const labels = new Labels({
+      labeledFrames: [frame, lfMask],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    const bytes = await saveSlpToBytes(labels);
+    // Source absent -> no recorded link -> format not bumped.
+    expect(await readFormatId(bytes)).toBeLessThan(2.4);
+
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    loaded.materialize();
+    expect(loaded.masks.length).toBe(1);
+    const loadedUser = loaded.masks.find(
+      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
+    )!;
+    expect(loadedUser.fromPredicted).toBeNull();
+  });
+
+  it("disambiguates fromPredicted across frames (each user links to its own frame's prediction)", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [10, 20] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+    const { encodeRle } = await import("../src/model/mask.js");
+
+    // Distinct rasters so the loaded masks are individually identifiable.
+    const rasterA = makeMaskRaster(30, 30, (r, c) => r >= 2 && r < 8 && c >= 2 && c < 8);
+    const rasterB = makeMaskRaster(30, 30, (r, c) => r >= 20 && r < 26 && c >= 20 && c < 26);
+
+    const predA = new PredictedSegmentationMask({
+      rleCounts: encodeRle(rasterA, 30, 30),
+      height: 30,
+      width: 30,
+      score: 0.7,
+      name: "A",
+    });
+    const predB = new PredictedSegmentationMask({
+      rleCounts: encodeRle(rasterB, 30, 30),
+      height: 30,
+      width: 30,
+      score: 0.6,
+      name: "B",
+    });
+    const userA = predA.toUser(true);
+    const userB = predB.toUser(true);
+
+    const lfA = new LabeledFrame({ video, frameIdx: 1, masks: [predA, userA] });
+    const lfB = new LabeledFrame({ video, frameIdx: 2, masks: [predB, userB] });
+    const labels = new Labels({
+      labeledFrames: [frame, lfA, lfB],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    const loaded = await roundTrip(labels);
+    loaded.materialize();
+
+    const loadedUserA = loaded.masks.find(
+      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask && m.name === "A",
+    )!;
+    const loadedUserB = loaded.masks.find(
+      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask && m.name === "B",
+    )!;
+    expect(loadedUserA.fromPredicted).not.toBeNull();
+    expect(loadedUserB.fromPredicted).not.toBeNull();
+    // Each user mask links to the prediction with the matching raster, not the
+    // other frame's prediction.
+    expect(loadedUserA.fromPredicted!.data).toEqual(rasterA);
+    expect(loadedUserB.fromPredicted!.data).toEqual(rasterB);
+    expect(loadedUserA.fromPredicted).not.toBe(loadedUserB.fromPredicted);
+  });
+
+  it("preserves fromPredicted across a double round-trip", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [10, 20] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const maskData = makeMaskRaster(60, 60, (r, c) => r >= 10 && r < 30 && c >= 10 && c < 30);
+    const { encodeRle } = await import("../src/model/mask.js");
+    const predMask = new PredictedSegmentationMask({
+      rleCounts: encodeRle(maskData, 60, 60),
+      height: 60,
+      width: 60,
+      score: 0.95,
+    });
+    const userMask = predMask.toUser(true);
+
+    const lfMask = new LabeledFrame({ video, frameIdx: 4, masks: [predMask, userMask] });
+    const labels = new Labels({
+      labeledFrames: [frame, lfMask],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    const once = await roundTrip(labels);
+    once.materialize();
+    const twice = await roundTrip(once);
+    twice.materialize();
+
+    const loadedPred = twice.masks.find(
+      (m): m is PredictedSegmentationMask => m instanceof PredictedSegmentationMask,
+    )!;
+    const loadedUser = twice.masks.find(
+      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
+    )!;
+    expect(loadedUser.fromPredicted).toBe(loadedPred);
+  });
+
+  it("persists both instance and mask fromPredicted in the same file", async () => {
+    const { PredictedInstance } = await import("../src/model/instance.js");
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+
+    // Predicted instance + a user instance carrying the instance fromPredicted link.
+    const predInst = PredictedInstance.fromArray([[10, 20]], skeleton, 0.9);
+    const userInst = new Instance({
+      points: { A: [10, 20] },
+      skeleton,
+      fromPredicted: predInst,
+    });
+    expect(userInst.fromPredicted).toBe(predInst);
+
+    // Predicted mask adopted to a user mask (mask fromPredicted).
+    const maskData = makeMaskRaster(40, 40, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const { encodeRle } = await import("../src/model/mask.js");
+    const predMask = new PredictedSegmentationMask({
+      rleCounts: encodeRle(maskData, 40, 40),
+      height: 40,
+      width: 40,
+      score: 0.8,
+    });
+    const userMask = predMask.toUser(true);
+
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [predInst, userInst],
+      masks: [predMask, userMask],
+    });
+    const labels = new Labels({
+      labeledFrames: [lf],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    const loaded = await roundTrip(labels);
+    loaded.materialize();
+
+    const loadedUserMask = loaded.masks.find(
+      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
+    )!;
+    const loadedPredMask = loaded.masks.find(
+      (m): m is PredictedSegmentationMask => m instanceof PredictedSegmentationMask,
+    )!;
+    expect(loadedUserMask.fromPredicted).toBe(loadedPredMask);
+
+    // Instance fromPredicted still round-trips alongside the mask link.
+    const loadedFrame = loaded.labeledFrames[0];
+    const loadedUserInst = loadedFrame.instances.find(
+      (i) => !(i instanceof PredictedInstance),
+    ) as Instance;
+    expect(loadedUserInst.fromPredicted).not.toBeNull();
+  });
+
+  it("loads fromPredicted as null from a legacy file without the from_predicted column", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [10, 20] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const maskData = makeMaskRaster(40, 40, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const { encodeRle } = await import("../src/model/mask.js");
+    const predMask = new PredictedSegmentationMask({
+      rleCounts: encodeRle(maskData, 40, 40),
+      height: 40,
+      width: 40,
+      score: 0.8,
+    });
+    const userMask = predMask.toUser(true);
+    const lfMask = new LabeledFrame({ video, frameIdx: 1, masks: [predMask, userMask] });
+    const labels = new Labels({
+      labeledFrames: [frame, lfMask],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    // Write normally (includes the from_predicted column), then surgically
+    // strip "from_predicted" from the masks dataset's field_names attr to
+    // simulate a pre-2.4 file. The reader is presence-gated by NAME, so the
+    // column becomes invisible and every user mask loads with null.
+    const bytes = await saveSlpToBytes(labels);
+    const module = await ready;
+    const memPath = `/tmp/slp_legacy_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+    module.FS.writeFile(memPath, new Uint8Array(bytes));
+    {
+      const f = new H5File(memPath, "a");
+      const masksDs = f.get("masks") as {
+        attrs: Record<string, { value?: unknown }>;
+        create_attribute: (name: string, value: unknown, shape: unknown, dtype: string) => void;
+        delete_attribute: (name: string) => void;
+      };
+      const fieldNames: string[] = JSON.parse(
+        String((masksDs.attrs["field_names"] as { value?: unknown }).value),
+      );
+      const stripped = fieldNames.filter((n) => n !== "from_predicted");
+      const strippedJson = JSON.stringify(stripped);
+      // h5wasm's create_attribute cannot overwrite an existing attribute
+      // ("Object already exists"); delete the original field_names first so the
+      // pre-2.4 (column-stripped) attribute takes effect.
+      masksDs.delete_attribute("field_names");
+      masksDs.create_attribute(
+        "field_names",
+        strippedJson,
+        null,
+        `S${new TextEncoder().encode(strippedJson).length}`,
+      );
+      f.close();
+    }
+    const legacyBytes = module.FS.readFile(memPath) as Uint8Array;
+    module.FS.unlink(memPath);
+
+    const loaded = await readSlp(new Uint8Array(legacyBytes).buffer, { openVideos: false });
+    loaded.materialize();
+    const loadedUser = loaded.masks.find(
+      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
+    )!;
+    expect(loadedUser.fromPredicted).toBeNull();
+  });
+
+  it("loads fromPredicted as null when the persisted index is out of range", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [10, 20] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const maskData = makeMaskRaster(40, 40, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const { encodeRle } = await import("../src/model/mask.js");
+    const predMask = new PredictedSegmentationMask({
+      rleCounts: encodeRle(maskData, 40, 40),
+      height: 40,
+      width: 40,
+      score: 0.8,
+    });
+    const userMask = predMask.toUser(true);
+    const lfMask = new LabeledFrame({ video, frameIdx: 1, masks: [predMask, userMask] });
+    const labels = new Labels({
+      labeledFrames: [frame, lfMask],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    // Write, then overwrite every from_predicted cell with an out-of-range index
+    // (999) via write_slice to simulate a corrupt file. The bounds-checked
+    // re-link (fpIdx < masks.length) leaves fromPredicted null.
+    const bytes = await saveSlpToBytes(labels);
+    const module = await ready;
+    const memPath = `/tmp/slp_oor_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+    module.FS.writeFile(memPath, new Uint8Array(bytes));
+    {
+      const f = new H5File(memPath, "a");
+      const masksDs = f.get("masks") as {
+        shape: number[];
+        attrs: Record<string, { value?: unknown }>;
+        write_slice: (ranges: Array<[number, number]>, data: Float64Array) => void;
+      };
+      const fieldNames: string[] = JSON.parse(
+        String((masksDs.attrs["field_names"] as { value?: unknown }).value),
+      );
+      const fpCol = fieldNames.indexOf("from_predicted");
+      expect(fpCol).toBeGreaterThanOrEqual(0);
+      const rowCount = masksDs.shape[0];
+      // Overwrite the from_predicted column (a [rowCount, 1] hyperslab) with 999.
+      masksDs.write_slice(
+        [
+          [0, rowCount],
+          [fpCol, fpCol + 1],
+        ],
+        Float64Array.from({ length: rowCount }, () => 999),
+      );
+      f.close();
+    }
+    const corruptBytes = module.FS.readFile(memPath) as Uint8Array;
+    module.FS.unlink(memPath);
+
+    const loaded = await readSlp(new Uint8Array(corruptBytes).buffer, { openVideos: false });
+    loaded.materialize();
+    const loadedUser = loaded.masks.find(
+      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
+    )!;
     expect(loadedUser.fromPredicted).toBeNull();
   });
 

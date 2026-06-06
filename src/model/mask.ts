@@ -267,7 +267,10 @@ export class SegmentationMask {
       });
     }
 
-    return new UserSegmentationMask(baseOpts);
+    return new UserSegmentationMask({
+      ...baseOpts,
+      fromPredicted: this instanceof UserSegmentationMask ? this.fromPredicted : null,
+    });
   }
 
   get bbox(): { x: number; y: number; width: number; height: number } {
@@ -364,19 +367,24 @@ export class SegmentationMask {
 }
 
 export interface UserSegmentationMaskOptions extends SegmentationMaskOptions {
-  /** In-memory provenance link to the predicted mask this was adopted from. */
+  /**
+   * Provenance link to the predicted mask this was adopted from. Persisted to
+   * the SLP format as an index into the saved mask list (see
+   * {@link UserSegmentationMask.fromPredicted}).
+   */
   fromPredicted?: PredictedSegmentationMask | null;
 }
 
 /** User-annotated segmentation mask (no prediction score). */
 export class UserSegmentationMask extends SegmentationMask {
   /**
-   * In-memory provenance link to the `PredictedSegmentationMask` this user mask
-   * was adopted from, set by {@link PredictedSegmentationMask.toUser}.
+   * Provenance link to the `PredictedSegmentationMask` this user mask was
+   * adopted from, set by {@link PredictedSegmentationMask.toUser}.
    *
-   * This mirrors `Instance.fromPredicted`, but unlike instances it is an
-   * in-memory-only link: it is intentionally NOT persisted to the SLP format,
-   * so it becomes `null` after a save/load round-trip.
+   * Mirroring `Instance.fromPredicted`, this link is persisted to the SLP
+   * format as an index into the saved mask list. It survives a save/load
+   * round-trip as long as the source prediction is also saved (in the same or
+   * another frame). Files written before this column existed load it as `null`.
    */
   fromPredicted: PredictedSegmentationMask | null;
 
@@ -428,9 +436,10 @@ export class PredictedSegmentationMask extends SegmentationMask {
    * the RLE raster and the `scale`/`offset` tuples are copied so the user mask
    * owns independent buffers.
    *
-   * Mirrors `Instance.fromPredicted` semantics, but the resulting
-   * `fromPredicted` link is in-memory only: it is intentionally NOT persisted
-   * to the SLP format and will be `null` after a save/load round-trip.
+   * Mirrors `Instance.fromPredicted` semantics: the resulting `fromPredicted`
+   * link is persisted to the SLP format as an index into the saved mask list,
+   * and survives a save/load round-trip as long as the source prediction is
+   * also saved. Files written before this column existed load it as `null`.
    *
    * @param link - When `true` (default), set the returned mask's
    *   `fromPredicted` to this predicted mask. When `false`, leave it `null`.

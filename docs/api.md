@@ -303,6 +303,8 @@ Merge annotations from one `LabeledFrame` into another with strategy-aware handl
 
 The `auto` and `update_tracks` strategies compare centroid distances against `threshold` (default `5.0` px). Empty masks and ROIs whose centroid is `null` are skipped by the matcher.
 
+Under `"auto"`, mask merging honors the `fromPredicted` provenance link *before* spatial matching: if a user mask in either frame links to a predicted mask in the other (by object identity), that pair is matched regardless of distance, and only falls back to centroid proximity when no link exists. Other annotation modalities have no `fromPredicted` link, so they are unaffected.
+
 The strategy argument is typed as `MergeStrategy`, re-exported from the package root for type-safe call sites:
 
 ```ts
@@ -453,16 +455,28 @@ mirrors `Instance.fromPredicted`: it returns a new `UserSegmentationMask` that
 copies the RLE raster and carries over metadata (`name`, `category`, `source`,
 `track`, `trackingScore`, `instance`, `scale`, `offset`) while dropping
 prediction-only fields (`score`, `scoreMap`). It sets `fromPredicted` on the
-returned mask as an in-memory provenance link.
+returned mask as a provenance link.
 
 ```ts
 const userMask = pred.toUser();      // userMask.fromPredicted === pred
 const detached = pred.toUser(false); // detached.fromPredicted === null
 ```
 
-> **Note:** unlike `Instance.fromPredicted` (which IS persisted), the mask's
-> `fromPredicted` link is in-memory only and is intentionally NOT written to the
-> SLP format — it becomes `null` after a save/load round-trip.
+> **Note:** like `Instance.fromPredicted`, the mask's `fromPredicted` link IS
+> persisted to the SLP format. It is stored as an index into the saved mask list
+> and re-linked on read, so it survives a save/load round-trip as long as the
+> source prediction is also saved (in the same or another frame). If the source
+> prediction is not saved, the link loads as `null`. Recording at least one link
+> bumps the SLP `format_id` to 2.4; the column is always written and reads are
+> presence-gated, so files written before this column existed load the link as
+> `null`.
+
+`LabeledFrame.unusedPredictedMasks` returns the predicted masks in a frame that
+no user mask has adopted — the mask analogue of `LabeledFrame.unusedPredictions`.
+A prediction is adopted when a user mask in the same frame links to it via
+`fromPredicted` (checked first, by identity) or, lacking a link, spatially
+overlaps it (bbox-centroid within 5 px). The remaining unclaimed predictions are
+returned, e.g. for surfacing unreviewed detections in a proofreading UI.
 
 ### `BoundingBox`
 Axis-aligned or rotated bounding box for detection/tracking workflows. `BoundingBox` is abstract; use `UserBoundingBox` or `PredictedBoundingBox` for direct construction.
@@ -671,6 +685,7 @@ The SLP format version (`format_id`) is set automatically based on content:
 | 2.1 | Spatial metadata (scale/offset) |
 | 2.2 | Chunked label image storage |
 | 2.3 | Virtual video crops present |
+| 2.4 | Persisted mask `fromPredicted` provenance link |
 
 ##### Virtual Crops (Format 2.3+)
 

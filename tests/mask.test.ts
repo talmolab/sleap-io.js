@@ -461,6 +461,28 @@ describe("Scale/offset spatial metadata", () => {
     expect(pm.scoreMap).not.toBeNull();
     expect(pm.scoreMap!.length).toBe(4); // 2*2
   });
+
+  it("resampled preserves fromPredicted on a linked user mask", () => {
+    const rle = encodeRle(makeMask2D(4, 4, () => true), 4, 4);
+    const pred = new PredictedSegmentationMask({
+      rleCounts: rle, height: 4, width: 4, score: 0.9,
+    });
+    const user = pred.toUser(); // links fromPredicted to pred
+    const resampled = user.resampled(2, 2);
+    expect(resampled).toBeInstanceOf(UserSegmentationMask);
+    // The provenance link is carried onto the resampled copy (mirrors
+    // track/instance preservation).
+    expect((resampled as UserSegmentationMask).fromPredicted).toBe(pred);
+  });
+
+  it("resampled leaves fromPredicted null on an unlinked user mask", () => {
+    const rle = encodeRle(makeMask2D(4, 4, () => true), 4, 4);
+    const user = new UserSegmentationMask({ rleCounts: rle, height: 4, width: 4 });
+    expect(user.fromPredicted).toBeNull();
+    const resampled = user.resampled(2, 2);
+    expect(resampled).toBeInstanceOf(UserSegmentationMask);
+    expect((resampled as UserSegmentationMask).fromPredicted).toBeNull();
+  });
 });
 
 describe("resizeNearest", () => {

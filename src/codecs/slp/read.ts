@@ -1121,6 +1121,9 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
   const scoreCol = masksData.score ?? [];
   const instanceCol = masksData.instance ?? [];
   const maskTrackingScoreCol = masksData.tracking_score ?? [];
+  // v2.4+: from_predicted provenance index into the flat mask list. Absent in
+  // pre-2.4 files (presence-gated by name) -> [] -> per-row fallback -1.
+  const fromPredictedCol = masksData.from_predicted ?? [];
 
   // v2.1+: spatial metadata columns (default to 1.0/0.0 for old files)
   const scaleXCol = masksData.scale_x ?? [];
@@ -1132,6 +1135,10 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
   const scoreMaps = readScoreMaps(file, "mask_score_map_index", "mask_score_maps");
 
   const masks: [SegmentationMask, number, number][] = [];
+  // Deferred from_predicted re-link: collect (userMaskIdx, srcIdx) pairs and
+  // resolve after ALL masks are built, since a source prediction can appear
+  // later in the flat list (mirrors instance from_predicted).
+  const fromPredictedPairs: Array<[number, number]> = [];
   for (let i = 0; i < heights.length; i++) {
     const rleStart = Number(rleStarts[i]);
     const rleEnd = Number(rleEnds[i]);
@@ -1187,6 +1194,9 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
       });
     } else {
       mask = new UserSegmentationMask(baseOptions);
+      // Collect from_predicted link for deferred re-link (user masks only).
+      const fpIdx = fromPredictedCol.length > i ? Number(fromPredictedCol[i]) : -1;
+      if (fpIdx >= 0) fromPredictedPairs.push([i, fpIdx]);
     }
 
     // Resolve instance reference
@@ -1197,6 +1207,16 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
 
     masks.push([mask, videoIdx, frameIdxVal]);
   }
+
+  // Deferred from_predicted re-link pass. Bounds-checked so out-of-range or -1
+  // indices leave fromPredicted at its constructor default (null).
+  for (const [i, fpIdx] of fromPredictedPairs) {
+    if (fpIdx >= 0 && fpIdx < masks.length) {
+      (masks[i][0] as UserSegmentationMask).fromPredicted =
+        masks[fpIdx][0] as PredictedSegmentationMask;
+    }
+  }
+
   return masks;
 }
 
