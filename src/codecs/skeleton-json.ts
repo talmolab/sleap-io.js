@@ -179,3 +179,113 @@ export function readSkeletonJson(
 
   return new Skeleton({ nodes, edges, symmetries, name: data.graph?.name });
 }
+
+/** Encode a node as a fresh jsonpickle py/object (name, weight=1.0). */
+function encodeNode(name: string): JsonPickleNode {
+  return {
+    "py/object": "sleap.skeleton.Node",
+    "py/state": { "py/tuple": [name, 1.0] },
+  };
+}
+
+function encodeSkeleton(skeleton: Skeleton): JsonPickleSkeletonData {
+  const links: JsonPickleLink[] = [];
+
+  // Edge types: first occurrence of a type emits py/reduce, later occurrences a
+  // py/id back-reference. Counting py/reduce occurrences in order matches both
+  // the Python encoder and the duplicate-object branch of readSkeletonJson.
+  const edgeTypePyId = new Map<number, number>();
+  let nextEdgeTypePyId = 1;
+  function encodeEdgeType(typeVal: number): JsonPickleEdgeType {
+    const existing = edgeTypePyId.get(typeVal);
+    if (existing !== undefined) return { "py/id": existing };
+    edgeTypePyId.set(typeVal, nextEdgeTypePyId++);
+    return {
+      "py/reduce": [
+        { "py/type": "sleap.skeleton.EdgeType" },
+        { "py/tuple": [typeVal] },
+      ],
+    };
+  }
+
+  // py/ids for the trailing nodes array, assigned in first-appearance order
+  // across edges, then symmetries, then any remaining nodes (Python order).
+  const nodePyId = new Map<string, number>();
+  let nextNodePyId = 1;
+  const ensureNodePyId = (name: string) => {
+    if (!nodePyId.has(name)) nodePyId.set(name, nextNodePyId++);
+  };
+  // Nodes that appear in at least one link — readSkeletonJson recovers these
+  // from the links; isolated nodes are emitted as py/object below instead.
+  const linkedNodes = new Set<string>();
+
+  // Edges first (type 1), so the type-1 py/reduce/py/id back-refs resolve before
+  // any symmetry (type 2) appears — mirrors Python's edges-then-symmetries order.
+  let edgeInsertIdx = 0;
+  for (const edge of skeleton.edges) {
+    const src = edge.source.name;
+    const dst = edge.destination.name;
+    links.push({
+      edge_insert_idx: edgeInsertIdx++,
+      key: 0,
+      source: encodeNode(src),
+      target: encodeNode(dst),
+      type: encodeEdgeType(1),
+    });
+    ensureNodePyId(src);
+    ensureNodePyId(dst);
+    linkedNodes.add(src).add(dst);
+  }
+
+  for (const [left, right] of skeleton.symmetryNames) {
+    links.push({
+      key: 0,
+      source: encodeNode(left),
+      target: encodeNode(right),
+      type: encodeEdgeType(2),
+    });
+    ensureNodePyId(left);
+    ensureNodePyId(right);
+    linkedNodes.add(left).add(right);
+  }
+
+  for (const node of skeleton.nodes) ensureNodePyId(node.name);
+
+  // nodes array, in skeleton-node order. Connected nodes use a py/id ref (the
+  // Python format); nodes in no link are emitted as a full py/object so a
+  // duplicate-object read still recovers them (Python emits py/id here, which
+  // readSkeletonJson cannot resolve for an isolated node).
+  const nodes = skeleton.nodes.map((node) =>
+    linkedNodes.has(node.name)
+      ? { id: { "py/id": nodePyId.get(node.name)! } }
+      : { id: encodeNode(node.name) }
+  );
+
+  return {
+    directed: true,
+    graph: {
+      name: skeleton.name ?? "",
+      num_edges_inserted: skeleton.edges.length,
+    },
+    links,
+    multigraph: true,
+    nodes,
+  };
+}
+
+/**
+ * Serialize skeleton(s) to the jsonpickle graph format consumed by
+ * {@link readSkeletonJson} and by PyQt SLEAP / Python `sleap_io`'s
+ * `SkeletonDecoder`. Port of Python `sleap_io.io.skeleton.SkeletonEncoder`.
+ *
+ * Emits the "duplicate-object" variant: every link source/target is a fresh
+ * py/object Node; the first occurrence of each edge type uses py/reduce, later
+ * occurrences a py/id back-reference. A single Skeleton serializes to a bare
+ * object; a list to a JSON array (matching the two standalone-file shapes).
+ */
+export function writeSkeletonJson(skeletons: Skeleton | Skeleton[]): string {
+  const data = Array.isArray(skeletons)
+    ? skeletons.map(encodeSkeleton)
+    : encodeSkeleton(skeletons);
+  return JSON.stringify(data);
+}
