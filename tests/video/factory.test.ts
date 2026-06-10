@@ -70,4 +70,50 @@ describe("createVideoBackend", () => {
       createVideoBackend(file, { backend: "mediabunny" })
     ).rejects.toThrow(/MediaBunny/);
   });
+
+  it("selects MediaBunny for .ts (MPEG-TS) files", async () => {
+    const { createVideoBackend } = await import("../../src/video/factory.js");
+    // .ts replaced .mpeg in the MediaBunny list: it is the real MPEG-TS case,
+    // which MediaBunny can demux (typical H.264/H.265 payload).
+    await expect(createVideoBackend("stream.ts")).rejects.toThrow(/MediaBunny/);
+  });
+
+  // .avi and MPEG program streams (.mpeg/.mpg) have no web decode path: reject
+  // them with a clean, catchable error instead of silently routing to MediaBunny
+  // (which has no AVI/MPEG-PS demuxer and would fail opaquely mid-decode).
+  for (const ext of ["avi", "mpeg", "mpg"]) {
+    it(`rejects .${ext} with a catchable UnsupportedVideoFormatError`, async () => {
+      const { createVideoBackend, UnsupportedVideoFormatError } = await import(
+        "../../src/video/factory.js"
+      );
+      let caught: unknown;
+      try {
+        await createVideoBackend(`clip.${ext}`);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(UnsupportedVideoFormatError);
+      expect((caught as InstanceType<typeof UnsupportedVideoFormatError>).extension).toBe(ext);
+      // Traceable, not an opaque MediaBunny mid-decode failure; points at MP4.
+      expect((caught as Error).message).not.toMatch(/MediaBunny/);
+      expect((caught as Error).message).toMatch(/MP4/);
+    });
+  }
+
+  it("rejects a Blob/File with an .avi filename", async () => {
+    const { createVideoBackend, UnsupportedVideoFormatError } = await import(
+      "../../src/video/factory.js"
+    );
+    const file = new File([new Blob(["fake"])], "clip.avi");
+    await expect(createVideoBackend(file)).rejects.toThrow(UnsupportedVideoFormatError);
+  });
+
+  it("honors an explicit backend override for unsupported extensions (escape hatch)", async () => {
+    const { createVideoBackend } = await import("../../src/video/factory.js");
+    // Forcing a backend bypasses the unsupported-format guard, so this attempts
+    // MediaBunny (mock throws /MediaBunny/) rather than UnsupportedVideoFormatError.
+    await expect(
+      createVideoBackend("clip.avi", { backend: "mediabunny" })
+    ).rejects.toThrow(/MediaBunny/);
+  });
 });

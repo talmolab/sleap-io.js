@@ -30,7 +30,11 @@ export {
   BlobByteSource,
   type ByteSource,
 } from "./video/seq-video.js";
-export { createVideoBackend, type VideoBackendType } from "./video/factory.js";
+export {
+  createVideoBackend,
+  UnsupportedVideoFormatError,
+  type VideoBackendType,
+} from "./video/factory.js";
 // CropRect is re-exported transitively via ./transform/index.js (single source).
 export {
   CropVideoBackend,
