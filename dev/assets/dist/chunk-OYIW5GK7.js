@@ -14478,6 +14478,78 @@ function readSkeletonJson(json) {
   }
   return new Skeleton({ nodes, edges, symmetries, name: data.graph?.name });
 }
+function encodeNode(name) {
+  return {
+    "py/object": "sleap.skeleton.Node",
+    "py/state": { "py/tuple": [name, 1] }
+  };
+}
+function encodeSkeleton(skeleton) {
+  const links = [];
+  const edgeTypePyId = /* @__PURE__ */ new Map();
+  let nextEdgeTypePyId = 1;
+  function encodeEdgeType(typeVal) {
+    const existing = edgeTypePyId.get(typeVal);
+    if (existing !== void 0) return { "py/id": existing };
+    edgeTypePyId.set(typeVal, nextEdgeTypePyId++);
+    return {
+      "py/reduce": [
+        { "py/type": "sleap.skeleton.EdgeType" },
+        { "py/tuple": [typeVal] }
+      ]
+    };
+  }
+  const nodePyId = /* @__PURE__ */ new Map();
+  let nextNodePyId = 1;
+  const ensureNodePyId = (name) => {
+    if (!nodePyId.has(name)) nodePyId.set(name, nextNodePyId++);
+  };
+  const linkedNodes = /* @__PURE__ */ new Set();
+  let edgeInsertIdx = 0;
+  for (const edge of skeleton.edges) {
+    const src = edge.source.name;
+    const dst = edge.destination.name;
+    links.push({
+      edge_insert_idx: edgeInsertIdx++,
+      key: 0,
+      source: encodeNode(src),
+      target: encodeNode(dst),
+      type: encodeEdgeType(1)
+    });
+    ensureNodePyId(src);
+    ensureNodePyId(dst);
+    linkedNodes.add(src).add(dst);
+  }
+  for (const [left, right] of skeleton.symmetryNames) {
+    links.push({
+      key: 0,
+      source: encodeNode(left),
+      target: encodeNode(right),
+      type: encodeEdgeType(2)
+    });
+    ensureNodePyId(left);
+    ensureNodePyId(right);
+    linkedNodes.add(left).add(right);
+  }
+  for (const node of skeleton.nodes) ensureNodePyId(node.name);
+  const nodes = skeleton.nodes.map(
+    (node) => linkedNodes.has(node.name) ? { id: { "py/id": nodePyId.get(node.name) } } : { id: encodeNode(node.name) }
+  );
+  return {
+    directed: true,
+    graph: {
+      name: skeleton.name ?? "",
+      num_edges_inserted: skeleton.edges.length
+    },
+    links,
+    multigraph: true,
+    nodes
+  };
+}
+function writeSkeletonJson(skeletons) {
+  const data = Array.isArray(skeletons) ? skeletons.map(encodeSkeleton) : encodeSkeleton(skeletons);
+  return JSON.stringify(data);
+}
 
 // src/codecs/training-config.ts
 function readTrainingConfigSkeletons(json) {
@@ -15174,6 +15246,7 @@ export {
   decodeYamlSkeleton,
   encodeYamlSkeleton,
   readSkeletonJson,
+  writeSkeletonJson,
   readTrainingConfigSkeletons,
   readTrainingConfigSkeleton,
   isTrainingConfig,

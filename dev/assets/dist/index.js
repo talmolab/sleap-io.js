@@ -145,8 +145,9 @@ import {
   toDict,
   toNumpy,
   uncropPoints,
-  writeGeoJSON
-} from "./chunk-2SQ4PZXO.js";
+  writeGeoJSON,
+  writeSkeletonJson
+} from "./chunk-OYIW5GK7.js";
 import {
   Edge,
   Instance,
@@ -2766,5 +2767,6 @@ export {
   writeGeoJSON,
   writeLabelFile,
   writeLabels,
-  writeRoiLabelFile
+  writeRoiLabelFile,
+  writeSkeletonJson
 };
