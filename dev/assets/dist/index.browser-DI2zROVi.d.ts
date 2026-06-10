@@ -2026,6 +2026,19 @@ declare class Labels {
         videoMap?: Map<Video, Video>;
     }): void;
     /**
+     * Remove one or more videos and every reference to them — the "drop" analog
+     * of {@link replaceVideos}. Labeled frames and suggestions belonging to a
+     * removed video are dropped (a frame's ROIs go with it), as are static ROIs
+     * that reference it. Videos not present are ignored (a no-op, matching
+     * {@link addVideo}'s lenient convention).
+     *
+     * Tracks and skeletons are intentionally left untouched — cleaning those up
+     * is a separate concern (see {@link clean}).
+     */
+    removeVideos(videos: Video[]): void;
+    /** Remove a single video and all references to it (see {@link removeVideos}). */
+    removeVideo(video: Video): void;
+    /**
      * Create a deep copy of this Labels object.
      *
      * @param options.openVideos - Controls video backend behavior in the copy:

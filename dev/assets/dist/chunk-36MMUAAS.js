@@ -5969,6 +5969,34 @@ To use, first materialize:
     this._invalidateIndices();
   }
   /**
+   * Remove one or more videos and every reference to them — the "drop" analog
+   * of {@link replaceVideos}. Labeled frames and suggestions belonging to a
+   * removed video are dropped (a frame's ROIs go with it), as are static ROIs
+   * that reference it. Videos not present are ignored (a no-op, matching
+   * {@link addVideo}'s lenient convention).
+   *
+   * Tracks and skeletons are intentionally left untouched — cleaning those up
+   * is a separate concern (see {@link clean}).
+   */
+  removeVideos(videos) {
+    if (videos.length === 0) return;
+    if (this._lazyFrameList) this.materialize();
+    const toRemove = new Set(videos);
+    this.labeledFrames = this.labeledFrames.filter(
+      (lf) => !toRemove.has(lf.video)
+    );
+    this.suggestions = this.suggestions.filter((s) => !toRemove.has(s.video));
+    this._staticRois = this._staticRois.filter(
+      (roi) => !roi.video || !toRemove.has(roi.video)
+    );
+    this.videos = this.videos.filter((v) => !toRemove.has(v));
+    this._invalidateIndices();
+  }
+  /** Remove a single video and all references to it (see {@link removeVideos}). */
+  removeVideo(video) {
+    this.removeVideos([video]);
+  }
+  /**
    * Create a deep copy of this Labels object.
    *
    * @param options.openVideos - Controls video backend behavior in the copy:
