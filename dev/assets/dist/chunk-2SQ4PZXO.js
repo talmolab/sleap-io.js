@@ -9810,7 +9810,20 @@ function decodeRawFrame2(bytes, shape, channelOrder) {
 }
 
 // src/video/factory.ts
-var MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "mpeg", "avi"];
+var MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "ts"];
+var UNSUPPORTED_EXTENSIONS = ["avi", "mpeg", "mpg"];
+var UnsupportedVideoFormatError = class extends Error {
+  /** The offending file extension (without the leading dot), e.g. `"avi"`. */
+  extension;
+  constructor(extension) {
+    super(
+      `Unsupported video format ".${extension}". AVI and MPEG program streams cannot be decoded in the browser or desktop app. Transcode to MP4 (H.264) first, e.g. \`ffmpeg -i input.${extension} -c:v libx264 output.mp4\`.`
+    );
+    this.name = "UnsupportedVideoFormatError";
+    this.extension = extension;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
 async function createVideoBackend(source, options) {
   const isBlob = typeof Blob !== "undefined" && source instanceof Blob;
   const filename = isBlob ? source.name ?? "" : source;
@@ -9844,6 +9857,9 @@ async function createVideoBackend(source, options) {
   if (options?.backend === "media") {
     if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source));
     return new MediaVideoBackend(filename);
+  }
+  if (UNSUPPORTED_EXTENSIONS.includes(ext)) {
+    throw new UnsupportedVideoFormatError(ext);
   }
   const supportsWebCodecs = typeof window !== "undefined" && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
   if (supportsWebCodecs && ext === "mp4") {
@@ -15136,6 +15152,7 @@ export {
   _registerNodeFileOps,
   nodeFileExists,
   openH5File,
+  UnsupportedVideoFormatError,
   createVideoBackend,
   readSlpStreaming,
   _registerFileWriter,

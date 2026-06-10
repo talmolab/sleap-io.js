@@ -64,6 +64,7 @@ import {
   SuggestionFrame,
   TrackMatchMethod,
   TrackMatcher,
+  UnsupportedVideoFormatError,
   UserBoundingBox,
   UserCentroid,
   UserLabelImage,
@@ -138,7 +139,7 @@ import {
   toNumpy,
   uncropPoints,
   writeGeoJSON
-} from "./chunk-LQOLNMZI.js";
+} from "./chunk-2SQ4PZXO.js";
 import {
   Edge,
   Instance,
@@ -232,6 +233,7 @@ export {
   Track,
   TrackMatchMethod,
   TrackMatcher,
+  UnsupportedVideoFormatError,
   UserBoundingBox,
   UserCentroid,
   UserLabelImage,
