@@ -4,6 +4,7 @@ import { MediaVideoBackend } from "./media-video.js";
 import { Mp4BoxVideoBackend } from "./mp4box-video.js";
 import { MediaBunnyVideoBackend } from "./mediabunny-video.js";
 import { SeqVideoBackend } from "./seq-video.js";
+import { ImageVideoBackend } from "./image-video.js";
 import { openH5File } from "../codecs/slp/h5.js";
 
 /** Supported video backend identifiers for user selection. */
@@ -26,6 +27,26 @@ const MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "ts"];
  * desktop) — tracked separately. Transcode to MP4 (H.264) as a workaround.
  */
 const UNSUPPORTED_EXTENSIONS = ["avi", "mpeg", "mpg"];
+
+/**
+ * Image-sequence frame extensions (parity with Python `ImageVideo.EXTS`): one
+ * image per frame. PNG/JPEG/BMP decode in both a browser (`createImageBitmap`)
+ * and Node (`skia-canvas`); TIFF has no web decoder yet, so a `.tif`/`.tiff`
+ * source routes here but fails gracefully at decode (the SLP load guard records
+ * it) until a wasm TIFF decoder is added.
+ */
+export const IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "tif", "tiff", "bmp"];
+
+/**
+ * True if `source` denotes an image-sequence (ImageVideo): a LIST of image
+ * paths, or a single image-extension filename. Used by the SLP loader to
+ * classify a backend-creation failure.
+ */
+export function isImageSource(source: string | string[]): boolean {
+  if (Array.isArray(source)) return true;
+  const ext = source.split("?")[0]?.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_EXTENSIONS.includes(ext);
+}
 
 /**
  * Thrown when a video file's container/codec cannot be decoded by any available
@@ -52,7 +73,7 @@ export class UnsupportedVideoFormatError extends Error {
 }
 
 export async function createVideoBackend(
-  source: string | File | Blob,
+  source: string | string[] | File | Blob,
   options?: {
     dataset?: string;
     embedded?: boolean;
@@ -65,6 +86,15 @@ export async function createVideoBackend(
     backend?: VideoBackendType;
   }
 ): Promise<VideoBackend> {
+  // Image-sequence video (Python `ImageVideo`): `source` is a LIST of image
+  // paths, one image per frame. Route to ImageVideoBackend before the single-
+  // filename logic below, which assumes a string and would crash on `.split`.
+  if (Array.isArray(source)) {
+    return ImageVideoBackend.create({
+      filename: source,
+      shape: options?.shape,
+    });
+  }
   const isBlob = typeof Blob !== "undefined" && source instanceof Blob;
   const filename = isBlob
     ? (source as File).name ?? ""
@@ -93,6 +123,14 @@ export async function createVideoBackend(
   // other backend can read the format).
   if (ext === "seq") {
     return SeqVideoBackend.create(source);
+  }
+
+  // Single image file (Python `ImageVideo` single-frame / from_filename): route
+  // to ImageVideoBackend with a one-element list. Multi-image lists are handled
+  // at the top of this function via Array.isArray. This must come before the
+  // MediaVideo fallback, which would otherwise try (and fail) to play a .jpg.
+  if (IMAGE_EXTENSIONS.includes(ext)) {
+    return ImageVideoBackend.create({ filename: [filename], shape: options?.shape });
   }
 
   // User-specified backend override

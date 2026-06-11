@@ -9,6 +9,9 @@ import "./model/node-fs-resolver.js";
 import "./video/seq-node.js";
 // Register the Node `fs`-backed TIFF reader for loadLabelImages() path inputs.
 import "./io/label-images-node.js";
+// Register the Node `fs`-backed default image-bytes reader for ImageVideoBackend
+// (image-sequence videos: a list of image paths, one per frame).
+import "./video/node-image-reader.js";
 
 export * from "./model/labels.js";
 export * from "./model/labeled-frame.js";
@@ -30,6 +33,12 @@ export * from "./video/backend.js";
 export * from "./video/mp4box-video.js";
 export * from "./video/mediabunny-video.js";
 export * from "./video/streaming-hdf5-video.js";
+export * from "./video/image-video.js";
+export {
+  setImageBytesReader,
+  getImageBytesReader,
+  type ImageBytesReader,
+} from "./video/image-source.js";
 export {
   SeqVideoBackend,
   SeqHeader,

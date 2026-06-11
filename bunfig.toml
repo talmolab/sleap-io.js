@@ -8,7 +8,7 @@
 # source for reading .seq video files. The suite runs with `bun test --parallel`
 # (each file in its own worker process, implying `--isolate`); these preloads run
 # per worker, so the registrations are present in every test file.
-preload = ["./src/codecs/slp/h5-node.ts", "./src/model/node-fs-resolver.ts", "./src/video/seq-node.ts", "./src/io/label-images-node.ts"]
+preload = ["./src/codecs/slp/h5-node.ts", "./src/model/node-fs-resolver.ts", "./src/video/seq-node.ts", "./src/io/label-images-node.ts", "./src/video/node-image-reader.ts"]
 
 # Coverage (emitted only when `--coverage` is passed, e.g. `bun test --coverage`).
 # Write an lcov report into `coverage/` so CI can upload it as an artifact, and
