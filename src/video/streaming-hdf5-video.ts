@@ -111,7 +111,11 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
             }
             fc = maxIdx + 1;
           }
-          this.shape = [fc, decoded.height, decoded.width, 4];
+          // Prefer the real channel count (from the dataset attrs, carried on
+          // the seed shape) over the decoded bitmap's channels, which is always
+          // 4 (RGBA) regardless of the stored grayscale/RGB image.
+          const channels = this.shape?.[3] ?? 4;
+          this.shape = [fc, decoded.height, decoded.width, channels];
         }
       }
     } catch { /* probe failed, shape stays undefined */ }

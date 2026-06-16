@@ -20,6 +20,7 @@ import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from
 import { Identity } from "../../model/identity.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
+import { resolveSourceFrameCount } from "./frame-count.js";
 import type { CropRect } from "../../transform/points.js";
 import type { Fill } from "../../transform/frame.js";
 
@@ -320,7 +321,27 @@ async function readVideosStreaming(
         }
       }
 
-      const frameCount = frameCountFromAttrs ?? meta.frameCount;
+      // For embedded videos we read frame_numbers up front so the source frame
+      // count (the seekbar extent) can be resolved synchronously — see below.
+      // frame_sizes lets the 1D-concatenated layout (JS writer) byte-range
+      // slice exactly, mirroring the sync reader (read.ts) — see issue #135.
+      let frameNumbers: number[] = [];
+      let frameSizes: number[] | undefined;
+      if (openVideos && meta.embedded && datasetPath) {
+        frameNumbers = await readFrameNumbersStreaming(file, datasetPath);
+        frameSizes = await readFrameSizesStreaming(file, datasetPath);
+      }
+
+      // Source frame count: prefer the `frames` attr, then the videos_json
+      // count, then max(frame_numbers)+1. The last fallback keeps multi-video
+      // pkg.slp files (written without a `frames` attr, e.g. older PyQt SLEAP)
+      // resolving a shape at read time instead of relying on an async per-video
+      // image-decode probe that races the UI (reporting 0 / "?" / wrong counts).
+      const frameCount = resolveSourceFrameCount({
+        framesAttr: frameCountFromAttrs,
+        jsonFrameCount: meta.frameCount,
+        frameNumbers,
+      });
       const shape: [number, number, number, number] | undefined =
         (meta.height && meta.width && meta.channels)
           ? [frameCount ?? 0, meta.height, meta.width, meta.channels]
@@ -335,12 +356,6 @@ async function readVideosStreaming(
       // Create streaming backend for embedded videos when openVideos is true
       let backend = null;
       if (openVideos && meta.embedded && datasetPath) {
-        // Read frame_numbers (and frame_sizes when present) for this video.
-        // frame_sizes lets the 1D-concatenated layout (JS writer) byte-range
-        // slice exactly, mirroring the sync reader (read.ts) — see issue #135.
-        const frameNumbers = await readFrameNumbersStreaming(file, datasetPath);
-        const frameSizes = await readFrameSizesStreaming(file, datasetPath);
-
         backend = new StreamingHdf5VideoBackend({
           filename: meta.filename,
           h5file: file,
@@ -353,6 +368,10 @@ async function readVideosStreaming(
           fps: meta.fps,
         });
 
+        // Only probe (decode one image) when height/width are still unknown —
+        // i.e. neither the dataset attrs nor videos_json provided them. With a
+        // resolved shape this is skipped, so the common pkg.slp path no longer
+        // pays a per-video network decode.
         if (!shape || shape[0] === 0) {
           await backend.probeShape(frameCount ?? undefined);
         }
