@@ -3750,6 +3750,52 @@ function isPairs(points) {
   return Array.isArray(points) && points.length > 0 && Array.isArray(points[0]);
 }
 
+// src/video/image-decode.ts
+async function rasterizeBitmap(bitmap) {
+  if (typeof OffscreenCanvas !== "undefined") {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Failed to get 2D context to rasterize a frame");
+    }
+    ctx.drawImage(bitmap, 0, 0);
+    return ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  }
+  try {
+    const sc = await import("skia-canvas");
+    const Canvas = sc.Canvas;
+    const canvas = new Canvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(bitmap, 0, 0);
+    return ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  } catch (err) {
+    throw new Error(
+      `Rasterizing a frame returned as an ImageBitmap requires an image rasterizer (a browser with OffscreenCanvas, or the optional \`skia-canvas\` package on Node). Original error: ${err.message}`
+    );
+  }
+}
+async function decodeEncoded(bytes) {
+  if (typeof createImageBitmap !== "undefined" && typeof OffscreenCanvas !== "undefined") {
+    const safe = new Uint8Array(bytes);
+    const bitmap = await createImageBitmap(new Blob([safe.buffer]));
+    return rasterizeBitmap(bitmap);
+  }
+  try {
+    const sc = await import("skia-canvas");
+    const src = typeof Buffer !== "undefined" ? Buffer.from(bytes) : bytes;
+    const img = await sc.loadImage(src);
+    const Canvas = sc.Canvas;
+    const canvas = new Canvas(img.width, img.height);
+    const ctx = canvas.getContext("2d");
+    ctx.drawImage(img, 0, 0);
+    return ctx.getImageData(0, 0, img.width, img.height);
+  } catch (err) {
+    throw new Error(
+      `Decoding undecoded JPEG/PNG image bytes requires an image decoder (a browser, or the optional \`skia-canvas\` package on Node). Original error: ${err.message}`
+    );
+  }
+}
+
 // src/video/crop-backend.ts
 function normFill(fill) {
   if (Array.isArray(fill)) {
@@ -3773,50 +3819,6 @@ function isEncodedBytes(bytes) {
   const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
   const png = bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
   return jpeg || png;
-}
-async function rasterizeBitmap(bitmap) {
-  if (typeof OffscreenCanvas !== "undefined") {
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      throw new Error("Failed to get 2D context to rasterize a cropped frame");
-    }
-    ctx.drawImage(bitmap, 0, 0);
-    return ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  }
-  try {
-    const sc = await import("skia-canvas");
-    const Canvas = sc.Canvas;
-    const canvas = new Canvas(bitmap.width, bitmap.height);
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(bitmap, 0, 0);
-    return ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  } catch (err) {
-    throw new Error(
-      `Cropping a frame returned as an ImageBitmap requires an image rasterizer (a browser with OffscreenCanvas, or the optional \`skia-canvas\` package on Node). Original error: ${err.message}`
-    );
-  }
-}
-async function decodeEncoded(bytes) {
-  if (typeof createImageBitmap !== "undefined" && typeof OffscreenCanvas !== "undefined") {
-    const safe = new Uint8Array(bytes);
-    const bitmap = await createImageBitmap(new Blob([safe.buffer]));
-    return rasterizeBitmap(bitmap);
-  }
-  try {
-    const sc = await import("skia-canvas");
-    const src = typeof Buffer !== "undefined" ? Buffer.from(bytes) : bytes;
-    const img = await sc.loadImage(src);
-    const Canvas = sc.Canvas;
-    const canvas = new Canvas(img.width, img.height);
-    const ctx = canvas.getContext("2d");
-    ctx.drawImage(img, 0, 0);
-    return ctx.getImageData(0, 0, img.width, img.height);
-  } catch (err) {
-    throw new Error(
-      `Cropping a frame returned as undecoded JPEG/PNG bytes requires an image decoder (a browser, or the optional \`skia-canvas\` package on Node). Original error: ${err.message}`
-    );
-  }
 }
 var CropVideoBackend = class _CropVideoBackend {
   /** Derived from `inner.filename`. */
@@ -4053,6 +4055,8 @@ function resolveCropRect(crop, opts = {}) {
 var Video = class _Video {
   filename;
   backend;
+  /** Set when the backend failed to open during load (then `backend` is null). */
+  backendError;
   backendMetadata;
   sourceVideo;
   openBackend;
@@ -4062,6 +4066,7 @@ var Video = class _Video {
   constructor(options) {
     this.filename = options.filename;
     this.backend = options.backend ?? null;
+    this.backendError = options.backendError ?? null;
     this.backendMetadata = options.backendMetadata ?? {};
     this.sourceVideo = options.sourceVideo ?? null;
     this.openBackend = options.openBackend ?? true;
@@ -8509,6 +8514,94 @@ function decodeRawFrame(bytes, shape, channelOrder) {
   return new ImageData(rgba, width, height);
 }
 
+// src/video/image-source.ts
+var _reader = null;
+var _default = null;
+function setImageBytesReader(reader) {
+  _reader = reader;
+}
+function setDefaultImageBytesReader(reader) {
+  _default = reader;
+}
+function getImageBytesReader() {
+  return _reader ?? _default;
+}
+
+// src/video/image-video.ts
+var DEFAULT_CACHE_SIZE2 = 32;
+var ImageVideoBackend = class _ImageVideoBackend {
+  filename;
+  shape;
+  reader;
+  cache = /* @__PURE__ */ new Map();
+  maxCache = DEFAULT_CACHE_SIZE2;
+  constructor(filename, reader, shape) {
+    this.filename = filename;
+    this.reader = reader;
+    this.shape = shape;
+  }
+  /**
+   * Build a backend, inferring `shape` by decoding `filename[0]` once (cached)
+   * when no `shape` is supplied — parity with Python `VideoBackend.img_shape`
+   * (`read_test_frame` -> `_read_frame(0)`; index 0, not "first available").
+   */
+  static async create(opts) {
+    const reader = opts.reader ?? getImageBytesReader();
+    if (!reader) {
+      throw new Error(
+        "ImageVideoBackend requires an image-bytes reader, but none is injected. On desktop/Node a default is registered; in the browser supply one via setImageBytesReader()."
+      );
+    }
+    const frames = opts.filename.length;
+    let height = 0;
+    let width = 0;
+    let channels = 0;
+    const seed = /* @__PURE__ */ new Map();
+    if (opts.shape) {
+      [, height, width, channels] = opts.shape;
+    } else if (frames > 0) {
+      const first = await decodeEncoded(await reader(opts.filename[0]));
+      seed.set(0, first);
+      height = first.height;
+      width = first.width;
+      channels = isGrayscale(first) ? 1 : 3;
+    }
+    const be = new _ImageVideoBackend(opts.filename, reader, [
+      frames,
+      height,
+      width,
+      channels
+    ]);
+    for (const [k, v] of seed) be.cache.set(k, v);
+    return be;
+  }
+  async getFrame(frameIndex) {
+    if (frameIndex < 0 || frameIndex >= this.filename.length) return null;
+    const cached = this.cache.get(frameIndex);
+    if (cached) return cached;
+    const frame = await decodeEncoded(await this.reader(this.filename[frameIndex]));
+    this.put(frameIndex, frame);
+    return frame;
+  }
+  put(index, frame) {
+    if (this.cache.size >= this.maxCache) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest !== void 0) this.cache.delete(oldest);
+    }
+    this.cache.set(index, frame);
+  }
+  close() {
+    this.cache.clear();
+  }
+};
+function isGrayscale(img) {
+  const d = img.data;
+  for (let i = 0; i < d.length; i += 4) {
+    if (d[i] !== d[i + 2]) return false;
+  }
+  return true;
+}
+
 // src/video/seq-video.ts
 var IMAGE_FORMAT_CODES = {
   100: "monoraw",
@@ -9841,6 +9934,12 @@ function decodeRawFrame2(bytes, shape, channelOrder) {
 // src/video/factory.ts
 var MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "ts"];
 var UNSUPPORTED_EXTENSIONS = ["avi", "mpeg", "mpg"];
+var IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "tif", "tiff", "bmp"];
+function isImageSource(source) {
+  if (Array.isArray(source)) return true;
+  const ext = source.split("?")[0]?.split(".").pop()?.toLowerCase() ?? "";
+  return IMAGE_EXTENSIONS.includes(ext);
+}
 var UnsupportedVideoFormatError = class extends Error {
   /** The offending file extension (without the leading dot), e.g. `"avi"`. */
   extension;
@@ -9854,6 +9953,12 @@ var UnsupportedVideoFormatError = class extends Error {
   }
 };
 async function createVideoBackend(source, options) {
+  if (Array.isArray(source)) {
+    return ImageVideoBackend.create({
+      filename: source,
+      shape: options?.shape
+    });
+  }
   const isBlob = typeof Blob !== "undefined" && source instanceof Blob;
   const filename = isBlob ? source.name ?? "" : source;
   const normalized = filename.split("?")[0]?.toLowerCase() ?? "";
@@ -9875,6 +9980,9 @@ async function createVideoBackend(source, options) {
   }
   if (ext === "seq") {
     return SeqVideoBackend.create(source);
+  }
+  if (IMAGE_EXTENSIONS.includes(ext)) {
+    return ImageVideoBackend.create({ filename: [filename], shape: options?.shape });
   }
   if (options?.backend === "mediabunny") {
     if (isBlob) return MediaBunnyVideoBackend.fromBlob(source, filename);
@@ -13282,17 +13390,26 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
     const shape = height && width && channels ? [frameCount ?? 0, height, width, channels] : void 0;
     const channelOrder = backendMeta.channel_order ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
     let backend = null;
+    let backendError = null;
     if (openVideos) {
-      backend = await createVideoBackend(filename, {
-        dataset: datasetPath ?? void 0,
-        embedded,
-        frameNumbers,
-        frameSizes: readFrameSizes(file, datasetPath),
-        format,
-        channelOrder,
-        shape,
-        fps: backendMeta.fps
-      });
+      try {
+        backend = await createVideoBackend(filename, {
+          dataset: datasetPath ?? void 0,
+          embedded,
+          frameNumbers,
+          frameSizes: readFrameSizes(file, datasetPath),
+          format,
+          channelOrder,
+          shape,
+          fps: backendMeta.fps
+        });
+      } catch (err) {
+        backend = null;
+        backendError = {
+          kind: err instanceof UnsupportedVideoFormatError ? "unsupported-format" : isImageSource(filename) ? "image-sequence" : "decode",
+          message: err instanceof Error ? err.message : String(err)
+        };
+      }
     }
     const sourceVideo = parsed.source_video ? new Video({ filename: parsed.source_video.filename ?? "" }) : null;
     const cropEntry = videoCrops?.get(videoIndex);
@@ -13319,6 +13436,7 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
       new Video({
         filename,
         backend,
+        backendError,
         backendMetadata,
         sourceVideo,
         openBackend: openVideos,
@@ -15281,6 +15399,10 @@ export {
   Identity,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
+  setImageBytesReader,
+  setDefaultImageBytesReader,
+  getImageBytesReader,
+  ImageVideoBackend,
   BlobByteSource,
   setSeqFileByteSourceFactory,
   SeqHeader,

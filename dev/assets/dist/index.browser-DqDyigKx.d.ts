@@ -178,9 +178,21 @@ interface CropOptions {
  *   not given together, or the resolved rect is inverted (`x2 < x1`/`y2 < y1`).
  */
 declare function resolveCropRect(crop?: CropRect | null, opts?: CropOptions): CropRect;
+/**
+ * Why a video's backend could not be opened during load (the backend is then
+ * left `null`). Drives the consumer's message/action — e.g. "locate image
+ * folder" for an image-sequence, "unsupported format" for `.avi`/`.mpeg`.
+ */
+type VideoBackendErrorKind = "image-sequence" | "unsupported-format" | "decode";
+interface VideoBackendError {
+    kind: VideoBackendErrorKind;
+    message: string;
+}
 declare class Video {
     filename: string | string[];
     backend: VideoBackend | null;
+    /** Set when the backend failed to open during load (then `backend` is null). */
+    backendError: VideoBackendError | null;
     backendMetadata: Record<string, unknown>;
     sourceVideo: Video | null;
     openBackend: boolean;
@@ -190,6 +202,7 @@ declare class Video {
     constructor(options: {
         filename: string | string[];
         backend?: VideoBackend | null;
+        backendError?: VideoBackendError | null;
         backendMetadata?: Record<string, unknown>;
         sourceVideo?: Video | null;
         openBackend?: boolean;
@@ -2587,6 +2600,42 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
     close(): void;
 }
 
+type ImageBytesReader = (path: string) => Promise<Uint8Array>;
+/** Override the image-bytes reader. Pass `null` to fall back to the default. */
+declare function setImageBytesReader(reader: ImageBytesReader | null): void;
+/** The effective reader: explicit override if set, else the registered default. */
+declare function getImageBytesReader(): ImageBytesReader | null;
+
+interface ImageVideoOptions {
+    /** Image paths, one per frame. */
+    filename: string[];
+    /** Byte reader; defaults to the globally-injected reader (`image-source`). */
+    reader?: ImageBytesReader;
+    /**
+     * Optional `[frames, H, W, C]` from `.slp` metadata. When given, H/W/C are
+     * trusted (frame count is always `filename.length`) and the first frame is
+     * not decoded up front.
+     */
+    shape?: [number, number, number, number];
+}
+declare class ImageVideoBackend implements VideoBackend {
+    filename: string[];
+    shape: [number, number, number, number];
+    private reader;
+    private cache;
+    private maxCache;
+    private constructor();
+    /**
+     * Build a backend, inferring `shape` by decoding `filename[0]` once (cached)
+     * when no `shape` is supplied — parity with Python `VideoBackend.img_shape`
+     * (`read_test_frame` -> `_read_frame(0)`; index 0, not "first available").
+     */
+    static create(opts: ImageVideoOptions): Promise<ImageVideoBackend>;
+    getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    private put;
+    close(): void;
+}
+
 /**
  * Random-access reader over the bytes of a `.seq` file. Implementations: a
  * `Blob` (browser) and an injected `node:fs`-backed source (Node, registered by
@@ -2712,7 +2761,7 @@ declare class UnsupportedVideoFormatError extends Error {
     readonly extension: string;
     constructor(extension: string);
 }
-declare function createVideoBackend(source: string | File | Blob, options?: {
+declare function createVideoBackend(source: string | string[] | File | Blob, options?: {
     dataset?: string;
     embedded?: boolean;
     frameNumbers?: number[];
@@ -3788,4 +3837,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { SHAPE_VIDEO_MATCHER as $, MergeResult as A, BoundingBox as B, CropVideoBackend as C, MatchResult as D, ErrorMode as E, FrameStrategy as F, MergeProgressBar as G, STRUCTURE_SKELETON_MATCHER as H, InstanceMatchMethod as I, SUBSET_SKELETON_MATCHER as J, DUPLICATE_MATCHER as K, Labels as L, MergeError as M, IOU_MATCHER as N, OVERLAP_SKELETON_MATCHER as O, IDENTITY_INSTANCE_MATCHER as P, NAME_TRACK_MATCHER as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, IDENTITY_TRACK_MATCHER as W, AUTO_VIDEO_MATCHER as X, PATH_VIDEO_MATCHER as Y, BASENAME_VIDEO_MATCHER as Z, IMAGE_DEDUP_VIDEO_MATCHER as _, LabeledFrame as a, loadSlpSet as a$, setFsResolver as a0, type FsResolver as a1, type MergeStrategy as a2, _annotationCentroidXy as a3, _findAnnotationMatches as a4, _findAnnotationLinkMatches as a5, _resolveMergedIsNegative as a6, type CropOptions as a7, resolveCropRect as a8, SuggestionFrame as a9, UserSegmentationMask as aA, PredictedSegmentationMask as aB, type BoundingBoxOptions as aC, UserBoundingBox as aD, PredictedBoundingBox as aE, getCentroidSkeleton as aF, CENTROID_SKELETON as aG, type CentroidOptions as aH, Centroid as aI, UserCentroid as aJ, PredictedCentroid as aK, type LabelImageObjectInfo as aL, type LabelImageOptions as aM, LabelImage as aN, UserLabelImage as aO, PredictedLabelImage as aP, normalizeLabelIds as aQ, type VideoFrame as aR, type VideoBackend as aS, Mp4BoxVideoBackend as aT, type MediaBunnyOptions as aU, MediaBunnyVideoBackend as aV, StreamingHdf5VideoBackend as aW, loadSlp as aX, saveSlp as aY, loadAnalysisH5 as aZ, saveAnalysisH5 as a_, rodriguesTransformation as aa, Camera as ab, CameraGroup as ac, InstanceGroup as ad, FrameGroup as ae, RecordingSession as af, makeCameraFromDict as ag, Identity as ah, Instance3D as ai, PredictedInstance3D as aj, LazyDataStore as ak, LazyFrameList as al, _registerMaskFactory as am, AnnotationType as an, type Geometry as ao, type ROIOptions as ap, rasterizeGeometry as aq, encodeWkb as ar, decodeWkb as as, PredictedROI as at, encodeRle as au, decodeRle as av, resizeNearest as aw, type SegmentationMaskOptions as ax, SegmentationMask as ay, type UserSegmentationMaskOptions as az, LabelsSet as b, applyOverlay as b$, saveSlpSet as b0, loadVideo as b1, loadLabelImages as b2, setLabelImageFileReader as b3, type PagesAs as b4, type LoadLabelImagesOptions as b5, type LabelImageFileReader as b6, saveSlpToBytes as b7, isAnalysisH5File as b8, type GeoJSONFeature as b9, NAMED_COLORS as bA, PALETTES as bB, getPalette as bC, resolveColor as bD, rgbToCSS as bE, determineColorScheme as bF, drawCircle as bG, drawSquare as bH, drawDiamond as bI, drawTriangle as bJ, drawCross as bK, drawTrails as bL, getMarkerFunction as bM, MARKER_FUNCTIONS as bN, type DrawTrailsOptions as bO, resolveTrailNode as bP, computeTrails as bQ, nTrailPaletteColors as bR, collectTracks as bS, type TrailTarget as bT, type Trail as bU, RenderContext as bV, InstanceContext as bW, drawMasks as bX, drawLabelImage as bY, drawBboxes as bZ, drawRois as b_, type GeoJSONFeatureCollection as ba, roisToGeoJSON as bb, roisFromGeoJSON as bc, writeGeoJSON as bd, readGeoJSON as be, type LabelsDict as bf, toDict as bg, fromDict as bh, toNumpy as bi, fromNumpy as bj, labelsFromNumpy as bk, decodeYamlSkeleton as bl, encodeYamlSkeleton as bm, readSkeletonJson as bn, writeSkeletonJson as bo, readTrainingConfigSkeletons as bp, readTrainingConfigSkeleton as bq, isTrainingConfig as br, type RGB as bs, type RGBA as bt, type ColorSpec as bu, type ColorScheme as bv, type PaletteName as bw, type MarkerShape as bx, type Overlay as by, type VideoOverlay as bz, type RenderOptions as c, type RawLabelImage as c0, cropPoints as c1, uncropPoints as c2, type CropRect as c3, type FlatPoints as c4, type PointPairs as c5, cropFrame as c6, type FrameLike as c7, type RawFrame as c8, type Fill as c9, type VideoOptions as d, SeqHeader as e, SeqIndex as f, BlobByteSource as g, type ByteSource as h, createVideoBackend as i, UnsupportedVideoFormatError as j, type VideoBackendType as k, type CropWrapOptions as l, StreamingH5File as m, openH5Worker as n, openStreamingH5 as o, isStreamingSupported as p, type StreamingH5Source as q, readSlpStreaming as r, SkeletonMatchMethod as s, VideoMatchMethod as t, SkeletonMatcher as u, InstanceMatcher as v, TrackMatcher as w, VideoMatcher as x, ConflictResolution as y, SkeletonMismatchError as z };
+export { PATH_VIDEO_MATCHER as $, VideoMatcher as A, BoundingBox as B, CropVideoBackend as C, ConflictResolution as D, ErrorMode as E, FrameStrategy as F, SkeletonMismatchError as G, MergeResult as H, type ImageBytesReader as I, MatchResult as J, MergeProgressBar as K, Labels as L, MergeError as M, STRUCTURE_SKELETON_MATCHER as N, SUBSET_SKELETON_MATCHER as O, OVERLAP_SKELETON_MATCHER as P, DUPLICATE_MATCHER as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, IOU_MATCHER as W, IDENTITY_INSTANCE_MATCHER as X, NAME_TRACK_MATCHER as Y, IDENTITY_TRACK_MATCHER as Z, AUTO_VIDEO_MATCHER as _, LabeledFrame as a, StreamingHdf5VideoBackend as a$, BASENAME_VIDEO_MATCHER as a0, IMAGE_DEDUP_VIDEO_MATCHER as a1, SHAPE_VIDEO_MATCHER as a2, setFsResolver as a3, type FsResolver as a4, type MergeStrategy as a5, _annotationCentroidXy as a6, _findAnnotationMatches as a7, _findAnnotationLinkMatches as a8, _resolveMergedIsNegative as a9, decodeRle as aA, resizeNearest as aB, type SegmentationMaskOptions as aC, SegmentationMask as aD, type UserSegmentationMaskOptions as aE, UserSegmentationMask as aF, PredictedSegmentationMask as aG, type BoundingBoxOptions as aH, UserBoundingBox as aI, PredictedBoundingBox as aJ, getCentroidSkeleton as aK, CENTROID_SKELETON as aL, type CentroidOptions as aM, Centroid as aN, UserCentroid as aO, PredictedCentroid as aP, type LabelImageObjectInfo as aQ, type LabelImageOptions as aR, LabelImage as aS, UserLabelImage as aT, PredictedLabelImage as aU, normalizeLabelIds as aV, type VideoFrame as aW, type VideoBackend as aX, Mp4BoxVideoBackend as aY, type MediaBunnyOptions as aZ, MediaBunnyVideoBackend as a_, type CropOptions as aa, resolveCropRect as ab, type VideoBackendErrorKind as ac, type VideoBackendError as ad, SuggestionFrame as ae, rodriguesTransformation as af, Camera as ag, CameraGroup as ah, InstanceGroup as ai, FrameGroup as aj, RecordingSession as ak, makeCameraFromDict as al, Identity as am, Instance3D as an, PredictedInstance3D as ao, LazyDataStore as ap, LazyFrameList as aq, _registerMaskFactory as ar, AnnotationType as as, type Geometry as at, type ROIOptions as au, rasterizeGeometry as av, encodeWkb as aw, decodeWkb as ax, PredictedROI as ay, encodeRle as az, LabelsSet as b, type Trail as b$, type ImageVideoOptions as b0, ImageVideoBackend as b1, loadSlp as b2, saveSlp as b3, loadAnalysisH5 as b4, saveAnalysisH5 as b5, loadSlpSet as b6, saveSlpSet as b7, loadVideo as b8, loadLabelImages as b9, type RGBA as bA, type ColorSpec as bB, type ColorScheme as bC, type PaletteName as bD, type MarkerShape as bE, type Overlay as bF, type VideoOverlay as bG, NAMED_COLORS as bH, PALETTES as bI, getPalette as bJ, resolveColor as bK, rgbToCSS as bL, determineColorScheme as bM, drawCircle as bN, drawSquare as bO, drawDiamond as bP, drawTriangle as bQ, drawCross as bR, drawTrails as bS, getMarkerFunction as bT, MARKER_FUNCTIONS as bU, type DrawTrailsOptions as bV, resolveTrailNode as bW, computeTrails as bX, nTrailPaletteColors as bY, collectTracks as bZ, type TrailTarget as b_, setLabelImageFileReader as ba, type PagesAs as bb, type LoadLabelImagesOptions as bc, type LabelImageFileReader as bd, saveSlpToBytes as be, isAnalysisH5File as bf, type GeoJSONFeature as bg, type GeoJSONFeatureCollection as bh, roisToGeoJSON as bi, roisFromGeoJSON as bj, writeGeoJSON as bk, readGeoJSON as bl, type LabelsDict as bm, toDict as bn, fromDict as bo, toNumpy as bp, fromNumpy as bq, labelsFromNumpy as br, decodeYamlSkeleton as bs, encodeYamlSkeleton as bt, readSkeletonJson as bu, writeSkeletonJson as bv, readTrainingConfigSkeletons as bw, readTrainingConfigSkeleton as bx, isTrainingConfig as by, type RGB as bz, type RenderOptions as c, RenderContext as c0, InstanceContext as c1, drawMasks as c2, drawLabelImage as c3, drawBboxes as c4, drawRois as c5, applyOverlay as c6, type RawLabelImage as c7, cropPoints as c8, uncropPoints as c9, type CropRect as ca, type FlatPoints as cb, type PointPairs as cc, cropFrame as cd, type FrameLike as ce, type RawFrame as cf, type Fill as cg, type VideoOptions as d, SeqHeader as e, SeqIndex as f, getImageBytesReader as g, BlobByteSource as h, type ByteSource as i, createVideoBackend as j, UnsupportedVideoFormatError as k, type VideoBackendType as l, type CropWrapOptions as m, StreamingH5File as n, openStreamingH5 as o, openH5Worker as p, isStreamingSupported as q, type StreamingH5Source as r, setImageBytesReader as s, readSlpStreaming as t, SkeletonMatchMethod as u, InstanceMatchMethod as v, VideoMatchMethod as w, SkeletonMatcher as x, InstanceMatcher as y, TrackMatcher as z };
