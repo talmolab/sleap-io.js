@@ -23,6 +23,12 @@ export * from "./video/backend.js";
 export * from "./video/mp4box-video.js";
 export * from "./video/mediabunny-video.js";
 export * from "./video/streaming-hdf5-video.js";
+export * from "./video/image-video.js";
+export {
+  setImageBytesReader,
+  getImageBytesReader,
+  type ImageBytesReader,
+} from "./video/image-source.js";
 export {
   SeqVideoBackend,
   SeqHeader,

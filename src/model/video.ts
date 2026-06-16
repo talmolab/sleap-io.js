@@ -128,9 +128,26 @@ export function resolveCropRect(
   return [x1, y1, x2, y2];
 }
 
+/**
+ * Why a video's backend could not be opened during load (the backend is then
+ * left `null`). Drives the consumer's message/action — e.g. "locate image
+ * folder" for an image-sequence, "unsupported format" for `.avi`/`.mpeg`.
+ */
+export type VideoBackendErrorKind =
+  | "image-sequence"
+  | "unsupported-format"
+  | "decode";
+
+export interface VideoBackendError {
+  kind: VideoBackendErrorKind;
+  message: string;
+}
+
 export class Video {
   filename: string | string[];
   backend: VideoBackend | null;
+  /** Set when the backend failed to open during load (then `backend` is null). */
+  backendError: VideoBackendError | null;
   backendMetadata: Record<string, unknown>;
   sourceVideo: Video | null;
   openBackend: boolean;
@@ -141,6 +158,7 @@ export class Video {
   constructor(options: {
     filename: string | string[];
     backend?: VideoBackend | null;
+    backendError?: VideoBackendError | null;
     backendMetadata?: Record<string, unknown>;
     sourceVideo?: Video | null;
     openBackend?: boolean;
@@ -148,6 +166,7 @@ export class Video {
   }) {
     this.filename = options.filename;
     this.backend = options.backend ?? null;
+    this.backendError = options.backendError ?? null;
     this.backendMetadata = options.backendMetadata ?? {};
     this.sourceVideo = options.sourceVideo ?? null;
     this.openBackend = options.openBackend ?? true;

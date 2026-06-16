@@ -5,8 +5,12 @@ import { LabeledFrame } from "../../model/labeled-frame.js";
 import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../../model/instance.js";
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
-import { Video } from "../../model/video.js";
-import { createVideoBackend } from "../../video/factory.js";
+import { Video, type VideoBackendError } from "../../model/video.js";
+import {
+  createVideoBackend,
+  UnsupportedVideoFormatError,
+  isImageSource,
+} from "../../video/factory.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
 import { resolveSourceFrameCount } from "./frame-count.js";
 import type { CropRect } from "../../transform/points.js";
@@ -527,17 +531,35 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
     const channelOrder = (backendMeta.channel_order as string | undefined) ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
 
     let backend = null;
+    let backendError: VideoBackendError | null = null;
     if (openVideos) {
-      backend = await createVideoBackend(filename, {
-        dataset: datasetPath ?? undefined,
-        embedded,
-        frameNumbers,
-        frameSizes: readFrameSizes(file, datasetPath),
-        format,
-        channelOrder,
-        shape,
-        fps: backendMeta.fps,
-      });
+      try {
+        backend = await createVideoBackend(filename, {
+          dataset: datasetPath ?? undefined,
+          embedded,
+          frameNumbers,
+          frameSizes: readFrameSizes(file, datasetPath),
+          format,
+          channelOrder,
+          shape,
+          fps: backendMeta.fps,
+        });
+      } catch (err) {
+        // Resilient load: a single video whose backend can't be built — an
+        // image-sequence with missing files, an unsupported `.avi`/`.mpeg`, or
+        // a decode failure — must NOT abort the whole project load. Leave the
+        // backend null and record the reason so the consumer can show an
+        // actionable message / resolver instead of the load throwing.
+        backend = null;
+        backendError = {
+          kind: err instanceof UnsupportedVideoFormatError
+            ? "unsupported-format"
+            : isImageSource(filename)
+              ? "image-sequence"
+              : "decode",
+          message: err instanceof Error ? err.message : String(err),
+        };
+      }
     }
 
     const sourceVideo = parsed.source_video ? new Video({ filename: parsed.source_video.filename ?? "" }) : null;
@@ -574,6 +596,7 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
       new Video({
         filename,
         backend,
+        backendError,
         backendMetadata,
         sourceVideo,
         openBackend: openVideos,
