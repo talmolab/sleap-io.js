@@ -8426,7 +8426,8 @@ var StreamingHdf5VideoBackend = class {
             }
             fc = maxIdx + 1;
           }
-          this.shape = [fc, decoded.height, decoded.width, 4];
+          const channels = this.shape?.[3] ?? 4;
+          this.shape = [fc, decoded.height, decoded.width, channels];
         }
       }
     } catch {
@@ -10009,6 +10010,21 @@ async function createVideoBackend(source, options) {
   return new MediaVideoBackend(filename);
 }
 
+// src/codecs/slp/frame-count.ts
+function resolveSourceFrameCount(opts) {
+  const { framesAttr, jsonFrameCount, frameNumbers } = opts;
+  if (framesAttr !== void 0 && framesAttr > 0) return framesAttr;
+  if (jsonFrameCount !== void 0 && jsonFrameCount > 0) return jsonFrameCount;
+  if (frameNumbers && frameNumbers.length > 0) {
+    let max = 0;
+    for (const n of frameNumbers) {
+      if (n > max) max = n;
+    }
+    return max + 1;
+  }
+  return void 0;
+}
+
 // src/codecs/slp/read-streaming.ts
 async function readSlpStreaming(source, options) {
   if (!isStreamingSupported()) {
@@ -10158,13 +10174,21 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
         } catch {
         }
       }
-      const frameCount = frameCountFromAttrs ?? meta.frameCount;
+      let frameNumbers = [];
+      let frameSizes;
+      if (openVideos && meta.embedded && datasetPath) {
+        frameNumbers = await readFrameNumbersStreaming(file, datasetPath);
+        frameSizes = await readFrameSizesStreaming(file, datasetPath);
+      }
+      const frameCount = resolveSourceFrameCount({
+        framesAttr: frameCountFromAttrs,
+        jsonFrameCount: meta.frameCount,
+        frameNumbers
+      });
       const shape = meta.height && meta.width && meta.channels ? [frameCount ?? 0, meta.height, meta.width, meta.channels] : void 0;
       const channelOrder = meta.channelOrder ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
       let backend = null;
       if (openVideos && meta.embedded && datasetPath) {
-        const frameNumbers = await readFrameNumbersStreaming(file, datasetPath);
-        const frameSizes = await readFrameSizesStreaming(file, datasetPath);
         backend = new StreamingHdf5VideoBackend({
           filename: meta.filename,
           h5file: file,
@@ -13330,6 +13354,9 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
     let format = backendMeta.format;
     let channelOrderFromAttrs;
     let frameCountFromAttrs;
+    let heightFromAttrs;
+    let widthFromAttrs;
+    let channelsFromAttrs;
     if (datasetPath) {
       const videoDs = file.get(datasetPath);
       if (videoDs) {
@@ -13342,10 +13369,25 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
         if (framesNum !== void 0 && framesNum > 0) {
           frameCountFromAttrs = framesNum;
         }
+        const h = attrToNumber(attrs.height);
+        if (h !== void 0 && h > 0) heightFromAttrs = h;
+        const w = attrToNumber(attrs.width);
+        if (w !== void 0 && w > 0) widthFromAttrs = w;
+        const c = attrToNumber(attrs.channels);
+        if (c !== void 0 && c > 0) channelsFromAttrs = c;
       }
     }
+    const frameNumbers = datasetPath ? readFrameNumbers(file, datasetPath) : [];
     const jsonShape = backendMeta.shape;
-    const shape = jsonShape && jsonShape.length === 4 ? [frameCountFromAttrs ?? jsonShape[0], jsonShape[1], jsonShape[2], jsonShape[3]] : void 0;
+    const height = jsonShape?.[1] ?? heightFromAttrs;
+    const width = jsonShape?.[2] ?? widthFromAttrs;
+    const channels = jsonShape?.[3] ?? channelsFromAttrs;
+    const frameCount = resolveSourceFrameCount({
+      framesAttr: frameCountFromAttrs,
+      jsonFrameCount: jsonShape?.[0],
+      frameNumbers
+    });
+    const shape = height && width && channels ? [frameCount ?? 0, height, width, channels] : void 0;
     const channelOrder = backendMeta.channel_order ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
     let backend = null;
     let backendError = null;
@@ -13354,7 +13396,7 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
         backend = await createVideoBackend(filename, {
           dataset: datasetPath ?? void 0,
           embedded,
-          frameNumbers: readFrameNumbers(file, datasetPath),
+          frameNumbers,
           frameSizes: readFrameSizes(file, datasetPath),
           format,
           channelOrder,
