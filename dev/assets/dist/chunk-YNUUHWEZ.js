@@ -20,8 +20,9 @@ import {
   predictedPointsFromArray,
   reconstructInstance3D,
   resolveCameraKey,
-  resolveIdentity
-} from "./chunk-FQG2LKSM.js";
+  resolveIdentity,
+  resolveVideoFilename
+} from "./chunk-KIMQQ2HE.js";
 
 // src/model/centroid.ts
 var _centroidSkeleton = null;
@@ -10190,7 +10191,10 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
       let backend = null;
       if (openVideos && meta.embedded && datasetPath) {
         backend = new StreamingHdf5VideoBackend({
-          filename: meta.filename,
+          // Embedded videos always carry a single string filename (the labels
+          // path); the array form is only for image sequences, which never
+          // reach this embedded branch. Narrow for the type checker.
+          filename: Array.isArray(meta.filename) ? meta.filename[0] ?? "" : meta.filename,
           h5file: file,
           datasetPath,
           frameNumbers,
@@ -13341,7 +13345,7 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
     if (!entry) continue;
     const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder2.decode(entry));
     const backendMeta = parsed.backend ?? {};
-    let filename = backendMeta.filename ?? parsed.filename ?? "";
+    let filename = resolveVideoFilename(backendMeta, parsed);
     let datasetPath = backendMeta.dataset ?? null;
     let embedded = false;
     if (filename === ".") {

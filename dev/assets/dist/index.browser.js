@@ -143,7 +143,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-36IJFNXG.js";
+} from "./chunk-YNUUHWEZ.js";
 import {
   Edge,
   Instance,
@@ -161,7 +161,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-FQG2LKSM.js";
+} from "./chunk-KIMQQ2HE.js";
 export {
   AUTO_VIDEO_MATCHER,
   AnnotationType,

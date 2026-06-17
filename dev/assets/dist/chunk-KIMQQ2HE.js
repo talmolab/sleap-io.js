@@ -743,6 +743,13 @@ function parseTracks(values) {
   }
   return tracks;
 }
+function resolveVideoFilename(backendMeta, parsed) {
+  const filenames = backendMeta.filenames;
+  if (Array.isArray(filenames) && filenames.length > 0) {
+    return filenames;
+  }
+  return backendMeta.filename ?? parsed.filename ?? "";
+}
 function parseVideosMetadata(values, labelsPath) {
   const videos = [];
   for (const entry of values) {
@@ -756,7 +763,7 @@ function parseVideosMetadata(values, labelsPath) {
       parsed = entry;
     }
     const backendMeta = parsed.backend ?? {};
-    let filename = backendMeta.filename ?? parsed.filename ?? "";
+    let filename = resolveVideoFilename(backendMeta, parsed);
     const dataset = backendMeta.dataset ?? null;
     let embedded = false;
     if (filename === ".") {
@@ -878,6 +885,7 @@ export {
   parseJsonEntry,
   parseSkeletons,
   parseTracks,
+  resolveVideoFilename,
   parseVideosMetadata,
   parseSuggestions,
   parseSessionsMetadata,
