@@ -357,7 +357,12 @@ async function readVideosStreaming(
       let backend = null;
       if (openVideos && meta.embedded && datasetPath) {
         backend = new StreamingHdf5VideoBackend({
-          filename: meta.filename,
+          // Embedded videos always carry a single string filename (the labels
+          // path); the array form is only for image sequences, which never
+          // reach this embedded branch. Narrow for the type checker.
+          filename: Array.isArray(meta.filename)
+            ? meta.filename[0] ?? ""
+            : meta.filename,
           h5file: file,
           datasetPath,
           frameNumbers,
