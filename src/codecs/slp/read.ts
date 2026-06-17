@@ -1,5 +1,5 @@
 import { openH5File, OpenH5Options, SlpSource } from "./h5.js";
-import { attrToNumber, attrToString, parseJsonAttr, parseSkeletons, resolveCameraKey, reconstructInstance3D, resolveIdentity } from "./parsers.js";
+import { attrToNumber, attrToString, parseJsonAttr, parseSkeletons, resolveCameraKey, reconstructInstance3D, resolveIdentity, resolveVideoFilename } from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../../model/instance.js";
@@ -449,7 +449,7 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
     if (!entry) continue;
     const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
     const backendMeta = parsed.backend ?? {};
-    let filename = backendMeta.filename ?? parsed.filename ?? "";
+    let filename = resolveVideoFilename(backendMeta, parsed);
     let datasetPath = backendMeta.dataset ?? null;
     let embedded = false;
 

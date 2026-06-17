@@ -246,8 +246,12 @@ export function parseTracks(values: unknown[]): Track[] {
  * Video metadata extracted from videos_json without creating backends.
  */
 export interface VideoMetadata {
-  /** Original filename or "." for embedded */
-  filename: string;
+  /**
+   * Original filename, or "." for embedded. For image-sequence videos
+   * (Python `ImageVideo`) this is the FULL ordered list of image paths — one
+   * per frame — not just the first image.
+   */
+  filename: string | string[];
   /** HDF5 dataset path for embedded videos */
   dataset?: string;
   /** Video format (e.g., "mp4", "hdf5") */
@@ -271,6 +275,29 @@ export interface VideoMetadata {
 }
 
 /**
+ * Resolve the stored filename(s) for a video backend. Image-sequence videos
+ * (Python `ImageVideo`) serialize the FULL ordered image list under
+ * `backend.filenames` (plural) and only the first image under the singular
+ * `backend.filename`. Reading the singular field collapses an N-image sequence
+ * to a single frame (`createVideoBackend` builds a 1-image backend whose
+ * `shape[0]` is `filename.length`), so prefer the list when present; otherwise
+ * fall back to the singular `backend.filename`, then the top-level `filename`.
+ *
+ * Shared by the streaming reader ({@link parseVideosMetadata}) and the eager
+ * reader (read.ts) so both surface the whole sequence identically.
+ */
+export function resolveVideoFilename(
+  backendMeta: Record<string, unknown>,
+  parsed: Record<string, unknown>
+): string | string[] {
+  const filenames = backendMeta.filenames;
+  if (Array.isArray(filenames) && filenames.length > 0) {
+    return filenames as string[];
+  }
+  return (backendMeta.filename ?? parsed.filename ?? "") as string;
+}
+
+/**
  * Parse video metadata from videos_json dataset values.
  * Returns metadata objects WITHOUT creating video backends.
  */
@@ -291,7 +318,7 @@ export function parseVideosMetadata(values: unknown[], labelsPath?: string): Vid
     }
 
     const backendMeta = (parsed.backend ?? {}) as Record<string, unknown>;
-    let filename = (backendMeta.filename ?? parsed.filename ?? "") as string;
+    let filename = resolveVideoFilename(backendMeta, parsed);
     const dataset = (backendMeta.dataset ?? null) as string | null;
     let embedded = false;
 

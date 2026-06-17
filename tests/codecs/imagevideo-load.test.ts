@@ -36,6 +36,23 @@ describe("ImageVideo SLP loading", () => {
     expect(video.shape?.[2]).toBe(frame.width);
   });
 
+  it("loads ALL frames of a multi-image ImageVideo (filenames list, not just the first)", async () => {
+    // imgvideo.slp references a 3-image sequence: backend.filenames has 3 paths,
+    // but the singular backend.filename is only the first. Reading the singular
+    // field collapsed the video to 1 frame; the whole list must be surfaced.
+    const labels = await loadSlp(imgvideo, { openVideos: true });
+    const video = labels.videos[0];
+    expect(video.backend).toBeInstanceOf(ImageVideoBackend);
+    expect(Array.isArray(video.filename)).toBe(true);
+    expect((video.filename as string[]).length).toBe(3);
+    expect(video.shape?.[0]).toBe(3);
+    // The last frame must decode — proof the backend spans the whole list.
+    const last = (await video.getFrame(2)) as ImageData;
+    expect(last).not.toBeNull();
+    expect(last.width).toBeGreaterThan(0);
+    expect(last.height).toBeGreaterThan(0);
+  });
+
   it("crash-guard: a failing backend leaves the video backend null instead of aborting", async () => {
     setImageBytesReader(async () => {
       throw new Error("simulated missing image file");
