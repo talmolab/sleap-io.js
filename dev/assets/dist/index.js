@@ -83,6 +83,7 @@ import {
   _registerNodeH5,
   _resolveMergedIsNegative,
   collectTracks,
+  computePrefetchWindow,
   computeTrails,
   createVideoBackend,
   cropFrame,
@@ -151,7 +152,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-YNUUHWEZ.js";
+} from "./chunk-QZA56GEB.js";
 import {
   Edge,
   Instance,
@@ -2678,6 +2679,7 @@ export {
   checkFfmpeg,
   classNamesFromConfig,
   collectTracks,
+  computePrefetchWindow,
   computeTrails,
   createDataYaml,
   createSkeletonFromConfig,

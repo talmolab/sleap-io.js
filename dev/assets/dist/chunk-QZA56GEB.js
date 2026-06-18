@@ -8528,18 +8528,117 @@ function getImageBytesReader() {
   return _reader ?? _default;
 }
 
+// src/video/lru-cache.ts
+var LruCache = class {
+  /**
+   * @param maxBytes Soft byte budget. Eviction runs after each `set` until the
+   *   total is within budget — except the entry just set is never evicted, so a
+   *   single oversized entry is kept (you still need it to render).
+   * @param sizeOf Byte size of a value. Must be deterministic for a given value.
+   */
+  constructor(maxBytes, sizeOf) {
+    this.maxBytes = maxBytes;
+    this.sizeOf = sizeOf;
+  }
+  map = /* @__PURE__ */ new Map();
+  bytes = 0;
+  get size() {
+    return this.map.size;
+  }
+  get totalBytes() {
+    return this.bytes;
+  }
+  has(key) {
+    return this.map.has(key);
+  }
+  get(key) {
+    const entry = this.map.get(key);
+    if (!entry) return void 0;
+    this.map.delete(key);
+    this.map.set(key, entry);
+    return entry.value;
+  }
+  set(key, value) {
+    const existing = this.map.get(key);
+    if (existing) {
+      this.bytes -= existing.size;
+      this.map.delete(key);
+    }
+    const size = this.sizeOf(value);
+    this.map.set(key, { value, size });
+    this.bytes += size;
+    this.evict();
+  }
+  delete(key) {
+    const entry = this.map.get(key);
+    if (!entry) return false;
+    this.bytes -= entry.size;
+    return this.map.delete(key);
+  }
+  clear() {
+    this.map.clear();
+    this.bytes = 0;
+  }
+  keys() {
+    return this.map.keys();
+  }
+  evict() {
+    while (this.bytes > this.maxBytes && this.map.size > 1) {
+      const oldest = this.map.keys().next().value;
+      const entry = this.map.get(oldest);
+      if (!entry) break;
+      this.bytes -= entry.size;
+      this.map.delete(oldest);
+    }
+  }
+};
+
 // src/video/image-video.ts
-var DEFAULT_CACHE_SIZE2 = 32;
+function computePrefetchWindow(current, last, length, ahead, behind) {
+  const dir = last === null || current >= last ? 1 : -1;
+  const out = [];
+  for (let k = 1; k <= ahead; k++) out.push(current + dir * k);
+  for (let k = 1; k <= behind; k++) out.push(current - dir * k);
+  return out.filter((i) => i >= 0 && i < length && i !== current);
+}
+var DEFAULT_BYTES_CACHE = 128 * 1024 * 1024;
+var DEFAULT_DECODED_CACHE = 64 * 1024 * 1024;
+var DEFAULT_PREFETCH_CONCURRENCY = 6;
+var DEFAULT_PREFETCH_AHEAD = 8;
+var DEFAULT_PREFETCH_BEHIND = 2;
 var ImageVideoBackend = class _ImageVideoBackend {
   filename;
   shape;
   reader;
-  cache = /* @__PURE__ */ new Map();
-  maxCache = DEFAULT_CACHE_SIZE2;
-  constructor(filename, reader, shape) {
+  // Two-tier cache: a large tier of raw encoded bytes (kills the network read on
+  // revisit/prefetch) and a small tier of decoded frames (kills the re-decode).
+  bytesCache;
+  decodedCache;
+  // In-flight byte reads, so a getFrame and a prefetch of the same frame share
+  // one read instead of racing.
+  inflight = /* @__PURE__ */ new Map();
+  prefetchConcurrency;
+  prefetchAhead;
+  prefetchBehind;
+  lastIndex = null;
+  // Bumped each time a new prefetch window is issued; in-flight prefetch workers
+  // stop pulling new frames once superseded (e.g. the user jumps away).
+  prefetchGen = 0;
+  /**
+   * The in-flight auto-prefetch promise from the most recent `getFrame`. Resolves
+   * when that window finishes (or is superseded). Exposed for coordination/tests;
+   * callers normally ignore it.
+   */
+  lastPrefetch = Promise.resolve();
+  constructor(filename, reader, shape, cfg) {
     this.filename = filename;
     this.reader = reader;
     this.shape = shape;
+    this.bytesCache = new LruCache(cfg.bytesCacheBytes, (b) => b.byteLength);
+    this.decodedCache = new LruCache(cfg.decodedCacheBytes, (f) => f.data.byteLength);
+    this.prefetchConcurrency = cfg.prefetchConcurrency;
+    this.prefetchAhead = cfg.prefetchAhead;
+    this.prefetchBehind = cfg.prefetchBehind;
   }
   /**
    * Build a backend, inferring `shape` by decoding `filename[0]` once (cached)
@@ -8557,42 +8656,108 @@ var ImageVideoBackend = class _ImageVideoBackend {
     let height = 0;
     let width = 0;
     let channels = 0;
-    const seed = /* @__PURE__ */ new Map();
+    let seedBytes;
+    let seedFrame;
     if (opts.shape) {
       [, height, width, channels] = opts.shape;
     } else if (frames > 0) {
-      const first = await decodeEncoded(await reader(opts.filename[0]));
-      seed.set(0, first);
-      height = first.height;
-      width = first.width;
-      channels = isGrayscale(first) ? 1 : 3;
+      seedBytes = await reader(opts.filename[0]);
+      seedFrame = await decodeEncoded(seedBytes);
+      height = seedFrame.height;
+      width = seedFrame.width;
+      channels = isGrayscale(seedFrame) ? 1 : 3;
     }
-    const be = new _ImageVideoBackend(opts.filename, reader, [
-      frames,
-      height,
-      width,
-      channels
-    ]);
-    for (const [k, v] of seed) be.cache.set(k, v);
+    const be = new _ImageVideoBackend(
+      opts.filename,
+      reader,
+      [frames, height, width, channels],
+      {
+        bytesCacheBytes: opts.bytesCacheBytes ?? DEFAULT_BYTES_CACHE,
+        decodedCacheBytes: opts.decodedCacheBytes ?? DEFAULT_DECODED_CACHE,
+        prefetchConcurrency: opts.prefetchConcurrency ?? DEFAULT_PREFETCH_CONCURRENCY,
+        prefetchAhead: opts.prefetchAhead ?? DEFAULT_PREFETCH_AHEAD,
+        prefetchBehind: opts.prefetchBehind ?? DEFAULT_PREFETCH_BEHIND
+      }
+    );
+    if (seedBytes) be.bytesCache.set(0, seedBytes);
+    if (seedFrame) be.decodedCache.set(0, seedFrame);
     return be;
   }
   async getFrame(frameIndex) {
     if (frameIndex < 0 || frameIndex >= this.filename.length) return null;
-    const cached = this.cache.get(frameIndex);
-    if (cached) return cached;
-    const frame = await decodeEncoded(await this.reader(this.filename[frameIndex]));
-    this.put(frameIndex, frame);
+    this.triggerPrefetch(frameIndex);
+    const decoded = this.decodedCache.get(frameIndex);
+    if (decoded) return decoded;
+    const bytes = await this.startRead(frameIndex);
+    const frame = await decodeEncoded(bytes);
+    this.decodedCache.set(frameIndex, frame);
     return frame;
   }
-  put(index, frame) {
-    if (this.cache.size >= this.maxCache) {
-      const oldest = this.cache.keys().next().value;
-      if (oldest !== void 0) this.cache.delete(oldest);
-    }
-    this.cache.set(index, frame);
+  /**
+   * Read a frame's encoded bytes, serving from the bytes tier when present (no
+   * network) and coalescing concurrent reads of the same frame via `inflight` so
+   * a getFrame and a prefetch never read the same file twice.
+   */
+  startRead(frameIndex) {
+    const cached = this.bytesCache.get(frameIndex);
+    if (cached) return Promise.resolve(cached);
+    const existing = this.inflight.get(frameIndex);
+    if (existing) return existing;
+    const p = (async () => {
+      try {
+        const bytes = await this.reader(this.filename[frameIndex]);
+        this.bytesCache.set(frameIndex, bytes);
+        return bytes;
+      } finally {
+        this.inflight.delete(frameIndex);
+      }
+    })();
+    this.inflight.set(frameIndex, p);
+    return p;
+  }
+  /**
+   * Read a window of frames' bytes into the bytes tier, concurrency-capped, and
+   * cancellable: a later prefetch (or a jump) bumps the generation so in-flight
+   * workers stop pulling new frames. Resolves when this window finishes or is
+   * superseded. Frames already cached or in flight are skipped.
+   */
+  prefetch(indices) {
+    const gen = ++this.prefetchGen;
+    const queue = [...new Set(indices)].filter(
+      (i) => i >= 0 && i < this.filename.length && !this.bytesCache.has(i)
+    );
+    let next = 0;
+    const worker = async () => {
+      while (next < queue.length && gen === this.prefetchGen) {
+        const i = queue[next++];
+        if (this.bytesCache.has(i)) continue;
+        try {
+          await this.startRead(i);
+        } catch {
+        }
+      }
+    };
+    const n = Math.min(this.prefetchConcurrency, queue.length);
+    return Promise.all(Array.from({ length: n }, () => worker())).then(
+      () => void 0
+    );
+  }
+  /** Compute and launch the read-ahead window for `frameIndex` (fire-and-forget). */
+  triggerPrefetch(frameIndex) {
+    const window2 = computePrefetchWindow(
+      frameIndex,
+      this.lastIndex,
+      this.filename.length,
+      this.prefetchAhead,
+      this.prefetchBehind
+    );
+    this.lastIndex = frameIndex;
+    this.lastPrefetch = this.prefetch(window2);
   }
   close() {
-    this.cache.clear();
+    this.bytesCache.clear();
+    this.decodedCache.clear();
+    this.inflight.clear();
   }
 };
 function isGrayscale(img) {
@@ -15406,6 +15571,7 @@ export {
   setImageBytesReader,
   setDefaultImageBytesReader,
   getImageBytesReader,
+  computePrefetchWindow,
   ImageVideoBackend,
   BlobByteSource,
   setSeqFileByteSourceFactory,
