@@ -73,7 +73,15 @@ const textDecoder = new TextDecoder();
 
 export async function readSlp(
   source: SlpSource,
-  options?: { openVideos?: boolean; h5?: OpenH5Options },
+  options?: {
+    openVideos?: boolean;
+    h5?: OpenH5Options;
+    // Accepted for API parity with loadSlp / the streaming reader. The eager
+    // and lazy main-thread paths (Node, or the no-Worker browser fallback) do
+    // not yet emit progress; instrumenting them mirrors readFromStreamingFile
+    // (read-streaming.ts) and is a follow-up.
+    onProgress?: (current: number, total: number, message?: string) => void;
+  },
 ): Promise<Labels> {
   const { file, close } = await openH5File(source, options?.h5);
   try {
@@ -271,7 +279,15 @@ export async function readSlp(
  */
 export async function readSlpLazy(
   source: SlpSource,
-  options?: { openVideos?: boolean; h5?: OpenH5Options },
+  options?: {
+    openVideos?: boolean;
+    h5?: OpenH5Options;
+    // Accepted for API parity with loadSlp / the streaming reader. The eager
+    // and lazy main-thread paths (Node, or the no-Worker browser fallback) do
+    // not yet emit progress; instrumenting them mirrors readFromStreamingFile
+    // (read-streaming.ts) and is a follow-up.
+    onProgress?: (current: number, total: number, message?: string) => void;
+  },
 ): Promise<Labels> {
   const { file, close } = await openH5File(source, options?.h5);
   try {

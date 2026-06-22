@@ -63,6 +63,13 @@ export interface StreamingSlpOptions {
   filenameHint?: string;
   /** Whether to open video backends for embedded videos (default: false) */
   openVideos?: boolean;
+  /**
+   * Optional progress callback fired as loading advances through its stages.
+   * `current` counts completed stages out of `total`; `message` labels the
+   * stage about to run. Matches the (current, total, message?) convention used
+   * elsewhere in the library (Labels.merge, RenderOptions.onProgress).
+   */
+  onProgress?: (current: number, total: number, message?: string) => void;
 }
 
 /**
@@ -129,6 +136,7 @@ export async function readSlpStreaming(
       sourcePath,
       options?.filenameHint,
       openVideos,
+      options?.onProgress,
     );
   } finally {
     // Only close the file if we're NOT opening video backends.
@@ -147,8 +155,18 @@ async function readFromStreamingFile(
   url: string,
   filenameHint?: string,
   openVideos: boolean = false,
+  onProgress?: (current: number, total: number, message?: string) => void,
 ): Promise<Labels> {
-  // Read metadata
+  // Stage-level progress. The orchestration in this function runs on the MAIN
+  // thread — only the low-level HDF5 byte reads are delegated to the worker via
+  // `file` — so each phase can be surfaced as it starts without any cross-worker
+  // messaging. `current` counts completed stages; `message` labels the stage
+  // about to run. (Shape matches Labels.merge / RenderOptions.onProgress.)
+  const STAGES = 10;
+  const report = (n: number, message: string) =>
+    onProgress?.(n, STAGES, message);
+
+  report(0, "Reading metadata");
   const metadataAttrs = await file.getAttrs("metadata");
   const formatId = Number(
     (metadataAttrs["format_id"] as { value?: number })?.value ??
@@ -164,31 +182,39 @@ async function readFromStreamingFile(
     filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
   const skeletons = parseSkeletons(metadataJson);
 
-  // Read tracks
+  report(1, "Reading tracks");
   const tracks = await readTracksStreaming(file);
 
   // Read per-video crop records (SLP 2.3; empty on old/uncropped files).
+  report(2, "Reading video metadata");
   const videoCrops = await readVideoCropsStreaming(file);
 
-  // Read video metadata (and optionally create backends for embedded videos)
+  // Read video metadata (and optionally create backends for embedded videos).
+  // When opening videos, the per-video reporter keeps the bar at this stage
+  // while the label counts videos (probeShape per embedded backend is slow).
   const videos = await readVideosStreaming(
     file,
     labelsPath,
     openVideos,
     formatId,
     videoCrops,
+    openVideos ? (i, n) => report(2, `Opening videos (${i}/${n})`) : undefined,
   );
 
-  // Read suggestions
+  report(3, "Reading suggestions");
   const suggestions = await readSuggestionsStreaming(file, videos);
 
   // Read frame/instance/point data
+  report(4, "Reading frames");
   const framesData = await readStructDatasetStreaming(file, "frames");
+  report(5, "Reading instances");
   const instancesData = await readStructDatasetStreaming(file, "instances");
+  report(6, "Reading points");
   const pointsData = await readStructDatasetStreaming(file, "points");
   const predPointsData = await readStructDatasetStreaming(file, "pred_points");
 
   // Build labeled frames
+  report(7, "Building labeled frames");
   const labeledFrames = buildLabeledFrames({
     framesData,
     instancesData,
@@ -201,9 +227,11 @@ async function readFromStreamingFile(
   });
 
   // Read identities
+  report(8, "Reading identities");
   const identities = await readIdentitiesStreaming(file);
 
   // Read sessions
+  report(9, "Reading sessions");
   const sessions = await readSessionsStreaming(
     file,
     videos,
@@ -212,6 +240,7 @@ async function readFromStreamingFile(
     identities,
   );
 
+  onProgress?.(STAGES, STAGES, "Finalizing");
   return new Labels({
     labeledFrames,
     videos,
@@ -316,6 +345,7 @@ async function readVideosStreaming(
   openVideos: boolean = false,
   formatId: number = 1.0,
   videoCrops?: Map<number, VideoCropEntry>,
+  onVideoProgress?: (current: number, total: number) => void,
 ): Promise<Video[]> {
   try {
     const keys = file.keys();
@@ -328,6 +358,7 @@ async function readVideosStreaming(
     const videos: Video[] = [];
 
     for (let videoIndex = 0; videoIndex < metadataList.length; videoIndex++) {
+      onVideoProgress?.(videoIndex + 1, metadataList.length);
       const meta = metadataList[videoIndex];
 
       // Auto-detect dataset path when embedded but not specified in metadata

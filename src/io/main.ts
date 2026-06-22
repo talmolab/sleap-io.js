@@ -45,11 +45,20 @@ function isBrowserWithWorkerSupport(): boolean {
  * @param options.openVideos - Whether to open video backends (default: true)
  * @param options.h5 - HDF5 opening options (stream mode, filename hint)
  * @param options.lazy - If true, use lazy loading for on-demand frame materialization (default: false)
+ * @param options.onProgress - Optional callback fired as loading advances through
+ *   its stages: (current, total, message?), where current/total count completed
+ *   stages and message labels the stage about to run. Only the streaming reader
+ *   currently emits these (the path used in browser/Tauri).
  * @returns Loaded Labels object
  */
 export async function loadSlp(
   source: SlpSource,
-  options?: { openVideos?: boolean; h5?: OpenH5Options; lazy?: boolean },
+  options?: {
+    openVideos?: boolean;
+    h5?: OpenH5Options;
+    lazy?: boolean;
+    onProgress?: (current: number, total: number, message?: string) => void;
+  },
 ): Promise<Labels> {
   const streamMode = options?.h5?.stream ?? "auto";
   const openVideos = options?.openVideos ?? true;
@@ -78,6 +87,7 @@ export async function loadSlp(
         return await readSlpStreaming(streamingSource, {
           filenameHint: options?.h5?.filenameHint,
           openVideos,
+          onProgress: options?.onProgress,
         });
       } catch (e) {
         if (streamMode === "auto") {
@@ -94,9 +104,17 @@ export async function loadSlp(
 
   // Fall back to standard reader (Node.js, or browser without Worker support, or download mode)
   if (lazy) {
-    return readSlpLazy(source, { openVideos, h5: options?.h5 });
+    return readSlpLazy(source, {
+      openVideos,
+      h5: options?.h5,
+      onProgress: options?.onProgress,
+    });
   }
-  return readSlp(source, { openVideos, h5: options?.h5 });
+  return readSlp(source, {
+    openVideos,
+    h5: options?.h5,
+    onProgress: options?.onProgress,
+  });
 }
 
 /**
