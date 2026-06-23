@@ -11866,7 +11866,9 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
   const scoreMapChunks = [];
   let smOffset = 0;
   const maskIdToIdx = /* @__PURE__ */ new Map();
-  masks.forEach((m, i) => maskIdToIdx.set(m, i));
+  masks.forEach((m, i) => {
+    maskIdToIdx.set(m, i);
+  });
   for (let i = 0; i < masks.length; i++) {
     const mask = masks[i];
     const rleBytes = new Uint8Array(mask.rleCounts.length * 4);
