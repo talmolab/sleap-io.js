@@ -5,13 +5,13 @@
 1. Build the package:
 
 ```bash
-npm run build
+bun run build
 ```
 
 2. Serve the repo root (needs static server for module imports):
 
 ```bash
-npx serve -p 8080 --cors --no-clipboard
+bunx serve -p 8080 --cors --no-clipboard
 ```
 
 3. Open the demo page:

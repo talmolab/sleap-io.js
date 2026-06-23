@@ -107,7 +107,9 @@ export function classNamesFromConfig(config: Record<string, unknown>): Map<numbe
   const raw = config["names"];
   const result = new Map<number, string>();
   if (Array.isArray(raw)) {
-    raw.forEach((name, i) => result.set(i, String(name)));
+    raw.forEach((name, i) => {
+      result.set(i, String(name));
+    });
   } else if (raw && typeof raw === "object") {
     for (const [k, v] of Object.entries(raw as Record<string, unknown>)) {
       const id = Number(k);
@@ -602,7 +604,9 @@ function buildClassNames(categories: string[]): Map<number, string> {
     result.set(0, "object");
     return result;
   }
-  distinct.forEach((name, i) => result.set(i, name));
+  distinct.forEach((name, i) => {
+    result.set(i, name);
+  });
   return result;
 }
 

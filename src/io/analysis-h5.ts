@@ -864,7 +864,9 @@ export function toAnalysisArrays(
   } else {
     nTracks = labels.tracks.length;
     trackToSlot = new Map<Track, number>();
-    labels.tracks.forEach((track, i) => trackToSlot!.set(track, i));
+    labels.tracks.forEach((track, i) => {
+      trackToSlot!.set(track, i);
+    });
   }
 
   // Canonical-shape matrices.
@@ -886,7 +888,9 @@ export function toAnalysisArrays(
     const slotted: Array<[number, InstanceLike]> = [];
     if (untracked) {
       const insts = untrackedFrameInstances(lf, isSingleInstance);
-      insts.forEach((inst, i) => slotted.push([i, inst]));
+      insts.forEach((inst, i) => {
+        slotted.push([i, inst]);
+      });
     } else {
       for (const [track, inst] of trackedFrameInstances(lf)) {
         const slot = trackToSlot!.get(track);

@@ -52,7 +52,9 @@ describe("dictionary codec", () => {
     const labels = await loadFixture("typical.slp");
     const video = labels.videos[0];
     const filtered = toDict(labels, { video });
-    filtered.labeled_frames.forEach((frame) => expect(frame.video_idx).toBe(0));
+    filtered.labeled_frames.forEach((frame) => {
+      expect(frame.video_idx).toBe(0);
+    });
 
     const nonEmptyCount = labels.labeledFrames.filter((lf) => lf.instances.length > 0).length;
     const skipped = toDict(labels, { skipEmptyFrames: true });

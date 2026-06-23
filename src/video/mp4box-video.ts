@@ -112,14 +112,15 @@ export class Mp4BoxVideoBackend implements VideoBackend {
 
     this.latestRequestedFrame = frameIndex;
 
-    await (this.decodeQueue = this.decodeQueue.then(async () => {
+    this.decodeQueue = this.decodeQueue.then(async () => {
       if (this.latestRequestedFrame !== frameIndex) return;
       if (signal?.aborted) return;
 
       const keyframe = this.findKeyframeBefore(frameIndex);
       const end = Math.min(frameIndex + this.lookahead, this.samples.length - 1);
       await this.decodeRange(keyframe, end, frameIndex);
-    }));
+    });
+    await this.decodeQueue;
 
     return this.cache.get(frameIndex) ?? null;
   }
@@ -138,7 +139,9 @@ export class Mp4BoxVideoBackend implements VideoBackend {
       }
     }
     this.decoder = null;
-    this.cache.forEach((bitmap) => bitmap.close());
+    this.cache.forEach((bitmap) => {
+      bitmap.close();
+    });
     this.cache.clear();
     this.fileBlob = null;
   }
