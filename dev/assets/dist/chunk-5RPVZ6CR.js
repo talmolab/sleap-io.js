@@ -315,7 +315,8 @@ var PredictedInstance = class _PredictedInstance extends Instance {
       points: pts,
       skeleton: rest.skeleton,
       track: rest.track,
-      trackingScore: rest.trackingScore
+      trackingScore: rest.trackingScore,
+      fromPredicted: rest.fromPredicted
     });
     this.score = score;
   }
