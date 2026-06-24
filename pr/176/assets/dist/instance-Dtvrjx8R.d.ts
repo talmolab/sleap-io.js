@@ -199,6 +199,7 @@ declare class PredictedInstance extends Instance {
         track?: Track | null;
         score?: number;
         trackingScore?: number;
+        fromPredicted?: PredictedInstance | null;
     });
     static fromArray(points: number[][], skeleton: Skeleton, score?: number): PredictedInstance;
     static fromNumpy(options: {

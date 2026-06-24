@@ -81,6 +81,7 @@ import {
   _registerMaskFactory,
   _registerNodeFileOps,
   _registerNodeH5,
+  _relinkFromPredicted,
   _resolveMergedIsNegative,
   collectTracks,
   computePrefetchWindow,
@@ -152,7 +153,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-YSDRYCFG.js";
+} from "./chunk-N7XFOMEA.js";
 import {
   Edge,
   Instance,
@@ -170,7 +171,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-KIMQQ2HE.js";
+} from "./chunk-5RPVZ6CR.js";
 
 // src/codecs/slp/h5-node.ts
 var modulePromise = null;
@@ -194,7 +195,10 @@ async function openH5FileNode(module, source) {
     const { tmpdir } = await import("os");
     const { join: join4 } = await import("path");
     const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join4(tmpdir(), `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
+    const tempPath = join4(
+      tmpdir(),
+      `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`
+    );
     writeFileSync2(tempPath, data);
     const file = new module.File(tempPath, "r");
     return {
@@ -205,7 +209,9 @@ async function openH5FileNode(module, source) {
       }
     };
   }
-  throw new Error("Node environments only support string paths or byte buffers for SLP inputs.");
+  throw new Error(
+    "Node environments only support string paths or byte buffers for SLP inputs."
+  );
 }
 _registerNodeH5(getH5ModuleNode, openH5FileNode);
 _registerFileWriter(async (filename, bytes) => {
@@ -336,7 +342,14 @@ setDefaultImageBytesReader(nodeImageReader);
 import * as fs5 from "fs";
 import * as path from "path";
 var HEADER_ROWS = 4;
-var SPOTS_SIGNATURE = ["LABEL", "ID", "TRACK_ID", "QUALITY", "POSITION_X", "POSITION_Y"];
+var SPOTS_SIGNATURE = [
+  "LABEL",
+  "ID",
+  "TRACK_ID",
+  "QUALITY",
+  "POSITION_X",
+  "POSITION_Y"
+];
 function isTrackMateFile(filePath) {
   try {
     const fd = fs5.openSync(filePath, "r");
@@ -458,13 +471,20 @@ function readTrackMateCsv(spotsPath, options) {
       name: label,
       source: "trackmate"
     });
-    centroidsByFrame.set(frameIdx, [...centroidsByFrame.get(frameIdx) ?? [], centroid]);
+    centroidsByFrame.set(frameIdx, [
+      ...centroidsByFrame.get(frameIdx) ?? [],
+      centroid
+    ]);
   }
   const videos = videoObj ? [videoObj] : [];
   const video = videoObj ?? new Video({ filename: "" });
   const labeledFrames = [];
-  for (const [frameIdx, frameCentroids] of [...centroidsByFrame.entries()].sort((a, b) => a[0] - b[0])) {
-    labeledFrames.push(new LabeledFrame({ video, frameIdx, centroids: frameCentroids }));
+  for (const [frameIdx, frameCentroids] of [...centroidsByFrame.entries()].sort(
+    (a, b) => a[0] - b[0]
+  )) {
+    labeledFrames.push(
+      new LabeledFrame({ video, frameIdx, centroids: frameCentroids })
+    );
   }
   const labels = new Labels({ labeledFrames, videos, tracks });
   labels.provenance["filename"] = spotsPath;
@@ -480,7 +500,15 @@ import * as path2 from "path";
 import YAML from "yaml";
 import { deflate } from "pako";
 var READ_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp"];
-var IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".gif"];
+var IMAGE_EXTENSIONS = [
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".tiff",
+  ".tif",
+  ".bmp",
+  ".gif"
+];
 function parseDataYaml(yamlPath) {
   const text = fs6.readFileSync(yamlPath, "utf-8");
   return YAML.parse(text) ?? {};
@@ -489,7 +517,9 @@ function classNamesFromConfig(config) {
   const raw = config["names"];
   const result = /* @__PURE__ */ new Map();
   if (Array.isArray(raw)) {
-    raw.forEach((name, i) => result.set(i, String(name)));
+    raw.forEach((name, i) => {
+      result.set(i, String(name));
+    });
   } else if (raw && typeof raw === "object") {
     for (const [k, v] of Object.entries(raw)) {
       const id = Number(k);
@@ -560,7 +590,9 @@ function parseLabelFile(labelPath, skeleton, imageShape, options) {
     try {
       const parts = line.split(/\s+/);
       if (parts.length < 5) {
-        console.warn(`Invalid line ${lineNum} in ${labelPath}: insufficient data`);
+        console.warn(
+          `Invalid line ${lineNum} in ${labelPath}: insufficient data`
+        );
         continue;
       }
       const fmt = detectLineFormat(parts);
@@ -580,16 +612,34 @@ function parseLabelFile(labelPath, skeleton, imageShape, options) {
         if (fmt === "detection_conf") {
           const score = parseStrictFloat(parts[5]);
           bboxes.push(
-            new PredictedBoundingBox({ x1, y1, x2: x1 + wPx, y2: y1 + hPx, category, score })
+            new PredictedBoundingBox({
+              x1,
+              y1,
+              x2: x1 + wPx,
+              y2: y1 + hPx,
+              category,
+              score
+            })
           );
         } else {
-          bboxes.push(new UserBoundingBox({ x1, y1, x2: x1 + wPx, y2: y1 + hPx, category }));
+          bboxes.push(
+            new UserBoundingBox({
+              x1,
+              y1,
+              x2: x1 + wPx,
+              y2: y1 + hPx,
+              category
+            })
+          );
         }
       } else if (fmt === "segmentation") {
         const coordValues = parts.slice(1).map(parseStrictFloat);
         const coords = [];
         for (let i = 0; i + 1 < coordValues.length; i += 2) {
-          coords.push([coordValues[i] * widthPx, coordValues[i + 1] * heightPx]);
+          coords.push([
+            coordValues[i] * widthPx,
+            coordValues[i + 1] * heightPx
+          ]);
         }
         rois.push(UserROI.fromPolygon(coords, { category }));
       } else {
@@ -620,7 +670,9 @@ function parseLabelFile(labelPath, skeleton, imageShape, options) {
         instances.push(Instance.fromNumpy({ pointsData: points, skeleton }));
       }
     } catch (e) {
-      console.warn(`Error parsing line ${lineNum} in ${labelPath}: ${e.message}`);
+      console.warn(
+        `Error parsing line ${lineNum} in ${labelPath}: ${e.message}`
+      );
       continue;
     }
   }
@@ -703,7 +755,9 @@ function writeRoiLabelFile(labelPath, rois, imageShape, nameToId) {
       const w = (maxX - minX) / widthPx;
       const h = (maxY - minY) / heightPx;
       out.push(
-        [String(classId), fmt6(xCenter), fmt6(yCenter), fmt6(w), fmt6(h)].join(" ")
+        [String(classId), fmt6(xCenter), fmt6(yCenter), fmt6(w), fmt6(h)].join(
+          " "
+        )
       );
     }
   }
@@ -740,10 +794,16 @@ function createDataYaml(yamlPath, skeleton, splitRatios, options) {
   } else if (skeleton !== null) {
     const connections = [];
     for (const edge of skeleton.edges) {
-      connections.push([skeleton.index(edge.source), skeleton.index(edge.destination)]);
+      connections.push([
+        skeleton.index(edge.source),
+        skeleton.index(edge.destination)
+      ]);
     }
     config["kpt_shape"] = [skeleton.nodes.length, 3];
-    config["flip_idx"] = Array.from({ length: skeleton.nodes.length }, (_, i) => i);
+    config["flip_idx"] = Array.from(
+      { length: skeleton.nodes.length },
+      (_, i) => i
+    );
     config["skeleton"] = connections;
     config["node_names"] = skeleton.nodes.map((node) => node.name);
   }
@@ -765,7 +825,9 @@ function buildClassNames(categories) {
     result.set(0, "object");
     return result;
   }
-  distinct.forEach((name, i) => result.set(i, name));
+  distinct.forEach((name, i) => {
+    result.set(i, name);
+  });
   return result;
 }
 function readLabels(datasetPath, options) {
@@ -800,7 +862,9 @@ function readLabels(datasetPath, options) {
   }
   const labeledFrames = [];
   const tracks = /* @__PURE__ */ new Map();
-  const imageFiles = fs6.readdirSync(imagesDir).filter((name) => READ_IMAGE_EXTENSIONS.includes(path2.extname(name).toLowerCase())).sort();
+  const imageFiles = fs6.readdirSync(imagesDir).filter(
+    (name) => READ_IMAGE_EXTENSIONS.includes(path2.extname(name).toLowerCase())
+  ).sort();
   for (const imageName of imageFiles) {
     const imageFile = path2.join(imagesDir, imageName);
     const stem = path2.basename(imageName, path2.extname(imageName));
@@ -812,11 +876,16 @@ function readLabels(datasetPath, options) {
     if (fs6.existsSync(labelFile)) {
       const imgShape = probeImageSize(imageFile) ?? imageSize;
       const parseSkeleton = skeleton ?? new Skeleton({ nodes: [] });
-      ({ instances, rois, bboxes } = parseLabelFile(labelFile, parseSkeleton, imgShape, {
-        classNames,
-        video,
-        frameIdx: 0
-      }));
+      ({ instances, rois, bboxes } = parseLabelFile(
+        labelFile,
+        parseSkeleton,
+        imgShape,
+        {
+          classNames,
+          video,
+          frameIdx: 0
+        }
+      ));
       for (let i = 0; i < instances.length; i++) {
         const trackName = `track_${i}`;
         let track = tracks.get(trackName);
@@ -881,7 +950,10 @@ function readLabelsSet(datasetPath, options) {
         const kptShape = dataConfig["kpt_shape"];
         if (Array.isArray(kptShape) && kptShape.length >= 2) {
           const nKeypoints = kptShape[0];
-          const nodes = Array.from({ length: nKeypoints }, (_, i) => new Node(String(i)));
+          const nodes = Array.from(
+            { length: nKeypoints },
+            (_, i) => new Node(String(i))
+          );
           skeleton = new Skeleton({ nodes });
         }
       }
@@ -933,11 +1005,25 @@ async function writeLabels(labels, datasetPath, options) {
     classNames
   });
   if (task === "detect") {
-    writeBboxLabels(labels, datasetPath, splitRatios, classNames, imageFormat, imageQuality);
+    writeBboxLabels(
+      labels,
+      datasetPath,
+      splitRatios,
+      classNames,
+      imageFormat,
+      imageQuality
+    );
     return;
   }
   if (task === "segment") {
-    writeRoiLabels(labels, datasetPath, splitRatios, classNames, imageFormat, imageQuality);
+    writeRoiLabels(
+      labels,
+      datasetPath,
+      splitRatios,
+      classNames,
+      imageFormat,
+      imageQuality
+    );
     return;
   }
   let splitLabels;
@@ -955,9 +1041,17 @@ async function writeLabels(labels, datasetPath, options) {
     const frames = splitData.labeledFrames;
     for (let lfIdx = 0; lfIdx < frames.length; lfIdx++) {
       const frame = frames[lfIdx];
-      const written = await writeFrameImage(frame, imagesDir, lfIdx, imageFormat, imageQuality);
+      const written = await writeFrameImage(
+        frame,
+        imagesDir,
+        lfIdx,
+        imageFormat,
+        imageQuality
+      );
       if (written === null) {
-        console.warn(`Could not load frame ${frame.frameIdx} from video, skipping.`);
+        console.warn(
+          `Could not load frame ${frame.frameIdx} from video, skipping.`
+        );
         continue;
       }
       const labelPath = path2.join(labelsDir, `${pad7(lfIdx)}.txt`);
@@ -1216,9 +1310,14 @@ function encodePng(rgba, width, height, compressLevel = null) {
   const raw = new Uint8Array((stride + 1) * height);
   for (let y = 0; y < height; y++) {
     raw[y * (stride + 1)] = 0;
-    raw.set(rgba.subarray(y * stride, y * stride + stride), y * (stride + 1) + 1);
+    raw.set(
+      rgba.subarray(y * stride, y * stride + stride),
+      y * (stride + 1) + 1
+    );
   }
-  const compressed = deflate(raw, { level });
+  const compressed = deflate(raw, {
+    level
+  });
   const ihdr = new Uint8Array(13);
   const dv = new DataView(ihdr.buffer);
   dv.setUint32(0, width);
@@ -1228,7 +1327,16 @@ function encodePng(rgba, width, height, compressLevel = null) {
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
-  const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const signature = new Uint8Array([
+    137,
+    80,
+    78,
+    71,
+    13,
+    10,
+    26,
+    10
+  ]);
   const chunks = [
     signature,
     pngChunk("IHDR", ihdr),
@@ -1361,7 +1469,9 @@ var JABS_DEFAULT_SYMMETRY_INDICES = [
 ];
 function makeJabsDefaultSkeleton() {
   const nodes = JABS_DEFAULT_KEYPOINT_NAMES.map((name) => new Node(name));
-  const edges = JABS_DEFAULT_EDGE_INDICES.map(([a, b]) => new Edge(nodes[a], nodes[b]));
+  const edges = JABS_DEFAULT_EDGE_INDICES.map(
+    ([a, b]) => new Edge(nodes[a], nodes[b])
+  );
   const symmetries = JABS_DEFAULT_SYMMETRY_INDICES.map(
     ([a, b]) => new Symmetry([nodes[a], nodes[b]])
   );
@@ -1369,8 +1479,14 @@ function makeJabsDefaultSkeleton() {
 }
 var JABS_DEFAULT_SKELETON = makeJabsDefaultSkeleton();
 function makeSimpleSkeleton(name, numPoints) {
-  const nodes = Array.from({ length: numPoints }, (_, i) => new Node(`${name}_kp${i}`));
-  const edges = Array.from({ length: Math.max(0, numPoints - 1) }, (_, i) => new Edge(nodes[i], nodes[i + 1]));
+  const nodes = Array.from(
+    { length: numPoints },
+    (_, i) => new Node(`${name}_kp${i}`)
+  );
+  const edges = Array.from(
+    { length: Math.max(0, numPoints - 1) },
+    (_, i) => new Edge(nodes[i], nodes[i + 1])
+  );
   return new Skeleton({ nodes, edges, name });
 }
 function predictionToInstance(data, confidence, skeleton, track) {
@@ -1391,14 +1507,22 @@ function predictionToInstance(data, confidence, skeleton, track) {
   }
   if (scores.length === 0) return null;
   const meanScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-  return PredictedInstance.fromNumpy({ pointsData, skeleton, track: track ?? null, score: meanScore });
+  return PredictedInstance.fromNumpy({
+    pointsData,
+    skeleton,
+    track: track ?? null,
+    score: meanScore
+  });
 }
 function staticObjectToRoi(name, coords, video) {
   let geometry;
   if (coords.length === 1) {
     geometry = { type: "Point", coordinates: [coords[0][0], coords[0][1]] };
   } else {
-    geometry = { type: "MultiPoint", coordinates: coords.map(([x, y]) => [x, y]) };
+    geometry = {
+      type: "MultiPoint",
+      coordinates: coords.map(([x, y]) => [x, y])
+    };
   }
   const category = name === "corners" ? "arena" : "anchor";
   return new UserROI({ geometry, name, category, source: "jabs", video });
@@ -1433,7 +1557,9 @@ async function loadJabs(labelsPath, options) {
   try {
     const pointsDs = getDataset(file, "poseest/points");
     if (pointsDs == null) {
-      throw new Error(`JABS pose file is missing 'poseest/points': ${labelsPath}`);
+      throw new Error(
+        `JABS pose file is missing 'poseest/points': ${labelsPath}`
+      );
     }
     const pShape = Array.from(pointsDs.shape, num);
     const numFrames = pShape[0];
@@ -1463,17 +1589,23 @@ async function loadJabs(labelsPath, options) {
       const idDs = getDataset(file, "poseest/instance_track_id");
       const countDs = getDataset(file, "poseest/instance_count");
       if (idDs == null) {
-        throw new Error(`JABS pose file is missing 'poseest/instance_track_id': ${labelsPath}`);
+        throw new Error(
+          `JABS pose file is missing 'poseest/instance_track_id': ${labelsPath}`
+        );
       }
       if (countDs == null) {
-        throw new Error(`JABS pose file is missing 'poseest/instance_count': ${labelsPath}`);
+        throw new Error(
+          `JABS pose file is missing 'poseest/instance_count': ${labelsPath}`
+        );
       }
       idVal = idDs.value;
       instanceCountVal = countDs.value;
     } else if (poseVersion > 3) {
       const idDs = getDataset(file, "poseest/instance_embed_id");
       if (idDs == null) {
-        throw new Error(`JABS pose file is missing 'poseest/instance_embed_id': ${labelsPath}`);
+        throw new Error(
+          `JABS pose file is missing 'poseest/instance_embed_id': ${labelsPath}`
+        );
       }
       idVal = idDs.value;
     }
@@ -1510,7 +1642,12 @@ async function loadJabs(labelsPath, options) {
             tracks.set(poseId, new Track(String(poseId)));
           }
           const { data, conf } = extractInstance(frameIdx, curId);
-          const inst = predictionToInstance(data, conf, skeleton, tracks.get(poseId));
+          const inst = predictionToInstance(
+            data,
+            conf,
+            skeleton,
+            tracks.get(poseId)
+          );
           if (inst) instances.push(inst);
         }
       }
@@ -1872,7 +2009,13 @@ function drawGeometry(ctx, geometry, rgb, lineWidth, fillAlpha) {
     case "Point": {
       const radius = Math.max(lineWidth, 2);
       ctx.beginPath();
-      ctx.arc(geometry.coordinates[0], geometry.coordinates[1], radius, 0, Math.PI * 2);
+      ctx.arc(
+        geometry.coordinates[0],
+        geometry.coordinates[1],
+        radius,
+        0,
+        Math.PI * 2
+      );
       ctx.fillStyle = rgbToCSS(rgb);
       ctx.fill();
       break;
@@ -1954,6 +2097,7 @@ function applyOverlay(image, overlay, opts) {
   const outline = opts?.outline ?? false;
   const outlineWidth = opts?.outlineWidth ?? 1;
   const outlineColor = opts?.outlineColor ?? null;
+  const explicitColors = opts?.colors ?? null;
   if (!Array.isArray(overlay)) {
     if (isLabelImageLike(overlay)) {
       drawLabelImage(image, overlay, {
@@ -1973,7 +2117,7 @@ function applyOverlay(image, overlay, opts) {
       "Pass individual LabelImage objects to applyOverlay, not a list. Per-frame dispatch from a list[LabelImage] should happen at the renderVideo level."
     );
   }
-  const colors = getPalette(palette, overlay.length);
+  const colors = explicitColors ?? getPalette(palette, overlay.length);
   if (isSegmentationMask(first)) {
     drawMasks(image, overlay, { colors, alpha });
   } else if (isROI(first)) {
@@ -2020,11 +2164,16 @@ var DEFAULT_COLOR = PALETTES.standard[0];
 async function renderImage(source, options = {}) {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } = extractSourceData(source, opts);
+  let effectiveOverlay = opts.overlay ?? void 0;
+  if (effectiveOverlay == null && !Array.isArray(source)) {
+    const renderedFrame = renderedLabeledFrame(source);
+    if (renderedFrame && renderedFrame.masks.length > 0) {
+      effectiveOverlay = [...renderedFrame.masks];
+    }
+  }
   const trailsPossible = opts.showTrails && opts.trailLength > 0 && !Array.isArray(source);
   if (instances.length === 0 && !opts.image && !hasNonInstanceAnnotations(source) && !trailsPossible) {
-    throw new Error(
-      "No instances to render and no background image provided"
-    );
+    throw new Error("No instances to render and no background image provided");
   }
   const width = opts.image?.width ?? opts.width ?? frameSize[0];
   const height = opts.image?.height ?? opts.height ?? frameSize[1];
@@ -2052,19 +2201,38 @@ async function renderImage(source, options = {}) {
     ctx.fillStyle = rgbToCSS(bgColor);
     ctx.fillRect(0, 0, scaledWidth, scaledHeight);
   }
-  if (opts.overlay !== void 0 && opts.overlay !== null) {
+  const hasTracks = !Array.isArray(source) && "labeledFrames" in source ? source.tracks.length > 0 : instances.some((inst) => inst.track != null);
+  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
+  const globalTrackIndexMap = opts.overlayTrackIndexMap ? opts.overlayTrackIndexMap : trackIndexMap;
+  const globalTracks = opts.overlayTrackIndexMap ? Array.from(opts.overlayTrackIndexMap.keys()) : tracks;
+  if (effectiveOverlay !== void 0 && effectiveOverlay !== null) {
+    const trackColorable = opts.overlayTrackIndexMap != null || !Array.isArray(source) && "labeledFrames" in source;
+    let overlayColors = null;
+    if (colorScheme === "track" && trackColorable && globalTrackIndexMap.size > 0 && Array.isArray(effectiveOverlay) && effectiveOverlay.length > 0) {
+      const ovPal = getPalette(
+        opts.palette,
+        Math.max(globalTrackIndexMap.size, 1)
+      );
+      overlayColors = effectiveOverlay.map(
+        (el) => {
+          const tidx = el.track ? globalTrackIndexMap.get(el.track) : void 0;
+          return tidx !== void 0 ? ovPal[tidx % ovPal.length] : ovPal[0];
+        }
+      );
+    }
     const overlayOpts = {
       alpha: opts.overlayAlpha,
       palette: opts.overlayPalette,
       outline: opts.overlayOutline,
       outlineWidth: opts.overlayOutlineWidth,
-      outlineColor: opts.overlayOutlineColor
+      outlineColor: opts.overlayOutlineColor,
+      colors: overlayColors
     };
     if (opts.scale === 1) {
       const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
       applyOverlay(
         imageData,
-        opts.overlay,
+        effectiveOverlay,
         overlayOpts
       );
       ctx.putImageData(imageData, 0, 0);
@@ -2075,7 +2243,7 @@ async function renderImage(source, options = {}) {
       const imageData = srcCtx.getImageData(0, 0, width, height);
       applyOverlay(
         imageData,
-        opts.overlay,
+        effectiveOverlay,
         overlayOpts
       );
       srcCtx.putImageData(imageData, 0, 0);
@@ -2085,15 +2253,13 @@ async function renderImage(source, options = {}) {
   }
   const edgeInds = skeleton?.edgeIndices ?? [];
   const nodeNames = skeleton?.nodeNames ?? [];
-  const hasTracks = instances.some((inst) => inst.track != null);
-  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
   const colors = buildColorMap(
     colorScheme,
     instances,
     nodeNames.length,
     opts.palette,
-    tracks,
-    trackIndexMap
+    globalTracks,
+    globalTrackIndexMap
   );
   const renderCtx = new RenderContext(
     ctx,
@@ -2204,7 +2370,7 @@ async function renderImage(source, options = {}) {
       }
     }
     if (opts.perInstanceCallback) {
-      const trackIdx = instance.track ? trackIndexMap.get(instance.track) ?? null : null;
+      const trackIdx = instance.track ? globalTrackIndexMap.get(instance.track) ?? null : null;
       const instCtx = new InstanceContext(
         ctx,
         instIdx,
@@ -2223,7 +2389,18 @@ async function renderImage(source, options = {}) {
   if (opts.postRenderCallback) {
     opts.postRenderCallback(renderCtx);
   }
-  return ctx.getImageData(0, 0, scaledWidth, scaledHeight);
+  return ctx.getImageData(
+    0,
+    0,
+    scaledWidth,
+    scaledHeight
+  );
+}
+function renderedLabeledFrame(source) {
+  if ("labeledFrames" in source) {
+    return source.labeledFrames[0];
+  }
+  return source;
 }
 function hasNonInstanceAnnotations(source) {
   if (Array.isArray(source)) return false;
@@ -2266,7 +2443,9 @@ function extractSourceData(source, options) {
     }
     const tracks2 = Array.from(trackSet);
     const trackIndexMap2 = /* @__PURE__ */ new Map();
-    tracks2.forEach((t, i) => trackIndexMap2.set(t, i));
+    tracks2.forEach((t, i) => {
+      trackIndexMap2.set(t, i);
+    });
     return {
       instances,
       skeleton: skeleton2,
@@ -2285,7 +2464,9 @@ function extractSourceData(source, options) {
     }
     const tracks2 = Array.from(trackSet);
     const trackIndexMap2 = /* @__PURE__ */ new Map();
-    tracks2.forEach((t, i) => trackIndexMap2.set(t, i));
+    tracks2.forEach((t, i) => {
+      trackIndexMap2.set(t, i);
+    });
     let frameSize2 = [options.width ?? 0, options.height ?? 0];
     if (frame.video) {
       const video = frame.video;
@@ -2310,7 +2491,9 @@ function extractSourceData(source, options) {
   if (labels.labeledFrames.length === 0) {
     const tracks2 = labels.tracks ?? [];
     const trackIndexMap2 = /* @__PURE__ */ new Map();
-    tracks2.forEach((t, i) => trackIndexMap2.set(t, i));
+    tracks2.forEach((t, i) => {
+      trackIndexMap2.set(t, i);
+    });
     return {
       instances: [],
       skeleton: labels.skeletons?.[0] ?? null,
@@ -2335,7 +2518,9 @@ function extractSourceData(source, options) {
   }
   const tracks = labels.tracks ?? [];
   const trackIndexMap = /* @__PURE__ */ new Map();
-  tracks.forEach((t, i) => trackIndexMap.set(t, i));
+  tracks.forEach((t, i) => {
+    trackIndexMap.set(t, i);
+  });
   return {
     instances: firstFrame.instances,
     skeleton,
@@ -2430,53 +2615,11 @@ async function renderVideo(source, outputPath, options = {}) {
       "ffmpeg not found. Please install ffmpeg and ensure it is in your PATH.\nInstallation: https://ffmpeg.org/download.html"
     );
   }
-  const frames = Array.isArray(source) ? source : source.labeledFrames;
-  let selectedFrames = frames;
-  if (options.frameInds) {
-    selectedFrames = options.frameInds.map((i) => frames[i]).filter((f) => f !== void 0);
-  } else if (options.start !== void 0 || options.end !== void 0) {
-    const start = options.start ?? 0;
-    const end = options.end ?? frames.length;
-    selectedFrames = frames.slice(start, end);
-  }
-  if (selectedFrames.length === 0) {
-    throw new Error("No frames to render");
-  }
-  let videoOverlay = options.overlay;
-  if (videoOverlay === void 0 && !Array.isArray(source) && source.labelImages.length > 0) {
-    const targetVideo = selectedFrames[0].video;
-    const videoLabelImages = source.getLabelImages({ video: targetVideo });
-    if (videoLabelImages.length > 0) {
-      videoOverlay = videoLabelImages;
-    }
-  }
-  const overlayForFrame = makeOverlayResolver(videoOverlay);
-  const framesByVideo = /* @__PURE__ */ new Map();
-  const trailPtsCache = options.showTrails ? /* @__PURE__ */ new Map() : void 0;
-  const canonicalTracks = Array.isArray(source) ? void 0 : source.tracks;
-  if (options.showTrails) {
-    for (const lf of frames) {
-      let videoFrames = framesByVideo.get(lf.video);
-      if (!videoFrames) {
-        videoFrames = /* @__PURE__ */ new Map();
-        framesByVideo.set(lf.video, videoFrames);
-      }
-      videoFrames.set(lf.frameIdx, lf);
-    }
-  }
-  const optsForFrame = (frame, position) => {
-    const { overlay: _ignored, ...rest } = options;
-    void _ignored;
-    const base = options.showTrails ? {
-      ...rest,
-      trailFrames: framesByVideo.get(frame.video),
-      trailTracks: options.trailTracks ?? canonicalTracks,
-      trailPtsCache
-    } : { ...rest };
-    base.overlay = overlayForFrame(frame, position);
-    return base;
-  };
-  const firstImage = await renderImage(selectedFrames[0], optsForFrame(selectedFrames[0], 0));
+  const { selectedFrames, optsForFrame } = buildFrameRenderer(source, options);
+  const firstImage = await renderImage(
+    selectedFrames[0],
+    optsForFrame(selectedFrames[0], 0)
+  );
   const width = firstImage.width;
   const height = firstImage.height;
   const fps = options.fps ?? 30;
@@ -2552,6 +2695,72 @@ async function renderVideo(source, outputPath, options = {}) {
     });
     ffmpeg.on("error", reject);
   });
+}
+function buildFrameRenderer(source, options = {}) {
+  const frames = Array.isArray(source) ? source : source.labeledFrames;
+  let selectedFrames = frames;
+  if (options.frameInds) {
+    selectedFrames = options.frameInds.map((i) => frames[i]).filter((f) => f !== void 0);
+  } else if (options.start !== void 0 || options.end !== void 0) {
+    const start = options.start ?? 0;
+    const end = options.end ?? frames.length;
+    selectedFrames = frames.slice(start, end);
+  }
+  if (selectedFrames.length === 0) {
+    throw new Error("No frames to render");
+  }
+  let videoOverlay = options.overlay;
+  if (videoOverlay === void 0 && !Array.isArray(source) && source.labelImages.length > 0) {
+    const targetVideo = selectedFrames[0].video;
+    const videoLabelImages = source.getLabelImages({ video: targetVideo });
+    if (videoLabelImages.length > 0) {
+      videoOverlay = videoLabelImages;
+    }
+  }
+  if (videoOverlay === void 0 && !Array.isArray(source) && source.masks.length > 0) {
+    const targetVideo = selectedFrames[0].video;
+    const labels = source;
+    if (labels.getMasks({ video: targetVideo }).length > 0) {
+      videoOverlay = (frameIdx) => labels.getMasks({ video: targetVideo, frameIdx });
+    }
+  }
+  const overlayForFrame = makeOverlayResolver(videoOverlay);
+  const framesByVideo = /* @__PURE__ */ new Map();
+  const trailPtsCache = options.showTrails ? /* @__PURE__ */ new Map() : void 0;
+  const canonicalTracks = Array.isArray(source) ? void 0 : source.tracks;
+  const globalTracks = canonicalTracks ?? [];
+  const hasTracks = globalTracks.length > 0;
+  const resolvedScheme = determineColorScheme(
+    options.colorBy ?? "auto",
+    hasTracks,
+    false
+  );
+  const overlayTrackIndexMap = hasTracks ? new Map(globalTracks.map((t, i) => [t, i])) : void 0;
+  if (options.showTrails) {
+    for (const lf of frames) {
+      let videoFrames = framesByVideo.get(lf.video);
+      if (!videoFrames) {
+        videoFrames = /* @__PURE__ */ new Map();
+        framesByVideo.set(lf.video, videoFrames);
+      }
+      videoFrames.set(lf.frameIdx, lf);
+    }
+  }
+  const optsForFrame = (frame, position) => {
+    const { overlay: _ignored, ...rest } = options;
+    void _ignored;
+    const base = options.showTrails ? {
+      ...rest,
+      trailFrames: framesByVideo.get(frame.video),
+      trailTracks: options.trailTracks ?? canonicalTracks,
+      trailPtsCache
+    } : { ...rest };
+    base.overlay = overlayForFrame(frame, position);
+    base.colorBy = resolvedScheme;
+    base.overlayTrackIndexMap = overlayTrackIndexMap;
+    return base;
+  };
+  return { selectedFrames, optsForFrame };
 }
 function isLabelImageLike2(value) {
   return typeof value === "object" && value !== null && "data" in value && value.data instanceof Int32Array;
@@ -2672,6 +2881,7 @@ export {
   _findAnnotationMatches,
   _registerCentroidFactory,
   _registerMaskFactory,
+  _relinkFromPredicted,
   _resolveMergedIsNegative,
   applyOverlay,
   buildClassNamesFromBboxes,
