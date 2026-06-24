@@ -1303,8 +1303,9 @@ declare class InstanceMatcher {
 declare class TrackMatcher {
     method: TrackMatchMethod;
     /**
-     * @param method - The matching method (default NAME). A bare string is coerced
-     *   + validated.
+     * @param method - The matching method (default IDENTITY — matches only the
+     *   same Track object; correctness-first). Use NAME to match by track name. A
+     *   bare string is coerced + validated.
      */
     constructor(method?: TrackMatchMethod | string);
     /** Check if two tracks match according to the configured method. */
@@ -2186,7 +2187,13 @@ declare class Labels {
      * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE; string ->
      *   validated; else used as-is).
      * @param opts.video - Video matcher (`null` -> AUTO).
-     * @param opts.track - Track matcher (`null` -> NAME).
+     * @param opts.track - Track matcher (`null` -> IDENTITY). The default matches
+     *   tracks only by object identity (the same Track instance) and appends all
+     *   other tracks as new — a correctness-first default that never collapses
+     *   distinct tracks by their (often arbitrary, tracker-assigned) names. Pass
+     *   `"name"` to match tracks by their name attribute instead, for cases where
+     *   track names are semantically meaningful (e.g. user-assigned identities or
+     *   identity-classification model outputs).
      * @param opts.frame - The frame merge strategy as a RAW string (default
      *   `"auto"`; NOT validated against the enum — an invalid value falls through
      *   `LabeledFrame.merge`'s strategy chain into the AUTO branch).
@@ -2208,6 +2215,37 @@ declare class Labels {
         errorMode?: string;
     }): Promise<MergeResult>;
     /**
+     * Warn when name-matched tracks diverge spatially on all shared frames.
+     *
+     * Faithful port of Python `Labels._warn_track_name_divergence`
+     * (labels.py:3672-3776, PR talmolab/sleap-io#448). Name-based track merging
+     * silently coalesces tracks that share a name across two `Labels`. If those
+     * tracks actually label different animals, this can glue distinct tracks
+     * together. This helper emits a diagnostic `console.warn` (purely additive; it
+     * never changes the merge result) when a track pair matched by name carries
+     * instances on overlapping frames that do not spatially correspond under the
+     * merge's instance matcher.
+     *
+     * The check is a no-op unless track matching is by NAME (divergence is
+     * meaningless for identity/object track matching) and the instance matcher is
+     * spatial (SPATIAL or IOU). A warning fires at most once per colliding
+     * `(otherTrack, selfTrack)` pair, only when the pair has at least one shared
+     * frame with instances on both sides and zero spatial instance matches across
+     * all such frames.
+     *
+     * @param other - The other `Labels` being merged into `self`.
+     * @param videoMap - Mapping from `other` videos to the matched `self` videos,
+     *   as built in {@link merge}.
+     * @param trackMap - Mapping from `other` tracks to the matched `self` tracks
+     *   (or back to themselves if appended as new), as built in {@link merge}.
+     * @param trackMatcher - The `TrackMatcher` used for the merge. The check is
+     *   skipped unless its method is NAME.
+     * @param instanceMatcher - The `InstanceMatcher` used for the merge. Reused
+     *   here as the divergence primitive (no new threshold introduced). Skipped
+     *   when its method is IDENTITY (see below).
+     */
+    private _warnTrackNameDivergence;
+    /**
      * Build correspondence maps between this `Labels` and another WITHOUT mutating
      * either (read-only twin of {@link merge}).
      *
@@ -2222,7 +2260,13 @@ declare class Labels {
      * @param other - The `Labels` to match against (maps `other` -> `self`).
      * @param opts.video - Video matcher (`null` -> AUTO).
      * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE).
-     * @param opts.track - Track matcher (`null` -> NAME).
+     * @param opts.track - Track matcher (`null` -> IDENTITY). The default matches
+     *   tracks only by object identity (the same Track instance); all other tracks
+     *   map to `null` — a correctness-first default that never collapses distinct
+     *   tracks by their (often arbitrary, tracker-assigned) names. Pass `"name"` to
+     *   match tracks by their name attribute instead, for cases where track names
+     *   are semantically meaningful (e.g. user-assigned identities or
+     *   identity-classification model outputs).
      */
     match(other: Labels, opts?: {
         video?: string | VideoMatcher | null;
