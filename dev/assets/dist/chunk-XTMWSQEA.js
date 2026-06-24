@@ -2362,10 +2362,11 @@ function hasKey(obj, key) {
   return Object.prototype.hasOwnProperty.call(obj, key);
 }
 function _getEffectiveShape(video) {
-  if (video.originalVideo != null) {
-    const originalShape = _getEffectiveShape(video.originalVideo);
-    if (originalShape != null) {
-      return originalShape;
+  const source = video.sourceVideo;
+  if (source != null) {
+    const sourceShape = _getEffectiveShape(source);
+    if (sourceShape != null) {
+      return sourceShape;
     }
   }
   if (hasKey(video.backendMetadata, "shape")) {
