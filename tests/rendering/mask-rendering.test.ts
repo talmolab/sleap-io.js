@@ -8,7 +8,11 @@
 
 import { describe, it, expect } from "../bun-test";
 import { renderImage } from "../../src/rendering/render";
-import { renderVideo, checkFfmpeg } from "../../src/rendering/video";
+import {
+  renderVideo,
+  checkFfmpeg,
+  buildFrameRenderer,
+} from "../../src/rendering/video";
 import { UserSegmentationMask } from "../../src/model/mask";
 import { UserLabelImage } from "../../src/model/label-image";
 import { UserBoundingBox } from "../../src/model/bbox";
@@ -508,9 +512,64 @@ describe("color overlays by track identity", () => {
   });
 
   it("renderVideo per-frame masks keep stable track colors across frames", async () => {
-    if (!(await checkFfmpeg())) return; // ffmpeg-gated smoke test
-    // End-to-end: renderVideo auto-resolves masks per frame (callable keyed by
-    // frame index) and routes them to renderImage, which track-colors them.
+    // Real, ffmpeg-free pixel-sampling test for the renderVideo track-coloring
+    // path (JS #162). Two tracked masks SWAP their order within `frame.masks`
+    // between frame 0 and frame 1 while their `.track` stays fixed. We exercise
+    // the EXACT code path renderVideo uses by building its per-frame renderer
+    // (`buildFrameRenderer`) and rendering each frame with `renderImage` — this
+    // is what renderVideo does before piping the RGBA to ffmpeg, so the
+    // coloring assertions run in CI without ffmpeg installed.
+    const trackA = new Track("A");
+    const trackB = new Track("B");
+    const labels = makeTrackedMaskLabels(
+      // frame 0: [A, B]; frame 1: [B, A] (positional coloring would flicker).
+      [boxMask(BOX_A, trackA), boxMask(BOX_B, trackB)],
+      [boxMask(BOX_B, trackB), boxMask(BOX_A, trackA)],
+      [trackA, trackB],
+    );
+
+    const { selectedFrames, optsForFrame } = buildFrameRenderer(labels, {
+      width: 64,
+      height: 64,
+      colorBy: "track",
+      background: "black",
+      overlayAlpha: 1.0,
+      fps: 30,
+    });
+    expect(selectedFrames.length).toBe(2);
+
+    // Render each selected frame exactly as renderVideo would (bare per-frame
+    // LabeledFrame + the per-frame options that carry the GLOBAL track map).
+    const frame0 = await renderImage(
+      selectedFrames[0],
+      optsForFrame(selectedFrames[0], 0),
+    );
+    const frame1 = await renderImage(
+      selectedFrames[1],
+      optsForFrame(selectedFrames[1], 1),
+    );
+
+    // Sample pixels inside each track's mask region in both frames.
+    const a0 = boxCenterColor(frame0, BOX_A);
+    const a1 = boxCenterColor(frame1, BOX_A);
+    const b0 = boxCenterColor(frame0, BOX_B);
+    const b1 = boxCenterColor(frame1, BOX_B);
+
+    // (a) No flicker: each track keeps the SAME color across both frames,
+    // despite its list index swapping between frames.
+    expect(a0).toEqual(a1);
+    expect(b0).toEqual(b1);
+    // (b) The two tracks have DISTINCT colors.
+    expect(arrEq(a0, b0)).toBe(false);
+    // The colors are GLOBAL-track-keyed (A=0, B=1) from the pose palette
+    // ("standard"), NOT the positional overlay_palette ("distinct").
+    expect(a0).toEqual(STANDARD[0]);
+    expect(b0).toEqual(STANDARD[1]);
+    expect(arrEq(a0, DISTINCT[0])).toBe(false);
+  });
+
+  it("renderVideo per-frame masks render to an mp4 (ffmpeg smoke)", async () => {
+    if (!(await checkFfmpeg())) return; // ffmpeg-gated end-to-end smoke test
     const trackA = new Track("A");
     const trackB = new Track("B");
     const labels = makeTrackedMaskLabels(
