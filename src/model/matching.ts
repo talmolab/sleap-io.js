@@ -542,11 +542,20 @@ function hasKey(obj: Record<string, unknown>, key: string): boolean {
 }
 
 /**
- * Get the effective shape for comparison purposes (matching.py:531-555).
+ * Get the effective shape for comparison purposes (matching.py:531-559).
  *
- * Recurses into `originalVideo` FIRST (returns its effective shape if non-null);
- * else uses a KEY-PRESENCE check on `backendMetadata["shape"]` (returns the
- * stored value AS-IS, even if `null`); else falls back to `video.shape`.
+ * Walks the `sourceVideo` chain NEAREST-FIRST and returns the first known shape
+ * along it. An embedded subset's frame count is a view of its source video (e.g.
+ * a 27-frame embedded subset of an 80-frame restored original), so the nearest
+ * source's full shape is the right identity for shape comparison — even when the
+ * deeper chain root has an unknown shape. Recursion bottoms out at the root
+ * (`sourceVideo == null`). If no source shape is found, uses a KEY-PRESENCE
+ * check on `backendMetadata["shape"]` (returns the stored value AS-IS, even if
+ * `null`); else falls back to `video.shape`.
+ *
+ * This reads only in-memory metadata (no file I/O); the heavier `isSameFile`
+ * identity check is reserved for the actual match so that shape stays a
+ * permissive pre-filter.
  *
  * PARITY: uses real key-presence (`hasOwnProperty`), NOT truthiness, and does
  * NOT rely on the JS `shape` getter's `??` ordering.
@@ -554,11 +563,12 @@ function hasKey(obj: Record<string, unknown>, key: string): boolean {
 export function _getEffectiveShape(
   video: Video,
 ): [number, number, number, number] | null {
-  // For embedded videos, prefer original_video's shape.
-  if (video.originalVideo != null) {
-    const originalShape = _getEffectiveShape(video.originalVideo);
-    if (originalShape != null) {
-      return originalShape;
+  // Prefer the nearest source's shape (subset frame counts are a view of it).
+  const source = video.sourceVideo;
+  if (source != null) {
+    const sourceShape = _getEffectiveShape(source);
+    if (sourceShape != null) {
+      return sourceShape;
     }
   }
 
