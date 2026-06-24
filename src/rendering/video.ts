@@ -84,6 +84,23 @@ export async function renderVideo(
       videoOverlay = videoLabelImages;
     }
   }
+  // Auto-use segmentation masks as overlay when no explicit overlay (and no
+  // label images) resolved. Masks live on specific frames at arbitrary frame
+  // indices, so resolve them per-frame via a callable keyed by the source frame
+  // index rather than a position-indexed list. label images take precedence
+  // (resolved above). Mirrors Python render_video (core.py L1572-1588).
+  if (
+    videoOverlay === undefined &&
+    !Array.isArray(source) &&
+    source.masks.length > 0
+  ) {
+    const targetVideo = selectedFrames[0].video;
+    const labels = source;
+    if (labels.getMasks({ video: targetVideo }).length > 0) {
+      videoOverlay = (frameIdx: number) =>
+        labels.getMasks({ video: targetVideo, frameIdx });
+    }
+  }
   const overlayForFrame = makeOverlayResolver(videoOverlay);
 
   // Build per-video temporal context for motion trails once (keyed by frame

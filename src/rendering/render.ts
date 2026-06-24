@@ -4,7 +4,13 @@ import type { Labels } from "../model/labels.js";
 import type { LabeledFrame } from "../model/labeled-frame.js";
 import type { Instance, PredictedInstance, Track } from "../model/instance.js";
 import type { Skeleton } from "../model/skeleton.js";
-import type { RenderOptions, RGB, ColorScheme, PaletteName } from "./types.js";
+import type {
+  RenderOptions,
+  RGB,
+  ColorScheme,
+  PaletteName,
+  Overlay,
+} from "./types.js";
 import {
   getPalette,
   resolveColor,
@@ -99,6 +105,19 @@ export async function renderImage(
   const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } =
     extractSourceData(source, opts);
 
+  // Auto-use the frame's segmentation masks as the overlay when no explicit
+  // overlay is given and the frame carries masks. Mirrors Python render_image
+  // (core.py L1142-1156): a segmentation-only frame still draws its masks. Only
+  // masks are auto-resolved here (not label images), and an explicit overlay
+  // always wins.
+  let effectiveOverlay: Overlay | undefined = opts.overlay ?? undefined;
+  if (effectiveOverlay == null && !Array.isArray(source)) {
+    const renderedFrame = renderedLabeledFrame(source);
+    if (renderedFrame && renderedFrame.masks.length > 0) {
+      effectiveOverlay = [...renderedFrame.masks];
+    }
+  }
+
   // Motion trails can contribute frames even when the current frame is empty
   // (past frames supply the trail), so they relax the "nothing to render" guard
   // for a Labels / LabeledFrame source. Mirrors Python PR #434.
@@ -153,6 +172,14 @@ export async function renderImage(
     ctx.fillRect(0, 0, scaledWidth, scaledHeight);
   }
 
+  // Determine the color scheme up front (hoisted above the overlay block so
+  // track-colored overlays can match the pose/centroid/trail track colors).
+  // Mirrors Python render_image (core.py L1183-1187, PR #470). `hasTracks` is
+  // instance-based here (consistent with the existing pose path); the overlay
+  // track-color gate below additionally requires a Labels source with tracks.
+  const hasTracks = instances.some((inst) => inst.track != null);
+  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
+
   // Apply the annotation overlay AFTER the background and BEFORE trails/poses,
   // mirroring Python render_image (core.py L1159-1180: overlay applied on the
   // base frame, before trails/centroids/poses).
@@ -164,20 +191,49 @@ export async function renderImage(
   // replicate that equivalent: read the canvas at source resolution, blend the
   // overlay in source space, then scale-composite back onto the (possibly
   // scaled) canvas. When `scale === 1` this is an in-place read/blend/write.
-  if (opts.overlay !== undefined && opts.overlay !== null) {
+  if (effectiveOverlay !== undefined && effectiveOverlay !== null) {
+    // Color overlay elements (masks/ROIs/bboxes) by track identity when
+    // color_by resolves to "track", matching poses/centroids/trails (same
+    // `palette`). Otherwise fall through to positional `overlayPalette`
+    // coloring. Gated on a Labels source with tracks (track-less labels stay
+    // positional, mirroring Python `has_tracks` at render_video level). A
+    // single LabelImage overlay is not an array, so label images are skipped.
+    // Untracked elements fall back to the first palette color. Mirrors Python
+    // render_image (core.py L1216-1239, PR #470).
+    let overlayColors: RGB[] | null = null;
+    if (
+      colorScheme === "track" &&
+      !Array.isArray(source) &&
+      "labeledFrames" in source &&
+      tracks.length > 0 &&
+      Array.isArray(effectiveOverlay) &&
+      effectiveOverlay.length > 0
+    ) {
+      const ovPal = getPalette(
+        opts.palette as PaletteName,
+        Math.max(tracks.length, 1),
+      );
+      overlayColors = (effectiveOverlay as { track?: Track | null }[]).map(
+        (el) => {
+          const tidx = el.track ? trackIndexMap.get(el.track) : undefined;
+          return tidx !== undefined ? ovPal[tidx % ovPal.length] : ovPal[0];
+        },
+      );
+    }
     const overlayOpts = {
       alpha: opts.overlayAlpha,
       palette: opts.overlayPalette,
       outline: opts.overlayOutline,
       outlineWidth: opts.overlayOutlineWidth,
       outlineColor: opts.overlayOutlineColor,
+      colors: overlayColors,
     };
     if (opts.scale === 1) {
       // Fast path: blend directly on the scaled canvas (== source resolution).
       const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
       applyOverlay(
         imageData as unknown as ImageData,
-        opts.overlay,
+        effectiveOverlay,
         overlayOpts,
       );
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -194,7 +250,7 @@ export async function renderImage(
       const imageData = srcCtx.getImageData(0, 0, width, height);
       applyOverlay(
         imageData as unknown as ImageData,
-        opts.overlay,
+        effectiveOverlay,
         overlayOpts,
       );
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -208,10 +264,6 @@ export async function renderImage(
   // Get skeleton info
   const edgeInds = skeleton?.edgeIndices ?? [];
   const nodeNames = skeleton?.nodeNames ?? [];
-
-  // Determine color scheme
-  const hasTracks = instances.some((inst) => inst.track != null);
-  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
 
   // Build color map
   const colors = buildColorMap(
@@ -411,6 +463,21 @@ export async function renderImage(
     scaledWidth,
     scaledHeight,
   ) as unknown as ImageData;
+}
+
+/**
+ * The single `LabeledFrame` that `renderImage` renders for a non-array source:
+ * the `LabeledFrame` itself, or a `Labels`' first labeled frame. Used to
+ * auto-resolve that frame's segmentation masks as the overlay. Returns
+ * `undefined` for an empty `Labels`.
+ */
+function renderedLabeledFrame(
+  source: Labels | LabeledFrame,
+): LabeledFrame | undefined {
+  if ("labeledFrames" in source) {
+    return (source as Labels).labeledFrames[0];
+  }
+  return source as LabeledFrame;
 }
 
 /**

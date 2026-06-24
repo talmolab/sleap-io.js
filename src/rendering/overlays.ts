@@ -719,7 +719,11 @@ function isROI(value: unknown): value is ROI {
  * @param image - RGBA ImageData, mutated in place.
  * @param overlay - A LabelImage, or a list of SegmentationMask / ROI / BoundingBox.
  * @param opts - `alpha` (0.3), `palette` ("distinct"), `outline` (false),
- *   `outlineWidth` (1), `outlineColor` (null).
+ *   `outlineWidth` (1), `outlineColor` (null), plus optional per-element
+ *   `colors` for a list overlay. When `colors` is provided it overrides the
+ *   positional `palette` coloring (used by callers to color overlays by track
+ *   identity); it must match the overlay length and is ignored for label
+ *   images. Mirrors Python `_apply_overlay` (core.py L473-566, PR #470).
  * @returns The same ImageData.
  */
 export function applyOverlay(
@@ -736,6 +740,7 @@ export function applyOverlay(
     outline?: boolean;
     outlineWidth?: number;
     outlineColor?: RGB | null;
+    colors?: RGB[] | null;
   },
 ): ImageData {
   const alpha = clampAlpha(opts?.alpha ?? 0.3);
@@ -743,6 +748,7 @@ export function applyOverlay(
   const outline = opts?.outline ?? false;
   const outlineWidth = opts?.outlineWidth ?? 1;
   const outlineColor = opts?.outlineColor ?? null;
+  const explicitColors = opts?.colors ?? null;
 
   // Single LabelImage (or raw Int32Array-backed) overlay.
   if (!Array.isArray(overlay)) {
@@ -772,7 +778,8 @@ export function applyOverlay(
     );
   }
 
-  const colors = getPalette(palette, overlay.length);
+  // Explicit per-element colors (e.g. track-keyed) override positional palette.
+  const colors = explicitColors ?? getPalette(palette, overlay.length);
 
   if (isSegmentationMask(first)) {
     drawMasks(image, overlay as SegmentationMask[], { colors, alpha });
