@@ -1362,3 +1362,123 @@ describe("Labels.merge — original_video OR-logic (GROUP J)", () => {
 // `hasattr(result, "unresolved_videos")`; the hard requirements (successful, +1
 // video for an unmatched pred) are already covered by GROUP G/B AUTO no-match
 // cases above.
+
+// ============================================================================
+// Identity-default track matching (PR talmolab/sleap-io#449)
+// Ports test_labels.py::test_merge_default_keeps_same_named_distinct_tracks_separate
+// and ::test_merge_track_name_opt_in_collapses_and_warns.
+// ============================================================================
+
+describe("Labels.merge — identity-default track matching (PR 449)", () => {
+  it("default merge (identity) keeps distinct same-named tracks separate", async () => {
+    // Locks in the correctness-first identity default: two independently loaded
+    // files often have positionally-named tracks (e.g. "track_0") that are
+    // *different* animals, so the default must NOT collapse them by name.
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const video = new Video({ filename: "v.mp4", openBackend: false });
+
+    const trackSelf = new Track("track_0");
+    const trackOther = new Track("track_0"); // Same name, distinct object.
+
+    const instSelf = Instance.fromNumpy({
+      pointsData: [[1.0, 2.0]],
+      skeleton,
+      track: trackSelf,
+    });
+    const selfLabels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 0, instances: [instSelf] }),
+      ],
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [trackSelf],
+    });
+
+    const instOther = Instance.fromNumpy({
+      pointsData: [[3.0, 4.0]],
+      skeleton,
+      track: trackOther,
+    });
+    const otherLabels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 1, instances: [instOther] }),
+      ],
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [trackOther],
+    });
+
+    await selfLabels.merge(otherLabels);
+
+    // No silent collapse: both distinct tracks survive as the original objects.
+    expect(selfLabels.tracks.length).toBe(2);
+    expect(selfLabels.tracks[0]).toBe(trackSelf);
+    expect(selfLabels.tracks[1]).toBe(trackOther);
+    // The incoming instance keeps its own (distinct) track; nothing was rebound.
+    expect(instOther.track).toBe(trackOther);
+  });
+
+  it('track="name" still collapses same-named tracks and warns on divergence', async () => {
+    // Mirrors the divergence-warning fixture: two distinct `track_0` tracks
+    // whose instances are spatially far apart. The explicit name opt-in must
+    // (a) coalesce them into a single track and (b) emit the spatial-divergence
+    // warning.
+    const skeleton = new Skeleton({ nodes: ["head", "tail"] });
+    const video = new Video({ filename: "v.mp4", openBackend: false });
+
+    const trackSelf = new Track("track_0");
+    const trackOther = new Track("track_0");
+
+    const instSelf = Instance.fromNumpy({
+      pointsData: [
+        [10.0, 10.0],
+        [20.0, 20.0],
+      ],
+      skeleton,
+      track: trackSelf,
+    });
+    const selfLabels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 0, instances: [instSelf] }),
+      ],
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [trackSelf],
+    });
+
+    const instOther = Instance.fromNumpy({
+      pointsData: [
+        [500.0, 500.0],
+        [510.0, 510.0],
+      ],
+      skeleton,
+      track: trackOther,
+    });
+    const otherLabels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 0, instances: [instOther] }),
+      ],
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [trackOther],
+    });
+
+    const warnings: string[] = [];
+    const origWarn = console.warn;
+    console.warn = (...args: unknown[]) => warnings.push(String(args[0]));
+    try {
+      await selfLabels.merge(otherLabels, {
+        frame: "keep_both",
+        track: "name",
+      });
+    } finally {
+      console.warn = origWarn;
+    }
+
+    expect(warnings.some((w) => /track_0.*diverge spatially/.test(w))).toBe(
+      true,
+    );
+    // Opt-in name matching collapses the two same-named tracks into one.
+    expect(selfLabels.tracks.length).toBe(1);
+  });
+});

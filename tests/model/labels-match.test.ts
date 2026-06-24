@@ -190,10 +190,45 @@ describe("Labels.match (read-only)", () => {
       tracks: [trackPred],
     });
 
-    const result = await gtLabels.match(predLabels);
+    // Opt in to name-based matching: these are two distinct Track objects with
+    // the same name, which only coalesce under track="name" (the identity
+    // default would keep them as separate tracks).
+    const result = await gtLabels.match(predLabels, { track: "name" });
 
     expect(result.allTracksMatched).toBe(true);
     expect(result.trackMap.get(trackPred)).toBe(trackGt);
+  });
+
+  // test_match_default_keeps_same_named_distinct_tracks_unmatched (PR #449)
+  it("default (identity) does not match distinct same-named tracks", async () => {
+    // Locks match()/merge() consistency: both resolve `track=null` to a bare
+    // `TrackMatcher()` and therefore share the identity default. `track="name"`
+    // is the opt-in that matches by name.
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const video = new Video({ filename: "v.mp4", openBackend: false });
+
+    const trackGt = new Track("track_0");
+    const trackPred = new Track("track_0"); // Same name, distinct object.
+
+    const gtLabels = new Labels({
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [trackGt],
+    });
+    const predLabels = new Labels({
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [trackPred],
+    });
+
+    // Default identity: distinct objects do not match (track maps to null).
+    const result = await gtLabels.match(predLabels);
+    expect(result.trackMap.get(trackPred)).not.toBe(trackGt);
+    expect(result.trackMap.get(trackPred)).toBe(null);
+
+    // Opt-in name matching: they match.
+    const resultNamed = await gtLabels.match(predLabels, { track: "name" });
+    expect(resultNamed.trackMap.get(trackPred)).toBe(trackGt);
   });
 
   // test_labels_match_string_method (test_labels.py:4701-4715)

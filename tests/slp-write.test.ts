@@ -105,6 +105,64 @@ describe("saveSlpToBytes", () => {
     expect(loadedInstance.points[2].visible).toBe(false);
   });
 
+  // Port of test_slp.py::test_duplicate_track_name_roundtrip (PR #449).
+  it("round-trips two distinct same-named tracks losslessly", async () => {
+    // The identity-default merge makes duplicate-name Labels more common, so
+    // verify that the SLP reader/writer (which keys tracks by positional index)
+    // preserves two distinct `track_0` tracks rather than collapsing them.
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+
+    const trackA = new Track("track_0");
+    const trackB = new Track("track_0"); // Same name, distinct object.
+
+    const instA = Instance.fromNumpy({
+      pointsData: [[1.0, 2.0]],
+      skeleton,
+      track: trackA,
+    });
+    const instB = Instance.fromNumpy({
+      pointsData: [[3.0, 4.0]],
+      skeleton,
+      track: trackB,
+    });
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instA, instB],
+    });
+    const labels = new Labels({
+      labeledFrames: [lf],
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [trackA, trackB],
+    });
+
+    const bytes = await saveSlpToBytes(labels);
+    const loaded = await loadSlp(bytes, { openVideos: false });
+
+    // Both distinct tracks survive with the same name.
+    expect(loaded.tracks.length).toBe(2);
+    expect(loaded.tracks.map((t) => t.name)).toEqual(["track_0", "track_0"]);
+
+    // Per-instance track references resolve to distinct positional indices.
+    const loadedLf = loaded.labeledFrames[0];
+    const trackIndices = loadedLf.instances
+      .map((inst) => loaded.tracks.indexOf(inst.track!))
+      .sort((a, b) => a - b);
+    expect(trackIndices).toEqual([0, 1]);
+
+    // Points are exact and correctly associated with their (distinct) track.
+    const byIndex = new Map<number, Instance>();
+    for (const inst of loadedLf.instances) {
+      byIndex.set(loaded.tracks.indexOf(inst.track!), inst as Instance);
+    }
+    expect(byIndex.get(0)!.numpy()[0][0]).toBeCloseTo(1.0);
+    expect(byIndex.get(0)!.numpy()[0][1]).toBeCloseTo(2.0);
+    expect(byIndex.get(1)!.numpy()[0][0]).toBeCloseTo(3.0);
+    expect(byIndex.get(1)!.numpy()[0][1]).toBeCloseTo(4.0);
+  });
+
   it("round-trips a fixture file", async () => {
     const original = await loadFixture("typical.slp");
     const bytes = await saveSlpToBytes(original);
