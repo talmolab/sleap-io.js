@@ -152,7 +152,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-E627NSVZ.js";
+} from "./chunk-V3XVWZAF.js";
 import {
   Edge,
   Instance,
@@ -170,7 +170,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-KIMQQ2HE.js";
+} from "./chunk-P74PHRSF.js";
 
 // src/codecs/slp/h5-node.ts
 var modulePromise = null;
@@ -194,7 +194,10 @@ async function openH5FileNode(module, source) {
     const { tmpdir } = await import("os");
     const { join: join4 } = await import("path");
     const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join4(tmpdir(), `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
+    const tempPath = join4(
+      tmpdir(),
+      `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`
+    );
     writeFileSync2(tempPath, data);
     const file = new module.File(tempPath, "r");
     return {
@@ -205,7 +208,9 @@ async function openH5FileNode(module, source) {
       }
     };
   }
-  throw new Error("Node environments only support string paths or byte buffers for SLP inputs.");
+  throw new Error(
+    "Node environments only support string paths or byte buffers for SLP inputs."
+  );
 }
 _registerNodeH5(getH5ModuleNode, openH5FileNode);
 _registerFileWriter(async (filename, bytes) => {
@@ -336,7 +341,14 @@ setDefaultImageBytesReader(nodeImageReader);
 import * as fs5 from "fs";
 import * as path from "path";
 var HEADER_ROWS = 4;
-var SPOTS_SIGNATURE = ["LABEL", "ID", "TRACK_ID", "QUALITY", "POSITION_X", "POSITION_Y"];
+var SPOTS_SIGNATURE = [
+  "LABEL",
+  "ID",
+  "TRACK_ID",
+  "QUALITY",
+  "POSITION_X",
+  "POSITION_Y"
+];
 function isTrackMateFile(filePath) {
   try {
     const fd = fs5.openSync(filePath, "r");
@@ -458,13 +470,20 @@ function readTrackMateCsv(spotsPath, options) {
       name: label,
       source: "trackmate"
     });
-    centroidsByFrame.set(frameIdx, [...centroidsByFrame.get(frameIdx) ?? [], centroid]);
+    centroidsByFrame.set(frameIdx, [
+      ...centroidsByFrame.get(frameIdx) ?? [],
+      centroid
+    ]);
   }
   const videos = videoObj ? [videoObj] : [];
   const video = videoObj ?? new Video({ filename: "" });
   const labeledFrames = [];
-  for (const [frameIdx, frameCentroids] of [...centroidsByFrame.entries()].sort((a, b) => a[0] - b[0])) {
-    labeledFrames.push(new LabeledFrame({ video, frameIdx, centroids: frameCentroids }));
+  for (const [frameIdx, frameCentroids] of [...centroidsByFrame.entries()].sort(
+    (a, b) => a[0] - b[0]
+  )) {
+    labeledFrames.push(
+      new LabeledFrame({ video, frameIdx, centroids: frameCentroids })
+    );
   }
   const labels = new Labels({ labeledFrames, videos, tracks });
   labels.provenance["filename"] = spotsPath;
@@ -480,7 +499,15 @@ import * as path2 from "path";
 import YAML from "yaml";
 import { deflate } from "pako";
 var READ_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp"];
-var IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".gif"];
+var IMAGE_EXTENSIONS = [
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".tiff",
+  ".tif",
+  ".bmp",
+  ".gif"
+];
 function parseDataYaml(yamlPath) {
   const text = fs6.readFileSync(yamlPath, "utf-8");
   return YAML.parse(text) ?? {};
@@ -562,7 +589,9 @@ function parseLabelFile(labelPath, skeleton, imageShape, options) {
     try {
       const parts = line.split(/\s+/);
       if (parts.length < 5) {
-        console.warn(`Invalid line ${lineNum} in ${labelPath}: insufficient data`);
+        console.warn(
+          `Invalid line ${lineNum} in ${labelPath}: insufficient data`
+        );
         continue;
       }
       const fmt = detectLineFormat(parts);
@@ -582,16 +611,34 @@ function parseLabelFile(labelPath, skeleton, imageShape, options) {
         if (fmt === "detection_conf") {
           const score = parseStrictFloat(parts[5]);
           bboxes.push(
-            new PredictedBoundingBox({ x1, y1, x2: x1 + wPx, y2: y1 + hPx, category, score })
+            new PredictedBoundingBox({
+              x1,
+              y1,
+              x2: x1 + wPx,
+              y2: y1 + hPx,
+              category,
+              score
+            })
           );
         } else {
-          bboxes.push(new UserBoundingBox({ x1, y1, x2: x1 + wPx, y2: y1 + hPx, category }));
+          bboxes.push(
+            new UserBoundingBox({
+              x1,
+              y1,
+              x2: x1 + wPx,
+              y2: y1 + hPx,
+              category
+            })
+          );
         }
       } else if (fmt === "segmentation") {
         const coordValues = parts.slice(1).map(parseStrictFloat);
         const coords = [];
         for (let i = 0; i + 1 < coordValues.length; i += 2) {
-          coords.push([coordValues[i] * widthPx, coordValues[i + 1] * heightPx]);
+          coords.push([
+            coordValues[i] * widthPx,
+            coordValues[i + 1] * heightPx
+          ]);
         }
         rois.push(UserROI.fromPolygon(coords, { category }));
       } else {
@@ -622,7 +669,9 @@ function parseLabelFile(labelPath, skeleton, imageShape, options) {
         instances.push(Instance.fromNumpy({ pointsData: points, skeleton }));
       }
     } catch (e) {
-      console.warn(`Error parsing line ${lineNum} in ${labelPath}: ${e.message}`);
+      console.warn(
+        `Error parsing line ${lineNum} in ${labelPath}: ${e.message}`
+      );
       continue;
     }
   }
@@ -705,7 +754,9 @@ function writeRoiLabelFile(labelPath, rois, imageShape, nameToId) {
       const w = (maxX - minX) / widthPx;
       const h = (maxY - minY) / heightPx;
       out.push(
-        [String(classId), fmt6(xCenter), fmt6(yCenter), fmt6(w), fmt6(h)].join(" ")
+        [String(classId), fmt6(xCenter), fmt6(yCenter), fmt6(w), fmt6(h)].join(
+          " "
+        )
       );
     }
   }
@@ -742,10 +793,16 @@ function createDataYaml(yamlPath, skeleton, splitRatios, options) {
   } else if (skeleton !== null) {
     const connections = [];
     for (const edge of skeleton.edges) {
-      connections.push([skeleton.index(edge.source), skeleton.index(edge.destination)]);
+      connections.push([
+        skeleton.index(edge.source),
+        skeleton.index(edge.destination)
+      ]);
     }
     config["kpt_shape"] = [skeleton.nodes.length, 3];
-    config["flip_idx"] = Array.from({ length: skeleton.nodes.length }, (_, i) => i);
+    config["flip_idx"] = Array.from(
+      { length: skeleton.nodes.length },
+      (_, i) => i
+    );
     config["skeleton"] = connections;
     config["node_names"] = skeleton.nodes.map((node) => node.name);
   }
@@ -804,7 +861,9 @@ function readLabels(datasetPath, options) {
   }
   const labeledFrames = [];
   const tracks = /* @__PURE__ */ new Map();
-  const imageFiles = fs6.readdirSync(imagesDir).filter((name) => READ_IMAGE_EXTENSIONS.includes(path2.extname(name).toLowerCase())).sort();
+  const imageFiles = fs6.readdirSync(imagesDir).filter(
+    (name) => READ_IMAGE_EXTENSIONS.includes(path2.extname(name).toLowerCase())
+  ).sort();
   for (const imageName of imageFiles) {
     const imageFile = path2.join(imagesDir, imageName);
     const stem = path2.basename(imageName, path2.extname(imageName));
@@ -816,11 +875,16 @@ function readLabels(datasetPath, options) {
     if (fs6.existsSync(labelFile)) {
       const imgShape = probeImageSize(imageFile) ?? imageSize;
       const parseSkeleton = skeleton ?? new Skeleton({ nodes: [] });
-      ({ instances, rois, bboxes } = parseLabelFile(labelFile, parseSkeleton, imgShape, {
-        classNames,
-        video,
-        frameIdx: 0
-      }));
+      ({ instances, rois, bboxes } = parseLabelFile(
+        labelFile,
+        parseSkeleton,
+        imgShape,
+        {
+          classNames,
+          video,
+          frameIdx: 0
+        }
+      ));
       for (let i = 0; i < instances.length; i++) {
         const trackName = `track_${i}`;
         let track = tracks.get(trackName);
@@ -885,7 +949,10 @@ function readLabelsSet(datasetPath, options) {
         const kptShape = dataConfig["kpt_shape"];
         if (Array.isArray(kptShape) && kptShape.length >= 2) {
           const nKeypoints = kptShape[0];
-          const nodes = Array.from({ length: nKeypoints }, (_, i) => new Node(String(i)));
+          const nodes = Array.from(
+            { length: nKeypoints },
+            (_, i) => new Node(String(i))
+          );
           skeleton = new Skeleton({ nodes });
         }
       }
@@ -937,11 +1004,25 @@ async function writeLabels(labels, datasetPath, options) {
     classNames
   });
   if (task === "detect") {
-    writeBboxLabels(labels, datasetPath, splitRatios, classNames, imageFormat, imageQuality);
+    writeBboxLabels(
+      labels,
+      datasetPath,
+      splitRatios,
+      classNames,
+      imageFormat,
+      imageQuality
+    );
     return;
   }
   if (task === "segment") {
-    writeRoiLabels(labels, datasetPath, splitRatios, classNames, imageFormat, imageQuality);
+    writeRoiLabels(
+      labels,
+      datasetPath,
+      splitRatios,
+      classNames,
+      imageFormat,
+      imageQuality
+    );
     return;
   }
   let splitLabels;
@@ -959,9 +1040,17 @@ async function writeLabels(labels, datasetPath, options) {
     const frames = splitData.labeledFrames;
     for (let lfIdx = 0; lfIdx < frames.length; lfIdx++) {
       const frame = frames[lfIdx];
-      const written = await writeFrameImage(frame, imagesDir, lfIdx, imageFormat, imageQuality);
+      const written = await writeFrameImage(
+        frame,
+        imagesDir,
+        lfIdx,
+        imageFormat,
+        imageQuality
+      );
       if (written === null) {
-        console.warn(`Could not load frame ${frame.frameIdx} from video, skipping.`);
+        console.warn(
+          `Could not load frame ${frame.frameIdx} from video, skipping.`
+        );
         continue;
       }
       const labelPath = path2.join(labelsDir, `${pad7(lfIdx)}.txt`);
@@ -1220,9 +1309,14 @@ function encodePng(rgba, width, height, compressLevel = null) {
   const raw = new Uint8Array((stride + 1) * height);
   for (let y = 0; y < height; y++) {
     raw[y * (stride + 1)] = 0;
-    raw.set(rgba.subarray(y * stride, y * stride + stride), y * (stride + 1) + 1);
+    raw.set(
+      rgba.subarray(y * stride, y * stride + stride),
+      y * (stride + 1) + 1
+    );
   }
-  const compressed = deflate(raw, { level });
+  const compressed = deflate(raw, {
+    level
+  });
   const ihdr = new Uint8Array(13);
   const dv = new DataView(ihdr.buffer);
   dv.setUint32(0, width);
@@ -1232,7 +1326,16 @@ function encodePng(rgba, width, height, compressLevel = null) {
   ihdr[10] = 0;
   ihdr[11] = 0;
   ihdr[12] = 0;
-  const signature = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+  const signature = new Uint8Array([
+    137,
+    80,
+    78,
+    71,
+    13,
+    10,
+    26,
+    10
+  ]);
   const chunks = [
     signature,
     pngChunk("IHDR", ihdr),
@@ -1365,7 +1468,9 @@ var JABS_DEFAULT_SYMMETRY_INDICES = [
 ];
 function makeJabsDefaultSkeleton() {
   const nodes = JABS_DEFAULT_KEYPOINT_NAMES.map((name) => new Node(name));
-  const edges = JABS_DEFAULT_EDGE_INDICES.map(([a, b]) => new Edge(nodes[a], nodes[b]));
+  const edges = JABS_DEFAULT_EDGE_INDICES.map(
+    ([a, b]) => new Edge(nodes[a], nodes[b])
+  );
   const symmetries = JABS_DEFAULT_SYMMETRY_INDICES.map(
     ([a, b]) => new Symmetry([nodes[a], nodes[b]])
   );
@@ -1373,8 +1478,14 @@ function makeJabsDefaultSkeleton() {
 }
 var JABS_DEFAULT_SKELETON = makeJabsDefaultSkeleton();
 function makeSimpleSkeleton(name, numPoints) {
-  const nodes = Array.from({ length: numPoints }, (_, i) => new Node(`${name}_kp${i}`));
-  const edges = Array.from({ length: Math.max(0, numPoints - 1) }, (_, i) => new Edge(nodes[i], nodes[i + 1]));
+  const nodes = Array.from(
+    { length: numPoints },
+    (_, i) => new Node(`${name}_kp${i}`)
+  );
+  const edges = Array.from(
+    { length: Math.max(0, numPoints - 1) },
+    (_, i) => new Edge(nodes[i], nodes[i + 1])
+  );
   return new Skeleton({ nodes, edges, name });
 }
 function predictionToInstance(data, confidence, skeleton, track) {
@@ -1395,14 +1506,22 @@ function predictionToInstance(data, confidence, skeleton, track) {
   }
   if (scores.length === 0) return null;
   const meanScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-  return PredictedInstance.fromNumpy({ pointsData, skeleton, track: track ?? null, score: meanScore });
+  return PredictedInstance.fromNumpy({
+    pointsData,
+    skeleton,
+    track: track ?? null,
+    score: meanScore
+  });
 }
 function staticObjectToRoi(name, coords, video) {
   let geometry;
   if (coords.length === 1) {
     geometry = { type: "Point", coordinates: [coords[0][0], coords[0][1]] };
   } else {
-    geometry = { type: "MultiPoint", coordinates: coords.map(([x, y]) => [x, y]) };
+    geometry = {
+      type: "MultiPoint",
+      coordinates: coords.map(([x, y]) => [x, y])
+    };
   }
   const category = name === "corners" ? "arena" : "anchor";
   return new UserROI({ geometry, name, category, source: "jabs", video });
@@ -1437,7 +1556,9 @@ async function loadJabs(labelsPath, options) {
   try {
     const pointsDs = getDataset(file, "poseest/points");
     if (pointsDs == null) {
-      throw new Error(`JABS pose file is missing 'poseest/points': ${labelsPath}`);
+      throw new Error(
+        `JABS pose file is missing 'poseest/points': ${labelsPath}`
+      );
     }
     const pShape = Array.from(pointsDs.shape, num);
     const numFrames = pShape[0];
@@ -1467,17 +1588,23 @@ async function loadJabs(labelsPath, options) {
       const idDs = getDataset(file, "poseest/instance_track_id");
       const countDs = getDataset(file, "poseest/instance_count");
       if (idDs == null) {
-        throw new Error(`JABS pose file is missing 'poseest/instance_track_id': ${labelsPath}`);
+        throw new Error(
+          `JABS pose file is missing 'poseest/instance_track_id': ${labelsPath}`
+        );
       }
       if (countDs == null) {
-        throw new Error(`JABS pose file is missing 'poseest/instance_count': ${labelsPath}`);
+        throw new Error(
+          `JABS pose file is missing 'poseest/instance_count': ${labelsPath}`
+        );
       }
       idVal = idDs.value;
       instanceCountVal = countDs.value;
     } else if (poseVersion > 3) {
       const idDs = getDataset(file, "poseest/instance_embed_id");
       if (idDs == null) {
-        throw new Error(`JABS pose file is missing 'poseest/instance_embed_id': ${labelsPath}`);
+        throw new Error(
+          `JABS pose file is missing 'poseest/instance_embed_id': ${labelsPath}`
+        );
       }
       idVal = idDs.value;
     }
@@ -1514,7 +1641,12 @@ async function loadJabs(labelsPath, options) {
             tracks.set(poseId, new Track(String(poseId)));
           }
           const { data, conf } = extractInstance(frameIdx, curId);
-          const inst = predictionToInstance(data, conf, skeleton, tracks.get(poseId));
+          const inst = predictionToInstance(
+            data,
+            conf,
+            skeleton,
+            tracks.get(poseId)
+          );
           if (inst) instances.push(inst);
         }
       }
@@ -1876,7 +2008,13 @@ function drawGeometry(ctx, geometry, rgb, lineWidth, fillAlpha) {
     case "Point": {
       const radius = Math.max(lineWidth, 2);
       ctx.beginPath();
-      ctx.arc(geometry.coordinates[0], geometry.coordinates[1], radius, 0, Math.PI * 2);
+      ctx.arc(
+        geometry.coordinates[0],
+        geometry.coordinates[1],
+        radius,
+        0,
+        Math.PI * 2
+      );
       ctx.fillStyle = rgbToCSS(rgb);
       ctx.fill();
       break;
@@ -2026,9 +2164,7 @@ async function renderImage(source, options = {}) {
   const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } = extractSourceData(source, opts);
   const trailsPossible = opts.showTrails && opts.trailLength > 0 && !Array.isArray(source);
   if (instances.length === 0 && !opts.image && !hasNonInstanceAnnotations(source) && !trailsPossible) {
-    throw new Error(
-      "No instances to render and no background image provided"
-    );
+    throw new Error("No instances to render and no background image provided");
   }
   const width = opts.image?.width ?? opts.width ?? frameSize[0];
   const height = opts.image?.height ?? opts.height ?? frameSize[1];
@@ -2227,7 +2363,12 @@ async function renderImage(source, options = {}) {
   if (opts.postRenderCallback) {
     opts.postRenderCallback(renderCtx);
   }
-  return ctx.getImageData(0, 0, scaledWidth, scaledHeight);
+  return ctx.getImageData(
+    0,
+    0,
+    scaledWidth,
+    scaledHeight
+  );
 }
 function hasNonInstanceAnnotations(source) {
   if (Array.isArray(source)) return false;
@@ -2488,7 +2629,10 @@ async function renderVideo(source, outputPath, options = {}) {
     base.overlay = overlayForFrame(frame, position);
     return base;
   };
-  const firstImage = await renderImage(selectedFrames[0], optsForFrame(selectedFrames[0], 0));
+  const firstImage = await renderImage(
+    selectedFrames[0],
+    optsForFrame(selectedFrames[0], 0)
+  );
   const width = firstImage.width;
   const height = firstImage.height;
   const fps = options.fps ?? 30;

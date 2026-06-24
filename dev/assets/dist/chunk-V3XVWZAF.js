@@ -22,7 +22,7 @@ import {
   resolveCameraKey,
   resolveIdentity,
   resolveVideoFilename
-} from "./chunk-KIMQQ2HE.js";
+} from "./chunk-P74PHRSF.js";
 
 // src/model/centroid.ts
 var _centroidSkeleton = null;
@@ -159,7 +159,9 @@ var Centroid = class _Centroid {
       }
       const pt = instance.points[nodeIdx];
       if (!pt || Number.isNaN(pt.xy[0])) {
-        throw new Error(`Anchor node ${JSON.stringify(node)} is not visible in this instance.`);
+        throw new Error(
+          `Anchor node ${JSON.stringify(node)} is not visible in this instance.`
+        );
       }
       x = pt.xy[0];
       y = pt.xy[1];
@@ -229,9 +231,7 @@ var ROI = class _ROI {
   _instanceIdx = null;
   constructor(options) {
     if (new.target === _ROI) {
-      throw new TypeError(
-        "ROI is abstract. Use UserROI or PredictedROI."
-      );
+      throw new TypeError("ROI is abstract. Use UserROI or PredictedROI.");
     }
     this.geometry = options.geometry;
     this.name = options.name ?? "";
@@ -331,10 +331,12 @@ var ROI = class _ROI {
         })
       );
     }
-    return [new Ctor({
-      geometry: this.geometry,
-      ...copyFields
-    })];
+    return [
+      new Ctor({
+        geometry: this.geometry,
+        ...copyFields
+      })
+    ];
   }
   toGeoJSON() {
     return {
@@ -404,7 +406,10 @@ var ROI = class _ROI {
   /** @deprecated Use `centroidXy` instead. */
   get centroid() {
     if (this.geometry.type === "Point") {
-      return { x: this.geometry.coordinates[0], y: this.geometry.coordinates[1] };
+      return {
+        x: this.geometry.coordinates[0],
+        y: this.geometry.coordinates[1]
+      };
     }
     const b = this.bounds;
     return { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
@@ -478,7 +483,11 @@ function rasterizeGeometry(geometry, height, width) {
   }
   if (geometry.type === "MultiPolygon") {
     for (const poly of geometry.coordinates) {
-      const polyMask = rasterizeGeometry({ type: "Polygon", coordinates: poly }, height, width);
+      const polyMask = rasterizeGeometry(
+        { type: "Polygon", coordinates: poly },
+        height,
+        width
+      );
       for (let i = 0; i < mask.length; i++) {
         if (polyMask[i]) mask[i] = 1;
       }
@@ -654,7 +663,10 @@ function decodeWkbInternal(bytes) {
   }
   if (wkbType === 3) {
     const { rings, bytesRead } = decodeWkbPolygon(view, 5, le);
-    return { geometry: { type: "Polygon", coordinates: rings }, bytesRead: 5 + bytesRead };
+    return {
+      geometry: { type: "Polygon", coordinates: rings },
+      bytesRead: 5 + bytesRead
+    };
   }
   if (wkbType === 6) {
     const numPolygons = view.getUint32(5, le);
@@ -667,7 +679,10 @@ function decodeWkbInternal(bytes) {
       polygons.push(rings);
       offset += bytesRead;
     }
-    return { geometry: { type: "MultiPolygon", coordinates: polygons }, bytesRead: offset };
+    return {
+      geometry: { type: "MultiPolygon", coordinates: polygons },
+      bytesRead: offset
+    };
   }
   if (wkbType === 2) {
     const numPoints = view.getUint32(5, le);
@@ -679,7 +694,10 @@ function decodeWkbInternal(bytes) {
       coords.push([x, y]);
       offset += 16;
     }
-    return { geometry: { type: "LineString", coordinates: coords }, bytesRead: offset };
+    return {
+      geometry: { type: "LineString", coordinates: coords },
+      bytesRead: offset
+    };
   }
   if (wkbType === 4) {
     const numPoints = view.getUint32(5, le);
@@ -693,19 +711,29 @@ function decodeWkbInternal(bytes) {
       coords.push([x, y]);
       offset += 16;
     }
-    return { geometry: { type: "MultiPoint", coordinates: coords }, bytesRead: offset };
+    return {
+      geometry: { type: "MultiPoint", coordinates: coords },
+      bytesRead: offset
+    };
   }
   if (wkbType === 7) {
     const numGeometries = view.getUint32(5, le);
     const geometries = [];
     let offset = 9;
     for (let i = 0; i < numGeometries; i++) {
-      const subBytes = new Uint8Array(bytes.buffer, bytes.byteOffset + offset, bytes.byteLength - offset);
+      const subBytes = new Uint8Array(
+        bytes.buffer,
+        bytes.byteOffset + offset,
+        bytes.byteLength - offset
+      );
       const { geometry: geom, bytesRead } = decodeWkbInternal(subBytes);
       geometries.push(geom);
       offset += bytesRead;
     }
-    return { geometry: { type: "GeometryCollection", geometries }, bytesRead: offset };
+    return {
+      geometry: { type: "GeometryCollection", geometries },
+      bytesRead: offset
+    };
   }
   throw new Error(`Unsupported WKB type: ${wkbType}`);
 }
@@ -779,7 +807,13 @@ var BoundingBox = class _BoundingBox {
   }
   /** Create from top-left corner + size [x, y, w, h]. */
   static fromXywh(x, y, w, h, options) {
-    return new UserBoundingBox({ x1: x, y1: y, x2: x + w, y2: y + h, ...options });
+    return new UserBoundingBox({
+      x1: x,
+      y1: y,
+      x2: x + w,
+      y2: y + h,
+      ...options
+    });
   }
   /** Center X coordinate (computed from x1, x2). */
   get xCenter() {
@@ -960,7 +994,9 @@ var SegmentationMask = class _SegmentationMask {
     }
     const scale = options.scale ?? [1, 1];
     if (scale[0] <= 0 || scale[1] <= 0) {
-      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
+      throw new Error(
+        `Scale must be positive, got [${scale[0]}, ${scale[1]}].`
+      );
     }
     this.rleCounts = options.rleCounts;
     this.height = options.height;
@@ -1045,7 +1081,13 @@ var SegmentationMask = class _SegmentationMask {
    */
   resampled(targetHeight, targetWidth) {
     const srcData = this.data;
-    const resized = resizeNearest(srcData, this.height, this.width, targetHeight, targetWidth);
+    const resized = resizeNearest(
+      srcData,
+      this.height,
+      this.width,
+      targetHeight,
+      targetWidth
+    );
     const rleCounts = encodeRle(resized, targetHeight, targetWidth);
     const baseOpts = {
       rleCounts,
@@ -1241,7 +1283,12 @@ var PredictedSegmentationMask = class extends SegmentationMask {
 };
 _registerMaskFactory(
   (mask, height, width, options) => {
-    return SegmentationMask.fromArray(mask, height, width, options);
+    return SegmentationMask.fromArray(
+      mask,
+      height,
+      width,
+      options
+    );
   }
 );
 
@@ -1268,7 +1315,9 @@ var LabelImage = class _LabelImage {
     }
     const scale = options.scale ?? [1, 1];
     if (scale[0] <= 0 || scale[1] <= 0) {
-      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
+      throw new Error(
+        `Scale must be positive, got [${scale[0]}, ${scale[1]}].`
+      );
     }
     this.data = options.data;
     this.height = options.height;
@@ -1329,7 +1378,13 @@ var LabelImage = class _LabelImage {
    * The returned label image has scale=[1,1] and offset=[0,0].
    */
   resampled(targetHeight, targetWidth) {
-    const resizedData = resizeNearest(this.data, this.height, this.width, targetHeight, targetWidth);
+    const resizedData = resizeNearest(
+      this.data,
+      this.height,
+      this.width,
+      targetHeight,
+      targetWidth
+    );
     const baseOpts = {
       data: resizedData,
       height: targetHeight,
@@ -1481,7 +1536,11 @@ var LabelImage = class _LabelImage {
         }
       }
     }
-    const allIds = /* @__PURE__ */ new Set([...sortedIds, ...trackMap.keys(), ...catMap.keys()]);
+    const allIds = /* @__PURE__ */ new Set([
+      ...sortedIds,
+      ...trackMap.keys(),
+      ...catMap.keys()
+    ]);
     const objects = /* @__PURE__ */ new Map();
     for (const lid of Array.from(allIds).sort((a, b) => a - b)) {
       objects.set(lid, {
@@ -1715,9 +1774,7 @@ var LabelImage = class _LabelImage {
       const seen = /* @__PURE__ */ new Set();
       for (const id of options.labelIds) {
         if (id <= 0) {
-          throw new Error(
-            `All labelIds must be positive, got ${id}.`
-          );
+          throw new Error(`All labelIds must be positive, got ${id}.`);
         }
         if (seen.has(id)) {
           throw new Error(`Duplicate labelId: ${id}.`);
@@ -1819,10 +1876,12 @@ var LabelImage = class _LabelImage {
       };
       if (this instanceof PredictedLabelImage) {
         const pli = this;
-        result.push(new PredictedSegmentationMask({
-          ...baseOpts,
-          score: info.score ?? pli.score
-        }));
+        result.push(
+          new PredictedSegmentationMask({
+            ...baseOpts,
+            score: info.score ?? pli.score
+          })
+        );
       } else {
         result.push(new UserSegmentationMask(baseOpts));
       }
@@ -3286,10 +3345,14 @@ var LabeledFrame = class {
     return this.instances[index];
   }
   get userInstances() {
-    return this.instances.filter((inst) => inst.constructor === Instance);
+    return this.instances.filter(
+      (inst) => inst.constructor === Instance
+    );
   }
   get predictedInstances() {
-    return this.instances.filter((inst) => inst instanceof PredictedInstance);
+    return this.instances.filter(
+      (inst) => inst instanceof PredictedInstance
+    );
   }
   get hasUserInstances() {
     return this.userInstances.length > 0;
@@ -3313,7 +3376,9 @@ var LabeledFrame = class {
     const tracks = this.instances.map((inst) => inst.track).filter((track) => track !== null && track !== void 0);
     if (tracks.length) {
       const usedTracks = new Set(tracks);
-      return this.predictedInstances.filter((inst) => !inst.track || !usedTracks.has(inst.track));
+      return this.predictedInstances.filter(
+        (inst) => !inst.track || !usedTracks.has(inst.track)
+      );
     }
     return this.predictedInstances.filter((inst) => !usedPredicted.has(inst));
   }
@@ -3342,7 +3407,12 @@ var LabeledFrame = class {
     }
     const remaining = predicted.filter((m) => !adopted.has(m));
     if (remaining.length && userMasks.length) {
-      const matches = _findAnnotationMatches(remaining, userMasks, "masks", 5);
+      const matches = _findAnnotationMatches(
+        remaining,
+        userMasks,
+        "masks",
+        5
+      );
       for (const { selfIdx } of matches) {
         adopted.add(remaining[selfIdx]);
       }
@@ -3350,7 +3420,9 @@ var LabeledFrame = class {
     return predicted.filter((m) => !adopted.has(m));
   }
   removePredictions() {
-    this.instances = this.instances.filter((inst) => !(inst instanceof PredictedInstance));
+    this.instances = this.instances.filter(
+      (inst) => !(inst instanceof PredictedInstance)
+    );
     this.centroids = this.centroids.filter((c) => !c.isPredicted);
     this.bboxes = this.bboxes.filter((b) => !b.isPredicted);
     this.masks = this.masks.filter((m) => !m.isPredicted);
@@ -4789,7 +4861,9 @@ function labelsFromNumpy(data, options) {
     for (let trackIdx = 0; trackIdx < trackCount; trackIdx += 1) {
       const points = data[frameIdx][trackIdx];
       if (!points) continue;
-      const hasData = points.some((point) => point.some((value) => !Number.isNaN(value)));
+      const hasData = points.some(
+        (point) => point.some((value) => !Number.isNaN(value))
+      );
       if (!hasData) continue;
       const arrayPoints = points.map((point) => {
         if (options.returnConfidence) {
@@ -4798,17 +4872,22 @@ function labelsFromNumpy(data, options) {
         return [point[0], point[1], 1, 0];
       });
       const instance = new PredictedInstance({
-        points: predictedPointsFromArray(arrayPoints, options.skeleton.nodeNames),
+        points: predictedPointsFromArray(
+          arrayPoints,
+          options.skeleton.nodeNames
+        ),
         skeleton: options.skeleton,
         track: tracks[trackIdx]
       });
       instances.push(instance);
     }
-    labeledFrames.push(new LabeledFrame({
-      video: options.video,
-      frameIdx: startFrame + frameIdx,
-      instances
-    }));
+    labeledFrames.push(
+      new LabeledFrame({
+        video: options.video,
+        frameIdx: startFrame + frameIdx,
+        instances
+      })
+    );
   }
   return new Labels({
     labeledFrames,
@@ -4819,8 +4898,10 @@ function labelsFromNumpy(data, options) {
 }
 function resolveSkeleton(options) {
   if (options.skeleton) return options.skeleton;
-  if (Array.isArray(options.skeletons) && options.skeletons.length) return options.skeletons[0];
-  if (options.skeletons && !Array.isArray(options.skeletons)) return options.skeletons;
+  if (Array.isArray(options.skeletons) && options.skeletons.length)
+    return options.skeletons[0];
+  if (options.skeletons && !Array.isArray(options.skeletons))
+    return options.skeletons;
   throw new Error("fromNumpy requires a skeleton.");
 }
 
@@ -4914,7 +4995,9 @@ var LazyDataStore = class _LazyDataStore {
     const rawVideoId = Number(this.framesData.video?.[frameIdx] ?? 0);
     const videoIndex = rawVideoId;
     const frameIndex = Number(this.framesData.frame_idx?.[frameIdx] ?? 0);
-    const instStart = Number(this.framesData.instance_id_start?.[frameIdx] ?? 0);
+    const instStart = Number(
+      this.framesData.instance_id_start?.[frameIdx] ?? 0
+    );
     const instEnd = Number(this.framesData.instance_id_end?.[frameIdx] ?? 0);
     const video = this.videos[videoIndex];
     if (!video) return null;
@@ -4922,21 +5005,32 @@ var LazyDataStore = class _LazyDataStore {
     const instanceById = /* @__PURE__ */ new Map();
     const fromPredictedPairs = [];
     for (let instIdx = instStart; instIdx < instEnd; instIdx++) {
-      const instanceType = Number(this.instancesData.instance_type?.[instIdx] ?? 0);
+      const instanceType = Number(
+        this.instancesData.instance_type?.[instIdx] ?? 0
+      );
       const skeletonId = Number(this.instancesData.skeleton?.[instIdx] ?? 0);
       const trackId = Number(this.instancesData.track?.[instIdx] ?? -1);
-      const pointStart = Number(this.instancesData.point_id_start?.[instIdx] ?? 0);
+      const pointStart = Number(
+        this.instancesData.point_id_start?.[instIdx] ?? 0
+      );
       const pointEnd = Number(this.instancesData.point_id_end?.[instIdx] ?? 0);
       const score = Number(this.instancesData.score?.[instIdx] ?? 0);
       const rawTrackingScore = this.formatId < 1.2 ? 0 : Number(this.instancesData.tracking_score?.[instIdx] ?? 0);
       const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
-      const fromPredicted = Number(this.instancesData.from_predicted?.[instIdx] ?? -1);
+      const fromPredicted = Number(
+        this.instancesData.from_predicted?.[instIdx] ?? -1
+      );
       const skeleton = this.skeletons[skeletonId] ?? this.skeletons[0];
       const track = trackId >= 0 ? this.tracks[trackId] : null;
       let instance;
       if (instanceType === 0) {
         const points = this.slicePoints(this.pointsData, pointStart, pointEnd);
-        instance = new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton, track, trackingScore });
+        instance = new Instance({
+          points: pointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          trackingScore
+        });
         if (this.formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -4946,8 +5040,19 @@ var LazyDataStore = class _LazyDataStore {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = this.slicePoints(this.predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({ points: predictedPointsFromArray(points, skeleton.nodeNames), skeleton, track, score, trackingScore });
+        const points = this.slicePoints(
+          this.predPointsData,
+          pointStart,
+          pointEnd,
+          true
+        );
+        instance = new PredictedInstance({
+          points: predictedPointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          score,
+          trackingScore
+        });
         if (this.formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -5040,7 +5145,10 @@ var LazyDataStore = class _LazyDataStore {
       { length: maxFrameIdx + 1 },
       () => Array.from(
         { length: trackCount },
-        () => Array.from({ length: nodeCount }, () => Array.from({ length: channelCount }, () => Number.NaN))
+        () => Array.from(
+          { length: nodeCount },
+          () => Array.from({ length: channelCount }, () => Number.NaN)
+        )
       )
     );
     const instTypes = this.instancesData.instance_type ?? [];
@@ -5561,7 +5669,9 @@ To use, first materialize:
     const canonicals = [];
     const canonicalFor = /* @__PURE__ */ new Map();
     for (const skel of this.skeletons) {
-      const existing = canonicals.find((c) => skel.matches(c, { requireSameOrder: true }));
+      const existing = canonicals.find(
+        (c) => skel.matches(c, { requireSameOrder: true })
+      );
       if (existing) {
         canonicalFor.set(skel, existing);
       } else {
@@ -5644,7 +5754,12 @@ To use, first materialize:
     this._lazyDataStore = null;
     const allInstances = this.labeledFrames.flatMap((f) => f.instances);
     for (const lf of this.labeledFrames) {
-      for (const ann of [...lf.centroids, ...lf.bboxes, ...lf.masks, ...lf.rois]) {
+      for (const ann of [
+        ...lf.centroids,
+        ...lf.bboxes,
+        ...lf.masks,
+        ...lf.rois
+      ]) {
         if (ann._instanceIdx !== null && ann._instanceIdx >= 0 && ann._instanceIdx < allInstances.length) {
           ann.instance = allInstances[ann._instanceIdx];
           ann._instanceIdx = null;
@@ -5920,7 +6035,9 @@ To use, first materialize:
     }
     if (filters.track !== void 0) {
       results = results.filter(
-        (li) => Array.from(li.objects.values()).some((info) => info.track === filters.track)
+        (li) => Array.from(li.objects.values()).some(
+          (info) => info.track === filters.track
+        )
       );
     }
     if (filters.category !== void 0) {
@@ -5969,7 +6086,8 @@ To use, first materialize:
       if (mapped) suggestion.video = mapped;
     }
     for (const roi of this._staticRois) {
-      if (roi.video && videoMap.has(roi.video)) roi.video = videoMap.get(roi.video);
+      if (roi.video && videoMap.has(roi.video))
+        roi.video = videoMap.get(roi.video);
     }
     this.videos = this.videos.map((v) => videoMap.get(v) ?? v);
     this._invalidateIndices();
@@ -6041,7 +6159,12 @@ To use, first materialize:
         const nodes = [...sym.nodes];
         return new Symmetry([nodeMap.get(nodes[0]), nodeMap.get(nodes[1])]);
       });
-      const ns = new Skeleton({ nodes: newNodes, edges: newEdges, symmetries: newSymmetries, name: s.name });
+      const ns = new Skeleton({
+        nodes: newNodes,
+        edges: newEdges,
+        symmetries: newSymmetries,
+        name: s.name
+      });
       skeletonMap.set(s, ns);
       return ns;
     });
@@ -6108,7 +6231,8 @@ To use, first materialize:
       }
       for (const [key, val] of saved) {
         if (key === "video") clone.video = videoMap.get(val) ?? val;
-        else if (key === "track") clone.track = trackMap.get(val) ?? val;
+        else if (key === "track")
+          clone.track = trackMap.get(val) ?? val;
         else if (key === "instance") clone.instance = null;
       }
       if (objectRefs) {
@@ -6130,19 +6254,21 @@ To use, first materialize:
       newStore.tracks = newTracks;
       const newLazyFrames = new LazyFrameList(newStore);
       if (this._lazyFrameList?._supplementary.length) {
-        newLazyFrames._supplementary = this._lazyFrameList._supplementary.map((lf) => {
-          return new LabeledFrame({
-            video: videoMap.get(lf.video) ?? lf.video,
-            frameIdx: lf.frameIdx,
-            instances: lf.instances.map(cloneInstance),
-            isNegative: lf.isNegative,
-            centroids: cloneAncillary(lf.centroids),
-            bboxes: cloneAncillary(lf.bboxes),
-            masks: cloneAncillary(lf.masks),
-            labelImages: cloneAncillary(lf.labelImages),
-            rois: cloneAncillary(lf.rois)
-          });
-        });
+        newLazyFrames._supplementary = this._lazyFrameList._supplementary.map(
+          (lf) => {
+            return new LabeledFrame({
+              video: videoMap.get(lf.video) ?? lf.video,
+              frameIdx: lf.frameIdx,
+              instances: lf.instances.map(cloneInstance),
+              isNegative: lf.isNegative,
+              centroids: cloneAncillary(lf.centroids),
+              bboxes: cloneAncillary(lf.bboxes),
+              masks: cloneAncillary(lf.masks),
+              labelImages: cloneAncillary(lf.labelImages),
+              rois: cloneAncillary(lf.rois)
+            });
+          }
+        );
       }
       labelsCopy = new _Labels({
         videos: newVideos,
@@ -6246,7 +6372,9 @@ To use, first materialize:
     if (this._lazyDataStore) {
       return this._lazyDataStore.toNumpy({ ...options, video: targetVideo });
     }
-    const frames = this.labeledFrames.filter((frame) => frame.video.matchesPath(targetVideo, true));
+    const frames = this.labeledFrames.filter(
+      (frame) => frame.video.matchesPath(targetVideo, true)
+    );
     if (!frames.length) return [];
     let maxFrame = Math.max(...frames.map((frame) => frame.frameIdx));
     const rawOverride = options?.numFrames;
@@ -6262,7 +6390,10 @@ To use, first materialize:
       { length: maxFrame + 1 },
       () => Array.from(
         { length: tracks },
-        () => Array.from({ length: nodes }, () => Array.from({ length: channelCount }, () => Number.NaN))
+        () => Array.from(
+          { length: nodes },
+          () => Array.from({ length: channelCount }, () => Number.NaN)
+        )
       )
     );
     for (const frame of frames) {
@@ -6331,7 +6462,11 @@ To use, first materialize:
    * @param trackMap - Map from old tracks to new tracks.
    */
   static _remapFrameAnnotations(frame, videoMap, trackMap) {
-    for (const ann of [...frame.centroids, ...frame.bboxes, ...frame.masks]) {
+    for (const ann of [
+      ...frame.centroids,
+      ...frame.bboxes,
+      ...frame.masks
+    ]) {
       if (ann.track != null && trackMap.has(ann.track)) {
         ann.track = trackMap.get(ann.track);
       }
@@ -7184,10 +7319,7 @@ To use, first materialize:
         );
         const newSymmetries = s.symmetries.map((sym) => {
           const nodes = [...sym.nodes];
-          return new Symmetry([
-            nodeMap.get(nodes[0]),
-            nodeMap.get(nodes[1])
-          ]);
+          return new Symmetry([nodeMap.get(nodes[0]), nodeMap.get(nodes[1])]);
         });
         ns = new Skeleton({
           nodes: newNodes,
@@ -7369,7 +7501,10 @@ var MediaVideoBackend = class {
         this.fps = this.video.duration ? this.video.videoHeight ? void 0 : void 0 : void 0;
         resolve();
       });
-      this.video?.addEventListener("error", () => reject(new Error("Failed to load video")));
+      this.video?.addEventListener(
+        "error",
+        () => reject(new Error("Failed to load video"))
+      );
     });
   }
   async getFrame(frameIndex) {
@@ -7422,10 +7557,12 @@ function toDict(labels, options) {
       skeleton.index(edge.source.name),
       skeleton.index(edge.destination.name)
     ]);
-    const symmetries = skeleton.symmetries.map((sym) => {
-      const [left, right] = sym.nodes;
-      return [skeleton.index(left.name), skeleton.index(right.name)];
-    });
+    const symmetries = skeleton.symmetries.map(
+      (sym) => {
+        const [left, right] = sym.nodes;
+        return [skeleton.index(left.name), skeleton.index(right.name)];
+      }
+    );
     return {
       name: skeleton.name ?? void 0,
       nodes: skeleton.nodeNames,
@@ -7435,18 +7572,24 @@ function toDict(labels, options) {
   });
   const labeledFrames = [];
   for (const frame of labels.labeledFrames) {
-    if (videoFilter && !frame.video.matchesPath(videoFilter.video, true)) continue;
-    if (options?.skipEmptyFrames && frame.instances.length === 0 && !frame.isNegative) continue;
+    if (videoFilter && !frame.video.matchesPath(videoFilter.video, true))
+      continue;
+    if (options?.skipEmptyFrames && frame.instances.length === 0 && !frame.isNegative)
+      continue;
     const videoIdx = videos.indexOf(frame.video);
     if (videoIdx < 0) continue;
     labeledFrames.push({
       frame_idx: frame.frameIdx,
       video_idx: videoIdx,
-      instances: frame.instances.map((instance) => instanceToDict(instance, labels, trackIndex)),
+      instances: frame.instances.map(
+        (instance) => instanceToDict(instance, labels, trackIndex)
+      ),
       ...frame.isNegative ? { is_negative: true } : {}
     });
   }
-  const suggestions = labels.suggestions.filter((suggestion) => !videoFilter || suggestion.video.matchesPath(videoFilter.video, true)).map((suggestion) => ({
+  const suggestions = labels.suggestions.filter(
+    (suggestion) => !videoFilter || suggestion.video.matchesPath(videoFilter.video, true)
+  ).map((suggestion) => ({
     frame_idx: suggestion.frameIdx,
     video_idx: videos.indexOf(suggestion.video),
     ...suggestion.metadata
@@ -7477,23 +7620,40 @@ function fromDict(data) {
   validateDict(data);
   const skeletons = data.skeletons.map((skeleton) => {
     const nodes = skeleton.nodes.map((name) => new Node(name));
-    const edges = skeleton.edges.map(([sourceIdx, destIdx]) => new Edge(nodes[sourceIdx], nodes[destIdx]));
+    const edges = skeleton.edges.map(
+      ([sourceIdx, destIdx]) => new Edge(nodes[sourceIdx], nodes[destIdx])
+    );
     const symmetries = (skeleton.symmetries ?? []).map(
       ([leftIdx, rightIdx]) => new Symmetry([nodes[leftIdx], nodes[rightIdx]])
     );
     return new Skeleton({ name: skeleton.name, nodes, edges, symmetries });
   });
-  const videos = data.videos.map((video) => new Video({ filename: video.filename }));
-  const tracks = data.tracks.map((track) => new Track(String(track.name ?? "")));
+  const videos = data.videos.map(
+    (video) => new Video({ filename: video.filename })
+  );
+  const tracks = data.tracks.map(
+    (track) => new Track(String(track.name ?? ""))
+  );
   const labeledFrames = data.labeled_frames.map((frame) => {
     const video = videos[frame.video_idx];
-    const instances = frame.instances.map((inst) => dictToInstance(inst, skeletons, tracks));
-    return new LabeledFrame({ video, frameIdx: frame.frame_idx, instances, isNegative: frame.is_negative ?? false });
+    const instances = frame.instances.map(
+      (inst) => dictToInstance(inst, skeletons, tracks)
+    );
+    return new LabeledFrame({
+      video,
+      frameIdx: frame.frame_idx,
+      instances,
+      isNegative: frame.is_negative ?? false
+    });
   });
   const suggestions = data.suggestions.map((suggestion) => {
     const entry = suggestion;
     const video = videos[entry.video_idx ?? 0];
-    return new SuggestionFrame({ video, frameIdx: entry.frame_idx ?? 0, metadata: entry });
+    return new SuggestionFrame({
+      video,
+      frameIdx: entry.frame_idx ?? 0,
+      metadata: entry
+    });
   });
   return new Labels({
     labeledFrames,
@@ -7610,7 +7770,15 @@ function trackToDict(track) {
   return payload;
 }
 function validateDict(data) {
-  const required = ["version", "skeletons", "videos", "tracks", "labeled_frames", "suggestions", "provenance"];
+  const required = [
+    "version",
+    "skeletons",
+    "videos",
+    "tracks",
+    "labeled_frames",
+    "suggestions",
+    "provenance"
+  ];
   for (const key of required) {
     if (!(key in data)) {
       throw new Error(`Missing required key: ${key}`);
@@ -7624,7 +7792,14 @@ function rodriguesTransformation(input) {
     const rvec = input;
     const theta2 = Math.hypot(rvec[0], rvec[1], rvec[2]);
     if (theta2 === 0) {
-      return { matrix: [[1, 0, 0], [0, 1, 0], [0, 0, 1]], vector: rvec };
+      return {
+        matrix: [
+          [1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1]
+        ],
+        vector: rvec
+      };
     }
     const axis = rvec.map((v) => v / theta2);
     const [x, y, z] = axis;
@@ -7635,7 +7810,11 @@ function rodriguesTransformation(input) {
       [z, 0, -x],
       [-y, x, 0]
     ];
-    const I = [[1, 0, 0], [0, 1, 0], [0, 0, 1]];
+    const I = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1]
+    ];
     const KK = multiply3x3(K, K);
     const matrix2 = add3x3(add3x3(I, scale3x3(K, sin)), scale3x3(KK, 1 - cos));
     return { matrix: matrix2, vector: rvec };
@@ -7718,7 +7897,9 @@ var InstanceGroup = class {
   }
   set points(value) {
     if (this.instance3d?.points && value != null) {
-      console.warn("Setting points on an InstanceGroup that has an Instance3D \u2014 the getter will return instance3d.points, not this value. Set instance3d.points directly instead.");
+      console.warn(
+        "Setting points on an InstanceGroup that has an Instance3D \u2014 the getter will return instance3d.points, not this value. Set instance3d.points directly instead."
+      );
     }
     this._points = value;
   }
@@ -7907,7 +8088,10 @@ var Mp4BoxVideoBackend = class {
       if (this.latestRequestedFrame !== frameIndex) return;
       if (signal?.aborted) return;
       const keyframe = this.findKeyframeBefore(frameIndex);
-      const end = Math.min(frameIndex + this.lookahead, this.samples.length - 1);
+      const end = Math.min(
+        frameIndex + this.lookahead,
+        this.samples.length - 1
+      );
       await this.decodeRange(keyframe, end, frameIndex);
     });
     await this.decodeQueue;
@@ -8003,7 +8187,9 @@ var Mp4BoxVideoBackend = class {
   async readChunk(offset, size) {
     const end = Math.min(offset + size, this.fileSize);
     if (this.supportsRangeRequests) {
-      const response = await fetch(this.filename, { headers: { Range: `bytes=${offset}-${end - 1}` } });
+      const response = await fetch(this.filename, {
+        headers: { Range: `bytes=${offset}-${end - 1}` }
+      });
       return await response.arrayBuffer();
     }
     if (this.fileBlob) {
@@ -8076,7 +8262,10 @@ var Mp4BoxVideoBackend = class {
       let bufferOffset = 0;
       for (let j = i; j <= regionEnd; j += 1) {
         const { sample } = samplesToFeed[j];
-        results.set(sample.decodeIndex, bufferView.slice(bufferOffset, bufferOffset + sample.size));
+        results.set(
+          sample.decodeIndex,
+          bufferView.slice(bufferOffset, bufferOffset + sample.size)
+        );
         bufferOffset += sample.size;
       }
       i = regionEnd + 1;
@@ -8193,7 +8382,16 @@ var Mp4BoxVideoBackend = class {
 };
 
 // src/video/embedded-frame.ts
-var PNG_MAGIC = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+var PNG_MAGIC = new Uint8Array([
+  137,
+  80,
+  78,
+  71,
+  13,
+  10,
+  26,
+  10
+]);
 var JPEG_MAGIC = new Uint8Array([255, 216, 255]);
 function isEncodedFormat(format) {
   const n = format.toLowerCase();
@@ -8351,7 +8549,11 @@ async function readEmbeddedFrameBytes(reader, index) {
       if (!buf2) return null;
       reader.legacy.whole = buf2;
       if (encoded && startsWithImageMagic(buf2)) {
-        reader.legacy.offsets = findEncodedFrameOffsets(buf2, reader.format, reader.frameCount);
+        reader.legacy.offsets = findEncodedFrameOffsets(
+          buf2,
+          reader.format,
+          reader.frameCount
+        );
       }
     }
   }
@@ -8393,7 +8595,9 @@ var StreamingHdf5VideoBackend = class {
     this.dataset = options.datasetPath;
     const frameNumbers = options.frameNumbers ?? [];
     this.frameNumbers = frameNumbers;
-    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
+    this.frameNumberToIndex = new Map(
+      frameNumbers.map((num, idx) => [num, idx])
+    );
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";
     this.frameSizes = options.frameSizes;
@@ -8413,7 +8617,11 @@ var StreamingHdf5VideoBackend = class {
     }
     if (!rawBytes || rawBytes.length === 0) return null;
     if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes(rawBytes, this.format, this.channelOrder);
+      const decoded = await decodeImageBytes(
+        rawBytes,
+        this.format,
+        this.channelOrder
+      );
       return decoded ?? rawBytes;
     }
     const image = decodeRawFrame(rawBytes, this.shape, this.channelOrder);
@@ -8425,7 +8633,11 @@ var StreamingHdf5VideoBackend = class {
       const rawBytes = await readEmbeddedFrameBytes(this.buildReader(), 0);
       if (!rawBytes || rawBytes.length === 0) return;
       if (isEncodedFormat(this.format)) {
-        const decoded = await decodeImageBytes(rawBytes, this.format, this.channelOrder);
+        const decoded = await decodeImageBytes(
+          rawBytes,
+          this.format,
+          this.channelOrder
+        );
         if (decoded && "width" in decoded && "height" in decoded) {
           let fc = sourceFrameCount ?? 0;
           if (!fc && this.frameNumberToIndex.size > 0) {
@@ -8643,7 +8855,10 @@ var ImageVideoBackend = class _ImageVideoBackend {
     this.reader = reader;
     this.shape = shape;
     this.bytesCache = new LruCache(cfg.bytesCacheBytes, (b) => b.byteLength);
-    this.decodedCache = new LruCache(cfg.decodedCacheBytes, (f) => f.data.byteLength);
+    this.decodedCache = new LruCache(
+      cfg.decodedCacheBytes,
+      (f) => f.data.byteLength
+    );
     this.prefetchConcurrency = cfg.prefetchConcurrency;
     this.prefetchAhead = cfg.prefetchAhead;
     this.prefetchBehind = cfg.prefetchBehind;
@@ -8795,7 +9010,13 @@ var IMAGE_FORMAT_CODES = {
   2: "png"
   // Color PNG compressed
 };
-var COMPRESSED_CODECS = /* @__PURE__ */ new Set(["monojpg", "jpg", "jbrgb", "monopng", "png"]);
+var COMPRESSED_CODECS = /* @__PURE__ */ new Set([
+  "monojpg",
+  "jpg",
+  "jbrgb",
+  "monopng",
+  "png"
+]);
 var BAYER_CODECS = /* @__PURE__ */ new Set(["brgb8", "jbrgb"]);
 var HEADER_SIZE = 1024;
 var MAGIC = 65261;
@@ -8981,10 +9202,11 @@ var SeqIndex = class _SeqIndex {
       if (nextOffset >= fileSize) break;
       const check = await source.read(nextOffset, 6);
       if (check.length < 6) break;
-      const checkSize = new DataView(check.buffer, check.byteOffset, 6).getUint32(
-        0,
-        true
-      );
+      const checkSize = new DataView(
+        check.buffer,
+        check.byteOffset,
+        6
+      ).getUint32(0, true);
       if (checkSize === 0 || checkSize > fileSize) break;
       offsets.push(nextOffset);
     }
@@ -9000,7 +9222,12 @@ async function makeImageData(rgba, width, height) {
     const sc = await import("skia-canvas");
     return new sc.ImageData(rgba, width, height);
   } catch {
-    return { data: rgba, width, height, colorSpace: "srgb" };
+    return {
+      data: rgba,
+      width,
+      height,
+      colorSpace: "srgb"
+    };
   }
 }
 async function decodeEncoded2(bytes) {
@@ -9082,7 +9309,12 @@ var SeqVideoBackend = class _SeqVideoBackend {
     let idx = frameIndex;
     if (idx < 0) idx = this.index.numFrames + idx;
     if (idx < 0 || idx >= this.index.numFrames) return null;
-    const data = await readFrameData(this.source, this.headerData, this.index, idx);
+    const data = await readFrameData(
+      this.source,
+      this.headerData,
+      this.index,
+      idx
+    );
     return decodeFrame(this.headerData, data);
   }
   /**
@@ -9092,7 +9324,9 @@ var SeqVideoBackend = class _SeqVideoBackend {
   async getTimestamps() {
     const out = [];
     for (let i = 0; i < this.index.numFrames; i++) {
-      out.push(await readTimestamp(this.source, this.headerData, this.index, i));
+      out.push(
+        await readTimestamp(this.source, this.headerData, this.index, i)
+      );
     }
     return out;
   }
@@ -9124,7 +9358,10 @@ var SeqVideoBackend = class _SeqVideoBackend {
 };
 async function readCompressedFrameSize(source, offset) {
   const sizeBytes = await source.read(offset, 4);
-  return new DataView(sizeBytes.buffer, sizeBytes.byteOffset, 4).getUint32(0, true);
+  return new DataView(sizeBytes.buffer, sizeBytes.byteOffset, 4).getUint32(
+    0,
+    true
+  );
 }
 async function readFrameData(source, header, index, frameIdx) {
   const offset = index.frameOffset(frameIdx);
@@ -9618,8 +9855,14 @@ function reconstructValue(data) {
   if (data && typeof data === "object" && "type" in data) {
     const typed = data;
     if (typed.type === "typedarray" && typed.buffer) {
-      const TypedArrayConstructor = getTypedArrayConstructor(typed.dtype || "Uint8Array");
-      return new TypedArrayConstructor(typed.buffer, typed.byteOffset || 0, typed.length);
+      const TypedArrayConstructor = getTypedArrayConstructor(
+        typed.dtype || "Uint8Array"
+      );
+      return new TypedArrayConstructor(
+        typed.buffer,
+        typed.byteOffset || 0,
+        typed.length
+      );
     }
     if (typed.type === "arraybuffer" && typed.buffer) {
       return typed.buffer;
@@ -9945,7 +10188,9 @@ async function openFromUrl(module, fs, url, options) {
   }
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Failed to fetch SLP file: ${response.status} ${response.statusText}`);
+    throw new Error(
+      `Failed to fetch SLP file: ${response.status} ${response.statusText}`
+    );
   }
   const buffer = new Uint8Array(await response.arrayBuffer());
   const localPath = "/tmp-slp.slp";
@@ -10013,7 +10258,9 @@ var Hdf5VideoBackend = class {
     this.dataset = options.datasetPath;
     const frameNumbers = options.frameNumbers ?? [];
     this.frameNumbers = frameNumbers;
-    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
+    this.frameNumberToIndex = new Map(
+      frameNumbers.map((num, idx) => [num, idx])
+    );
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";
     this.shape = options.shape;
@@ -10026,10 +10273,17 @@ var Hdf5VideoBackend = class {
     if (!dataset) return null;
     const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
     if (index === void 0) return null;
-    const rawBytes = await readEmbeddedFrameBytes(this.buildReader(dataset), index);
+    const rawBytes = await readEmbeddedFrameBytes(
+      this.buildReader(dataset),
+      index
+    );
     if (!rawBytes || rawBytes.length === 0) return null;
     if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes2(rawBytes, this.format, this.channelOrder);
+      const decoded = await decodeImageBytes2(
+        rawBytes,
+        this.format,
+        this.channelOrder
+      );
       return decoded ?? rawBytes;
     }
     const image = decodeRawFrame2(rawBytes, this.shape, this.channelOrder);
@@ -10042,7 +10296,10 @@ var Hdf5VideoBackend = class {
       format: this.format,
       frameSizes: this.frameSizes,
       legacy: this.legacy,
-      getMeta: async () => ({ shape: dataset.shape ?? [], dtype: dataset.dtype }),
+      getMeta: async () => ({
+        shape: dataset.shape ?? [],
+        dtype: dataset.dtype
+      }),
       readSlice: async (slice) => {
         const value = slice ? dataset.slice(slice) : dataset.value;
         return { value, shape: dataset.shape ?? [] };
@@ -10156,17 +10413,22 @@ async function createVideoBackend(source, options) {
     return SeqVideoBackend.create(source);
   }
   if (IMAGE_EXTENSIONS.includes(ext)) {
-    return ImageVideoBackend.create({ filename: [filename], shape: options?.shape });
+    return ImageVideoBackend.create({
+      filename: [filename],
+      shape: options?.shape
+    });
   }
   if (options?.backend === "mediabunny") {
-    if (isBlob) return MediaBunnyVideoBackend.fromBlob(source, filename);
+    if (isBlob)
+      return MediaBunnyVideoBackend.fromBlob(source, filename);
     return MediaBunnyVideoBackend.fromUrl(filename);
   }
   if (options?.backend === "mp4box") {
     return new Mp4BoxVideoBackend(source);
   }
   if (options?.backend === "media") {
-    if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source));
+    if (isBlob)
+      return new MediaVideoBackend(URL.createObjectURL(source));
     return new MediaVideoBackend(filename);
   }
   if (UNSUPPORTED_EXTENSIONS.includes(ext)) {
@@ -10177,7 +10439,8 @@ async function createVideoBackend(source, options) {
     return new Mp4BoxVideoBackend(source);
   }
   if (supportsWebCodecs && MEDIABUNNY_EXTENSIONS.includes(ext)) {
-    if (isBlob) return MediaBunnyVideoBackend.fromBlob(source, filename);
+    if (isBlob)
+      return MediaBunnyVideoBackend.fromBlob(source, filename);
     return MediaBunnyVideoBackend.fromUrl(filename);
   }
   if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source));
@@ -10202,7 +10465,9 @@ function resolveSourceFrameCount(opts) {
 // src/codecs/slp/read-streaming.ts
 async function readSlpStreaming(source, options) {
   if (!isStreamingSupported()) {
-    throw new Error("Streaming HDF5 requires Web Worker support (browser environment)");
+    throw new Error(
+      "Streaming HDF5 requires Web Worker support (browser environment)"
+    );
   }
   const file = await openH5Worker(source, {
     h5wasmUrl: options?.h5wasmUrl,
@@ -10211,7 +10476,12 @@ async function readSlpStreaming(source, options) {
   const openVideos = options?.openVideos ?? false;
   const sourcePath = typeof source === "string" ? source : typeof File !== "undefined" && source instanceof File ? source.name : options?.filenameHint ?? "slp-data.slp";
   try {
-    return await readFromStreamingFile(file, sourcePath, options?.filenameHint, openVideos);
+    return await readFromStreamingFile(
+      file,
+      sourcePath,
+      options?.filenameHint,
+      openVideos
+    );
   } finally {
     if (!openVideos) {
       await file.close();
@@ -10228,7 +10498,13 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   const skeletons = parseSkeletons(metadataJson);
   const tracks = await readTracksStreaming(file);
   const videoCrops = await readVideoCropsStreaming(file);
-  const videos = await readVideosStreaming(file, labelsPath, openVideos, formatId, videoCrops);
+  const videos = await readVideosStreaming(
+    file,
+    labelsPath,
+    openVideos,
+    formatId,
+    videoCrops
+  );
   const suggestions = await readSuggestionsStreaming(file, videos);
   const framesData = await readStructDatasetStreaming(file, "frames");
   const instancesData = await readStructDatasetStreaming(file, "instances");
@@ -10245,7 +10521,13 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     formatId
   });
   const identities = await readIdentitiesStreaming(file);
-  const sessions = await readSessionsStreaming(file, videos, skeletons, labeledFrames, identities);
+  const sessions = await readSessionsStreaming(
+    file,
+    videos,
+    skeletons,
+    labeledFrames,
+    identities
+  );
   return new Labels({
     labeledFrames,
     videos,
@@ -10406,14 +10688,16 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
         backendMetadata.crop = [...cropEntry.crop];
         backendMetadata.crop_fill = cropEntry.fill;
       }
-      videos.push(new Video({
-        filename: meta.filename,
-        backend: videoBackend,
-        backendMetadata,
-        sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
-        openBackend: openVideos && meta.embedded,
-        embedded: meta.embedded
-      }));
+      videos.push(
+        new Video({
+          filename: meta.filename,
+          backend: videoBackend,
+          backendMetadata,
+          sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
+          openBackend: openVideos && meta.embedded,
+          embedded: meta.embedded
+        })
+      );
     }
     return videos;
   } catch {
@@ -10526,11 +10810,13 @@ async function readIdentitiesStreaming(file) {
     for (const entry of values) {
       const parsed = parseJsonEntry(entry);
       const { name, color, ...rest } = parsed;
-      identities.push(new Identity({
-        name: name ?? "",
-        color,
-        metadata: rest
-      }));
+      identities.push(
+        new Identity({
+          name: name ?? "",
+          color,
+          metadata: rest
+        })
+      );
     }
     return identities;
   } catch {
@@ -10563,10 +10849,17 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
         cameraGroup.cameras.push(camera);
         cameraMap.set(String(key), camera);
       }
-      const session = new RecordingSession({ cameraGroup, metadata: parsed.metadata ?? {} });
+      const session = new RecordingSession({
+        cameraGroup,
+        metadata: parsed.metadata ?? {}
+      });
       const map = parsed.camcorder_to_video_idx_map ?? {};
       for (const [cameraKey, videoIdx] of Object.entries(map)) {
-        const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+        const camera = resolveCameraKey(
+          cameraKey,
+          cameraMap,
+          cameraGroup.cameras
+        );
         const video = videos[Number(videoIdx)];
         if (camera && video) {
           session.addVideo(video, camera);
@@ -10583,18 +10876,34 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
           const instanceByCamera = /* @__PURE__ */ new Map();
           const instancesRecord = instanceGroupRecord.instances ?? {};
           for (const [cameraKey, points] of Object.entries(instancesRecord)) {
-            const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+            const camera = resolveCameraKey(
+              cameraKey,
+              cameraMap,
+              cameraGroup.cameras
+            );
             if (!camera) {
-              console.warn(`Camera key "${cameraKey}" not found in session calibration \u2014 skipping 2D instance data for this camera.`);
+              console.warn(
+                `Camera key "${cameraKey}" not found in session calibration \u2014 skipping 2D instance data for this camera.`
+              );
               continue;
             }
             const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
-            instanceByCamera.set(camera, new Instance({ points, skeleton }));
+            instanceByCamera.set(
+              camera,
+              new Instance({
+                points,
+                skeleton
+              })
+            );
           }
           if (instanceByCamera.size === 0) {
             const lfInstMap = instanceGroupRecord.camcorder_to_lf_and_inst_idx_map ?? {};
             for (const [camIdx, value] of Object.entries(lfInstMap)) {
-              const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+              const camera = resolveCameraKey(
+                camIdx,
+                cameraMap,
+                cameraGroup.cameras
+              );
               if (!camera) continue;
               const pair = value;
               const lf = labeledFrames[Number(pair[0])];
@@ -10604,7 +10913,10 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
               }
             }
           }
-          const instance3d = reconstructInstance3D(instanceGroupRecord, skeletons);
+          const instance3d = reconstructInstance3D(
+            instanceGroupRecord,
+            skeletons
+          );
           const identity = resolveIdentity(instanceGroupRecord, identities);
           instanceGroups.push(
             new InstanceGroup({
@@ -10618,10 +10930,18 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
         }
         const labeledFrameByCamera = /* @__PURE__ */ new Map();
         const labeledFrameMap = groupRecord.labeled_frame_by_camera ?? {};
-        for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
-          const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+        for (const [cameraKey, labeledFrameIdx] of Object.entries(
+          labeledFrameMap
+        )) {
+          const camera = resolveCameraKey(
+            cameraKey,
+            cameraMap,
+            cameraGroup.cameras
+          );
           if (!camera) {
-            console.warn(`Camera key "${cameraKey}" not found in session calibration \u2014 skipping labeled frame mapping.`);
+            console.warn(
+              `Camera key "${cameraKey}" not found in session calibration \u2014 skipping labeled frame mapping.`
+            );
             continue;
           }
           const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
@@ -10634,7 +10954,11 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
             const igRecord = instanceGroup;
             const lfInstMap = igRecord.camcorder_to_lf_and_inst_idx_map ?? {};
             for (const [camIdx, value] of Object.entries(lfInstMap)) {
-              const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+              const camera = resolveCameraKey(
+                camIdx,
+                cameraMap,
+                cameraGroup.cameras
+              );
               if (!camera) continue;
               const pair = value;
               const lf = labeledFrames[Number(pair[0])];
@@ -10767,7 +11091,16 @@ function normalizeDatasetArray(value) {
 }
 function buildLabeledFrames(options) {
   const frames = [];
-  const { framesData, instancesData, pointsData, predPointsData, skeletons, tracks, videos, formatId } = options;
+  const {
+    framesData,
+    instancesData,
+    pointsData,
+    predPointsData,
+    skeletons,
+    tracks,
+    videos,
+    formatId
+  } = options;
   const frameIds = framesData.frame_id ?? [];
   const videoIdToIndex = buildVideoIdMap(framesData, videos);
   const instanceById = /* @__PURE__ */ new Map();
@@ -10775,28 +11108,51 @@ function buildLabeledFrames(options) {
   for (let frameIdx = 0; frameIdx < frameIds.length; frameIdx += 1) {
     const rawVideoId = Number(framesData.video?.[frameIdx] ?? 0);
     const videoIndex = videoIdToIndex.get(rawVideoId) ?? rawVideoId;
-    const frameIndex = Number(framesData.frame_idx?.[frameIdx] ?? 0);
-    const instStart = Number(framesData.instance_id_start?.[frameIdx] ?? 0);
-    const instEnd = Number(framesData.instance_id_end?.[frameIdx] ?? 0);
+    const frameIndex = Number(
+      framesData.frame_idx?.[frameIdx] ?? 0
+    );
+    const instStart = Number(
+      framesData.instance_id_start?.[frameIdx] ?? 0
+    );
+    const instEnd = Number(
+      framesData.instance_id_end?.[frameIdx] ?? 0
+    );
     const video = videos[videoIndex];
     if (!video) continue;
     const instances = [];
     for (let instIdx = instStart; instIdx < instEnd; instIdx += 1) {
-      const instanceType = Number(instancesData.instance_type?.[instIdx] ?? 0);
-      const skeletonId = Number(instancesData.skeleton?.[instIdx] ?? 0);
-      const trackId = Number(instancesData.track?.[instIdx] ?? -1);
-      const pointStart = Number(instancesData.point_id_start?.[instIdx] ?? 0);
-      const pointEnd = Number(instancesData.point_id_end?.[instIdx] ?? 0);
+      const instanceType = Number(
+        instancesData.instance_type?.[instIdx] ?? 0
+      );
+      const skeletonId = Number(
+        instancesData.skeleton?.[instIdx] ?? 0
+      );
+      const trackId = Number(
+        instancesData.track?.[instIdx] ?? -1
+      );
+      const pointStart = Number(
+        instancesData.point_id_start?.[instIdx] ?? 0
+      );
+      const pointEnd = Number(
+        instancesData.point_id_end?.[instIdx] ?? 0
+      );
       const score = Number(instancesData.score?.[instIdx] ?? 0);
       const rawTrackingScore = formatId < 1.2 ? 0 : Number(instancesData.tracking_score?.[instIdx] ?? 0);
       const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
-      const fromPredicted = Number(instancesData.from_predicted?.[instIdx] ?? -1);
+      const fromPredicted = Number(
+        instancesData.from_predicted?.[instIdx] ?? -1
+      );
       const skeleton = skeletons[skeletonId] ?? skeletons[0] ?? new Skeleton({ nodes: [] });
       const track = trackId >= 0 ? tracks[trackId] : null;
       let instance;
       if (instanceType === 0) {
         const points = slicePoints(pointsData, pointStart, pointEnd);
-        instance = new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton, track, trackingScore });
+        instance = new Instance({
+          points: pointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          trackingScore
+        });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -10807,7 +11163,13 @@ function buildLabeledFrames(options) {
         }
       } else {
         const points = slicePoints(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({ points: predictedPointsFromArray(points, skeleton.nodeNames), skeleton, track, score, trackingScore });
+        instance = new PredictedInstance({
+          points: predictedPointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          score,
+          trackingScore
+        });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -10892,7 +11254,12 @@ function setStringAttr(target, name, value) {
 function writeStringDataset(file, name, values) {
   const json = JSON.stringify(values);
   const bytes = textEncoder.encode(json);
-  file.create_dataset({ name, data: bytes, shape: [bytes.length], dtype: "<B" });
+  file.create_dataset({
+    name,
+    data: bytes,
+    shape: [bytes.length],
+    dtype: "<B"
+  });
   const ds = file.get(name);
   setStringAttr(ds, "json", json);
 }
@@ -10908,7 +11275,13 @@ function writeSlpToFile(file, labels, embeddedVideoData) {
   writeTracks(file, labels.tracks);
   writeSuggestions(file, labels.suggestions, labels.videos);
   writeIdentities(file, labels.identities);
-  writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames, labels.identities);
+  writeSessions(
+    file,
+    labels.sessions,
+    labels.videos,
+    labels.labeledFrames,
+    labels.identities
+  );
   writeLabeledFrames(file, labels);
   writeNegativeFrames(file, labels);
   const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
@@ -10950,10 +11323,38 @@ function writeSlpToFile(file, labels, embeddedVideoData) {
     roiCtx.push([r.video ? labels.videos.indexOf(r.video) : -1, -1]);
   }
   writeRois(file, allRois, labels.videos, labels.tracks, allInstances, roiCtx);
-  writeMasks(file, allMasks, labels.videos, labels.tracks, allInstances, maskCtx);
-  writeBboxes(file, allBboxes, labels.videos, labels.tracks, allInstances, bboxCtx);
-  writeCentroids(file, allCentroids, labels.videos, labels.tracks, allInstances, centroidCtx);
-  writeLabelImages(file, allLabelImages, labels.videos, labels.tracks, allInstances, liCtx);
+  writeMasks(
+    file,
+    allMasks,
+    labels.videos,
+    labels.tracks,
+    allInstances,
+    maskCtx
+  );
+  writeBboxes(
+    file,
+    allBboxes,
+    labels.videos,
+    labels.tracks,
+    allInstances,
+    bboxCtx
+  );
+  writeCentroids(
+    file,
+    allCentroids,
+    labels.videos,
+    labels.tracks,
+    allInstances,
+    centroidCtx
+  );
+  writeLabelImages(
+    file,
+    allLabelImages,
+    labels.videos,
+    labels.tracks,
+    allInstances,
+    liCtx
+  );
 }
 var LazySourceFallback = class extends Error {
   constructor() {
@@ -11066,12 +11467,20 @@ function writeLazyNegativeFrames(file, store) {
     rows.push([Number(vidStr), Number(fidxStr)]);
   }
   rows.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  createMatrixDataset(file, "negative_frames", rows, ["video_id", "frame_idx"], "<i8");
+  createMatrixDataset(
+    file,
+    "negative_frames",
+    rows,
+    ["video_id", "frame_idx"],
+    "<i8"
+  );
 }
 function writeSlpToFileLazy(file, labels) {
   const store = labels._lazyDataStore;
   if (!labels.isLazy || !store) {
-    throw new Error("writeSlpToFileLazy requires lazy Labels with a data store");
+    throw new Error(
+      "writeSlpToFileLazy requires lazy Labels with a data store"
+    );
   }
   writeMetadata(file, labels);
   writeVideos(file, labels.videos);
@@ -11132,8 +11541,22 @@ function writeSlpToFileLazy(file, labels) {
   writeRois(file, allRois, labels.videos, labels.tracks, void 0, roiCtx);
   writeMasks(file, allMasks, labels.videos, labels.tracks, [], maskCtx);
   writeBboxes(file, allBboxes, labels.videos, labels.tracks, [], bboxCtx);
-  writeCentroids(file, allCentroids, labels.videos, labels.tracks, [], centroidCtx);
-  writeLabelImages(file, allLabelImages, labels.videos, labels.tracks, [], liCtx);
+  writeCentroids(
+    file,
+    allCentroids,
+    labels.videos,
+    labels.tracks,
+    [],
+    centroidCtx
+  );
+  writeLabelImages(
+    file,
+    allLabelImages,
+    labels.videos,
+    labels.tracks,
+    [],
+    liCtx
+  );
 }
 async function saveSlpToBytes(labels, options) {
   const embedMode = options?.embed ?? false;
@@ -11247,7 +11670,9 @@ function writeMetadata(file, labels) {
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
   const hasIdentities = (labels.identities?.length ?? 0) > 0;
   const hasPredicted = labels.rois.some((r) => r.isPredicted) || labels.masks.some((m) => m.isPredicted) || (labels.labelImages ?? []).some((li) => li.isPredicted);
-  const hasMaskInstances = labels.masks.some((m) => m.instance !== null || m._instanceIdx != null && m._instanceIdx >= 0);
+  const hasMaskInstances = labels.masks.some(
+    (m) => m.instance !== null || m._instanceIdx != null && m._instanceIdx >= 0
+  );
   let formatId = (labels.bboxes?.length ?? 0) > 0 ? 2 : hasPredicted || hasMaskInstances ? 1.9 : (labels.labelImages?.length ?? 0) > 0 ? 1.8 : hasRoiInstance ? 1.6 : labels.rois.length > 0 || labels.masks.length > 0 ? 1.5 : FORMAT_ID;
   if (hasIdentities) {
     formatId = Math.max(formatId, 1.9);
@@ -11262,7 +11687,9 @@ function writeMetadata(file, labels) {
   const savedMasks = labels.masks;
   const savedMaskSet = new Set(savedMasks);
   if (savedMasks.some(
-    (m) => m.fromPredicted != null && savedMaskSet.has(m.fromPredicted)
+    (m) => m.fromPredicted != null && savedMaskSet.has(
+      m.fromPredicted
+    )
   )) {
     formatId = Math.max(formatId, 2.4);
   }
@@ -11315,7 +11742,9 @@ function serializeSkeletons(skeletons) {
       const target = nodeIndex.get(right) ?? 0;
       links.push({ key: 0, source, target, type: makeEdgeType(2) });
     }
-    const skeletonNodeIds = skeleton.nodeNames.map((name) => nodeIndex.get(name) ?? 0);
+    const skeletonNodeIds = skeleton.nodeNames.map(
+      (name) => nodeIndex.get(name) ?? 0
+    );
     return {
       directed: true,
       graph: {
@@ -11363,9 +11792,12 @@ function serializeVideo(video) {
     }
     backend.shape = srcShape;
   } else {
-    if (backend.dataset == null && liveBackend?.dataset) backend.dataset = liveBackend.dataset;
-    if (backend.shape == null && liveBackend?.shape) backend.shape = liveBackend.shape;
-    if (backend.fps == null && liveBackend?.fps != null) backend.fps = liveBackend.fps;
+    if (backend.dataset == null && liveBackend?.dataset)
+      backend.dataset = liveBackend.dataset;
+    if (backend.shape == null && liveBackend?.shape)
+      backend.shape = liveBackend.shape;
+    if (backend.fps == null && liveBackend?.fps != null)
+      backend.fps = liveBackend.fps;
   }
   delete backend.crop;
   delete backend.crop_fill;
@@ -11391,7 +11823,9 @@ function writeVideoCrops(file, videos) {
   file.create_dataset({ name: "video_crops", data: [payload] });
 }
 function writeTracks(file, tracks) {
-  const payload = tracks.map((track) => JSON.stringify([SPAWNED_ON, track.name]));
+  const payload = tracks.map(
+    (track) => JSON.stringify([SPAWNED_ON, track.name])
+  );
   file.create_dataset({ name: "tracks_json", data: payload });
 }
 function writeSuggestions(file, suggestions, videos) {
@@ -11423,11 +11857,17 @@ function writeSessions(file, sessions, videos, labeledFrames, identities) {
   labeledFrames.forEach((lf, idx) => {
     labeledFrameIndex.set(lf, idx);
   });
-  const payload = sessions.map((session) => JSON.stringify(serializeSession(session, videos, labeledFrameIndex, identities)));
+  const payload = sessions.map(
+    (session) => JSON.stringify(
+      serializeSession(session, videos, labeledFrameIndex, identities)
+    )
+  );
   file.create_dataset({ name: "sessions_json", data: payload });
 }
 function serializeSession(session, videos, labeledFrameIndex, identities) {
-  const calibration = { metadata: session.cameraGroup.metadata ?? {} };
+  const calibration = {
+    metadata: session.cameraGroup.metadata ?? {}
+  };
   session.cameraGroup.cameras.forEach((camera, idx) => {
     const key = camera.name ?? String(idx);
     const camData = {
@@ -11451,7 +11891,9 @@ function serializeSession(session, videos, labeledFrameIndex, identities) {
   const frame_group_dicts = [];
   for (const frameGroup of session.frameGroups.values()) {
     if (!frameGroup.instanceGroups.length) continue;
-    frame_group_dicts.push(serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities));
+    frame_group_dicts.push(
+      serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities)
+    );
   }
   return {
     calibration,
@@ -11461,9 +11903,20 @@ function serializeSession(session, videos, labeledFrameIndex, identities) {
   };
 }
 function serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities) {
-  const instance_groups = frameGroup.instanceGroups.map((group) => serializeInstanceGroup(group, session, identities, frameGroup, labeledFrameIndex));
+  const instance_groups = frameGroup.instanceGroups.map(
+    (group) => serializeInstanceGroup(
+      group,
+      session,
+      identities,
+      frameGroup,
+      labeledFrameIndex
+    )
+  );
   const labeled_frame_by_camera = {};
-  for (const [camera, labeledFrame] of frameGroup.labeledFrameByCamera.entries()) {
+  for (const [
+    camera,
+    labeledFrame
+  ] of frameGroup.labeledFrameByCamera.entries()) {
     const cameraKey = cameraKeyForSession(camera, session);
     const index = labeledFrameIndex.get(labeledFrame);
     if (index !== void 0) {
@@ -11522,10 +11975,13 @@ function serializeInstanceGroup(group, session, identities, frameGroup, labeledF
     if (identityIdx >= 0) {
       payload.identity_idx = identityIdx;
     } else {
-      console.warn(`InstanceGroup references an Identity ("${group.identity.name}") not found in Labels.identities \u2014 identity will be dropped on save.`);
+      console.warn(
+        `InstanceGroup references an Identity ("${group.identity.name}") not found in Labels.identities \u2014 identity will be dropped on save.`
+      );
     }
   }
-  if (group.metadata && Object.keys(group.metadata).length) payload.metadata = group.metadata;
+  if (group.metadata && Object.keys(group.metadata).length)
+    payload.metadata = group.metadata;
   return payload;
 }
 function pointsToDict(instance) {
@@ -11563,7 +12019,10 @@ function writeLabeledFrames(file, labels) {
     for (const instance of labeledFrame.instances) {
       const instanceId = instances.length;
       instanceIndex.set(instance, instanceId);
-      const skeletonId = Math.max(0, labels.skeletons.indexOf(instance.skeleton));
+      const skeletonId = Math.max(
+        0,
+        labels.skeletons.indexOf(instance.skeleton)
+      );
       const trackId = instance.track ? labels.tracks.indexOf(instance.track) : -1;
       const trackingScore = instance.trackingScore ?? 0;
       let fromPredicted = -1;
@@ -11612,7 +12071,13 @@ function writeLabeledFrames(file, labels) {
       ]);
     }
     const instanceEnd = instances.length;
-    frames.push([frameId, videoIndex, labeledFrame.frameIdx, instanceStart, instanceEnd]);
+    frames.push([
+      frameId,
+      videoIndex,
+      labeledFrame.frameIdx,
+      instanceStart,
+      instanceEnd
+    ]);
   }
   for (const [instanceId, fromPredictedInstance] of predictedLinks) {
     const fromIndex = instanceIndex.get(fromPredictedInstance);
@@ -11622,7 +12087,13 @@ function writeLabeledFrames(file, labels) {
       instances[instanceId][5] = -1;
     }
   }
-  createMatrixDataset(file, "frames", frames, ["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"], "<i8");
+  createMatrixDataset(
+    file,
+    "frames",
+    frames,
+    ["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"],
+    "<i8"
+  );
   createMatrixDataset(
     file,
     "instances",
@@ -11641,8 +12112,20 @@ function writeLabeledFrames(file, labels) {
     ],
     "<f8"
   );
-  createMatrixDataset(file, "points", points, ["x", "y", "visible", "complete"], "<f8");
-  createMatrixDataset(file, "pred_points", predPoints, ["x", "y", "visible", "complete", "score"], "<f8");
+  createMatrixDataset(
+    file,
+    "points",
+    points,
+    ["x", "y", "visible", "complete"],
+    "<f8"
+  );
+  createMatrixDataset(
+    file,
+    "pred_points",
+    predPoints,
+    ["x", "y", "visible", "complete", "score"],
+    "<f8"
+  );
 }
 function writeNegativeFrames(file, labels) {
   const negativeFrames = labels.labeledFrames.filter((f) => f.isNegative);
@@ -11652,7 +12135,13 @@ function writeNegativeFrames(file, labels) {
     const videoIndex = Math.max(0, labels.videos.indexOf(frame.video));
     rows.push([videoIndex, frame.frameIdx]);
   }
-  createMatrixDataset(file, "negative_frames", rows, ["video_id", "frame_idx"], "<i8");
+  createMatrixDataset(
+    file,
+    "negative_frames",
+    rows,
+    ["video_id", "frame_idx"],
+    "<i8"
+  );
 }
 async function collectFramesForEmbedding(labels, embedMode) {
   const result = /* @__PURE__ */ new Map();
@@ -11672,7 +12161,8 @@ async function collectFramesForEmbedding(labels, embedMode) {
       include = frame.hasUserInstances;
     }
     if (include) {
-      if (!framesByVideo.has(videoIndex)) framesByVideo.set(videoIndex, /* @__PURE__ */ new Set());
+      if (!framesByVideo.has(videoIndex))
+        framesByVideo.set(videoIndex, /* @__PURE__ */ new Set());
       framesByVideo.get(videoIndex).add(frame.frameIdx);
     }
   }
@@ -11680,7 +12170,8 @@ async function collectFramesForEmbedding(labels, embedMode) {
     for (const suggestion of labels.suggestions) {
       const videoIndex = labels.videos.indexOf(suggestion.video);
       if (videoIndex < 0) continue;
-      if (!framesByVideo.has(videoIndex)) framesByVideo.set(videoIndex, /* @__PURE__ */ new Set());
+      if (!framesByVideo.has(videoIndex))
+        framesByVideo.set(videoIndex, /* @__PURE__ */ new Set());
       framesByVideo.get(videoIndex).add(suggestion.frameIdx);
     }
   }
@@ -11742,7 +12233,9 @@ function writeEmbeddedVideos(file, labels, embeddedVideoData) {
       if (video.sourceVideo) {
         entry.source_video = { filename: video.sourceVideo.filename };
       } else if (!video.hasEmbeddedImages) {
-        entry.source_video = { filename: Array.isArray(video.filename) ? video.filename[0] : video.filename };
+        entry.source_video = {
+          filename: Array.isArray(video.filename) ? video.filename[0] : video.filename
+        };
       }
       return JSON.stringify(entry);
     } else {
@@ -11830,7 +12323,18 @@ function writeRois(file, rois, videos, tracks, instances, contexts) {
     const score = roi.isPredicted ? roi.score : Number.NaN;
     const isPredicted = roi.isPredicted ? 1 : 0;
     const trackingScore = roi.trackingScore ?? Number.NaN;
-    rows.push([0, videoIdx, frameIdx, trackIdx, score, trackingScore, wkbStart, wkbEnd, instanceIdx, isPredicted]);
+    rows.push([
+      0,
+      videoIdx,
+      frameIdx,
+      trackIdx,
+      score,
+      trackingScore,
+      wkbStart,
+      wkbEnd,
+      instanceIdx,
+      isPredicted
+    ]);
     categories.push(roi.category);
     names.push(roi.name);
     sources.push(roi.source);
@@ -11839,7 +12343,18 @@ function writeRois(file, rois, videos, tracks, instances, contexts) {
     file,
     "rois",
     rows,
-    ["annotation_type", "video", "frame_idx", "track", "score", "tracking_score", "wkb_start", "wkb_end", "instance", "is_predicted"],
+    [
+      "annotation_type",
+      "video",
+      "frame_idx",
+      "track",
+      "score",
+      "tracking_score",
+      "wkb_start",
+      "wkb_end",
+      "instance",
+      "is_predicted"
+    ],
     "<f8"
   );
   writeStringDataset(file, "roi_categories", categories);
@@ -11852,7 +12367,12 @@ function writeRois(file, rois, videos, tracks, instances, contexts) {
     wkbFlat.set(chunk, offset);
     offset += chunk.length;
   }
-  file.create_dataset({ name: "roi_wkb", data: wkbFlat, shape: [wkbFlat.length], dtype: "<B" });
+  file.create_dataset({
+    name: "roi_wkb",
+    data: wkbFlat,
+    shape: [wkbFlat.length],
+    dtype: "<B"
+  });
 }
 function writeMasks(file, masks, videos, tracks, instances, contexts) {
   if (!masks.length) return;
@@ -11914,13 +12434,25 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
     if (mask.isPredicted) {
       const pm = mask;
       if (pm.scoreMap) {
-        const smBytes = new Uint8Array(pm.scoreMap.buffer, pm.scoreMap.byteOffset, pm.scoreMap.byteLength);
+        const smBytes = new Uint8Array(
+          pm.scoreMap.buffer,
+          pm.scoreMap.byteOffset,
+          pm.scoreMap.byteLength
+        );
         const compressed = deflate(smBytes);
         const smH = pm.scoreMap.length / mask.width;
         if (!Number.isInteger(smH)) {
-          throw new Error(`Score map size ${pm.scoreMap.length} not divisible by width ${mask.width}`);
+          throw new Error(
+            `Score map size ${pm.scoreMap.length} not divisible by width ${mask.width}`
+          );
         }
-        scoreMapIndexRows.push([i, smOffset, smOffset + compressed.length, smH, mask.width]);
+        scoreMapIndexRows.push([
+          i,
+          smOffset,
+          smOffset + compressed.length,
+          smH,
+          mask.width
+        ]);
         scoreMapChunks.push(compressed);
         smOffset += compressed.length;
       }
@@ -11930,7 +12462,25 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
     file,
     "masks",
     rows,
-    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "tracking_score", "scale_x", "scale_y", "offset_x", "offset_y", "from_predicted"],
+    [
+      "height",
+      "width",
+      "annotation_type",
+      "video",
+      "frame_idx",
+      "track",
+      "score",
+      "rle_start",
+      "rle_end",
+      "is_predicted",
+      "instance",
+      "tracking_score",
+      "scale_x",
+      "scale_y",
+      "offset_x",
+      "offset_y",
+      "from_predicted"
+    ],
     "<f8"
   );
   writeStringDataset(file, "mask_categories", categories);
@@ -11943,7 +12493,12 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
     rleFlat.set(chunk, offset);
     offset += chunk.length;
   }
-  file.create_dataset({ name: "mask_rle", data: rleFlat, shape: [rleFlat.length], dtype: "<B" });
+  file.create_dataset({
+    name: "mask_rle",
+    data: rleFlat,
+    shape: [rleFlat.length],
+    dtype: "<B"
+  });
   if (scoreMapIndexRows.length > 0) {
     createMatrixDataset(
       file,
@@ -11959,7 +12514,12 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
       smFlat.set(chunk, smOff);
       smOff += chunk.length;
     }
-    file.create_dataset({ name: "mask_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
+    file.create_dataset({
+      name: "mask_score_maps",
+      data: smFlat,
+      shape: [smFlat.length],
+      dtype: "<B"
+    });
   }
 }
 function writeBboxes(file, bboxes, _videos, tracks, instances, contexts) {
@@ -11997,7 +12557,19 @@ function writeBboxes(file, bboxes, _videos, tracks, instances, contexts) {
     file,
     "bboxes",
     rows,
-    ["x1", "y1", "x2", "y2", "angle", "video", "frame_idx", "track", "score", "instance", "tracking_score"],
+    [
+      "x1",
+      "y1",
+      "x2",
+      "y2",
+      "angle",
+      "video",
+      "frame_idx",
+      "track",
+      "score",
+      "instance",
+      "tracking_score"
+    ],
     "<f8"
   );
   writeStringDataset(file, "bbox_categories", categories);
@@ -12025,7 +12597,11 @@ function writeLabelImages(file, labelImages, _videos, tracks, instances, context
     const li = labelImages[liIdx];
     const videoIdx = contexts ? contexts[liIdx][0] : -1;
     const frameIdx = contexts ? contexts[liIdx][1] : -1;
-    const pixelBytes = new Uint8Array(li.data.buffer, li.data.byteOffset, li.data.byteLength);
+    const pixelBytes = new Uint8Array(
+      li.data.buffer,
+      li.data.byteOffset,
+      li.data.byteLength
+    );
     const compressed = deflate(pixelBytes);
     const dataStart = dataOffset;
     const dataEnd = dataOffset + compressed.length;
@@ -12045,7 +12621,13 @@ function writeLabelImages(file, labelImages, _videos, tracks, instances, context
       }
       const objScore = info.score != null ? info.score : Number.NaN;
       const objTrackingScore = info.trackingScore != null ? info.trackingScore : Number.NaN;
-      objectRows.push([labelId, trackIdx, instanceIdx, objScore, objTrackingScore]);
+      objectRows.push([
+        labelId,
+        trackIdx,
+        instanceIdx,
+        objScore,
+        objTrackingScore
+      ]);
       objectCategories.push(info.category);
       objectNames.push(info.name);
       objectsOffset++;
@@ -12070,13 +12652,25 @@ function writeLabelImages(file, labelImages, _videos, tracks, instances, context
     if (li.isPredicted) {
       const pli = li;
       if (pli.scoreMap) {
-        const smBytes = new Uint8Array(pli.scoreMap.buffer, pli.scoreMap.byteOffset, pli.scoreMap.byteLength);
+        const smBytes = new Uint8Array(
+          pli.scoreMap.buffer,
+          pli.scoreMap.byteOffset,
+          pli.scoreMap.byteLength
+        );
         const smCompressed = deflate(smBytes);
         const smH = pli.scoreMap.length / li.width;
         if (!Number.isInteger(smH)) {
-          throw new Error(`Score map size ${pli.scoreMap.length} not divisible by width ${li.width}`);
+          throw new Error(
+            `Score map size ${pli.scoreMap.length} not divisible by width ${li.width}`
+          );
         }
-        smIndexRows.push([liIdx, smOffset, smOffset + smCompressed.length, smH, li.width]);
+        smIndexRows.push([
+          liIdx,
+          smOffset,
+          smOffset + smCompressed.length,
+          smH,
+          li.width
+        ]);
         smChunks.push(smCompressed);
         smOffset += smCompressed.length;
       }
@@ -12123,7 +12717,12 @@ function writeLabelImages(file, labelImages, _videos, tracks, instances, context
     dataFlat.set(chunk, offset);
     offset += chunk.length;
   }
-  file.create_dataset({ name: "label_image_data", data: dataFlat, shape: [dataFlat.length], dtype: "<B" });
+  file.create_dataset({
+    name: "label_image_data",
+    data: dataFlat,
+    shape: [dataFlat.length],
+    dtype: "<B"
+  });
   if (smIndexRows.length > 0) {
     createMatrixDataset(
       file,
@@ -12139,7 +12738,12 @@ function writeLabelImages(file, labelImages, _videos, tracks, instances, context
       smFlat.set(chunk, smOff);
       smOff += chunk.length;
     }
-    file.create_dataset({ name: "label_image_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
+    file.create_dataset({
+      name: "label_image_score_maps",
+      data: smFlat,
+      shape: [smFlat.length],
+      dtype: "<B"
+    });
   }
 }
 function writeCentroids(file, centroids, _videos, tracks, instances, contexts) {
@@ -12177,7 +12781,18 @@ function writeCentroids(file, centroids, _videos, tracks, instances, contexts) {
     file,
     "centroids",
     rows,
-    ["x", "y", "z", "video", "frame_idx", "track", "instance", "is_predicted", "score", "tracking_score"],
+    [
+      "x",
+      "y",
+      "z",
+      "video",
+      "frame_idx",
+      "track",
+      "instance",
+      "is_predicted",
+      "score",
+      "tracking_score"
+    ],
     "<f8"
   );
   writeStringDataset(file, "centroid_categories", categories);
@@ -12311,14 +12926,16 @@ function getDs(file, name) {
 function decodeStringElement(v) {
   if (typeof v === "string") return v;
   if (v instanceof Uint8Array) return textDecoder.decode(v);
-  if (Array.isArray(v)) return textDecoder.decode(Uint8Array.from(v));
+  if (Array.isArray(v))
+    return textDecoder.decode(Uint8Array.from(v));
   return String(v);
 }
 function decodeStringArray(value) {
   if (value == null) return [];
   if (typeof value === "string") return [value];
   if (value instanceof Uint8Array) return [textDecoder.decode(value)];
-  if (Array.isArray(value)) return value.map(decodeStringElement);
+  if (Array.isArray(value))
+    return value.map(decodeStringElement);
   if (typeof value.length === "number") {
     return Array.from(value).map(decodeStringElement);
   }
@@ -12430,7 +13047,11 @@ async function readLabels(filename, options) {
     );
     const [nFrames, nTracks, nNodes] = tracksT.shape;
     const tracksData = tracksT.data;
-    const storedOrder3d = renumberOrder(storedOrder, ["frame", "track", "node"]);
+    const storedOrder3d = renumberOrder(storedOrder, [
+      "frame",
+      "track",
+      "node"
+    ]);
     const storedOrder2d = renumberOrder(storedOrder, ["frame", "track"]);
     const axes3d = getTransposeAxes(storedOrder3d, canonicalOrder3d, 3);
     const axes2d = getTransposeAxes(storedOrder2d, canonicalOrder2d, 2);
@@ -12675,7 +13296,9 @@ function toAnalysisArrays(labels, video, allFrames, minOccupancy) {
     });
   }
   const occupancy = new Float64Array(nFrames * nTracks);
-  const locations = new Float64Array(nFrames * nTracks * nodeCount * 2).fill(NaN);
+  const locations = new Float64Array(nFrames * nTracks * nodeCount * 2).fill(
+    NaN
+  );
   const pointScores = new Float64Array(nFrames * nTracks * nodeCount).fill(NaN);
   const instanceScores = new Float64Array(nFrames * nTracks).fill(NaN);
   const trackingScores = new Float64Array(nFrames * nTracks).fill(NaN);
@@ -12839,7 +13462,11 @@ async function writeLabels(labels, filename, options) {
   const axes4d = getTransposeAxes(canonicalOrder4d, axisOrder, 4);
   const axes3d = getTransposeAxes(canonicalOrder3d, targetOrder3d, 3);
   const axes2d = getTransposeAxes(canonicalOrder2d, targetOrder2d, 2);
-  const axesOccupancy = getTransposeAxes(canonicalOrder2d, targetOrderOccupancy, 2);
+  const axesOccupancy = getTransposeAxes(
+    canonicalOrder2d,
+    targetOrderOccupancy,
+    2
+  );
   const locationsT = transposeFlat(
     arrays.locations,
     [nFrames, nTracks, nNodes, 2],
@@ -12860,7 +13487,11 @@ async function writeLabels(labels, filename, options) {
     [nFrames, nTracks],
     axes2d
   );
-  const occupancyT = transposeFlat(arrays.occupancy, [nFrames, nTracks], axesOccupancy);
+  const occupancyT = transposeFlat(
+    arrays.occupancy,
+    [nFrames, nTracks],
+    axesOccupancy
+  );
   const dims4d = getDimsTuple(axisOrder, 4);
   const dims3d = getDimsTuple(targetOrder3d, 3);
   const dims2d = getDimsTuple(targetOrder2d, 2);
@@ -12875,10 +13506,7 @@ async function writeLabels(labels, filename, options) {
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/analysis_${Date.now()}_${Math.random().toString(16).slice(2)}.h5`;
-  const f = new module.File(
-    memPath,
-    "w"
-  );
+  const f = new module.File(memPath, "w");
   try {
     const writeNumeric = (name, data, shape, dimNames) => {
       const canCompress = shape.length > 0 && shape.every((d) => d > 0);
@@ -12899,10 +13527,25 @@ async function writeLabels(labels, filename, options) {
       if (ds) ds.create_attribute("dims", JSON.stringify(dimNames));
     };
     writeNumeric("tracks", locationsT.data, locationsT.shape, dims4d);
-    writeNumeric("track_occupancy", occupancyT.data, occupancyT.shape, dimsOccupancy);
+    writeNumeric(
+      "track_occupancy",
+      occupancyT.data,
+      occupancyT.shape,
+      dimsOccupancy
+    );
     writeNumeric("point_scores", pointScoresT.data, pointScoresT.shape, dims3d);
-    writeNumeric("instance_scores", instanceScoresT.data, instanceScoresT.shape, dims2d);
-    writeNumeric("tracking_scores", trackingScoresT.data, trackingScoresT.shape, dims2d);
+    writeNumeric(
+      "instance_scores",
+      instanceScoresT.data,
+      instanceScoresT.shape,
+      dims2d
+    );
+    writeNumeric(
+      "tracking_scores",
+      trackingScoresT.data,
+      trackingScoresT.shape,
+      dims2d
+    );
     f.create_dataset({ name: "track_names", data: arrays.trackNames });
     f.create_dataset({ name: "node_names", data: nodeNames });
     const edgeFlat = [];
@@ -13155,7 +13798,9 @@ function buildTimeStack(pages, options, source) {
 }
 function buildClassStack(pages, options, source) {
   const labelIds = inferLabelIdsFromPages(pages);
-  const masks = pages.map((page) => page.map((row) => row.map((v) => v > 0 ? 1 : 0)));
+  const masks = pages.map(
+    (page) => page.map((row) => row.map((v) => v > 0 ? 1 : 0))
+  );
   const categories = coerceCategoriesToList(options.categories, pages.length);
   return LabelImage.fromBinaryMasks(masks, {
     labelIds: labelIds ?? void 0,
@@ -13205,13 +13850,22 @@ async function readSlp(source, options) {
       throw new Error("Missing /metadata group in SLP file");
     }
     const metadataAttrs = metadataGroup.attrs ?? {};
-    const formatId = Number(metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1);
+    const formatId = Number(
+      metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
+    );
     const metadataJson = parseJsonAttr(metadataAttrs["json"]);
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
     const videoCrops = readVideoCrops(file);
-    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId, videoCrops);
+    const videos = await readVideos(
+      file.get("videos_json"),
+      labelsPath,
+      options?.openVideos ?? true,
+      file,
+      formatId,
+      videoCrops
+    );
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
     const framesData = normalizeStructDataset(file.get("frames"));
     const instancesData = normalizeStructDataset(file.get("instances"));
@@ -13244,12 +13898,28 @@ async function readSlp(source, options) {
       }
     }
     const identities = readIdentities(file.get("identities_json"));
-    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames, identities);
+    const sessions = readSessions(
+      file.get("sessions_json"),
+      videos,
+      skeletons,
+      labeledFrames,
+      identities
+    );
     const allInstances = labeledFrames.flatMap((f) => f.instances);
-    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(file, videos, tracks, allInstances);
+    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
+      file,
+      videos,
+      tracks,
+      allInstances
+    );
     const maskTuples = readMasks(file, videos, tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
-    const labelImageTuples = readLabelImages(file, videos, tracks, allInstances);
+    const labelImageTuples = readLabelImages(
+      file,
+      videos,
+      tracks,
+      allInstances
+    );
     const frameMap = /* @__PURE__ */ new Map();
     for (const lf of labeledFrames) {
       const vidIdx = videos.indexOf(lf.video);
@@ -13331,13 +14001,22 @@ async function readSlpLazy(source, options) {
       throw new Error("Missing /metadata group in SLP file");
     }
     const metadataAttrs = metadataGroup.attrs ?? {};
-    const formatId = Number(metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1);
+    const formatId = Number(
+      metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
+    );
     const metadataJson = parseJsonAttr(metadataAttrs["json"]);
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
     const videoCrops = readVideoCrops(file);
-    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId, videoCrops);
+    const videos = await readVideos(
+      file.get("videos_json"),
+      labelsPath,
+      options?.openVideos ?? true,
+      file,
+      formatId,
+      videoCrops
+    );
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
     const framesData = normalizeStructDataset(file.get("frames"));
     const instancesData = normalizeStructDataset(file.get("instances"));
@@ -13366,8 +14045,18 @@ async function readSlpLazy(source, options) {
     });
     const lazyFrames = new LazyFrameList(store);
     const identities = readIdentities(file.get("identities_json"));
-    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, [], identities);
-    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(file, videos, tracks);
+    const sessions = readSessions(
+      file.get("sessions_json"),
+      videos,
+      skeletons,
+      [],
+      identities
+    );
+    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
+      file,
+      videos,
+      tracks
+    );
     const maskTuples = readMasks(file, videos, tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
     const labelImageTuples = readLabelImages(file, videos, tracks);
@@ -13612,7 +14301,12 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
       const innerShape = backendMetadata.shape;
       if (innerShape && innerShape.length === 4) {
         backendMetadata.source_shape = [...innerShape];
-        backendMetadata.shape = [innerShape[0], cy2 - cy1, cx2 - cx1, innerShape[3]];
+        backendMetadata.shape = [
+          innerShape[0],
+          cy2 - cy1,
+          cx2 - cx1,
+          innerShape[3]
+        ];
       }
       backendMetadata.crop = [...cropEntry.crop];
       backendMetadata.crop_fill = cropEntry.fill;
@@ -13678,7 +14372,14 @@ function readSuggestions(dataset, videos) {
     const videoIndex = Number(parsed.video ?? 0);
     const video = videos[videoIndex];
     if (!video) continue;
-    suggestions.push(new SuggestionFrame({ video, frameIdx: parsed.frame_idx ?? parsed.frameIdx ?? 0, group: parsed.group != null ? String(parsed.group) : void 0, metadata: parsed }));
+    suggestions.push(
+      new SuggestionFrame({
+        video,
+        frameIdx: parsed.frame_idx ?? parsed.frameIdx ?? 0,
+        group: parsed.group != null ? String(parsed.group) : void 0,
+        metadata: parsed
+      })
+    );
   }
   return suggestions;
 }
@@ -13689,11 +14390,13 @@ function readIdentities(dataset) {
   for (const entry of values) {
     const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder2.decode(entry));
     const { name, color, ...rest } = parsed;
-    identities.push(new Identity({
-      name: name ?? "",
-      color: color ?? void 0,
-      metadata: rest
-    }));
+    identities.push(
+      new Identity({
+        name: name ?? "",
+        color: color ?? void 0,
+        metadata: rest
+      })
+    );
   }
   return identities;
 }
@@ -13720,10 +14423,17 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
       cameraGroup.cameras.push(camera);
       cameraMap.set(String(key), camera);
     }
-    const session = new RecordingSession({ cameraGroup, metadata: parsed.metadata ?? {} });
+    const session = new RecordingSession({
+      cameraGroup,
+      metadata: parsed.metadata ?? {}
+    });
     const map = asRecord(parsed.camcorder_to_video_idx_map);
     for (const [cameraKey, videoIdx] of Object.entries(map)) {
-      const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+      const camera = resolveCameraKey(
+        cameraKey,
+        cameraMap,
+        cameraGroup.cameras
+      );
       const video = videos[Number(videoIdx)];
       if (camera && video) {
         session.addVideo(video, camera);
@@ -13740,18 +14450,36 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
         const instanceByCamera = /* @__PURE__ */ new Map();
         const instancesRecord = asRecord(instanceGroupRecord.instances);
         for (const [cameraKey, points] of Object.entries(instancesRecord)) {
-          const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+          const camera = resolveCameraKey(
+            cameraKey,
+            cameraMap,
+            cameraGroup.cameras
+          );
           if (!camera) {
-            console.warn(`Camera key "${cameraKey}" not found in session calibration \u2014 skipping 2D instance data for this camera.`);
+            console.warn(
+              `Camera key "${cameraKey}" not found in session calibration \u2014 skipping 2D instance data for this camera.`
+            );
             continue;
           }
           const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
-          instanceByCamera.set(camera, new Instance({ points, skeleton }));
+          instanceByCamera.set(
+            camera,
+            new Instance({
+              points,
+              skeleton
+            })
+          );
         }
         if (instanceByCamera.size === 0) {
-          const lfInstMap = asRecord(instanceGroupRecord.camcorder_to_lf_and_inst_idx_map);
+          const lfInstMap = asRecord(
+            instanceGroupRecord.camcorder_to_lf_and_inst_idx_map
+          );
           for (const [camIdx, value] of Object.entries(lfInstMap)) {
-            const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+            const camera = resolveCameraKey(
+              camIdx,
+              cameraMap,
+              cameraGroup.cameras
+            );
             if (!camera) continue;
             const pair = value;
             const lf = labeledFrames[Number(pair[0])];
@@ -13761,7 +14489,10 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
             }
           }
         }
-        const instance3d = reconstructInstance3D(instanceGroupRecord, skeletons);
+        const instance3d = reconstructInstance3D(
+          instanceGroupRecord,
+          skeletons
+        );
         const identity = resolveIdentity(instanceGroupRecord, identities);
         instanceGroups.push(
           new InstanceGroup({
@@ -13775,10 +14506,18 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
       }
       const labeledFrameByCamera = /* @__PURE__ */ new Map();
       const labeledFrameMap = asRecord(groupRecord.labeled_frame_by_camera);
-      for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
-        const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+      for (const [cameraKey, labeledFrameIdx] of Object.entries(
+        labeledFrameMap
+      )) {
+        const camera = resolveCameraKey(
+          cameraKey,
+          cameraMap,
+          cameraGroup.cameras
+        );
         if (!camera) {
-          console.warn(`Camera key "${cameraKey}" not found in session calibration \u2014 skipping labeled frame mapping.`);
+          console.warn(
+            `Camera key "${cameraKey}" not found in session calibration \u2014 skipping labeled frame mapping.`
+          );
           continue;
         }
         const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
@@ -13791,7 +14530,11 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
           const igRecord = asRecord(instanceGroup);
           const lfInstMap = asRecord(igRecord.camcorder_to_lf_and_inst_idx_map);
           for (const [camIdx, value] of Object.entries(lfInstMap)) {
-            const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+            const camera = resolveCameraKey(
+              camIdx,
+              cameraMap,
+              cameraGroup.cameras
+            );
             if (!camera) continue;
             const pair = value;
             const lf = labeledFrames[Number(pair[0])];
@@ -13842,7 +14585,12 @@ function readAttrString(dataset, name) {
   return [];
 }
 function readRoisAndBboxes(file, videos, tracks, instances) {
-  const { rois, migratedBboxes } = readRoisWithMigration(file, videos, tracks, instances);
+  const { rois, migratedBboxes } = readRoisWithMigration(
+    file,
+    videos,
+    tracks,
+    instances
+  );
   let bboxes = readBboxes(file, videos, tracks);
   if (bboxes.length === 0 && migratedBboxes.length > 0) {
     bboxes = migratedBboxes;
@@ -13858,7 +14606,12 @@ function readRoisWithMigration(file, videos, tracks, instances) {
   const wkbDs = file.get("roi_wkb");
   if (!wkbDs) return { rois: [], migratedBboxes: [] };
   const wkbFlat = wkbDs.value instanceof Uint8Array ? wkbDs.value : new Uint8Array(wkbDs.value ?? []);
-  const categories = readStringMetadata(file, "roi_categories", roisDs, "categories");
+  const categories = readStringMetadata(
+    file,
+    "roi_categories",
+    roisDs,
+    "categories"
+  );
   const names = readStringMetadata(file, "roi_names", roisDs, "names");
   const sources = readStringMetadata(file, "roi_sources", roisDs, "sources");
   const videoIndices = roisData.video ?? [];
@@ -13887,7 +14640,14 @@ function readRoisWithMigration(file, videos, tracks, instances) {
     const roiTsVal = trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
     const roiTrackingScore = Number.isNaN(roiTsVal) ? null : roiTsVal;
     if (annotType === 1 /* BOUNDING_BOX */ && !isPred) {
-      const tmpRoi = new UserROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, track });
+      const tmpRoi = new UserROI({
+        geometry,
+        name: names[i] ?? "",
+        category: categories[i] ?? "",
+        source: sources[i] ?? "",
+        video,
+        track
+      });
       const b = tmpRoi.bounds;
       const scoreVal = Number(scores[i]);
       const bboxScore = Number.isNaN(scoreVal) ? null : scoreVal;
@@ -13930,7 +14690,10 @@ function readRoisWithMigration(file, videos, tracks, instances) {
       let roi;
       if (isPred) {
         const scoreVal = Number(scores[i]);
-        roi = new PredictedROI({ ...roiOptions, score: Number.isNaN(scoreVal) ? 0 : scoreVal });
+        roi = new PredictedROI({
+          ...roiOptions,
+          score: Number.isNaN(scoreVal) ? 0 : scoreVal
+        });
       } else {
         roi = new UserROI(roiOptions);
       }
@@ -13956,7 +14719,12 @@ function readBboxes(file, _videos, tracks) {
   const x1s = bboxesData.x1 ?? [];
   const count = isLegacy ? xCenters.length : x1s.length;
   if (!count) return [];
-  const categories = readStringMetadata(file, "bbox_categories", bboxesDs, "categories");
+  const categories = readStringMetadata(
+    file,
+    "bbox_categories",
+    bboxesDs,
+    "categories"
+  );
   const names = readStringMetadata(file, "bbox_names", bboxesDs, "names");
   const sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
   const yCenters = bboxesData.y_center ?? [];
@@ -14062,7 +14830,10 @@ function readScoreMaps(file, indexPath, dataPath) {
       );
     }
     const scoreMap = new Float32Array(
-      decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
+      decompressed.buffer.slice(
+        decompressed.byteOffset,
+        decompressed.byteOffset + decompressed.byteLength
+      )
     );
     result.set(annotIdx, { scoreMap, height: h, width: w });
   }
@@ -14077,7 +14848,12 @@ function readMasks(file, _videos, tracks) {
   const rleDs = file.get("mask_rle");
   if (!rleDs) return [];
   const rleFlat = rleDs.value instanceof Uint8Array ? rleDs.value : new Uint8Array(rleDs.value ?? []);
-  const categories = readStringMetadata(file, "mask_categories", masksDs, "categories");
+  const categories = readStringMetadata(
+    file,
+    "mask_categories",
+    masksDs,
+    "categories"
+  );
   const names = readStringMetadata(file, "mask_names", masksDs, "names");
   const sources = readStringMetadata(file, "mask_sources", masksDs, "sources");
   const widths = masksData.width ?? [];
@@ -14095,7 +14871,11 @@ function readMasks(file, _videos, tracks) {
   const scaleYCol = masksData.scale_y ?? [];
   const offsetXCol = masksData.offset_x ?? [];
   const offsetYCol = masksData.offset_y ?? [];
-  const scoreMaps = readScoreMaps(file, "mask_score_map_index", "mask_score_maps");
+  const scoreMaps = readScoreMaps(
+    file,
+    "mask_score_map_index",
+    "mask_score_maps"
+  );
   const masks = [];
   const fromPredictedPairs = [];
   for (let i = 0; i < heights.length; i++) {
@@ -14104,7 +14884,11 @@ function readMasks(file, _videos, tracks) {
     const rleRaw = rleFlat.slice(rleStart, rleEnd);
     const numCounts = rleRaw.byteLength / 4;
     const rleCounts = new Uint32Array(numCounts);
-    const rleView = new DataView(rleRaw.buffer, rleRaw.byteOffset, rleRaw.byteLength);
+    const rleView = new DataView(
+      rleRaw.buffer,
+      rleRaw.byteOffset,
+      rleRaw.byteLength
+    );
     for (let j = 0; j < numCounts; j++) {
       rleCounts[j] = rleView.getUint32(j * 4, true);
     }
@@ -14171,7 +14955,12 @@ function readLabelImages(file, _videos, tracks, instances) {
   const objectsStarts = liData.objects_start ?? [];
   const dataStarts = liData.data_start ?? [];
   const dataEnds = liData.data_end ?? [];
-  const sources = readStringMetadata(file, "label_image_sources", liDs, "sources");
+  const sources = readStringMetadata(
+    file,
+    "label_image_sources",
+    liDs,
+    "sources"
+  );
   const isPredictedCol = liData.is_predicted ?? [];
   const liScoreCol = liData.score ?? [];
   const liScaleXCol = liData.scale_x ?? [];
@@ -14202,12 +14991,26 @@ function readLabelImages(file, _videos, tracks, instances) {
     objLabelIds = objData.label_id ?? [];
     objTrackIndices = objData.track ?? [];
     objInstanceIndices = objData.instance ?? [];
-    objCategories = readStringMetadata(file, "label_image_obj_categories", objDs, "categories");
-    objNames = readStringMetadata(file, "label_image_obj_names", objDs, "names");
+    objCategories = readStringMetadata(
+      file,
+      "label_image_obj_categories",
+      objDs,
+      "categories"
+    );
+    objNames = readStringMetadata(
+      file,
+      "label_image_obj_names",
+      objDs,
+      "names"
+    );
     objScoreCol = objData.score ?? [];
     objTrackingScoreCol = objData.tracking_score ?? [];
   }
-  const liScoreMaps = readScoreMaps(file, "label_image_score_map_index", "label_image_score_maps");
+  const liScoreMaps = readScoreMaps(
+    file,
+    "label_image_score_map_index",
+    "label_image_score_maps"
+  );
   const labelImages = [];
   for (let i = 0; i < videoIndices.length; i++) {
     const videoIdx = Number(videoIndices[i]);
@@ -14218,7 +15021,11 @@ function readLabelImages(file, _videos, tracks, instances) {
     if (isChunked && dataChunked) {
       const frameSize = height * width;
       if (dataChunked instanceof Int32Array) {
-        pixelData = new Int32Array(dataChunked.buffer, dataChunked.byteOffset + i * frameSize * 4, frameSize);
+        pixelData = new Int32Array(
+          dataChunked.buffer,
+          dataChunked.byteOffset + i * frameSize * 4,
+          frameSize
+        );
       } else if (ArrayBuffer.isView(dataChunked)) {
         const offset = i * frameSize;
         pixelData = new Int32Array(frameSize);
@@ -14234,7 +15041,10 @@ function readLabelImages(file, _videos, tracks, instances) {
       const compressed = dataFlat.slice(dataStart, dataEnd);
       const decompressed = inflate(compressed);
       pixelData = new Int32Array(
-        decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
+        decompressed.buffer.slice(
+          decompressed.byteOffset,
+          decompressed.byteOffset + decompressed.byteLength
+        )
       );
     }
     const nObj = Number(nObjectsList[i]);
@@ -14373,7 +15183,16 @@ function getFieldNames(dataset) {
 }
 function buildLabeledFrames2(options) {
   const frames = [];
-  const { framesData, instancesData, pointsData, predPointsData, skeletons, tracks, videos, formatId } = options;
+  const {
+    framesData,
+    instancesData,
+    pointsData,
+    predPointsData,
+    skeletons,
+    tracks,
+    videos,
+    formatId
+  } = options;
   const frameIds = framesData.frame_id ?? [];
   const videoIdToIndex = buildVideoIdMap2(framesData, videos);
   const instanceById = /* @__PURE__ */ new Map();
@@ -14396,13 +15215,20 @@ function buildLabeledFrames2(options) {
       const score = Number(instancesData.score?.[instIdx] ?? 0);
       const rawTrackingScore = formatId < 1.2 ? 0 : Number(instancesData.tracking_score?.[instIdx] ?? 0);
       const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
-      const fromPredicted = Number(instancesData.from_predicted?.[instIdx] ?? -1);
+      const fromPredicted = Number(
+        instancesData.from_predicted?.[instIdx] ?? -1
+      );
       const skeleton = skeletons[skeletonId] ?? skeletons[0];
       const track = trackId >= 0 ? tracks[trackId] : null;
       let instance;
       if (instanceType === 0) {
         const points = slicePoints2(pointsData, pointStart, pointEnd);
-        instance = new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton, track, trackingScore });
+        instance = new Instance({
+          points: pointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          trackingScore
+        });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -14413,7 +15239,13 @@ function buildLabeledFrames2(options) {
         }
       } else {
         const points = slicePoints2(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({ points: predictedPointsFromArray(points, skeleton.nodeNames), skeleton, track, score, trackingScore });
+        instance = new PredictedInstance({
+          points: predictedPointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          score,
+          trackingScore
+        });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -14473,9 +15305,24 @@ function readCentroids(file, _videos, tracks) {
   const xs = data.x ?? [];
   const count = xs.length;
   if (!count) return [];
-  const categories = readStringMetadata(file, "centroid_categories", centroidsDs, "categories");
-  const names = readStringMetadata(file, "centroid_names", centroidsDs, "names");
-  const sources = readStringMetadata(file, "centroid_sources", centroidsDs, "sources");
+  const categories = readStringMetadata(
+    file,
+    "centroid_categories",
+    centroidsDs,
+    "categories"
+  );
+  const names = readStringMetadata(
+    file,
+    "centroid_names",
+    centroidsDs,
+    "names"
+  );
+  const sources = readStringMetadata(
+    file,
+    "centroid_sources",
+    centroidsDs,
+    "sources"
+  );
   const ys = data.y ?? [];
   const zs = data.z ?? [];
   const videoIndices = data.video ?? [];
@@ -14510,7 +15357,10 @@ function readCentroids(file, _videos, tracks) {
     let centroid;
     if (isPred) {
       const scoreVal = Number(scores[i]);
-      centroid = new PredictedCentroid({ ...options, score: Number.isNaN(scoreVal) ? 0 : scoreVal });
+      centroid = new PredictedCentroid({
+        ...options,
+        score: Number.isNaN(scoreVal) ? 0 : scoreVal
+      });
     } else {
       centroid = new UserCentroid(options);
     }
@@ -14570,7 +15420,10 @@ async function loadSlp(source, options) {
         });
       } catch (e) {
         if (streamMode === "auto") {
-          console.warn("[sleap-io] Worker-based loading failed, falling back to main thread:", e);
+          console.warn(
+            "[sleap-io] Worker-based loading failed, falling back to main thread:",
+            e
+          );
         } else {
           throw e;
         }
@@ -14608,13 +15461,17 @@ async function saveAnalysisH5(labels, filename, options) {
 async function loadSlpSet(sources, options) {
   const set = new LabelsSet();
   if (Array.isArray(sources)) {
-    const results = await Promise.all(sources.map((src) => loadSlp(src, options)));
+    const results = await Promise.all(
+      sources.map((src) => loadSlp(src, options))
+    );
     for (let i = 0; i < sources.length; i++) {
       set.set(sources[i], results[i]);
     }
   } else {
     const entries = Object.entries(sources);
-    const results = await Promise.all(entries.map(([, src]) => loadSlp(src, options)));
+    const results = await Promise.all(
+      entries.map(([, src]) => loadSlp(src, options))
+    );
     for (let i = 0; i < entries.length; i++) {
       set.set(entries[i][0], results[i]);
     }
@@ -14634,7 +15491,11 @@ async function loadVideo(source, options) {
     dataset: options?.dataset,
     backend: options?.backend
   });
-  return new Video({ filename, backend, openBackend: options?.openBackend ?? true });
+  return new Video({
+    filename,
+    backend,
+    openBackend: options?.openBackend ?? true
+  });
 }
 
 // src/io/geojson.ts
@@ -14699,7 +15560,8 @@ function decodeSkeleton(data, fallbackName) {
     const rightName = resolveName(right);
     const leftNode = nodes.find((node) => node.name === leftName);
     const rightNode = nodes.find((node) => node.name === rightName);
-    if (!leftNode || !rightNode) throw new Error("Symmetry references unknown node.");
+    if (!leftNode || !rightNode)
+      throw new Error("Symmetry references unknown node.");
     return new Symmetry([leftNode, rightNode]);
   });
   return new Skeleton({
