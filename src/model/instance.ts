@@ -404,6 +404,7 @@ export class PredictedInstance extends Instance {
     track?: Track | null;
     score?: number;
     trackingScore?: number;
+    fromPredicted?: PredictedInstance | null;
   }) {
     const { score = 0, ...rest } = options;
     const pts = Array.isArray(rest.points)
@@ -417,6 +418,7 @@ export class PredictedInstance extends Instance {
       skeleton: rest.skeleton,
       track: rest.track,
       trackingScore: rest.trackingScore,
+      fromPredicted: rest.fromPredicted,
     });
     this.score = score;
   }

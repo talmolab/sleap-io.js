@@ -39,6 +39,68 @@ function _shallowCopy<T>(item: T): T {
 }
 
 /**
+ * Shallow-copy an annotation, recording `original -> copy` in `memo`.
+ *
+ * Mirrors Python `_copy_with_memo` (labeled_frame.py). The memo lets a later
+ * {@link _relinkFromPredicted} pass repair `fromPredicted` provenance links:
+ * when both a predicted annotation and the user annotation that adopted it are
+ * copied independently during a merge, the user copy's `fromPredicted` still
+ * points at the *original* predicted object rather than its copy now living in
+ * the merged frame. Recording the original->copy mapping here lets the link be
+ * rewritten to the in-frame copy.
+ *
+ * JS uses a `Map` keyed by the original object reference as the analog of
+ * Python's `id()`-keyed dict.
+ *
+ * @param item - The annotation to copy.
+ * @param memo - Map from an original annotation to its copy, mutated in place.
+ * @returns The shallow copy of `item`.
+ */
+function _copyWithMemo<T extends object>(
+  item: T,
+  memo: Map<object, object>,
+): T {
+  const itemCopy = _shallowCopy(item);
+  memo.set(item, itemCopy);
+  return itemCopy;
+}
+
+/**
+ * Rewrite `fromPredicted` links to copied sources within a merged frame.
+ *
+ * Mirrors Python `_relink_from_predicted` (labeled_frame.py). After annotations
+ * are copied into a merged frame, a user annotation's `fromPredicted` may still
+ * reference the *original* predicted source rather than the copy that was placed
+ * in the frame. This pass redirects each such link to the copied source (looked
+ * up in `memo`) so the provenance link points at the in-frame object and would
+ * survive serialization (which resolves links by object identity). Links whose
+ * source was not copied (not in `memo`) are left unchanged.
+ *
+ * Generic over modality via `ann.fromPredicted`: only segmentation masks and
+ * `Instance`s carry a `fromPredicted` link today, so other annotation types are
+ * left untouched.
+ *
+ * @param annotations - The merged annotation list to repair in place.
+ * @param memo - Map from an original annotation to its copy, as built by
+ *   {@link _copyWithMemo} (or `Labels._mapInstance`).
+ */
+export function _relinkFromPredicted(
+  // biome-ignore lint/suspicious/noExplicitAny: generic over heterogeneous annotation modalities.
+  annotations: any[],
+  memo: Map<object, object>,
+): void {
+  for (const ann of annotations) {
+    const src = ann?.fromPredicted;
+    if (src != null) {
+      const replacement = memo.get(src);
+      if (replacement !== undefined) {
+        ann.fromPredicted = replacement;
+      }
+    }
+  }
+}
+
+/**
  * Extract centroid (x, y) from an annotation based on its modality.
  *
  * @returns A tuple of [x, y] coordinates, or null if the centroid cannot be
@@ -170,6 +232,9 @@ function _resolveAnnotationAuto(
 ): Annotation[] {
   const merged: Annotation[] = [];
   const usedSelfIndices = new Set<number>();
+  // Track copied annotations so `fromPredicted` links can be repaired to point
+  // at the in-frame copy of their source rather than the original.
+  const memo = new Map<object, object>();
 
   // 1. Keep all user annotations from self
   for (const ann of selfList) {
@@ -214,16 +279,16 @@ function _resolveAnnotationAuto(
         // user + user → keep self (already in merged)
       } else if (selfAnn.isPredicted && !otherAnn.isPredicted) {
         // predicted + user → replace with other's user
-        merged.push(_shallowCopy(otherAnn));
+        merged.push(_copyWithMemo(otherAnn, memo));
       } else if (!selfAnn.isPredicted && otherAnn.isPredicted) {
         // user + predicted → keep self (already in merged)
       } else {
         // predicted + predicted → keep other's (newer)
-        merged.push(_shallowCopy(otherAnn));
+        merged.push(_copyWithMemo(otherAnn, memo));
       }
     } else {
       // No match → add from other
-      merged.push(_shallowCopy(otherAnn));
+      merged.push(_copyWithMemo(otherAnn, memo));
     }
   }
 
@@ -233,6 +298,10 @@ function _resolveAnnotationAuto(
       merged.push(selfList[selfIdx]);
     }
   }
+
+  // Repair `fromPredicted` links so a copied user annotation references the
+  // copied source prediction now in the merged frame, not the original.
+  _relinkFromPredicted(merged, memo);
 
   return merged;
 }
@@ -483,19 +552,26 @@ export class LabeledFrame {
 
     if (strategy === "keep_new") {
       for (const attr of ANNOTATION_ATTRS) {
-        this[attr] = (other[attr] as Annotation[]).map(_shallowCopy) as any;
+        const memo = new Map<object, object>();
+        const newList = (other[attr] as Annotation[]).map((item) =>
+          _copyWithMemo(item, memo),
+        );
+        _relinkFromPredicted(newList, memo);
+        this[attr] = newList as any;
       }
       return;
     }
 
     if (strategy === "replace_predictions") {
       for (const attr of ANNOTATION_ATTRS) {
+        const memo = new Map<object, object>();
         const kept = (this[attr] as Annotation[]).filter((a) => !a.isPredicted);
         for (const item of other[attr] as Annotation[]) {
           if (item.isPredicted) {
-            kept.push(_shallowCopy(item));
+            kept.push(_copyWithMemo(item, memo));
           }
         }
+        _relinkFromPredicted(kept, memo);
         (this as any)[attr] = kept;
       }
       return;
@@ -527,12 +603,15 @@ export class LabeledFrame {
 
     // "keep_both" (default): identity dedup + shallow copy
     for (const attr of ANNOTATION_ATTRS) {
-      const existing = new Set(this[attr] as unknown[]);
-      for (const item of other[attr] as unknown[]) {
+      const memo = new Map<object, object>();
+      const target = this[attr] as Annotation[];
+      const existing = new Set(target as unknown[]);
+      for (const item of other[attr] as Annotation[]) {
         if (!existing.has(item)) {
-          (this[attr] as unknown[]).push(_shallowCopy(item));
+          target.push(_copyWithMemo(item, memo));
         }
       }
+      _relinkFromPredicted(target, memo);
     }
   }
 

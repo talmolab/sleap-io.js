@@ -1,6 +1,15 @@
-import { LabeledFrame, _resolveMergedIsNegative } from "./labeled-frame.js";
+import {
+  LabeledFrame,
+  _relinkFromPredicted,
+  _resolveMergedIsNegative,
+} from "./labeled-frame.js";
 import { Instance, PredictedInstance, Track } from "./instance.js";
-import type { PredictedPointsArray } from "./instance.js";
+import type {
+  Point,
+  PointsArray,
+  PredictedPoint,
+  PredictedPointsArray,
+} from "./instance.js";
 import { Skeleton, Node, Edge, Symmetry } from "./skeleton.js";
 import { SuggestionFrame } from "./suggestions.js";
 import { Video } from "./video.js";
@@ -1525,21 +1534,35 @@ export class Labels {
   /**
    * Map an instance to use mapped skeleton and track, returning a NEW instance.
    *
-   * Mirrors Python `Labels._map_instance` (labels.py:3650-3687). The source
+   * Mirrors Python `Labels._map_instance` (labels.py:3953-4020). The source
    * instance is never mutated: its points are deep-copied and the returned
    * instance is a fresh object of the SAME exact type (`Instance` vs
    * `PredictedInstance`, dispatched via `constructor ===`). Skeleton/track are
    * resolved through the maps with `?? original` fallback.
    *
+   * When the source instance's node order differs from the mapped skeleton's
+   * node order (e.g. the default structure matcher matched `[A, B, C]` with
+   * `[C, B, A]`), the points are reordered by node NAME so that each node's
+   * coordinates and score follow its name rather than its position (Python
+   * #489). When the node orders are identical (the common case) the points are
+   * copied positionally to avoid any overhead on the hot path. Nodes present in
+   * the mapped skeleton but absent from the source are filled with a missing,
+   * invisible point (NaN xy).
+   *
    * @param instance - Instance to map.
    * @param skeletonMap - Map from old skeletons to new skeletons.
    * @param trackMap - Map from old tracks to new tracks.
+   * @param memo - Optional map from the source instance to the new instance,
+   *   mutated in place. Used by {@link _relinkFromPredicted} to repair
+   *   `fromPredicted` links so a remapped user instance references the remapped
+   *   source prediction now in the merged frame (Python #491).
    * @returns New instance with mapped skeleton and track.
    */
   _mapInstance(
     instance: Instance | PredictedInstance,
     skeletonMap: Map<Skeleton, Skeleton>,
     trackMap: Map<Track, Track>,
+    memo?: Map<object, object>,
   ): Instance | PredictedInstance {
     const mappedSkeleton =
       skeletonMap.get(instance.skeleton) ?? instance.skeleton;
@@ -1547,29 +1570,76 @@ export class Labels {
       ? (trackMap.get(instance.track) ?? instance.track)
       : null;
 
-    // Deep/independent copy of the points so the source is never aliased.
-    const newPoints = instance.points.map((p) => ({
-      ...p,
-      xy: [...p.xy] as [number, number],
-    }));
+    const isPredicted = instance.constructor === PredictedInstance;
+    const sourcePoints = instance.points;
+    const mappedNames = mappedSkeleton.nodeNames;
 
-    if (instance.constructor === PredictedInstance) {
+    // Reorder points by node name when the source order differs from the mapped
+    // skeleton's order, otherwise the per-node coordinates/scores would be
+    // carried over positionally and silently misaligned (Python #489). When the
+    // orders already match, copy positionally on the hot path.
+    let mappedPoints: PointsArray | PredictedPointsArray;
+    const sameOrder =
+      sourcePoints.length === mappedNames.length &&
+      sourcePoints.every((p, i) => p.name === mappedNames[i]);
+    if (sameOrder) {
+      mappedPoints = sourcePoints.map((p) => ({
+        ...p,
+        xy: [...p.xy] as [number, number],
+      })) as PointsArray | PredictedPointsArray;
+    } else {
+      // Index the source points by node name so each mapped-skeleton node can
+      // copy the coordinates/score that belong to its name.
+      const sourceByName = new Map<string, Point | PredictedPoint>();
+      for (const p of sourcePoints) {
+        if (p.name !== undefined) sourceByName.set(p.name, p);
+      }
+      mappedPoints = mappedNames.map((name) => {
+        const src = sourceByName.get(name);
+        if (src !== undefined) {
+          return { ...src, xy: [...src.xy] as [number, number], name };
+        }
+        // Node absent from the source skeleton: fill a missing/invisible point
+        // (NaN xy), mirroring how missing nodes are represented elsewhere.
+        return isPredicted
+          ? {
+              xy: [Number.NaN, Number.NaN] as [number, number],
+              visible: false,
+              complete: false,
+              score: Number.NaN,
+              name,
+            }
+          : {
+              xy: [Number.NaN, Number.NaN] as [number, number],
+              visible: false,
+              complete: false,
+              name,
+            };
+      }) as PointsArray | PredictedPointsArray;
+    }
+
+    let newInstance: Instance | PredictedInstance;
+    if (isPredicted) {
       const predicted = instance as PredictedInstance;
-      return new PredictedInstance({
-        points: newPoints as unknown as PredictedPointsArray,
+      newInstance = new PredictedInstance({
+        points: mappedPoints as PredictedPointsArray,
         skeleton: mappedSkeleton,
         score: predicted.score,
         track: mappedTrack,
         trackingScore: predicted.trackingScore,
+        fromPredicted: predicted.fromPredicted,
+      });
+    } else {
+      newInstance = new Instance({
+        points: mappedPoints as PointsArray,
+        skeleton: mappedSkeleton,
+        track: mappedTrack,
+        trackingScore: instance.trackingScore,
+        fromPredicted: instance.fromPredicted,
       });
     }
-    return new Instance({
-      points: newPoints,
-      skeleton: mappedSkeleton,
-      track: mappedTrack,
-      trackingScore: instance.trackingScore,
-      fromPredicted: instance.fromPredicted,
-    });
+    if (memo !== undefined) memo.set(instance, newInstance);
+    return newInstance;
   }
 
   /**
@@ -1862,12 +1932,15 @@ export class Labels {
             instances: [],
             isNegative: otherFrame.isNegative,
           });
+          const instanceMemo = new Map<object, object>();
           for (const inst of otherFrame.instances) {
             newFrame.instances.push(
-              this._mapInstance(inst, skeletonMap, trackMap),
+              this._mapInstance(inst, skeletonMap, trackMap, instanceMemo),
             );
             result.instancesAdded += 1; // per instance
           }
+          // Repair `fromPredicted` links to the remapped source.
+          _relinkFromPredicted(newFrame.instances, instanceMemo);
           newFrame.mergeAnnotations(otherFrame); // default "keep_both"
           Labels._remapFrameAnnotations(newFrame, videoMap, trackMap);
           this.append(newFrame);
@@ -1883,11 +1956,15 @@ export class Labels {
           });
 
           // Remap skeleton/track of instances that came from `other`.
+          const instanceMemo = new Map<object, object>();
           const mergedInstances = rawMerged.map((inst) =>
             skeletonMap.has(inst.skeleton)
-              ? this._mapInstance(inst, skeletonMap, trackMap)
+              ? this._mapInstance(inst, skeletonMap, trackMap, instanceMemo)
               : inst,
           );
+          // Repair `fromPredicted` links so a remapped user instance references
+          // the remapped source prediction in this frame.
+          _relinkFromPredicted(mergedInstances, instanceMemo);
 
           const nBefore = selfFrame.instances.length; // BEFORE reassignment
           const nAfter = mergedInstances.length;
