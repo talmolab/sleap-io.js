@@ -820,7 +820,9 @@ function writeIdentities(file: any, identities: Identity[]): void {
 
 function writeSessions(file: any, sessions: RecordingSession[], videos: Video[], labeledFrames: LabeledFrame[], identities?: Identity[]): void {
   const labeledFrameIndex = new Map<LabeledFrame, number>();
-  labeledFrames.forEach((lf, idx) => labeledFrameIndex.set(lf, idx));
+  labeledFrames.forEach((lf, idx) => {
+    labeledFrameIndex.set(lf, idx);
+  });
 
   const payload = sessions.map((session) => JSON.stringify(serializeSession(session, videos, labeledFrameIndex, identities)));
   file.create_dataset({ name: "sessions_json", data: payload });
@@ -1392,7 +1394,9 @@ function writeMasks(
   // from_predicted). Keyed by the object itself (object identity) — the JS
   // analog of Python's id(mask).
   const maskIdToIdx = new Map<SegmentationMask, number>();
-  masks.forEach((m, i) => maskIdToIdx.set(m, i));
+  masks.forEach((m, i) => {
+    maskIdToIdx.set(m, i);
+  });
 
   for (let i = 0; i < masks.length; i++) {
     const mask = masks[i];

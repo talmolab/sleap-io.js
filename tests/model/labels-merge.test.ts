@@ -834,7 +834,7 @@ describe("Labels.merge — samefile matching (GROUP H)", () => {
     labels.videos = [videoA];
 
     const originalCwd = process.cwd();
-    let result;
+    let result: Awaited<ReturnType<typeof labels.merge>>;
     try {
       process.chdir(tmp);
       const relativePath = path.join("data", "video.mp4");

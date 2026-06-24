@@ -351,7 +351,8 @@ export async function readEmbeddedFrameBytes(
 
   // 1D concatenated with known sizes: exact byte-range slice.
   if (layout === "concat" && reader.frameSizes && reader.frameSizes.length > index) {
-    const offsets = (reader.legacy.offsets ??= computeOffsetsFromSizes(reader.frameSizes));
+    reader.legacy.offsets ??= computeOffsetsFromSizes(reader.frameSizes);
+    const offsets = reader.legacy.offsets;
     const start = offsets[index];
     const end = start + reader.frameSizes[index];
     const { value } = await reader.readSlice([[start, end]]);

@@ -3,21 +3,26 @@
 ## Toolchain
 
 This project uses [**Bun**](https://bun.com) as its package manager, script
-runner, and test runner. The version is pinned to **`bun@1.3.14`** via the
-`packageManager` field in `package.json`; please use that version locally to
-match CI. There is no npm/Node fallback in the dev workflow — the only place npm
-is still used is the release workflow's `npm publish` step (npm's OIDC trusted
-publishing and provenance are registry features Bun's publisher does not
-support).
+runner, and test runner. The Bun version is pinned in exactly one place — the
+`packageManager` field in `package.json` (**`bun@1.3.14`**). CI reads that same
+field via `setup-bun`'s `bun-version-file: package.json`, and a `preinstall`
+guard fails fast if the Bun running `bun install` locally doesn't match the pin,
+so local and CI never drift. There is no npm/Node fallback in the dev workflow —
+the only place npm is still used is the release workflow's `npm publish` step
+(npm's OIDC trusted publishing and provenance are registry features Bun's
+publisher does not support).
 
-[Install Bun](https://bun.com/docs/installation), then:
+[Install Bun](https://bun.com/docs/installation) (the pinned version), then:
 
 ```bash
 bun install              # install deps from the committed bun.lock
 bun run build            # bundle src/ to dist/ with tsup (ESM + d.ts)
 bun run lint             # type-check only: tsc -p tsconfig.json --noEmit
-bun test                 # run the unit suite
+bun run check            # lint check with Biome (no writes)
+bun run format           # apply Biome's safe lint fixes
+bun test                 # run the unit suite (tests/)
 bun run test:coverage    # run the suite and write coverage/lcov.info
+bun run check:pack       # validate the publishable tarball (publint + attw)
 ```
 
 `bun install --frozen-lockfile` (what CI runs) installs exactly what `bun.lock`
@@ -35,12 +40,42 @@ nothing new is blocked:
 bun pm untrusted         # should report 0 untrusted dependencies with scripts
 ```
 
+### Linting & formatting
+
+[**Biome**](https://biomejs.dev) is the linter (config in `biome.json`, scoped to
+`src/` and `tests/`, version pinned **exactly** in `package.json` so local and CI
+never drift on lint rules). `bun run check` is the read-only lint gate CI runs;
+`bun run format` applies Biome's safe lint fixes. Two recommended rules are
+disabled because they fight intentional patterns in this parsing-heavy codebase:
+`noExplicitAny` (untyped HDF5/JSON payloads) and `noNonNullAssertion`. Biome also
+reports a number of pre-existing warnings (e.g. unused imports, `noGlobalIsNan`);
+these are non-blocking and fine to clean up incrementally — note `noGlobalIsNan`
+is **not** auto-fixed because `isNaN` and `Number.isNaN` differ in coercion
+semantics.
+
+Biome's **formatter is intentionally disabled** for now (`formatter.enabled:
+false` in `biome.json`). Turning it on reflows nearly every file, so that churn is
+deferred to a dedicated follow-up PR — flip `formatter.enabled` to `true` and run
+`bun run format` — to keep this Bun migration reviewable.
+
+### Publishable-package check
+
+`bun run check:pack` runs [`publint`](https://publint.dev) and
+[`@arethetypeswrong/cli`](https://arethetypes.wrong) against the built `dist/` to
+catch broken `exports`/`types` conditions or accidental `bun:`/Node-only imports
+before they reach consumers. It uses the `esm-only` attw profile (the package is
+intentionally ESM-only, so the CJS/`node10` resolutions are expected and
+ignored). Run `bun run build` first.
+
 ## Tests
 
 The suite lives in `tests/**/*.test.ts` and runs on Bun's native test runner.
 
-- **`bun test --parallel`** is the configured `test` script. `--parallel` runs
-  each test file in its own worker process (implying `--isolate`). That process
+- **`bun test --parallel ./tests/`** is the configured `test` script. The
+  explicit `./tests/` path scopes discovery to the suite so stray `*.test.ts` /
+  `*.spec.ts` files elsewhere in a working tree (e.g. a local `scratch/`) aren't
+  picked up. `--parallel` runs each test file in its own worker process
+  (implying `--isolate`). That process
   isolation is required: the mediabunny/mp4box backend tests use `mock.module`
   (via the `vi` shim), and Bun's module mocks are process-global and cannot be
   undone — without a fresh process per file they would leak into the real-WebM
@@ -65,6 +100,8 @@ tests have already passed. It does not affect the test results or the exit code
 ## Submitting changes
 
 1. Branch off `main`.
-2. Make sure `bun run lint`, `bun run build`, and `bun test` all pass.
-3. Open a PR. CI runs lint + build + the coverage suite on both Ubuntu and
-   Windows with `bun@1.3.14`.
+2. Make sure `bun run lint`, `bun run check`, `bun run build`, `bun test`, and
+   `bun run check:pack` all pass.
+3. Open a PR. CI runs lint, the Biome check, build, the package check, and the
+   coverage suite (lint/build/coverage on both Ubuntu and Windows) with the Bun
+   version pinned in `packageManager`.

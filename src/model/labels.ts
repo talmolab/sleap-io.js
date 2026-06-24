@@ -2370,7 +2370,9 @@ export class Labels {
 
     // Keep the track list in the same relative order as the source by NAME.
     const trackToInd = new Map<string, number>();
-    this.tracks.forEach((t, i) => trackToInd.set(t.name, i));
+    this.tracks.forEach((t, i) => {
+      trackToInd.set(t.name, i);
+    });
     labels.tracks = labels.tracks
       .map((t, i) => [t, i] as const)
       .sort((a, b) => {
@@ -2382,7 +2384,9 @@ export class Labels {
 
     // Keep the skeleton list in source order by NAME.
     const skelToInd = new Map<string, number>();
-    this.skeletons.forEach((s, i) => skelToInd.set(s.name ?? "", i));
+    this.skeletons.forEach((s, i) => {
+      skelToInd.set(s.name ?? "", i);
+    });
     labels.skeletons = labels.skeletons
       .map((s, i) => [s, i] as const)
       .sort((a, b) => {

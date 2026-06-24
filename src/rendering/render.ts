@@ -502,7 +502,9 @@ function extractSourceData(
     }
     const tracks = Array.from(trackSet);
     const trackIndexMap = new Map<Track, number>();
-    tracks.forEach((t, i) => trackIndexMap.set(t, i));
+    tracks.forEach((t, i) => {
+      trackIndexMap.set(t, i);
+    });
 
     return {
       instances,
@@ -527,7 +529,9 @@ function extractSourceData(
     }
     const tracks = Array.from(trackSet);
     const trackIndexMap = new Map<Track, number>();
-    tracks.forEach((t, i) => trackIndexMap.set(t, i));
+    tracks.forEach((t, i) => {
+      trackIndexMap.set(t, i);
+    });
 
     // Try to get video dimensions
     let frameSize: [number, number] = [options.width ?? 0, options.height ?? 0];
@@ -557,7 +561,9 @@ function extractSourceData(
   if (labels.labeledFrames.length === 0) {
     const tracks = labels.tracks ?? [];
     const trackIndexMap = new Map<Track, number>();
-    tracks.forEach((t, i) => trackIndexMap.set(t, i));
+    tracks.forEach((t, i) => {
+      trackIndexMap.set(t, i);
+    });
     return {
       instances: [],
       skeleton: labels.skeletons?.[0] ?? null,
@@ -590,7 +596,9 @@ function extractSourceData(
 
   const tracks = labels.tracks ?? [];
   const trackIndexMap = new Map<Track, number>();
-  tracks.forEach((t, i) => trackIndexMap.set(t, i));
+  tracks.forEach((t, i) => {
+    trackIndexMap.set(t, i);
+  });
 
   return {
     instances: firstFrame.instances,
