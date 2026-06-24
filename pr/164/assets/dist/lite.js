@@ -10,14 +10,17 @@ import {
   parseSuggestions,
   parseTracks,
   parseVideosMetadata
-} from "./chunk-FQG2LKSM.js";
+} from "./chunk-5RPVZ6CR.js";
 
 // src/codecs/slp/jsfive.ts
 import * as hdf5 from "jsfive";
 function openJsfiveFile(source, filename) {
   let buffer;
   if (source instanceof Uint8Array) {
-    const slice = source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+    const slice = source.buffer.slice(
+      source.byteOffset,
+      source.byteOffset + source.byteLength
+    );
     buffer = slice;
   } else {
     buffer = source;
@@ -98,7 +101,8 @@ async function loadSlpMetadata(source, options) {
       if (attrs.format !== void 0) enriched.format = String(attrs.format);
       if (attrs.width !== void 0) enriched.width = Number(attrs.width);
       if (attrs.height !== void 0) enriched.height = Number(attrs.height);
-      if (attrs.channels !== void 0) enriched.channels = Number(attrs.channels);
+      if (attrs.channels !== void 0)
+        enriched.channels = Number(attrs.channels);
       const shape = getShape(videoDs);
       if (shape.length > 0) {
         enriched.frameCount = shape[0];

@@ -49,7 +49,12 @@ function pointsFromArray(array, names) {
     const row = array[i] ?? [Number.NaN, Number.NaN];
     const visible = row.length > 2 ? Boolean(row[2]) : !Number.isNaN(row[0]);
     const complete = row.length > 3 ? Boolean(row[3]) : false;
-    pts.push({ xy: [row[0] ?? Number.NaN, row[1] ?? Number.NaN], visible, complete, name: names?.[i] });
+    pts.push({
+      xy: [row[0] ?? Number.NaN, row[1] ?? Number.NaN],
+      visible,
+      complete,
+      name: names?.[i]
+    });
   }
   return pts;
 }
@@ -87,7 +92,10 @@ var Instance = class _Instance {
     }
   }
   static fromArray(points, skeleton) {
-    return new _Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton });
+    return new _Instance({
+      points: pointsFromArray(points, skeleton.nodeNames),
+      skeleton
+    });
   }
   static fromNumpy(options) {
     return new _Instance({
@@ -99,7 +107,13 @@ var Instance = class _Instance {
     });
   }
   static empty(options) {
-    return new _Instance({ points: pointsEmpty(options.skeleton.nodeNames.length, options.skeleton.nodeNames), skeleton: options.skeleton });
+    return new _Instance({
+      points: pointsEmpty(
+        options.skeleton.nodeNames.length,
+        options.skeleton.nodeNames
+      ),
+      skeleton: options.skeleton
+    });
   }
   get length() {
     return this.points.length;
@@ -109,7 +123,8 @@ var Instance = class _Instance {
   }
   getPoint(target) {
     if (typeof target === "number") {
-      if (target < 0 || target >= this.points.length) throw new Error("Point index out of range.");
+      if (target < 0 || target >= this.points.length)
+        throw new Error("Point index out of range.");
       return this.points[target];
     }
     if (typeof target === "string") {
@@ -161,7 +176,9 @@ var Instance = class _Instance {
     return _centroidFactory(this, { method, node });
   }
   get isEmpty() {
-    return this.points.every((point) => !point.visible || Number.isNaN(point.xy[0]));
+    return this.points.every(
+      (point) => !point.visible || Number.isNaN(point.xy[0])
+    );
   }
   /**
    * Check if this instance has the same pose as another instance.
@@ -280,19 +297,26 @@ var Instance = class _Instance {
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
     const maxY = Math.max(...ys);
-    return [[minX, minY], [maxX, maxY]];
+    return [
+      [minX, minY],
+      [maxX, maxY]
+    ];
   }
 };
 var PredictedInstance = class _PredictedInstance extends Instance {
   score;
   constructor(options) {
     const { score = 0, ...rest } = options;
-    const pts = Array.isArray(rest.points) ? rest.points : predictedPointsFromDict(rest.points, rest.skeleton);
+    const pts = Array.isArray(rest.points) ? rest.points : predictedPointsFromDict(
+      rest.points,
+      rest.skeleton
+    );
     super({
       points: pts,
       skeleton: rest.skeleton,
       track: rest.track,
-      trackingScore: rest.trackingScore
+      trackingScore: rest.trackingScore,
+      fromPredicted: rest.fromPredicted
     });
     this.score = score;
   }
@@ -305,7 +329,10 @@ var PredictedInstance = class _PredictedInstance extends Instance {
   }
   static fromNumpy(options) {
     return new _PredictedInstance({
-      points: predictedPointsFromArray(options.pointsData, options.skeleton.nodeNames),
+      points: predictedPointsFromArray(
+        options.pointsData,
+        options.skeleton.nodeNames
+      ),
       skeleton: options.skeleton,
       track: options.track ?? null,
       score: options.score,
@@ -313,7 +340,13 @@ var PredictedInstance = class _PredictedInstance extends Instance {
     });
   }
   static empty(options) {
-    return new _PredictedInstance({ points: predictedPointsEmpty(options.skeleton.nodeNames.length, options.skeleton.nodeNames), skeleton: options.skeleton });
+    return new _PredictedInstance({
+      points: predictedPointsEmpty(
+        options.skeleton.nodeNames.length,
+        options.skeleton.nodeNames
+      ),
+      skeleton: options.skeleton
+    });
   }
   numpy(options) {
     const invisibleAsNaN = options?.invisibleAsNaN ?? true;
@@ -344,7 +377,10 @@ function pointsFromDict(pointsDict, skeleton) {
   return points;
 }
 function predictedPointsFromDict(pointsDict, skeleton) {
-  const points = predictedPointsEmpty(skeleton.nodeNames.length, skeleton.nodeNames);
+  const points = predictedPointsEmpty(
+    skeleton.nodeNames.length,
+    skeleton.nodeNames
+  );
   for (const [nodeName, data] of Object.entries(pointsDict)) {
     const index = skeleton.index(nodeName);
     points[index] = {
@@ -421,7 +457,9 @@ var Skeleton = class {
   nodeToIndex;
   constructor(options) {
     const resolved = Array.isArray(options) ? { nodes: options } : options;
-    this.nodes = resolved.nodes.map((node) => typeof node === "string" ? new Node(node) : node);
+    this.nodes = resolved.nodes.map(
+      (node) => typeof node === "string" ? new Node(node) : node
+    );
     this.edges = [];
     this.symmetries = [];
     this.name = resolved.name;
@@ -429,7 +467,9 @@ var Skeleton = class {
     this.nodeToIndex = /* @__PURE__ */ new Map();
     this.rebuildCache();
     if (resolved.edges) {
-      this.edges = resolved.edges.map((edge) => edge instanceof Edge ? edge : this.edgeFrom(edge));
+      this.edges = resolved.edges.map(
+        (edge) => edge instanceof Edge ? edge : this.edgeFrom(edge)
+      );
     }
     if (resolved.symmetries) {
       this.symmetries = resolved.symmetries.map(
@@ -463,7 +503,10 @@ var Skeleton = class {
     return found;
   }
   get edgeIndices() {
-    return this.edges.map((edge) => [this.index(edge.source), this.index(edge.destination)]);
+    return this.edges.map((edge) => [
+      this.index(edge.source),
+      this.index(edge.destination)
+    ]);
   }
   get symmetryNames() {
     return this.symmetries.map((symmetry) => {
@@ -500,10 +543,14 @@ var Skeleton = class {
     }
     if (this.edges.length !== other.edges.length) return false;
     const selfEdgeSet = new Set(
-      this.edges.map((edge) => edgeKey(edge.source.name, edge.destination.name))
+      this.edges.map(
+        (edge) => edgeKey(edge.source.name, edge.destination.name)
+      )
     );
     const otherEdgeSet = new Set(
-      other.edges.map((edge) => edgeKey(edge.source.name, edge.destination.name))
+      other.edges.map(
+        (edge) => edgeKey(edge.source.name, edge.destination.name)
+      )
     );
     if (!setsEqual(selfEdgeSet, otherEdgeSet)) return false;
     if (this.symmetries.length !== other.symmetries.length) return false;
@@ -592,7 +639,11 @@ function parseJsonAttr(attr) {
   if (typeof value === "string") return JSON.parse(value);
   if (value instanceof Uint8Array) return JSON.parse(textDecoder.decode(value));
   if (value && typeof value === "object" && "buffer" in value) {
-    return JSON.parse(textDecoder.decode(new Uint8Array(value.buffer)));
+    return JSON.parse(
+      textDecoder.decode(
+        new Uint8Array(value.buffer)
+      )
+    );
   }
   if (value && typeof value === "object") {
     return value;
@@ -605,7 +656,8 @@ function trimHdf5String(str) {
 function attrToString(attr) {
   if (attr === void 0 || attr === null) return void 0;
   if (typeof attr === "string") return trimHdf5String(attr);
-  if (attr instanceof Uint8Array) return trimHdf5String(textDecoder.decode(attr));
+  if (attr instanceof Uint8Array)
+    return trimHdf5String(textDecoder.decode(attr));
   if (typeof attr === "object" && "value" in attr) {
     const v = attr.value;
     if (typeof v === "string") return trimHdf5String(v);
@@ -627,9 +679,16 @@ function attrToNumber(attr) {
 }
 function parseJsonEntry(entry) {
   if (typeof entry === "string") return JSON.parse(trimHdf5String(entry));
-  if (entry instanceof Uint8Array) return JSON.parse(trimHdf5String(textDecoder.decode(entry)));
+  if (entry instanceof Uint8Array)
+    return JSON.parse(trimHdf5String(textDecoder.decode(entry)));
   if (entry && typeof entry === "object" && "buffer" in entry) {
-    return JSON.parse(trimHdf5String(textDecoder.decode(new Uint8Array(entry.buffer))));
+    return JSON.parse(
+      trimHdf5String(
+        textDecoder.decode(
+          new Uint8Array(entry.buffer)
+        )
+      )
+    );
   }
   return entry;
 }
@@ -743,6 +802,13 @@ function parseTracks(values) {
   }
   return tracks;
 }
+function resolveVideoFilename(backendMeta, parsed) {
+  const filenames = backendMeta.filenames;
+  if (Array.isArray(filenames) && filenames.length > 0) {
+    return filenames;
+  }
+  return backendMeta.filename ?? parsed.filename ?? "";
+}
 function parseVideosMetadata(values, labelsPath) {
   const videos = [];
   for (const entry of values) {
@@ -756,7 +822,7 @@ function parseVideosMetadata(values, labelsPath) {
       parsed = entry;
     }
     const backendMeta = parsed.backend ?? {};
-    let filename = backendMeta.filename ?? parsed.filename ?? "";
+    let filename = resolveVideoFilename(backendMeta, parsed);
     const dataset = backendMeta.dataset ?? null;
     let embedded = false;
     if (filename === ".") {
@@ -840,7 +906,12 @@ function reconstructInstance3D(record, skeletons) {
   const score = record.instance_3d_score;
   const pointScores = record.instance_3d_point_scores;
   if (pointScores) {
-    return new PredictedInstance3D({ points: pointsValue, skeleton, score, pointScores });
+    return new PredictedInstance3D({
+      points: pointsValue,
+      skeleton,
+      score,
+      pointScores
+    });
   }
   return new Instance3D({ points: pointsValue, skeleton, score });
 }
@@ -851,7 +922,9 @@ function resolveIdentity(record, identities) {
   if (idx >= 0 && idx < identities.length) {
     return identities[idx];
   }
-  console.warn(`identity_idx ${idx} is out of bounds (${identities.length} identities available) \u2014 skipping identity for this instance group.`);
+  console.warn(
+    `identity_idx ${idx} is out of bounds (${identities.length} identities available) \u2014 skipping identity for this instance group.`
+  );
   return void 0;
 }
 
@@ -878,6 +951,7 @@ export {
   parseJsonEntry,
   parseSkeletons,
   parseTracks,
+  resolveVideoFilename,
   parseVideosMetadata,
   parseSuggestions,
   parseSessionsMetadata,

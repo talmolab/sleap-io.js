@@ -5,8 +5,8 @@ JavaScript/TypeScript utilities for reading and writing SLEAP `.slp` files with 
 ## Quick start
 
 ```bash
-npm install
-npm run build
+bun install
+bun run build
 ```
 
 ```ts
