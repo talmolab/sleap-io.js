@@ -41,6 +41,26 @@ async function readFormatId(bytes: Uint8Array): Promise<number> {
   }
 }
 
+/** Read the HDF5 filter ids applied to a dataset in saved SLP bytes. */
+async function readDatasetFilters(
+  bytes: Uint8Array,
+  path: string,
+): Promise<Array<{ id: number; name: string; cd_values: number[] }>> {
+  const module = await ready;
+  const memPath = `/tmp/slp_flt_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+  module.FS.writeFile(memPath, bytes);
+  const file = new H5File(memPath, "r");
+  try {
+    const ds = file.get(path) as {
+      filters?: Array<{ id: number; name: string; cd_values: number[] }>;
+    };
+    return ds.filters ?? [];
+  } finally {
+    file.close();
+    module.FS.unlink(memPath);
+  }
+}
+
 /** Build a flat row-major binary mask raster. */
 function makeMaskRaster(
   height: number,
@@ -1171,5 +1191,184 @@ describe("SLP Scale/Offset Roundtrips", () => {
     expect(loaded.labelImages[0].scale[1]).toBeCloseTo(0.5);
     expect(loaded.labelImages[0].offset[0]).toBeCloseTo(3);
     expect(loaded.labelImages[0].offset[1]).toBeCloseTo(7);
+  });
+});
+
+// HDF5 deflate/gzip filter id (H5Z_FILTER_DEFLATE).
+const H5Z_FILTER_DEFLATE = 1;
+
+describe("SLP gzip compression of mask_rle / roi_wkb (Python #464, #465)", () => {
+  it("gzip-compresses mask_rle losslessly across several fragmented masks", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [10, 20] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    // Several masks with fragmented (many-run) rasters to make the RLE blob
+    // sizeable and worth compressing: checkerboards and stripes maximize run
+    // count, exercising the packed-bytes path the gzip filter wraps.
+    const masks = [
+      SegmentationMask.fromArray(
+        makeMaskRaster(64, 64, (r, c) => (r + c) % 2 === 0),
+        64,
+        64,
+        { name: "checker", category: "cell", source: "model" },
+      ),
+      SegmentationMask.fromArray(
+        makeMaskRaster(48, 80, (r) => r % 2 === 0),
+        48,
+        80,
+        { name: "hstripes", category: "cell", source: "model" },
+      ),
+      SegmentationMask.fromArray(
+        makeMaskRaster(50, 50, (_r, c) => c % 3 === 0),
+        50,
+        50,
+        { name: "vstripes", category: "cell", source: "model" },
+      ),
+      SegmentationMask.fromArray(
+        makeMaskRaster(40, 60, (r, c) => r >= 5 && r < 35 && c >= 10 && c < 50),
+        40,
+        60,
+        { name: "block", category: "cell", source: "model" },
+      ),
+    ];
+
+    const lfMask = new LabeledFrame({ video, frameIdx: 3, masks });
+    const labels = new Labels({
+      labeledFrames: [frame, lfMask],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    const bytes = await saveSlpToBytes(labels);
+
+    // The mask_rle dataset is written with the HDF5 deflate (gzip) filter at
+    // level 1.
+    const filters = await readDatasetFilters(new Uint8Array(bytes), "mask_rle");
+    const deflate = filters.find((f) => f.id === H5Z_FILTER_DEFLATE);
+    expect(deflate).toBeDefined();
+    expect(deflate!.cd_values[0]).toBe(1);
+
+    // ...and transparently decompresses to byte-identical rasters on read.
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
+    expect(loaded.masks.length).toBe(masks.length);
+    for (const original of masks) {
+      const match = loaded.masks.find((m) => m.name === original.name)!;
+      expect(match).toBeDefined();
+      expect(match.height).toBe(original.height);
+      expect(match.width).toBe(original.width);
+      // RLE counts and the decoded raster are both byte-identical.
+      expect(Array.from(match.rleCounts)).toEqual(
+        Array.from(original.rleCounts),
+      );
+      expect(match.data).toEqual(original.data);
+    }
+  });
+
+  it("gzip-compresses roi_wkb losslessly across several ROIs", async () => {
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [1, 2] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const rois = [
+      ROI.fromBbox(10, 20, 100, 200, {
+        name: "bbox",
+        category: "arena",
+        source: "manual",
+      }),
+      ROI.fromPolygon(
+        [
+          [0, 0],
+          [100, 0],
+          [100, 100],
+          [0, 100],
+        ],
+        { name: "poly", category: "region", source: "auto" },
+      ),
+      ROI.fromPolygon(
+        [
+          [5, 5],
+          [60, 0],
+          [80, 40],
+          [40, 90],
+          [0, 50],
+        ],
+        { name: "pentagon", category: "region", source: "auto" },
+      ),
+    ];
+
+    const labels = new Labels({
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
+      rois,
+    });
+
+    const bytes = await saveSlpToBytes(labels);
+
+    // The roi_wkb dataset carries the HDF5 deflate (gzip) filter at level 1.
+    const filters = await readDatasetFilters(new Uint8Array(bytes), "roi_wkb");
+    const deflate = filters.find((f) => f.id === H5Z_FILTER_DEFLATE);
+    expect(deflate).toBeDefined();
+    expect(deflate!.cd_values[0]).toBe(1);
+
+    // Geometry round-trips byte-identically through the transparent decompress.
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
+    expect(loaded.rois.length).toBe(rois.length);
+    for (const original of rois) {
+      const match = loaded.rois.find((r) => r.name === original.name)!;
+      expect(match).toBeDefined();
+      expect(match.category).toBe(original.category);
+      expect(match.source).toBe(original.source);
+      expect(match.geometry).toEqual(original.geometry);
+    }
+  });
+
+  it("writes empty mask_rle uncompressed when every mask has a zero-length RLE", async () => {
+    // A zero-size raster (height*width === 0) encodes to an empty rleCounts, so
+    // the packed RLE blob is zero-length even though masks are present. h5wasm
+    // rejects a 0-size chunk dim, so the writer must fall back to an
+    // uncompressed/contiguous dataset (no deflate filter) for this case.
+    const video = new Video({ filename: "test.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [10, 20] }, skeleton });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+
+    const emptyMask = new UserSegmentationMask({
+      rleCounts: new Uint32Array(0),
+      height: 0,
+      width: 0,
+      name: "empty",
+      category: "cell",
+      source: "model",
+    });
+
+    const lfMask = new LabeledFrame({ video, frameIdx: 3, masks: [emptyMask] });
+    const labels = new Labels({
+      labeledFrames: [frame, lfMask],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    const bytes = await saveSlpToBytes(labels);
+
+    // No deflate filter on the empty dataset (the length>0 guard fell through).
+    const filters = await readDatasetFilters(new Uint8Array(bytes), "mask_rle");
+    expect(filters.some((f) => f.id === H5Z_FILTER_DEFLATE)).toBe(false);
+
+    // Still round-trips: the empty mask survives with an empty raster.
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
+    expect(loaded.masks.length).toBe(1);
+    expect(loaded.masks[0].name).toBe("empty");
+    expect(loaded.masks[0].rleCounts.length).toBe(0);
+    expect(loaded.masks[0].data.length).toBe(0);
   });
 });
