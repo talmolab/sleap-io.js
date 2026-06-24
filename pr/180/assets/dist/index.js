@@ -81,6 +81,7 @@ import {
   _registerMaskFactory,
   _registerNodeFileOps,
   _registerNodeH5,
+  _relinkFromPredicted,
   _resolveMergedIsNegative,
   collectTracks,
   computePrefetchWindow,
@@ -152,7 +153,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-V3XVWZAF.js";
+} from "./chunk-3O4KQ4QE.js";
 import {
   Edge,
   Instance,
@@ -170,7 +171,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-P74PHRSF.js";
+} from "./chunk-5RPVZ6CR.js";
 
 // src/codecs/slp/h5-node.ts
 var modulePromise = null;
@@ -2880,6 +2881,7 @@ export {
   _findAnnotationMatches,
   _registerCentroidFactory,
   _registerMaskFactory,
+  _relinkFromPredicted,
   _resolveMergedIsNegative,
   applyOverlay,
   buildClassNamesFromBboxes,

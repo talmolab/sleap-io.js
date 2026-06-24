@@ -22,7 +22,7 @@ import {
   resolveCameraKey,
   resolveIdentity,
   resolveVideoFilename
-} from "./chunk-P74PHRSF.js";
+} from "./chunk-5RPVZ6CR.js";
 
 // src/model/centroid.ts
 var _centroidSkeleton = null;
@@ -2849,10 +2849,11 @@ var InstanceMatcher = class {
 var TrackMatcher = class {
   method;
   /**
-   * @param method - The matching method (default NAME). A bare string is coerced
-   *   + validated.
+   * @param method - The matching method (default IDENTITY — matches only the
+   *   same Track object; correctness-first). Use NAME to match by track name. A
+   *   bare string is coerced + validated.
    */
-  constructor(method = TrackMatchMethod.NAME) {
+  constructor(method = TrackMatchMethod.IDENTITY) {
     this.method = typeof method === "string" ? toTrackMatchMethod(method) : method;
   }
   /** Check if two tracks match according to the configured method. */
@@ -3186,6 +3187,22 @@ function _shallowCopy(item) {
     Object.getOwnPropertyDescriptors(item)
   );
 }
+function _copyWithMemo(item, memo) {
+  const itemCopy = _shallowCopy(item);
+  memo.set(item, itemCopy);
+  return itemCopy;
+}
+function _relinkFromPredicted(annotations, memo) {
+  for (const ann of annotations) {
+    const src = ann?.fromPredicted;
+    if (src != null) {
+      const replacement = memo.get(src);
+      if (replacement !== void 0) {
+        ann.fromPredicted = replacement;
+      }
+    }
+  }
+}
 function _annotationCentroidXy(annotation, attr) {
   if (attr === "centroids") {
     const c = annotation;
@@ -3252,6 +3269,7 @@ function _findAnnotationLinkMatches(selfList, otherList) {
 function _resolveAnnotationAuto(selfList, otherList, attr, threshold) {
   const merged = [];
   const usedSelfIndices = /* @__PURE__ */ new Set();
+  const memo = /* @__PURE__ */ new Map();
   for (const ann of selfList) {
     if (!ann.isPredicted) {
       merged.push(ann);
@@ -3278,13 +3296,13 @@ function _resolveAnnotationAuto(selfList, otherList, attr, threshold) {
       usedSelfIndices.add(selfIdx);
       if (!selfAnn.isPredicted && !otherAnn.isPredicted) {
       } else if (selfAnn.isPredicted && !otherAnn.isPredicted) {
-        merged.push(_shallowCopy(otherAnn));
+        merged.push(_copyWithMemo(otherAnn, memo));
       } else if (!selfAnn.isPredicted && otherAnn.isPredicted) {
       } else {
-        merged.push(_shallowCopy(otherAnn));
+        merged.push(_copyWithMemo(otherAnn, memo));
       }
     } else {
-      merged.push(_shallowCopy(otherAnn));
+      merged.push(_copyWithMemo(otherAnn, memo));
     }
   }
   for (let selfIdx = 0; selfIdx < selfList.length; selfIdx++) {
@@ -3292,6 +3310,7 @@ function _resolveAnnotationAuto(selfList, otherList, attr, threshold) {
       merged.push(selfList[selfIdx]);
     }
   }
+  _relinkFromPredicted(merged, memo);
   return merged;
 }
 function _resolveAnnotationUpdateTracks(selfList, otherList, attr, threshold) {
@@ -3453,18 +3472,25 @@ var LabeledFrame = class {
     }
     if (strategy === "keep_new") {
       for (const attr of ANNOTATION_ATTRS) {
-        this[attr] = other[attr].map(_shallowCopy);
+        const memo = /* @__PURE__ */ new Map();
+        const newList = other[attr].map(
+          (item) => _copyWithMemo(item, memo)
+        );
+        _relinkFromPredicted(newList, memo);
+        this[attr] = newList;
       }
       return;
     }
     if (strategy === "replace_predictions") {
       for (const attr of ANNOTATION_ATTRS) {
+        const memo = /* @__PURE__ */ new Map();
         const kept = this[attr].filter((a) => !a.isPredicted);
         for (const item of other[attr]) {
           if (item.isPredicted) {
-            kept.push(_shallowCopy(item));
+            kept.push(_copyWithMemo(item, memo));
           }
         }
+        _relinkFromPredicted(kept, memo);
         this[attr] = kept;
       }
       return;
@@ -3492,12 +3518,15 @@ var LabeledFrame = class {
       return;
     }
     for (const attr of ANNOTATION_ATTRS) {
-      const existing = new Set(this[attr]);
+      const memo = /* @__PURE__ */ new Map();
+      const target = this[attr];
+      const existing = new Set(target);
       for (const item of other[attr]) {
         if (!existing.has(item)) {
-          this[attr].push(_shallowCopy(item));
+          target.push(_copyWithMemo(item, memo));
         }
       }
+      _relinkFromPredicted(target, memo);
     }
   }
   /**
@@ -6490,41 +6519,89 @@ To use, first materialize:
   /**
    * Map an instance to use mapped skeleton and track, returning a NEW instance.
    *
-   * Mirrors Python `Labels._map_instance` (labels.py:3650-3687). The source
+   * Mirrors Python `Labels._map_instance` (labels.py:3953-4020). The source
    * instance is never mutated: its points are deep-copied and the returned
    * instance is a fresh object of the SAME exact type (`Instance` vs
    * `PredictedInstance`, dispatched via `constructor ===`). Skeleton/track are
    * resolved through the maps with `?? original` fallback.
    *
+   * When the source instance's node order differs from the mapped skeleton's
+   * node order (e.g. the default structure matcher matched `[A, B, C]` with
+   * `[C, B, A]`), the points are reordered by node NAME so that each node's
+   * coordinates and score follow its name rather than its position (Python
+   * #489). When the node orders are identical (the common case) the points are
+   * copied positionally to avoid any overhead on the hot path. Nodes present in
+   * the mapped skeleton but absent from the source are filled with a missing,
+   * invisible point (NaN xy).
+   *
    * @param instance - Instance to map.
    * @param skeletonMap - Map from old skeletons to new skeletons.
    * @param trackMap - Map from old tracks to new tracks.
+   * @param memo - Optional map from the source instance to the new instance,
+   *   mutated in place. Used by {@link _relinkFromPredicted} to repair
+   *   `fromPredicted` links so a remapped user instance references the remapped
+   *   source prediction now in the merged frame (Python #491).
    * @returns New instance with mapped skeleton and track.
    */
-  _mapInstance(instance, skeletonMap, trackMap) {
+  _mapInstance(instance, skeletonMap, trackMap, memo) {
     const mappedSkeleton = skeletonMap.get(instance.skeleton) ?? instance.skeleton;
     const mappedTrack = instance.track ? trackMap.get(instance.track) ?? instance.track : null;
-    const newPoints = instance.points.map((p) => ({
-      ...p,
-      xy: [...p.xy]
-    }));
-    if (instance.constructor === PredictedInstance) {
+    const isPredicted = instance.constructor === PredictedInstance;
+    const sourcePoints = instance.points;
+    const mappedNames = mappedSkeleton.nodeNames;
+    let mappedPoints;
+    const sameOrder = sourcePoints.length === mappedNames.length && sourcePoints.every((p, i) => p.name === mappedNames[i]);
+    if (sameOrder) {
+      mappedPoints = sourcePoints.map((p) => ({
+        ...p,
+        xy: [...p.xy]
+      }));
+    } else {
+      const sourceByName = /* @__PURE__ */ new Map();
+      for (const p of sourcePoints) {
+        if (p.name !== void 0) sourceByName.set(p.name, p);
+      }
+      mappedPoints = mappedNames.map((name) => {
+        const src = sourceByName.get(name);
+        if (src !== void 0) {
+          return { ...src, xy: [...src.xy], name };
+        }
+        return isPredicted ? {
+          xy: [Number.NaN, Number.NaN],
+          visible: false,
+          complete: false,
+          score: Number.NaN,
+          name
+        } : {
+          xy: [Number.NaN, Number.NaN],
+          visible: false,
+          complete: false,
+          name
+        };
+      });
+    }
+    let newInstance;
+    if (isPredicted) {
       const predicted = instance;
-      return new PredictedInstance({
-        points: newPoints,
+      newInstance = new PredictedInstance({
+        points: mappedPoints,
         skeleton: mappedSkeleton,
         score: predicted.score,
         track: mappedTrack,
-        trackingScore: predicted.trackingScore
+        trackingScore: predicted.trackingScore,
+        fromPredicted: predicted.fromPredicted
+      });
+    } else {
+      newInstance = new Instance({
+        points: mappedPoints,
+        skeleton: mappedSkeleton,
+        track: mappedTrack,
+        trackingScore: instance.trackingScore,
+        fromPredicted: instance.fromPredicted
       });
     }
-    return new Instance({
-      points: newPoints,
-      skeleton: mappedSkeleton,
-      track: mappedTrack,
-      trackingScore: instance.trackingScore,
-      fromPredicted: instance.fromPredicted
-    });
+    if (memo !== void 0) memo.set(instance, newInstance);
+    return newInstance;
   }
   /**
    * Merge another `Labels` object into this one in place.
@@ -6543,7 +6620,13 @@ To use, first materialize:
    * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE; string ->
    *   validated; else used as-is).
    * @param opts.video - Video matcher (`null` -> AUTO).
-   * @param opts.track - Track matcher (`null` -> NAME).
+   * @param opts.track - Track matcher (`null` -> IDENTITY). The default matches
+   *   tracks only by object identity (the same Track instance) and appends all
+   *   other tracks as new — a correctness-first default that never collapses
+   *   distinct tracks by their (often arbitrary, tracker-assigned) names. Pass
+   *   `"name"` to match tracks by their name attribute instead, for cases where
+   *   track names are semantically meaningful (e.g. user-assigned identities or
+   *   identity-classification model outputs).
    * @param opts.frame - The frame merge strategy as a RAW string (default
    *   `"auto"`; NOT validated against the enum — an invalid value falls through
    *   `LabeledFrame.merge`'s strategy chain into the AUTO branch).
@@ -6711,6 +6794,13 @@ To use, first materialize:
           trackMap.set(otherTrack, otherTrack);
         }
       }
+      this._warnTrackNameDivergence(
+        other,
+        videoMap,
+        trackMap,
+        trackMatcher,
+        instanceMatcher
+      );
       total = other.labeledFrames.length;
       for (let idx = 0; idx < total; idx++) {
         const otherFrame = other.labeledFrames[idx];
@@ -6736,12 +6826,14 @@ To use, first materialize:
             instances: [],
             isNegative: otherFrame.isNegative
           });
+          const instanceMemo = /* @__PURE__ */ new Map();
           for (const inst of otherFrame.instances) {
             newFrame.instances.push(
-              this._mapInstance(inst, skeletonMap, trackMap)
+              this._mapInstance(inst, skeletonMap, trackMap, instanceMemo)
             );
             result.instancesAdded += 1;
           }
+          _relinkFromPredicted(newFrame.instances, instanceMemo);
           newFrame.mergeAnnotations(otherFrame);
           _Labels._remapFrameAnnotations(newFrame, videoMap, trackMap);
           this.append(newFrame);
@@ -6753,9 +6845,11 @@ To use, first materialize:
             instance: instanceMatcher,
             frame
           });
+          const instanceMemo = /* @__PURE__ */ new Map();
           const mergedInstances = rawMerged.map(
-            (inst) => skeletonMap.has(inst.skeleton) ? this._mapInstance(inst, skeletonMap, trackMap) : inst
+            (inst) => skeletonMap.has(inst.skeleton) ? this._mapInstance(inst, skeletonMap, trackMap, instanceMemo) : inst
           );
+          _relinkFromPredicted(mergedInstances, instanceMemo);
           const nBefore = selfFrame.instances.length;
           const nAfter = mergedInstances.length;
           result.instancesAdded += Math.max(0, nAfter - nBefore);
@@ -6837,6 +6931,93 @@ To use, first materialize:
     return result;
   }
   /**
+   * Warn when name-matched tracks diverge spatially on all shared frames.
+   *
+   * Faithful port of Python `Labels._warn_track_name_divergence`
+   * (labels.py:3672-3776, PR talmolab/sleap-io#448). Name-based track merging
+   * silently coalesces tracks that share a name across two `Labels`. If those
+   * tracks actually label different animals, this can glue distinct tracks
+   * together. This helper emits a diagnostic `console.warn` (purely additive; it
+   * never changes the merge result) when a track pair matched by name carries
+   * instances on overlapping frames that do not spatially correspond under the
+   * merge's instance matcher.
+   *
+   * The check is a no-op unless track matching is by NAME (divergence is
+   * meaningless for identity/object track matching) and the instance matcher is
+   * spatial (SPATIAL or IOU). A warning fires at most once per colliding
+   * `(otherTrack, selfTrack)` pair, only when the pair has at least one shared
+   * frame with instances on both sides and zero spatial instance matches across
+   * all such frames.
+   *
+   * @param other - The other `Labels` being merged into `self`.
+   * @param videoMap - Mapping from `other` videos to the matched `self` videos,
+   *   as built in {@link merge}.
+   * @param trackMap - Mapping from `other` tracks to the matched `self` tracks
+   *   (or back to themselves if appended as new), as built in {@link merge}.
+   * @param trackMatcher - The `TrackMatcher` used for the merge. The check is
+   *   skipped unless its method is NAME.
+   * @param instanceMatcher - The `InstanceMatcher` used for the merge. Reused
+   *   here as the divergence primitive (no new threshold introduced). Skipped
+   *   when its method is IDENTITY (see below).
+   */
+  _warnTrackNameDivergence(other, videoMap, trackMap, trackMatcher, instanceMatcher) {
+    if (trackMatcher.method !== TrackMatchMethod.NAME) {
+      return;
+    }
+    if (instanceMatcher.method === InstanceMatchMethod.IDENTITY) {
+      return;
+    }
+    const collidingPairs = [];
+    for (const [otherTrack, selfTrack] of trackMap.entries()) {
+      if (selfTrack !== otherTrack && selfTrack.name === otherTrack.name) {
+        collidingPairs.push([otherTrack, selfTrack]);
+      }
+    }
+    if (collidingPairs.length === 0) {
+      return;
+    }
+    for (const [otherTrack, selfTrack] of collidingPairs) {
+      let nShared = 0;
+      let nMatches = 0;
+      let divergentVideo = null;
+      for (const otherFrame of other.labeledFrames) {
+        const mappedVideo = videoMap.get(otherFrame.video) ?? otherFrame.video;
+        const matchingFrames = this.find({
+          video: mappedVideo,
+          frameIdx: otherFrame.frameIdx
+        });
+        if (matchingFrames.length === 0) {
+          continue;
+        }
+        const selfInsts = [];
+        for (const frame of matchingFrames) {
+          for (const inst of frame.instances) {
+            if (inst.track === selfTrack) {
+              selfInsts.push(inst);
+            }
+          }
+        }
+        const otherInsts = otherFrame.instances.filter(
+          (inst) => inst.track === otherTrack
+        );
+        if (selfInsts.length === 0 || otherInsts.length === 0) {
+          continue;
+        }
+        nShared += 1;
+        nMatches += instanceMatcher.findMatches(selfInsts, otherInsts).length;
+        if (divergentVideo === null) {
+          divergentVideo = mappedVideo;
+        }
+      }
+      if (nShared >= 1 && nMatches === 0) {
+        const videoRepr = divergentVideo != null ? filenameRepr(divergentVideo.filename) : "None";
+        console.warn(
+          `Track '${selfTrack.name}' was merged by name across labels that share video ${videoRepr} but instances on that track diverge spatially on all ${nShared} overlapping frame(s) (no instance matched under the merge's instance matcher). If these tracking runs label different animals, name-based merging may glue distinct tracks together. Review the merge or resolve tracks at the instance level.`
+        );
+      }
+    }
+  }
+  /**
    * Build correspondence maps between this `Labels` and another WITHOUT mutating
    * either (read-only twin of {@link merge}).
    *
@@ -6851,7 +7032,13 @@ To use, first materialize:
    * @param other - The `Labels` to match against (maps `other` -> `self`).
    * @param opts.video - Video matcher (`null` -> AUTO).
    * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE).
-   * @param opts.track - Track matcher (`null` -> NAME).
+   * @param opts.track - Track matcher (`null` -> IDENTITY). The default matches
+   *   tracks only by object identity (the same Track instance); all other tracks
+   *   map to `null` — a correctness-first default that never collapses distinct
+   *   tracks by their (often arbitrary, tracker-assigned) names. Pass `"name"` to
+   *   match tracks by their name attribute instead, for cases where track names
+   *   are semantically meaningful (e.g. user-assigned identities or
+   *   identity-classification model outputs).
    */
   async match(other, opts = {}) {
     const skeletonMatcher = coerceSkeletonMatcher(opts.skeleton);
@@ -16414,6 +16601,7 @@ export {
   BASENAME_VIDEO_MATCHER,
   IMAGE_DEDUP_VIDEO_MATCHER,
   SHAPE_VIDEO_MATCHER,
+  _relinkFromPredicted,
   _annotationCentroidXy,
   _findAnnotationMatches,
   _findAnnotationLinkMatches,

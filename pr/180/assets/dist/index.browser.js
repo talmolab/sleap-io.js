@@ -78,6 +78,7 @@ import {
   _findAnnotationLinkMatches,
   _findAnnotationMatches,
   _registerMaskFactory,
+  _relinkFromPredicted,
   _resolveMergedIsNegative,
   collectTracks,
   computePrefetchWindow,
@@ -144,7 +145,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-V3XVWZAF.js";
+} from "./chunk-3O4KQ4QE.js";
 import {
   Edge,
   Instance,
@@ -162,7 +163,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-P74PHRSF.js";
+} from "./chunk-5RPVZ6CR.js";
 export {
   AUTO_VIDEO_MATCHER,
   AnnotationType,
@@ -253,6 +254,7 @@ export {
   _findAnnotationMatches,
   _registerCentroidFactory,
   _registerMaskFactory,
+  _relinkFromPredicted,
   _resolveMergedIsNegative,
   collectTracks,
   computePrefetchWindow,
