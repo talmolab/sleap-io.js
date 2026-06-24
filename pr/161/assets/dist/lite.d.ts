@@ -1,5 +1,5 @@
-import { S as Skeleton, T as Track } from './instance-DLj547bw.js';
-export { E as Edge, N as Node, a as Symmetry } from './instance-DLj547bw.js';
+import { S as Skeleton, T as Track } from './instance-Dtvrjx8R.js';
+export { E as Edge, N as Node, a as Symmetry } from './instance-Dtvrjx8R.js';
 
 /**
  * jsfive-based HDF5 file interface.
@@ -16,8 +16,12 @@ type JsfiveSource = ArrayBuffer | Uint8Array;
  * Video metadata extracted from videos_json without creating backends.
  */
 interface VideoMetadata {
-    /** Original filename or "." for embedded */
-    filename: string;
+    /**
+     * Original filename, or "." for embedded. For image-sequence videos
+     * (Python `ImageVideo`) this is the FULL ordered list of image paths — one
+     * per frame — not just the first image.
+     */
+    filename: string | string[];
     /** HDF5 dataset path for embedded videos */
     dataset?: string;
     /** Video format (e.g., "mp4", "hdf5") */

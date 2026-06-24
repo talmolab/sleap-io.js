@@ -1,4 +1,4 @@
-import { T as Track, I as Instance, S as Skeleton, P as PredictedInstance } from './instance-DLj547bw.js';
+import { T as Track, I as Instance, S as Skeleton, P as PredictedInstance } from './instance-Dtvrjx8R.js';
 
 type VideoFrame = ImageData | ImageBitmap | Uint8Array | ArrayBuffer;
 interface VideoBackend {
@@ -178,9 +178,21 @@ interface CropOptions {
  *   not given together, or the resolved rect is inverted (`x2 < x1`/`y2 < y1`).
  */
 declare function resolveCropRect(crop?: CropRect | null, opts?: CropOptions): CropRect;
+/**
+ * Why a video's backend could not be opened during load (the backend is then
+ * left `null`). Drives the consumer's message/action — e.g. "locate image
+ * folder" for an image-sequence, "unsupported format" for `.avi`/`.mpeg`.
+ */
+type VideoBackendErrorKind = "image-sequence" | "unsupported-format" | "decode";
+interface VideoBackendError {
+    kind: VideoBackendErrorKind;
+    message: string;
+}
 declare class Video {
     filename: string | string[];
     backend: VideoBackend | null;
+    /** Set when the backend failed to open during load (then `backend` is null). */
+    backendError: VideoBackendError | null;
     backendMetadata: Record<string, unknown>;
     sourceVideo: Video | null;
     openBackend: boolean;
@@ -190,6 +202,7 @@ declare class Video {
     constructor(options: {
         filename: string | string[];
         backend?: VideoBackend | null;
+        backendError?: VideoBackendError | null;
         backendMetadata?: Record<string, unknown>;
         sourceVideo?: Video | null;
         openBackend?: boolean;
@@ -1290,8 +1303,9 @@ declare class InstanceMatcher {
 declare class TrackMatcher {
     method: TrackMatchMethod;
     /**
-     * @param method - The matching method (default NAME). A bare string is coerced
-     *   + validated.
+     * @param method - The matching method (default IDENTITY — matches only the
+     *   same Track object; correctness-first). Use NAME to match by track name. A
+     *   bare string is coerced + validated.
      */
     constructor(method?: TrackMatchMethod | string);
     /** Check if two tracks match according to the configured method. */
@@ -1405,6 +1419,26 @@ type MergeStrategy = "keep_both" | "keep_original" | "keep_new" | "replace_predi
 type Annotation = Centroid | BoundingBox | SegmentationMask | LabelImage | ROI;
 /** Annotation attribute names on LabeledFrame. */
 type AnnotationAttr = "centroids" | "bboxes" | "masks" | "labelImages" | "rois";
+/**
+ * Rewrite `fromPredicted` links to copied sources within a merged frame.
+ *
+ * Mirrors Python `_relink_from_predicted` (labeled_frame.py). After annotations
+ * are copied into a merged frame, a user annotation's `fromPredicted` may still
+ * reference the *original* predicted source rather than the copy that was placed
+ * in the frame. This pass redirects each such link to the copied source (looked
+ * up in `memo`) so the provenance link points at the in-frame object and would
+ * survive serialization (which resolves links by object identity). Links whose
+ * source was not copied (not in `memo`) are left unchanged.
+ *
+ * Generic over modality via `ann.fromPredicted`: only segmentation masks and
+ * `Instance`s carry a `fromPredicted` link today, so other annotation types are
+ * left untouched.
+ *
+ * @param annotations - The merged annotation list to repair in place.
+ * @param memo - Map from an original annotation to its copy, as built by
+ *   {@link _copyWithMemo} (or `Labels._mapInstance`).
+ */
+declare function _relinkFromPredicted(annotations: any[], memo: Map<object, object>): void;
 /**
  * Extract centroid (x, y) from an annotation based on its modality.
  *
@@ -2026,6 +2060,19 @@ declare class Labels {
         videoMap?: Map<Video, Video>;
     }): void;
     /**
+     * Remove one or more videos and every reference to them — the "drop" analog
+     * of {@link replaceVideos}. Labeled frames and suggestions belonging to a
+     * removed video are dropped (a frame's ROIs go with it), as are static ROIs
+     * that reference it. Videos not present are ignored (a no-op, matching
+     * {@link addVideo}'s lenient convention).
+     *
+     * Tracks and skeletons are intentionally left untouched — cleaning those up
+     * is a separate concern (see {@link clean}).
+     */
+    removeVideos(videos: Video[]): void;
+    /** Remove a single video and all references to it (see {@link removeVideos}). */
+    removeVideo(video: Video): void;
+    /**
      * Create a deep copy of this Labels object.
      *
      * @param options.openVideos - Controls video backend behavior in the copy:
@@ -2098,18 +2145,31 @@ declare class Labels {
     /**
      * Map an instance to use mapped skeleton and track, returning a NEW instance.
      *
-     * Mirrors Python `Labels._map_instance` (labels.py:3650-3687). The source
+     * Mirrors Python `Labels._map_instance` (labels.py:3953-4020). The source
      * instance is never mutated: its points are deep-copied and the returned
      * instance is a fresh object of the SAME exact type (`Instance` vs
      * `PredictedInstance`, dispatched via `constructor ===`). Skeleton/track are
      * resolved through the maps with `?? original` fallback.
      *
+     * When the source instance's node order differs from the mapped skeleton's
+     * node order (e.g. the default structure matcher matched `[A, B, C]` with
+     * `[C, B, A]`), the points are reordered by node NAME so that each node's
+     * coordinates and score follow its name rather than its position (Python
+     * #489). When the node orders are identical (the common case) the points are
+     * copied positionally to avoid any overhead on the hot path. Nodes present in
+     * the mapped skeleton but absent from the source are filled with a missing,
+     * invisible point (NaN xy).
+     *
      * @param instance - Instance to map.
      * @param skeletonMap - Map from old skeletons to new skeletons.
      * @param trackMap - Map from old tracks to new tracks.
+     * @param memo - Optional map from the source instance to the new instance,
+     *   mutated in place. Used by {@link _relinkFromPredicted} to repair
+     *   `fromPredicted` links so a remapped user instance references the remapped
+     *   source prediction now in the merged frame (Python #491).
      * @returns New instance with mapped skeleton and track.
      */
-    _mapInstance(instance: Instance | PredictedInstance, skeletonMap: Map<Skeleton, Skeleton>, trackMap: Map<Track, Track>): Instance | PredictedInstance;
+    _mapInstance(instance: Instance | PredictedInstance, skeletonMap: Map<Skeleton, Skeleton>, trackMap: Map<Track, Track>, memo?: Map<object, object>): Instance | PredictedInstance;
     /**
      * Merge another `Labels` object into this one in place.
      *
@@ -2127,7 +2187,13 @@ declare class Labels {
      * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE; string ->
      *   validated; else used as-is).
      * @param opts.video - Video matcher (`null` -> AUTO).
-     * @param opts.track - Track matcher (`null` -> NAME).
+     * @param opts.track - Track matcher (`null` -> IDENTITY). The default matches
+     *   tracks only by object identity (the same Track instance) and appends all
+     *   other tracks as new — a correctness-first default that never collapses
+     *   distinct tracks by their (often arbitrary, tracker-assigned) names. Pass
+     *   `"name"` to match tracks by their name attribute instead, for cases where
+     *   track names are semantically meaningful (e.g. user-assigned identities or
+     *   identity-classification model outputs).
      * @param opts.frame - The frame merge strategy as a RAW string (default
      *   `"auto"`; NOT validated against the enum — an invalid value falls through
      *   `LabeledFrame.merge`'s strategy chain into the AUTO branch).
@@ -2149,6 +2215,37 @@ declare class Labels {
         errorMode?: string;
     }): Promise<MergeResult>;
     /**
+     * Warn when name-matched tracks diverge spatially on all shared frames.
+     *
+     * Faithful port of Python `Labels._warn_track_name_divergence`
+     * (labels.py:3672-3776, PR talmolab/sleap-io#448). Name-based track merging
+     * silently coalesces tracks that share a name across two `Labels`. If those
+     * tracks actually label different animals, this can glue distinct tracks
+     * together. This helper emits a diagnostic `console.warn` (purely additive; it
+     * never changes the merge result) when a track pair matched by name carries
+     * instances on overlapping frames that do not spatially correspond under the
+     * merge's instance matcher.
+     *
+     * The check is a no-op unless track matching is by NAME (divergence is
+     * meaningless for identity/object track matching) and the instance matcher is
+     * spatial (SPATIAL or IOU). A warning fires at most once per colliding
+     * `(otherTrack, selfTrack)` pair, only when the pair has at least one shared
+     * frame with instances on both sides and zero spatial instance matches across
+     * all such frames.
+     *
+     * @param other - The other `Labels` being merged into `self`.
+     * @param videoMap - Mapping from `other` videos to the matched `self` videos,
+     *   as built in {@link merge}.
+     * @param trackMap - Mapping from `other` tracks to the matched `self` tracks
+     *   (or back to themselves if appended as new), as built in {@link merge}.
+     * @param trackMatcher - The `TrackMatcher` used for the merge. The check is
+     *   skipped unless its method is NAME.
+     * @param instanceMatcher - The `InstanceMatcher` used for the merge. Reused
+     *   here as the divergence primitive (no new threshold introduced). Skipped
+     *   when its method is IDENTITY (see below).
+     */
+    private _warnTrackNameDivergence;
+    /**
      * Build correspondence maps between this `Labels` and another WITHOUT mutating
      * either (read-only twin of {@link merge}).
      *
@@ -2163,7 +2260,13 @@ declare class Labels {
      * @param other - The `Labels` to match against (maps `other` -> `self`).
      * @param opts.video - Video matcher (`null` -> AUTO).
      * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE).
-     * @param opts.track - Track matcher (`null` -> NAME).
+     * @param opts.track - Track matcher (`null` -> IDENTITY). The default matches
+     *   tracks only by object identity (the same Track instance); all other tracks
+     *   map to `null` — a correctness-first default that never collapses distinct
+     *   tracks by their (often arbitrary, tracker-assigned) names. Pass `"name"` to
+     *   match tracks by their name attribute instead, for cases where track names
+     *   are semantically meaningful (e.g. user-assigned identities or
+     *   identity-classification model outputs).
      */
     match(other: Labels, opts?: {
         video?: string | VideoMatcher | null;
@@ -2574,6 +2677,85 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
     close(): void;
 }
 
+type ImageBytesReader = (path: string) => Promise<Uint8Array>;
+/** Override the image-bytes reader. Pass `null` to fall back to the default. */
+declare function setImageBytesReader(reader: ImageBytesReader | null): void;
+/** The effective reader: explicit override if set, else the registered default. */
+declare function getImageBytesReader(): ImageBytesReader | null;
+
+interface ImageVideoOptions {
+    /** Image paths, one per frame. */
+    filename: string[];
+    /** Byte reader; defaults to the globally-injected reader (`image-source`). */
+    reader?: ImageBytesReader;
+    /**
+     * Optional `[frames, H, W, C]` from `.slp` metadata. When given, H/W/C are
+     * trusted (frame count is always `filename.length`) and the first frame is
+     * not decoded up front.
+     */
+    shape?: [number, number, number, number];
+    /** Byte budget for the raw-bytes cache tier (default 128 MB). */
+    bytesCacheBytes?: number;
+    /** Byte budget for the decoded-frame cache tier (default 64 MB). */
+    decodedCacheBytes?: number;
+    /** Max concurrent prefetch reads (default 6). */
+    prefetchConcurrency?: number;
+    /** Frames to read ahead in the direction of travel (default 8; 0 disables). */
+    prefetchAhead?: number;
+    /** Frames to read behind the direction of travel (default 2). */
+    prefetchBehind?: number;
+}
+/**
+ * Indices to prefetch around `current`, biased ahead in the direction of travel
+ * (`current` vs the previous index `last`). Reading is the dominant cost, so we
+ * read ahead where the user is most likely to go next, plus a couple behind for
+ * back-stepping. Clamped to `[0, length)` and excludes `current`. Pure.
+ */
+declare function computePrefetchWindow(current: number, last: number | null, length: number, ahead: number, behind: number): number[];
+declare class ImageVideoBackend implements VideoBackend {
+    filename: string[];
+    shape: [number, number, number, number];
+    private reader;
+    private bytesCache;
+    private decodedCache;
+    private inflight;
+    private prefetchConcurrency;
+    private prefetchAhead;
+    private prefetchBehind;
+    private lastIndex;
+    private prefetchGen;
+    /**
+     * The in-flight auto-prefetch promise from the most recent `getFrame`. Resolves
+     * when that window finishes (or is superseded). Exposed for coordination/tests;
+     * callers normally ignore it.
+     */
+    lastPrefetch: Promise<void>;
+    private constructor();
+    /**
+     * Build a backend, inferring `shape` by decoding `filename[0]` once (cached)
+     * when no `shape` is supplied — parity with Python `VideoBackend.img_shape`
+     * (`read_test_frame` -> `_read_frame(0)`; index 0, not "first available").
+     */
+    static create(opts: ImageVideoOptions): Promise<ImageVideoBackend>;
+    getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    /**
+     * Read a frame's encoded bytes, serving from the bytes tier when present (no
+     * network) and coalescing concurrent reads of the same frame via `inflight` so
+     * a getFrame and a prefetch never read the same file twice.
+     */
+    private startRead;
+    /**
+     * Read a window of frames' bytes into the bytes tier, concurrency-capped, and
+     * cancellable: a later prefetch (or a jump) bumps the generation so in-flight
+     * workers stop pulling new frames. Resolves when this window finishes or is
+     * superseded. Frames already cached or in flight are skipped.
+     */
+    prefetch(indices: number[]): Promise<void>;
+    /** Compute and launch the read-ahead window for `frameIndex` (fire-and-forget). */
+    private triggerPrefetch;
+    close(): void;
+}
+
 /**
  * Random-access reader over the bytes of a `.seq` file. Implementations: a
  * `Blob` (browser) and an injected `node:fs`-backed source (Node, registered by
@@ -2688,7 +2870,18 @@ declare class SeqVideoBackend implements VideoBackend {
 
 /** Supported video backend identifiers for user selection. */
 type VideoBackendType = "mp4box" | "mediabunny" | "media";
-declare function createVideoBackend(source: string | File | Blob, options?: {
+/**
+ * Thrown when a video file's container/codec cannot be decoded by any available
+ * web backend (e.g. `.avi`, `.mpeg`, `.mpg`). This is a clean, catchable signal
+ * so callers can show an actionable "unsupported format" message instead of
+ * letting a backend fail opaquely mid-decode. Transcode to MP4 (H.264) first.
+ */
+declare class UnsupportedVideoFormatError extends Error {
+    /** The offending file extension (without the leading dot), e.g. `"avi"`. */
+    readonly extension: string;
+    constructor(extension: string);
+}
+declare function createVideoBackend(source: string | string[] | File | Blob, options?: {
     dataset?: string;
     embedded?: boolean;
     frameNumbers?: number[];
@@ -3183,6 +3376,17 @@ declare function encodeYamlSkeleton(skeletons: Skeleton | Skeleton[]): string;
  * We use separate ID registries for nodes and edge types to handle both.
  */
 declare function readSkeletonJson(json: string | Record<string, unknown>): Skeleton;
+/**
+ * Serialize skeleton(s) to the jsonpickle graph format consumed by
+ * {@link readSkeletonJson} and by PyQt SLEAP / Python `sleap_io`'s
+ * `SkeletonDecoder`. Port of Python `sleap_io.io.skeleton.SkeletonEncoder`.
+ *
+ * Emits the "duplicate-object" variant: every link source/target is a fresh
+ * py/object Node; the first occurrence of each edge type uses py/reduce, later
+ * occurrences a py/id back-reference. A single Skeleton serializes to a bare
+ * object; a list to a JSON array (matching the two standalone-file shapes).
+ */
+declare function writeSkeletonJson(skeletons: Skeleton | Skeleton[]): string;
 
 /**
  * Extract skeleton(s) from a SLEAP training config JSON file.
@@ -3403,7 +3607,11 @@ declare function drawRois(image: ImageData, rois: ROI[], opts?: {
  * @param image - RGBA ImageData, mutated in place.
  * @param overlay - A LabelImage, or a list of SegmentationMask / ROI / BoundingBox.
  * @param opts - `alpha` (0.3), `palette` ("distinct"), `outline` (false),
- *   `outlineWidth` (1), `outlineColor` (null).
+ *   `outlineWidth` (1), `outlineColor` (null), plus optional per-element
+ *   `colors` for a list overlay. When `colors` is provided it overrides the
+ *   positional `palette` coloring (used by callers to color overlays by track
+ *   identity); it must match the overlay length and is ignored for label
+ *   images. Mirrors Python `_apply_overlay` (core.py L473-566, PR #470).
  * @returns The same ImageData.
  */
 declare function applyOverlay(image: ImageData, overlay: LabelImage | RawLabelImage | SegmentationMask[] | ROI[] | BoundingBox[], opts?: {
@@ -3412,6 +3620,7 @@ declare function applyOverlay(image: ImageData, overlay: LabelImage | RawLabelIm
     outline?: boolean;
     outlineWidth?: number;
     outlineColor?: RGB | null;
+    colors?: RGB[] | null;
 }): ImageData;
 
 /**
@@ -3473,6 +3682,16 @@ interface RenderOptions {
      * per render by `renderVideo` to avoid recomputing instance points.
      */
     trailPtsCache?: Map<Instance | PredictedInstance, number[][]>;
+    /**
+     * Advanced: global track -> index map used to color overlay elements
+     * (masks / ROIs / bboxes) by track identity under `colorBy: "track"`, keyed
+     * off the project's `Labels.tracks` (stable across frames). Populated by
+     * `renderVideo` so a bare per-frame `LabeledFrame` still gets GLOBAL
+     * track-identity overlay colors instead of per-frame positional colors
+     * (mirrors Python render_video `_track_idx_map`, fixing JS #162 flicker).
+     * For a `Labels` source this is derived automatically from `Labels.tracks`.
+     */
+    overlayTrackIndexMap?: Map<Track, number> | null;
     background?: "transparent" | ColorSpec;
     image?: ImageData | null;
     /**
@@ -3753,4 +3972,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { setFsResolver as $, MatchResult as A, BoundingBox as B, CropVideoBackend as C, MergeProgressBar as D, ErrorMode as E, FrameStrategy as F, STRUCTURE_SKELETON_MATCHER as G, SUBSET_SKELETON_MATCHER as H, InstanceMatchMethod as I, DUPLICATE_MATCHER as J, IOU_MATCHER as K, Labels as L, MergeError as M, IDENTITY_INSTANCE_MATCHER as N, OVERLAP_SKELETON_MATCHER as O, NAME_TRACK_MATCHER as P, IDENTITY_TRACK_MATCHER as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, AUTO_VIDEO_MATCHER as W, PATH_VIDEO_MATCHER as X, BASENAME_VIDEO_MATCHER as Y, IMAGE_DEDUP_VIDEO_MATCHER as Z, SHAPE_VIDEO_MATCHER as _, LabeledFrame as a, saveSlpSet as a$, type FsResolver as a0, type MergeStrategy as a1, _annotationCentroidXy as a2, _findAnnotationMatches as a3, _findAnnotationLinkMatches as a4, _resolveMergedIsNegative as a5, type CropOptions as a6, resolveCropRect as a7, SuggestionFrame as a8, rodriguesTransformation as a9, PredictedSegmentationMask as aA, type BoundingBoxOptions as aB, UserBoundingBox as aC, PredictedBoundingBox as aD, getCentroidSkeleton as aE, CENTROID_SKELETON as aF, type CentroidOptions as aG, Centroid as aH, UserCentroid as aI, PredictedCentroid as aJ, type LabelImageObjectInfo as aK, type LabelImageOptions as aL, LabelImage as aM, UserLabelImage as aN, PredictedLabelImage as aO, normalizeLabelIds as aP, type VideoFrame as aQ, type VideoBackend as aR, Mp4BoxVideoBackend as aS, type MediaBunnyOptions as aT, MediaBunnyVideoBackend as aU, StreamingHdf5VideoBackend as aV, loadSlp as aW, saveSlp as aX, loadAnalysisH5 as aY, saveAnalysisH5 as aZ, loadSlpSet as a_, Camera as aa, CameraGroup as ab, InstanceGroup as ac, FrameGroup as ad, RecordingSession as ae, makeCameraFromDict as af, Identity as ag, Instance3D as ah, PredictedInstance3D as ai, LazyDataStore as aj, LazyFrameList as ak, _registerMaskFactory as al, AnnotationType as am, type Geometry as an, type ROIOptions as ao, rasterizeGeometry as ap, encodeWkb as aq, decodeWkb as ar, PredictedROI as as, encodeRle as at, decodeRle as au, resizeNearest as av, type SegmentationMaskOptions as aw, SegmentationMask as ax, type UserSegmentationMaskOptions as ay, UserSegmentationMask as az, LabelsSet as b, cropPoints as b$, loadVideo as b0, loadLabelImages as b1, setLabelImageFileReader as b2, type PagesAs as b3, type LoadLabelImagesOptions as b4, type LabelImageFileReader as b5, saveSlpToBytes as b6, isAnalysisH5File as b7, type GeoJSONFeature as b8, type GeoJSONFeatureCollection as b9, getPalette as bA, resolveColor as bB, rgbToCSS as bC, determineColorScheme as bD, drawCircle as bE, drawSquare as bF, drawDiamond as bG, drawTriangle as bH, drawCross as bI, drawTrails as bJ, getMarkerFunction as bK, MARKER_FUNCTIONS as bL, type DrawTrailsOptions as bM, resolveTrailNode as bN, computeTrails as bO, nTrailPaletteColors as bP, collectTracks as bQ, type TrailTarget as bR, type Trail as bS, RenderContext as bT, InstanceContext as bU, drawMasks as bV, drawLabelImage as bW, drawBboxes as bX, drawRois as bY, applyOverlay as bZ, type RawLabelImage as b_, roisToGeoJSON as ba, roisFromGeoJSON as bb, writeGeoJSON as bc, readGeoJSON as bd, type LabelsDict as be, toDict as bf, fromDict as bg, toNumpy as bh, fromNumpy as bi, labelsFromNumpy as bj, decodeYamlSkeleton as bk, encodeYamlSkeleton as bl, readSkeletonJson as bm, readTrainingConfigSkeletons as bn, readTrainingConfigSkeleton as bo, isTrainingConfig as bp, type RGB as bq, type RGBA as br, type ColorSpec as bs, type ColorScheme as bt, type PaletteName as bu, type MarkerShape as bv, type Overlay as bw, type VideoOverlay as bx, NAMED_COLORS as by, PALETTES as bz, type RenderOptions as c, uncropPoints as c0, type CropRect as c1, type FlatPoints as c2, type PointPairs as c3, cropFrame as c4, type FrameLike as c5, type RawFrame as c6, type Fill as c7, type VideoOptions as d, SeqHeader as e, SeqIndex as f, BlobByteSource as g, type ByteSource as h, createVideoBackend as i, type VideoBackendType as j, type CropWrapOptions as k, StreamingH5File as l, openH5Worker as m, isStreamingSupported as n, openStreamingH5 as o, type StreamingH5Source as p, SkeletonMatchMethod as q, readSlpStreaming as r, VideoMatchMethod as s, SkeletonMatcher as t, InstanceMatcher as u, TrackMatcher as v, VideoMatcher as w, ConflictResolution as x, SkeletonMismatchError as y, MergeResult as z };
+export { PATH_VIDEO_MATCHER as $, VideoMatcher as A, BoundingBox as B, CropVideoBackend as C, ConflictResolution as D, ErrorMode as E, FrameStrategy as F, SkeletonMismatchError as G, MergeResult as H, type ImageBytesReader as I, MatchResult as J, MergeProgressBar as K, Labels as L, MergeError as M, STRUCTURE_SKELETON_MATCHER as N, SUBSET_SKELETON_MATCHER as O, OVERLAP_SKELETON_MATCHER as P, DUPLICATE_MATCHER as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, IOU_MATCHER as W, IDENTITY_INSTANCE_MATCHER as X, NAME_TRACK_MATCHER as Y, IDENTITY_TRACK_MATCHER as Z, AUTO_VIDEO_MATCHER as _, LabeledFrame as a, MediaBunnyVideoBackend as a$, BASENAME_VIDEO_MATCHER as a0, IMAGE_DEDUP_VIDEO_MATCHER as a1, SHAPE_VIDEO_MATCHER as a2, setFsResolver as a3, type FsResolver as a4, type MergeStrategy as a5, _relinkFromPredicted as a6, _annotationCentroidXy as a7, _findAnnotationMatches as a8, _findAnnotationLinkMatches as a9, encodeRle as aA, decodeRle as aB, resizeNearest as aC, type SegmentationMaskOptions as aD, SegmentationMask as aE, type UserSegmentationMaskOptions as aF, UserSegmentationMask as aG, PredictedSegmentationMask as aH, type BoundingBoxOptions as aI, UserBoundingBox as aJ, PredictedBoundingBox as aK, getCentroidSkeleton as aL, CENTROID_SKELETON as aM, type CentroidOptions as aN, Centroid as aO, UserCentroid as aP, PredictedCentroid as aQ, type LabelImageObjectInfo as aR, type LabelImageOptions as aS, LabelImage as aT, UserLabelImage as aU, PredictedLabelImage as aV, normalizeLabelIds as aW, type VideoFrame as aX, type VideoBackend as aY, Mp4BoxVideoBackend as aZ, type MediaBunnyOptions as a_, _resolveMergedIsNegative as aa, type CropOptions as ab, resolveCropRect as ac, type VideoBackendErrorKind as ad, type VideoBackendError as ae, SuggestionFrame as af, rodriguesTransformation as ag, Camera as ah, CameraGroup as ai, InstanceGroup as aj, FrameGroup as ak, RecordingSession as al, makeCameraFromDict as am, Identity as an, Instance3D as ao, PredictedInstance3D as ap, LazyDataStore as aq, LazyFrameList as ar, _registerMaskFactory as as, AnnotationType as at, type Geometry as au, type ROIOptions as av, rasterizeGeometry as aw, encodeWkb as ax, decodeWkb as ay, PredictedROI as az, LabelsSet as b, collectTracks as b$, StreamingHdf5VideoBackend as b0, type ImageVideoOptions as b1, computePrefetchWindow as b2, ImageVideoBackend as b3, loadSlp as b4, saveSlp as b5, loadAnalysisH5 as b6, saveAnalysisH5 as b7, loadSlpSet as b8, saveSlpSet as b9, isTrainingConfig as bA, type RGB as bB, type RGBA as bC, type ColorSpec as bD, type ColorScheme as bE, type PaletteName as bF, type MarkerShape as bG, type Overlay as bH, type VideoOverlay as bI, NAMED_COLORS as bJ, PALETTES as bK, getPalette as bL, resolveColor as bM, rgbToCSS as bN, determineColorScheme as bO, drawCircle as bP, drawSquare as bQ, drawDiamond as bR, drawTriangle as bS, drawCross as bT, drawTrails as bU, getMarkerFunction as bV, MARKER_FUNCTIONS as bW, type DrawTrailsOptions as bX, resolveTrailNode as bY, computeTrails as bZ, nTrailPaletteColors as b_, loadVideo as ba, loadLabelImages as bb, setLabelImageFileReader as bc, type PagesAs as bd, type LoadLabelImagesOptions as be, type LabelImageFileReader as bf, saveSlpToBytes as bg, isAnalysisH5File as bh, type GeoJSONFeature as bi, type GeoJSONFeatureCollection as bj, roisToGeoJSON as bk, roisFromGeoJSON as bl, writeGeoJSON as bm, readGeoJSON as bn, type LabelsDict as bo, toDict as bp, fromDict as bq, toNumpy as br, fromNumpy as bs, labelsFromNumpy as bt, decodeYamlSkeleton as bu, encodeYamlSkeleton as bv, readSkeletonJson as bw, writeSkeletonJson as bx, readTrainingConfigSkeletons as by, readTrainingConfigSkeleton as bz, type RenderOptions as c, type TrailTarget as c0, type Trail as c1, RenderContext as c2, InstanceContext as c3, drawMasks as c4, drawLabelImage as c5, drawBboxes as c6, drawRois as c7, applyOverlay as c8, type RawLabelImage as c9, cropPoints as ca, uncropPoints as cb, type CropRect as cc, type FlatPoints as cd, type PointPairs as ce, cropFrame as cf, type FrameLike as cg, type RawFrame as ch, type Fill as ci, type VideoOptions as d, SeqHeader as e, SeqIndex as f, getImageBytesReader as g, BlobByteSource as h, type ByteSource as i, createVideoBackend as j, UnsupportedVideoFormatError as k, type VideoBackendType as l, type CropWrapOptions as m, StreamingH5File as n, openStreamingH5 as o, openH5Worker as p, isStreamingSupported as q, type StreamingH5Source as r, setImageBytesReader as s, readSlpStreaming as t, SkeletonMatchMethod as u, InstanceMatchMethod as v, VideoMatchMethod as w, SkeletonMatcher as x, InstanceMatcher as y, TrackMatcher as z };
