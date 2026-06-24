@@ -24,17 +24,27 @@ describe("LabelImage SLP I/O", () => {
 
     const data = new Int32Array(10 * 10);
     // Object 1: top-left corner
-    data[0] = 1; data[1] = 1; data[10] = 1;
+    data[0] = 1;
+    data[1] = 1;
+    data[10] = 1;
     // Object 2: bottom-right area
-    data[98] = 2; data[99] = 2; data[89] = 2;
+    data[98] = 2;
+    data[99] = 2;
+    data[89] = 2;
 
     const li = new UserLabelImage({
       data,
       height: 10,
       width: 10,
       objects: new Map<number, LabelImageObjectInfo>([
-        [1, { track: track1, category: "neuron", name: "cell_A", instance: null }],
-        [2, { track: track2, category: "glia", name: "cell_B", instance: null }],
+        [
+          1,
+          { track: track1, category: "neuron", name: "cell_A", instance: null },
+        ],
+        [
+          2,
+          { track: track2, category: "glia", name: "cell_B", instance: null },
+        ],
       ]),
       source: "cellpose",
     });
@@ -157,7 +167,10 @@ describe("LabelImage SLP I/O", () => {
     const inst2 = new Instance({ points: { a: [1, 2] }, skeleton });
     const frame2 = new LabeledFrame({ video, frameIdx: 0, instances: [inst2] });
     const bb = new UserBoundingBox({
-      x1: 0, y1: 10, x2: 100, y2: 90,
+      x1: 0,
+      y1: 10,
+      x2: 100,
+      y2: 90,
     });
     frame2.bboxes.push(bb);
 
@@ -190,7 +203,15 @@ describe("LabelImage SLP I/O", () => {
         height: 8,
         width: 8,
         objects: new Map<number, LabelImageObjectInfo>([
-          [1, { track, category: "cell", name: `frame_${frameIdx}`, instance: null }],
+          [
+            1,
+            {
+              track,
+              category: "cell",
+              name: `frame_${frameIdx}`,
+              instance: null,
+            },
+          ],
         ]),
         source: "auto",
       });
@@ -249,37 +270,43 @@ describe("LabelImage SLP I/O", () => {
     };
 
     const lf0 = new LabeledFrame({ video, frameIdx: 0 });
-    lf0.labelImages.push(new UserLabelImage({
-      data: makeData(),
-      height: 4,
-      width: 4,
-      objects: new Map<number, LabelImageObjectInfo>([
-        [1, { track: trackA, category: "neuron", name: "", instance: null }],
-      ]),
-      source: "model",
-    }));
+    lf0.labelImages.push(
+      new UserLabelImage({
+        data: makeData(),
+        height: 4,
+        width: 4,
+        objects: new Map<number, LabelImageObjectInfo>([
+          [1, { track: trackA, category: "neuron", name: "", instance: null }],
+        ]),
+        source: "model",
+      }),
+    );
 
     const lf5 = new LabeledFrame({ video, frameIdx: 5 });
-    lf5.labelImages.push(new UserLabelImage({
-      data: makeData(),
-      height: 4,
-      width: 4,
-      objects: new Map<number, LabelImageObjectInfo>([
-        [1, { track: trackB, category: "glia", name: "", instance: null }],
-      ]),
-      source: "model",
-    }));
+    lf5.labelImages.push(
+      new UserLabelImage({
+        data: makeData(),
+        height: 4,
+        width: 4,
+        objects: new Map<number, LabelImageObjectInfo>([
+          [1, { track: trackB, category: "glia", name: "", instance: null }],
+        ]),
+        source: "model",
+      }),
+    );
 
     const lf10 = new LabeledFrame({ video, frameIdx: 10 });
-    lf10.labelImages.push(new UserLabelImage({
-      data: makeData(),
-      height: 4,
-      width: 4,
-      objects: new Map<number, LabelImageObjectInfo>([
-        [1, { track: trackA, category: "neuron", name: "", instance: null }],
-      ]),
-      source: "model",
-    }));
+    lf10.labelImages.push(
+      new UserLabelImage({
+        data: makeData(),
+        height: 4,
+        width: 4,
+        objects: new Map<number, LabelImageObjectInfo>([
+          [1, { track: trackA, category: "neuron", name: "", instance: null }],
+        ]),
+        source: "model",
+      }),
+    );
 
     const labels = new Labels({
       labeledFrames: [lf0, lf5, lf10],
@@ -366,7 +393,11 @@ describe("LabelImage SLP I/O", () => {
       points: { a: [10, 20], b: [30, 40] },
       skeleton,
     });
-    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [instance] });
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instance],
+    });
 
     const data = new Int32Array(5 * 5);
     data[0] = 1;
@@ -430,7 +461,9 @@ describe("LabelImage SLP I/O", () => {
     });
 
     const bytes = await saveSlpToBytes(labels);
-    const loaded = await readSlpLazy(new Uint8Array(bytes).buffer, { openVideos: false });
+    const loaded = await readSlpLazy(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
 
     // labelImages should be loaded eagerly even in lazy mode
     expect(loaded.labelImages).toHaveLength(1);
@@ -484,7 +517,9 @@ describe("LabelImage SLP I/O", () => {
     // Load, hold only the inner LabelImage, then drop the Labels reference.
     let labelImage: LabelImage | null;
     {
-      const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+      const loaded = await readSlp(new Uint8Array(bytes).buffer, {
+        openVideos: false,
+      });
       labelImage = loaded.labelImages[0];
     }
     // `loaded` is now out of scope; only `labelImage` keeps the data alive.

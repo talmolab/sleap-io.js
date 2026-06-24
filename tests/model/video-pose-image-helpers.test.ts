@@ -401,8 +401,14 @@ describe("framesSimilarByImage (TestImageMatching._frames_similar_by_image)", ()
   // Videos with no backend raise on frame access -> caught -> false. In JS a
   // backend-less getFrame returns null, which the helper treats as false.
   it("frame access failure => false", async () => {
-    const video1 = new Video({ filename: "/nonexistent.mp4", openBackend: false });
-    const video2 = new Video({ filename: "/nonexistent.mp4", openBackend: false });
+    const video1 = new Video({
+      filename: "/nonexistent.mp4",
+      openBackend: false,
+    });
+    const video2 = new Video({
+      filename: "/nonexistent.mp4",
+      openBackend: false,
+    });
     expect(await _framesSimilarByImage(video1, video2, 0, 0.05)).toBe(false);
   });
 });
@@ -433,8 +439,16 @@ describe("helpers coverage (TestHelperFunctionsCoverage)", () => {
       skeleton,
     );
 
-    const lf1 = new LabeledFrame({ video: video1, frameIdx: 0, instances: [inst1] });
-    const lf2 = new LabeledFrame({ video: video2, frameIdx: 0, instances: [inst2] });
+    const lf1 = new LabeledFrame({
+      video: video1,
+      frameIdx: 0,
+      instances: [inst1],
+    });
+    const lf2 = new LabeledFrame({
+      video: video2,
+      frameIdx: 0,
+      instances: [inst2],
+    });
 
     const labels = new Labels({
       videos: [video1, video2],
@@ -460,7 +474,11 @@ describe("helpers coverage (TestHelperFunctionsCoverage)", () => {
       ],
       skeleton,
     );
-    const lf = new LabeledFrame({ video: video2, frameIdx: 0, instances: [inst] });
+    const lf = new LabeledFrame({
+      video: video2,
+      frameIdx: 0,
+      instances: [inst],
+    });
 
     const labels = new Labels({
       videos: [video1, video2],

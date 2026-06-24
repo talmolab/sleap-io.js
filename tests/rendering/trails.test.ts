@@ -31,7 +31,7 @@ function twoNodeSkeleton(): Skeleton {
 function makeInstance(
   skeleton: Skeleton,
   points: Record<string, number[]>,
-  track?: Track
+  track?: Track,
 ): Instance {
   return new Instance({ points, skeleton, track });
 }
@@ -39,14 +39,14 @@ function makeInstance(
 function makeFrame(
   video: Video,
   frameIdx: number,
-  instances: Instance[]
+  instances: Instance[],
 ): LabeledFrame {
   return new LabeledFrame({ video, frameIdx, instances });
 }
 
 async function makeCtx(
   w: number,
-  h: number
+  h: number,
 ): Promise<{ ctx: CanvasRenderingContext2D; read: () => ImageData }> {
   const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(w, h);
@@ -65,7 +65,7 @@ function rgbaAt(
   img: ImageData,
   w: number,
   x: number,
-  y: number
+  y: number,
 ): [number, number, number, number] {
   const i = (y * w + x) * 4;
   return [img.data[i], img.data[i + 1], img.data[i + 2], img.data[i + 3]];
@@ -99,7 +99,7 @@ describe("resolveTrailNode", () => {
     const skel = twoNodeSkeleton();
     expect(() => resolveTrailNode("nope", skel)).toThrow("Unknown trailNode");
     expect(() => resolveTrailNode(["head", "nope"], skel)).toThrow(
-      "Unknown trailNode"
+      "Unknown trailNode",
     );
   });
 });
@@ -207,7 +207,12 @@ describe("computeTrails", () => {
     const skel2 = twoNodeSkeleton();
     const track = new Track("A");
     const frames = new Map<number, LabeledFrame>([
-      [0, makeFrame(video, 0, [makeInstance(skel2, { head: [5, 5], tail: [7, 7] }, track)])],
+      [
+        0,
+        makeFrame(video, 0, [
+          makeInstance(skel2, { head: [5, 5], tail: [7, 7] }, track),
+        ]),
+      ],
     ]);
     const { trails } = computeTrails({
       frameIdx: 0,
@@ -334,7 +339,12 @@ describe("computeTrails", () => {
   it("computes the centroid as the mean of visible nodes", () => {
     const skel2 = twoNodeSkeleton();
     const frames = new Map<number, LabeledFrame>([
-      [0, makeFrame(video, 0, [makeInstance(skel2, { head: [10, 20], tail: [30, 40] })])],
+      [
+        0,
+        makeFrame(video, 0, [
+          makeInstance(skel2, { head: [10, 20], tail: [30, 40] }),
+        ]),
+      ],
     ]);
     const { trails } = computeTrails({
       frameIdx: 0,
@@ -367,7 +377,12 @@ describe("computeTrails", () => {
   it("yields NaN for a node index beyond the instance points", () => {
     const skel2 = twoNodeSkeleton();
     const frames = new Map<number, LabeledFrame>([
-      [0, makeFrame(video, 0, [makeInstance(skel2, { head: [5, 5], tail: [7, 7] })])],
+      [
+        0,
+        makeFrame(video, 0, [
+          makeInstance(skel2, { head: [5, 5], tail: [7, 7] }),
+        ]),
+      ],
     ]);
     const { trails } = computeTrails({
       frameIdx: 0,
@@ -410,7 +425,16 @@ describe("computeTrails", () => {
 describe("drawTrails", () => {
   it("draws a polyline (covered pixels become opaque)", async () => {
     const { ctx, read } = await makeCtx(40, 40);
-    drawTrails(ctx, [[[10, 10], [10, 30]]], { lineWidth: 6, alphaFade: false });
+    drawTrails(
+      ctx,
+      [
+        [
+          [10, 10],
+          [10, 30],
+        ],
+      ],
+      { lineWidth: 6, alphaFade: false },
+    );
     const img = read();
     expect(alphaAt(img, 40, 10, 20)).toBeGreaterThan(200); // on the line
     expect(alphaAt(img, 40, 0, 0)).toBe(0); // corner untouched
@@ -432,10 +456,21 @@ describe("drawTrails", () => {
   it("breaks the line at NaN gaps", async () => {
     const { ctx, read } = await makeCtx(40, 60);
     // segment 0: (10,10)-(10,20) drawn; segments touching NaN skipped.
-    drawTrails(ctx, [[[10, 10], [10, 20], [NaN, NaN], [10, 40]]], {
-      lineWidth: 6,
-      alphaFade: false,
-    });
+    drawTrails(
+      ctx,
+      [
+        [
+          [10, 10],
+          [10, 20],
+          [NaN, NaN],
+          [10, 40],
+        ],
+      ],
+      {
+        lineWidth: 6,
+        alphaFade: false,
+      },
+    );
     const img = read();
     expect(alphaAt(img, 40, 10, 15)).toBeGreaterThan(200); // drawn segment
     expect(alphaAt(img, 40, 10, 40)).toBe(0); // isolated point: no segment
@@ -443,7 +478,17 @@ describe("drawTrails", () => {
 
   it("fades opacity from oldest to newest segment", async () => {
     const { ctx, read } = await makeCtx(40, 80);
-    drawTrails(ctx, [[[10, 10], [10, 40], [10, 70]]], { lineWidth: 6 });
+    drawTrails(
+      ctx,
+      [
+        [
+          [10, 10],
+          [10, 40],
+          [10, 70],
+        ],
+      ],
+      { lineWidth: 6 },
+    );
     const img = read();
     const older = alphaAt(img, 40, 10, 25); // segment 0 (frac 0.5)
     const newer = alphaAt(img, 40, 10, 55); // segment 1 (frac 1.0)
@@ -453,19 +498,37 @@ describe("drawTrails", () => {
 
   it("applies the global alpha multiplier", async () => {
     const half = await makeCtx(40, 40);
-    drawTrails(half.ctx, [[[10, 10], [10, 30]]], {
-      lineWidth: 6,
-      alphaFade: false,
-      alpha: 0.5,
-    });
+    drawTrails(
+      half.ctx,
+      [
+        [
+          [10, 10],
+          [10, 30],
+        ],
+      ],
+      {
+        lineWidth: 6,
+        alphaFade: false,
+        alpha: 0.5,
+      },
+    );
     const full = await makeCtx(40, 40);
-    drawTrails(full.ctx, [[[10, 10], [10, 30]]], {
-      lineWidth: 6,
-      alphaFade: false,
-      alpha: 1,
-    });
+    drawTrails(
+      full.ctx,
+      [
+        [
+          [10, 10],
+          [10, 30],
+        ],
+      ],
+      {
+        lineWidth: 6,
+        alphaFade: false,
+        alpha: 1,
+      },
+    );
     expect(alphaAt(half.read(), 40, 10, 20)).toBeLessThan(
-      alphaAt(full.read(), 40, 10, 20)
+      alphaAt(full.read(), 40, 10, 20),
     );
   });
 
@@ -476,10 +539,16 @@ describe("drawTrails", () => {
     drawTrails(
       ctx,
       [
-        [[10, 10], [10, 30]],
-        [[30, 10], [30, 30]],
+        [
+          [10, 10],
+          [10, 30],
+        ],
+        [
+          [30, 10],
+          [30, 30],
+        ],
       ],
-      { lineWidth: 6, alphaFade: false, colors: [red, blue] }
+      { lineWidth: 6, alphaFade: false, colors: [red, blue] },
     );
     const img = read();
     const [r1, , b1] = rgbaAt(img, 50, 10, 20);
@@ -491,19 +560,41 @@ describe("drawTrails", () => {
   it("throws when colors length does not match trails", async () => {
     const { ctx } = await makeCtx(20, 20);
     expect(() =>
-      drawTrails(ctx, [[[1, 1], [2, 2]], [[3, 3], [4, 4]]], {
-        colors: [[255, 0, 0]],
-      })
+      drawTrails(
+        ctx,
+        [
+          [
+            [1, 1],
+            [2, 2],
+          ],
+          [
+            [3, 3],
+            [4, 4],
+          ],
+        ],
+        {
+          colors: [[255, 0, 0]],
+        },
+      ),
     ).toThrow("must be the same length");
   });
 
   it("applies the offset", async () => {
     const { ctx, read } = await makeCtx(40, 40);
-    drawTrails(ctx, [[[20, 10], [20, 30]]], {
-      lineWidth: 6,
-      alphaFade: false,
-      offset: [10, 0],
-    });
+    drawTrails(
+      ctx,
+      [
+        [
+          [20, 10],
+          [20, 30],
+        ],
+      ],
+      {
+        lineWidth: 6,
+        alphaFade: false,
+        offset: [10, 0],
+      },
+    );
     const img = read();
     expect(alphaAt(img, 40, 10, 20)).toBeGreaterThan(200); // shifted left by 10
     expect(alphaAt(img, 40, 20, 20)).toBe(0); // original position empty
@@ -511,20 +602,47 @@ describe("drawTrails", () => {
 
   it("applies the scale factor", async () => {
     const { ctx, read } = await makeCtx(40, 40);
-    drawTrails(ctx, [[[5, 5], [5, 15]]], {
-      lineWidth: 4,
-      alphaFade: false,
-      scale: 2,
-    });
+    drawTrails(
+      ctx,
+      [
+        [
+          [5, 5],
+          [5, 15],
+        ],
+      ],
+      {
+        lineWidth: 4,
+        alphaFade: false,
+        scale: 2,
+      },
+    );
     const img = read();
     expect(alphaAt(img, 40, 10, 20)).toBeGreaterThan(200); // scaled to (10,10)-(10,30)
   });
 
   it("widens the stroke with lineWidth", async () => {
     const thin = await makeCtx(40, 40);
-    drawTrails(thin.ctx, [[[10, 5], [10, 35]]], { lineWidth: 1, alphaFade: false });
+    drawTrails(
+      thin.ctx,
+      [
+        [
+          [10, 5],
+          [10, 35],
+        ],
+      ],
+      { lineWidth: 1, alphaFade: false },
+    );
     const thick = await makeCtx(40, 40);
-    drawTrails(thick.ctx, [[[10, 5], [10, 35]]], { lineWidth: 9, alphaFade: false });
+    drawTrails(
+      thick.ctx,
+      [
+        [
+          [10, 5],
+          [10, 35],
+        ],
+      ],
+      { lineWidth: 9, alphaFade: false },
+    );
     // A pixel offset from the line center is covered only by the thick stroke.
     expect(alphaAt(thin.read(), 40, 13, 20)).toBe(0);
     expect(alphaAt(thick.read(), 40, 13, 20)).toBeGreaterThan(0);
@@ -541,9 +659,15 @@ describe("renderImage with motion trails", () => {
   /** Build a Labels whose rendered frame (labeledFrames[0]) is the newest. */
   function makeTrailLabels(track?: Track): Labels {
     const video = new Video({ filename: "v.mp4" });
-    const f0 = makeFrame(video, 0, [makeInstance(skel, { c: [20, 20] }, track)]);
-    const f1 = makeFrame(video, 1, [makeInstance(skel, { c: [20, 40] }, track)]);
-    const f2 = makeFrame(video, 2, [makeInstance(skel, { c: [20, 60] }, track)]);
+    const f0 = makeFrame(video, 0, [
+      makeInstance(skel, { c: [20, 20] }, track),
+    ]);
+    const f1 = makeFrame(video, 1, [
+      makeInstance(skel, { c: [20, 40] }, track),
+    ]);
+    const f2 = makeFrame(video, 2, [
+      makeInstance(skel, { c: [20, 60] }, track),
+    ]);
     // labeledFrames[0] is the current (newest) frame; trail reaches back to f0.
     return new Labels({ labeledFrames: [f2, f1, f0] });
   }
@@ -605,9 +729,15 @@ describe("renderImage with motion trails", () => {
   it("uses caller-provided trailFrames for a LabeledFrame source", async () => {
     const track = new Track("A");
     const video = new Video({ filename: "v.mp4" });
-    const f0 = makeFrame(video, 0, [makeInstance(skel, { c: [20, 20] }, track)]);
-    const f1 = makeFrame(video, 1, [makeInstance(skel, { c: [20, 40] }, track)]);
-    const f2 = makeFrame(video, 2, [makeInstance(skel, { c: [20, 60] }, track)]);
+    const f0 = makeFrame(video, 0, [
+      makeInstance(skel, { c: [20, 20] }, track),
+    ]);
+    const f1 = makeFrame(video, 1, [
+      makeInstance(skel, { c: [20, 40] }, track),
+    ]);
+    const f2 = makeFrame(video, 2, [
+      makeInstance(skel, { c: [20, 60] }, track),
+    ]);
     const img = await renderImage(f2, {
       width: 80,
       height: 80,
@@ -623,10 +753,22 @@ describe("renderImage with motion trails", () => {
     const skel2 = twoNodeSkeleton();
     const video = new Video({ filename: "v.mp4" });
     const f0 = makeFrame(video, 0, [
-      Instance.fromArray([[20, 20], [60, 60]], skel2),
+      Instance.fromArray(
+        [
+          [20, 20],
+          [60, 60],
+        ],
+        skel2,
+      ),
     ]);
     const f1 = makeFrame(video, 1, [
-      Instance.fromArray([[20, 40], [60, 60]], skel2),
+      Instance.fromArray(
+        [
+          [20, 40],
+          [60, 60],
+        ],
+        skel2,
+      ),
     ]);
     const labels = new Labels({ labeledFrames: [f1, f0] });
     const img = await renderImage(labels, {
@@ -646,10 +788,22 @@ describe("renderImage with motion trails", () => {
     const video = new Video({ filename: "v.mp4" });
     // head sweeps down x=20; tail sweeps down x=60.
     const f0 = makeFrame(video, 0, [
-      Instance.fromArray([[20, 20], [60, 20]], skel2),
+      Instance.fromArray(
+        [
+          [20, 20],
+          [60, 20],
+        ],
+        skel2,
+      ),
     ]);
     const f1 = makeFrame(video, 1, [
-      Instance.fromArray([[20, 50], [60, 50]], skel2),
+      Instance.fromArray(
+        [
+          [20, 50],
+          [60, 50],
+        ],
+        skel2,
+      ),
     ]);
     const labels = new Labels({ labeledFrames: [f1, f0] });
     const img = await renderImage(labels, {
@@ -683,8 +837,12 @@ describe("renderImage with motion trails", () => {
   it("renders trails on an empty current frame (Python PR #434 parity)", async () => {
     const track = new Track("A");
     const video = new Video({ filename: "v.mp4" });
-    const f1 = makeFrame(video, 1, [makeInstance(skel, { c: [20, 30] }, track)]);
-    const f2 = makeFrame(video, 2, [makeInstance(skel, { c: [20, 50] }, track)]);
+    const f1 = makeFrame(video, 1, [
+      makeInstance(skel, { c: [20, 30] }, track),
+    ]);
+    const f2 = makeFrame(video, 2, [
+      makeInstance(skel, { c: [20, 50] }, track),
+    ]);
     const f3 = makeFrame(video, 3, []); // current frame is empty
     const labels = new Labels({
       labeledFrames: [f3, f2, f1],
@@ -707,10 +865,20 @@ describe("renderImage with motion trails", () => {
     const track = new Track("A");
     const video = new Video({ filename: "v.mp4" });
     const f0 = makeFrame(video, 0, [
-      new PredictedInstance({ points: { c: [20, 20] }, skeleton: skel, track, score: 0.9 }),
+      new PredictedInstance({
+        points: { c: [20, 20] },
+        skeleton: skel,
+        track,
+        score: 0.9,
+      }),
     ]);
     const f1 = makeFrame(video, 1, [
-      new PredictedInstance({ points: { c: [20, 50] }, skeleton: skel, track, score: 0.8 }),
+      new PredictedInstance({
+        points: { c: [20, 50] },
+        skeleton: skel,
+        track,
+        score: 0.8,
+      }),
     ]);
     const labels = new Labels({ labeledFrames: [f1, f0] });
     const img = await renderImage(labels, {

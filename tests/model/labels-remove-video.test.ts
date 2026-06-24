@@ -84,7 +84,10 @@ describe("Labels.removeVideo / removeVideos", () => {
     const fa = new LabeledFrame({ video: a, frameIdx: 0 });
     const fb = new LabeledFrame({ video: b, frameIdx: 0 });
     const fc = new LabeledFrame({ video: c, frameIdx: 0 });
-    const labels = new Labels({ labeledFrames: [fa, fb, fc], videos: [a, b, c] });
+    const labels = new Labels({
+      labeledFrames: [fa, fb, fc],
+      videos: [a, b, c],
+    });
     labels.removeVideos([a, c]);
     expect(labels.videos).toEqual([b]);
     expect(labels.labeledFrames).toEqual([fb]);

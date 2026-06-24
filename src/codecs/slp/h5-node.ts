@@ -9,7 +9,13 @@
  * The browser entry point never imports this file, ensuring the browser
  * bundle contains no references to Node built-in modules.
  */
-import { _registerNodeH5, _registerNodeFileOps, type H5Module, type SlpSource, type H5File } from "./h5.js";
+import {
+  _registerNodeH5,
+  _registerNodeFileOps,
+  type H5Module,
+  type SlpSource,
+  type H5File,
+} from "./h5.js";
 import { _registerFileWriter } from "./write.js";
 
 let modulePromise: Promise<H5Module> | null = null;
@@ -27,7 +33,7 @@ async function getH5ModuleNode(): Promise<H5Module> {
 
 async function openH5FileNode(
   module: H5Module,
-  source: SlpSource
+  source: SlpSource,
 ): Promise<{ file: H5File; close: () => void }> {
   if (typeof source === "string") {
     const file = new module.File(source, "r");
@@ -39,7 +45,10 @@ async function openH5FileNode(
     const { tmpdir } = await import("node:os");
     const { join } = await import("node:path");
     const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join(tmpdir(), `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
+    const tempPath = join(
+      tmpdir(),
+      `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`,
+    );
     writeFileSync(tempPath, data);
     const file = new module.File(tempPath, "r");
     return {
@@ -51,7 +60,9 @@ async function openH5FileNode(
     };
   }
 
-  throw new Error("Node environments only support string paths or byte buffers for SLP inputs.");
+  throw new Error(
+    "Node environments only support string paths or byte buffers for SLP inputs.",
+  );
 }
 
 // Register Node providers on import (side-effect)

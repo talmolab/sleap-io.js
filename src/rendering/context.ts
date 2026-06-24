@@ -22,7 +22,7 @@ export class RenderContext {
     /** Current scale factor */
     public readonly scale: number = 1.0,
     /** Offset for cropped views [x, y] */
-    public readonly offset: [number, number] = [0, 0]
+    public readonly offset: [number, number] = [0, 0],
   ) {}
 
   /**
@@ -60,7 +60,7 @@ export class InstanceContext {
     /** Current scale factor */
     public readonly scale: number = 1.0,
     /** Offset for cropped views */
-    public readonly offset: [number, number] = [0, 0]
+    public readonly offset: [number, number] = [0, 0],
   ) {}
 
   /**

@@ -1,6 +1,12 @@
 import { Labels } from "../model/labels.js";
 import { LabeledFrame } from "../model/labeled-frame.js";
-import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../model/instance.js";
+import {
+  Instance,
+  PredictedInstance,
+  Track,
+  pointsFromArray,
+  predictedPointsFromArray,
+} from "../model/instance.js";
 import { Skeleton, Edge, Node, Symmetry } from "../model/skeleton.js";
 import { Video } from "../model/video.js";
 import { SuggestionFrame } from "../model/suggestions.js";
@@ -34,7 +40,7 @@ export type LabelsDict = {
 
 export function toDict(
   labels: Labels,
-  options?: { video?: Video | number; skipEmptyFrames?: boolean }
+  options?: { video?: Video | number; skipEmptyFrames?: boolean },
 ): LabelsDict {
   const videoFilter = resolveVideoFilter(labels, options?.video);
   const videos = videoFilter ? [videoFilter.video] : labels.videos;
@@ -47,10 +53,12 @@ export function toDict(
       skeleton.index(edge.source.name),
       skeleton.index(edge.destination.name),
     ]);
-    const symmetries: Array<[number, number]> = skeleton.symmetries.map((sym) => {
-      const [left, right] = sym.nodes;
-      return [skeleton.index(left.name), skeleton.index(right.name)];
-    });
+    const symmetries: Array<[number, number]> = skeleton.symmetries.map(
+      (sym) => {
+        const [left, right] = sym.nodes;
+        return [skeleton.index(left.name), skeleton.index(right.name)];
+      },
+    );
     return {
       name: skeleton.name ?? undefined,
       nodes: skeleton.nodeNames,
@@ -61,20 +69,31 @@ export function toDict(
 
   const labeledFrames: LabelsDict["labeled_frames"] = [];
   for (const frame of labels.labeledFrames) {
-    if (videoFilter && !frame.video.matchesPath(videoFilter.video, true)) continue;
-    if (options?.skipEmptyFrames && frame.instances.length === 0 && !frame.isNegative) continue;
+    if (videoFilter && !frame.video.matchesPath(videoFilter.video, true))
+      continue;
+    if (
+      options?.skipEmptyFrames &&
+      frame.instances.length === 0 &&
+      !frame.isNegative
+    )
+      continue;
     const videoIdx = videos.indexOf(frame.video);
     if (videoIdx < 0) continue;
     labeledFrames.push({
       frame_idx: frame.frameIdx,
       video_idx: videoIdx,
-      instances: frame.instances.map((instance) => instanceToDict(instance, labels, trackIndex)),
+      instances: frame.instances.map((instance) =>
+        instanceToDict(instance, labels, trackIndex),
+      ),
       ...(frame.isNegative ? { is_negative: true } : {}),
     });
   }
 
   const suggestions = labels.suggestions
-    .filter((suggestion) => !videoFilter || suggestion.video.matchesPath(videoFilter.video, true))
+    .filter(
+      (suggestion) =>
+        !videoFilter || suggestion.video.matchesPath(videoFilter.video, true),
+    )
     .map((suggestion) => ({
       frame_idx: suggestion.frameIdx,
       video_idx: videos.indexOf(suggestion.video),
@@ -83,7 +102,9 @@ export function toDict(
 
   const videoDicts = videos.map((video) => {
     const backendType = resolveBackendType(video);
-    const backend: Record<string, unknown> | undefined = backendType ? { type: backendType } : undefined;
+    const backend: Record<string, unknown> | undefined = backendType
+      ? { type: backendType }
+      : undefined;
     const shape = video.shape ? Array.from(video.shape) : undefined;
     const fps = video.fps ?? undefined;
     return {
@@ -110,26 +131,43 @@ export function fromDict(data: LabelsDict): Labels {
 
   const skeletons = data.skeletons.map((skeleton) => {
     const nodes = skeleton.nodes.map((name) => new Node(name));
-    const edges = skeleton.edges.map(([sourceIdx, destIdx]) => new Edge(nodes[sourceIdx], nodes[destIdx]));
+    const edges = skeleton.edges.map(
+      ([sourceIdx, destIdx]) => new Edge(nodes[sourceIdx], nodes[destIdx]),
+    );
     const symmetries = (skeleton.symmetries ?? []).map(
-      ([leftIdx, rightIdx]) => new Symmetry([nodes[leftIdx], nodes[rightIdx]])
+      ([leftIdx, rightIdx]) => new Symmetry([nodes[leftIdx], nodes[rightIdx]]),
     );
     return new Skeleton({ name: skeleton.name, nodes, edges, symmetries });
   });
 
-  const videos = data.videos.map((video) => new Video({ filename: video.filename }));
-  const tracks = data.tracks.map((track) => new Track(String(track.name ?? "")));
+  const videos = data.videos.map(
+    (video) => new Video({ filename: video.filename }),
+  );
+  const tracks = data.tracks.map(
+    (track) => new Track(String(track.name ?? "")),
+  );
 
   const labeledFrames = data.labeled_frames.map((frame) => {
     const video = videos[frame.video_idx];
-    const instances = frame.instances.map((inst) => dictToInstance(inst, skeletons, tracks));
-    return new LabeledFrame({ video, frameIdx: frame.frame_idx, instances, isNegative: frame.is_negative ?? false });
+    const instances = frame.instances.map((inst) =>
+      dictToInstance(inst, skeletons, tracks),
+    );
+    return new LabeledFrame({
+      video,
+      frameIdx: frame.frame_idx,
+      instances,
+      isNegative: frame.is_negative ?? false,
+    });
   });
 
   const suggestions = data.suggestions.map((suggestion) => {
     const entry = suggestion as Record<string, unknown>;
     const video = videos[(entry.video_idx as number | undefined) ?? 0];
-    return new SuggestionFrame({ video, frameIdx: (entry.frame_idx as number) ?? 0, metadata: entry });
+    return new SuggestionFrame({
+      video,
+      frameIdx: (entry.frame_idx as number) ?? 0,
+      metadata: entry,
+    });
   });
 
   return new Labels({
@@ -169,7 +207,7 @@ function collectTracks(labels: Labels, video?: Video): Track[] {
 function instanceToDict(
   instance: Instance | PredictedInstance,
   labels: Labels,
-  trackIndex: Map<Track, number>
+  trackIndex: Map<Track, number>,
 ): Record<string, unknown> {
   const skeletonIdx = labels.skeletons.indexOf(instance.skeleton);
   const isPredicted = instance instanceof PredictedInstance;
@@ -214,14 +252,17 @@ function instanceToDict(
 function dictToInstance(
   data: Record<string, unknown>,
   skeletons: Skeleton[],
-  tracks: Track[]
+  tracks: Track[],
 ): Instance | PredictedInstance {
   const type = data.type === "predicted_instance" ? "predicted" : "instance";
-  const skeleton = skeletons[(data.skeleton_idx as number) ?? 0] ?? skeletons[0];
+  const skeleton =
+    skeletons[(data.skeleton_idx as number) ?? 0] ?? skeletons[0];
   const trackIdx = data.track_idx as number | undefined;
   const track = trackIdx !== undefined ? tracks[trackIdx] : undefined;
 
-  const points = Array.isArray(data.points) ? (data.points as Array<Record<string, unknown>>) : [];
+  const points = Array.isArray(data.points)
+    ? (data.points as Array<Record<string, unknown>>)
+    : [];
   if (type === "predicted") {
     const pointRows = points.map((point) => [
       Number(point.x),
@@ -270,7 +311,15 @@ function trackToDict(track: Track): Record<string, unknown> {
 }
 
 function validateDict(data: LabelsDict): void {
-  const required = ["version", "skeletons", "videos", "tracks", "labeled_frames", "suggestions", "provenance"] as const;
+  const required = [
+    "version",
+    "skeletons",
+    "videos",
+    "tracks",
+    "labeled_frames",
+    "suggestions",
+    "provenance",
+  ] as const;
   for (const key of required) {
     if (!(key in data)) {
       throw new Error(`Missing required key: ${key}`);

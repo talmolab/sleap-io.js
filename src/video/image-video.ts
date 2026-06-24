@@ -50,7 +50,7 @@ export function computePrefetchWindow(
   last: number | null,
   length: number,
   ahead: number,
-  behind: number
+  behind: number,
 ): number[] {
   const dir = last === null || current >= last ? 1 : -1;
   const out: number[] = [];
@@ -106,13 +106,16 @@ export class ImageVideoBackend implements VideoBackend {
       prefetchConcurrency: number;
       prefetchAhead: number;
       prefetchBehind: number;
-    }
+    },
   ) {
     this.filename = filename;
     this.reader = reader;
     this.shape = shape;
     this.bytesCache = new LruCache(cfg.bytesCacheBytes, (b) => b.byteLength);
-    this.decodedCache = new LruCache(cfg.decodedCacheBytes, (f) => f.data.byteLength);
+    this.decodedCache = new LruCache(
+      cfg.decodedCacheBytes,
+      (f) => f.data.byteLength,
+    );
     this.prefetchConcurrency = cfg.prefetchConcurrency;
     this.prefetchAhead = cfg.prefetchAhead;
     this.prefetchBehind = cfg.prefetchBehind;
@@ -129,7 +132,7 @@ export class ImageVideoBackend implements VideoBackend {
       throw new Error(
         "ImageVideoBackend requires an image-bytes reader, but none is " +
           "injected. On desktop/Node a default is registered; in the browser " +
-          "supply one via setImageBytesReader()."
+          "supply one via setImageBytesReader().",
       );
     }
     const frames = opts.filename.length;
@@ -156,10 +159,11 @@ export class ImageVideoBackend implements VideoBackend {
       {
         bytesCacheBytes: opts.bytesCacheBytes ?? DEFAULT_BYTES_CACHE,
         decodedCacheBytes: opts.decodedCacheBytes ?? DEFAULT_DECODED_CACHE,
-        prefetchConcurrency: opts.prefetchConcurrency ?? DEFAULT_PREFETCH_CONCURRENCY,
+        prefetchConcurrency:
+          opts.prefetchConcurrency ?? DEFAULT_PREFETCH_CONCURRENCY,
         prefetchAhead: opts.prefetchAhead ?? DEFAULT_PREFETCH_AHEAD,
         prefetchBehind: opts.prefetchBehind ?? DEFAULT_PREFETCH_BEHIND,
-      }
+      },
     );
     // Seed the cache with frame 0 (decoded up front when no shape was given).
     if (seedBytes) be.bytesCache.set(0, seedBytes);
@@ -211,7 +215,7 @@ export class ImageVideoBackend implements VideoBackend {
   prefetch(indices: number[]): Promise<void> {
     const gen = ++this.prefetchGen;
     const queue = [...new Set(indices)].filter(
-      (i) => i >= 0 && i < this.filename.length && !this.bytesCache.has(i)
+      (i) => i >= 0 && i < this.filename.length && !this.bytesCache.has(i),
     );
     let next = 0;
     const worker = async (): Promise<void> => {
@@ -227,7 +231,7 @@ export class ImageVideoBackend implements VideoBackend {
     };
     const n = Math.min(this.prefetchConcurrency, queue.length);
     return Promise.all(Array.from({ length: n }, () => worker())).then(
-      () => undefined
+      () => undefined,
     );
   }
 
@@ -238,7 +242,7 @@ export class ImageVideoBackend implements VideoBackend {
       this.lastIndex,
       this.filename.length,
       this.prefetchAhead,
-      this.prefetchBehind
+      this.prefetchBehind,
     );
     this.lastIndex = frameIndex;
     this.lastPrefetch = this.prefetch(window);

@@ -12,7 +12,11 @@ import { Track, Instance } from "../src/model/instance.js";
 import { Skeleton } from "../src/model/skeleton.js";
 import { Video } from "../src/model/video.js";
 
-function makeMask2D(height: number, width: number, fill?: (r: number, c: number) => boolean): Uint8Array {
+function makeMask2D(
+  height: number,
+  width: number,
+  fill?: (r: number, c: number) => boolean,
+): Uint8Array {
   const flat = new Uint8Array(height * width);
   if (fill) {
     for (let r = 0; r < height; r++) {
@@ -46,7 +50,11 @@ describe("encodeRle / decodeRle", () => {
   });
 
   it("roundtrip", () => {
-    const mask = makeMask2D(10, 10, (r, c) => r >= 2 && r < 5 && c >= 3 && c < 7);
+    const mask = makeMask2D(
+      10,
+      10,
+      (r, c) => r >= 2 && r < 5 && c >= 3 && c < 7,
+    );
     // Also set one isolated pixel
     mask[7 * 10 + 1] = 1;
 
@@ -89,7 +97,11 @@ describe("SegmentationMask", () => {
   });
 
   it("fromArray with metadata", () => {
-    const data = makeMask2D(10, 15, (r, c) => r >= 2 && r < 5 && c >= 3 && c < 8);
+    const data = makeMask2D(
+      10,
+      15,
+      (r, c) => r >= 2 && r < 5 && c >= 3 && c < 8,
+    );
     const mask = SegmentationMask.fromArray(data, 10, 15, { name: "test" });
     expect(mask.height).toBe(10);
     expect(mask.width).toBe(15);
@@ -97,7 +109,11 @@ describe("SegmentationMask", () => {
   });
 
   it("data roundtrip", () => {
-    const original = makeMask2D(10, 10, (r, c) => r >= 3 && r < 7 && c >= 2 && c < 8);
+    const original = makeMask2D(
+      10,
+      10,
+      (r, c) => r >= 3 && r < 7 && c >= 2 && c < 8,
+    );
     const mask = SegmentationMask.fromArray(original, 10, 10);
     const decoded = mask.data;
     expect(decoded).toEqual(original);
@@ -105,13 +121,21 @@ describe("SegmentationMask", () => {
 
   it("area", () => {
     // 3 rows * 4 cols = 12 pixels
-    const data = makeMask2D(10, 10, (r, c) => r >= 2 && r < 5 && c >= 3 && c < 7);
+    const data = makeMask2D(
+      10,
+      10,
+      (r, c) => r >= 2 && r < 5 && c >= 3 && c < 7,
+    );
     const mask = SegmentationMask.fromArray(data, 10, 10);
     expect(mask.area).toBe(12);
   });
 
   it("bbox", () => {
-    const data = makeMask2D(20, 20, (r, c) => r >= 5 && r < 10 && c >= 3 && c < 8);
+    const data = makeMask2D(
+      20,
+      20,
+      (r, c) => r >= 5 && r < 10 && c >= 3 && c < 8,
+    );
     const mask = SegmentationMask.fromArray(data, 20, 20);
     const bb = mask.bbox;
     expect(bb.x).toBe(3);
@@ -173,7 +197,11 @@ describe("SegmentationMask", () => {
   });
 
   it("toPolygon creates an ROI", () => {
-    const data = makeMask2D(20, 20, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const data = makeMask2D(
+      20,
+      20,
+      (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15,
+    );
     const mask = SegmentationMask.fromArray(data, 20, 20, {
       name: "test_mask",
       category: "cat",
@@ -195,7 +223,10 @@ describe("SegmentationMask", () => {
 describe("Abstract base and subclasses", () => {
   it("SegmentationMask cannot be instantiated directly", () => {
     const rle = encodeRle(new Uint8Array(25), 5, 5);
-    expect(() => new (SegmentationMask as any)({ rleCounts: rle, height: 5, width: 5 })).toThrow(TypeError);
+    expect(
+      () =>
+        new (SegmentationMask as any)({ rleCounts: rle, height: 5, width: 5 }),
+    ).toThrow(TypeError);
   });
 
   it("UserSegmentationMask is not predicted", () => {
@@ -205,9 +236,16 @@ describe("Abstract base and subclasses", () => {
   });
 
   it("PredictedSegmentationMask has score and isPredicted", () => {
-    const rle = encodeRle(makeMask2D(5, 5, () => true), 5, 5);
+    const rle = encodeRle(
+      makeMask2D(5, 5, () => true),
+      5,
+      5,
+    );
     const mask = new PredictedSegmentationMask({
-      rleCounts: rle, height: 5, width: 5, score: 0.85,
+      rleCounts: rle,
+      height: 5,
+      width: 5,
+      score: 0.85,
     });
     expect(mask.isPredicted).toBe(true);
     expect(mask.score).toBe(0.85);
@@ -217,11 +255,20 @@ describe("Abstract base and subclasses", () => {
   });
 
   it("PredictedSegmentationMask stores scoreMap", () => {
-    const rle = encodeRle(makeMask2D(3, 4, () => true), 3, 4);
+    const rle = encodeRle(
+      makeMask2D(3, 4, () => true),
+      3,
+      4,
+    );
     const sm = new Float32Array(12).fill(0.5);
     const mask = new PredictedSegmentationMask({
-      rleCounts: rle, height: 3, width: 4, score: 0.9,
-      scoreMap: sm, scoreMapScale: [2, 2], scoreMapOffset: [1, 1],
+      rleCounts: rle,
+      height: 3,
+      width: 4,
+      score: 0.9,
+      scoreMap: sm,
+      scoreMapScale: [2, 2],
+      scoreMapOffset: [1, 1],
     });
     expect(mask.scoreMap).toBe(sm);
     expect(mask.scoreMapScale).toEqual([2, 2]);
@@ -316,7 +363,13 @@ describe("PredictedSegmentationMask.toUser", () => {
 
   it("preserves the instance reference", () => {
     const skeleton = new Skeleton(["A", "B"]);
-    const instance = Instance.fromArray([[0, 0], [1, 1]], skeleton);
+    const instance = Instance.fromArray(
+      [
+        [0, 0],
+        [1, 1],
+      ],
+      skeleton,
+    );
     const pred = makePred(() => true, { instance });
     const user = pred.toUser();
     expect(user.instance).toBe(instance);
@@ -402,9 +455,14 @@ describe("Scale/offset spatial metadata", () => {
 
   it("bbox applies scale and offset", () => {
     // 5x5 mask with pixels at rows 1-3, cols 1-3
-    const data = makeMask2D(5, 5, (r, c) => r >= 1 && r <= 3 && c >= 1 && c <= 3);
+    const data = makeMask2D(
+      5,
+      5,
+      (r, c) => r >= 1 && r <= 3 && c >= 1 && c <= 3,
+    );
     const mask = SegmentationMask.fromArray(data, 5, 5, {
-      scale: [2, 2], offset: [10, 20],
+      scale: [2, 2],
+      offset: [10, 20],
     });
     const bb = mask.bbox;
     // mask-space: x=1, y=1, w=3, h=3
@@ -424,21 +482,25 @@ describe("Scale/offset spatial metadata", () => {
 
   it("explicit scale takes precedence over stride", () => {
     const mask = SegmentationMask.fromArray(makeMask2D(10, 10), 10, 10, {
-      stride: 4, scale: [3, 3],
+      stride: 4,
+      scale: [3, 3],
     });
     expect(mask.scale).toEqual([3, 3]);
   });
 
   it("scale must be positive", () => {
-    expect(() => SegmentationMask.fromArray(makeMask2D(5, 5), 5, 5, {
-      scale: [0, 1],
-    })).toThrow("Scale must be positive");
+    expect(() =>
+      SegmentationMask.fromArray(makeMask2D(5, 5), 5, 5, {
+        scale: [0, 1],
+      }),
+    ).toThrow("Scale must be positive");
   });
 
   it("resampled returns identity scale/offset", () => {
     const data = makeMask2D(10, 10, (r, c) => r < 5 && c < 5);
     const mask = SegmentationMask.fromArray(data, 10, 10, {
-      scale: [2, 2], offset: [5, 5],
+      scale: [2, 2],
+      offset: [5, 5],
     });
     const resampled = mask.resampled(5, 5);
     expect(resampled.height).toBe(5);
@@ -449,10 +511,18 @@ describe("Scale/offset spatial metadata", () => {
   });
 
   it("resampled preserves PredictedSegmentationMask", () => {
-    const rle = encodeRle(makeMask2D(4, 4, () => true), 4, 4);
+    const rle = encodeRle(
+      makeMask2D(4, 4, () => true),
+      4,
+      4,
+    );
     const sm = new Float32Array(16).fill(0.7);
     const mask = new PredictedSegmentationMask({
-      rleCounts: rle, height: 4, width: 4, score: 0.9, scoreMap: sm,
+      rleCounts: rle,
+      height: 4,
+      width: 4,
+      score: 0.9,
+      scoreMap: sm,
     });
     const resampled = mask.resampled(2, 2);
     expect(resampled).toBeInstanceOf(PredictedSegmentationMask);
@@ -463,9 +533,16 @@ describe("Scale/offset spatial metadata", () => {
   });
 
   it("resampled preserves fromPredicted on a linked user mask", () => {
-    const rle = encodeRle(makeMask2D(4, 4, () => true), 4, 4);
+    const rle = encodeRle(
+      makeMask2D(4, 4, () => true),
+      4,
+      4,
+    );
     const pred = new PredictedSegmentationMask({
-      rleCounts: rle, height: 4, width: 4, score: 0.9,
+      rleCounts: rle,
+      height: 4,
+      width: 4,
+      score: 0.9,
     });
     const user = pred.toUser(); // links fromPredicted to pred
     const resampled = user.resampled(2, 2);
@@ -476,8 +553,16 @@ describe("Scale/offset spatial metadata", () => {
   });
 
   it("resampled leaves fromPredicted null on an unlinked user mask", () => {
-    const rle = encodeRle(makeMask2D(4, 4, () => true), 4, 4);
-    const user = new UserSegmentationMask({ rleCounts: rle, height: 4, width: 4 });
+    const rle = encodeRle(
+      makeMask2D(4, 4, () => true),
+      4,
+      4,
+    );
+    const user = new UserSegmentationMask({
+      rleCounts: rle,
+      height: 4,
+      width: 4,
+    });
     expect(user.fromPredicted).toBeNull();
     const resampled = user.resampled(2, 2);
     expect(resampled).toBeInstanceOf(UserSegmentationMask);
@@ -499,7 +584,9 @@ describe("resizeNearest", () => {
   });
 
   it("downscales Int32Array", () => {
-    const src = new Int32Array([1, 1, 2, 2, 1, 1, 2, 2, 3, 3, 4, 4, 3, 3, 4, 4]); // 4x4
+    const src = new Int32Array([
+      1, 1, 2, 2, 1, 1, 2, 2, 3, 3, 4, 4, 3, 3, 4, 4,
+    ]); // 4x4
     const dst = resizeNearest(src, 4, 4, 2, 2);
     expect(dst).toBeInstanceOf(Int32Array);
     expect(dst.length).toBe(4);
@@ -532,7 +619,11 @@ describe("SegmentationMask.toBbox", () => {
 
   it("propagates metadata", () => {
     const track = new Track("t1");
-    const mask = makeMask2D(10, 10, (r, c) => r >= 2 && r < 5 && c >= 1 && c < 4);
+    const mask = makeMask2D(
+      10,
+      10,
+      (r, c) => r >= 2 && r < 5 && c >= 1 && c < 4,
+    );
     const sm = SegmentationMask.fromArray(mask, 10, 10, {
       track,
       category: "cell",
@@ -560,7 +651,11 @@ describe("SegmentationMask.toBbox", () => {
   });
 
   it("respects scale", () => {
-    const mask = makeMask2D(10, 10, (r, c) => r >= 2 && r < 4 && c >= 3 && c < 6);
+    const mask = makeMask2D(
+      10,
+      10,
+      (r, c) => r >= 2 && r < 4 && c >= 3 && c < 6,
+    );
     const sm = SegmentationMask.fromArray(mask, 10, 10, {
       scale: [0.5, 0.5],
     });
@@ -570,7 +665,11 @@ describe("SegmentationMask.toBbox", () => {
   });
 
   it("respects offset", () => {
-    const mask = makeMask2D(10, 10, (r, c) => r >= 2 && r < 4 && c >= 3 && c < 6);
+    const mask = makeMask2D(
+      10,
+      10,
+      (r, c) => r >= 2 && r < 4 && c >= 3 && c < 6,
+    );
     const sm = SegmentationMask.fromArray(mask, 10, 10, {
       offset: [10, 20],
     });

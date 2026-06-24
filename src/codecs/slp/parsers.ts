@@ -21,7 +21,11 @@ export function parseJsonAttr(attr: unknown): unknown {
   if (typeof value === "string") return JSON.parse(value);
   if (value instanceof Uint8Array) return JSON.parse(textDecoder.decode(value));
   if (value && typeof value === "object" && "buffer" in value) {
-    return JSON.parse(textDecoder.decode(new Uint8Array((value as { buffer: ArrayBuffer }).buffer)));
+    return JSON.parse(
+      textDecoder.decode(
+        new Uint8Array((value as { buffer: ArrayBuffer }).buffer),
+      ),
+    );
   }
   // If value is already a parsed object (e.g., from streaming worker), return as-is
   if (value && typeof value === "object") {
@@ -48,7 +52,8 @@ function trimHdf5String(str: string): string {
 export function attrToString(attr: unknown): string | undefined {
   if (attr === undefined || attr === null) return undefined;
   if (typeof attr === "string") return trimHdf5String(attr);
-  if (attr instanceof Uint8Array) return trimHdf5String(textDecoder.decode(attr));
+  if (attr instanceof Uint8Array)
+    return trimHdf5String(textDecoder.decode(attr));
   if (typeof attr === "object" && "value" in attr) {
     const v = (attr as { value: unknown }).value;
     if (typeof v === "string") return trimHdf5String(v);
@@ -70,7 +75,11 @@ export function attrToNumber(attr: unknown): number | undefined {
   if (typeof attr === "object" && "value" in attr) {
     raw = (attr as { value: unknown }).value;
   }
-  if (typeof raw !== "number" && typeof raw !== "bigint" && typeof raw !== "string") {
+  if (
+    typeof raw !== "number" &&
+    typeof raw !== "bigint" &&
+    typeof raw !== "string"
+  ) {
     return undefined;
   }
   const num = typeof raw === "bigint" ? Number(raw) : Number(raw);
@@ -84,9 +93,16 @@ export function attrToNumber(attr: unknown): number | undefined {
  */
 export function parseJsonEntry(entry: unknown): unknown {
   if (typeof entry === "string") return JSON.parse(trimHdf5String(entry));
-  if (entry instanceof Uint8Array) return JSON.parse(trimHdf5String(textDecoder.decode(entry)));
+  if (entry instanceof Uint8Array)
+    return JSON.parse(trimHdf5String(textDecoder.decode(entry)));
   if (entry && typeof entry === "object" && "buffer" in entry) {
-    return JSON.parse(trimHdf5String(textDecoder.decode(new Uint8Array((entry as { buffer: ArrayBuffer }).buffer))));
+    return JSON.parse(
+      trimHdf5String(
+        textDecoder.decode(
+          new Uint8Array((entry as { buffer: ArrayBuffer }).buffer),
+        ),
+      ),
+    );
   }
   return entry;
 }
@@ -98,14 +114,16 @@ export function parseJsonEntry(entry: unknown): unknown {
 export function resolveEdgeType(
   edgeType: unknown,
   cache: Map<number, number>,
-  state: { nextId: number }
+  state: { nextId: number },
 ): number {
   if (!edgeType || typeof edgeType !== "object") return 1;
   const et = edgeType as Record<string, unknown>;
 
   if (et["py/reduce"]) {
     const reduce = et["py/reduce"] as unknown[];
-    const tuple = (reduce[1] as Record<string, unknown>)?.["py/tuple"] as number[] | undefined;
+    const tuple = (reduce[1] as Record<string, unknown>)?.["py/tuple"] as
+      | number[]
+      | undefined;
     const typeId = tuple?.[0] ?? 1;
     cache.set(state.nextId, typeId);
     state.nextId += 1;
@@ -133,10 +151,13 @@ export function parseSkeletons(metadataJson: unknown): Skeleton[] {
   if (!metadataJson || typeof metadataJson !== "object") return [];
 
   const meta = metadataJson as Record<string, unknown>;
-  const nodeNames = (meta.nodes as Array<{ name?: string } | string> ?? []).map(
-    (node) => (typeof node === "object" ? node.name ?? "" : String(node))
+  const nodeNames = (
+    (meta.nodes as Array<{ name?: string } | string>) ?? []
+  ).map((node) =>
+    typeof node === "object" ? (node.name ?? "") : String(node),
   );
-  const skeletonEntries = meta.skeletons as Array<Record<string, unknown>> ?? [];
+  const skeletonEntries =
+    (meta.skeletons as Array<Record<string, unknown>>) ?? [];
   const skeletons: Skeleton[] = [];
 
   for (const entry of skeletonEntries) {
@@ -145,9 +166,9 @@ export function parseSkeletons(metadataJson: unknown): Skeleton[] {
     const typeCache = new Map<number, number>();
     const typeState = { nextId: 1 };
 
-    const entryNodes = entry.nodes as Array<{ id?: number } | number> ?? [];
+    const entryNodes = (entry.nodes as Array<{ id?: number } | number>) ?? [];
     const skeletonNodeIds = entryNodes.map((node) =>
-      Number(typeof node === "object" ? node.id ?? 0 : node)
+      Number(typeof node === "object" ? (node.id ?? 0) : node),
     );
     const nodeOrder = skeletonNodeIds.length
       ? skeletonNodeIds
@@ -163,7 +184,12 @@ export function parseSkeletons(metadataJson: unknown): Skeleton[] {
       nodeIndexById.set(Number(nodeId), index);
     });
 
-    const links = entry.links as Array<{ source: number; target: number; type?: unknown }> ?? [];
+    const links =
+      (entry.links as Array<{
+        source: number;
+        target: number;
+        type?: unknown;
+      }>) ?? [];
     for (const link of links) {
       const source = Number(link.source);
       const target = Number(link.target);
@@ -288,7 +314,7 @@ export interface VideoMetadata {
  */
 export function resolveVideoFilename(
   backendMeta: Record<string, unknown>,
-  parsed: Record<string, unknown>
+  parsed: Record<string, unknown>,
 ): string | string[] {
   const filenames = backendMeta.filenames;
   if (Array.isArray(filenames) && filenames.length > 0) {
@@ -301,7 +327,10 @@ export function resolveVideoFilename(
  * Parse video metadata from videos_json dataset values.
  * Returns metadata objects WITHOUT creating video backends.
  */
-export function parseVideosMetadata(values: unknown[], labelsPath?: string): VideoMetadata[] {
+export function parseVideosMetadata(
+  values: unknown[],
+  labelsPath?: string,
+): VideoMetadata[] {
   const videos: VideoMetadata[] = [];
 
   for (const entry of values) {
@@ -312,7 +341,10 @@ export function parseVideosMetadata(values: unknown[], labelsPath?: string): Vid
       // jsfive returns fixed-width strings with trailing spaces/nulls - trim before parsing
       parsed = JSON.parse(trimHdf5String(entry)) as Record<string, unknown>;
     } else if (entry instanceof Uint8Array) {
-      parsed = JSON.parse(trimHdf5String(textDecoder.decode(entry))) as Record<string, unknown>;
+      parsed = JSON.parse(trimHdf5String(textDecoder.decode(entry))) as Record<
+        string,
+        unknown
+      >;
     } else {
       parsed = entry as Record<string, unknown>;
     }
@@ -427,7 +459,10 @@ export function parseSessionsMetadata(values: unknown[]): SessionMetadata[] {
     }
 
     const videosByCamera: Record<string, number> = {};
-    const map = (parsed.camcorder_to_video_idx_map ?? {}) as Record<string, unknown>;
+    const map = (parsed.camcorder_to_video_idx_map ?? {}) as Record<
+      string,
+      unknown
+    >;
     for (const [cameraKey, videoIdx] of Object.entries(map)) {
       videosByCamera[cameraKey] = Number(videoIdx);
     }
@@ -469,7 +504,9 @@ export function reconstructInstance3D(
   skeletons: Skeleton[],
 ): Instance3D | undefined {
   const rawPoints = record.points;
-  const pointsValue = Array.isArray(rawPoints) ? (rawPoints as number[][]) : undefined;
+  const pointsValue = Array.isArray(rawPoints)
+    ? (rawPoints as number[][])
+    : undefined;
   if (!pointsValue) return undefined;
 
   const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
@@ -477,7 +514,12 @@ export function reconstructInstance3D(
   const pointScores = record.instance_3d_point_scores as number[] | undefined;
 
   if (pointScores) {
-    return new PredictedInstance3D({ points: pointsValue, skeleton, score, pointScores });
+    return new PredictedInstance3D({
+      points: pointsValue,
+      skeleton,
+      score,
+      pointScores,
+    });
   }
   return new Instance3D({ points: pointsValue, skeleton, score });
 }
@@ -496,6 +538,8 @@ export function resolveIdentity(
   if (idx >= 0 && idx < identities.length) {
     return identities[idx];
   }
-  console.warn(`identity_idx ${idx} is out of bounds (${identities.length} identities available) — skipping identity for this instance group.`);
+  console.warn(
+    `identity_idx ${idx} is out of bounds (${identities.length} identities available) — skipping identity for this instance group.`,
+  );
   return undefined;
 }

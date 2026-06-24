@@ -39,7 +39,9 @@ describe("attrToString", () => {
   });
 
   it("unwraps { value: Uint8Array }", () => {
-    expect(attrToString({ value: new TextEncoder().encode("jpg") })).toBe("jpg");
+    expect(attrToString({ value: new TextEncoder().encode("jpg") })).toBe(
+      "jpg",
+    );
   });
 
   it("trims trailing nulls and whitespace from fixed-width HDF5 strings", () => {
@@ -96,17 +98,30 @@ describe("read.ts honors `frames` HDF5 attribute on embedded video dataset", () 
   // because write.ts only emits shape from `video.backend?.shape`, not
   // `backendMetadata.shape`, so we'd have no way to inject the JSON shape via
   // the public API.
-  async function buildFixture(opts: { jsonFrameCount: number; framesAttr: number | null }) {
+  async function buildFixture(opts: {
+    jsonFrameCount: number;
+    framesAttr: number | null;
+  }) {
     const h5 = await import("h5wasm");
     await h5.ready;
     const FS = h5.FS;
-    const memPath = "/test-fixture-" + Date.now() + "-" + Math.random().toString(36).slice(2) + ".slp";
+    const memPath =
+      "/test-fixture-" +
+      Date.now() +
+      "-" +
+      Math.random().toString(36).slice(2) +
+      ".slp";
     FS.writeFile(memPath, new Uint8Array(0));
     const f = new h5.File(memPath, "w");
 
-    const meta = f.create_group("metadata") as { create_attribute: (n: string, v: unknown, s?: null, t?: string) => void };
+    const meta = f.create_group("metadata") as {
+      create_attribute: (n: string, v: unknown, s?: null, t?: string) => void;
+    };
     meta.create_attribute("format_id", 1.5);
-    meta.create_attribute("json", JSON.stringify({ skeletons: [], provenance: {} }));
+    meta.create_attribute(
+      "json",
+      JSON.stringify({ skeletons: [], provenance: {} }),
+    );
 
     f.create_dataset({
       name: "videos_json",
@@ -131,14 +146,29 @@ describe("read.ts honors `frames` HDF5 attribute on embedded video dataset", () 
         create_attribute: (n: string, v: number, s: null, t: string) => void;
       };
     };
-    const vd = v0.create_dataset({ name: "video", data: new Uint8Array([0x89]), shape: [1], dtype: "<B" });
+    const vd = v0.create_dataset({
+      name: "video",
+      data: new Uint8Array([0x89]),
+      shape: [1],
+      dtype: "<B",
+    });
     if (opts.framesAttr !== null) {
       vd.create_attribute("frames", opts.framesAttr, null, "<i8");
     }
-    v0.create_dataset({ name: "frame_numbers", data: new Uint32Array([0]), shape: [1], dtype: "<i4" });
+    v0.create_dataset({
+      name: "frame_numbers",
+      data: new Uint32Array([0]),
+      shape: [1],
+      dtype: "<i4",
+    });
 
     f.create_dataset({ name: "tracks_json", data: [], shape: [0], dtype: "S" });
-    f.create_dataset({ name: "suggestions_json", data: [], shape: [0], dtype: "S" });
+    f.create_dataset({
+      name: "suggestions_json",
+      data: [],
+      shape: [0],
+      dtype: "S",
+    });
     f.close();
 
     const out = FS.readFile(memPath);
@@ -150,7 +180,8 @@ describe("read.ts honors `frames` HDF5 attribute on embedded video dataset", () 
     const buf = await buildFixture({ jsonFrameCount: 50, framesAttr: 14100 });
     const labels = await readSlp(buf, { openVideos: false });
     expect(labels.videos.length).toBe(1);
-    const shape = (labels.videos[0].backendMetadata as { shape?: number[] })?.shape;
+    const shape = (labels.videos[0].backendMetadata as { shape?: number[] })
+      ?.shape;
     expect(shape).toBeDefined();
     expect(shape?.[0]).toBe(14100);
     expect(shape?.slice(1)).toEqual([100, 100, 1]);
@@ -160,7 +191,8 @@ describe("read.ts honors `frames` HDF5 attribute on embedded video dataset", () 
     const buf = await buildFixture({ jsonFrameCount: 50, framesAttr: null });
     const labels = await readSlp(buf, { openVideos: false });
     expect(labels.videos.length).toBe(1);
-    const shape = (labels.videos[0].backendMetadata as { shape?: number[] })?.shape;
+    const shape = (labels.videos[0].backendMetadata as { shape?: number[] })
+      ?.shape;
     expect(shape).toBeDefined();
     expect(shape?.[0]).toBe(50);
   });
@@ -177,7 +209,9 @@ describe("MEMFS cleanup algorithm (mirrors h5-worker.ts closeFile)", () => {
     const FS = h5.FS;
 
     const before = new Set(FS.readdir("/"));
-    const data = new Uint8Array(fs.readFileSync(path.join(fixtureRoot, "slp", "minimal_instance.slp")));
+    const data = new Uint8Array(
+      fs.readFileSync(path.join(fixtureRoot, "slp", "minimal_instance.slp")),
+    );
 
     for (let i = 0; i < 10; i++) {
       // open

@@ -8,11 +8,16 @@ import path from "node:path";
 const fixtureRoot = fileURLToPath(new URL("./data", import.meta.url));
 
 async function loadFixture(filename: string) {
-  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false });
+  return loadSlp(path.join(fixtureRoot, "slp", filename), {
+    openVideos: false,
+  });
 }
 
 async function loadFixtureLazy(filename: string) {
-  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false, lazy: true });
+  return loadSlp(path.join(fixtureRoot, "slp", filename), {
+    openVideos: false,
+    lazy: true,
+  });
 }
 
 describe("Lazy Loading", () => {
@@ -250,7 +255,7 @@ describe("LazyDataStore.toNumpy numFrames", () => {
     const maxLabeledFrame = Math.max(
       ...eager.labeledFrames
         .filter((f) => f.video.matchesPath(targetVideo, true))
-        .map((f) => f.frameIdx)
+        .map((f) => f.frameIdx),
     );
     return { lazy, eager, maxLabeledFrame };
   }

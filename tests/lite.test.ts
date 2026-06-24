@@ -1,5 +1,9 @@
 import { describe, it, expect } from "./bun-test";
-import { loadSlpMetadata, validateSlpBuffer, isHdf5Buffer } from "../src/lite.js";
+import {
+  loadSlpMetadata,
+  validateSlpBuffer,
+  isHdf5Buffer,
+} from "../src/lite.js";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -33,7 +37,9 @@ describe("loadSlpMetadata", () => {
   });
 
   it("reads provenance metadata", async () => {
-    const buffer = loadFixtureBuffer("predictions_1.2.7_provenance_and_tracking.slp");
+    const buffer = loadFixtureBuffer(
+      "predictions_1.2.7_provenance_and_tracking.slp",
+    );
     const metadata = await loadSlpMetadata(buffer);
 
     expect(metadata.provenance).toBeDefined();
@@ -41,7 +47,9 @@ describe("loadSlpMetadata", () => {
   });
 
   it("extracts track information", async () => {
-    const buffer = loadFixtureBuffer("predictions_1.2.7_provenance_and_tracking.slp");
+    const buffer = loadFixtureBuffer(
+      "predictions_1.2.7_provenance_and_tracking.slp",
+    );
     const metadata = await loadSlpMetadata(buffer);
 
     expect(metadata.tracks.length).toBeGreaterThan(0);
@@ -73,7 +81,9 @@ describe("loadSlpMetadata", () => {
   });
 
   it("counts points and predicted points separately", async () => {
-    const buffer = loadFixtureBuffer("predictions_1.2.7_provenance_and_tracking.slp");
+    const buffer = loadFixtureBuffer(
+      "predictions_1.2.7_provenance_and_tracking.slp",
+    );
     const metadata = await loadSlpMetadata(buffer);
 
     // This file has predictions, so should have predicted points
@@ -102,7 +112,9 @@ describe("loadSlpMetadata", () => {
 
   it("throws on file missing required datasets", async () => {
     // HDF5 magic number but not a valid SLP
-    const hdf5Header = new Uint8Array([0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a]);
+    const hdf5Header = new Uint8Array([
+      0x89, 0x48, 0x44, 0x46, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
 
     // This will throw because jsfive can't parse a truncated HDF5
     await expect(loadSlpMetadata(hdf5Header)).rejects.toThrow();
@@ -156,11 +168,17 @@ describe("lite vs full comparison", () => {
 
     // Compare skeletons
     expect(liteMetadata.skeletons.length).toBe(fullLabels.skeletons.length);
-    expect(liteMetadata.skeletons[0].nodeNames).toEqual(fullLabels.skeletons[0].nodeNames);
-    expect(liteMetadata.skeletons[0].edgeIndices).toEqual(fullLabels.skeletons[0].edgeIndices);
+    expect(liteMetadata.skeletons[0].nodeNames).toEqual(
+      fullLabels.skeletons[0].nodeNames,
+    );
+    expect(liteMetadata.skeletons[0].edgeIndices).toEqual(
+      fullLabels.skeletons[0].edgeIndices,
+    );
 
     // Compare counts
-    expect(liteMetadata.counts.labeledFrames).toBe(fullLabels.labeledFrames.length);
+    expect(liteMetadata.counts.labeledFrames).toBe(
+      fullLabels.labeledFrames.length,
+    );
     expect(liteMetadata.videos.length).toBe(fullLabels.videos.length);
     expect(liteMetadata.tracks.length).toBe(fullLabels.tracks.length);
   });
@@ -168,12 +186,20 @@ describe("lite vs full comparison", () => {
   it("extracts same provenance as full loadSlp", async () => {
     const { loadSlp } = await import("../src/io/main.js");
 
-    const buffer = loadFixtureBuffer("predictions_1.2.7_provenance_and_tracking.slp");
+    const buffer = loadFixtureBuffer(
+      "predictions_1.2.7_provenance_and_tracking.slp",
+    );
     const liteMetadata = await loadSlpMetadata(buffer);
 
-    const fullPath = path.join(fixtureRoot, "slp", "predictions_1.2.7_provenance_and_tracking.slp");
+    const fullPath = path.join(
+      fixtureRoot,
+      "slp",
+      "predictions_1.2.7_provenance_and_tracking.slp",
+    );
     const fullLabels = await loadSlp(fullPath, { openVideos: false });
 
-    expect(liteMetadata.provenance?.sleap_version).toBe(fullLabels.provenance.sleap_version);
+    expect(liteMetadata.provenance?.sleap_version).toBe(
+      fullLabels.provenance.sleap_version,
+    );
   });
 });

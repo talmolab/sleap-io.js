@@ -34,7 +34,11 @@ export type PointPairs = ReadonlyArray<readonly [number, number]>;
  * not present in this layout — the buffer is assumed to be pure interleaved
  * `(..., 2)` data.
  */
-function offsetFlat<T extends FlatPoints>(points: T, dx: number, dy: number): T {
+function offsetFlat<T extends FlatPoints>(
+  points: T,
+  dx: number,
+  dy: number,
+): T {
   if (Array.isArray(points)) {
     const out = points.slice() as number[];
     for (let i = 0; i + 1 < out.length; i += 2) {
@@ -54,7 +58,11 @@ function offsetFlat<T extends FlatPoints>(points: T, dx: number, dy: number): T 
 }
 
 /** Offset an array of `[x, y]` pairs by `(dx, dy)`, returning a fresh array. */
-function offsetPairs(points: PointPairs, dx: number, dy: number): [number, number][] {
+function offsetPairs(
+  points: PointPairs,
+  dx: number,
+  dy: number,
+): [number, number][] {
   return points.map(([x, y]) => [x + dx, y + dy] as [number, number]);
 }
 
@@ -72,10 +80,13 @@ function offsetPairs(points: PointPairs, dx: number, dy: number): [number, numbe
  * @returns Crop-local coordinates (a copy; input unmutated).
  */
 export function cropPoints<T extends FlatPoints>(points: T, crop: CropRect): T;
-export function cropPoints(points: PointPairs, crop: CropRect): [number, number][];
+export function cropPoints(
+  points: PointPairs,
+  crop: CropRect,
+): [number, number][];
 export function cropPoints(
   points: FlatPoints | PointPairs,
-  crop: CropRect
+  crop: CropRect,
 ): FlatPoints | [number, number][] {
   const [x1, y1] = crop;
   if (isPairs(points)) {
@@ -94,11 +105,17 @@ export function cropPoints(
  * @param crop Crop region `[x1, y1, x2, y2]` (x2/y2 exclusive).
  * @returns Source-frame coordinates (a copy; input unmutated).
  */
-export function uncropPoints<T extends FlatPoints>(points: T, crop: CropRect): T;
-export function uncropPoints(points: PointPairs, crop: CropRect): [number, number][];
+export function uncropPoints<T extends FlatPoints>(
+  points: T,
+  crop: CropRect,
+): T;
+export function uncropPoints(
+  points: PointPairs,
+  crop: CropRect,
+): [number, number][];
 export function uncropPoints(
   points: FlatPoints | PointPairs,
-  crop: CropRect
+  crop: CropRect,
 ): FlatPoints | [number, number][] {
   const [x1, y1] = crop;
   if (isPairs(points)) {

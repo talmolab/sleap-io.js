@@ -2,7 +2,11 @@ import { describe, it, expect } from "../bun-test";
 import { Labels } from "../../src/model/labels.js";
 import { LabeledFrame } from "../../src/model/labeled-frame.js";
 import { Video } from "../../src/model/video.js";
-import { Instance, PredictedInstance, Track } from "../../src/model/instance.js";
+import {
+  Instance,
+  PredictedInstance,
+  Track,
+} from "../../src/model/instance.js";
 import { Skeleton, Node, Edge } from "../../src/model/skeleton.js";
 import { SuggestionFrame } from "../../src/model/suggestions.js";
 import { UserROI } from "../../src/model/roi.js";
@@ -18,14 +22,34 @@ const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 function makeLabels(): Labels {
   const nodeA = new Node("a");
   const nodeB = new Node("b");
-  const skeleton = new Skeleton({ nodes: [nodeA, nodeB], edges: [new Edge(nodeA, nodeB)] });
+  const skeleton = new Skeleton({
+    nodes: [nodeA, nodeB],
+    edges: [new Edge(nodeA, nodeB)],
+  });
   const video = new Video({ filename: "test.mp4" });
   const track = new Track("t1");
-  const instance = Instance.fromArray([[10, 20], [30, 40]], skeleton);
+  const instance = Instance.fromArray(
+    [
+      [10, 20],
+      [30, 40],
+    ],
+    skeleton,
+  );
   instance.track = track;
-  const predicted = PredictedInstance.fromArray([[11, 21], [31, 41]], skeleton, 0.95);
+  const predicted = PredictedInstance.fromArray(
+    [
+      [11, 21],
+      [31, 41],
+    ],
+    skeleton,
+    0.95,
+  );
   predicted.track = track;
-  const frame = new LabeledFrame({ video, frameIdx: 0, instances: [instance, predicted] });
+  const frame = new LabeledFrame({
+    video,
+    frameIdx: 0,
+    instances: [instance, predicted],
+  });
   const suggestion = new SuggestionFrame({ video, frameIdx: 5 });
   const roi = new UserROI({
     geometry: { type: "Point", coordinates: [1, 2] },
@@ -180,10 +204,10 @@ describe("Labels.copy (eager)", () => {
 
 describe("Labels.copy (lazy)", () => {
   it("creates an independent lazy copy", async () => {
-    const labels = await loadSlp(
-      path.join(fixtureRoot, "slp", "typical.slp"),
-      { openVideos: false, lazy: true },
-    );
+    const labels = await loadSlp(path.join(fixtureRoot, "slp", "typical.slp"), {
+      openVideos: false,
+      lazy: true,
+    });
     expect(labels.isLazy).toBe(true);
 
     const copy = labels.copy();
@@ -201,10 +225,10 @@ describe("Labels.copy (lazy)", () => {
   });
 
   it("lazy copy materializes independently", async () => {
-    const labels = await loadSlp(
-      path.join(fixtureRoot, "slp", "typical.slp"),
-      { openVideos: false, lazy: true },
-    );
+    const labels = await loadSlp(path.join(fixtureRoot, "slp", "typical.slp"), {
+      openVideos: false,
+      lazy: true,
+    });
     const copy = labels.copy();
 
     // Materialize the copy
@@ -217,10 +241,10 @@ describe("Labels.copy (lazy)", () => {
   });
 
   it("lazy copy has consistent skeleton/track refs after materialize", async () => {
-    const labels = await loadSlp(
-      path.join(fixtureRoot, "slp", "typical.slp"),
-      { openVideos: false, lazy: true },
-    );
+    const labels = await loadSlp(path.join(fixtureRoot, "slp", "typical.slp"), {
+      openVideos: false,
+      lazy: true,
+    });
     const copy = labels.copy();
     copy.materialize();
 
@@ -252,7 +276,13 @@ describe("Labels.copy + replaceVideos integration", () => {
     });
     const instance = Instance.fromArray([[5, 10]], skeleton);
     instance.track = track;
-    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [instance], centroids: [centroid], labelImages: [li] });
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instance],
+      centroids: [centroid],
+      labelImages: [li],
+    });
 
     const labels = new Labels({
       labeledFrames: [frame],

@@ -20,7 +20,9 @@ export function setImageBytesReader(reader: ImageBytesReader | null): void {
 }
 
 /** Register the DEFAULT reader (called by the Node-only `node-image-reader`). */
-export function setDefaultImageBytesReader(reader: ImageBytesReader | null): void {
+export function setDefaultImageBytesReader(
+  reader: ImageBytesReader | null,
+): void {
   _default = reader;
 }
 

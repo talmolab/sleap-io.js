@@ -1,5 +1,8 @@
 import { describe, it, expect } from "./bun-test";
-import { readSkeletonJson, writeSkeletonJson } from "../src/codecs/skeleton-json.js";
+import {
+  readSkeletonJson,
+  writeSkeletonJson,
+} from "../src/codecs/skeleton-json.js";
 import { Skeleton, Node, Edge, Symmetry } from "../src/model/skeleton.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -46,7 +49,9 @@ describe("Skeleton JSON codec", () => {
     const raw = loadFixtureJson("mice_hc.json");
     const parsed = JSON.parse(raw) as Record<string, unknown>;
     // mice_hc has nx_graph wrapper
-    const skeleton = readSkeletonJson(parsed.nx_graph as Record<string, unknown>);
+    const skeleton = readSkeletonJson(
+      parsed.nx_graph as Record<string, unknown>,
+    );
     expect(skeleton.nodes.length).toBe(5);
     expect(skeleton.nodeNames).toContain("nose1");
     expect(skeleton.edges.length).toBe(4);
@@ -118,8 +123,13 @@ describe("writeSkeletonJson", () => {
   });
 
   it("round-trips mice_hc", () => {
-    const parsed = JSON.parse(loadFixtureJson("mice_hc.json")) as Record<string, unknown>;
-    const original = readSkeletonJson(parsed.nx_graph as Record<string, unknown>);
+    const parsed = JSON.parse(loadFixtureJson("mice_hc.json")) as Record<
+      string,
+      unknown
+    >;
+    const original = readSkeletonJson(
+      parsed.nx_graph as Record<string, unknown>,
+    );
     const reparsed = roundTripFixture(original);
     expect(reparsed.nodes.length).toBe(5);
     expect(nameKeys(reparsed)).toEqual(nameKeys(original));
@@ -129,7 +139,10 @@ describe("writeSkeletonJson", () => {
 
   it("emits jsonpickle duplicate-object structure (py/object nodes, py/reduce then py/id edge types)", () => {
     const original = readSkeletonJson(loadFixtureJson("flies13.skeleton.json"));
-    const data = JSON.parse(writeSkeletonJson(original)) as Record<string, unknown>;
+    const data = JSON.parse(writeSkeletonJson(original)) as Record<
+      string,
+      unknown
+    >;
     expect(data.directed).toBe(true);
     expect(data.multigraph).toBe(true);
     const links = data.links as Array<Record<string, any>>;
@@ -137,7 +150,9 @@ describe("writeSkeletonJson", () => {
     expect(links[0].source["py/object"]).toBe("sleap.skeleton.Node");
     expect(links[0].source["py/state"]["py/tuple"][1]).toBe(1.0);
     // First edge type is a py/reduce; a later edge reuses it via py/id.
-    expect(links[0].type["py/reduce"][0]["py/type"]).toBe("sleap.skeleton.EdgeType");
+    expect(links[0].type["py/reduce"][0]["py/type"]).toBe(
+      "sleap.skeleton.EdgeType",
+    );
     expect(links[0].type["py/reduce"][1]["py/tuple"][0]).toBe(1);
     expect(links[1].type["py/id"]).toBe(1);
     // num_edges_inserted matches the edge count.
@@ -151,7 +166,9 @@ describe("writeSkeletonJson", () => {
     expect(Array.isArray(arr)).toBe(true);
     expect(arr.length).toBe(1);
     // Each element round-trips independently.
-    expect(readSkeletonJson(arr[0] as Record<string, unknown>).nodes.length).toBe(13);
+    expect(
+      readSkeletonJson(arr[0] as Record<string, unknown>).nodes.length,
+    ).toBe(13);
   });
 
   it("preserves an isolated node (no edges/symmetries) through round-trip", () => {

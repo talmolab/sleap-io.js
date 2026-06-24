@@ -28,7 +28,7 @@ export function roisToGeoJSON(rois: ROI[]): GeoJSONFeatureCollection {
  * Accepts either a FeatureCollection or a single Feature.
  */
 export function roisFromGeoJSON(
-  geojson: GeoJSONFeatureCollection | GeoJSONFeature
+  geojson: GeoJSONFeatureCollection | GeoJSONFeature,
 ): ROI[] {
   const features =
     geojson.type === "FeatureCollection" ? geojson.features : [geojson];

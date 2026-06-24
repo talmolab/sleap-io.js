@@ -2,7 +2,10 @@ import { Skeleton, Node } from "./skeleton.js";
 
 // Late-binding factory to avoid circular imports with centroid.ts.
 // Set by centroid.ts when it is imported.
-type CentroidFactory = (instance: Instance | PredictedInstance, options?: { method?: string; node?: string | number }) => any;
+type CentroidFactory = (
+  instance: Instance | PredictedInstance,
+  options?: { method?: string; node?: string | number },
+) => any;
 let _centroidFactory: CentroidFactory | null = null;
 export function _registerCentroidFactory(factory: CentroidFactory): void {
   _centroidFactory = factory;
@@ -52,7 +55,10 @@ export function pointsEmpty(length: number, names?: string[]): PointsArray {
   return pts;
 }
 
-export function predictedPointsEmpty(length: number, names?: string[]): PredictedPointsArray {
+export function predictedPointsEmpty(
+  length: number,
+  names?: string[],
+): PredictedPointsArray {
   const pts: PredictedPointsArray = [];
   for (let i = 0; i < length; i += 1) {
     pts.push({
@@ -66,18 +72,29 @@ export function predictedPointsEmpty(length: number, names?: string[]): Predicte
   return pts;
 }
 
-export function pointsFromArray(array: number[][], names?: string[]): PointsArray {
+export function pointsFromArray(
+  array: number[][],
+  names?: string[],
+): PointsArray {
   const pts: PointsArray = [];
   for (let i = 0; i < array.length; i += 1) {
     const row = array[i] ?? [Number.NaN, Number.NaN];
     const visible = row.length > 2 ? Boolean(row[2]) : !Number.isNaN(row[0]);
     const complete = row.length > 3 ? Boolean(row[3]) : false;
-    pts.push({ xy: [row[0] ?? Number.NaN, row[1] ?? Number.NaN], visible, complete, name: names?.[i] });
+    pts.push({
+      xy: [row[0] ?? Number.NaN, row[1] ?? Number.NaN],
+      visible,
+      complete,
+      name: names?.[i],
+    });
   }
   return pts;
 }
 
-export function predictedPointsFromArray(array: number[][], names?: string[]): PredictedPointsArray {
+export function predictedPointsFromArray(
+  array: number[][],
+  names?: string[],
+): PredictedPointsArray {
   const pts: PredictedPointsArray = [];
   for (let i = 0; i < array.length; i += 1) {
     const row = array[i] ?? [Number.NaN, Number.NaN, Number.NaN];
@@ -120,7 +137,10 @@ export class Instance {
   }
 
   static fromArray(points: number[][], skeleton: Skeleton): Instance {
-    return new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton });
+    return new Instance({
+      points: pointsFromArray(points, skeleton.nodeNames),
+      skeleton,
+    });
   }
 
   static fromNumpy(options: {
@@ -140,7 +160,13 @@ export class Instance {
   }
 
   static empty(options: { skeleton: Skeleton }): Instance {
-    return new Instance({ points: pointsEmpty(options.skeleton.nodeNames.length, options.skeleton.nodeNames), skeleton: options.skeleton });
+    return new Instance({
+      points: pointsEmpty(
+        options.skeleton.nodeNames.length,
+        options.skeleton.nodeNames,
+      ),
+      skeleton: options.skeleton,
+    });
   }
 
   get length(): number {
@@ -153,7 +179,8 @@ export class Instance {
 
   getPoint(target: number | string | Node): Point {
     if (typeof target === "number") {
-      if (target < 0 || target >= this.points.length) throw new Error("Point index out of range.");
+      if (target < 0 || target >= this.points.length)
+        throw new Error("Point index out of range.");
       return this.points[target];
     }
     if (typeof target === "string") {
@@ -181,9 +208,15 @@ export class Instance {
 
   /** Mean of visible point coordinates as `[x, y]`, or `null` if no points visible. */
   get centroidXy(): [number, number] | null {
-    let sumX = 0, sumY = 0, count = 0;
+    let sumX = 0,
+      sumY = 0,
+      count = 0;
     for (const point of this.points) {
-      if (point.visible && !Number.isNaN(point.xy[0]) && !Number.isNaN(point.xy[1])) {
+      if (
+        point.visible &&
+        !Number.isNaN(point.xy[0]) &&
+        !Number.isNaN(point.xy[1])
+      ) {
         sumX += point.xy[0];
         sumY += point.xy[1];
         count++;
@@ -210,7 +243,9 @@ export class Instance {
   }
 
   get isEmpty(): boolean {
-    return this.points.every((point) => !point.visible || Number.isNaN(point.xy[0]));
+    return this.points.every(
+      (point) => !point.visible || Number.isNaN(point.xy[0]),
+    );
   }
 
   /**
@@ -353,7 +388,10 @@ export class Instance {
     const maxX = Math.max(...xs);
     const minY = Math.min(...ys);
     const maxY = Math.max(...ys);
-    return [[minX, minY], [maxX, maxY]];
+    return [
+      [minX, minY],
+      [maxX, maxY],
+    ];
   }
 }
 
@@ -370,7 +408,10 @@ export class PredictedInstance extends Instance {
     const { score = 0, ...rest } = options;
     const pts = Array.isArray(rest.points)
       ? rest.points
-      : predictedPointsFromDict(rest.points as Record<string, number[]>, rest.skeleton);
+      : predictedPointsFromDict(
+          rest.points as Record<string, number[]>,
+          rest.skeleton,
+        );
     super({
       points: pts as PointsArray,
       skeleton: rest.skeleton,
@@ -380,7 +421,11 @@ export class PredictedInstance extends Instance {
     this.score = score;
   }
 
-  static fromArray(points: number[][], skeleton: Skeleton, score?: number): PredictedInstance {
+  static fromArray(
+    points: number[][],
+    skeleton: Skeleton,
+    score?: number,
+  ): PredictedInstance {
     return new PredictedInstance({
       points: predictedPointsFromArray(points, skeleton.nodeNames),
       skeleton,
@@ -396,7 +441,10 @@ export class PredictedInstance extends Instance {
     trackingScore?: number;
   }): PredictedInstance {
     return new PredictedInstance({
-      points: predictedPointsFromArray(options.pointsData, options.skeleton.nodeNames),
+      points: predictedPointsFromArray(
+        options.pointsData,
+        options.skeleton.nodeNames,
+      ),
       skeleton: options.skeleton,
       track: options.track ?? null,
       score: options.score,
@@ -405,13 +453,22 @@ export class PredictedInstance extends Instance {
   }
 
   static empty(options: { skeleton: Skeleton }): PredictedInstance {
-    return new PredictedInstance({ points: predictedPointsEmpty(options.skeleton.nodeNames.length, options.skeleton.nodeNames), skeleton: options.skeleton });
+    return new PredictedInstance({
+      points: predictedPointsEmpty(
+        options.skeleton.nodeNames.length,
+        options.skeleton.nodeNames,
+      ),
+      skeleton: options.skeleton,
+    });
   }
 
   numpy(options?: { scores?: boolean; invisibleAsNaN?: boolean }): number[][] {
     const invisibleAsNaN = options?.invisibleAsNaN ?? true;
     return this.points.map((point) => {
-      const xy = invisibleAsNaN && !point.visible ? [Number.NaN, Number.NaN] : [point.xy[0], point.xy[1]];
+      const xy =
+        invisibleAsNaN && !point.visible
+          ? [Number.NaN, Number.NaN]
+          : [point.xy[0], point.xy[1]];
       if (options?.scores) {
         return [xy[0], xy[1], point.score ?? 0];
       }
@@ -425,7 +482,10 @@ export class PredictedInstance extends Instance {
   }
 }
 
-export function pointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PointsArray {
+export function pointsFromDict(
+  pointsDict: Record<string, number[]>,
+  skeleton: Skeleton,
+): PointsArray {
   const points = pointsEmpty(skeleton.nodeNames.length, skeleton.nodeNames);
   for (const [nodeName, data] of Object.entries(pointsDict)) {
     const index = skeleton.index(nodeName);
@@ -439,8 +499,14 @@ export function pointsFromDict(pointsDict: Record<string, number[]>, skeleton: S
   return points;
 }
 
-export function predictedPointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PredictedPointsArray {
-  const points = predictedPointsEmpty(skeleton.nodeNames.length, skeleton.nodeNames);
+export function predictedPointsFromDict(
+  pointsDict: Record<string, number[]>,
+  skeleton: Skeleton,
+): PredictedPointsArray {
+  const points = predictedPointsEmpty(
+    skeleton.nodeNames.length,
+    skeleton.nodeNames,
+  );
   for (const [nodeName, data] of Object.entries(pointsDict)) {
     const index = skeleton.index(nodeName);
     points[index] = {
@@ -453,4 +519,3 @@ export function predictedPointsFromDict(pointsDict: Record<string, number[]>, sk
   }
   return points;
 }
-

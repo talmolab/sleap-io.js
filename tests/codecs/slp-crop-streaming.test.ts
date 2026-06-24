@@ -31,7 +31,11 @@ const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 const FIXTURE = path.join(fixtureRoot, "slp", "cropped_format_2_3.pkg.slp");
 
 /** Grayscale value of the RGBA pixel (x,y) in an ImageData-shaped frame. */
-function gray(frame: { data: ArrayLike<number>; width: number }, x: number, y: number): number {
+function gray(
+  frame: { data: ArrayLike<number>; width: number },
+  x: number,
+  y: number,
+): number {
   return frame.data[(y * frame.width + x) * 4];
 }
 
@@ -79,7 +83,9 @@ describe("STREAMING PARITY — virtual crop", () => {
     expect(sv._cropTuple()).toEqual(ev._cropTuple());
     expect(sv._cropFill()).toEqual(ev._cropFill());
     expect(sv.shape).toEqual(ev.shape);
-    expect(sv.backendMetadata.source_shape).toEqual(ev.backendMetadata.source_shape);
+    expect(sv.backendMetadata.source_shape).toEqual(
+      ev.backendMetadata.source_shape,
+    );
     expect(sv.backend instanceof CropVideoBackend).toBe(true);
 
     // Identical cropped frame (256x192, same pixels as the eager path).

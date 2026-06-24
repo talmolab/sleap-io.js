@@ -41,7 +41,10 @@ function buildLabels() {
   const skeleton = new Skeleton({ nodes: ["A", "B"] });
   // Canonical video lives under a directory so a bare-basename query must use
   // the basename tier (not the strict path tier) to resolve.
-  const canonical = new Video({ filename: "path/to/clip.mp4", openBackend: false });
+  const canonical = new Video({
+    filename: "path/to/clip.mp4",
+    openBackend: false,
+  });
   const inst = Instance.fromArray(
     [
       [1, 2],
@@ -109,7 +112,10 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
     it("resolves a foreign filename that shares only the basename (relocated file)", () => {
       const { labels, lf } = buildLabels();
       // Different directory, same basename -> basename tier resolves.
-      const results = labels.find({ video: "/new/location/clip.mp4", frameIdx: 10 });
+      const results = labels.find({
+        video: "/new/location/clip.mp4",
+        frameIdx: 10,
+      });
       expect(results).toHaveLength(1);
       expect(results[0]).toBe(lf);
     });
@@ -172,7 +178,10 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
       const byString = labels.numpy({ video: "clip.mp4" });
       const byCanonical = labels.numpy({ video: canonical });
       const byForeign = labels.numpy({
-        video: new Video({ filename: canonical.filename as string, openBackend: false }),
+        video: new Video({
+          filename: canonical.filename as string,
+          openBackend: false,
+        }),
       });
 
       // One labeled frame at idx 10 -> 11 frames (shape[0]) since maxFrame == 10.
@@ -197,7 +206,9 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
       const byCanonical = labels.extract(canonical);
       expect(byString.labeledFrames).toHaveLength(1);
       expect(byCanonical.labeledFrames).toHaveLength(1);
-      expect(byString.labeledFrames.length).toBe(byCanonical.labeledFrames.length);
+      expect(byString.labeledFrames.length).toBe(
+        byCanonical.labeledFrames.length,
+      );
     });
 
     it("widens [video, idx] tuple selectors with a foreign Video / string", () => {
@@ -220,7 +231,9 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
       const { labels, canonical } = buildLabels();
       const byUrl = labels.extract(new URL("file:///x/clip.mp4"));
       const byCanonical = labels.extract(canonical);
-      expect(byUrl.labeledFrames).toHaveLength(byCanonical.labeledFrames.length);
+      expect(byUrl.labeledFrames).toHaveLength(
+        byCanonical.labeledFrames.length,
+      );
       expect(byUrl.labeledFrames).toHaveLength(1);
     });
   });
@@ -228,7 +241,10 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
   describe("get* family widening", () => {
     it("getCentroids({video: 'name'}) matches passing the canonical Video", () => {
       const skeleton = new Skeleton({ nodes: ["A", "B"] });
-      const video = new Video({ filename: "/data/vid.mp4", openBackend: false });
+      const video = new Video({
+        filename: "/data/vid.mp4",
+        openBackend: false,
+      });
       const inst = Instance.fromArray(
         [
           [1, 2],
@@ -249,10 +265,15 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
         skeletons: [skeleton],
       });
 
-      const foreign = new Video({ filename: "/data/vid.mp4", openBackend: false });
+      const foreign = new Video({
+        filename: "/data/vid.mp4",
+        openBackend: false,
+      });
       expect(labels.getCentroids({ video })).toEqual([centroid]);
       expect(labels.getCentroids({ video: foreign })).toEqual([centroid]);
-      expect(labels.getCentroids({ video: "/data/vid.mp4" })).toEqual([centroid]);
+      expect(labels.getCentroids({ video: "/data/vid.mp4" })).toEqual([
+        centroid,
+      ]);
       // Bare basename also resolves via the basename tier.
       expect(labels.getCentroids({ video: "vid.mp4" })).toEqual([centroid]);
     });
@@ -263,7 +284,10 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
       const lf = new LabeledFrame({ video, frameIdx: 0, rois: [roi] });
       const labels = new Labels({ labeledFrames: [lf], videos: [video] });
 
-      const foreign = new Video({ filename: "/data/v1.mp4", openBackend: false });
+      const foreign = new Video({
+        filename: "/data/v1.mp4",
+        openBackend: false,
+      });
       expect(labels.getRois({ video })).toEqual([roi]);
       expect(labels.getRois({ video: foreign })).toEqual([roi]);
       expect(labels.getRois({ video: "/data/v1.mp4" })).toEqual([roi]);
@@ -276,7 +300,10 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
       const lf = new LabeledFrame({ video, frameIdx: 0, masks: [mask] });
       const labels = new Labels({ labeledFrames: [lf], videos: [video] });
 
-      const foreign = new Video({ filename: "/data/m.mp4", openBackend: false });
+      const foreign = new Video({
+        filename: "/data/m.mp4",
+        openBackend: false,
+      });
       expect(labels.getMasks({ video })).toEqual([mask]);
       expect(labels.getMasks({ video: foreign })).toEqual([mask]);
       expect(labels.getMasks({ video: "/data/m.mp4" })).toEqual([mask]);
@@ -289,7 +316,10 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
       const lf = new LabeledFrame({ video, frameIdx: 0, bboxes: [bbox] });
       const labels = new Labels({ labeledFrames: [lf], videos: [video] });
 
-      const foreign = new Video({ filename: "/data/b.mp4", openBackend: false });
+      const foreign = new Video({
+        filename: "/data/b.mp4",
+        openBackend: false,
+      });
       expect(labels.getBboxes({ video })).toEqual([bbox]);
       expect(labels.getBboxes({ video: foreign })).toEqual([bbox]);
       expect(labels.getBboxes({ video: "/data/b.mp4" })).toEqual([bbox]);
@@ -306,7 +336,10 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
       const lf = new LabeledFrame({ video, frameIdx: 0, labelImages: [li] });
       const labels = new Labels({ labeledFrames: [lf], videos: [video] });
 
-      const foreign = new Video({ filename: "/data/li.mp4", openBackend: false });
+      const foreign = new Video({
+        filename: "/data/li.mp4",
+        openBackend: false,
+      });
       expect(labels.getLabelImages({ video })).toEqual([li]);
       expect(labels.getLabelImages({ video: foreign })).toEqual([li]);
       expect(labels.getLabelImages({ video: "/data/li.mp4" })).toEqual([li]);
@@ -314,7 +347,10 @@ describe("Labels lookup widening (#107 / Python PR #436)", () => {
     });
 
     it("get* widening returns empty for a non-matching string (no throw)", () => {
-      const video = new Video({ filename: "/data/vid.mp4", openBackend: false });
+      const video = new Video({
+        filename: "/data/vid.mp4",
+        openBackend: false,
+      });
       const roi = ROI.fromBbox(0, 0, 10, 10, { video });
       const lf = new LabeledFrame({ video, frameIdx: 0, rois: [roi] });
       const labels = new Labels({ labeledFrames: [lf], videos: [video] });

@@ -110,7 +110,12 @@ describe("cropFrame — ImageData (browser RGBA) path", () => {
     const h = 3;
     const data = new Uint8ClampedArray(w * h * 4);
     for (let i = 0; i < data.length; i++) data[i] = i;
-    const imageData = { data, width: w, height: h, colorSpace: "srgb" } as ImageData;
+    const imageData = {
+      data,
+      width: w,
+      height: h,
+      colorSpace: "srgb",
+    } as ImageData;
 
     const out = cropFrame(imageData, [1, 0, 3, 2], 0);
     // ImageData result has no `channels` field and is RGBA (4 lanes/pixel).

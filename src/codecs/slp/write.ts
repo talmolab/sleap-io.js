@@ -2,14 +2,23 @@ import { Labels } from "../../model/labels.js";
 import { Instance, PredictedInstance } from "../../model/instance.js";
 import type { Track } from "../../model/instance.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
-import { RecordingSession, Camera, InstanceGroup, FrameGroup } from "../../model/camera.js";
+import {
+  RecordingSession,
+  Camera,
+  InstanceGroup,
+  FrameGroup,
+} from "../../model/camera.js";
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
 import { getH5Module, getH5FileSystem, ensureH5StagingDir } from "./h5.js";
 import { ROI, PredictedROI, encodeWkb } from "../../model/roi.js";
-import { SegmentationMask, UserSegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
+import {
+  SegmentationMask,
+  UserSegmentationMask,
+  PredictedSegmentationMask,
+} from "../../model/mask.js";
 import { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
 import { Centroid, PredictedCentroid } from "../../model/centroid.js";
 import { LabelImage, PredictedLabelImage } from "../../model/label-image.js";
@@ -19,7 +28,9 @@ import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
 import type { LazyDataStore } from "../../model/lazy.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
-let _writeToFile: ((filename: string, bytes: Uint8Array) => Promise<void>) | null = null;
+let _writeToFile:
+  | ((filename: string, bytes: Uint8Array) => Promise<void>)
+  | null = null;
 
 /**
  * Register a file writer for Node.js environments.
@@ -27,7 +38,7 @@ let _writeToFile: ((filename: string, bytes: Uint8Array) => Promise<void>) | nul
  * @internal
  */
 export function _registerFileWriter(
-  writer: (filename: string, bytes: Uint8Array) => Promise<void>
+  writer: (filename: string, bytes: Uint8Array) => Promise<void>,
 ): void {
   _writeToFile = writer;
 }
@@ -48,7 +59,12 @@ function setStringAttr(target: any, name: string, value: string): void {
 function writeStringDataset(file: any, name: string, values: string[]): void {
   const json = JSON.stringify(values);
   const bytes = textEncoder.encode(json);
-  file.create_dataset({ name, data: bytes, shape: [bytes.length], dtype: "<B" });
+  file.create_dataset({
+    name,
+    data: bytes,
+    shape: [bytes.length],
+    dtype: "<B",
+  });
   const ds = file.get(name);
   setStringAttr(ds, "json", json);
 }
@@ -74,7 +90,11 @@ interface EmbeddedVideoFrames {
   channelOrder: string;
 }
 
-function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<number, EmbeddedVideoFrames> | null): void {
+function writeSlpToFile(
+  file: any,
+  labels: Labels,
+  embeddedVideoData?: Map<number, EmbeddedVideoFrames> | null,
+): void {
   writeMetadata(file, labels);
 
   if (embeddedVideoData && embeddedVideoData.size > 0) {
@@ -87,7 +107,13 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   writeTracks(file, labels.tracks);
   writeSuggestions(file, labels.suggestions, labels.videos);
   writeIdentities(file, labels.identities);
-  writeSessions(file, labels.sessions, labels.videos, labels.labeledFrames, labels.identities);
+  writeSessions(
+    file,
+    labels.sessions,
+    labels.videos,
+    labels.labeledFrames,
+    labels.identities,
+  );
   writeLabeledFrames(file, labels);
   writeNegativeFrames(file, labels);
   const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
@@ -106,11 +132,26 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
 
   for (const lf of labels.labeledFrames) {
     const vidIdx = labels.videos.indexOf(lf.video);
-    for (const r of lf.rois) { allRois.push(r); roiCtx.push([vidIdx, lf.frameIdx]); }
-    for (const m of lf.masks) { allMasks.push(m); maskCtx.push([vidIdx, lf.frameIdx]); }
-    for (const b of lf.bboxes) { allBboxes.push(b); bboxCtx.push([vidIdx, lf.frameIdx]); }
-    for (const c of lf.centroids) { allCentroids.push(c); centroidCtx.push([vidIdx, lf.frameIdx]); }
-    for (const li of lf.labelImages) { allLabelImages.push(li); liCtx.push([vidIdx, lf.frameIdx]); }
+    for (const r of lf.rois) {
+      allRois.push(r);
+      roiCtx.push([vidIdx, lf.frameIdx]);
+    }
+    for (const m of lf.masks) {
+      allMasks.push(m);
+      maskCtx.push([vidIdx, lf.frameIdx]);
+    }
+    for (const b of lf.bboxes) {
+      allBboxes.push(b);
+      bboxCtx.push([vidIdx, lf.frameIdx]);
+    }
+    for (const c of lf.centroids) {
+      allCentroids.push(c);
+      centroidCtx.push([vidIdx, lf.frameIdx]);
+    }
+    for (const li of lf.labelImages) {
+      allLabelImages.push(li);
+      liCtx.push([vidIdx, lf.frameIdx]);
+    }
   }
   // Static ROIs
   for (const r of labels._staticRois) {
@@ -119,10 +160,38 @@ function writeSlpToFile(file: any, labels: Labels, embeddedVideoData?: Map<numbe
   }
 
   writeRois(file, allRois, labels.videos, labels.tracks, allInstances, roiCtx);
-  writeMasks(file, allMasks, labels.videos, labels.tracks, allInstances, maskCtx);
-  writeBboxes(file, allBboxes, labels.videos, labels.tracks, allInstances, bboxCtx);
-  writeCentroids(file, allCentroids, labels.videos, labels.tracks, allInstances, centroidCtx);
-  writeLabelImages(file, allLabelImages, labels.videos, labels.tracks, allInstances, liCtx);
+  writeMasks(
+    file,
+    allMasks,
+    labels.videos,
+    labels.tracks,
+    allInstances,
+    maskCtx,
+  );
+  writeBboxes(
+    file,
+    allBboxes,
+    labels.videos,
+    labels.tracks,
+    allInstances,
+    bboxCtx,
+  );
+  writeCentroids(
+    file,
+    allCentroids,
+    labels.videos,
+    labels.tracks,
+    allInstances,
+    centroidCtx,
+  );
+  writeLabelImages(
+    file,
+    allLabelImages,
+    labels.videos,
+    labels.tracks,
+    allInstances,
+    liCtx,
+  );
 }
 
 /**
@@ -285,7 +354,13 @@ function writeLazyNegativeFrames(file: any, store: LazyDataStore): void {
   }
   // Deterministic ordering for byte-stable output.
   rows.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  createMatrixDataset(file, "negative_frames", rows, ["video_id", "frame_idx"], "<i8");
+  createMatrixDataset(
+    file,
+    "negative_frames",
+    rows,
+    ["video_id", "frame_idx"],
+    "<i8",
+  );
 }
 
 /**
@@ -308,7 +383,9 @@ function writeLazyNegativeFrames(file: any, store: LazyDataStore): void {
 function writeSlpToFileLazy(file: any, labels: Labels): void {
   const store = labels._lazyDataStore;
   if (!labels.isLazy || !store) {
-    throw new Error("writeSlpToFileLazy requires lazy Labels with a data store");
+    throw new Error(
+      "writeSlpToFileLazy requires lazy Labels with a data store",
+    );
   }
 
   writeMetadata(file, labels);
@@ -393,8 +470,22 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
   writeRois(file, allRois, labels.videos, labels.tracks, undefined, roiCtx);
   writeMasks(file, allMasks, labels.videos, labels.tracks, [], maskCtx);
   writeBboxes(file, allBboxes, labels.videos, labels.tracks, [], bboxCtx);
-  writeCentroids(file, allCentroids, labels.videos, labels.tracks, [], centroidCtx);
-  writeLabelImages(file, allLabelImages, labels.videos, labels.tracks, [], liCtx);
+  writeCentroids(
+    file,
+    allCentroids,
+    labels.videos,
+    labels.tracks,
+    [],
+    centroidCtx,
+  );
+  writeLabelImages(
+    file,
+    allLabelImages,
+    labels.videos,
+    labels.tracks,
+    [],
+    liCtx,
+  );
 }
 
 /**
@@ -414,7 +505,7 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
  */
 export async function saveSlpToBytes(
   labels: Labels,
-  options?: SlpWriteOptions
+  options?: SlpWriteOptions,
 ): Promise<Uint8Array> {
   const embedMode = options?.embed ?? false;
 
@@ -478,7 +569,8 @@ export async function saveSlpToBytes(
     writeLabels = new Labels({
       labeledFrames: labels.labeledFrames.map((frame) => {
         const videoIdx = labels.videos.indexOf(frame.video);
-        const restoredVideo = videoIdx >= 0 ? restoredVideos[videoIdx] : frame.video;
+        const restoredVideo =
+          videoIdx >= 0 ? restoredVideos[videoIdx] : frame.video;
         return new LabeledFrame({
           video: restoredVideo,
           frameIdx: frame.frameIdx,
@@ -527,7 +619,7 @@ export async function saveSlpToBytes(
 export async function writeSlp(
   filename: string,
   labels: Labels,
-  options?: SlpWriteOptions
+  options?: SlpWriteOptions,
 ): Promise<void> {
   const bytes = await saveSlpToBytes(labels, options);
 
@@ -536,7 +628,7 @@ export async function writeSlp(
   } else {
     throw new Error(
       "writeSlp requires a Node.js environment for file I/O. " +
-      "Use saveSlpToBytes() to get the SLP data as a Uint8Array in the browser."
+        "Use saveSlpToBytes() to get the SLP data as a Uint8Array in the browser.",
     );
   }
 }
@@ -560,18 +652,22 @@ function writeMetadata(file: any, labels: Labels): void {
     labels.rois.some((r) => r.isPredicted) ||
     labels.masks.some((m) => m.isPredicted) ||
     (labels.labelImages ?? []).some((li) => li.isPredicted);
-  const hasMaskInstances = labels.masks.some((m) => m.instance !== null || (m._instanceIdx != null && m._instanceIdx >= 0));
-  let formatId = (labels.bboxes?.length ?? 0) > 0
-    ? 2.0
-    : (hasPredicted || hasMaskInstances)
-      ? 1.9
-      : (labels.labelImages?.length ?? 0) > 0
-        ? 1.8
-        : hasRoiInstance
-          ? 1.6
-          : (labels.rois.length > 0 || labels.masks.length > 0)
-            ? 1.5
-            : FORMAT_ID;
+  const hasMaskInstances = labels.masks.some(
+    (m) =>
+      m.instance !== null || (m._instanceIdx != null && m._instanceIdx >= 0),
+  );
+  let formatId =
+    (labels.bboxes?.length ?? 0) > 0
+      ? 2.0
+      : hasPredicted || hasMaskInstances
+        ? 1.9
+        : (labels.labelImages?.length ?? 0) > 0
+          ? 1.8
+          : hasRoiInstance
+            ? 1.6
+            : labels.rois.length > 0 || labels.masks.length > 0
+              ? 1.5
+              : FORMAT_ID;
   if (hasIdentities) {
     formatId = Math.max(formatId, 1.9);
   }
@@ -605,7 +701,9 @@ function writeMetadata(file: any, labels: Labels): void {
     savedMasks.some(
       (m) =>
         (m as UserSegmentationMask).fromPredicted != null &&
-        savedMaskSet.has((m as UserSegmentationMask).fromPredicted as SegmentationMask),
+        savedMaskSet.has(
+          (m as UserSegmentationMask).fromPredicted as SegmentationMask,
+        ),
     )
   ) {
     formatId = Math.max(formatId, 2.4);
@@ -617,7 +715,10 @@ function writeMetadata(file: any, labels: Labels): void {
   setStringAttr(metadataGroup, "json", JSON.stringify(metadata));
 }
 
-function serializeSkeletons(skeletons: Skeleton[]): { skeletons: any[]; nodes: Array<{ name: string }> } {
+function serializeSkeletons(skeletons: Skeleton[]): {
+  skeletons: any[];
+  nodes: Array<{ name: string }>;
+} {
   const nodes: Array<{ name: string }> = [];
   const nodeIndex = new Map<string, number>();
 
@@ -670,7 +771,9 @@ function serializeSkeletons(skeletons: Skeleton[]): { skeletons: any[]; nodes: A
     }
 
     // Build per-skeleton node index list (global indices of this skeleton's nodes)
-    const skeletonNodeIds = skeleton.nodeNames.map((name) => nodeIndex.get(name) ?? 0);
+    const skeletonNodeIds = skeleton.nodeNames.map(
+      (name) => nodeIndex.get(name) ?? 0,
+    );
 
     return {
       directed: true,
@@ -693,7 +796,10 @@ function writeVideos(file: any, videos: Video[]): void {
 }
 
 function serializeVideo(video: Video): Record<string, unknown> {
-  const backend = { ...(video.backendMetadata ?? {}) } as Record<string, unknown>;
+  const backend = { ...(video.backendMetadata ?? {}) } as Record<
+    string,
+    unknown
+  >;
   if (backend.filename == null) backend.filename = video.filename;
 
   // Crop unwrap (SLP 2.3): a cropped Video serializes as its UNCROPPED inner so
@@ -710,12 +816,14 @@ function serializeVideo(video: Video): Record<string, unknown> {
       throw new Error(
         "Cannot serialize a nested crop-of-crop video: the /video_crops format " +
           "stores a single crop per video. Flatten the crop (use matching fills " +
-          "and an in-bounds region) before saving."
+          "and an in-bounds region) before saving.",
       );
     }
     // Serialize the inner's full-frame shape/dataset/fps, not the cropped facade.
     const innerShape =
-      inner.shape ?? (backend.source_shape as number[] | undefined) ?? video.sourceVideo?.shape;
+      inner.shape ??
+      (backend.source_shape as number[] | undefined) ??
+      video.sourceVideo?.shape;
     if (innerShape != null) backend.shape = [...innerShape];
     else delete backend.shape;
     if (inner.dataset != null) backend.dataset = inner.dataset;
@@ -734,14 +842,17 @@ function serializeVideo(video: Video): Record<string, unknown> {
       throw new Error(
         "Cannot serialize closed cropped video: the uncropped source shape is " +
           "unavailable (no source_video and no recorded source_shape), so " +
-          "videos_json cannot describe the full frame."
+          "videos_json cannot describe the full frame.",
       );
     }
     backend.shape = srcShape;
   } else {
-    if (backend.dataset == null && liveBackend?.dataset) backend.dataset = liveBackend.dataset;
-    if (backend.shape == null && liveBackend?.shape) backend.shape = liveBackend.shape;
-    if (backend.fps == null && liveBackend?.fps != null) backend.fps = liveBackend.fps;
+    if (backend.dataset == null && liveBackend?.dataset)
+      backend.dataset = liveBackend.dataset;
+    if (backend.shape == null && liveBackend?.shape)
+      backend.shape = liveBackend.shape;
+    if (backend.fps == null && liveBackend?.fps != null)
+      backend.fps = liveBackend.fps;
   }
 
   // Strip crop keys from videos_json regardless of path (they ride /video_crops).
@@ -788,17 +899,23 @@ function writeVideoCrops(file: any, videos: Video[]): void {
 }
 
 function writeTracks(file: any, tracks: Array<{ name: string }>): void {
-  const payload = tracks.map((track) => JSON.stringify([SPAWNED_ON, track.name]));
+  const payload = tracks.map((track) =>
+    JSON.stringify([SPAWNED_ON, track.name]),
+  );
   file.create_dataset({ name: "tracks_json", data: payload });
 }
 
-function writeSuggestions(file: any, suggestions: SuggestionFrame[], videos: Video[]): void {
+function writeSuggestions(
+  file: any,
+  suggestions: SuggestionFrame[],
+  videos: Video[],
+): void {
   const payload = suggestions.map((suggestion) =>
     JSON.stringify({
       video: String(videos.indexOf(suggestion.video)),
       frame_idx: suggestion.frameIdx,
       group: suggestion.group ?? "default",
-    })
+    }),
   );
   file.create_dataset({ name: "suggestions_json", data: payload });
 }
@@ -818,13 +935,23 @@ function writeIdentities(file: any, identities: Identity[]): void {
   file.create_dataset({ name: "identities_json", data: payload });
 }
 
-function writeSessions(file: any, sessions: RecordingSession[], videos: Video[], labeledFrames: LabeledFrame[], identities?: Identity[]): void {
+function writeSessions(
+  file: any,
+  sessions: RecordingSession[],
+  videos: Video[],
+  labeledFrames: LabeledFrame[],
+  identities?: Identity[],
+): void {
   const labeledFrameIndex = new Map<LabeledFrame, number>();
   labeledFrames.forEach((lf, idx) => {
     labeledFrameIndex.set(lf, idx);
   });
 
-  const payload = sessions.map((session) => JSON.stringify(serializeSession(session, videos, labeledFrameIndex, identities)));
+  const payload = sessions.map((session) =>
+    JSON.stringify(
+      serializeSession(session, videos, labeledFrameIndex, identities),
+    ),
+  );
   file.create_dataset({ name: "sessions_json", data: payload });
 }
 
@@ -832,9 +959,11 @@ function serializeSession(
   session: RecordingSession,
   videos: Video[],
   labeledFrameIndex: Map<LabeledFrame, number>,
-  identities?: Identity[]
+  identities?: Identity[],
 ): Record<string, unknown> {
-  const calibration: Record<string, unknown> = { metadata: session.cameraGroup.metadata ?? {} };
+  const calibration: Record<string, unknown> = {
+    metadata: session.cameraGroup.metadata ?? {},
+  };
   session.cameraGroup.cameras.forEach((camera, idx) => {
     const key = camera.name ?? String(idx);
     const camData: Record<string, unknown> = {
@@ -860,7 +989,9 @@ function serializeSession(
   const frame_group_dicts: Record<string, unknown>[] = [];
   for (const frameGroup of session.frameGroups.values()) {
     if (!frameGroup.instanceGroups.length) continue;
-    frame_group_dicts.push(serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities));
+    frame_group_dicts.push(
+      serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities),
+    );
   }
 
   return {
@@ -875,11 +1006,22 @@ function serializeFrameGroup(
   frameGroup: FrameGroup,
   session: RecordingSession,
   labeledFrameIndex: Map<LabeledFrame, number>,
-  identities?: Identity[]
+  identities?: Identity[],
 ): Record<string, unknown> {
-  const instance_groups = frameGroup.instanceGroups.map((group) => serializeInstanceGroup(group, session, identities, frameGroup, labeledFrameIndex));
+  const instance_groups = frameGroup.instanceGroups.map((group) =>
+    serializeInstanceGroup(
+      group,
+      session,
+      identities,
+      frameGroup,
+      labeledFrameIndex,
+    ),
+  );
   const labeled_frame_by_camera: Record<string, number> = {};
-  for (const [camera, labeledFrame] of frameGroup.labeledFrameByCamera.entries()) {
+  for (const [
+    camera,
+    labeledFrame,
+  ] of frameGroup.labeledFrameByCamera.entries()) {
     const cameraKey = cameraKeyForSession(camera, session);
     const index = labeledFrameIndex.get(labeledFrame);
     if (index !== undefined) {
@@ -940,7 +1082,10 @@ function serializeInstanceGroup(
     if (group.instance3d.score != null) {
       payload.instance_3d_score = group.instance3d.score;
     }
-    if (group.instance3d instanceof PredictedInstance3D && group.instance3d.pointScores) {
+    if (
+      group.instance3d instanceof PredictedInstance3D &&
+      group.instance3d.pointScores
+    ) {
       payload.instance_3d_point_scores = group.instance3d.pointScores;
     }
   } else if (group.points != null) {
@@ -953,11 +1098,14 @@ function serializeInstanceGroup(
     if (identityIdx >= 0) {
       payload.identity_idx = identityIdx;
     } else {
-      console.warn(`InstanceGroup references an Identity ("${group.identity.name}") not found in Labels.identities — identity will be dropped on save.`);
+      console.warn(
+        `InstanceGroup references an Identity ("${group.identity.name}") not found in Labels.identities — identity will be dropped on save.`,
+      );
     }
   }
 
-  if (group.metadata && Object.keys(group.metadata).length) payload.metadata = group.metadata;
+  if (group.metadata && Object.keys(group.metadata).length)
+    payload.metadata = group.metadata;
   return payload;
 }
 
@@ -980,7 +1128,10 @@ function pointsToDict(instance: Instance): Record<string, number[]> {
   return dict;
 }
 
-function cameraKeyForSession(camera: Camera, session: RecordingSession): string {
+function cameraKeyForSession(
+  camera: Camera,
+  session: RecordingSession,
+): string {
   return String(session.cameraGroup.cameras.indexOf(camera));
 }
 
@@ -1001,8 +1152,13 @@ function writeLabeledFrames(file: any, labels: Labels): void {
       const instanceId = instances.length;
       instanceIndex.set(instance as Instance, instanceId);
 
-      const skeletonId = Math.max(0, labels.skeletons.indexOf(instance.skeleton));
-      const trackId = instance.track ? labels.tracks.indexOf(instance.track) : -1;
+      const skeletonId = Math.max(
+        0,
+        labels.skeletons.indexOf(instance.skeleton),
+      );
+      const trackId = instance.track
+        ? labels.tracks.indexOf(instance.track)
+        : -1;
       const trackingScore = instance.trackingScore ?? 0;
       let fromPredicted = -1;
       let score = 0;
@@ -1053,7 +1209,13 @@ function writeLabeledFrames(file: any, labels: Labels): void {
     }
 
     const instanceEnd = instances.length;
-    frames.push([frameId, videoIndex, labeledFrame.frameIdx, instanceStart, instanceEnd]);
+    frames.push([
+      frameId,
+      videoIndex,
+      labeledFrame.frameIdx,
+      instanceStart,
+      instanceEnd,
+    ]);
   }
 
   for (const [instanceId, fromPredictedInstance] of predictedLinks) {
@@ -1065,7 +1227,13 @@ function writeLabeledFrames(file: any, labels: Labels): void {
     }
   }
 
-  createMatrixDataset(file, "frames", frames, ["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"], "<i8");
+  createMatrixDataset(
+    file,
+    "frames",
+    frames,
+    ["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"],
+    "<i8",
+  );
   createMatrixDataset(
     file,
     "instances",
@@ -1082,10 +1250,22 @@ function writeLabeledFrames(file: any, labels: Labels): void {
       "point_id_end",
       "tracking_score",
     ],
-    "<f8"
+    "<f8",
   );
-  createMatrixDataset(file, "points", points, ["x", "y", "visible", "complete"], "<f8");
-  createMatrixDataset(file, "pred_points", predPoints, ["x", "y", "visible", "complete", "score"], "<f8");
+  createMatrixDataset(
+    file,
+    "points",
+    points,
+    ["x", "y", "visible", "complete"],
+    "<f8",
+  );
+  createMatrixDataset(
+    file,
+    "pred_points",
+    predPoints,
+    ["x", "y", "visible", "complete", "score"],
+    "<f8",
+  );
 }
 
 function writeNegativeFrames(file: any, labels: Labels): void {
@@ -1096,7 +1276,13 @@ function writeNegativeFrames(file: any, labels: Labels): void {
     const videoIndex = Math.max(0, labels.videos.indexOf(frame.video));
     rows.push([videoIndex, frame.frameIdx]);
   }
-  createMatrixDataset(file, "negative_frames", rows, ["video_id", "frame_idx"], "<i8");
+  createMatrixDataset(
+    file,
+    "negative_frames",
+    rows,
+    ["video_id", "frame_idx"],
+    "<i8",
+  );
 }
 
 /**
@@ -1104,7 +1290,7 @@ function writeNegativeFrames(file: any, labels: Labels): void {
  */
 async function collectFramesForEmbedding(
   labels: Labels,
-  embedMode: boolean | string
+  embedMode: boolean | string,
 ): Promise<Map<number, EmbeddedVideoFrames>> {
   const result = new Map<number, EmbeddedVideoFrames>();
 
@@ -1129,7 +1315,8 @@ async function collectFramesForEmbedding(
     }
 
     if (include) {
-      if (!framesByVideo.has(videoIndex)) framesByVideo.set(videoIndex, new Set());
+      if (!framesByVideo.has(videoIndex))
+        framesByVideo.set(videoIndex, new Set());
       framesByVideo.get(videoIndex)!.add(frame.frameIdx);
     }
   }
@@ -1139,7 +1326,8 @@ async function collectFramesForEmbedding(
     for (const suggestion of labels.suggestions) {
       const videoIndex = labels.videos.indexOf(suggestion.video);
       if (videoIndex < 0) continue;
-      if (!framesByVideo.has(videoIndex)) framesByVideo.set(videoIndex, new Set());
+      if (!framesByVideo.has(videoIndex))
+        framesByVideo.set(videoIndex, new Set());
       framesByVideo.get(videoIndex)!.add(suggestion.frameIdx);
     }
   }
@@ -1164,7 +1352,8 @@ async function collectFramesForEmbedding(
 
     if (frameData.size > 0) {
       const backendFormat = (video.backendMetadata?.format as string) ?? "png";
-      const backendChannelOrder = (video.backendMetadata?.channel_order as string) ?? "RGB";
+      const backendChannelOrder =
+        (video.backendMetadata?.channel_order as string) ?? "RGB";
       result.set(videoIndex, {
         videoIndex,
         frameNumbers: sortedFrames.filter((f) => frameData.has(f)),
@@ -1197,7 +1386,7 @@ function frameToBytes(frame: unknown): Uint8Array | null {
 function writeEmbeddedVideos(
   file: any,
   labels: Labels,
-  embeddedVideoData: Map<number, EmbeddedVideoFrames>
+  embeddedVideoData: Map<number, EmbeddedVideoFrames>,
 ): void {
   const payload = labels.videos.map((video, videoIndex) => {
     const embedData = embeddedVideoData.get(videoIndex);
@@ -1213,7 +1402,9 @@ function writeEmbeddedVideos(
       // (the crop rides /video_crops and is re-applied once on read); read the
       // shape/fps from the inner backend, not the cropped facade.
       const inner =
-        video.backend instanceof CropVideoBackend ? video.backend.inner : video.backend;
+        video.backend instanceof CropVideoBackend
+          ? video.backend.inner
+          : video.backend;
       const innerShape =
         inner?.shape ??
         (video.backendMetadata?.source_shape as number[] | undefined);
@@ -1229,7 +1420,11 @@ function writeEmbeddedVideos(
         entry.source_video = { filename: video.sourceVideo.filename };
       } else if (!video.hasEmbeddedImages) {
         // If this video wasn't already embedded, save original path as source
-        entry.source_video = { filename: Array.isArray(video.filename) ? video.filename[0] : video.filename };
+        entry.source_video = {
+          filename: Array.isArray(video.filename)
+            ? video.filename[0]
+            : video.filename,
+        };
       }
       return JSON.stringify(entry);
     } else {
@@ -1283,7 +1478,7 @@ function writeEmbeddedVideos(
     });
 
     // Write frame_sizes dataset for reliable frame boundary detection
-    const frameSizes = frameBytes.map(b => b.length);
+    const frameSizes = frameBytes.map((b) => b.length);
     file.create_dataset({
       name: `${groupName}/frame_sizes`,
       data: frameSizes,
@@ -1293,11 +1488,21 @@ function writeEmbeddedVideos(
   }
 }
 
-function createMatrixDataset(file: any, name: string, rows: number[][], fieldNames: string[], dtype: string): void {
+function createMatrixDataset(
+  file: any,
+  name: string,
+  rows: number[][],
+  fieldNames: string[],
+  dtype: string,
+): void {
   const rowCount = rows.length;
   const colCount = fieldNames.length;
   // Pre-allocate typed array to avoid intermediate .flat() allocation
-  const TypedArray = dtype.includes("i") ? (dtype.includes("4") ? Int32Array : Float64Array) : Float64Array;
+  const TypedArray = dtype.includes("i")
+    ? dtype.includes("4")
+      ? Int32Array
+      : Float64Array
+    : Float64Array;
   const data = new TypedArray(rowCount * colCount);
   for (let i = 0; i < rowCount; i++) {
     const row = rows[i];
@@ -1311,7 +1516,14 @@ function createMatrixDataset(file: any, name: string, rows: number[][], fieldNam
   setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
 }
 
-function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name: string }>, instances?: Array<Instance | PredictedInstance>, contexts?: [number, number][]): void {
+function writeRois(
+  file: any,
+  rois: ROI[],
+  videos: Video[],
+  tracks: Array<{ name: string }>,
+  instances?: Array<Instance | PredictedInstance>,
+  contexts?: [number, number][],
+): void {
   if (!rois.length) return;
 
   const rows: number[][] = [];
@@ -1330,7 +1542,11 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
     wkbChunks.push(wkb);
     wkbOffset = wkbEnd;
 
-    const videoIdx = contexts ? contexts[i][0] : (roi.video ? videos.indexOf(roi.video) : -1);
+    const videoIdx = contexts
+      ? contexts[i][0]
+      : roi.video
+        ? videos.indexOf(roi.video)
+        : -1;
     const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = roi.track ? tracks.indexOf(roi.track as any) : -1;
     // Fall back to stored _instanceIdx when no live instance link (e.g., lazy mode).
@@ -1342,14 +1558,41 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
     const isPredicted = roi.isPredicted ? 1 : 0;
     const trackingScore = roi.trackingScore ?? Number.NaN;
 
-    rows.push([0, videoIdx, frameIdx, trackIdx, score, trackingScore, wkbStart, wkbEnd, instanceIdx, isPredicted]);
+    rows.push([
+      0,
+      videoIdx,
+      frameIdx,
+      trackIdx,
+      score,
+      trackingScore,
+      wkbStart,
+      wkbEnd,
+      instanceIdx,
+      isPredicted,
+    ]);
     categories.push(roi.category);
     names.push(roi.name);
     sources.push(roi.source);
   }
 
-  createMatrixDataset(file, "rois", rows,
-    ["annotation_type", "video", "frame_idx", "track", "score", "tracking_score", "wkb_start", "wkb_end", "instance", "is_predicted"], "<f8");
+  createMatrixDataset(
+    file,
+    "rois",
+    rows,
+    [
+      "annotation_type",
+      "video",
+      "frame_idx",
+      "track",
+      "score",
+      "tracking_score",
+      "wkb_start",
+      "wkb_end",
+      "instance",
+      "is_predicted",
+    ],
+    "<f8",
+  );
 
   // Write string metadata as datasets at root level (v1.9+)
   writeStringDataset(file, "roi_categories", categories);
@@ -1364,7 +1607,12 @@ function writeRois(file: any, rois: ROI[], videos: Video[], tracks: Array<{ name
     wkbFlat.set(chunk, offset);
     offset += chunk.length;
   }
-  file.create_dataset({ name: "roi_wkb", data: wkbFlat, shape: [wkbFlat.length], dtype: "<B" });
+  file.create_dataset({
+    name: "roi_wkb",
+    data: wkbFlat,
+    shape: [wkbFlat.length],
+    dtype: "<B",
+  });
 }
 
 function writeMasks(
@@ -1414,23 +1662,41 @@ function writeMasks(
     const videoIdx = contexts ? contexts[i][0] : -1;
     const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = mask.track ? tracks.indexOf(mask.track as any) : -1;
-    const score = mask.isPredicted ? (mask as PredictedSegmentationMask).score : Number.NaN;
+    const score = mask.isPredicted
+      ? (mask as PredictedSegmentationMask).score
+      : Number.NaN;
     const isPredicted = mask.isPredicted ? 1 : 0;
-    const instanceIdx = mask.instance ? instances.indexOf(mask.instance as Instance) : (mask._instanceIdx ?? -1);
+    const instanceIdx = mask.instance
+      ? instances.indexOf(mask.instance as Instance)
+      : (mask._instanceIdx ?? -1);
     const maskTrackingScore = mask.trackingScore ?? Number.NaN;
 
     // Resolve the from_predicted provenance link to a global index into the
     // flat mask list. -1 sentinel when there is no link or the source
     // prediction is absent from the saved list (Map miss). Only user masks
     // carry fromPredicted; predicted masks always resolve to -1.
-    const fromPredictedSrc = (mask as UserSegmentationMask).fromPredicted ?? null;
+    const fromPredictedSrc =
+      (mask as UserSegmentationMask).fromPredicted ?? null;
     const fromPredictedIdx =
       fromPredictedSrc != null ? (maskIdToIdx.get(fromPredictedSrc) ?? -1) : -1;
 
     rows.push([
-      mask.height, mask.width, 2, videoIdx, frameIdx, trackIdx,
-      score, rleStart, rleEnd, isPredicted, instanceIdx, maskTrackingScore,
-      mask.scale[0], mask.scale[1], mask.offset[0], mask.offset[1],
+      mask.height,
+      mask.width,
+      2,
+      videoIdx,
+      frameIdx,
+      trackIdx,
+      score,
+      rleStart,
+      rleEnd,
+      isPredicted,
+      instanceIdx,
+      maskTrackingScore,
+      mask.scale[0],
+      mask.scale[1],
+      mask.offset[0],
+      mask.offset[1],
       fromPredictedIdx,
     ]);
     categories.push(mask.category);
@@ -1441,21 +1707,56 @@ function writeMasks(
     if (mask.isPredicted) {
       const pm = mask as PredictedSegmentationMask;
       if (pm.scoreMap) {
-        const smBytes = new Uint8Array(pm.scoreMap.buffer, pm.scoreMap.byteOffset, pm.scoreMap.byteLength);
+        const smBytes = new Uint8Array(
+          pm.scoreMap.buffer,
+          pm.scoreMap.byteOffset,
+          pm.scoreMap.byteLength,
+        );
         const compressed = deflate(smBytes);
         const smH = pm.scoreMap.length / mask.width;
         if (!Number.isInteger(smH)) {
-          throw new Error(`Score map size ${pm.scoreMap.length} not divisible by width ${mask.width}`);
+          throw new Error(
+            `Score map size ${pm.scoreMap.length} not divisible by width ${mask.width}`,
+          );
         }
-        scoreMapIndexRows.push([i, smOffset, smOffset + compressed.length, smH, mask.width]);
+        scoreMapIndexRows.push([
+          i,
+          smOffset,
+          smOffset + compressed.length,
+          smH,
+          mask.width,
+        ]);
         scoreMapChunks.push(compressed);
         smOffset += compressed.length;
       }
     }
   }
 
-  createMatrixDataset(file, "masks", rows,
-    ["height", "width", "annotation_type", "video", "frame_idx", "track", "score", "rle_start", "rle_end", "is_predicted", "instance", "tracking_score", "scale_x", "scale_y", "offset_x", "offset_y", "from_predicted"], "<f8");
+  createMatrixDataset(
+    file,
+    "masks",
+    rows,
+    [
+      "height",
+      "width",
+      "annotation_type",
+      "video",
+      "frame_idx",
+      "track",
+      "score",
+      "rle_start",
+      "rle_end",
+      "is_predicted",
+      "instance",
+      "tracking_score",
+      "scale_x",
+      "scale_y",
+      "offset_x",
+      "offset_y",
+      "from_predicted",
+    ],
+    "<f8",
+  );
 
   // Write string metadata as datasets at root level (v1.9+)
   writeStringDataset(file, "mask_categories", categories);
@@ -1470,12 +1771,22 @@ function writeMasks(
     rleFlat.set(chunk, offset);
     offset += chunk.length;
   }
-  file.create_dataset({ name: "mask_rle", data: rleFlat, shape: [rleFlat.length], dtype: "<B" });
+  file.create_dataset({
+    name: "mask_rle",
+    data: rleFlat,
+    shape: [rleFlat.length],
+    dtype: "<B",
+  });
 
   // Write score maps
   if (scoreMapIndexRows.length > 0) {
-    createMatrixDataset(file, "mask_score_map_index", scoreMapIndexRows,
-      ["mask_idx", "data_start", "data_end", "height", "width"], "<f8");
+    createMatrixDataset(
+      file,
+      "mask_score_map_index",
+      scoreMapIndexRows,
+      ["mask_idx", "data_start", "data_end", "height", "width"],
+      "<f8",
+    );
     const totalSm = scoreMapChunks.reduce((sum, c) => sum + c.length, 0);
     const smFlat = new Uint8Array(totalSm);
     let smOff = 0;
@@ -1483,7 +1794,12 @@ function writeMasks(
       smFlat.set(chunk, smOff);
       smOff += chunk.length;
     }
-    file.create_dataset({ name: "mask_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
+    file.create_dataset({
+      name: "mask_score_maps",
+      data: smFlat,
+      shape: [smFlat.length],
+      dtype: "<B",
+    });
   }
 }
 
@@ -1507,7 +1823,9 @@ function writeBboxes(
     const videoIdx = contexts ? contexts[i][0] : -1;
     const frameIdx = contexts ? contexts[i][1] : -1;
     const trackIdx = bbox.track ? tracks.indexOf(bbox.track as any) : -1;
-    const score = bbox.isPredicted ? (bbox as PredictedBoundingBox).score : Number.NaN;
+    const score = bbox.isPredicted
+      ? (bbox as PredictedBoundingBox).score
+      : Number.NaN;
     // Fall back to stored _instanceIdx when no live instance link (e.g., lazy mode).
     const instanceIdx = bbox.instance
       ? instances.indexOf(bbox.instance as Instance)
@@ -1533,8 +1851,25 @@ function writeBboxes(
     sources.push(bbox.source);
   }
 
-  createMatrixDataset(file, "bboxes", rows,
-    ["x1", "y1", "x2", "y2", "angle", "video", "frame_idx", "track", "score", "instance", "tracking_score"], "<f8");
+  createMatrixDataset(
+    file,
+    "bboxes",
+    rows,
+    [
+      "x1",
+      "y1",
+      "x2",
+      "y2",
+      "angle",
+      "video",
+      "frame_idx",
+      "track",
+      "score",
+      "instance",
+      "tracking_score",
+    ],
+    "<f8",
+  );
 
   // Write string metadata as datasets at root level (v1.9+)
   writeStringDataset(file, "bbox_categories", categories);
@@ -1578,7 +1913,11 @@ function writeLabelImages(
     const frameIdx = contexts ? contexts[liIdx][1] : -1;
 
     // Compress pixel data: Int32Array -> raw bytes -> zlib
-    const pixelBytes = new Uint8Array(li.data.buffer, li.data.byteOffset, li.data.byteLength);
+    const pixelBytes = new Uint8Array(
+      li.data.buffer,
+      li.data.byteOffset,
+      li.data.byteLength,
+    );
     const compressed = deflate(pixelBytes);
     const dataStart = dataOffset;
     const dataEnd = dataOffset + compressed.length;
@@ -1586,7 +1925,9 @@ function writeLabelImages(
     dataOffset = dataEnd;
 
     const isPredicted = li.isPredicted ? 1 : 0;
-    const liScore = li.isPredicted ? (li as PredictedLabelImage).score : Number.NaN;
+    const liScore = li.isPredicted
+      ? (li as PredictedLabelImage).score
+      : Number.NaN;
 
     // Per-object entries
     const objectsStart = objectsOffset;
@@ -1601,28 +1942,61 @@ function writeLabelImages(
         instanceIdx = info._instanceIdx;
       }
       const objScore = info.score != null ? info.score : Number.NaN;
-      const objTrackingScore = info.trackingScore != null ? info.trackingScore : Number.NaN;
-      objectRows.push([labelId, trackIdx, instanceIdx, objScore, objTrackingScore]);
+      const objTrackingScore =
+        info.trackingScore != null ? info.trackingScore : Number.NaN;
+      objectRows.push([
+        labelId,
+        trackIdx,
+        instanceIdx,
+        objScore,
+        objTrackingScore,
+      ]);
       objectCategories.push(info.category);
       objectNames.push(info.name);
       objectsOffset++;
     }
 
-    rows.push([videoIdx, frameIdx, li.height, li.width, li.nObjects, objectsStart, dataStart, dataEnd, isPredicted, liScore,
-      li.scale[0], li.scale[1], li.offset[0], li.offset[1]]);
+    rows.push([
+      videoIdx,
+      frameIdx,
+      li.height,
+      li.width,
+      li.nObjects,
+      objectsStart,
+      dataStart,
+      dataEnd,
+      isPredicted,
+      liScore,
+      li.scale[0],
+      li.scale[1],
+      li.offset[0],
+      li.offset[1],
+    ]);
     sources.push(li.source);
 
     // Collect score maps for predicted label images
     if (li.isPredicted) {
       const pli = li as PredictedLabelImage;
       if (pli.scoreMap) {
-        const smBytes = new Uint8Array(pli.scoreMap.buffer, pli.scoreMap.byteOffset, pli.scoreMap.byteLength);
+        const smBytes = new Uint8Array(
+          pli.scoreMap.buffer,
+          pli.scoreMap.byteOffset,
+          pli.scoreMap.byteLength,
+        );
         const smCompressed = deflate(smBytes);
         const smH = pli.scoreMap.length / li.width;
         if (!Number.isInteger(smH)) {
-          throw new Error(`Score map size ${pli.scoreMap.length} not divisible by width ${li.width}`);
+          throw new Error(
+            `Score map size ${pli.scoreMap.length} not divisible by width ${li.width}`,
+          );
         }
-        smIndexRows.push([liIdx, smOffset, smOffset + smCompressed.length, smH, li.width]);
+        smIndexRows.push([
+          liIdx,
+          smOffset,
+          smOffset + smCompressed.length,
+          smH,
+          li.width,
+        ]);
         smChunks.push(smCompressed);
         smOffset += smCompressed.length;
       }
@@ -1630,17 +2004,41 @@ function writeLabelImages(
   }
 
   // Write main metadata table
-  createMatrixDataset(file, "label_images", rows,
-    ["video", "frame_idx", "height", "width", "n_objects", "objects_start", "data_start", "data_end", "is_predicted", "score",
-     "scale_x", "scale_y", "offset_x", "offset_y"], "<f8");
+  createMatrixDataset(
+    file,
+    "label_images",
+    rows,
+    [
+      "video",
+      "frame_idx",
+      "height",
+      "width",
+      "n_objects",
+      "objects_start",
+      "data_start",
+      "data_end",
+      "is_predicted",
+      "score",
+      "scale_x",
+      "scale_y",
+      "offset_x",
+      "offset_y",
+    ],
+    "<f8",
+  );
 
   // Write string metadata as datasets at root level (v1.9+)
   writeStringDataset(file, "label_image_sources", sources);
 
   // Write objects table (if any objects exist)
   if (objectRows.length > 0) {
-    createMatrixDataset(file, "label_image_objects", objectRows,
-      ["label_id", "track", "instance", "score", "tracking_score"], "<f8");
+    createMatrixDataset(
+      file,
+      "label_image_objects",
+      objectRows,
+      ["label_id", "track", "instance", "score", "tracking_score"],
+      "<f8",
+    );
     // Write string metadata as datasets at root level (v1.9+)
     writeStringDataset(file, "label_image_obj_categories", objectCategories);
     writeStringDataset(file, "label_image_obj_names", objectNames);
@@ -1654,12 +2052,22 @@ function writeLabelImages(
     dataFlat.set(chunk, offset);
     offset += chunk.length;
   }
-  file.create_dataset({ name: "label_image_data", data: dataFlat, shape: [dataFlat.length], dtype: "<B" });
+  file.create_dataset({
+    name: "label_image_data",
+    data: dataFlat,
+    shape: [dataFlat.length],
+    dtype: "<B",
+  });
 
   // Write score maps
   if (smIndexRows.length > 0) {
-    createMatrixDataset(file, "label_image_score_map_index", smIndexRows,
-      ["li_idx", "data_start", "data_end", "height", "width"], "<f8");
+    createMatrixDataset(
+      file,
+      "label_image_score_map_index",
+      smIndexRows,
+      ["li_idx", "data_start", "data_end", "height", "width"],
+      "<f8",
+    );
     const totalSm = smChunks.reduce((sum, c) => sum + c.length, 0);
     const smFlat = new Uint8Array(totalSm);
     let smOff = 0;
@@ -1667,7 +2075,12 @@ function writeLabelImages(
       smFlat.set(chunk, smOff);
       smOff += chunk.length;
     }
-    file.create_dataset({ name: "label_image_score_maps", data: smFlat, shape: [smFlat.length], dtype: "<B" });
+    file.create_dataset({
+      name: "label_image_score_maps",
+      data: smFlat,
+      shape: [smFlat.length],
+      dtype: "<B",
+    });
   }
 }
 
@@ -1700,17 +2113,40 @@ function writeCentroids(
     const trackingScore = c.trackingScore ?? Number.NaN;
 
     rows.push([
-      c.x, c.y, c.z ?? Number.NaN,
-      videoIdx, frameIdx, trackIdx, instanceIdx,
-      isPredicted, score, trackingScore,
+      c.x,
+      c.y,
+      c.z ?? Number.NaN,
+      videoIdx,
+      frameIdx,
+      trackIdx,
+      instanceIdx,
+      isPredicted,
+      score,
+      trackingScore,
     ]);
     categories.push(c.category);
     names.push(c.name);
     sources.push(c.source);
   }
 
-  createMatrixDataset(file, "centroids", rows,
-    ["x", "y", "z", "video", "frame_idx", "track", "instance", "is_predicted", "score", "tracking_score"], "<f8");
+  createMatrixDataset(
+    file,
+    "centroids",
+    rows,
+    [
+      "x",
+      "y",
+      "z",
+      "video",
+      "frame_idx",
+      "track",
+      "instance",
+      "is_predicted",
+      "score",
+      "tracking_score",
+    ],
+    "<f8",
+  );
 
   writeStringDataset(file, "centroid_categories", categories);
   writeStringDataset(file, "centroid_names", names);

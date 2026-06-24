@@ -57,7 +57,7 @@ describe("getFieldNamesFromMeta — h5wasm 0.10.x array-of-pairs compound dtype 
         shape: [1, 4],
         dtype:
           "{'names':['x','y','visible','complete'],'formats':['<d','<d','|b1','|b1']}",
-      })
+      }),
     ).toEqual(["x", "y", "visible", "complete"]);
   });
 

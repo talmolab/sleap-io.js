@@ -30,7 +30,13 @@ const IMAGE_FORMAT_CODES: Record<number, string> = {
   2: "png", // Color PNG compressed
 };
 
-const COMPRESSED_CODECS = new Set(["monojpg", "jpg", "jbrgb", "monopng", "png"]);
+const COMPRESSED_CODECS = new Set([
+  "monojpg",
+  "jpg",
+  "jbrgb",
+  "monopng",
+  "png",
+]);
 const BAYER_CODECS = new Set(["brgb8", "jbrgb"]);
 
 const HEADER_SIZE = 1024;
@@ -81,7 +87,7 @@ let fileByteSourceFactory: FileByteSourceFactory | null = null;
 
 /** Register the Node `node:fs`-backed byte source factory (see `seq-node.ts`). */
 export function setSeqFileByteSourceFactory(
-  factory: FileByteSourceFactory | null
+  factory: FileByteSourceFactory | null,
 ): void {
   fileByteSourceFactory = factory;
 }
@@ -90,7 +96,7 @@ function createFileByteSource(path: string): ByteSource {
   if (!fileByteSourceFactory) {
     throw new Error(
       "Reading .seq files from a path requires the Node entry point " +
-        "(`@talmolab/sleap-io.js`). In the browser, pass a File/Blob instead."
+        "(`@talmolab/sleap-io.js`). In the browser, pass a File/Blob instead.",
     );
   }
   return fileByteSourceFactory(path);
@@ -120,7 +126,9 @@ export class SeqHeader {
 
   /** Human-readable codec name (e.g. `"monoraw"`). */
   get codecName(): string {
-    return IMAGE_FORMAT_CODES[this.imageFormat] ?? `unknown(${this.imageFormat})`;
+    return (
+      IMAGE_FORMAT_CODES[this.imageFormat] ?? `unknown(${this.imageFormat})`
+    );
   }
 
   /** Whether frames use variable-length compression (JPEG/PNG). */
@@ -148,7 +156,7 @@ export class SeqHeader {
     if (magic !== MAGIC) {
       throw new Error(
         `Invalid .seq magic: 0x${magic.toString(16).toUpperCase()} ` +
-          `(expected 0x${MAGIC.toString(16).toUpperCase()})`
+          `(expected 0x${MAGIC.toString(16).toUpperCase()})`,
       );
     }
 
@@ -232,7 +240,7 @@ export class SeqIndex {
    */
   static async buildCompressed(
     source: ByteSource,
-    header: SeqHeader
+    header: SeqHeader,
   ): Promise<SeqIndex> {
     const fileSize = await source.size();
     const nMax = header.numFrames > 0 ? header.numFrames : 10_000_000;
@@ -268,7 +276,7 @@ export class SeqIndex {
           const candSize = new DataView(
             probe.buffer,
             probe.byteOffset,
-            6
+            6,
           ).getUint32(0, true);
           const m0 = probe[4];
           const m1 = probe[5];
@@ -291,10 +299,11 @@ export class SeqIndex {
       // (size + magic) and require all 6 to be present, matching Python's scan.
       const check = await source.read(nextOffset, 6);
       if (check.length < 6) break;
-      const checkSize = new DataView(check.buffer, check.byteOffset, 6).getUint32(
-        0,
-        true
-      );
+      const checkSize = new DataView(
+        check.buffer,
+        check.byteOffset,
+        6,
+      ).getUint32(0, true);
       if (checkSize === 0 || checkSize > fileSize) break;
 
       offsets.push(nextOffset);
@@ -308,30 +317,38 @@ export class SeqIndex {
 // Image decoding helpers
 // =============================================================================
 
-const hasGlobalImageData = typeof globalThis !== "undefined" &&
+const hasGlobalImageData =
+  typeof globalThis !== "undefined" &&
   typeof (globalThis as { ImageData?: unknown }).ImageData !== "undefined";
 
 /** Construct an `ImageData` from RGBA bytes, in browser or Node (skia-canvas). */
 async function makeImageData(
   rgba: Uint8ClampedArray<ArrayBuffer>,
   width: number,
-  height: number
+  height: number,
 ): Promise<ImageData> {
   if (hasGlobalImageData) {
     return new ImageData(rgba, width, height);
   }
   try {
     const sc = await import("skia-canvas");
-    return new (sc as unknown as {
-      ImageData: new (
-        d: Uint8ClampedArray<ArrayBuffer>,
-        w: number,
-        h: number
-      ) => ImageData;
-    }).ImageData(rgba, width, height);
+    return new (
+      sc as unknown as {
+        ImageData: new (
+          d: Uint8ClampedArray<ArrayBuffer>,
+          w: number,
+          h: number,
+        ) => ImageData;
+      }
+    ).ImageData(rgba, width, height);
   } catch {
     // Last-resort duck-typed frame: consumers only read width/height/data.
-    return { data: rgba, width, height, colorSpace: "srgb" } as unknown as ImageData;
+    return {
+      data: rgba,
+      width,
+      height,
+      colorSpace: "srgb",
+    } as unknown as ImageData;
   }
 }
 
@@ -357,10 +374,13 @@ async function decodeEncoded(bytes: Uint8Array): Promise<ImageData> {
     const src =
       typeof Buffer !== "undefined" ? Buffer.from(bytes) : (bytes as unknown);
     const img = await (
-      sc as unknown as { loadImage: (b: unknown) => Promise<{ width: number; height: number }> }
+      sc as unknown as {
+        loadImage: (b: unknown) => Promise<{ width: number; height: number }>;
+      }
     ).loadImage(src);
-    const Canvas = (sc as unknown as { Canvas: new (w: number, h: number) => unknown })
-      .Canvas;
+    const Canvas = (
+      sc as unknown as { Canvas: new (w: number, h: number) => unknown }
+    ).Canvas;
     const canvas = new Canvas(img.width, img.height) as {
       getContext: (t: string) => {
         drawImage: (i: unknown, x: number, y: number) => void;
@@ -374,7 +394,7 @@ async function decodeEncoded(bytes: Uint8Array): Promise<ImageData> {
     throw new Error(
       "Decoding JPEG/PNG frames in .seq files requires an image decoder " +
         "(a browser, or the optional `skia-canvas` package on Node). " +
-        `Original error: ${(err as Error).message}`
+        `Original error: ${(err as Error).message}`,
     );
   }
 }
@@ -407,7 +427,7 @@ export class SeqVideoBackend implements VideoBackend {
     source: ByteSource,
     header: SeqHeader,
     index: SeqIndex,
-    fps: number | undefined
+    fps: number | undefined,
   ) {
     this.filename = filename;
     this.source = source;
@@ -421,7 +441,9 @@ export class SeqVideoBackend implements VideoBackend {
   /** Open a `.seq` file from a path (Node) or a `File`/`Blob` (browser). */
   static async create(source: string | File | Blob): Promise<SeqVideoBackend> {
     const isBlob = typeof Blob !== "undefined" && source instanceof Blob;
-    const filename = isBlob ? ((source as File).name ?? "") : (source as string);
+    const filename = isBlob
+      ? ((source as File).name ?? "")
+      : (source as string);
     const byteSource = isBlob
       ? new BlobByteSource(source as Blob)
       : createFileByteSource(source as string);
@@ -431,14 +453,14 @@ export class SeqVideoBackend implements VideoBackend {
       if (BAYER_CODECS.has(header.codecName)) {
         throw new Error(
           `Bayer codec '${header.codecName}' is not supported in .seq files. ` +
-            "Convert the file to a standard format first."
+            "Convert the file to a standard format first.",
         );
       }
       const index = header.isCompressed
         ? await SeqIndex.buildCompressed(byteSource, header)
         : SeqIndex.buildUncompressed(header);
       const fps = await computeFps(byteSource, header, index, (i, h) =>
-        readTimestamp(byteSource, h, index, i)
+        readTimestamp(byteSource, h, index, i),
       );
       return new SeqVideoBackend(filename, byteSource, header, index, fps);
     } catch (err) {
@@ -462,7 +484,12 @@ export class SeqVideoBackend implements VideoBackend {
     if (idx < 0) idx = this.index.numFrames + idx;
     if (idx < 0 || idx >= this.index.numFrames) return null;
 
-    const data = await readFrameData(this.source, this.headerData, this.index, idx);
+    const data = await readFrameData(
+      this.source,
+      this.headerData,
+      this.index,
+      idx,
+    );
     return decodeFrame(this.headerData, data);
   }
 
@@ -473,7 +500,9 @@ export class SeqVideoBackend implements VideoBackend {
   async getTimestamps(): Promise<number[]> {
     const out: number[] = [];
     for (let i = 0; i < this.index.numFrames; i++) {
-      out.push(await readTimestamp(this.source, this.headerData, this.index, i));
+      out.push(
+        await readTimestamp(this.source, this.headerData, this.index, i),
+      );
     }
     return out;
   }
@@ -484,7 +513,7 @@ export class SeqVideoBackend implements VideoBackend {
     if (idx < 0) idx = this.index.numFrames + idx;
     if (idx < 0 || idx >= this.index.numFrames) {
       throw new Error(
-        `Frame ${frameIndex} out of range [0, ${this.index.numFrames})`
+        `Frame ${frameIndex} out of range [0, ${this.index.numFrames})`,
       );
     }
     return readTimestamp(this.source, this.headerData, this.index, idx);
@@ -514,10 +543,13 @@ export class SeqVideoBackend implements VideoBackend {
 /** Read the compressed frame's leading 4-byte size field (includes itself). */
 async function readCompressedFrameSize(
   source: ByteSource,
-  offset: number
+  offset: number,
 ): Promise<number> {
   const sizeBytes = await source.read(offset, 4);
-  return new DataView(sizeBytes.buffer, sizeBytes.byteOffset, 4).getUint32(0, true);
+  return new DataView(sizeBytes.buffer, sizeBytes.byteOffset, 4).getUint32(
+    0,
+    true,
+  );
 }
 
 /** Read the raw (possibly compressed) bytes of a frame. */
@@ -525,7 +557,7 @@ async function readFrameData(
   source: ByteSource,
   header: SeqHeader,
   index: SeqIndex,
-  frameIdx: number
+  frameIdx: number,
 ): Promise<Uint8Array> {
   const offset = index.frameOffset(frameIdx);
   if (header.isCompressed) {
@@ -540,7 +572,7 @@ async function readTimestamp(
   source: ByteSource,
   header: SeqHeader,
   index: SeqIndex,
-  frameIdx: number
+  frameIdx: number,
 ): Promise<number> {
   // The timestamp directly follows the image data. Its position is nominal in
   // both cases (matching Python's value for well-formed files) — no need to read
@@ -565,7 +597,10 @@ async function readTimestamp(
 }
 
 /** Decode raw frame bytes into an RGBA `ImageData`. */
-async function decodeFrame(header: SeqHeader, data: Uint8Array): Promise<ImageData> {
+async function decodeFrame(
+  header: SeqHeader,
+  data: Uint8Array,
+): Promise<ImageData> {
   const codec = header.codecName;
   const h = header.height;
   const w = header.width;
@@ -617,7 +652,7 @@ async function computeFps(
   source: ByteSource,
   header: SeqHeader,
   index: SeqIndex,
-  read: (i: number, h: SeqHeader) => Promise<number>
+  read: (i: number, h: SeqHeader) => Promise<number>,
 ): Promise<number | undefined> {
   const fallback = header.fps >= 1.0 ? header.fps : undefined;
   try {

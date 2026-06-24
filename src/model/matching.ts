@@ -581,10 +581,7 @@ export function _getEffectiveShape(
  * (missing metadata). Compares ONLY (frames, height, width) — channels
  * (index 3) are EXCLUDED.
  */
-export function shapesCompatible(
-  video1: Video,
-  video2: Video,
-): boolean | null {
+export function shapesCompatible(video1: Video, video2: Video): boolean | null {
   const shape1 = _getEffectiveShape(video1);
   const shape2 = _getEffectiveShape(video2);
 
@@ -1088,10 +1085,7 @@ export function _getEmbeddedFrameIndices(video: Video): number[] | null {
   if (backend == null) {
     return null;
   }
-  if (
-    "embedded_frame_inds" in backend &&
-    backend.embedded_frame_inds != null
-  ) {
+  if ("embedded_frame_inds" in backend && backend.embedded_frame_inds != null) {
     return [...backend.embedded_frame_inds];
   }
   if ("frame_map" in backend && backend.frame_map) {
@@ -1150,7 +1144,11 @@ export function _toGrayscaleFloat(frame: VideoFrame): {
   data: Float32Array;
 } {
   // Only ImageData carries width/height + per-channel pixel data.
-  const img = frame as { width?: number; height?: number; data?: ArrayLike<number> };
+  const img = frame as {
+    width?: number;
+    height?: number;
+    data?: ArrayLike<number>;
+  };
   if (
     typeof img.width === "number" &&
     typeof img.height === "number" &&
@@ -1271,9 +1269,7 @@ export class SkeletonMatcher {
     options: { requireSameOrder?: boolean; minOverlap?: number } = {},
   ) {
     this.method =
-      typeof method === "string"
-        ? toSkeletonMatchMethod(method)
-        : method;
+      typeof method === "string" ? toSkeletonMatchMethod(method) : method;
     this.requireSameOrder = options.requireSameOrder ?? false;
     this.minOverlap = options.minOverlap ?? 0.5;
   }
@@ -1329,9 +1325,7 @@ export class InstanceMatcher {
     options: { threshold?: number } = {},
   ) {
     this.method =
-      typeof method === "string"
-        ? toInstanceMatchMethod(method)
-        : method;
+      typeof method === "string" ? toInstanceMatchMethod(method) : method;
     this.threshold = options.threshold ?? 5.0;
   }
 

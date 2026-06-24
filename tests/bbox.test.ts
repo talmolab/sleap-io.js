@@ -1,10 +1,16 @@
 import { describe, it, expect } from "./bun-test";
-import { BoundingBox, UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
+import {
+  BoundingBox,
+  UserBoundingBox,
+  PredictedBoundingBox,
+} from "../src/model/bbox.js";
 import "../src/model/mask.js"; // Ensure mask factory is registered
 
 describe("BoundingBox", () => {
   it("is abstract — cannot be instantiated directly", () => {
-    expect(() => new (BoundingBox as any)({ x1: 0, y1: 10, x2: 100, y2: 90 })).toThrow(TypeError);
+    expect(
+      () => new (BoundingBox as any)({ x1: 0, y1: 10, x2: 100, y2: 90 }),
+    ).toThrow(TypeError);
   });
 
   it("constructs with defaults", () => {
@@ -58,7 +64,10 @@ describe("BoundingBox", () => {
 
   it("corners handles rotation", () => {
     const bb = new UserBoundingBox({
-      x1: -1, y1: -1, x2: 1, y2: 1,
+      x1: -1,
+      y1: -1,
+      x2: 1,
+      y2: 1,
       angle: Math.PI / 4, // 45 degrees
     });
     expect(bb.isRotated).toBe(true);
@@ -120,7 +129,11 @@ describe("BoundingBox", () => {
 describe("PredictedBoundingBox", () => {
   it("has score and isPredicted", () => {
     const bb = new PredictedBoundingBox({
-      x1: 0, y1: 10, x2: 100, y2: 90, score: 0.95,
+      x1: 0,
+      y1: 10,
+      x2: 100,
+      y2: 90,
+      score: 0.95,
     });
     expect(bb.score).toBe(0.95);
     expect(bb.isPredicted).toBe(true);

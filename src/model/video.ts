@@ -62,7 +62,7 @@ export interface CropOptions {
  */
 export function resolveCropRect(
   crop?: CropRect | null,
-  opts: CropOptions = {}
+  opts: CropOptions = {},
 ): CropRect {
   const { bbox, roi, center, size, margin = 0 } = opts;
 
@@ -70,7 +70,7 @@ export function resolveCropRect(
   if ((center == null) !== (size == null)) {
     throw new Error(
       "center and size must be provided together for a centered window; " +
-        `got center=${JSON.stringify(center)}, size=${JSON.stringify(size)}.`
+        `got center=${JSON.stringify(center)}, size=${JSON.stringify(size)}.`,
     );
   }
   const hasCenterSize = center != null && size != null;
@@ -83,7 +83,7 @@ export function resolveCropRect(
     throw new Error(
       "Exactly one of {crop, bbox, roi, (center, size)} must be provided " +
         `to specify a crop region, got ${nSpecs}. For a centered window, ` +
-        "pass both center and size."
+        "pass both center and size.",
     );
   }
 
@@ -122,7 +122,7 @@ export function resolveCropRect(
   if (x2 < x1 || y2 < y1) {
     throw new Error(
       `Inverted crop rect: x2 (${x2}) < x1 (${x1}) or y2 (${y2}) < y1 (${y1}). ` +
-        "Crop bounds must satisfy x2 >= x1 and y2 >= y1."
+        "Crop bounds must satisfy x2 >= x1 and y2 >= y1.",
     );
   }
   return [x1, y1, x2, y2];
@@ -200,7 +200,14 @@ export class Video {
   }
 
   get shape(): [number, number, number, number] | null {
-    return this._shape ?? this.backend?.shape ?? (this.backendMetadata.shape as [number, number, number, number] | undefined) ?? null;
+    return (
+      this._shape ??
+      this.backend?.shape ??
+      (this.backendMetadata.shape as
+        | [number, number, number, number]
+        | undefined) ??
+      null
+    );
   }
 
   set shape(value: [number, number, number, number] | null) {
@@ -208,7 +215,12 @@ export class Video {
   }
 
   get fps(): number | null {
-    return this._fps ?? this.backend?.fps ?? (this.backendMetadata.fps as number | undefined) ?? null;
+    return (
+      this._fps ??
+      this.backend?.fps ??
+      (this.backendMetadata.fps as number | undefined) ??
+      null
+    );
   }
 
   set fps(value: number | null) {
@@ -258,7 +270,7 @@ export class Video {
     if (this.backend == null) {
       throw new Error(
         "Cannot crop a video with no open backend. Provide a backend (the JS " +
-          "port has no filesystem auto-open) before cropping."
+          "port has no filesystem auto-open) before cropping.",
       );
     }
     const fill: Fill = opts.fill ?? 0;
@@ -320,13 +332,13 @@ export class Video {
   static fromCrop(
     video: Video | string,
     crop?: CropRect | null,
-    opts: CropOptions = {}
+    opts: CropOptions = {},
   ): Video {
     if (typeof video === "string") {
       throw new Error(
         "Video.fromCrop does not support opening a path string in the JS port " +
           "(there is no filesystem auto-open). Construct a Video with a backend " +
-          "first, then call Video.fromCrop(video, ...) or video.crop(...)."
+          "first, then call Video.fromCrop(video, ...) or video.crop(...).",
       );
     }
     return video.crop(crop, opts);
@@ -387,7 +399,7 @@ export class Video {
   toCropCoords<T extends FlatPoints>(points: T): T;
   toCropCoords(points: PointPairs): [number, number][];
   toCropCoords(
-    points: FlatPoints | PointPairs
+    points: FlatPoints | PointPairs,
   ): FlatPoints | [number, number][] {
     const crop = this._cropTuple();
     if (crop === null) {
@@ -406,7 +418,7 @@ export class Video {
   toSourceCoords<T extends FlatPoints>(points: T): T;
   toSourceCoords(points: PointPairs): [number, number][];
   toSourceCoords(
-    points: FlatPoints | PointPairs
+    points: FlatPoints | PointPairs,
   ): FlatPoints | [number, number][] {
     const crop = this._cropTuple();
     if (crop === null) {
@@ -535,11 +547,17 @@ export class Video {
     // present (real key-presence check, not truthiness).
     const selfShape =
       this.backend === null && hasOwn(this.backendMetadata, "shape")
-        ? (this.backendMetadata.shape as [number, number, number, number] | null | undefined)
+        ? (this.backendMetadata.shape as
+            | [number, number, number, number]
+            | null
+            | undefined)
         : this.shape;
     const otherShape =
       other.backend === null && hasOwn(other.backendMetadata, "shape")
-        ? (other.backendMetadata.shape as [number, number, number, number] | null | undefined)
+        ? (other.backendMetadata.shape as
+            | [number, number, number, number]
+            | null
+            | undefined)
         : other.shape;
 
     if (selfShape == null || otherShape == null) {
@@ -630,7 +648,7 @@ export class Video {
 
     // Keep only this video's images whose basename is not a duplicate.
     const deduplicatedPaths = (this.filename as string[]).filter(
-      (f) => !otherBasenames.has(basename(f))
+      (f) => !otherBasenames.has(basename(f)),
     );
 
     if (deduplicatedPaths.length === 0) {
@@ -703,7 +721,7 @@ export class Video {
  */
 function makeImageSequenceVideo(
   paths: string[],
-  grayscale: boolean | null
+  grayscale: boolean | null,
 ): Video {
   const backendMetadata: Record<string, unknown> = {};
   if (grayscale != null) {
@@ -724,12 +742,12 @@ function makeImageSequenceVideo(
  * passthrough (Python `points.copy()`).
  */
 function copyPoints(
-  points: FlatPoints | PointPairs
+  points: FlatPoints | PointPairs,
 ): FlatPoints | [number, number][] {
   if (Array.isArray(points)) {
     if (points.length > 0 && Array.isArray(points[0])) {
       return (points as unknown as PointPairs).map(
-        ([x, y]) => [x, y] as [number, number]
+        ([x, y]) => [x, y] as [number, number],
       );
     }
     return (points as number[]).slice();
@@ -769,7 +787,7 @@ function arraysEqual(a: string[], b: string[]): boolean {
 /** Component-wise equality of two (possibly null) 4-tuple shapes. */
 function shapeTupleEqual(
   a: [number, number, number, number] | null,
-  b: [number, number, number, number] | null
+  b: [number, number, number, number] | null,
 ): boolean {
   if (a === null || b === null) return a === b;
   if (a.length !== b.length) return false;

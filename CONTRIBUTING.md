@@ -18,8 +18,8 @@ publisher does not support).
 bun install              # install deps from the committed bun.lock
 bun run build            # bundle src/ to dist/ with tsup (ESM + d.ts)
 bun run lint             # type-check only: tsc -p tsconfig.json --noEmit
-bun run check            # lint check with Biome (no writes)
-bun run format           # apply Biome's safe lint fixes
+bun run check            # lint + format check with Biome (no writes)
+bun run format           # apply Biome formatting + safe lint fixes
 bun test                 # run the unit suite (tests/)
 bun run test:coverage    # run the suite and write coverage/lcov.info
 bun run check:pack       # validate the publishable tarball (publint + attw)
@@ -42,21 +42,23 @@ bun pm untrusted         # should report 0 untrusted dependencies with scripts
 
 ### Linting & formatting
 
-[**Biome**](https://biomejs.dev) is the linter (config in `biome.json`, scoped to
-`src/` and `tests/`, version pinned **exactly** in `package.json` so local and CI
-never drift on lint rules). `bun run check` is the read-only lint gate CI runs;
-`bun run format` applies Biome's safe lint fixes. Two recommended rules are
-disabled because they fight intentional patterns in this parsing-heavy codebase:
+[**Biome**](https://biomejs.dev) is the linter/formatter (config in `biome.json`,
+scoped to `src/` and `tests/`, version pinned **exactly** in `package.json` so
+local and CI never drift on rules or formatting). `bun run check` is the read-only
+gate CI runs (lint + formatting); `bun run format` applies Biome's formatting and
+safe lint fixes. The formatter uses 2-space indent, 80-column width, double
+quotes, semicolons, and trailing commas. Two recommended lint rules are disabled
+because they fight intentional patterns in this parsing-heavy codebase:
 `noExplicitAny` (untyped HDF5/JSON payloads) and `noNonNullAssertion`. Biome also
 reports a number of pre-existing warnings (e.g. unused imports, `noGlobalIsNan`);
 these are non-blocking and fine to clean up incrementally — note `noGlobalIsNan`
 is **not** auto-fixed because `isNaN` and `Number.isNaN` differ in coercion
 semantics.
 
-Biome's **formatter is intentionally disabled** for now (`formatter.enabled:
-false` in `biome.json`). Turning it on reflows nearly every file, so that churn is
-deferred to a dedicated follow-up PR — flip `formatter.enabled` to `true` and run
-`bun run format` — to keep this Bun migration reviewable.
+The whole `src/` + `tests/` tree was reformatted in one commit when the formatter
+was enabled; that commit is listed in `.git-blame-ignore-revs` so `git blame`
+skips it (configure once with `git config blame.ignoreRevsFile
+.git-blame-ignore-revs`).
 
 ### Publishable-package check
 

@@ -131,7 +131,9 @@ describe("readTrackMateCsv", () => {
 
     // Don't pass edgesPath — should be auto-detected
     const labels = readTrackMateCsv(path.join(dir, "sample_spots.csv"));
-    expect((labels.centroids[1] as PredictedCentroid).trackingScore).toBeCloseTo(0.8);
+    expect(
+      (labels.centroids[1] as PredictedCentroid).trackingScore,
+    ).toBeCloseTo(0.8);
 
     fs.rmSync(dir, { recursive: true });
   });
@@ -142,7 +144,9 @@ describe("readTrackMateCsv", () => {
       "ID1,1,0,5.0,1.0,2.0,0.0,0.0,0,11.5,1",
     ]);
 
-    const labels = readTrackMateCsv(path.join(dir, "test_spots.csv"), { video: "my_video.tif" });
+    const labels = readTrackMateCsv(path.join(dir, "test_spots.csv"), {
+      video: "my_video.tif",
+    });
 
     expect(labels.videos).toHaveLength(1);
     expect(labels.videos[0].filename).toBe("my_video.tif");
@@ -182,7 +186,9 @@ describe("readTrackMateCsv", () => {
   });
 
   it("throws for missing file", () => {
-    expect(() => readTrackMateCsv("/tmp/nonexistent_spots.csv")).toThrow(/not found/);
+    expect(() => readTrackMateCsv("/tmp/nonexistent_spots.csv")).toThrow(
+      /not found/,
+    );
   });
 
   it("throws for non-TrackMate CSV", () => {

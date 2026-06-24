@@ -1,7 +1,12 @@
 export type H5Module = typeof import("h5wasm");
 export type H5File = InstanceType<H5Module["File"]>;
 
-export type SlpSource = string | ArrayBuffer | Uint8Array | File | FileSystemFileHandle;
+export type SlpSource =
+  | string
+  | ArrayBuffer
+  | Uint8Array
+  | File
+  | FileSystemFileHandle;
 export type StreamMode = "auto" | "range" | "download";
 
 export type OpenH5Options = {
@@ -17,7 +22,11 @@ export type OpenH5Options = {
 };
 
 // Re-export streaming utilities for advanced use cases
-export { StreamingH5File, openStreamingH5, isStreamingSupported } from "./h5-streaming.js";
+export {
+  StreamingH5File,
+  openStreamingH5,
+  isStreamingSupported,
+} from "./h5-streaming.js";
 
 type H5FileSystem = {
   writeFile: (path: string, data: Uint8Array) => void;
@@ -27,14 +36,25 @@ type H5FileSystem = {
   rmdir?: (path: string) => void;
   mount?: (fs: unknown, opts: unknown, mountpoint: string) => void;
   unmount?: (mountpoint: string) => void;
-  createLazyFile?: (parent: string, name: string, url: string, canRead: boolean, canWrite: boolean) => void;
+  createLazyFile?: (
+    parent: string,
+    name: string,
+    url: string,
+    canRead: boolean,
+    canWrite: boolean,
+  ) => void;
   filesystems?: Record<string, unknown>;
 };
 
 // Node provider hooks — registered by h5-node.ts (imported as side-effect from Node entry point).
 // When null, only browser code paths are used, keeping the browser bundle free of Node-only imports.
 let _nodeGetModule: (() => Promise<H5Module>) | null = null;
-let _nodeOpenFile: ((module: H5Module, source: SlpSource) => Promise<{ file: H5File; close: () => void }>) | null = null;
+let _nodeOpenFile:
+  | ((
+      module: H5Module,
+      source: SlpSource,
+    ) => Promise<{ file: H5File; close: () => void }>)
+  | null = null;
 
 /**
  * Register Node.js-specific h5wasm provider.
@@ -43,7 +63,10 @@ let _nodeOpenFile: ((module: H5Module, source: SlpSource) => Promise<{ file: H5F
  */
 export function _registerNodeH5(
   getModule: () => Promise<H5Module>,
-  openFile: (module: H5Module, source: SlpSource) => Promise<{ file: H5File; close: () => void }>
+  openFile: (
+    module: H5Module,
+    source: SlpSource,
+  ) => Promise<{ file: H5File; close: () => void }>,
 ): void {
   _nodeGetModule = getModule;
   _nodeOpenFile = openFile;
@@ -52,7 +75,9 @@ export function _registerNodeH5(
 // Node-only filesystem ops — registered by h5-node.ts (imported as a side-effect
 // from the Node entry point). They stay null in the browser so this shared,
 // browser-safe module never references Node built-ins (issue #70).
-let _nodeWriteFile: ((path: string, bytes: Uint8Array) => Promise<void>) | null = null;
+let _nodeWriteFile:
+  | ((path: string, bytes: Uint8Array) => Promise<void>)
+  | null = null;
 let _nodeFileExists: ((path: string) => Promise<boolean>) | null = null;
 let _nodeReadPackageVersion: (() => Promise<string | null>) | null = null;
 
@@ -73,10 +98,13 @@ export function _registerNodeFileOps(ops: {
 }
 
 /** Write bytes to a path via the Node provider. Throws in the browser. */
-export async function nodeWriteFile(path: string, bytes: Uint8Array): Promise<void> {
+export async function nodeWriteFile(
+  path: string,
+  bytes: Uint8Array,
+): Promise<void> {
   if (!_nodeWriteFile) {
     throw new Error(
-      "Writing files requires a Node.js environment. This codec's writer is Node-only."
+      "Writing files requires a Node.js environment. This codec's writer is Node-only.",
     );
   }
   await _nodeWriteFile(path, bytes);
@@ -138,7 +166,7 @@ export async function getH5EmscriptenModule(): Promise<unknown> {
 
 export async function openH5File(
   source: SlpSource,
-  options?: OpenH5Options
+  options?: OpenH5Options,
 ): Promise<{ file: H5File; close: () => void }> {
   const module = await getH5Module();
 
@@ -160,7 +188,7 @@ function isFileHandle(value: SlpSource): value is FileSystemFileHandle {
 async function openH5FileBrowser(
   module: H5Module,
   source: SlpSource,
-  options?: OpenH5Options
+  options?: OpenH5Options,
 ): Promise<{ file: H5File; close: () => void }> {
   const fs = getH5FileSystem(module);
 
@@ -196,9 +224,12 @@ async function openFromUrl(
   module: H5Module,
   fs: H5FileSystem,
   url: string,
-  options?: OpenH5Options
+  options?: OpenH5Options,
 ): Promise<{ file: H5File; close: () => void }> {
-  const filename = options?.filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
+  const filename =
+    options?.filenameHint ??
+    url.split("/").pop()?.split("?")[0] ??
+    "slp-data.slp";
   const streamMode = options?.stream ?? "auto";
 
   if (fs.createLazyFile && (streamMode === "auto" || streamMode === "range")) {
@@ -222,7 +253,9 @@ async function openFromUrl(
 
   const response = await fetch(url);
   if (!response.ok) {
-    throw new Error(`Failed to fetch SLP file: ${response.status} ${response.statusText}`);
+    throw new Error(
+      `Failed to fetch SLP file: ${response.status} ${response.statusText}`,
+    );
   }
   const buffer = new Uint8Array(await response.arrayBuffer());
   const localPath = "/tmp-slp.slp";
@@ -235,7 +268,7 @@ async function openFromFile(
   module: H5Module,
   fs: H5FileSystem,
   file: File,
-  options?: OpenH5Options
+  options?: OpenH5Options,
 ): Promise<{ file: H5File; close: () => void }> {
   const mountPath = `/slp-local-${Date.now()}`;
   fs.mkdir?.(mountPath);

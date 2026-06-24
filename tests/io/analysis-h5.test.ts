@@ -671,9 +671,7 @@ describe("Analysis HDF5 write", () => {
         expect(
           rootAttrString(file as never, "video_backend_metadata"),
         ).toBeDefined();
-        expect(
-          rootAttrString(file as never, "sleap_io_version"),
-        ).toBeDefined();
+        expect(rootAttrString(file as never, "sleap_io_version")).toBeDefined();
       } finally {
         close();
       }
@@ -887,7 +885,9 @@ describe("Analysis HDF5 read + round-trip", () => {
     try {
       const out = path.join(tmp, "custom_videoobj.analysis.h5");
       await writeAnalysisH5(simpleLabels(), out);
-      const custom = new Video({ filename: path.join(tmp, "custom_video.mp4") });
+      const custom = new Video({
+        filename: path.join(tmp, "custom_video.mp4"),
+      });
       const loaded = await loadAnalysisH5(out, { video: custom });
       expect(loaded.videos[0].filename).toBe(custom.filename);
     } finally {
@@ -1151,9 +1151,9 @@ describe("Analysis HDF5 edge cases", () => {
         const { file, close } = await openH5File(out);
         try {
           expect(shapeOf(file.get("tracks") as never)).toEqual(expectedShape);
-          expect(
-            stringArray((file.get("track_names") as never).value),
-          ).toEqual(["track_0", "track_1"]);
+          expect(stringArray((file.get("track_names") as never).value)).toEqual(
+            ["track_0", "track_1"],
+          );
         } finally {
           close();
         }
@@ -1421,9 +1421,7 @@ describe("Analysis HDF5 differential parity with Python fixtures", () => {
           for (let n = 0; n < ei.points.length; n++) {
             const ep = ei.points[n];
             for (let c = 0; c < ep.length; c++) {
-              expect(
-                allclose(got[n][c], parseMaybeNaN(ep[c])),
-              ).toBe(true);
+              expect(allclose(got[n][c], parseMaybeNaN(ep[c]))).toBe(true);
             }
           }
 

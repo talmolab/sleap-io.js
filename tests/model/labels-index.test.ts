@@ -3,7 +3,11 @@ import { Labels } from "../../src/model/labels.js";
 import { LabeledFrame } from "../../src/model/labeled-frame.js";
 import { Video } from "../../src/model/video.js";
 import { Skeleton } from "../../src/model/skeleton.js";
-import { Instance, PredictedInstance, Track } from "../../src/model/instance.js";
+import {
+  Instance,
+  PredictedInstance,
+  Track,
+} from "../../src/model/instance.js";
 import { UserCentroid } from "../../src/model/centroid.js";
 import { UserBoundingBox } from "../../src/model/bbox.js";
 import { UserSegmentationMask } from "../../src/model/mask.js";
@@ -147,7 +151,13 @@ describe("Labels track index", () => {
         [1, { track, category: "cell", name: "", instance: null }],
       ]),
     });
-    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video, frameIdx: 0, labelImages: [li] })], videos: [video], tracks: [track] });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 0, labelImages: [li] }),
+      ],
+      videos: [video],
+      tracks: [track],
+    });
 
     const anns = labels.getTrackAnnotations(video, track);
     expect(anns).toHaveLength(1);
@@ -205,9 +215,15 @@ describe("Labels.find() fast path", () => {
 describe("get*() fast paths", () => {
   it("getCentroids uses O(1) frame lookup when video+frameIdx given", () => {
     const video = new Video({ filename: "test.mp4" });
-    const c0 = new UserCentroid({ x: 1, y: 2});
-    const c1 = new UserCentroid({ x: 3, y: 4});
-    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video: video, frameIdx: 0, centroids: [c0] }), new LabeledFrame({ video: video, frameIdx: 1, centroids: [c1] })], videos: [video] });
+    const c0 = new UserCentroid({ x: 1, y: 2 });
+    const c1 = new UserCentroid({ x: 3, y: 4 });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video: video, frameIdx: 0, centroids: [c0] }),
+        new LabeledFrame({ video: video, frameIdx: 1, centroids: [c1] }),
+      ],
+      videos: [video],
+    });
 
     // Fast path: both video and frameIdx
     let result = labels.getCentroids({ video, frameIdx: 0 });
@@ -250,7 +266,12 @@ describe("get*() fast paths", () => {
       video,
       frameIdx: 0,
     });
-    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video: video, frameIdx: 0, bboxes: [b1, b2] })], videos: [video] });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video: video, frameIdx: 0, bboxes: [b1, b2] }),
+      ],
+      videos: [video],
+    });
 
     // Fast path with video+frameIdx
     let result = labels.getBboxes({ video, frameIdx: 0 });
@@ -276,8 +297,14 @@ describe("get*() fast paths", () => {
     const mask = new UserSegmentationMask({
       rleCounts: new Uint32Array([16]),
       height: 4,
-      width: 4, });
-    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video: video, frameIdx: 0, masks: [mask] })], videos: [video] });
+      width: 4,
+    });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video: video, frameIdx: 0, masks: [mask] }),
+      ],
+      videos: [video],
+    });
 
     let result = labels.getMasks({ video, frameIdx: 0 });
     expect(result).toHaveLength(1);
@@ -386,7 +413,11 @@ describe("Index invalidation", () => {
     const track = new Track("t1");
     const c0 = new UserCentroid({ x: 1, y: 2, track });
     const lf0 = new LabeledFrame({ video, frameIdx: 0, centroids: [c0] });
-    const labels = new Labels({ labeledFrames: [lf0], videos: [video], tracks: [track] });
+    const labels = new Labels({
+      labeledFrames: [lf0],
+      videos: [video],
+      tracks: [track],
+    });
 
     // Build track index
     let anns = labels.getTrackAnnotations(video, track);
@@ -407,22 +438,30 @@ const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 
 describe("Lazy guards", () => {
   it("getFrame throws on lazy Labels", async () => {
-    const lazy = await loadSlp(path.join(fixtureRoot, "slp", "centered_pair_predictions.slp"), {
-      openVideos: false,
-      lazy: true,
-    });
+    const lazy = await loadSlp(
+      path.join(fixtureRoot, "slp", "centered_pair_predictions.slp"),
+      {
+        openVideos: false,
+        lazy: true,
+      },
+    );
     const video = lazy.videos[0];
     expect(() => lazy.getFrame(video, 0)).toThrow("getFrame");
   });
 
   it("getTrackAnnotations throws on lazy Labels", async () => {
-    const lazy = await loadSlp(path.join(fixtureRoot, "slp", "centered_pair_predictions.slp"), {
-      openVideos: false,
-      lazy: true,
-    });
+    const lazy = await loadSlp(
+      path.join(fixtureRoot, "slp", "centered_pair_predictions.slp"),
+      {
+        openVideos: false,
+        lazy: true,
+      },
+    );
     const video = lazy.videos[0];
     const track = lazy.tracks[0];
-    expect(() => lazy.getTrackAnnotations(video, track)).toThrow("getTrackAnnotations");
+    expect(() => lazy.getTrackAnnotations(video, track)).toThrow(
+      "getTrackAnnotations",
+    );
   });
 });
 
@@ -432,7 +471,14 @@ describe("Labels.removePredictions()", () => {
     const video = new Video({ filename: "test.mp4" });
     const track = new Track("t1");
 
-    const pred = PredictedInstance.fromArray([[1, 2], [3, 4]], skel, 0.9);
+    const pred = PredictedInstance.fromArray(
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      skel,
+      0.9,
+    );
     pred.track = track;
     const lf = new LabeledFrame({ video, frameIdx: 0, instances: [pred] });
     const c = new UserCentroid({ x: 5, y: 6, track });

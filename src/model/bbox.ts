@@ -71,7 +71,13 @@ export class BoundingBox {
     h: number,
     options?: Omit<BoundingBoxOptions, "x1" | "y1" | "x2" | "y2">,
   ): UserBoundingBox {
-    return new UserBoundingBox({ x1: x, y1: y, x2: x + w, y2: y + h, ...options });
+    return new UserBoundingBox({
+      x1: x,
+      y1: y,
+      x2: x + w,
+      y2: y + h,
+      ...options,
+    });
   }
 
   /** Center X coordinate (computed from x1, x2). */

@@ -262,7 +262,7 @@ export function rgbToCSS(rgb: RGB, alpha: number = 1): string {
 export function determineColorScheme(
   scheme: ColorScheme,
   hasTracks: boolean,
-  isSingleImage: boolean
+  isSingleImage: boolean,
 ): ColorScheme {
   if (scheme !== "auto") {
     return scheme;

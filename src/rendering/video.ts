@@ -37,14 +37,14 @@ export async function checkFfmpeg(): Promise<boolean> {
 export async function renderVideo(
   source: Labels | LabeledFrame[],
   outputPath: string,
-  options: VideoOptions = {}
+  options: VideoOptions = {},
 ): Promise<void> {
   // Check ffmpeg availability
   const hasFfmpeg = await checkFfmpeg();
   if (!hasFfmpeg) {
     throw new Error(
       "ffmpeg not found. Please install ffmpeg and ensure it is in your PATH.\n" +
-        "Installation: https://ffmpeg.org/download.html"
+        "Installation: https://ffmpeg.org/download.html",
     );
   }
 
@@ -110,7 +110,10 @@ export async function renderVideo(
   // Build the per-frame render options. Overlay is resolved per frame (static
   // value, position-indexed list, frame-index-keyed Map, or callable) and
   // passed through as the single-frame `overlay` that renderImage understands.
-  const optsForFrame = (frame: LabeledFrame, position: number): RenderOptions => {
+  const optsForFrame = (
+    frame: LabeledFrame,
+    position: number,
+  ): RenderOptions => {
     // Strip the video-level (per-frame) `overlay` so the spread does not leak a
     // `VideoOverlay` into the single-frame `RenderOptions`; it is replaced by
     // the resolved single-frame overlay below.
@@ -129,7 +132,10 @@ export async function renderVideo(
   };
 
   // Get frame dimensions from first frame
-  const firstImage = await renderImage(selectedFrames[0], optsForFrame(selectedFrames[0], 0));
+  const firstImage = await renderImage(
+    selectedFrames[0],
+    optsForFrame(selectedFrames[0], 0),
+  );
   const width = firstImage.width;
   const height = firstImage.height;
 
@@ -204,7 +210,7 @@ export async function renderVideo(
     // Handle backpressure
     if (!canWrite) {
       await new Promise<void>((resolve) =>
-        ffmpeg.stdin?.once("drain", resolve)
+        ffmpeg.stdin?.once("drain", resolve),
       );
     }
 

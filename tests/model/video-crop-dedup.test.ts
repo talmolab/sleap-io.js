@@ -23,7 +23,11 @@ import {
 afterEach(() => setFsResolver(null));
 
 /** A fake source backend (shared inner) with a known shape. */
-function makeBackend(filename: string, width = 384, height = 384): VideoBackend {
+function makeBackend(
+  filename: string,
+  width = 384,
+  height = 384,
+): VideoBackend {
   return {
     filename,
     shape: [1, height, width, 1],

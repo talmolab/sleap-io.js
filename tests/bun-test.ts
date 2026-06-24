@@ -53,8 +53,7 @@ const stubbedGlobals = new Map<string, PropertyDescriptor | undefined>();
 /** Minimal `vi` shim covering the vitest APIs used in this repo. */
 export const vi = {
   /** vitest `vi.fn` -> bun `mock`. */
-  fn: (impl?: (...args: never[]) => unknown) =>
-    mock(impl ?? (() => undefined)),
+  fn: (impl?: (...args: never[]) => unknown) => mock(impl ?? (() => undefined)),
 
   /** vitest `vi.spyOn` -> bun `spyOn`. */
   spyOn,

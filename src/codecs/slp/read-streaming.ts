@@ -8,15 +8,44 @@
  * @module
  */
 
-import { openH5Worker, StreamingH5File, isStreamingSupported, type StreamingH5Source } from "./h5-streaming.js";
-import { attrToNumber, attrToString, parseJsonAttr, parseJsonEntry, parseSkeletons, parseTracks, parseVideosMetadata, parseSuggestions, resolveCameraKey, reconstructInstance3D, resolveIdentity } from "./parsers.js";
+import {
+  openH5Worker,
+  StreamingH5File,
+  isStreamingSupported,
+  type StreamingH5Source,
+} from "./h5-streaming.js";
+import {
+  attrToNumber,
+  attrToString,
+  parseJsonAttr,
+  parseJsonEntry,
+  parseSkeletons,
+  parseTracks,
+  parseVideosMetadata,
+  parseSuggestions,
+  resolveCameraKey,
+  reconstructInstance3D,
+  resolveIdentity,
+} from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
-import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../../model/instance.js";
+import {
+  Instance,
+  PredictedInstance,
+  Track,
+  pointsFromArray,
+  predictedPointsFromArray,
+} from "../../model/instance.js";
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video } from "../../model/video.js";
-import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
+import {
+  Camera,
+  CameraGroup,
+  FrameGroup,
+  InstanceGroup,
+  RecordingSession,
+} from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
@@ -71,10 +100,12 @@ export interface StreamingSlpOptions {
  */
 export async function readSlpStreaming(
   source: StreamingH5Source,
-  options?: StreamingSlpOptions
+  options?: StreamingSlpOptions,
 ): Promise<Labels> {
   if (!isStreamingSupported()) {
-    throw new Error("Streaming HDF5 requires Web Worker support (browser environment)");
+    throw new Error(
+      "Streaming HDF5 requires Web Worker support (browser environment)",
+    );
   }
 
   const file = await openH5Worker(source, {
@@ -85,14 +116,20 @@ export async function readSlpStreaming(
   const openVideos = options?.openVideos ?? false;
 
   // Determine the source path for video resolution
-  const sourcePath = typeof source === "string"
-    ? source
-    : (typeof File !== "undefined" && source instanceof File)
-      ? source.name
-      : options?.filenameHint ?? "slp-data.slp";
+  const sourcePath =
+    typeof source === "string"
+      ? source
+      : typeof File !== "undefined" && source instanceof File
+        ? source.name
+        : (options?.filenameHint ?? "slp-data.slp");
 
   try {
-    return await readFromStreamingFile(file, sourcePath, options?.filenameHint, openVideos);
+    return await readFromStreamingFile(
+      file,
+      sourcePath,
+      options?.filenameHint,
+      openVideos,
+    );
   } finally {
     // Only close the file if we're NOT opening video backends.
     // When openVideos is true, the file must remain open for video frame access.
@@ -109,18 +146,22 @@ async function readFromStreamingFile(
   file: StreamingH5File,
   url: string,
   filenameHint?: string,
-  openVideos: boolean = false
+  openVideos: boolean = false,
 ): Promise<Labels> {
   // Read metadata
   const metadataAttrs = await file.getAttrs("metadata");
   const formatId = Number(
     (metadataAttrs["format_id"] as { value?: number })?.value ??
-    metadataAttrs["format_id"] ??
-    1.0
+      metadataAttrs["format_id"] ??
+      1.0,
   );
-  const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<string, unknown> | null;
+  const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<
+    string,
+    unknown
+  > | null;
 
-  const labelsPath = filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
+  const labelsPath =
+    filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
   const skeletons = parseSkeletons(metadataJson);
 
   // Read tracks
@@ -130,7 +171,13 @@ async function readFromStreamingFile(
   const videoCrops = await readVideoCropsStreaming(file);
 
   // Read video metadata (and optionally create backends for embedded videos)
-  const videos = await readVideosStreaming(file, labelsPath, openVideos, formatId, videoCrops);
+  const videos = await readVideosStreaming(
+    file,
+    labelsPath,
+    openVideos,
+    formatId,
+    videoCrops,
+  );
 
   // Read suggestions
   const suggestions = await readSuggestionsStreaming(file, videos);
@@ -157,7 +204,13 @@ async function readFromStreamingFile(
   const identities = await readIdentitiesStreaming(file);
 
   // Read sessions
-  const sessions = await readSessionsStreaming(file, videos, skeletons, labeledFrames, identities);
+  const sessions = await readSessionsStreaming(
+    file,
+    videos,
+    skeletons,
+    labeledFrames,
+    identities,
+  );
 
   return new Labels({
     labeledFrames,
@@ -202,7 +255,7 @@ interface VideoCropEntry {
  * array, raw bytes); not part of the public API.
  */
 export async function readVideoCropsStreaming(
-  file: StreamingH5File
+  file: StreamingH5File,
 ): Promise<Map<number, VideoCropEntry>> {
   const out = new Map<number, VideoCropEntry>();
   try {
@@ -262,7 +315,7 @@ async function readVideosStreaming(
   labelsPath: string,
   openVideos: boolean = false,
   formatId: number = 1.0,
-  videoCrops?: Map<number, VideoCropEntry>
+  videoCrops?: Map<number, VideoCropEntry>,
 ): Promise<Video[]> {
   try {
     const keys = file.keys();
@@ -280,7 +333,8 @@ async function readVideosStreaming(
       // Auto-detect dataset path when embedded but not specified in metadata
       let datasetPath: string | undefined = meta.dataset;
       if (meta.embedded && !datasetPath) {
-        datasetPath = (await findVideoDatasetStreaming(file, videoIndex)) ?? undefined;
+        datasetPath =
+          (await findVideoDatasetStreaming(file, videoIndex)) ?? undefined;
       }
 
       // Read format/channel_order/frames from HDF5 dataset attributes when a
@@ -308,8 +362,10 @@ async function readVideosStreaming(
           // is missing (common for pkg.slp files)
           const readNumAttr = (attr: unknown): number | undefined => {
             if (attr === undefined || attr === null) return undefined;
-            const v = typeof attr === "object" && attr !== null && "value" in attr
-              ? (attr as { value: unknown }).value : attr;
+            const v =
+              typeof attr === "object" && attr !== null && "value" in attr
+                ? (attr as { value: unknown }).value
+                : attr;
             const n = Number(v);
             return Number.isFinite(n) && n > 0 ? n : undefined;
           };
@@ -343,7 +399,7 @@ async function readVideosStreaming(
         frameNumbers,
       });
       const shape: [number, number, number, number] | undefined =
-        (meta.height && meta.width && meta.channels)
+        meta.height && meta.width && meta.channels
           ? [frameCount ?? 0, meta.height, meta.width, meta.channels]
           : undefined;
 
@@ -351,7 +407,10 @@ async function readVideosStreaming(
       // 1. JSON metadata (meta.channelOrder)
       // 2. HDF5 dataset attribute (channelOrderFromAttrs)
       // 3. Legacy fallback based on format_id (BGR for < 1.4)
-      const channelOrder = meta.channelOrder ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
+      const channelOrder =
+        meta.channelOrder ??
+        channelOrderFromAttrs ??
+        (formatId < 1.4 ? "BGR" : "RGB");
 
       // Create streaming backend for embedded videos when openVideos is true
       let backend = null;
@@ -361,7 +420,7 @@ async function readVideosStreaming(
           // path); the array form is only for image sequences, which never
           // reach this embedded branch. Narrow for the type checker.
           filename: Array.isArray(meta.filename)
-            ? meta.filename[0] ?? ""
+            ? (meta.filename[0] ?? "")
             : meta.filename,
           h5file: file,
           datasetPath,
@@ -412,14 +471,18 @@ async function readVideosStreaming(
         backendMetadata.crop_fill = cropEntry.fill;
       }
 
-      videos.push(new Video({
-        filename: meta.filename,
-        backend: videoBackend,
-        backendMetadata,
-        sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
-        openBackend: openVideos && meta.embedded,
-        embedded: meta.embedded,
-      }));
+      videos.push(
+        new Video({
+          filename: meta.filename,
+          backend: videoBackend,
+          backendMetadata,
+          sourceVideo: meta.sourceVideo
+            ? new Video({ filename: meta.sourceVideo.filename })
+            : null,
+          openBackend: openVideos && meta.embedded,
+          embedded: meta.embedded,
+        }),
+      );
     }
 
     return videos;
@@ -434,7 +497,7 @@ async function readVideosStreaming(
  */
 async function readFrameNumbersStreaming(
   file: StreamingH5File,
-  datasetPath: string
+  datasetPath: string,
 ): Promise<number[]> {
   try {
     // Extract group path from dataset path (e.g., "video0/video" -> "video0")
@@ -476,7 +539,7 @@ async function readFrameNumbersStreaming(
  */
 async function readFrameSizesStreaming(
   file: StreamingH5File,
-  datasetPath: string
+  datasetPath: string,
 ): Promise<number[] | undefined> {
   try {
     const groupPath = datasetPath.endsWith("/video")
@@ -509,7 +572,7 @@ async function readFrameSizesStreaming(
  */
 async function findVideoDatasetStreaming(
   file: StreamingH5File,
-  videoIndex: number
+  videoIndex: number,
 ): Promise<string | null> {
   try {
     // Try explicit path first (video0/video, video1/video, etc.)
@@ -557,7 +620,10 @@ async function findVideoDatasetStreaming(
 /**
  * Read suggestions from suggestions_json dataset.
  */
-async function readSuggestionsStreaming(file: StreamingH5File, videos: Video[]): Promise<SuggestionFrame[]> {
+async function readSuggestionsStreaming(
+  file: StreamingH5File,
+  videos: Video[],
+): Promise<SuggestionFrame[]> {
   try {
     const keys = file.keys();
     if (!keys.includes("suggestions_json")) return [];
@@ -567,7 +633,7 @@ async function readSuggestionsStreaming(file: StreamingH5File, videos: Video[]):
     const metadataList = parseSuggestions(values);
 
     return metadataList
-      .map(meta => {
+      .map((meta) => {
         const video = videos[meta.video];
         if (!video) return null;
         return new SuggestionFrame({
@@ -585,7 +651,9 @@ async function readSuggestionsStreaming(file: StreamingH5File, videos: Video[]):
 /**
  * Read identities from identities_json dataset.
  */
-async function readIdentitiesStreaming(file: StreamingH5File): Promise<Identity[]> {
+async function readIdentitiesStreaming(
+  file: StreamingH5File,
+): Promise<Identity[]> {
   try {
     const keys = file.keys();
     if (!keys.includes("identities_json")) return [];
@@ -596,11 +664,13 @@ async function readIdentitiesStreaming(file: StreamingH5File): Promise<Identity[
     for (const entry of values) {
       const parsed = parseJsonEntry(entry) as Record<string, unknown>;
       const { name, color, ...rest } = parsed;
-      identities.push(new Identity({
-        name: (name as string) ?? "",
-        color: color as string | undefined,
-        metadata: rest,
-      }));
+      identities.push(
+        new Identity({
+          name: (name as string) ?? "",
+          color: color as string | undefined,
+          metadata: rest,
+        }),
+      );
     }
     return identities;
   } catch {
@@ -616,7 +686,7 @@ async function readSessionsStreaming(
   videos: Video[],
   skeletons: Skeleton[],
   labeledFrames: LabeledFrame[],
-  identities?: Identity[]
+  identities?: Identity[],
 ): Promise<RecordingSession[]> {
   try {
     const keys = file.keys();
@@ -648,44 +718,81 @@ async function readSessionsStreaming(
         cameraMap.set(String(key), camera);
       }
 
-      const session = new RecordingSession({ cameraGroup, metadata: (parsed.metadata as Record<string, unknown> | undefined) ?? {} });
+      const session = new RecordingSession({
+        cameraGroup,
+        metadata:
+          (parsed.metadata as Record<string, unknown> | undefined) ?? {},
+      });
 
-      const map = (parsed.camcorder_to_video_idx_map ?? {}) as Record<string, unknown>;
+      const map = (parsed.camcorder_to_video_idx_map ?? {}) as Record<
+        string,
+        unknown
+      >;
       for (const [cameraKey, videoIdx] of Object.entries(map)) {
-        const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+        const camera = resolveCameraKey(
+          cameraKey,
+          cameraMap,
+          cameraGroup.cameras,
+        );
         const video = videos[Number(videoIdx)];
         if (camera && video) {
           session.addVideo(video, camera);
         }
       }
 
-      const frameGroups = Array.isArray(parsed.frame_group_dicts) ? parsed.frame_group_dicts : [];
+      const frameGroups = Array.isArray(parsed.frame_group_dicts)
+        ? parsed.frame_group_dicts
+        : [];
       for (const group of frameGroups) {
         const groupRecord = group as Record<string, unknown>;
-        const frameIdx = (groupRecord.frame_idx as number | undefined) ?? (groupRecord.frameIdx as number | undefined) ?? 0;
+        const frameIdx =
+          (groupRecord.frame_idx as number | undefined) ??
+          (groupRecord.frameIdx as number | undefined) ??
+          0;
         const instanceGroups: InstanceGroup[] = [];
-        const instanceGroupList = Array.isArray(groupRecord.instance_groups) ? groupRecord.instance_groups : [];
+        const instanceGroupList = Array.isArray(groupRecord.instance_groups)
+          ? groupRecord.instance_groups
+          : [];
         for (const instanceGroup of instanceGroupList) {
           const instanceGroupRecord = instanceGroup as Record<string, unknown>;
           const instanceByCamera = new Map<Camera, Instance>();
 
           // Read JS-format instances (camera key -> point data)
-          const instancesRecord = (instanceGroupRecord.instances ?? {}) as Record<string, unknown>;
+          const instancesRecord = (instanceGroupRecord.instances ??
+            {}) as Record<string, unknown>;
           for (const [cameraKey, points] of Object.entries(instancesRecord)) {
-            const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+            const camera = resolveCameraKey(
+              cameraKey,
+              cameraMap,
+              cameraGroup.cameras,
+            );
             if (!camera) {
-              console.warn(`Camera key "${cameraKey}" not found in session calibration — skipping 2D instance data for this camera.`);
+              console.warn(
+                `Camera key "${cameraKey}" not found in session calibration — skipping 2D instance data for this camera.`,
+              );
               continue;
             }
             const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
-            instanceByCamera.set(camera, new Instance({ points: points as Record<string, number[]>, skeleton }));
+            instanceByCamera.set(
+              camera,
+              new Instance({
+                points: points as Record<string, number[]>,
+                skeleton,
+              }),
+            );
           }
 
           // Fall back to Python-format camcorder_to_lf_and_inst_idx_map
           if (instanceByCamera.size === 0) {
-            const lfInstMap = (instanceGroupRecord.camcorder_to_lf_and_inst_idx_map ?? {}) as Record<string, unknown>;
+            const lfInstMap =
+              (instanceGroupRecord.camcorder_to_lf_and_inst_idx_map ??
+                {}) as Record<string, unknown>;
             for (const [camIdx, value] of Object.entries(lfInstMap)) {
-              const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+              const camera = resolveCameraKey(
+                camIdx,
+                cameraMap,
+                cameraGroup.cameras,
+              );
               if (!camera) continue;
               const pair = value as unknown as [number, number];
               const lf = labeledFrames[Number(pair[0])];
@@ -696,7 +803,10 @@ async function readSessionsStreaming(
             }
           }
 
-          const instance3d = reconstructInstance3D(instanceGroupRecord, skeletons);
+          const instance3d = reconstructInstance3D(
+            instanceGroupRecord,
+            skeletons,
+          );
           const identity = resolveIdentity(instanceGroupRecord, identities);
 
           instanceGroups.push(
@@ -705,17 +815,29 @@ async function readSessionsStreaming(
               score: instanceGroupRecord.score as number | undefined,
               instance3d,
               identity,
-              metadata: (instanceGroupRecord.metadata as Record<string, unknown> | undefined) ?? {},
-            })
+              metadata:
+                (instanceGroupRecord.metadata as
+                  | Record<string, unknown>
+                  | undefined) ?? {},
+            }),
           );
         }
 
         const labeledFrameByCamera = new Map<Camera, LabeledFrame>();
-        const labeledFrameMap = (groupRecord.labeled_frame_by_camera ?? {}) as Record<string, unknown>;
-        for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
-          const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+        const labeledFrameMap = (groupRecord.labeled_frame_by_camera ??
+          {}) as Record<string, unknown>;
+        for (const [cameraKey, labeledFrameIdx] of Object.entries(
+          labeledFrameMap,
+        )) {
+          const camera = resolveCameraKey(
+            cameraKey,
+            cameraMap,
+            cameraGroup.cameras,
+          );
           if (!camera) {
-            console.warn(`Camera key "${cameraKey}" not found in session calibration — skipping labeled frame mapping.`);
+            console.warn(
+              `Camera key "${cameraKey}" not found in session calibration — skipping labeled frame mapping.`,
+            );
             continue;
           }
           const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
@@ -728,9 +850,14 @@ async function readSessionsStreaming(
         if (labeledFrameByCamera.size === 0) {
           for (const instanceGroup of instanceGroupList) {
             const igRecord = instanceGroup as Record<string, unknown>;
-            const lfInstMap = (igRecord.camcorder_to_lf_and_inst_idx_map ?? {}) as Record<string, unknown>;
+            const lfInstMap = (igRecord.camcorder_to_lf_and_inst_idx_map ??
+              {}) as Record<string, unknown>;
             for (const [camIdx, value] of Object.entries(lfInstMap)) {
-              const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+              const camera = resolveCameraKey(
+                camIdx,
+                cameraMap,
+                cameraGroup.cameras,
+              );
               if (!camera) continue;
               const pair = value as unknown as [number, number];
               const lf = labeledFrames[Number(pair[0])];
@@ -745,8 +872,10 @@ async function readSessionsStreaming(
             frameIdx: Number(frameIdx),
             instanceGroups,
             labeledFrameByCamera,
-            metadata: (groupRecord.metadata as Record<string, unknown> | undefined) ?? {},
-          })
+            metadata:
+              (groupRecord.metadata as Record<string, unknown> | undefined) ??
+              {},
+          }),
         );
       }
       sessions.push(session);
@@ -762,7 +891,7 @@ async function readSessionsStreaming(
  */
 async function readStructDatasetStreaming(
   file: StreamingH5File,
-  path: string
+  path: string,
 ): Promise<Record<string, unknown[]>> {
   try {
     const keys = file.keys();
@@ -779,19 +908,30 @@ async function readStructDatasetStreaming(
         const attrs = await file.getAttrs(path);
         const fnAttr = attrs.field_names ?? attrs.fieldNames;
         if (fnAttr) {
-          let raw = Array.isArray(fnAttr) ? fnAttr
+          let raw = Array.isArray(fnAttr)
+            ? fnAttr
             : (fnAttr as { value?: unknown })?.value;
           if (typeof raw === "string") {
-            try { raw = JSON.parse(raw); } catch { /* not JSON */ }
+            try {
+              raw = JSON.parse(raw);
+            } catch {
+              /* not JSON */
+            }
           }
           if (raw instanceof Uint8Array) {
-            try { raw = JSON.parse(new TextDecoder().decode(raw)); } catch { /* not JSON */ }
+            try {
+              raw = JSON.parse(new TextDecoder().decode(raw));
+            } catch {
+              /* not JSON */
+            }
           }
           if (Array.isArray(raw)) {
             fieldNames = raw.map(String);
           }
         }
-      } catch { /* ignore attribute read errors */ }
+      } catch {
+        /* ignore attribute read errors */
+      }
     }
 
     return normalizeStructData(data.value, data.shape, fieldNames);
@@ -818,7 +958,7 @@ export function getFieldNamesFromMeta(meta: {
       const namesStr = namesMatch[1];
       const names = namesStr.match(/'([^']+)'/g);
       if (names) {
-        return names.map(n => n.replace(/'/g, ""));
+        return names.map((n) => n.replace(/'/g, ""));
       }
     }
   }
@@ -830,10 +970,12 @@ export function getFieldNamesFromMeta(meta: {
   if (typeof dtype === "object" && dtype !== null) {
     const dtypeObj = dtype as Record<string, unknown>;
     if (dtypeObj.compound_type && typeof dtypeObj.compound_type === "object") {
-      const compound = dtypeObj.compound_type as { members?: Array<{ name?: string }> };
+      const compound = dtypeObj.compound_type as {
+        members?: Array<{ name?: string }>;
+      };
       if (compound.members) {
         return compound.members
-          .map(m => m.name)
+          .map((m) => m.name)
           .filter((n): n is string => !!n);
       }
     }
@@ -848,12 +990,17 @@ export function getFieldNamesFromMeta(meta: {
 function normalizeStructData(
   value: unknown,
   shape: number[],
-  fieldNames: string[]
+  fieldNames: string[],
 ): Record<string, unknown[]> {
   if (!value) return {};
 
   // If value is already an object with arrays (column format)
-  if (value && typeof value === "object" && !Array.isArray(value) && !ArrayBuffer.isView(value)) {
+  if (
+    value &&
+    typeof value === "object" &&
+    !Array.isArray(value) &&
+    !ArrayBuffer.isView(value)
+  ) {
     const obj = value as Record<string, unknown>;
     // Check if it looks like column data
     const firstKey = Object.keys(obj)[0];
@@ -886,7 +1033,7 @@ function normalizeStructData(
     if (fieldNames.length) {
       const result: Record<string, unknown[]> = {};
       fieldNames.forEach((field, colIdx) => {
-        result[field] = rows.map(row => row[colIdx]);
+        result[field] = rows.map((row) => row[colIdx]);
       });
       return result;
     }
@@ -922,7 +1069,16 @@ function buildLabeledFrames(options: {
   formatId: number;
 }): LabeledFrame[] {
   const frames: LabeledFrame[] = [];
-  const { framesData, instancesData, pointsData, predPointsData, skeletons, tracks, videos, formatId } = options;
+  const {
+    framesData,
+    instancesData,
+    pointsData,
+    predPointsData,
+    skeletons,
+    tracks,
+    videos,
+    formatId,
+  } = options;
   const frameIds = (framesData.frame_id ?? []) as number[];
   const videoIdToIndex = buildVideoIdMap(framesData, videos);
   const instanceById = new Map<number, Instance | PredictedInstance>();
@@ -931,30 +1087,59 @@ function buildLabeledFrames(options: {
   for (let frameIdx = 0; frameIdx < frameIds.length; frameIdx += 1) {
     const rawVideoId = Number((framesData.video as number[])?.[frameIdx] ?? 0);
     const videoIndex = videoIdToIndex.get(rawVideoId) ?? rawVideoId;
-    const frameIndex = Number((framesData.frame_idx as number[])?.[frameIdx] ?? 0);
-    const instStart = Number((framesData.instance_id_start as number[])?.[frameIdx] ?? 0);
-    const instEnd = Number((framesData.instance_id_end as number[])?.[frameIdx] ?? 0);
+    const frameIndex = Number(
+      (framesData.frame_idx as number[])?.[frameIdx] ?? 0,
+    );
+    const instStart = Number(
+      (framesData.instance_id_start as number[])?.[frameIdx] ?? 0,
+    );
+    const instEnd = Number(
+      (framesData.instance_id_end as number[])?.[frameIdx] ?? 0,
+    );
     const video = videos[videoIndex];
     if (!video) continue;
 
     const instances: Array<Instance | PredictedInstance> = [];
     for (let instIdx = instStart; instIdx < instEnd; instIdx += 1) {
-      const instanceType = Number((instancesData.instance_type as number[])?.[instIdx] ?? 0);
-      const skeletonId = Number((instancesData.skeleton as number[])?.[instIdx] ?? 0);
-      const trackId = Number((instancesData.track as number[])?.[instIdx] ?? -1);
-      const pointStart = Number((instancesData.point_id_start as number[])?.[instIdx] ?? 0);
-      const pointEnd = Number((instancesData.point_id_end as number[])?.[instIdx] ?? 0);
+      const instanceType = Number(
+        (instancesData.instance_type as number[])?.[instIdx] ?? 0,
+      );
+      const skeletonId = Number(
+        (instancesData.skeleton as number[])?.[instIdx] ?? 0,
+      );
+      const trackId = Number(
+        (instancesData.track as number[])?.[instIdx] ?? -1,
+      );
+      const pointStart = Number(
+        (instancesData.point_id_start as number[])?.[instIdx] ?? 0,
+      );
+      const pointEnd = Number(
+        (instancesData.point_id_end as number[])?.[instIdx] ?? 0,
+      );
       const score = Number((instancesData.score as number[])?.[instIdx] ?? 0);
-      const rawTrackingScore = formatId < 1.2 ? 0 : Number((instancesData.tracking_score as number[])?.[instIdx] ?? 0);
-      const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
-      const fromPredicted = Number((instancesData.from_predicted as number[])?.[instIdx] ?? -1);
-      const skeleton = skeletons[skeletonId] ?? skeletons[0] ?? new Skeleton({ nodes: [] });
+      const rawTrackingScore =
+        formatId < 1.2
+          ? 0
+          : Number((instancesData.tracking_score as number[])?.[instIdx] ?? 0);
+      const trackingScore = Number.isNaN(rawTrackingScore)
+        ? 0
+        : rawTrackingScore;
+      const fromPredicted = Number(
+        (instancesData.from_predicted as number[])?.[instIdx] ?? -1,
+      );
+      const skeleton =
+        skeletons[skeletonId] ?? skeletons[0] ?? new Skeleton({ nodes: [] });
       const track = trackId >= 0 ? tracks[trackId] : null;
 
       let instance: Instance | PredictedInstance;
       if (instanceType === 0) {
         const points = slicePoints(pointsData, pointStart, pointEnd);
-        instance = new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton, track, trackingScore });
+        instance = new Instance({
+          points: pointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          trackingScore,
+        });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -965,7 +1150,13 @@ function buildLabeledFrames(options: {
         }
       } else {
         const points = slicePoints(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({ points: predictedPointsFromArray(points, skeleton.nodeNames), skeleton, track, score, trackingScore });
+        instance = new PredictedInstance({
+          points: predictedPointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          score,
+          trackingScore,
+        });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -983,7 +1174,11 @@ function buildLabeledFrames(options: {
   for (const [instanceId, fromPredictedId] of fromPredictedPairs) {
     const instance = instanceById.get(instanceId);
     const predicted = instanceById.get(fromPredictedId);
-    if (instance && predicted instanceof PredictedInstance && instance instanceof Instance) {
+    if (
+      instance &&
+      predicted instanceof PredictedInstance &&
+      instance instanceof Instance
+    ) {
       instance.fromPredicted = predicted;
     }
   }
@@ -991,7 +1186,10 @@ function buildLabeledFrames(options: {
   return frames;
 }
 
-function buildVideoIdMap(framesData: Record<string, unknown[]>, videos: Video[]): Map<number, number> {
+function buildVideoIdMap(
+  framesData: Record<string, unknown[]>,
+  videos: Video[],
+): Map<number, number> {
   const videoIds = new Set<number>();
   for (const value of (framesData.video ?? []) as number[]) {
     videoIds.add(Number(value));
@@ -1010,7 +1208,8 @@ function buildVideoIdMap(framesData: Record<string, unknown[]>, videos: Video[])
   const map = new Map<number, number>();
   for (let index = 0; index < videos.length; index += 1) {
     const video = videos[index];
-    const dataset = (video.backendMetadata?.dataset as string | undefined) ?? "";
+    const dataset =
+      (video.backendMetadata?.dataset as string | undefined) ?? "";
     const parsedId = parseVideoIdFromDataset(dataset);
     if (parsedId != null) {
       map.set(parsedId, index);
@@ -1027,7 +1226,12 @@ function parseVideoIdFromDataset(dataset: string): number | null {
   return Number.isNaN(id) ? null : id;
 }
 
-function slicePoints(data: Record<string, unknown[]>, start: number, end: number, predicted = false): number[][] {
+function slicePoints(
+  data: Record<string, unknown[]>,
+  start: number,
+  end: number,
+  predicted = false,
+): number[][] {
   const xs = (data.x ?? []) as number[];
   const ys = (data.y ?? []) as number[];
   const visible = (data.visible ?? []) as number[];

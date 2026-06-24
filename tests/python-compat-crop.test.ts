@@ -89,14 +89,16 @@ function candidateRunners(): PyRunner[] {
   if (envPy) {
     runners.push({
       label: `$SLEAP_IO_PY (${envPy})`,
-      run: (s) => execFileSync(envPy, [s], { encoding: "utf-8", timeout: 60_000 }),
+      run: (s) =>
+        execFileSync(envPy, [s], { encoding: "utf-8", timeout: 60_000 }),
     });
   }
   const devVenv = "/home/talmo/code/sleap-io/.venv/bin/python";
   if (existsSync(devVenv)) {
     runners.push({
       label: `dev venv (${devVenv})`,
-      run: (s) => execFileSync(devVenv, [s], { encoding: "utf-8", timeout: 60_000 }),
+      run: (s) =>
+        execFileSync(devVenv, [s], { encoding: "utf-8", timeout: 60_000 }),
     });
   }
   runners.push({
@@ -154,9 +156,19 @@ describe("JS -> Python cross-compat: virtual crop (SLP 2.3)", () => {
         grayscale: true,
       },
     });
-    const inst = Instance.fromArray([[10, 20], [30, 40]], skel);
+    const inst = Instance.fromArray(
+      [
+        [10, 20],
+        [30, 40],
+      ],
+      skel,
+    );
     const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
-    const labels = new Labels({ skeletons: [skel], videos: [video], labeledFrames: [lf] });
+    const labels = new Labels({
+      skeletons: [skel],
+      videos: [video],
+      labeledFrames: [lf],
+    });
 
     const bytes = await saveSlpToBytes(labels);
     const slpPath = tmpFile(".slp");

@@ -43,7 +43,7 @@ export class MediaBunnyVideoBackend implements VideoBackend {
 
   static async fromUrl(
     url: string,
-    options?: MediaBunnyOptions
+    options?: MediaBunnyOptions,
   ): Promise<MediaBunnyVideoBackend> {
     const backend = new MediaBunnyVideoBackend(url, options);
     backend.input = new Input({
@@ -57,7 +57,7 @@ export class MediaBunnyVideoBackend implements VideoBackend {
   static async fromBlob(
     blob: Blob,
     filename: string,
-    options?: MediaBunnyOptions
+    options?: MediaBunnyOptions,
   ): Promise<MediaBunnyVideoBackend> {
     const backend = new MediaBunnyVideoBackend(filename, options);
     backend.input = new Input({
@@ -92,7 +92,7 @@ export class MediaBunnyVideoBackend implements VideoBackend {
       this._frameTimes = [];
       this.sink = null;
       throw new Error(
-        `Failed to build frame time index: ${error instanceof Error ? error.message : String(error)}`
+        `Failed to build frame time index: ${error instanceof Error ? error.message : String(error)}`,
       );
     }
 
@@ -137,7 +137,9 @@ export class MediaBunnyVideoBackend implements VideoBackend {
     return this.decodeSingleFrame(frameIndex);
   }
 
-  private async decodeSingleFrame(frameIndex: number): Promise<VideoFrame | null> {
+  private async decodeSingleFrame(
+    frameIndex: number,
+  ): Promise<VideoFrame | null> {
     if (!this.sink) throw new Error("Backend not initialized");
 
     const timestamp = this._frameTimes[frameIndex];
@@ -180,7 +182,10 @@ export class MediaBunnyVideoBackend implements VideoBackend {
     }
   }
 
-  async getFrames(startIndex: number, endIndex: number): Promise<Map<number, ImageBitmap>> {
+  async getFrames(
+    startIndex: number,
+    endIndex: number,
+  ): Promise<Map<number, ImageBitmap>> {
     await this.prefetch(startIndex, endIndex);
 
     const result = new Map<number, ImageBitmap>();
@@ -193,7 +198,10 @@ export class MediaBunnyVideoBackend implements VideoBackend {
     return result;
   }
 
-  private async decodeRange(startIndex: number, endIndex: number): Promise<void> {
+  private async decodeRange(
+    startIndex: number,
+    endIndex: number,
+  ): Promise<void> {
     if (!this.sink) throw new Error("Backend not initialized");
 
     const sink = this.sink;

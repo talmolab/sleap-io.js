@@ -43,8 +43,14 @@ function reconstructValue(data: unknown): unknown {
     };
 
     if (typed.type === "typedarray" && typed.buffer) {
-      const TypedArrayConstructor = getTypedArrayConstructor(typed.dtype || "Uint8Array");
-      return new TypedArrayConstructor(typed.buffer, typed.byteOffset || 0, typed.length);
+      const TypedArrayConstructor = getTypedArrayConstructor(
+        typed.dtype || "Uint8Array",
+      );
+      return new TypedArrayConstructor(
+        typed.buffer,
+        typed.byteOffset || 0,
+        typed.length,
+      );
     }
 
     if (typed.type === "arraybuffer" && typed.buffer) {
@@ -56,9 +62,20 @@ function reconstructValue(data: unknown): unknown {
 }
 
 function getTypedArrayConstructor(
-  name: string
-): new (buffer: ArrayBuffer, byteOffset: number, length?: number) => ArrayBufferView {
-  const constructors: Record<string, new (buffer: ArrayBuffer, byteOffset: number, length?: number) => ArrayBufferView> = {
+  name: string,
+): new (
+  buffer: ArrayBuffer,
+  byteOffset: number,
+  length?: number,
+) => ArrayBufferView {
+  const constructors: Record<
+    string,
+    new (
+      buffer: ArrayBuffer,
+      byteOffset: number,
+      length?: number,
+    ) => ArrayBufferView
+  > = {
     Int8Array,
     Uint8Array,
     Uint8ClampedArray,
@@ -85,7 +102,10 @@ export class StreamingH5File {
   private messageId = 0;
   private pendingMessages = new Map<
     number,
-    { resolve: (value: H5WorkerResponse) => void; reject: (error: Error) => void }
+    {
+      resolve: (value: H5WorkerResponse) => void;
+      reject: (error: Error) => void;
+    }
   >();
   private _keys: string[] = [];
   private _isOpen = false;
@@ -127,7 +147,7 @@ export class StreamingH5File {
 
   private send(
     type: H5WorkerMessage["type"],
-    payload?: Record<string, unknown>
+    payload?: Record<string, unknown>,
   ): Promise<H5WorkerResponse> {
     return new Promise((resolve, reject) => {
       const id = ++this.messageId;
@@ -153,7 +173,8 @@ export class StreamingH5File {
     // Initialize if not already done
     await this.init(options);
 
-    const filename = options?.filenameHint || url.split("/").pop()?.split("?")[0] || "data.h5";
+    const filename =
+      options?.filenameHint || url.split("/").pop()?.split("?")[0] || "data.h5";
     const result = await this.send("openUrl", { url, filename });
     this._keys = (result.keys as string[]) || [];
     this._isOpen = true;
@@ -181,7 +202,10 @@ export class StreamingH5File {
    * @param buffer - ArrayBuffer or Uint8Array containing the HDF5 file data
    * @param options - Optional settings
    */
-  async openBuffer(buffer: ArrayBuffer | Uint8Array, options?: StreamingH5Options): Promise<void> {
+  async openBuffer(
+    buffer: ArrayBuffer | Uint8Array,
+    options?: StreamingH5Options,
+  ): Promise<void> {
     // Initialize if not already done
     await this.init(options);
 
@@ -199,7 +223,10 @@ export class StreamingH5File {
    * @param source - URL string, File, ArrayBuffer, or Uint8Array
    * @param options - Optional settings
    */
-  async openAny(source: StreamingH5Source, options?: StreamingH5Options): Promise<void> {
+  async openAny(
+    source: StreamingH5Source,
+    options?: StreamingH5Options,
+  ): Promise<void> {
     if (typeof source === "string") {
       return this.open(source, options);
     }
@@ -253,7 +280,9 @@ export class StreamingH5File {
   /**
    * Get dataset metadata (shape, dtype) without reading values.
    */
-  async getDatasetMeta(path: string): Promise<{ shape: number[]; dtype: string }> {
+  async getDatasetMeta(
+    path: string,
+  ): Promise<{ shape: number[]; dtype: string }> {
     const result = await this.send("getDatasetMeta", { path });
     const meta = result.meta as { shape: number[]; dtype: string };
     return meta;
@@ -267,10 +296,14 @@ export class StreamingH5File {
    */
   async getDatasetValue(
     path: string,
-    slice?: Array<[number, number] | []>
+    slice?: Array<[number, number] | []>,
   ): Promise<{ value: unknown; shape: number[]; dtype: string }> {
     const result = await this.send("getDatasetValue", { path, slice });
-    const data = result.data as { value: unknown; shape: number[]; dtype: string };
+    const data = result.data as {
+      value: unknown;
+      shape: number[];
+      dtype: string;
+    };
     return {
       value: reconstructValue(data.value),
       shape: data.shape,
@@ -295,7 +328,11 @@ export class StreamingH5File {
  * Check if streaming via Web Worker is supported in the current environment.
  */
 export function isStreamingSupported(): boolean {
-  return typeof Worker !== "undefined" && typeof Blob !== "undefined" && typeof URL !== "undefined";
+  return (
+    typeof Worker !== "undefined" &&
+    typeof Blob !== "undefined" &&
+    typeof URL !== "undefined"
+  );
 }
 
 /**
@@ -307,7 +344,7 @@ export function isStreamingSupported(): boolean {
  */
 export async function openStreamingH5(
   url: string,
-  options?: StreamingH5Options
+  options?: StreamingH5Options,
 ): Promise<StreamingH5File> {
   if (!isStreamingSupported()) {
     throw new Error("Streaming HDF5 requires Web Worker support");
@@ -342,7 +379,7 @@ export async function openStreamingH5(
  */
 export async function openH5Worker(
   source: StreamingH5Source,
-  options?: StreamingH5Options
+  options?: StreamingH5Options,
 ): Promise<StreamingH5File> {
   if (!isStreamingSupported()) {
     throw new Error("Web Worker HDF5 access requires Worker/Blob/URL support");

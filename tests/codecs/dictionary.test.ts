@@ -1,7 +1,11 @@
 import { describe, it, expect } from "../bun-test";
 import { loadSlp } from "../../src/io/main.js";
 import { toDict, fromDict } from "../../src/codecs/dictionary.js";
-import { Instance, PredictedInstance, Track } from "../../src/model/instance.js";
+import {
+  Instance,
+  PredictedInstance,
+  Track,
+} from "../../src/model/instance.js";
 import { LabeledFrame } from "../../src/model/labeled-frame.js";
 import { Labels } from "../../src/model/labels.js";
 import { Skeleton } from "../../src/model/skeleton.js";
@@ -13,7 +17,9 @@ import path from "node:path";
 const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 
 async function loadFixture(filename: string) {
-  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false });
+  return loadSlp(path.join(fixtureRoot, "slp", filename), {
+    openVideos: false,
+  });
 }
 
 describe("dictionary codec", () => {
@@ -56,7 +62,9 @@ describe("dictionary codec", () => {
       expect(frame.video_idx).toBe(0);
     });
 
-    const nonEmptyCount = labels.labeledFrames.filter((lf) => lf.instances.length > 0).length;
+    const nonEmptyCount = labels.labeledFrames.filter(
+      (lf) => lf.instances.length > 0,
+    ).length;
     const skipped = toDict(labels, { skipEmptyFrames: true });
     expect(skipped.labeled_frames.length).toBe(nonEmptyCount);
   });
@@ -86,8 +94,15 @@ describe("dictionary codec", () => {
       score: 0.8,
     });
 
-    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [instance1, instance2] });
-    const labels = new Labels({ labeledFrames: [lf], tracks: [track1, track2] });
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instance1, instance2],
+    });
+    const labels = new Labels({
+      labeledFrames: [lf],
+      tracks: [track1, track2],
+    });
 
     const data = toDict(labels);
     expect(data.tracks.length).toBe(2);
@@ -110,7 +125,11 @@ describe("dictionary codec", () => {
       ],
       skeleton,
     });
-    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [instance] })] });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 0, instances: [instance] }),
+      ],
+    });
     labels.provenance = { source: "test", metadata: { key: "value" } };
 
     const data = toDict(labels);
@@ -132,7 +151,12 @@ describe("dictionary codec", () => {
     const skeleton = new Skeleton({ nodes: ["node1"] });
     const video = new Video({ filename: "test.mp4" });
     const track = new Track("animal1");
-    const instance = PredictedInstance.fromNumpy({ pointsData: [[1, 2]], skeleton, track, score: 0.95 });
+    const instance = PredictedInstance.fromNumpy({
+      pointsData: [[1, 2]],
+      skeleton,
+      track,
+      score: 0.95,
+    });
     const lf = new LabeledFrame({ video, frameIdx: 0, instances: [instance] });
     const labels = new Labels({ labeledFrames: [lf], tracks: [track] });
     labels.suggestions = [new SuggestionFrame({ video, frameIdx: 10 })];
@@ -156,7 +180,9 @@ describe("dictionary codec", () => {
     const labels = fromDict(data);
     expect(labels.labeledFrames.length).toBe(0);
 
-    expect(() => fromDict({ skeletons: [] } as any)).toThrow(/Missing required key/);
+    expect(() => fromDict({ skeletons: [] } as any)).toThrow(
+      /Missing required key/,
+    );
   });
 
   it("serializes tracking_score and from_predicted flag", () => {
@@ -164,13 +190,29 @@ describe("dictionary codec", () => {
     const video = new Video({ filename: "test.mp4" });
     const track = new Track("animal1");
 
-    const predicted = PredictedInstance.fromNumpy({ pointsData: [[5, 6]], skeleton, track, score: 0.9 });
-    const user = Instance.fromNumpy({ pointsData: [[1, 2]], skeleton, track, fromPredicted: predicted });
+    const predicted = PredictedInstance.fromNumpy({
+      pointsData: [[5, 6]],
+      skeleton,
+      track,
+      score: 0.9,
+    });
+    const user = Instance.fromNumpy({
+      pointsData: [[1, 2]],
+      skeleton,
+      track,
+      fromPredicted: predicted,
+    });
     user.trackingScore = 0.85;
 
-    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [predicted, user] })] });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 0, instances: [predicted, user] }),
+      ],
+    });
     const data = toDict(labels);
-    const userDict = data.labeled_frames[0].instances.find((inst) => inst.type === "instance") as any;
+    const userDict = data.labeled_frames[0].instances.find(
+      (inst) => inst.type === "instance",
+    ) as any;
     expect(userDict.has_from_predicted).toBe(true);
     expect(userDict.tracking_score).toBeCloseTo(0.85);
   });
@@ -179,11 +221,18 @@ describe("dictionary codec", () => {
     const skeleton = new Skeleton({ nodes: ["node1"] });
     const video = new Video({
       filename: "test.mp4",
-      backend: { constructor: { name: "MediaVideo" }, shape: [1, 384, 384, 1] } as any,
+      backend: {
+        constructor: { name: "MediaVideo" },
+        shape: [1, 384, 384, 1],
+      } as any,
     });
 
     const instance = Instance.fromNumpy({ pointsData: [[1, 2]], skeleton });
-    const labels = new Labels({ labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [instance] })] });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 0, instances: [instance] }),
+      ],
+    });
     const data = toDict(labels);
 
     const videoDict = data.videos[0];
@@ -202,11 +251,34 @@ describe("dictionary codec", () => {
   it("preserves negative frames in round-trip", () => {
     const skeleton = new Skeleton({ nodes: ["node1", "node2"] });
     const video = new Video({ filename: "test.mp4" });
-    const instance = Instance.fromNumpy({ pointsData: [[1, 2], [3, 4]], skeleton });
-    const normalFrame = new LabeledFrame({ video, frameIdx: 0, instances: [instance] });
-    const negativeFrame = new LabeledFrame({ video, frameIdx: 5, isNegative: true });
-    const negativeWithInst = new LabeledFrame({ video, frameIdx: 10, instances: [instance], isNegative: true });
-    const labels = new Labels({ labeledFrames: [normalFrame, negativeFrame, negativeWithInst], videos: [video], skeletons: [skeleton] });
+    const instance = Instance.fromNumpy({
+      pointsData: [
+        [1, 2],
+        [3, 4],
+      ],
+      skeleton,
+    });
+    const normalFrame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instance],
+    });
+    const negativeFrame = new LabeledFrame({
+      video,
+      frameIdx: 5,
+      isNegative: true,
+    });
+    const negativeWithInst = new LabeledFrame({
+      video,
+      frameIdx: 10,
+      instances: [instance],
+      isNegative: true,
+    });
+    const labels = new Labels({
+      labeledFrames: [normalFrame, negativeFrame, negativeWithInst],
+      videos: [video],
+      skeletons: [skeleton],
+    });
 
     const dict = toDict(labels);
     expect(dict.labeled_frames[0].is_negative).toBeUndefined();
@@ -223,10 +295,22 @@ describe("dictionary codec", () => {
     const skeleton = new Skeleton({ nodes: ["node1"] });
     const video = new Video({ filename: "test.mp4" });
     const instance = Instance.fromNumpy({ pointsData: [[1, 2]], skeleton });
-    const normalFrame = new LabeledFrame({ video, frameIdx: 0, instances: [instance] });
+    const normalFrame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [instance],
+    });
     const emptyFrame = new LabeledFrame({ video, frameIdx: 1 }); // empty, not negative
-    const negativeFrame = new LabeledFrame({ video, frameIdx: 2, isNegative: true }); // empty but negative
-    const labels = new Labels({ labeledFrames: [normalFrame, emptyFrame, negativeFrame], videos: [video], skeletons: [skeleton] });
+    const negativeFrame = new LabeledFrame({
+      video,
+      frameIdx: 2,
+      isNegative: true,
+    }); // empty but negative
+    const labels = new Labels({
+      labeledFrames: [normalFrame, emptyFrame, negativeFrame],
+      videos: [video],
+      skeletons: [skeleton],
+    });
 
     const dict = toDict(labels, { skipEmptyFrames: true });
     // emptyFrame should be dropped, but negativeFrame should be kept

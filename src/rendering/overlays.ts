@@ -203,10 +203,10 @@ export function drawLabelImage(
   const labH = labels.height;
   const labW = labels.width;
   // Prefer explicit opts, then the object's own transform, else identity.
-  const scale: [number, number] =
-    opts?.scale ?? (labels as LabelImage).scale ?? [1, 1];
-  const offset: [number, number] =
-    opts?.offset ?? (labels as LabelImage).offset ?? [0, 0];
+  const scale: [number, number] = opts?.scale ??
+    (labels as LabelImage).scale ?? [1, 1];
+  const offset: [number, number] = opts?.offset ??
+    (labels as LabelImage).offset ?? [0, 0];
 
   // Unique non-background labels and max id.
   let maxId = 0;
@@ -442,7 +442,12 @@ function configureStroke(
 export function drawBboxes(
   image: ImageData,
   bboxes: BoundingBox[],
-  opts?: { color?: RGB; colors?: RGB[]; lineWidth?: number; fillAlpha?: number },
+  opts?: {
+    color?: RGB;
+    colors?: RGB[];
+    lineWidth?: number;
+    fillAlpha?: number;
+  },
 ): ImageData {
   if (bboxes.length === 0) return image;
 
@@ -500,7 +505,12 @@ export function drawBboxes(
 export function drawRois(
   image: ImageData,
   rois: ROI[],
-  opts?: { color?: RGB; colors?: RGB[]; lineWidth?: number; fillAlpha?: number },
+  opts?: {
+    color?: RGB;
+    colors?: RGB[];
+    lineWidth?: number;
+    fillAlpha?: number;
+  },
 ): ImageData {
   if (rois.length === 0) return image;
 
@@ -557,7 +567,13 @@ function drawGeometry(
     case "Point": {
       const radius = Math.max(lineWidth, 2);
       ctx.beginPath();
-      ctx.arc(geometry.coordinates[0], geometry.coordinates[1], radius, 0, Math.PI * 2);
+      ctx.arc(
+        geometry.coordinates[0],
+        geometry.coordinates[1],
+        radius,
+        0,
+        Math.PI * 2,
+      );
       ctx.fillStyle = rgbToCSS(rgb);
       ctx.fill();
       break;
@@ -601,7 +617,10 @@ function drawGeometry(
  * cut holes out of the exterior. Port of `_polygon_to_path` (overlays.py
  * L583-620).
  */
-function polygonToPath(ctx: CanvasRenderingContext2D, rings: number[][][]): void {
+function polygonToPath(
+  ctx: CanvasRenderingContext2D,
+  rings: number[][][],
+): void {
   ctx.beginPath();
   for (const ring of rings) {
     if (ring.length === 0) continue;

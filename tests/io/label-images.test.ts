@@ -2,7 +2,11 @@ import { describe, it, expect } from "../bun-test";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
-import { loadLabelImages, inferAxes, inferLabelIdsFromPages } from "../../src/io/label-images";
+import {
+  loadLabelImages,
+  inferAxes,
+  inferLabelIdsFromPages,
+} from "../../src/io/label-images";
 import "../../src/io/label-images-node"; // register node:fs reader
 import { Track } from "../../src/model/instance";
 
@@ -48,7 +52,8 @@ function makeTiff(pages: PageSpec[]): Uint8Array {
       if (cursor % 2 !== 0) cursor += 1;
     }
     const bytesPerSample = p.bitsPerSample / 8;
-    const stripBytes = p.width * p.height * (p.samplesPerPixel ?? 1) * bytesPerSample;
+    const stripBytes =
+      p.width * p.height * (p.samplesPerPixel ?? 1) * bytesPerSample;
     const stripOffset = cursor;
     cursor += stripBytes;
     if (cursor % 2 !== 0) cursor += 1;
@@ -67,21 +72,46 @@ function makeTiff(pages: PageSpec[]): Uint8Array {
     const L = layout[i];
     const p = L.p;
     const nextIFD = i + 1 < layout.length ? layout[i + 1].ifdOffset : 0;
-    const entries: { tag: number; type: number; count: number; value: number }[] = [];
+    const entries: {
+      tag: number;
+      type: number;
+      count: number;
+      value: number;
+    }[] = [];
     entries.push({ tag: 256, type: TYPE_SHORT, count: 1, value: p.width });
     entries.push({ tag: 257, type: TYPE_SHORT, count: 1, value: p.height });
-    entries.push({ tag: 258, type: TYPE_SHORT, count: 1, value: p.bitsPerSample });
+    entries.push({
+      tag: 258,
+      type: TYPE_SHORT,
+      count: 1,
+      value: p.bitsPerSample,
+    });
     entries.push({ tag: 259, type: TYPE_SHORT, count: 1, value: 1 }); // no compression
     entries.push({ tag: 262, type: TYPE_SHORT, count: 1, value: 1 }); // BlackIsZero
     if (p.description !== undefined) {
-      entries.push({ tag: 270, type: TYPE_ASCII, count: L.descBytes, value: L.descOffset });
+      entries.push({
+        tag: 270,
+        type: TYPE_ASCII,
+        count: L.descBytes,
+        value: L.descOffset,
+      });
     }
     entries.push({ tag: 273, type: TYPE_LONG, count: 1, value: L.stripOffset });
-    entries.push({ tag: 277, type: TYPE_SHORT, count: 1, value: p.samplesPerPixel ?? 1 });
+    entries.push({
+      tag: 277,
+      type: TYPE_SHORT,
+      count: 1,
+      value: p.samplesPerPixel ?? 1,
+    });
     entries.push({ tag: 278, type: TYPE_SHORT, count: 1, value: p.height });
     entries.push({ tag: 279, type: TYPE_LONG, count: 1, value: L.stripBytes });
     if (p.sampleFormat !== undefined) {
-      entries.push({ tag: 339, type: TYPE_SHORT, count: 1, value: p.sampleFormat });
+      entries.push({
+        tag: 339,
+        type: TYPE_SHORT,
+        count: 1,
+        value: p.sampleFormat,
+      });
     }
     entries.sort((a, b) => a.tag - b.tag);
 
@@ -108,11 +138,14 @@ function makeTiff(pages: PageSpec[]): Uint8Array {
       buf[L.descOffset + enc.length] = 0;
     }
     if (p.bitsPerSample === 8) {
-      for (let k = 0; k < p.pixels.length; k++) buf[L.stripOffset + k] = p.pixels[k] & 0xff;
+      for (let k = 0; k < p.pixels.length; k++)
+        buf[L.stripOffset + k] = p.pixels[k] & 0xff;
     } else if (p.bitsPerSample === 16) {
-      for (let k = 0; k < p.pixels.length; k++) dv.setUint16(L.stripOffset + k * 2, p.pixels[k] & 0xffff, LE);
+      for (let k = 0; k < p.pixels.length; k++)
+        dv.setUint16(L.stripOffset + k * 2, p.pixels[k] & 0xffff, LE);
     } else {
-      for (let k = 0; k < p.pixels.length; k++) dv.setUint32(L.stripOffset + k * 4, p.pixels[k] >>> 0, LE);
+      for (let k = 0; k < p.pixels.length; k++)
+        dv.setUint32(L.stripOffset + k * 4, p.pixels[k] >>> 0, LE);
     }
   }
   return buf;
@@ -127,7 +160,8 @@ function page(rows: number[][], opts?: Partial<PageSpec>): PageSpec {
   return { width, height, bitsPerSample: 8, pixels, ...opts };
 }
 
-const blobOf = (bytes: Uint8Array): Blob => new Blob([bytes.buffer as ArrayBuffer]);
+const blobOf = (bytes: Uint8Array): Blob =>
+  new Blob([bytes.buffer as ArrayBuffer]);
 
 // ---------------------------------------------------------------------------
 // Pure helpers
@@ -141,24 +175,31 @@ describe("inferAxes", () => {
     expect(inferAxes(undefined, 3)).toBe("unknown");
   });
   it("ImageJ multi-channel single-frame is CYX", () => {
-    expect(inferAxes("ImageJ=1.53\nimages=3\nchannels=3\nslices=1\nframes=1\n", 3)).toBe("CYX");
+    expect(
+      inferAxes("ImageJ=1.53\nimages=3\nchannels=3\nslices=1\nframes=1\n", 3),
+    ).toBe("CYX");
   });
   it("ImageJ z/time stack is TYX", () => {
     expect(inferAxes("ImageJ=1.53\nimages=3\nslices=3\n", 3)).toBe("TYX");
     expect(inferAxes("ImageJ=1.53\nimages=4\nframes=4\n", 4)).toBe("TYX");
   });
   it("ImageJ channels+frames is TCYX", () => {
-    expect(inferAxes("ImageJ=1.53\nimages=4\nchannels=2\nframes=2\n", 4)).toBe("TCYX");
+    expect(inferAxes("ImageJ=1.53\nimages=4\nchannels=2\nframes=2\n", 4)).toBe(
+      "TCYX",
+    );
   });
   it("OME SizeC>1 single timepoint is CYX", () => {
-    const ome = '<?xml version="1.0"?><OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"><Image><Pixels SizeC="3" SizeT="1" SizeZ="1" SizeX="4" SizeY="4" DimensionOrder="XYCZT"/></Image></OME>';
+    const ome =
+      '<?xml version="1.0"?><OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"><Image><Pixels SizeC="3" SizeT="1" SizeZ="1" SizeX="4" SizeY="4" DimensionOrder="XYCZT"/></Image></OME>';
     expect(inferAxes(ome, 3)).toBe("CYX");
   });
 });
 
 describe("inferLabelIdsFromPages", () => {
   it("preserves distinct single-class page IDs", () => {
-    expect(inferLabelIdsFromPages([[[5, 0]], [[0, 17]], [[99, 0]]])).toEqual([5, 17, 99]);
+    expect(inferLabelIdsFromPages([[[5, 0]], [[0, 17]], [[99, 0]]])).toEqual([
+      5, 17, 99,
+    ]);
   });
   it("returns null for colliding IDs (purely binary)", () => {
     expect(inferLabelIdsFromPages([[[1, 0]], [[0, 1]]])).toBeNull();
@@ -174,7 +215,12 @@ describe("inferLabelIdsFromPages", () => {
 
 describe("loadLabelImages — time mode", () => {
   it("reads a single page as one label image", async () => {
-    const tiff = makeTiff([page([[0, 1], [2, 0]])]);
+    const tiff = makeTiff([
+      page([
+        [0, 1],
+        [2, 0],
+      ]),
+    ]);
     const lis = await loadLabelImages(blobOf(tiff));
     expect(lis).toHaveLength(1);
     expect(lis[0].height).toBe(2);
@@ -185,9 +231,18 @@ describe("loadLabelImages — time mode", () => {
   it("preserves per-page integer values across a multi-page time stack", async () => {
     // Each page has 2+ distinct labels -> not a class stack -> time, no warning.
     const tiff = makeTiff([
-      page([[0, 1], [2, 0]]),
-      page([[3, 0], [0, 4]]),
-      page([[5, 6], [0, 0]]),
+      page([
+        [0, 1],
+        [2, 0],
+      ]),
+      page([
+        [3, 0],
+        [0, 4],
+      ]),
+      page([
+        [5, 6],
+        [0, 0],
+      ]),
     ]);
     const lis = await loadLabelImages(blobOf(tiff), { pagesAs: "time" });
     expect(lis).toHaveLength(3);
@@ -197,37 +252,75 @@ describe("loadLabelImages — time mode", () => {
   });
 
   it("uint16 values survive intact", async () => {
-    const tiff = makeTiff([page([[0, 60000], [300, 0]], { bitsPerSample: 16 })]);
+    const tiff = makeTiff([
+      page(
+        [
+          [0, 60000],
+          [300, 0],
+        ],
+        { bitsPerSample: 16 },
+      ),
+    ]);
     const lis = await loadLabelImages(blobOf(tiff), { pagesAs: "time" });
     expect(lis[0].labelIds).toEqual([300, 60000]);
   });
 
   it("createTracks:false yields no tracks; true auto-creates shared tracks", async () => {
-    const tiff = makeTiff([page([[0, 1], [2, 0]]), page([[1, 0], [0, 2]])]);
+    const tiff = makeTiff([
+      page([
+        [0, 1],
+        [2, 0],
+      ]),
+      page([
+        [1, 0],
+        [0, 2],
+      ]),
+    ]);
     const trackless = await loadLabelImages(blobOf(tiff), { pagesAs: "time" });
     expect(trackless[0].tracks).toEqual([]);
 
-    const tracked = await loadLabelImages(blobOf(tiff), { pagesAs: "time", createTracks: true });
+    const tracked = await loadLabelImages(blobOf(tiff), {
+      pagesAs: "time",
+      createTracks: true,
+    });
     expect(tracked[0].tracks).toHaveLength(2);
     // Shared Track objects across frames (same label IDs).
-    expect(tracked[0].objects.get(1)!.track).toBe(tracked[1].objects.get(1)!.track);
+    expect(tracked[0].objects.get(1)!.track).toBe(
+      tracked[1].objects.get(1)!.track,
+    );
   });
 
   it("applies categories by label ID (Map) in time mode", async () => {
-    const tiff = makeTiff([page([[0, 1], [2, 0]])]);
+    const tiff = makeTiff([
+      page([
+        [0, 1],
+        [2, 0],
+      ]),
+    ]);
     const lis = await loadLabelImages(blobOf(tiff), {
       pagesAs: "time",
-      categories: new Map([[1, "cell"], [2, "nucleus"]]),
+      categories: new Map([
+        [1, "cell"],
+        [2, "nucleus"],
+      ]),
     });
     expect(lis[0].objects.get(1)!.category).toBe("cell");
     expect(lis[0].objects.get(2)!.category).toBe("nucleus");
   });
 
   it("honors explicit tracks (positional)", async () => {
-    const tiff = makeTiff([page([[0, 1], [2, 0]])]);
+    const tiff = makeTiff([
+      page([
+        [0, 1],
+        [2, 0],
+      ]),
+    ]);
     const a = new Track("A");
     const b = new Track("B");
-    const lis = await loadLabelImages(blobOf(tiff), { pagesAs: "time", tracks: [a, b] });
+    const lis = await loadLabelImages(blobOf(tiff), {
+      pagesAs: "time",
+      tracks: [a, b],
+    });
     expect(lis[0].objects.get(1)!.track).toBe(a);
     expect(lis[0].objects.get(2)!.track).toBe(b);
   });
@@ -240,9 +333,18 @@ describe("loadLabelImages — time mode", () => {
 describe("loadLabelImages — classes mode", () => {
   it("composites single-class pages and preserves distinct COCO IDs", async () => {
     const tiff = makeTiff([
-      page([[5, 0], [0, 0]]),
-      page([[0, 17], [0, 0]]),
-      page([[0, 0], [99, 0]]),
+      page([
+        [5, 0],
+        [0, 0],
+      ]),
+      page([
+        [0, 17],
+        [0, 0],
+      ]),
+      page([
+        [0, 0],
+        [99, 0],
+      ]),
     ]);
     const lis = await loadLabelImages(blobOf(tiff), { pagesAs: "classes" });
     expect(lis).toHaveLength(1);
@@ -251,9 +353,18 @@ describe("loadLabelImages — classes mode", () => {
 
   it("renumbers positionally 1..N for purely-binary pages", async () => {
     const tiff = makeTiff([
-      page([[1, 0], [0, 0]]),
-      page([[0, 1], [0, 0]]),
-      page([[0, 0], [1, 0]]),
+      page([
+        [1, 0],
+        [0, 0],
+      ]),
+      page([
+        [0, 1],
+        [0, 0],
+      ]),
+      page([
+        [0, 0],
+        [1, 0],
+      ]),
     ]);
     const lis = await loadLabelImages(blobOf(tiff), { pagesAs: "classes" });
     expect(lis[0].labelIds).toEqual([1, 2, 3]);
@@ -276,7 +387,8 @@ describe("loadLabelImages — classes mode", () => {
 
 describe("loadLabelImages — auto detection", () => {
   it("ImageJ CYX metadata routes to classes (1 image)", async () => {
-    const desc = "ImageJ=1.53\nimages=3\nchannels=3\nslices=1\nframes=1\nhyperstack=true\n";
+    const desc =
+      "ImageJ=1.53\nimages=3\nchannels=3\nslices=1\nframes=1\nhyperstack=true\n";
     // Distinct pixel positions per class so composited IDs don't overlap.
     const tiff = makeTiff([
       page([[5, 0, 0]], { description: desc }),
@@ -300,8 +412,12 @@ describe("loadLabelImages — auto detection", () => {
   });
 
   it("OME CYX metadata routes to classes", async () => {
-    const ome = '<?xml version="1.0"?><OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"><Image><Pixels SizeC="2" SizeT="1" SizeZ="1"/></Image></OME>';
-    const tiff = makeTiff([page([[7, 0]], { description: ome }), page([[0, 8]])]);
+    const ome =
+      '<?xml version="1.0"?><OME xmlns="http://www.openmicroscopy.org/Schemas/OME/2016-06"><Image><Pixels SizeC="2" SizeT="1" SizeZ="1"/></Image></OME>';
+    const tiff = makeTiff([
+      page([[7, 0]], { description: ome }),
+      page([[0, 8]]),
+    ]);
     const lis = await loadLabelImages(blobOf(tiff));
     expect(lis).toHaveLength(1);
     expect(lis[0].labelIds).toEqual([7, 8]);
@@ -324,12 +440,18 @@ describe("loadLabelImages — auto detection", () => {
     const orig = console.warn;
     console.warn = (...args: unknown[]) => warnings.push(String(args[0]));
     try {
-      const lis = await loadLabelImages(blobOf(tiff), { source: "ambiguous-uniq.tif" });
+      const lis = await loadLabelImages(blobOf(tiff), {
+        source: "ambiguous-uniq.tif",
+      });
       expect(lis).toHaveLength(3); // routed to time
     } finally {
       console.warn = orig;
     }
-    expect(warnings.some((w) => /multi-page TIFF/.test(w) && /pagesAs: 'classes'/.test(w))).toBe(true);
+    expect(
+      warnings.some(
+        (w) => /multi-page TIFF/.test(w) && /pagesAs: 'classes'/.test(w),
+      ),
+    ).toBe(true);
   });
 });
 
@@ -345,40 +467,62 @@ describe("loadLabelImages — frames, errors, paths", () => {
       page([[5, 6]]),
       page([[7, 8]]),
     ]);
-    const lis = await loadLabelImages(blobOf(tiff), { pagesAs: "time", frames: [0, 2] });
+    const lis = await loadLabelImages(blobOf(tiff), {
+      pagesAs: "time",
+      frames: [0, 2],
+    });
     expect(lis).toHaveLength(2);
     expect(lis[0].labelIds).toEqual([1, 2]);
     expect(lis[1].labelIds).toEqual([5, 6]);
   });
 
   it("throws a clear error for 32-bit integer TIFFs", async () => {
-    const tiff = makeTiff([page([[1, 2], [3, 4]], { bitsPerSample: 32, sampleFormat: 1 })]);
-    await expect(loadLabelImages(blobOf(tiff), { pagesAs: "time" })).rejects.toThrow(
-      /8- and 16-bit unsigned/
-    );
+    const tiff = makeTiff([
+      page(
+        [
+          [1, 2],
+          [3, 4],
+        ],
+        { bitsPerSample: 32, sampleFormat: 1 },
+      ),
+    ]);
+    await expect(
+      loadLabelImages(blobOf(tiff), { pagesAs: "time" }),
+    ).rejects.toThrow(/8- and 16-bit unsigned/);
   });
 
   it("rejects floating-point TIFFs (not silently truncated)", async () => {
-    const tiff = makeTiff([page([[1, 2], [3, 4]], { bitsPerSample: 32, sampleFormat: 3 })]);
-    await expect(loadLabelImages(blobOf(tiff), { pagesAs: "time" })).rejects.toThrow(
-      /Floating-point/
-    );
+    const tiff = makeTiff([
+      page(
+        [
+          [1, 2],
+          [3, 4],
+        ],
+        { bitsPerSample: 32, sampleFormat: 3 },
+      ),
+    ]);
+    await expect(
+      loadLabelImages(blobOf(tiff), { pagesAs: "time" }),
+    ).rejects.toThrow(/Floating-point/);
   });
 
   it("rejects multi-channel (RGB) TIFFs", async () => {
     const tiff = makeTiff([
       { width: 2, height: 1, bitsPerSample: 8, samplesPerPixel: 3, pixels: [] },
     ]);
-    await expect(loadLabelImages(blobOf(tiff), { pagesAs: "time" })).rejects.toThrow(
-      /single-channel/
-    );
+    await expect(
+      loadLabelImages(blobOf(tiff), { pagesAs: "time" }),
+    ).rejects.toThrow(/single-channel/);
   });
 
   it("assigns class-mode categories from a Map (positional 1..N keys)", async () => {
     const tiff = makeTiff([page([[7, 0]]), page([[0, 8]])]);
     const lis = await loadLabelImages(blobOf(tiff), {
       pagesAs: "classes",
-      categories: new Map([[1, "cell"], [2, "debris"]]),
+      categories: new Map([
+        [1, "cell"],
+        [2, "debris"],
+      ]),
     });
     // Categories key by positional post-composite IDs 1..N, even though the
     // preserved label IDs are 7 and 8.
@@ -388,7 +532,10 @@ describe("loadLabelImages — frames, errors, paths", () => {
 
   it("ignores out-of-range frame indices", async () => {
     const tiff = makeTiff([page([[1, 2]]), page([[3, 4]]), page([[5, 6]])]);
-    const lis = await loadLabelImages(blobOf(tiff), { pagesAs: "time", frames: [0, 5, 2] });
+    const lis = await loadLabelImages(blobOf(tiff), {
+      pagesAs: "time",
+      frames: [0, 5, 2],
+    });
     expect(lis).toHaveLength(2); // 5 is out of range -> dropped
     expect(lis[0].labelIds).toEqual([1, 2]);
     expect(lis[1].labelIds).toEqual([5, 6]);
@@ -400,7 +547,10 @@ describe("loadLabelImages — frames, errors, paths", () => {
     fs.writeFileSync(path.join(dir, "01.tif"), makeTiff([page([[0, 2]])]));
     fs.writeFileSync(path.join(dir, "02.tif"), makeTiff([page([[3, 0]])]));
     try {
-      const lis = await loadLabelImages(dir, { pagesAs: "time", frames: [0, 2] });
+      const lis = await loadLabelImages(dir, {
+        pagesAs: "time",
+        frames: [0, 2],
+      });
       expect(lis).toHaveLength(2);
       expect(lis[0].labelIds).toEqual([1]);
       expect(lis[1].labelIds).toEqual([3]);
@@ -421,13 +571,22 @@ describe("loadLabelImages — frames, errors, paths", () => {
   it("throws on an invalid pagesAs value", async () => {
     const tiff = makeTiff([page([[1, 0]])]);
     // @ts-expect-error testing runtime validation
-    await expect(loadLabelImages(blobOf(tiff), { pagesAs: "bogus" })).rejects.toThrow(
-      "pagesAs must be"
-    );
+    await expect(
+      loadLabelImages(blobOf(tiff), { pagesAs: "bogus" }),
+    ).rejects.toThrow("pagesAs must be");
   });
 
   it("reads a .tif from a path (node:fs reader)", async () => {
-    const tiff = makeTiff([page([[10, 0], [0, 20]]), page([[0, 30], [40, 0]])]);
+    const tiff = makeTiff([
+      page([
+        [10, 0],
+        [0, 20],
+      ]),
+      page([
+        [0, 30],
+        [40, 0],
+      ]),
+    ]);
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), "li-test-"));
     const file = path.join(dir, "labels.tif");
     fs.writeFileSync(file, tiff);

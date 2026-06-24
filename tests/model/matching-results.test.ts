@@ -336,9 +336,11 @@ describe("MatchResult.summary (merging.md doc A.3)", () => {
   it("'0/0 matched' is valid for an empty MatchResult", () => {
     const result = new MatchResult();
     expect(result.summary()).toBe(
-      ["Videos: 0/0 matched", "Skeletons: 0/0 matched", "Tracks: 0/0 matched"].join(
-        "\n",
-      ),
+      [
+        "Videos: 0/0 matched",
+        "Skeletons: 0/0 matched",
+        "Tracks: 0/0 matched",
+      ].join("\n"),
     );
   });
 

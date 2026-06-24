@@ -66,7 +66,7 @@ export function _annotationCentroidXy(
     const li = annotation as LabelImage;
     const [sx, sy] = li.scale;
     const [ox, oy] = li.offset;
-    return [(li.width / 2) / sx + ox, (li.height / 2) / sy + oy];
+    return [li.width / 2 / sx + ox, li.height / 2 / sy + oy];
   }
   return null;
 }
@@ -264,7 +264,9 @@ function _resolveAnnotationUpdateTracks(
 
   selfToOther.forEach(({ otherIdx }, selfIdx) => {
     (selfList[selfIdx] as any).track = (otherList[otherIdx] as any).track;
-    (selfList[selfIdx] as any).trackingScore = (otherList[otherIdx] as any).trackingScore;
+    (selfList[selfIdx] as any).trackingScore = (
+      otherList[otherIdx] as any
+    ).trackingScore;
   });
 }
 
@@ -345,11 +347,15 @@ export class LabeledFrame {
   get userInstances(): Instance[] {
     // Exact-type match: PredictedInstance extends Instance, so `instanceof Instance`
     // would wrongly include predictions. Mirrors Python `type(inst) is Instance`.
-    return this.instances.filter((inst) => inst.constructor === Instance) as Instance[];
+    return this.instances.filter(
+      (inst) => inst.constructor === Instance,
+    ) as Instance[];
   }
 
   get predictedInstances(): PredictedInstance[] {
-    return this.instances.filter((inst) => inst instanceof PredictedInstance) as PredictedInstance[];
+    return this.instances.filter(
+      (inst) => inst instanceof PredictedInstance,
+    ) as PredictedInstance[];
   }
 
   get hasUserInstances(): boolean {
@@ -364,7 +370,9 @@ export class LabeledFrame {
     return this.instances.map((inst) => inst.numpy());
   }
 
-  get image(): Promise<ImageData | ImageBitmap | ArrayBuffer | Uint8Array | null> {
+  get image(): Promise<
+    ImageData | ImageBitmap | ArrayBuffer | Uint8Array | null
+  > {
     return this.video.getFrame(this.frameIdx);
   }
 
@@ -376,10 +384,14 @@ export class LabeledFrame {
       }
     }
 
-    const tracks = this.instances.map((inst) => inst.track).filter((track) => track !== null && track !== undefined);
+    const tracks = this.instances
+      .map((inst) => inst.track)
+      .filter((track) => track !== null && track !== undefined);
     if (tracks.length) {
       const usedTracks = new Set(tracks);
-      return this.predictedInstances.filter((inst) => !inst.track || !usedTracks.has(inst.track));
+      return this.predictedInstances.filter(
+        (inst) => !inst.track || !usedTracks.has(inst.track),
+      );
     }
 
     return this.predictedInstances.filter((inst) => !usedPredicted.has(inst));
@@ -417,7 +429,12 @@ export class LabeledFrame {
     // mask whose bbox centroid is within 5 px.
     const remaining = predicted.filter((m) => !adopted.has(m));
     if (remaining.length && userMasks.length) {
-      const matches = _findAnnotationMatches(remaining, userMasks, "masks", 5.0);
+      const matches = _findAnnotationMatches(
+        remaining,
+        userMasks,
+        "masks",
+        5.0,
+      );
       for (const { selfIdx } of matches) {
         adopted.add(remaining[selfIdx]);
       }
@@ -427,7 +444,9 @@ export class LabeledFrame {
   }
 
   removePredictions(): void {
-    this.instances = this.instances.filter((inst) => !(inst instanceof PredictedInstance));
+    this.instances = this.instances.filter(
+      (inst) => !(inst instanceof PredictedInstance),
+    );
     this.centroids = this.centroids.filter((c) => !c.isPredicted);
     this.bboxes = this.bboxes.filter((b) => !b.isPredicted);
     this.masks = this.masks.filter((m) => !m.isPredicted);
@@ -733,7 +752,10 @@ export class LabeledFrame {
       | LabelImage
       | ROI,
   ): void {
-    if (annotation instanceof PredictedInstance || annotation instanceof Instance) {
+    if (
+      annotation instanceof PredictedInstance ||
+      annotation instanceof Instance
+    ) {
       this.instances.push(annotation);
     } else if (annotation instanceof Centroid) {
       this.centroids.push(annotation);

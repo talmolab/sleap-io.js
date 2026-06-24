@@ -2,14 +2,23 @@ import { describe, it, expect } from "./bun-test";
 import { loadSlp } from "../src/io/main.js";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
 import { readSlp } from "../src/codecs/slp/read.js";
-import { Labels, LabeledFrame, Video, Skeleton, Instance, SuggestionFrame } from "../src/index.js";
+import {
+  Labels,
+  LabeledFrame,
+  Video,
+  Skeleton,
+  Instance,
+  SuggestionFrame,
+} from "../src/index.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const fixtureRoot = fileURLToPath(new URL("./data", import.meta.url));
 
 async function loadFixture(filename: string) {
-  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false });
+  return loadSlp(path.join(fixtureRoot, "slp", filename), {
+    openVideos: false,
+  });
 }
 
 describe("Frame Embedding", () => {
@@ -27,7 +36,9 @@ describe("Frame Embedding", () => {
     const bytes = await saveSlpToBytes(labels);
     expect(bytes.length).toBeGreaterThan(0);
 
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
     expect(reloaded.labeledFrames.length).toBe(labels.labeledFrames.length);
   });
 
@@ -35,7 +46,7 @@ describe("Frame Embedding", () => {
     // Load a package file that has embedded video frames
     const labels = await loadSlp(
       path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"),
-      { openVideos: true }
+      { openVideos: true },
     );
 
     // Verify the video has embedded images
@@ -58,7 +69,9 @@ describe("Frame Embedding", () => {
     expect(reloaded.videos[0].hasEmbeddedImages).toBe(true);
 
     // Verify we can read a frame from the re-embedded video
-    const frame = await reloaded.videos[0].getFrame(labels.labeledFrames[0].frameIdx);
+    const frame = await reloaded.videos[0].getFrame(
+      labels.labeledFrames[0].frameIdx,
+    );
     expect(frame).not.toBeNull();
 
     // Cleanup
@@ -68,17 +81,21 @@ describe("Frame Embedding", () => {
   it("embed='user' only embeds frames with user instances", async () => {
     const labels = await loadSlp(
       path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"),
-      { openVideos: true }
+      { openVideos: true },
     );
 
     // Count frames with user instances
-    const userFrameCount = labels.labeledFrames.filter((f) => f.hasUserInstances).length;
+    const userFrameCount = labels.labeledFrames.filter(
+      (f) => f.hasUserInstances,
+    ).length;
     expect(userFrameCount).toBeGreaterThan(0);
 
     const bytes = await saveSlpToBytes(labels, { embed: "user" });
     expect(bytes.length).toBeGreaterThan(0);
 
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: true });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: true,
+    });
     expect(reloaded.videos[0].hasEmbeddedImages).toBe(true);
   });
 
@@ -87,7 +104,9 @@ describe("Frame Embedding", () => {
     const bytes = await saveSlpToBytes(labels, { embed: "source" });
     expect(bytes.length).toBeGreaterThan(0);
 
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
     expect(reloaded.videos[0].hasEmbeddedImages).toBe(false);
   });
 
@@ -95,13 +114,22 @@ describe("Frame Embedding", () => {
     // Create a labels with a non-embedded video that has a backend returning bytes
     const video = new Video({ filename: "original_video.mp4" });
     const skeleton = new Skeleton({ nodes: ["A", "B"] });
-    const inst = new Instance({ points: { A: [10, 20], B: [30, 40] }, skeleton });
+    const inst = new Instance({
+      points: { A: [10, 20], B: [30, 40] },
+      skeleton,
+    });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
-    const labels = new Labels({ labeledFrames: [frame], videos: [video], skeletons: [skeleton] });
+    const labels = new Labels({
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
+    });
 
     // Without a backend, no frames will be embedded, but the code path should work
     const bytes = await saveSlpToBytes(labels, { embed: true });
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
     // Since no backend was available, video should not be embedded
     expect(reloaded.videos[0].hasEmbeddedImages).toBe(false);
   });
@@ -109,7 +137,7 @@ describe("Frame Embedding", () => {
   it("writes frame_sizes dataset and reads frames correctly", async () => {
     const labels = await loadSlp(
       path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"),
-      { openVideos: true }
+      { openVideos: true },
     );
 
     const fs = await import("node:fs");
@@ -125,7 +153,9 @@ describe("Frame Embedding", () => {
     const { file } = await openH5File(tmpFile);
     const frameSizesDs = file.get("video0/frame_sizes");
     expect(frameSizesDs).not.toBeNull();
-    const frameSizes = Array.from(frameSizesDs.value).map((v: any) => Number(v));
+    const frameSizes = Array.from(frameSizesDs.value).map((v: any) =>
+      Number(v),
+    );
     expect(frameSizes.length).toBeGreaterThan(0);
     expect(frameSizes.every((s: number) => s > 0)).toBe(true);
 
@@ -137,7 +167,9 @@ describe("Frame Embedding", () => {
 
     // Read back and verify frames are accessible
     const reloaded = await readSlp(tmpFile, { openVideos: true });
-    const frame = await reloaded.videos[0].getFrame(reloaded.labeledFrames[0].frameIdx);
+    const frame = await reloaded.videos[0].getFrame(
+      reloaded.labeledFrames[0].frameIdx,
+    );
     expect(frame).not.toBeNull();
 
     fs.rmSync(tmpDir, { recursive: true });
@@ -146,11 +178,13 @@ describe("Frame Embedding", () => {
   it("re-embedded pkg.slp preserves frame data", async () => {
     const labels = await loadSlp(
       path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"),
-      { openVideos: true }
+      { openVideos: true },
     );
 
     // Read a frame before embedding
-    const originalFrame = await labels.videos[0].getFrame(labels.labeledFrames[0].frameIdx);
+    const originalFrame = await labels.videos[0].getFrame(
+      labels.labeledFrames[0].frameIdx,
+    );
     expect(originalFrame).not.toBeNull();
 
     // Re-embed and verify metadata

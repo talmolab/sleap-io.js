@@ -252,11 +252,20 @@ describe("VideoMatcher coverage gaps (GROUP 12)", () => {
       "/data/recordings/video.mp4",
       [100, 480, 640, 3],
     );
-    const otherCandidate = makeVideo("/data/other/video.mp4", [100, 480, 640, 3]);
-    const incoming = makeVideo("/data/recordings/video.mp4", [100, 480, 640, 3]);
+    const otherCandidate = makeVideo(
+      "/data/other/video.mp4",
+      [100, 480, 640, 3],
+    );
+    const incoming = makeVideo(
+      "/data/recordings/video.mp4",
+      [100, 480, 640, 3],
+    );
 
     const matcher = new VideoMatcher(VideoMatchMethod.AUTO);
-    const result = await matcher.findMatch(incoming, [otherCandidate, candidate]);
+    const result = await matcher.findMatch(incoming, [
+      otherCandidate,
+      candidate,
+    ]);
 
     expect(result).toBe(candidate); // identity, full-path wins over basename
   });
@@ -333,7 +342,10 @@ describe("VideoMatcher coverage gaps (GROUP 12)", () => {
   it("find_match candidate too short for depth is skipped; unique deep wins", async () => {
     const shallowCandidate = makeVideo("video.mp4", [100, 480, 640, 3]);
     const deepCandidate = makeVideo("/data/exp1/video.mp4", [100, 480, 640, 3]);
-    const deepCandidate2 = makeVideo("/data/exp2/video.mp4", [100, 480, 640, 3]);
+    const deepCandidate2 = makeVideo(
+      "/data/exp2/video.mp4",
+      [100, 480, 640, 3],
+    );
     const incoming = makeVideo("/other/exp1/video.mp4", [100, 480, 640, 3]);
 
     const matcher = new VideoMatcher(VideoMatchMethod.AUTO);

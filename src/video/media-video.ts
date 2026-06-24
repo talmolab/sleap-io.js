@@ -28,10 +28,16 @@ export class MediaVideoBackend implements VideoBackend {
         if (!this.video || !this.canvas) return;
         this.canvas.width = this.video.videoWidth;
         this.canvas.height = this.video.videoHeight;
-        this.fps = this.video.duration ? this.video.videoHeight ? undefined : undefined : undefined;
+        this.fps = this.video.duration
+          ? this.video.videoHeight
+            ? undefined
+            : undefined
+          : undefined;
         resolve();
       });
-      this.video?.addEventListener("error", () => reject(new Error("Failed to load video")));
+      this.video?.addEventListener("error", () =>
+        reject(new Error("Failed to load video")),
+      );
     });
   }
 
@@ -39,7 +45,8 @@ export class MediaVideoBackend implements VideoBackend {
     if (!this.video || !this.ctx || !this.canvas) return null;
     await this.ready;
     const duration = this.video.duration;
-    const frameCount = Math.floor(duration * (this.video?.playbackRate || 1) * 30) || 1;
+    const frameCount =
+      Math.floor(duration * (this.video?.playbackRate || 1) * 30) || 1;
     const fps = duration ? frameCount / duration : 30;
     const targetTime = frameIndex / fps;
 

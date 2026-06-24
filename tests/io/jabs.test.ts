@@ -43,7 +43,9 @@ describe("JABS default skeleton", () => {
     expect(sk.nodes.length).toBe(12);
     expect(sk.edges.length).toBe(11);
     expect(sk.symmetries.length).toBe(3);
-    expect(sk.nodes.map((n) => n.name)).toEqual([...JABS_DEFAULT_KEYPOINT_NAMES]);
+    expect(sk.nodes.map((n) => n.name)).toEqual([
+      ...JABS_DEFAULT_KEYPOINT_NAMES,
+    ]);
   });
 
   it("makeJabsDefaultSkeleton returns a fresh equivalent skeleton", () => {
@@ -228,7 +230,9 @@ describe("predictionToInstance", () => {
   it("throws when the skeleton size does not match the keypoints", () => {
     const data = Array.from({ length: 5 }, () => [0, 0]);
     const conf = new Array(5).fill(1);
-    expect(() => predictionToInstance(data, conf, JABS_DEFAULT_SKELETON)).toThrow();
+    expect(() =>
+      predictionToInstance(data, conf, JABS_DEFAULT_SKELETON),
+    ).toThrow();
   });
 });
 
@@ -257,7 +261,9 @@ describe("staticObjectToRoi", () => {
     expect(roi.category).toBe("anchor");
     expect(roi.source).toBe("jabs");
     expect(roi.geometry.type).toBe("Point");
-    expect((roi.geometry as { coordinates: number[] }).coordinates).toEqual([100, 200]);
+    expect((roi.geometry as { coordinates: number[] }).coordinates).toEqual([
+      100, 200,
+    ]);
     expect(roi.video).toBe(video);
   });
 
@@ -275,6 +281,8 @@ describe("staticObjectToRoi", () => {
     );
     expect(roi.category).toBe("arena");
     expect(roi.geometry.type).toBe("MultiPoint");
-    expect((roi.geometry as { coordinates: number[][] }).coordinates.length).toBe(4);
+    expect(
+      (roi.geometry as { coordinates: number[][] }).coordinates.length,
+    ).toBe(4);
   });
 });

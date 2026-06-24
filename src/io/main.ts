@@ -5,8 +5,15 @@ import { readSlp, readSlpLazy } from "../codecs/slp/read.js";
 import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
 import { writeSlp, saveSlpToBytes } from "../codecs/slp/write.js";
 import { createVideoBackend, VideoBackendType } from "../video/factory.js";
-import { OpenH5Options, SlpSource, isStreamingSupported } from "../codecs/slp/h5.js";
-import { readLabels as readAnalysisH5, writeLabels as writeAnalysisH5 } from "./analysis-h5.js";
+import {
+  OpenH5Options,
+  SlpSource,
+  isStreamingSupported,
+} from "../codecs/slp/h5.js";
+import {
+  readLabels as readAnalysisH5,
+  writeLabels as writeAnalysisH5,
+} from "./analysis-h5.js";
 
 // TIFF label-image reader (browser-safe core; Node path reading is registered
 // via the side-effect import of ./label-images-node.js in the Node entry).
@@ -42,7 +49,7 @@ function isBrowserWithWorkerSupport(): boolean {
  */
 export async function loadSlp(
   source: SlpSource,
-  options?: { openVideos?: boolean; h5?: OpenH5Options; lazy?: boolean }
+  options?: { openVideos?: boolean; h5?: OpenH5Options; lazy?: boolean },
 ): Promise<Labels> {
   const streamMode = options?.h5?.stream ?? "auto";
   const openVideos = options?.openVideos ?? true;
@@ -57,7 +64,10 @@ export async function loadSlp(
       streamingSource = source;
     } else if (typeof File !== "undefined" && source instanceof File) {
       streamingSource = source;
-    } else if (typeof FileSystemFileHandle !== "undefined" && "getFile" in source) {
+    } else if (
+      typeof FileSystemFileHandle !== "undefined" &&
+      "getFile" in source
+    ) {
       streamingSource = await (source as FileSystemFileHandle).getFile();
     } else {
       streamingSource = null as unknown as File;
@@ -71,7 +81,10 @@ export async function loadSlp(
         });
       } catch (e) {
         if (streamMode === "auto") {
-          console.warn("[sleap-io] Worker-based loading failed, falling back to main thread:", e);
+          console.warn(
+            "[sleap-io] Worker-based loading failed, falling back to main thread:",
+            e,
+          );
         } else {
           throw e;
         }
@@ -101,7 +114,7 @@ export async function saveSlp(
   options?: {
     embed?: boolean | string;
     restoreOriginalVideos?: boolean;
-  }
+  },
 ): Promise<void> {
   await writeSlp(filename, labels, {
     embed: options?.embed ?? false,
@@ -126,7 +139,7 @@ export { saveSlpToBytes } from "../codecs/slp/write.js";
  */
 export async function loadAnalysisH5(
   filename: string,
-  options?: { video?: Video | string }
+  options?: { video?: Video | string },
 ): Promise<Labels> {
   return readAnalysisH5(filename, { video: options?.video });
 }
@@ -165,7 +178,7 @@ export async function saveAnalysisH5(
     nodeDim?: number;
     xyDim?: number;
     saveMetadata?: boolean;
-  }
+  },
 ): Promise<void> {
   await writeAnalysisH5(labels, filename, {
     video: options?.video,
@@ -199,18 +212,22 @@ export { isAnalysisH5File } from "./analysis-h5.js";
  */
 export async function loadSlpSet(
   sources: string[] | Record<string, string>,
-  options?: { openVideos?: boolean; h5?: OpenH5Options }
+  options?: { openVideos?: boolean; h5?: OpenH5Options },
 ): Promise<LabelsSet> {
   const set = new LabelsSet();
 
   if (Array.isArray(sources)) {
-    const results = await Promise.all(sources.map(src => loadSlp(src, options)));
+    const results = await Promise.all(
+      sources.map((src) => loadSlp(src, options)),
+    );
     for (let i = 0; i < sources.length; i++) {
       set.set(sources[i], results[i]);
     }
   } else {
     const entries = Object.entries(sources);
-    const results = await Promise.all(entries.map(([, src]) => loadSlp(src, options)));
+    const results = await Promise.all(
+      entries.map(([, src]) => loadSlp(src, options)),
+    );
     for (let i = 0; i < entries.length; i++) {
       set.set(entries[i][0], results[i]);
     }
@@ -233,7 +250,7 @@ export async function saveSlpSet(
   options?: {
     embed?: boolean | string;
     restoreOriginalVideos?: boolean;
-  }
+  },
 ): Promise<void> {
   const promises: Promise<void>[] = [];
   for (const [filename, labels] of labelsSet) {
@@ -254,12 +271,20 @@ export async function saveSlpSet(
  */
 export async function loadVideo(
   source: string | File,
-  options?: { dataset?: string; openBackend?: boolean; backend?: VideoBackendType }
+  options?: {
+    dataset?: string;
+    openBackend?: boolean;
+    backend?: VideoBackendType;
+  },
 ): Promise<Video> {
   const filename = typeof source === "string" ? source : source.name;
   const backend = await createVideoBackend(source, {
     dataset: options?.dataset,
     backend: options?.backend,
   });
-  return new Video({ filename, backend, openBackend: options?.openBackend ?? true });
+  return new Video({
+    filename,
+    backend,
+    openBackend: options?.openBackend ?? true,
+  });
 }

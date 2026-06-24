@@ -57,9 +57,7 @@ export class ROI {
 
   constructor(options: ROIOptions) {
     if (new.target === ROI) {
-      throw new TypeError(
-        "ROI is abstract. Use UserROI or PredictedROI.",
-      );
+      throw new TypeError("ROI is abstract. Use UserROI or PredictedROI.");
     }
     this.geometry = options.geometry;
     this.name = options.name ?? "";
@@ -174,26 +172,30 @@ export class ROI {
       copyFields.score = (this as any).score;
     }
     if (this.geometry.type === "MultiPolygon") {
-      return this.geometry.coordinates.map((coords) =>
-        new Ctor({
-          geometry: { type: "Polygon", coordinates: coords },
-          ...copyFields,
-        })
+      return this.geometry.coordinates.map(
+        (coords) =>
+          new Ctor({
+            geometry: { type: "Polygon", coordinates: coords },
+            ...copyFields,
+          }),
       );
     }
     if (this.geometry.type === "GeometryCollection") {
-      return this.geometry.geometries.map((geom) =>
-        new Ctor({
-          geometry: geom,
-          ...copyFields,
-        })
+      return this.geometry.geometries.map(
+        (geom) =>
+          new Ctor({
+            geometry: geom,
+            ...copyFields,
+          }),
       );
     }
     // Single geometry, return copy
-    return [new Ctor({
-      geometry: this.geometry,
-      ...copyFields,
-    })];
+    return [
+      new Ctor({
+        geometry: this.geometry,
+        ...copyFields,
+      }),
+    ];
   }
 
   toGeoJSON(): {
@@ -276,7 +278,10 @@ export class ROI {
   /** @deprecated Use `centroidXy` instead. */
   get centroid(): { x: number; y: number } {
     if (this.geometry.type === "Point") {
-      return { x: this.geometry.coordinates[0], y: this.geometry.coordinates[1] };
+      return {
+        x: this.geometry.coordinates[0],
+        y: this.geometry.coordinates[1],
+      };
     }
     const b = this.bounds;
     return { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
@@ -361,7 +366,11 @@ export function rasterizeGeometry(
 
   if (geometry.type === "MultiPolygon") {
     for (const poly of geometry.coordinates) {
-      const polyMask = rasterizeGeometry({ type: "Polygon", coordinates: poly }, height, width);
+      const polyMask = rasterizeGeometry(
+        { type: "Polygon", coordinates: poly },
+        height,
+        width,
+      );
       for (let i = 0; i < mask.length; i++) {
         if (polyMask[i]) mask[i] = 1;
       }
@@ -555,7 +564,10 @@ export function decodeWkb(bytes: Uint8Array): Geometry {
   return decodeWkbInternal(bytes).geometry;
 }
 
-function decodeWkbInternal(bytes: Uint8Array): { geometry: Geometry; bytesRead: number } {
+function decodeWkbInternal(bytes: Uint8Array): {
+  geometry: Geometry;
+  bytesRead: number;
+} {
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
   const byteOrder = view.getUint8(0);
   const le = byteOrder === 1;
@@ -569,7 +581,10 @@ function decodeWkbInternal(bytes: Uint8Array): { geometry: Geometry; bytesRead: 
 
   if (wkbType === 3) {
     const { rings, bytesRead } = decodeWkbPolygon(view, 5, le);
-    return { geometry: { type: "Polygon", coordinates: rings }, bytesRead: 5 + bytesRead };
+    return {
+      geometry: { type: "Polygon", coordinates: rings },
+      bytesRead: 5 + bytesRead,
+    };
   }
 
   if (wkbType === 6) {
@@ -583,7 +598,10 @@ function decodeWkbInternal(bytes: Uint8Array): { geometry: Geometry; bytesRead: 
       polygons.push(rings);
       offset += bytesRead;
     }
-    return { geometry: { type: "MultiPolygon", coordinates: polygons }, bytesRead: offset };
+    return {
+      geometry: { type: "MultiPolygon", coordinates: polygons },
+      bytesRead: offset,
+    };
   }
 
   if (wkbType === 2) {
@@ -597,7 +615,10 @@ function decodeWkbInternal(bytes: Uint8Array): { geometry: Geometry; bytesRead: 
       coords.push([x, y]);
       offset += 16;
     }
-    return { geometry: { type: "LineString", coordinates: coords }, bytesRead: offset };
+    return {
+      geometry: { type: "LineString", coordinates: coords },
+      bytesRead: offset,
+    };
   }
 
   if (wkbType === 4) {
@@ -613,7 +634,10 @@ function decodeWkbInternal(bytes: Uint8Array): { geometry: Geometry; bytesRead: 
       coords.push([x, y]);
       offset += 16;
     }
-    return { geometry: { type: "MultiPoint", coordinates: coords }, bytesRead: offset };
+    return {
+      geometry: { type: "MultiPoint", coordinates: coords },
+      bytesRead: offset,
+    };
   }
 
   if (wkbType === 7) {
@@ -622,12 +646,19 @@ function decodeWkbInternal(bytes: Uint8Array): { geometry: Geometry; bytesRead: 
     const geometries: Geometry[] = [];
     let offset = 9;
     for (let i = 0; i < numGeometries; i++) {
-      const subBytes = new Uint8Array(bytes.buffer, bytes.byteOffset + offset, bytes.byteLength - offset);
+      const subBytes = new Uint8Array(
+        bytes.buffer,
+        bytes.byteOffset + offset,
+        bytes.byteLength - offset,
+      );
       const { geometry: geom, bytesRead } = decodeWkbInternal(subBytes);
       geometries.push(geom);
       offset += bytesRead;
     }
-    return { geometry: { type: "GeometryCollection", geometries }, bytesRead: offset };
+    return {
+      geometry: { type: "GeometryCollection", geometries },
+      bytesRead: offset,
+    };
   }
 
   throw new Error(`Unsupported WKB type: ${wkbType}`);

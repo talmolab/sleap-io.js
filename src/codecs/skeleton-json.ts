@@ -39,7 +39,7 @@ interface JsonPickleSkeletonData {
  * We use separate ID registries for nodes and edge types to handle both.
  */
 export function readSkeletonJson(
-  json: string | Record<string, unknown>
+  json: string | Record<string, unknown>,
 ): Skeleton {
   const data: JsonPickleSkeletonData =
     typeof json === "string"
@@ -54,7 +54,8 @@ export function readSkeletonJson(
 
   // Detect format: check if any link source/target uses py/id
   const usesSharedNodeRefs = data.links.some(
-    (link) => link.source["py/id"] !== undefined || link.target["py/id"] !== undefined
+    (link) =>
+      link.source["py/id"] !== undefined || link.target["py/id"] !== undefined,
   );
 
   // Edge type registry (separate from node registry for duplicate-object format)
@@ -142,7 +143,8 @@ export function readSkeletonJson(
         }
       }
     }
-    nodeNames = orderedNames.length === nodeNameSet.size ? orderedNames : allNodeNames;
+    nodeNames =
+      orderedNames.length === nodeNameSet.size ? orderedNames : allNodeNames;
   } else {
     // Duplicate-object format or no links at all.
     // Check nodes array for any py/object definitions not seen in links.
@@ -163,7 +165,7 @@ export function readSkeletonJson(
   const nodeMap = new Map(nodes.map((n) => [n.name, n]));
 
   const edges = edgePairs.map(
-    ([src, dst]) => new Edge(nodeMap.get(src)!, nodeMap.get(dst)!)
+    ([src, dst]) => new Edge(nodeMap.get(src)!, nodeMap.get(dst)!),
   );
 
   // Deduplicate symmetries (each pair appears twice in jsonpickle format)
@@ -258,7 +260,7 @@ function encodeSkeleton(skeleton: Skeleton): JsonPickleSkeletonData {
   const nodes = skeleton.nodes.map((node) =>
     linkedNodes.has(node.name)
       ? { id: { "py/id": nodePyId.get(node.name)! } }
-      : { id: encodeNode(node.name) }
+      : { id: encodeNode(node.name) },
   );
 
   return {

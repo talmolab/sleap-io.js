@@ -31,7 +31,9 @@ describe("colors", () => {
     });
 
     it("throws on unknown palette", () => {
-      expect(() => getPalette("nonexistent" as "standard", 5)).toThrow("Unknown palette");
+      expect(() => getPalette("nonexistent" as "standard", 5)).toThrow(
+        "Unknown palette",
+      );
     });
 
     it("works with all built-in palettes", () => {

@@ -97,11 +97,20 @@ describe("Labels.match (read-only)", () => {
   // test_labels_match_unmatched_videos (test_labels.py:4635-4653)
   it("stores null in the video map on no-match (and is side-effect free)", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
-    const videoGt = new Video({ filename: "/data/video_a.mp4", openBackend: false });
-    const videoPred = new Video({ filename: "/data/video_b.mp4", openBackend: false });
+    const videoGt = new Video({
+      filename: "/data/video_a.mp4",
+      openBackend: false,
+    });
+    const videoPred = new Video({
+      filename: "/data/video_b.mp4",
+      openBackend: false,
+    });
 
     const gtLabels = new Labels({ videos: [videoGt], skeletons: [skeleton] });
-    const predLabels = new Labels({ videos: [videoPred], skeletons: [skeleton] });
+    const predLabels = new Labels({
+      videos: [videoPred],
+      skeletons: [skeleton],
+    });
 
     const result = await gtLabels.match(predLabels);
 
@@ -120,16 +129,31 @@ describe("Labels.match (read-only)", () => {
   // test_labels_match_multiple_videos (test_labels.py:4655-4681)
   it("matches multiple videos (2 match, 1 doesn't), preserving other order", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
-    const videoGt1 = new Video({ filename: "/data/video1.mp4", openBackend: false });
-    const videoGt2 = new Video({ filename: "/data/video2.mp4", openBackend: false });
+    const videoGt1 = new Video({
+      filename: "/data/video1.mp4",
+      openBackend: false,
+    });
+    const videoGt2 = new Video({
+      filename: "/data/video2.mp4",
+      openBackend: false,
+    });
     const gtLabels = new Labels({
       videos: [videoGt1, videoGt2],
       skeletons: [skeleton],
     });
 
-    const videoPred1 = new Video({ filename: "/output/video1.mp4", openBackend: false });
-    const videoPred2 = new Video({ filename: "/output/video2.mp4", openBackend: false });
-    const videoPred3 = new Video({ filename: "/output/video3.mp4", openBackend: false });
+    const videoPred1 = new Video({
+      filename: "/output/video1.mp4",
+      openBackend: false,
+    });
+    const videoPred2 = new Video({
+      filename: "/output/video2.mp4",
+      openBackend: false,
+    });
+    const videoPred3 = new Video({
+      filename: "/output/video3.mp4",
+      openBackend: false,
+    });
     const predLabels = new Labels({
       videos: [videoPred1, videoPred2, videoPred3],
       skeletons: [skeleton],
@@ -148,7 +172,10 @@ describe("Labels.match (read-only)", () => {
   // test_labels_match_track_matching (test_labels.py:4683-4699)
   it("matches tracks by name (different object, same name)", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
-    const video = new Video({ filename: "/data/video.mp4", openBackend: false });
+    const video = new Video({
+      filename: "/data/video.mp4",
+      openBackend: false,
+    });
     const trackGt = new Track("animal_1");
     const trackPred = new Track("animal_1");
 
@@ -172,11 +199,20 @@ describe("Labels.match (read-only)", () => {
   // test_labels_match_string_method (test_labels.py:4701-4715)
   it("accepts string method arguments", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
-    const videoGt = new Video({ filename: "/data/video.mp4", openBackend: false });
-    const videoPred = new Video({ filename: "/output/video.mp4", openBackend: false });
+    const videoGt = new Video({
+      filename: "/data/video.mp4",
+      openBackend: false,
+    });
+    const videoPred = new Video({
+      filename: "/output/video.mp4",
+      openBackend: false,
+    });
 
     const gtLabels = new Labels({ videos: [videoGt], skeletons: [skeleton] });
-    const predLabels = new Labels({ videos: [videoPred], skeletons: [skeleton] });
+    const predLabels = new Labels({
+      videos: [videoPred],
+      skeletons: [skeleton],
+    });
 
     const result = await gtLabels.match(predLabels, {
       video: "basename",
@@ -193,15 +229,25 @@ describe("Labels.match (read-only)", () => {
     // gt is a subset of pred, so gt nodes must be a subset of pred nodes.
     const skeletonGt = new Skeleton({ nodes: ["head", "tail"] });
     const skeletonPred = new Skeleton({ nodes: ["head", "body", "tail"] });
-    const video = new Video({ filename: "/data/video.mp4", openBackend: false });
+    const video = new Video({
+      filename: "/data/video.mp4",
+      openBackend: false,
+    });
 
     const gtLabels = new Labels({ videos: [video], skeletons: [skeletonGt] });
-    const predLabels = new Labels({ videos: [video], skeletons: [skeletonPred] });
+    const predLabels = new Labels({
+      videos: [video],
+      skeletons: [skeletonPred],
+    });
 
-    const resultStruct = await gtLabels.match(predLabels, { skeleton: "structure" });
+    const resultStruct = await gtLabels.match(predLabels, {
+      skeleton: "structure",
+    });
     expect(resultStruct.allSkeletonsMatched).toBe(false);
 
-    const resultSubset = await gtLabels.match(predLabels, { skeleton: "subset" });
+    const resultSubset = await gtLabels.match(predLabels, {
+      skeleton: "subset",
+    });
     expect(resultSubset.allSkeletonsMatched).toBe(true);
   });
 
@@ -223,14 +269,20 @@ describe("Labels.match (read-only)", () => {
   // test_labels_match_summary (test_labels.py:4753-4768)
   it("summary() reports matched counts and unmatched videos", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
-    const videoGt = new Video({ filename: "/data/video.mp4", openBackend: false });
+    const videoGt = new Video({
+      filename: "/data/video.mp4",
+      openBackend: false,
+    });
     const videoPred = new Video({
       filename: "/output/different.mp4",
       openBackend: false,
     });
 
     const gtLabels = new Labels({ videos: [videoGt], skeletons: [skeleton] });
-    const predLabels = new Labels({ videos: [videoPred], skeletons: [skeleton] });
+    const predLabels = new Labels({
+      videos: [videoPred],
+      skeletons: [skeleton],
+    });
 
     const result = await gtLabels.match(predLabels);
 
@@ -251,8 +303,14 @@ describe("Labels.match (read-only)", () => {
   // test_labels_match_with_matcher_objects (test_labels.py:4784-4819)
   it("accepts Matcher objects (not strings)", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
-    const videoGt = new Video({ filename: "/data/video.mp4", openBackend: false });
-    const videoPred = new Video({ filename: "/output/video.mp4", openBackend: false });
+    const videoGt = new Video({
+      filename: "/data/video.mp4",
+      openBackend: false,
+    });
+    const videoPred = new Video({
+      filename: "/output/video.mp4",
+      openBackend: false,
+    });
     const trackGt = new Track("animal_1");
     const trackPred = new Track("animal_1");
 
@@ -281,14 +339,21 @@ describe("Labels.match (read-only)", () => {
   // test_labels_match_summary_many_unmatched (test_labels.py:4821-4844)
   it("summary() truncates unmatched videos at 5 with '... and N more'", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
-    const videoGt = new Video({ filename: "/data/video_gt.mp4", openBackend: false });
+    const videoGt = new Video({
+      filename: "/data/video_gt.mp4",
+      openBackend: false,
+    });
     const gtLabels = new Labels({ videos: [videoGt], skeletons: [skeleton] });
 
     const predVideos = Array.from(
       { length: 7 },
-      (_, i) => new Video({ filename: `/output/pred_${i}.mp4`, openBackend: false }),
+      (_, i) =>
+        new Video({ filename: `/output/pred_${i}.mp4`, openBackend: false }),
     );
-    const predLabels = new Labels({ videos: predVideos, skeletons: [skeleton] });
+    const predLabels = new Labels({
+      videos: predVideos,
+      skeletons: [skeleton],
+    });
 
     const result = await gtLabels.match(predLabels);
 
@@ -302,14 +367,20 @@ describe("Labels.match (read-only)", () => {
   // test_labels_match_summary_image_video (test_labels.py:4846-4878)
   it("summary() handles an ImageVideo (list filename)", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
-    const videoGt = new Video({ filename: "/data/video.mp4", openBackend: false });
+    const videoGt = new Video({
+      filename: "/data/video.mp4",
+      openBackend: false,
+    });
     const gtLabels = new Labels({ videos: [videoGt], skeletons: [skeleton] });
 
     const videoPred = new Video({
       filename: ["/output/frame001.png", "/output/frame002.png"],
       openBackend: false,
     });
-    const predLabels = new Labels({ videos: [videoPred], skeletons: [skeleton] });
+    const predLabels = new Labels({
+      videos: [videoPred],
+      skeletons: [skeleton],
+    });
 
     const result = await gtLabels.match(predLabels);
 
@@ -324,13 +395,22 @@ describe("Labels.match (read-only)", () => {
   // (shape is rejection-only). (ARCH §7.1; PY:test_matching.py:473-494.)
   it("AUTO video match is rejection-only on shape (same shape, diff basename -> null)", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
-    const videoGt = new Video({ filename: "/data/video_a.mp4", openBackend: false });
+    const videoGt = new Video({
+      filename: "/data/video_a.mp4",
+      openBackend: false,
+    });
     videoGt.backendMetadata = { shape: [100, 480, 640, 3] };
-    const videoPred = new Video({ filename: "/data/video_b.mp4", openBackend: false });
+    const videoPred = new Video({
+      filename: "/data/video_b.mp4",
+      openBackend: false,
+    });
     videoPred.backendMetadata = { shape: [100, 480, 640, 3] };
 
     const gtLabels = new Labels({ videos: [videoGt], skeletons: [skeleton] });
-    const predLabels = new Labels({ videos: [videoPred], skeletons: [skeleton] });
+    const predLabels = new Labels({
+      videos: [videoPred],
+      skeletons: [skeleton],
+    });
 
     const result = await gtLabels.match(predLabels);
     expect(result.videoMap.get(videoPred)).toBe(null);
@@ -343,7 +423,10 @@ describe("Labels.match (read-only)", () => {
       filename: "/data/recordings/video.mp4",
       openBackend: false,
     });
-    const videoGt2 = new Video({ filename: "/data/other/video.mp4", openBackend: false });
+    const videoGt2 = new Video({
+      filename: "/data/other/video.mp4",
+      openBackend: false,
+    });
     const gtLabels = new Labels({
       videos: [videoGt2, videoGt1],
       skeletons: [skeleton],
@@ -353,7 +436,10 @@ describe("Labels.match (read-only)", () => {
       filename: "/data/recordings/video.mp4",
       openBackend: false,
     });
-    const predLabels = new Labels({ videos: [videoPred], skeletons: [skeleton] });
+    const predLabels = new Labels({
+      videos: [videoPred],
+      skeletons: [skeleton],
+    });
 
     const result = await gtLabels.match(predLabels);
     expect(result.videoMap.get(videoPred)).toBe(videoGt1);
@@ -363,10 +449,16 @@ describe("Labels.match (read-only)", () => {
 describe("Labels.matchVideo", () => {
   // test_match_video_foreign_instance (test_labels.py:343-354, programmatic)
   it("resolves a foreign Video with the same path to the canonical, and identity arg unchanged", async () => {
-    const canonical = new Video({ filename: "/data/video.mp4", openBackend: false });
+    const canonical = new Video({
+      filename: "/data/video.mp4",
+      openBackend: false,
+    });
     const labels = new Labels({ videos: [canonical] });
 
-    const foreign = new Video({ filename: canonical.filename, openBackend: false });
+    const foreign = new Video({
+      filename: canonical.filename,
+      openBackend: false,
+    });
     expect(foreign).not.toBe(canonical);
     expect(await labels.matchVideo(foreign)).toBe(canonical);
 
@@ -376,14 +468,20 @@ describe("Labels.matchVideo", () => {
 
   // test_match_video_by_path (test_labels.py:357-363, programmatic)
   it("resolves a str filename to the canonical Video", async () => {
-    const canonical = new Video({ filename: "/data/video.mp4", openBackend: false });
+    const canonical = new Video({
+      filename: "/data/video.mp4",
+      openBackend: false,
+    });
     const labels = new Labels({ videos: [canonical] });
     expect(await labels.matchVideo("/data/video.mp4")).toBe(canonical);
   });
 
   // test_match_video_no_match (test_labels.py:366-370, programmatic)
   it("returns null when no video matches", async () => {
-    const canonical = new Video({ filename: "/data/video.mp4", openBackend: false });
+    const canonical = new Video({
+      filename: "/data/video.mp4",
+      openBackend: false,
+    });
     const labels = new Labels({ videos: [canonical] });
     expect(await labels.matchVideo("not_in_project.mp4")).toBe(null);
     expect(
@@ -495,7 +593,9 @@ describe("Labels.matchVideo", () => {
     const labels = new Labels({
       videos: [new Video({ filename: "vid.mp4", openBackend: false })],
     });
-    await expect(labels.matchVideo("vid.mp4", "not_a_method")).rejects.toThrow();
+    await expect(
+      labels.matchVideo("vid.mp4", "not_a_method"),
+    ).rejects.toThrow();
   });
 
   // Method validation runs BEFORE the identity short-circuit: passing the
@@ -504,7 +604,9 @@ describe("Labels.matchVideo", () => {
   it("validates the method BEFORE the identity short-circuit", async () => {
     const canonical = new Video({ filename: "vid.mp4", openBackend: false });
     const labels = new Labels({ videos: [canonical] });
-    await expect(labels.matchVideo(canonical, "not_a_method")).rejects.toThrow();
+    await expect(
+      labels.matchVideo(canonical, "not_a_method"),
+    ).rejects.toThrow();
   });
 
   // test_match_video_image_sequence (test_labels.py:559-570)
@@ -513,7 +615,10 @@ describe("Labels.matchVideo", () => {
     const video = new Video({ filename: [...framePaths], openBackend: false });
     const labels = new Labels({ videos: [video] });
 
-    const foreign = new Video({ filename: [...framePaths], openBackend: false });
+    const foreign = new Video({
+      filename: [...framePaths],
+      openBackend: false,
+    });
     expect(await labels.matchVideo(foreign)).toBe(video);
 
     // A partially overlapping sequence is not an "auto" match.

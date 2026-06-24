@@ -1,0 +1,8 @@
+# Bulk-reformatting commits to skip in `git blame`.
+#
+# Opt in locally (one-time):
+#   git config blame.ignoreRevsFile .git-blame-ignore-revs
+# (GitHub applies this file automatically in its blame view.)
+#
+# Enable Biome formatter + reformat src/ and tests/.
+# The squash-merge commit hash is added here once this PR lands on main:

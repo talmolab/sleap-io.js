@@ -1,7 +1,11 @@
 import { VideoBackend, VideoFrame } from "./backend.js";
 
-const isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
-const hasWebCodecs = isBrowser && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
+const isBrowser =
+  typeof window !== "undefined" && typeof document !== "undefined";
+const hasWebCodecs =
+  isBrowser &&
+  typeof window.VideoDecoder !== "undefined" &&
+  typeof window.EncodedVideoChunk !== "undefined";
 const MP4BOX_CDN = "https://unpkg.com/mp4box@0.5.4/dist/mp4box.all.min.js";
 
 async function loadMp4box(): Promise<any> {
@@ -66,14 +70,18 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   private decodeQueue: Promise<void>;
   private latestRequestedFrame: number | null;
 
-  constructor(source: string | File | Blob, options?: { cacheSize?: number; lookahead?: number }) {
+  constructor(
+    source: string | File | Blob,
+    options?: { cacheSize?: number; lookahead?: number },
+  ) {
     if (!hasWebCodecs) {
       throw new Error("Mp4BoxVideoBackend requires WebCodecs support.");
     }
     if (!isBrowser) {
       throw new Error("Mp4BoxVideoBackend requires a browser environment.");
     }
-    this.filename = source instanceof Blob ? (source as File).name ?? "" : source;
+    this.filename =
+      source instanceof Blob ? ((source as File).name ?? "") : source;
     this.dataset = null;
     this.samples = [];
     this.keyframeIndices = [];
@@ -97,7 +105,10 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     this.ready = this.init();
   }
 
-  async getFrame(frameIndex: number, signal?: AbortSignal): Promise<VideoFrame | null> {
+  async getFrame(
+    frameIndex: number,
+    signal?: AbortSignal,
+  ): Promise<VideoFrame | null> {
     await this.ready;
     if (frameIndex < 0 || frameIndex >= this.samples.length) return null;
 
@@ -117,7 +128,10 @@ export class Mp4BoxVideoBackend implements VideoBackend {
       if (signal?.aborted) return;
 
       const keyframe = this.findKeyframeBefore(frameIndex);
-      const end = Math.min(frameIndex + this.lookahead, this.samples.length - 1);
+      const end = Math.min(
+        frameIndex + this.lookahead,
+        this.samples.length - 1,
+      );
       await this.decodeRange(keyframe, end, frameIndex);
     });
     await this.decodeQueue;
@@ -178,7 +192,9 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     this.videoTrack = info.videoTracks[0];
     const trak = this.mp4boxFile.getTrackById(this.videoTrack.id);
     const description = this.getCodecDescription(trak);
-    const codec = this.videoTrack.codec.startsWith("vp08") ? "vp8" : this.videoTrack.codec;
+    const codec = this.videoTrack.codec.startsWith("vp08")
+      ? "vp8"
+      : this.videoTrack.codec;
     this.config = {
       codec,
       codedWidth: this.videoTrack.video.width,
@@ -231,7 +247,9 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   private async readChunk(offset: number, size: number): Promise<ArrayBuffer> {
     const end = Math.min(offset + size, this.fileSize);
     if (this.supportsRangeRequests) {
-      const response = await fetch(this.filename, { headers: { Range: `bytes=${offset}-${end - 1}` } });
+      const response = await fetch(this.filename, {
+        headers: { Range: `bytes=${offset}-${end - 1}` },
+      });
       return await response.arrayBuffer();
     }
     if (this.fileBlob) {
@@ -277,7 +295,9 @@ export class Mp4BoxVideoBackend implements VideoBackend {
 
   private getCodecDescription(trak: any): Uint8Array | undefined {
     const entries = trak?.mdia?.minf?.stbl?.stsd?.entries ?? [];
-    const dataStream = (globalThis as { DataStream?: any }).DataStream ?? this.mp4box?.DataStream;
+    const dataStream =
+      (globalThis as { DataStream?: any }).DataStream ??
+      this.mp4box?.DataStream;
     if (!dataStream) return undefined;
 
     for (const entry of entries) {
@@ -290,7 +310,9 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     return undefined;
   }
 
-  private async readSampleDataByDecodeOrder(samplesToFeed: Array<{ pi: number; sample: Sample }>): Promise<Map<number, Uint8Array>> {
+  private async readSampleDataByDecodeOrder(
+    samplesToFeed: Array<{ pi: number; sample: Sample }>,
+  ): Promise<Map<number, Uint8Array>> {
     const results = new Map<number, Uint8Array>();
     let i = 0;
 
@@ -302,7 +324,10 @@ export class Mp4BoxVideoBackend implements VideoBackend {
       while (regionEnd < samplesToFeed.length - 1) {
         const current = samplesToFeed[regionEnd];
         const next = samplesToFeed[regionEnd + 1];
-        if (next.sample.offset === current.sample.offset + current.sample.size) {
+        if (
+          next.sample.offset ===
+          current.sample.offset + current.sample.size
+        ) {
           regionEnd += 1;
           regionBytes += next.sample.size;
         } else {
@@ -316,7 +341,10 @@ export class Mp4BoxVideoBackend implements VideoBackend {
 
       for (let j = i; j <= regionEnd; j += 1) {
         const { sample } = samplesToFeed[j];
-        results.set(sample.decodeIndex, bufferView.slice(bufferOffset, bufferOffset + sample.size));
+        results.set(
+          sample.decodeIndex,
+          bufferView.slice(bufferOffset, bufferOffset + sample.size),
+        );
         bufferOffset += sample.size;
       }
 
@@ -326,7 +354,11 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     return results;
   }
 
-  private async decodeRange(start: number, end: number, target: number): Promise<void> {
+  private async decodeRange(
+    start: number,
+    end: number,
+    target: number,
+  ): Promise<void> {
     if (!this.config) throw new Error("Decoder not configured");
 
     if (this.decoder) {
@@ -347,7 +379,10 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     const toFeed: Array<{ pi: number; sample: Sample }> = [];
     for (let i = 0; i < this.samples.length; i += 1) {
       const sample = this.samples[i];
-      if (sample.decodeIndex >= minDecodeIndex && sample.decodeIndex <= maxDecodeIndex) {
+      if (
+        sample.decodeIndex >= minDecodeIndex &&
+        sample.decodeIndex <= maxDecodeIndex
+      ) {
         toFeed.push({ pi: i, sample });
       }
     }
@@ -392,7 +427,11 @@ export class Mp4BoxVideoBackend implements VideoBackend {
           if (decodedCount >= toFeed.length) resolveComplete();
         };
 
-        if (frameIndex !== undefined && frameIndex >= cacheStart && frameIndex <= cacheEnd) {
+        if (
+          frameIndex !== undefined &&
+          frameIndex >= cacheStart &&
+          frameIndex <= cacheEnd
+        ) {
           createImageBitmap(frame)
             .then((bitmap) => {
               this.addToCache(frameIndex as number, bitmap);
@@ -426,7 +465,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
             timestamp: sample.timestamp,
             duration: sample.duration,
             data,
-          })
+          }),
         );
       }
       if (i + BATCH_SIZE < toFeed.length) {

@@ -62,7 +62,7 @@ export class UnsupportedVideoFormatError extends Error {
     super(
       `Unsupported video format ".${extension}". AVI and MPEG program streams ` +
         `cannot be decoded in the browser or desktop app. Transcode to MP4 (H.264) ` +
-        `first, e.g. \`ffmpeg -i input.${extension} -c:v libx264 output.mp4\`.`
+        `first, e.g. \`ffmpeg -i input.${extension} -c:v libx264 output.mp4\`.`,
     );
     this.name = "UnsupportedVideoFormatError";
     this.extension = extension;
@@ -84,7 +84,7 @@ export async function createVideoBackend(
     shape?: [number, number, number, number];
     fps?: number;
     backend?: VideoBackendType;
-  }
+  },
 ): Promise<VideoBackend> {
   // Image-sequence video (Python `ImageVideo`): `source` is a LIST of image
   // paths, one image per frame. Route to ImageVideoBackend before the single-
@@ -96,9 +96,7 @@ export async function createVideoBackend(
     });
   }
   const isBlob = typeof Blob !== "undefined" && source instanceof Blob;
-  const filename = isBlob
-    ? (source as File).name ?? ""
-    : (source as string);
+  const filename = isBlob ? ((source as File).name ?? "") : (source as string);
   const normalized = filename.split("?")[0]?.toLowerCase() ?? "";
   const ext = normalized.split(".").pop() ?? "";
 
@@ -130,19 +128,24 @@ export async function createVideoBackend(
   // at the top of this function via Array.isArray. This must come before the
   // MediaVideo fallback, which would otherwise try (and fail) to play a .jpg.
   if (IMAGE_EXTENSIONS.includes(ext)) {
-    return ImageVideoBackend.create({ filename: [filename], shape: options?.shape });
+    return ImageVideoBackend.create({
+      filename: [filename],
+      shape: options?.shape,
+    });
   }
 
   // User-specified backend override
   if (options?.backend === "mediabunny") {
-    if (isBlob) return MediaBunnyVideoBackend.fromBlob(source as Blob, filename);
+    if (isBlob)
+      return MediaBunnyVideoBackend.fromBlob(source as Blob, filename);
     return MediaBunnyVideoBackend.fromUrl(filename);
   }
   if (options?.backend === "mp4box") {
     return new Mp4BoxVideoBackend(source);
   }
   if (options?.backend === "media") {
-    if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source as Blob));
+    if (isBlob)
+      return new MediaVideoBackend(URL.createObjectURL(source as Blob));
     return new MediaVideoBackend(filename);
   }
 
@@ -166,7 +169,8 @@ export async function createVideoBackend(
 
   // Non-MP4 video formats: use MediaBunny
   if (supportsWebCodecs && MEDIABUNNY_EXTENSIONS.includes(ext)) {
-    if (isBlob) return MediaBunnyVideoBackend.fromBlob(source as Blob, filename);
+    if (isBlob)
+      return MediaBunnyVideoBackend.fromBlob(source as Blob, filename);
     return MediaBunnyVideoBackend.fromUrl(filename);
   }
 

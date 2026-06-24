@@ -11,7 +11,7 @@ import { setImageBytesReader } from "../../src/video/image-source.js";
 async function makePng(
   w: number,
   h: number,
-  rgb: [number, number, number]
+  rgb: [number, number, number],
 ): Promise<Uint8Array> {
   const sc = await import("skia-canvas");
   const canvas = new sc.Canvas(w, h);

@@ -30,7 +30,11 @@ describe("h5 provider pattern", () => {
   });
 
   it("openH5File opens an SLP file by path (Node provider)", async () => {
-    const fixturePath = join(fixturesDir, "slp", "centered_pair_predictions.slp");
+    const fixturePath = join(
+      fixturesDir,
+      "slp",
+      "centered_pair_predictions.slp",
+    );
     if (!existsSync(fixturePath)) return; // skip if fixture missing
 
     const { file, close } = await openH5File(fixturePath);
@@ -43,7 +47,11 @@ describe("h5 provider pattern", () => {
   });
 
   it("openH5File opens an SLP file from bytes (Node provider)", async () => {
-    const fixturePath = join(fixturesDir, "slp", "centered_pair_predictions.slp");
+    const fixturePath = join(
+      fixturesDir,
+      "slp",
+      "centered_pair_predictions.slp",
+    );
     if (!existsSync(fixturePath)) return;
 
     const bytes = readFileSync(fixturePath);
@@ -57,7 +65,11 @@ describe("h5 provider pattern", () => {
   });
 
   it("openH5File opens from ArrayBuffer (Node provider)", async () => {
-    const fixturePath = join(fixturesDir, "slp", "centered_pair_predictions.slp");
+    const fixturePath = join(
+      fixturesDir,
+      "slp",
+      "centered_pair_predictions.slp",
+    );
     if (!existsSync(fixturePath)) return;
 
     const bytes = readFileSync(fixturePath);

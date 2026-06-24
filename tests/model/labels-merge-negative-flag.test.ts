@@ -25,59 +25,137 @@ describe("Labels.merge preserves isNegative (issue #108 / PR #432)", () => {
     const sk = SK();
     const v = new Video({ filename: "v.mp4", openBackend: false });
     const base = new Labels();
-    base.append(new LabeledFrame({ video: v, frameIdx: 0, instances: [user([[1, 1], [2, 2]], sk)] }));
+    base.append(
+      new LabeledFrame({
+        video: v,
+        frameIdx: 0,
+        instances: [
+          user(
+            [
+              [1, 1],
+              [2, 2],
+            ],
+            sk,
+          ),
+        ],
+      }),
+    );
 
     const other = new Labels();
-    other.append(new LabeledFrame({ video: v, frameIdx: 5, instances: [], isNegative: true }));
+    other.append(
+      new LabeledFrame({
+        video: v,
+        frameIdx: 5,
+        instances: [],
+        isNegative: true,
+      }),
+    );
 
     const result = await base.merge(other);
 
     const appended = base.find({ video: v, frameIdx: 5 })[0];
     expect(appended.isNegative).toBe(true);
-    expect(result.conflicts.some((c) => c.conflictType === "negative_flag_conflict")).toBe(false);
+    expect(
+      result.conflicts.some((c) => c.conflictType === "negative_flag_conflict"),
+    ).toBe(false);
   });
 
   it("colliding: both sides negative, no user pose -> stays negative, no conflict", async () => {
     const sk = SK();
     const v = new Video({ filename: "v.mp4", openBackend: false });
     const base = new Labels();
-    base.append(new LabeledFrame({ video: v, frameIdx: 0, instances: [], isNegative: true }));
+    base.append(
+      new LabeledFrame({
+        video: v,
+        frameIdx: 0,
+        instances: [],
+        isNegative: true,
+      }),
+    );
     const other = new Labels();
-    other.append(new LabeledFrame({ video: v, frameIdx: 0, instances: [], isNegative: true }));
+    other.append(
+      new LabeledFrame({
+        video: v,
+        frameIdx: 0,
+        instances: [],
+        isNegative: true,
+      }),
+    );
 
     const result = await base.merge(other);
 
     expect(base.find({ video: v, frameIdx: 0 })[0].isNegative).toBe(true);
-    expect(result.conflicts.some((c) => c.conflictType === "negative_flag_conflict")).toBe(false);
+    expect(
+      result.conflicts.some((c) => c.conflictType === "negative_flag_conflict"),
+    ).toBe(false);
   });
 
   it("colliding: one side negative, no user pose -> stays negative, no conflict", async () => {
     const sk = SK();
     const v = new Video({ filename: "v.mp4", openBackend: false });
     const base = new Labels();
-    base.append(new LabeledFrame({ video: v, frameIdx: 0, instances: [], isNegative: true }));
+    base.append(
+      new LabeledFrame({
+        video: v,
+        frameIdx: 0,
+        instances: [],
+        isNegative: true,
+      }),
+    );
     const other = new Labels();
-    other.append(new LabeledFrame({ video: v, frameIdx: 0, instances: [], isNegative: false }));
+    other.append(
+      new LabeledFrame({
+        video: v,
+        frameIdx: 0,
+        instances: [],
+        isNegative: false,
+      }),
+    );
 
     const result = await base.merge(other);
 
     expect(base.find({ video: v, frameIdx: 0 })[0].isNegative).toBe(true);
-    expect(result.conflicts.some((c) => c.conflictType === "negative_flag_conflict")).toBe(false);
+    expect(
+      result.conflicts.some((c) => c.conflictType === "negative_flag_conflict"),
+    ).toBe(false);
   });
 
   it("colliding: negative base + incoming USER pose -> flag cleared + negative_flag_conflict emitted", async () => {
     const sk = SK();
     const v = new Video({ filename: "v.mp4", openBackend: false });
     const base = new Labels();
-    base.append(new LabeledFrame({ video: v, frameIdx: 0, instances: [], isNegative: true }));
+    base.append(
+      new LabeledFrame({
+        video: v,
+        frameIdx: 0,
+        instances: [],
+        isNegative: true,
+      }),
+    );
     const other = new Labels();
-    other.append(new LabeledFrame({ video: v, frameIdx: 0, instances: [user([[1, 1], [2, 2]], sk)] }));
+    other.append(
+      new LabeledFrame({
+        video: v,
+        frameIdx: 0,
+        instances: [
+          user(
+            [
+              [1, 1],
+              [2, 2],
+            ],
+            sk,
+          ),
+        ],
+      }),
+    );
 
     const result = await base.merge(other);
 
     const frame = base.find({ video: v, frameIdx: 0 })[0];
     expect(frame.isNegative).toBe(false); // user pose vetoes the flag
-    const conflict = result.conflicts.find((c) => c.conflictType === "negative_flag_conflict");
+    const conflict = result.conflicts.find(
+      (c) => c.conflictType === "negative_flag_conflict",
+    );
     expect(conflict).toBeDefined();
     expect(conflict!.originalData).toBe(true); // base was negative
     expect(conflict!.resolution).toBe("dropped_for_user_pose");
@@ -87,13 +165,36 @@ describe("Labels.merge preserves isNegative (issue #108 / PR #432)", () => {
     const sk = SK();
     const v = new Video({ filename: "v.mp4", openBackend: false });
     const base = new Labels();
-    base.append(new LabeledFrame({ video: v, frameIdx: 0, instances: [], isNegative: true }));
+    base.append(
+      new LabeledFrame({
+        video: v,
+        frameIdx: 0,
+        instances: [],
+        isNegative: true,
+      }),
+    );
     const other = new Labels();
-    other.append(new LabeledFrame({ video: v, frameIdx: 0, instances: [pred([[1, 1], [2, 2]], sk)] }));
+    other.append(
+      new LabeledFrame({
+        video: v,
+        frameIdx: 0,
+        instances: [
+          pred(
+            [
+              [1, 1],
+              [2, 2],
+            ],
+            sk,
+          ),
+        ],
+      }),
+    );
 
     const result = await base.merge(other);
 
     expect(base.find({ video: v, frameIdx: 0 })[0].isNegative).toBe(true);
-    expect(result.conflicts.some((c) => c.conflictType === "negative_flag_conflict")).toBe(false);
+    expect(
+      result.conflicts.some((c) => c.conflictType === "negative_flag_conflict"),
+    ).toBe(false);
   });
 });

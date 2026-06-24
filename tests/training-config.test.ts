@@ -32,7 +32,7 @@ describe("Training Config Skeleton", () => {
 
   it("reads skeleton-order-bug/training_config_13pt_fly.json", () => {
     const json = loadFixtureJson(
-      "skeleton-order-bug/training_config_13pt_fly.json"
+      "skeleton-order-bug/training_config_13pt_fly.json",
     );
     const skeleton = readTrainingConfigSkeleton(json);
     expect(skeleton.nodes.length).toBe(13);
@@ -41,10 +41,10 @@ describe("Training Config Skeleton", () => {
 
   it("training config skeleton matches standalone skeleton", () => {
     const configJson = loadFixtureJson(
-      "skeleton-order-bug/training_config_13pt_fly.json"
+      "skeleton-order-bug/training_config_13pt_fly.json",
     );
     const standaloneJson = loadFixtureJson(
-      "skeleton-order-bug/skeleton_13pt_fly.json"
+      "skeleton-order-bug/skeleton_13pt_fly.json",
     );
 
     const configSkeleton = readTrainingConfigSkeleton(configJson);

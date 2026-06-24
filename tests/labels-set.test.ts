@@ -1,5 +1,12 @@
 import { describe, it, expect } from "./bun-test";
-import { LabelsSet, Labels, Video, Skeleton, LabeledFrame, Instance } from "../src/index.js";
+import {
+  LabelsSet,
+  Labels,
+  Video,
+  Skeleton,
+  LabeledFrame,
+  Instance,
+} from "../src/index.js";
 import { loadSlpSet, saveSlpSet, loadSlp, saveSlp } from "../src/io/main.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -89,9 +96,16 @@ describe("saveSlpSet", () => {
   it("saves multiple SLP files", async () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A", "B"] });
-    const inst = new Instance({ points: { A: [10, 20], B: [30, 40] }, skeleton });
+    const inst = new Instance({
+      points: { A: [10, 20], B: [30, 40] },
+      skeleton,
+    });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
-    const labels = new Labels({ labeledFrames: [frame], videos: [video], skeletons: [skeleton] });
+    const labels = new Labels({
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
+    });
 
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sleap-test-"));
     const file1 = path.join(tmpDir, "train.slp");

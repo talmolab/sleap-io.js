@@ -1,11 +1,25 @@
 import { describe, it, expect } from "./bun-test";
-import { roisToGeoJSON, roisFromGeoJSON, writeGeoJSON, readGeoJSON } from "../src/io/geojson.js";
+import {
+  roisToGeoJSON,
+  roisFromGeoJSON,
+  writeGeoJSON,
+  readGeoJSON,
+} from "../src/io/geojson.js";
 import { ROI } from "../src/model/roi.js";
 
 describe("GeoJSON I/O", () => {
   it("round-trips ROIs through GeoJSON", () => {
     const rois = [
-      ROI.fromPolygon([[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]], { name: "test", category: "region" }),
+      ROI.fromPolygon(
+        [
+          [0, 0],
+          [10, 0],
+          [10, 10],
+          [0, 10],
+          [0, 0],
+        ],
+        { name: "test", category: "region" },
+      ),
       ROI.fromBbox(5, 5, 20, 20, { name: "box" }),
     ];
     const json = writeGeoJSON(rois);
@@ -33,8 +47,24 @@ describe("GeoJSON I/O", () => {
     const fc = {
       type: "FeatureCollection" as const,
       features: [
-        { type: "Feature" as const, geometry: { type: "Point" as const, coordinates: [1, 2] } },
-        { type: "Feature" as const, geometry: { type: "Polygon" as const, coordinates: [[[0, 0], [1, 0], [1, 1], [0, 0]]] } },
+        {
+          type: "Feature" as const,
+          geometry: { type: "Point" as const, coordinates: [1, 2] },
+        },
+        {
+          type: "Feature" as const,
+          geometry: {
+            type: "Polygon" as const,
+            coordinates: [
+              [
+                [0, 0],
+                [1, 0],
+                [1, 1],
+                [0, 0],
+              ],
+            ],
+          },
+        },
       ],
     };
     const rois = roisFromGeoJSON(fc);
@@ -44,9 +74,7 @@ describe("GeoJSON I/O", () => {
   });
 
   it("roisToGeoJSON creates valid FeatureCollection", () => {
-    const rois = [
-      ROI.fromBbox(0, 0, 10, 10, { name: "a", category: "cat1" }),
-    ];
+    const rois = [ROI.fromBbox(0, 0, 10, 10, { name: "a", category: "cat1" })];
     const fc = roisToGeoJSON(rois);
     expect(fc.type).toBe("FeatureCollection");
     expect(fc.features).toHaveLength(1);

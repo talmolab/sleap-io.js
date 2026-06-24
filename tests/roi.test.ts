@@ -228,7 +228,14 @@ describe("ROI", () => {
 describe("New geometry types", () => {
   it("LineString ROI has correct bounds and zero area", () => {
     const roi = new UserROI({
-      geometry: { type: "LineString", coordinates: [[0, 0], [10, 5], [20, 0]] },
+      geometry: {
+        type: "LineString",
+        coordinates: [
+          [0, 0],
+          [10, 5],
+          [20, 0],
+        ],
+      },
     });
     expect(roi.area).toBe(0);
     const b = roi.bounds;
@@ -240,7 +247,14 @@ describe("New geometry types", () => {
 
   it("MultiPoint ROI has correct bounds and zero area", () => {
     const roi = new UserROI({
-      geometry: { type: "MultiPoint", coordinates: [[1, 2], [3, 4], [5, 6]] },
+      geometry: {
+        type: "MultiPoint",
+        coordinates: [
+          [1, 2],
+          [3, 4],
+          [5, 6],
+        ],
+      },
     });
     expect(roi.area).toBe(0);
     const b = roi.bounds;
@@ -255,7 +269,18 @@ describe("New geometry types", () => {
       geometry: {
         type: "GeometryCollection",
         geometries: [
-          { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] },
+          {
+            type: "Polygon",
+            coordinates: [
+              [
+                [0, 0],
+                [10, 0],
+                [10, 10],
+                [0, 10],
+                [0, 0],
+              ],
+            ],
+          },
           { type: "Point", coordinates: [20, 20] },
         ],
       },
@@ -269,13 +294,25 @@ describe("New geometry types", () => {
   });
 
   it("rasterize LineString returns empty mask", () => {
-    const geom: Geometry = { type: "LineString", coordinates: [[0, 0], [10, 10]] };
+    const geom: Geometry = {
+      type: "LineString",
+      coordinates: [
+        [0, 0],
+        [10, 10],
+      ],
+    };
     const mask = rasterizeGeometry(geom, 20, 20);
     expect(mask.reduce((a, b) => a + b, 0)).toBe(0);
   });
 
   it("rasterize MultiPoint returns empty mask", () => {
-    const geom: Geometry = { type: "MultiPoint", coordinates: [[1, 1], [5, 5]] };
+    const geom: Geometry = {
+      type: "MultiPoint",
+      coordinates: [
+        [1, 1],
+        [5, 5],
+      ],
+    };
     const mask = rasterizeGeometry(geom, 10, 10);
     expect(mask.reduce((a, b) => a + b, 0)).toBe(0);
   });
@@ -284,7 +321,18 @@ describe("New geometry types", () => {
     const geom: Geometry = {
       type: "GeometryCollection",
       geometries: [
-        { type: "Polygon", coordinates: [[[2, 2], [8, 2], [8, 8], [2, 8], [2, 2]]] },
+        {
+          type: "Polygon",
+          coordinates: [
+            [
+              [2, 2],
+              [8, 2],
+              [8, 8],
+              [2, 8],
+              [2, 2],
+            ],
+          ],
+        },
       ],
     };
     const mask = rasterizeGeometry(geom, 10, 10);
@@ -295,10 +343,29 @@ describe("New geometry types", () => {
 
 describe("fromMultiPolygon and explode", () => {
   it("fromMultiPolygon creates correct geometry", () => {
-    const roi = ROI.fromMultiPolygon([
-      [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
-      [[[20, 20], [30, 20], [30, 30], [20, 30], [20, 20]]],
-    ], { name: "multi" });
+    const roi = ROI.fromMultiPolygon(
+      [
+        [
+          [
+            [0, 0],
+            [10, 0],
+            [10, 10],
+            [0, 10],
+            [0, 0],
+          ],
+        ],
+        [
+          [
+            [20, 20],
+            [30, 20],
+            [30, 30],
+            [20, 30],
+            [20, 20],
+          ],
+        ],
+      ],
+      { name: "multi" },
+    );
     expect(roi.geometry.type).toBe("MultiPolygon");
     expect(roi.name).toBe("multi");
     if (roi.geometry.type === "MultiPolygon") {
@@ -307,10 +374,29 @@ describe("fromMultiPolygon and explode", () => {
   });
 
   it("explode MultiPolygon splits into individual Polygon ROIs", () => {
-    const roi = ROI.fromMultiPolygon([
-      [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
-      [[[20, 20], [30, 20], [30, 30], [20, 30], [20, 20]]],
-    ], { name: "multi", category: "cat" });
+    const roi = ROI.fromMultiPolygon(
+      [
+        [
+          [
+            [0, 0],
+            [10, 0],
+            [10, 10],
+            [0, 10],
+            [0, 0],
+          ],
+        ],
+        [
+          [
+            [20, 20],
+            [30, 20],
+            [30, 30],
+            [20, 30],
+            [20, 20],
+          ],
+        ],
+      ],
+      { name: "multi", category: "cat" },
+    );
     const parts = roi.explode();
     expect(parts.length).toBe(2);
     expect(parts[0].geometry.type).toBe("Polygon");
@@ -325,7 +411,18 @@ describe("fromMultiPolygon and explode", () => {
         type: "GeometryCollection",
         geometries: [
           { type: "Point", coordinates: [1, 2] },
-          { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]] },
+          {
+            type: "Polygon",
+            coordinates: [
+              [
+                [0, 0],
+                [5, 0],
+                [5, 5],
+                [0, 5],
+                [0, 0],
+              ],
+            ],
+          },
         ],
       },
       name: "gc",
@@ -349,7 +446,11 @@ describe("fromMultiPolygon and explode", () => {
 
 describe("toGeoJSON", () => {
   it("returns correct Feature structure", () => {
-    const roi = ROI.fromBbox(0, 0, 10, 10, { name: "test", category: "cat", source: "src" });
+    const roi = ROI.fromBbox(0, 0, 10, 10, {
+      name: "test",
+      category: "cat",
+      source: "src",
+    });
     const feature = roi.toGeoJSON();
     expect(feature.type).toBe("Feature");
     expect(feature.geometry.type).toBe("Polygon");
@@ -375,8 +476,24 @@ describe("WKB", () => {
     const geom: Geometry = {
       type: "MultiPolygon",
       coordinates: [
-        [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]],
-        [[[15, 15], [20, 15], [20, 20], [15, 20], [15, 15]]],
+        [
+          [
+            [0, 0],
+            [10, 0],
+            [10, 10],
+            [0, 10],
+            [0, 0],
+          ],
+        ],
+        [
+          [
+            [15, 15],
+            [20, 15],
+            [20, 20],
+            [15, 20],
+            [15, 15],
+          ],
+        ],
       ],
     };
     const wkb = encodeWkb(geom);
@@ -415,7 +532,11 @@ describe("WKB", () => {
   it("encode and decode LineString", () => {
     const geom: Geometry = {
       type: "LineString",
-      coordinates: [[0, 0], [5, 5], [10, 0]],
+      coordinates: [
+        [0, 0],
+        [5, 5],
+        [10, 0],
+      ],
     };
     const wkb = encodeWkb(geom);
     const decoded = decodeWkb(wkb);
@@ -431,7 +552,11 @@ describe("WKB", () => {
   it("encode and decode MultiPoint", () => {
     const geom: Geometry = {
       type: "MultiPoint",
-      coordinates: [[1, 2], [3, 4], [5, 6]],
+      coordinates: [
+        [1, 2],
+        [3, 4],
+        [5, 6],
+      ],
     };
     const wkb = encodeWkb(geom);
     const decoded = decodeWkb(wkb);
@@ -449,8 +574,25 @@ describe("WKB", () => {
       type: "GeometryCollection",
       geometries: [
         { type: "Point", coordinates: [1, 2] },
-        { type: "LineString", coordinates: [[0, 0], [10, 10]] },
-        { type: "Polygon", coordinates: [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]] },
+        {
+          type: "LineString",
+          coordinates: [
+            [0, 0],
+            [10, 10],
+          ],
+        },
+        {
+          type: "Polygon",
+          coordinates: [
+            [
+              [0, 0],
+              [5, 0],
+              [5, 5],
+              [0, 5],
+              [0, 0],
+            ],
+          ],
+        },
       ],
     };
     const wkb = encodeWkb(geom);
@@ -465,7 +607,10 @@ describe("WKB", () => {
         expect(decoded.geometries[0].coordinates).toEqual([1, 2]);
       }
       if (decoded.geometries[1].type === "LineString") {
-        expect(decoded.geometries[1].coordinates).toEqual([[0, 0], [10, 10]]);
+        expect(decoded.geometries[1].coordinates).toEqual([
+          [0, 0],
+          [10, 10],
+        ]);
       }
     }
   });
@@ -473,14 +618,28 @@ describe("WKB", () => {
 
 describe("ROI abstract base and subclasses", () => {
   it("ROI cannot be instantiated directly", () => {
-    expect(() => new (ROI as any)({
-      geometry: { type: "Point", coordinates: [0, 0] },
-    })).toThrow(TypeError);
+    expect(
+      () =>
+        new (ROI as any)({
+          geometry: { type: "Point", coordinates: [0, 0] },
+        }),
+    ).toThrow(TypeError);
   });
 
   it("PredictedROI has score and isPredicted", () => {
     const roi = new PredictedROI({
-      geometry: { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] },
+      geometry: {
+        type: "Polygon",
+        coordinates: [
+          [
+            [0, 0],
+            [10, 0],
+            [10, 10],
+            [0, 10],
+            [0, 0],
+          ],
+        ],
+      },
       score: 0.75,
     });
     expect(roi.isPredicted).toBe(true);
@@ -490,8 +649,24 @@ describe("ROI abstract base and subclasses", () => {
   it("PredictedROI.explode() preserves score and subclass", () => {
     const roi = ROI.fromMultiPolygon(
       [
-        [[[0, 0], [5, 0], [5, 5], [0, 5], [0, 0]]],
-        [[[10, 10], [15, 10], [15, 15], [10, 15], [10, 10]]],
+        [
+          [
+            [0, 0],
+            [5, 0],
+            [5, 5],
+            [0, 5],
+            [0, 0],
+          ],
+        ],
+        [
+          [
+            [10, 10],
+            [15, 10],
+            [15, 15],
+            [10, 15],
+            [10, 10],
+          ],
+        ],
       ],
       { name: "multi" },
     );

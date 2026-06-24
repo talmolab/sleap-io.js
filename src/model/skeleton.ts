@@ -85,10 +85,12 @@ export class Skeleton {
           symmetries?: Array<Symmetry | [NodeOrIndex, NodeOrIndex]>;
           name?: string;
         }
-      | Array<Node | string>
+      | Array<Node | string>,
   ) {
     const resolved = Array.isArray(options) ? { nodes: options } : options;
-    this.nodes = resolved.nodes.map((node) => (typeof node === "string" ? new Node(node) : node));
+    this.nodes = resolved.nodes.map((node) =>
+      typeof node === "string" ? new Node(node) : node,
+    );
     this.edges = [];
     this.symmetries = [];
     this.name = resolved.name;
@@ -96,11 +98,13 @@ export class Skeleton {
     this.nodeToIndex = new Map();
     this.rebuildCache();
     if (resolved.edges) {
-      this.edges = resolved.edges.map((edge) => (edge instanceof Edge ? edge : this.edgeFrom(edge)));
+      this.edges = resolved.edges.map((edge) =>
+        edge instanceof Edge ? edge : this.edgeFrom(edge),
+      );
     }
     if (resolved.symmetries) {
       this.symmetries = resolved.symmetries.map((symmetry) =>
-        symmetry instanceof Symmetry ? symmetry : this.symmetryFrom(symmetry)
+        symmetry instanceof Symmetry ? symmetry : this.symmetryFrom(symmetry),
       );
     }
   }
@@ -135,7 +139,10 @@ export class Skeleton {
   }
 
   get edgeIndices(): Array<[number, number]> {
-    return this.edges.map((edge) => [this.index(edge.source), this.index(edge.destination)]);
+    return this.edges.map((edge) => [
+      this.index(edge.source),
+      this.index(edge.destination),
+    ]);
   }
 
   get symmetryNames(): Array<[string, string]> {
@@ -182,10 +189,14 @@ export class Skeleton {
 
     // 4. Edge set equality: directed (source.name, destination.name) pairs.
     const selfEdgeSet = new Set(
-      this.edges.map((edge) => edgeKey(edge.source.name, edge.destination.name))
+      this.edges.map((edge) =>
+        edgeKey(edge.source.name, edge.destination.name),
+      ),
     );
     const otherEdgeSet = new Set(
-      other.edges.map((edge) => edgeKey(edge.source.name, edge.destination.name))
+      other.edges.map((edge) =>
+        edgeKey(edge.source.name, edge.destination.name),
+      ),
     );
     if (!setsEqual(selfEdgeSet, otherEdgeSet)) return false;
 
@@ -232,7 +243,8 @@ export class Skeleton {
     const nUnion = sizeSelf + sizeOther - nCommon;
 
     const jaccard = nUnion > 0 ? nCommon / nUnion : 0;
-    const dice = sizeSelf + sizeOther > 0 ? (2 * nCommon) / (sizeSelf + sizeOther) : 0;
+    const dice =
+      sizeSelf + sizeOther > 0 ? (2 * nCommon) / (sizeSelf + sizeOther) : 0;
 
     return { nCommon, nSelfOnly, nOtherOnly, jaccard, dice };
   }
