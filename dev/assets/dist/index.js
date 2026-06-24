@@ -152,7 +152,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-QZA56GEB.js";
+} from "./chunk-E627NSVZ.js";
 import {
   Edge,
   Instance,
@@ -489,7 +489,9 @@ function classNamesFromConfig(config) {
   const raw = config["names"];
   const result = /* @__PURE__ */ new Map();
   if (Array.isArray(raw)) {
-    raw.forEach((name, i) => result.set(i, String(name)));
+    raw.forEach((name, i) => {
+      result.set(i, String(name));
+    });
   } else if (raw && typeof raw === "object") {
     for (const [k, v] of Object.entries(raw)) {
       const id = Number(k);
@@ -765,7 +767,9 @@ function buildClassNames(categories) {
     result.set(0, "object");
     return result;
   }
-  distinct.forEach((name, i) => result.set(i, name));
+  distinct.forEach((name, i) => {
+    result.set(i, name);
+  });
   return result;
 }
 function readLabels(datasetPath, options) {
@@ -2266,7 +2270,9 @@ function extractSourceData(source, options) {
     }
     const tracks2 = Array.from(trackSet);
     const trackIndexMap2 = /* @__PURE__ */ new Map();
-    tracks2.forEach((t, i) => trackIndexMap2.set(t, i));
+    tracks2.forEach((t, i) => {
+      trackIndexMap2.set(t, i);
+    });
     return {
       instances,
       skeleton: skeleton2,
@@ -2285,7 +2291,9 @@ function extractSourceData(source, options) {
     }
     const tracks2 = Array.from(trackSet);
     const trackIndexMap2 = /* @__PURE__ */ new Map();
-    tracks2.forEach((t, i) => trackIndexMap2.set(t, i));
+    tracks2.forEach((t, i) => {
+      trackIndexMap2.set(t, i);
+    });
     let frameSize2 = [options.width ?? 0, options.height ?? 0];
     if (frame.video) {
       const video = frame.video;
@@ -2310,7 +2318,9 @@ function extractSourceData(source, options) {
   if (labels.labeledFrames.length === 0) {
     const tracks2 = labels.tracks ?? [];
     const trackIndexMap2 = /* @__PURE__ */ new Map();
-    tracks2.forEach((t, i) => trackIndexMap2.set(t, i));
+    tracks2.forEach((t, i) => {
+      trackIndexMap2.set(t, i);
+    });
     return {
       instances: [],
       skeleton: labels.skeletons?.[0] ?? null,
@@ -2335,7 +2345,9 @@ function extractSourceData(source, options) {
   }
   const tracks = labels.tracks ?? [];
   const trackIndexMap = /* @__PURE__ */ new Map();
-  tracks.forEach((t, i) => trackIndexMap.set(t, i));
+  tracks.forEach((t, i) => {
+    trackIndexMap.set(t, i);
+  });
   return {
     instances: firstFrame.instances,
     skeleton,

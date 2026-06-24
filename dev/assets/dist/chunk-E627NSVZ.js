@@ -7039,14 +7039,18 @@ To use, first materialize:
     }
     const labels = new _Labels({ labeledFrames: lfs });
     const trackToInd = /* @__PURE__ */ new Map();
-    this.tracks.forEach((t, i) => trackToInd.set(t.name, i));
+    this.tracks.forEach((t, i) => {
+      trackToInd.set(t.name, i);
+    });
     labels.tracks = labels.tracks.map((t, i) => [t, i]).sort((a, b) => {
       const ka = trackToInd.get(a[0].name) ?? 0;
       const kb = trackToInd.get(b[0].name) ?? 0;
       return ka === kb ? a[1] - b[1] : ka - kb;
     }).map(([t]) => t);
     const skelToInd = /* @__PURE__ */ new Map();
-    this.skeletons.forEach((s, i) => skelToInd.set(s.name ?? "", i));
+    this.skeletons.forEach((s, i) => {
+      skelToInd.set(s.name ?? "", i);
+    });
     labels.skeletons = labels.skeletons.map((s, i) => [s, i]).sort((a, b) => {
       const ka = skelToInd.get(a[0].name ?? "") ?? 0;
       const kb = skelToInd.get(b[0].name ?? "") ?? 0;
@@ -7899,13 +7903,14 @@ var Mp4BoxVideoBackend = class {
       return bitmap;
     }
     this.latestRequestedFrame = frameIndex;
-    await (this.decodeQueue = this.decodeQueue.then(async () => {
+    this.decodeQueue = this.decodeQueue.then(async () => {
       if (this.latestRequestedFrame !== frameIndex) return;
       if (signal?.aborted) return;
       const keyframe = this.findKeyframeBefore(frameIndex);
       const end = Math.min(frameIndex + this.lookahead, this.samples.length - 1);
       await this.decodeRange(keyframe, end, frameIndex);
-    }));
+    });
+    await this.decodeQueue;
     return this.cache.get(frameIndex) ?? null;
   }
   async getFrameTimes() {
@@ -7920,7 +7925,9 @@ var Mp4BoxVideoBackend = class {
       }
     }
     this.decoder = null;
-    this.cache.forEach((bitmap) => bitmap.close());
+    this.cache.forEach((bitmap) => {
+      bitmap.close();
+    });
     this.cache.clear();
     this.fileBlob = null;
   }
@@ -8328,7 +8335,8 @@ async function readEmbeddedFrameBytes(reader, index) {
     return Array.isArray(whole2) ? asUint8Array(whole2[index]) : null;
   }
   if (layout === "concat" && reader.frameSizes && reader.frameSizes.length > index) {
-    const offsets2 = reader.legacy.offsets ??= computeOffsetsFromSizes(reader.frameSizes);
+    reader.legacy.offsets ??= computeOffsetsFromSizes(reader.frameSizes);
+    const offsets2 = reader.legacy.offsets;
     const start = offsets2[index];
     const end = start + reader.frameSizes[index];
     const { value } = await reader.readSlice([[start, end]]);
@@ -11412,7 +11420,9 @@ function writeIdentities(file, identities) {
 }
 function writeSessions(file, sessions, videos, labeledFrames, identities) {
   const labeledFrameIndex = /* @__PURE__ */ new Map();
-  labeledFrames.forEach((lf, idx) => labeledFrameIndex.set(lf, idx));
+  labeledFrames.forEach((lf, idx) => {
+    labeledFrameIndex.set(lf, idx);
+  });
   const payload = sessions.map((session) => JSON.stringify(serializeSession(session, videos, labeledFrameIndex, identities)));
   file.create_dataset({ name: "sessions_json", data: payload });
 }
@@ -11856,7 +11866,9 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
   const scoreMapChunks = [];
   let smOffset = 0;
   const maskIdToIdx = /* @__PURE__ */ new Map();
-  masks.forEach((m, i) => maskIdToIdx.set(m, i));
+  masks.forEach((m, i) => {
+    maskIdToIdx.set(m, i);
+  });
   for (let i = 0; i < masks.length; i++) {
     const mask = masks[i];
     const rleBytes = new Uint8Array(mask.rleCounts.length * 4);
@@ -12658,7 +12670,9 @@ function toAnalysisArrays(labels, video, allFrames, minOccupancy) {
   } else {
     nTracks = labels.tracks.length;
     trackToSlot = /* @__PURE__ */ new Map();
-    labels.tracks.forEach((track, i) => trackToSlot.set(track, i));
+    labels.tracks.forEach((track, i) => {
+      trackToSlot.set(track, i);
+    });
   }
   const occupancy = new Float64Array(nFrames * nTracks);
   const locations = new Float64Array(nFrames * nTracks * nodeCount * 2).fill(NaN);
@@ -12674,7 +12688,9 @@ function toAnalysisArrays(labels, video, allFrames, minOccupancy) {
     const slotted = [];
     if (untracked) {
       const insts = untrackedFrameInstances(lf, isSingleInstance);
-      insts.forEach((inst, i) => slotted.push([i, inst]));
+      insts.forEach((inst, i) => {
+        slotted.push([i, inst]);
+      });
     } else {
       for (const [track, inst] of trackedFrameInstances(lf)) {
         const slot = trackToSlot.get(track);
