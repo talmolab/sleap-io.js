@@ -2097,6 +2097,7 @@ function applyOverlay(image, overlay, opts) {
   const outline = opts?.outline ?? false;
   const outlineWidth = opts?.outlineWidth ?? 1;
   const outlineColor = opts?.outlineColor ?? null;
+  const explicitColors = opts?.colors ?? null;
   if (!Array.isArray(overlay)) {
     if (isLabelImageLike(overlay)) {
       drawLabelImage(image, overlay, {
@@ -2116,7 +2117,7 @@ function applyOverlay(image, overlay, opts) {
       "Pass individual LabelImage objects to applyOverlay, not a list. Per-frame dispatch from a list[LabelImage] should happen at the renderVideo level."
     );
   }
-  const colors = getPalette(palette, overlay.length);
+  const colors = explicitColors ?? getPalette(palette, overlay.length);
   if (isSegmentationMask(first)) {
     drawMasks(image, overlay, { colors, alpha });
   } else if (isROI(first)) {
@@ -2163,6 +2164,13 @@ var DEFAULT_COLOR = PALETTES.standard[0];
 async function renderImage(source, options = {}) {
   const opts = { ...DEFAULT_OPTIONS, ...options };
   const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } = extractSourceData(source, opts);
+  let effectiveOverlay = opts.overlay ?? void 0;
+  if (effectiveOverlay == null && !Array.isArray(source)) {
+    const renderedFrame = renderedLabeledFrame(source);
+    if (renderedFrame && renderedFrame.masks.length > 0) {
+      effectiveOverlay = [...renderedFrame.masks];
+    }
+  }
   const trailsPossible = opts.showTrails && opts.trailLength > 0 && !Array.isArray(source);
   if (instances.length === 0 && !opts.image && !hasNonInstanceAnnotations(source) && !trailsPossible) {
     throw new Error("No instances to render and no background image provided");
@@ -2193,19 +2201,38 @@ async function renderImage(source, options = {}) {
     ctx.fillStyle = rgbToCSS(bgColor);
     ctx.fillRect(0, 0, scaledWidth, scaledHeight);
   }
-  if (opts.overlay !== void 0 && opts.overlay !== null) {
+  const hasTracks = !Array.isArray(source) && "labeledFrames" in source ? source.tracks.length > 0 : instances.some((inst) => inst.track != null);
+  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
+  const globalTrackIndexMap = opts.overlayTrackIndexMap ? opts.overlayTrackIndexMap : trackIndexMap;
+  const globalTracks = opts.overlayTrackIndexMap ? Array.from(opts.overlayTrackIndexMap.keys()) : tracks;
+  if (effectiveOverlay !== void 0 && effectiveOverlay !== null) {
+    const trackColorable = opts.overlayTrackIndexMap != null || !Array.isArray(source) && "labeledFrames" in source;
+    let overlayColors = null;
+    if (colorScheme === "track" && trackColorable && globalTrackIndexMap.size > 0 && Array.isArray(effectiveOverlay) && effectiveOverlay.length > 0) {
+      const ovPal = getPalette(
+        opts.palette,
+        Math.max(globalTrackIndexMap.size, 1)
+      );
+      overlayColors = effectiveOverlay.map(
+        (el) => {
+          const tidx = el.track ? globalTrackIndexMap.get(el.track) : void 0;
+          return tidx !== void 0 ? ovPal[tidx % ovPal.length] : ovPal[0];
+        }
+      );
+    }
     const overlayOpts = {
       alpha: opts.overlayAlpha,
       palette: opts.overlayPalette,
       outline: opts.overlayOutline,
       outlineWidth: opts.overlayOutlineWidth,
-      outlineColor: opts.overlayOutlineColor
+      outlineColor: opts.overlayOutlineColor,
+      colors: overlayColors
     };
     if (opts.scale === 1) {
       const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
       applyOverlay(
         imageData,
-        opts.overlay,
+        effectiveOverlay,
         overlayOpts
       );
       ctx.putImageData(imageData, 0, 0);
@@ -2216,7 +2243,7 @@ async function renderImage(source, options = {}) {
       const imageData = srcCtx.getImageData(0, 0, width, height);
       applyOverlay(
         imageData,
-        opts.overlay,
+        effectiveOverlay,
         overlayOpts
       );
       srcCtx.putImageData(imageData, 0, 0);
@@ -2226,15 +2253,13 @@ async function renderImage(source, options = {}) {
   }
   const edgeInds = skeleton?.edgeIndices ?? [];
   const nodeNames = skeleton?.nodeNames ?? [];
-  const hasTracks = instances.some((inst) => inst.track != null);
-  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
   const colors = buildColorMap(
     colorScheme,
     instances,
     nodeNames.length,
     opts.palette,
-    tracks,
-    trackIndexMap
+    globalTracks,
+    globalTrackIndexMap
   );
   const renderCtx = new RenderContext(
     ctx,
@@ -2345,7 +2370,7 @@ async function renderImage(source, options = {}) {
       }
     }
     if (opts.perInstanceCallback) {
-      const trackIdx = instance.track ? trackIndexMap.get(instance.track) ?? null : null;
+      const trackIdx = instance.track ? globalTrackIndexMap.get(instance.track) ?? null : null;
       const instCtx = new InstanceContext(
         ctx,
         instIdx,
@@ -2370,6 +2395,12 @@ async function renderImage(source, options = {}) {
     scaledWidth,
     scaledHeight
   );
+}
+function renderedLabeledFrame(source) {
+  if ("labeledFrames" in source) {
+    return source.labeledFrames[0];
+  }
+  return source;
 }
 function hasNonInstanceAnnotations(source) {
   if (Array.isArray(source)) return false;
@@ -2584,52 +2615,7 @@ async function renderVideo(source, outputPath, options = {}) {
       "ffmpeg not found. Please install ffmpeg and ensure it is in your PATH.\nInstallation: https://ffmpeg.org/download.html"
     );
   }
-  const frames = Array.isArray(source) ? source : source.labeledFrames;
-  let selectedFrames = frames;
-  if (options.frameInds) {
-    selectedFrames = options.frameInds.map((i) => frames[i]).filter((f) => f !== void 0);
-  } else if (options.start !== void 0 || options.end !== void 0) {
-    const start = options.start ?? 0;
-    const end = options.end ?? frames.length;
-    selectedFrames = frames.slice(start, end);
-  }
-  if (selectedFrames.length === 0) {
-    throw new Error("No frames to render");
-  }
-  let videoOverlay = options.overlay;
-  if (videoOverlay === void 0 && !Array.isArray(source) && source.labelImages.length > 0) {
-    const targetVideo = selectedFrames[0].video;
-    const videoLabelImages = source.getLabelImages({ video: targetVideo });
-    if (videoLabelImages.length > 0) {
-      videoOverlay = videoLabelImages;
-    }
-  }
-  const overlayForFrame = makeOverlayResolver(videoOverlay);
-  const framesByVideo = /* @__PURE__ */ new Map();
-  const trailPtsCache = options.showTrails ? /* @__PURE__ */ new Map() : void 0;
-  const canonicalTracks = Array.isArray(source) ? void 0 : source.tracks;
-  if (options.showTrails) {
-    for (const lf of frames) {
-      let videoFrames = framesByVideo.get(lf.video);
-      if (!videoFrames) {
-        videoFrames = /* @__PURE__ */ new Map();
-        framesByVideo.set(lf.video, videoFrames);
-      }
-      videoFrames.set(lf.frameIdx, lf);
-    }
-  }
-  const optsForFrame = (frame, position) => {
-    const { overlay: _ignored, ...rest } = options;
-    void _ignored;
-    const base = options.showTrails ? {
-      ...rest,
-      trailFrames: framesByVideo.get(frame.video),
-      trailTracks: options.trailTracks ?? canonicalTracks,
-      trailPtsCache
-    } : { ...rest };
-    base.overlay = overlayForFrame(frame, position);
-    return base;
-  };
+  const { selectedFrames, optsForFrame } = buildFrameRenderer(source, options);
   const firstImage = await renderImage(
     selectedFrames[0],
     optsForFrame(selectedFrames[0], 0)
@@ -2709,6 +2695,72 @@ async function renderVideo(source, outputPath, options = {}) {
     });
     ffmpeg.on("error", reject);
   });
+}
+function buildFrameRenderer(source, options = {}) {
+  const frames = Array.isArray(source) ? source : source.labeledFrames;
+  let selectedFrames = frames;
+  if (options.frameInds) {
+    selectedFrames = options.frameInds.map((i) => frames[i]).filter((f) => f !== void 0);
+  } else if (options.start !== void 0 || options.end !== void 0) {
+    const start = options.start ?? 0;
+    const end = options.end ?? frames.length;
+    selectedFrames = frames.slice(start, end);
+  }
+  if (selectedFrames.length === 0) {
+    throw new Error("No frames to render");
+  }
+  let videoOverlay = options.overlay;
+  if (videoOverlay === void 0 && !Array.isArray(source) && source.labelImages.length > 0) {
+    const targetVideo = selectedFrames[0].video;
+    const videoLabelImages = source.getLabelImages({ video: targetVideo });
+    if (videoLabelImages.length > 0) {
+      videoOverlay = videoLabelImages;
+    }
+  }
+  if (videoOverlay === void 0 && !Array.isArray(source) && source.masks.length > 0) {
+    const targetVideo = selectedFrames[0].video;
+    const labels = source;
+    if (labels.getMasks({ video: targetVideo }).length > 0) {
+      videoOverlay = (frameIdx) => labels.getMasks({ video: targetVideo, frameIdx });
+    }
+  }
+  const overlayForFrame = makeOverlayResolver(videoOverlay);
+  const framesByVideo = /* @__PURE__ */ new Map();
+  const trailPtsCache = options.showTrails ? /* @__PURE__ */ new Map() : void 0;
+  const canonicalTracks = Array.isArray(source) ? void 0 : source.tracks;
+  const globalTracks = canonicalTracks ?? [];
+  const hasTracks = globalTracks.length > 0;
+  const resolvedScheme = determineColorScheme(
+    options.colorBy ?? "auto",
+    hasTracks,
+    false
+  );
+  const overlayTrackIndexMap = hasTracks ? new Map(globalTracks.map((t, i) => [t, i])) : void 0;
+  if (options.showTrails) {
+    for (const lf of frames) {
+      let videoFrames = framesByVideo.get(lf.video);
+      if (!videoFrames) {
+        videoFrames = /* @__PURE__ */ new Map();
+        framesByVideo.set(lf.video, videoFrames);
+      }
+      videoFrames.set(lf.frameIdx, lf);
+    }
+  }
+  const optsForFrame = (frame, position) => {
+    const { overlay: _ignored, ...rest } = options;
+    void _ignored;
+    const base = options.showTrails ? {
+      ...rest,
+      trailFrames: framesByVideo.get(frame.video),
+      trailTracks: options.trailTracks ?? canonicalTracks,
+      trailPtsCache
+    } : { ...rest };
+    base.overlay = overlayForFrame(frame, position);
+    base.colorBy = resolvedScheme;
+    base.overlayTrackIndexMap = overlayTrackIndexMap;
+    return base;
+  };
+  return { selectedFrames, optsForFrame };
 }
 function isLabelImageLike2(value) {
   return typeof value === "object" && value !== null && "data" in value && value.data instanceof Int32Array;

@@ -3607,7 +3607,11 @@ declare function drawRois(image: ImageData, rois: ROI[], opts?: {
  * @param image - RGBA ImageData, mutated in place.
  * @param overlay - A LabelImage, or a list of SegmentationMask / ROI / BoundingBox.
  * @param opts - `alpha` (0.3), `palette` ("distinct"), `outline` (false),
- *   `outlineWidth` (1), `outlineColor` (null).
+ *   `outlineWidth` (1), `outlineColor` (null), plus optional per-element
+ *   `colors` for a list overlay. When `colors` is provided it overrides the
+ *   positional `palette` coloring (used by callers to color overlays by track
+ *   identity); it must match the overlay length and is ignored for label
+ *   images. Mirrors Python `_apply_overlay` (core.py L473-566, PR #470).
  * @returns The same ImageData.
  */
 declare function applyOverlay(image: ImageData, overlay: LabelImage | RawLabelImage | SegmentationMask[] | ROI[] | BoundingBox[], opts?: {
@@ -3616,6 +3620,7 @@ declare function applyOverlay(image: ImageData, overlay: LabelImage | RawLabelIm
     outline?: boolean;
     outlineWidth?: number;
     outlineColor?: RGB | null;
+    colors?: RGB[] | null;
 }): ImageData;
 
 /**
@@ -3677,6 +3682,16 @@ interface RenderOptions {
      * per render by `renderVideo` to avoid recomputing instance points.
      */
     trailPtsCache?: Map<Instance | PredictedInstance, number[][]>;
+    /**
+     * Advanced: global track -> index map used to color overlay elements
+     * (masks / ROIs / bboxes) by track identity under `colorBy: "track"`, keyed
+     * off the project's `Labels.tracks` (stable across frames). Populated by
+     * `renderVideo` so a bare per-frame `LabeledFrame` still gets GLOBAL
+     * track-identity overlay colors instead of per-frame positional colors
+     * (mirrors Python render_video `_track_idx_map`, fixing JS #162 flicker).
+     * For a `Labels` source this is derived automatically from `Labels.tracks`.
+     */
+    overlayTrackIndexMap?: Map<Track, number> | null;
     background?: "transparent" | ColorSpec;
     image?: ImageData | null;
     /**
