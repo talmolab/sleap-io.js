@@ -105,6 +105,16 @@ export interface RenderOptions {
    * per render by `renderVideo` to avoid recomputing instance points.
    */
   trailPtsCache?: Map<Instance | PredictedInstance, number[][]>;
+  /**
+   * Advanced: global track -> index map used to color overlay elements
+   * (masks / ROIs / bboxes) by track identity under `colorBy: "track"`, keyed
+   * off the project's `Labels.tracks` (stable across frames). Populated by
+   * `renderVideo` so a bare per-frame `LabeledFrame` still gets GLOBAL
+   * track-identity overlay colors instead of per-frame positional colors
+   * (mirrors Python render_video `_track_idx_map`, fixing JS #162 flicker).
+   * For a `Labels` source this is derived automatically from `Labels.tracks`.
+   */
+  overlayTrackIndexMap?: Map<Track, number> | null;
 
   // Background
   background?: "transparent" | ColorSpec;

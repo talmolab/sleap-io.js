@@ -4,7 +4,13 @@ import type { Labels } from "../model/labels.js";
 import type { LabeledFrame } from "../model/labeled-frame.js";
 import type { Instance, PredictedInstance, Track } from "../model/instance.js";
 import type { Skeleton } from "../model/skeleton.js";
-import type { RenderOptions, RGB, ColorScheme, PaletteName } from "./types.js";
+import type {
+  RenderOptions,
+  RGB,
+  ColorScheme,
+  PaletteName,
+  Overlay,
+} from "./types.js";
 import {
   getPalette,
   resolveColor,
@@ -39,6 +45,9 @@ const DEFAULT_OPTIONS: Required<
     // `overlay` is absence-checked (undefined = no overlay), so it has no
     // default value; `overlayOutlineColor` is null by default below.
     | "overlay"
+    // `overlayTrackIndexMap` is absence-checked (null/undefined = derive from
+    // a Labels source), so it has no default value.
+    | "overlayTrackIndexMap"
   >
 > = {
   colorBy: "auto",
@@ -99,6 +108,19 @@ export async function renderImage(
   const { instances, skeleton, frameSize, frameIdx, tracks, trackIndexMap } =
     extractSourceData(source, opts);
 
+  // Auto-use the frame's segmentation masks as the overlay when no explicit
+  // overlay is given and the frame carries masks. Mirrors Python render_image
+  // (core.py L1142-1156): a segmentation-only frame still draws its masks. Only
+  // masks are auto-resolved here (not label images), and an explicit overlay
+  // always wins.
+  let effectiveOverlay: Overlay | undefined = opts.overlay ?? undefined;
+  if (effectiveOverlay == null && !Array.isArray(source)) {
+    const renderedFrame = renderedLabeledFrame(source);
+    if (renderedFrame && renderedFrame.masks.length > 0) {
+      effectiveOverlay = [...renderedFrame.masks];
+    }
+  }
+
   // Motion trails can contribute frames even when the current frame is empty
   // (past frames supply the trail), so they relax the "nothing to render" guard
   // for a Labels / LabeledFrame source. Mirrors Python PR #434.
@@ -153,6 +175,33 @@ export async function renderImage(
     ctx.fillRect(0, 0, scaledWidth, scaledHeight);
   }
 
+  // Determine the color scheme up front (hoisted above the overlay block so
+  // track-colored overlays can match the pose/centroid/trail track colors).
+  // Mirrors Python render_image (core.py L1183-1187, PR #470). For a Labels
+  // source, `hasTracks` is keyed off the project track list (core.py
+  // L1029/L1633: `has_tracks = len(source.tracks) > 0`), so a mask- or
+  // centroid-only tracked project still resolves color_by="auto" to "track".
+  // For a bare LabeledFrame / instance-array source there is no `.tracks`
+  // list, so fall back to the instance-based determination.
+  const hasTracks =
+    !Array.isArray(source) && "labeledFrames" in source
+      ? (source as Labels).tracks.length > 0
+      : instances.some((inst) => inst.track != null);
+  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
+
+  // The GLOBAL track -> index map to key track colors off (stable across
+  // frames). When renderVideo renders a bare per-frame LabeledFrame it passes
+  // its project-level map via `overlayTrackIndexMap`; this overrides the
+  // per-frame map (built from this frame's instance order) so both poses and
+  // overlay elements color by global track identity. Mirrors Python
+  // render_video `_track_idx_map` (core.py L1929-1934).
+  const globalTrackIndexMap: Map<Track, number> = opts.overlayTrackIndexMap
+    ? opts.overlayTrackIndexMap
+    : trackIndexMap;
+  const globalTracks: Track[] = opts.overlayTrackIndexMap
+    ? Array.from(opts.overlayTrackIndexMap.keys())
+    : tracks;
+
   // Apply the annotation overlay AFTER the background and BEFORE trails/poses,
   // mirroring Python render_image (core.py L1159-1180: overlay applied on the
   // base frame, before trails/centroids/poses).
@@ -164,20 +213,54 @@ export async function renderImage(
   // replicate that equivalent: read the canvas at source resolution, blend the
   // overlay in source space, then scale-composite back onto the (possibly
   // scaled) canvas. When `scale === 1` this is an in-place read/blend/write.
-  if (opts.overlay !== undefined && opts.overlay !== null) {
+  if (effectiveOverlay !== undefined && effectiveOverlay !== null) {
+    // Color overlay elements (masks/ROIs/bboxes) by track identity when
+    // color_by resolves to "track", matching poses/centroids/trails (same
+    // `palette`). Otherwise fall through to positional `overlayPalette`
+    // coloring. A single LabelImage overlay is not an array, so label images
+    // are skipped. Untracked elements fall back to the first palette color.
+    // Mirrors Python render_image (core.py L1216-1239, PR #470).
+    //
+    // Track-color the overlay only when there is a GLOBAL track list to key
+    // off (a Labels source, or renderVideo's explicit `overlayTrackIndexMap`).
+    // A bare LabeledFrame / instance-array source with no project track list
+    // stays positional, matching Python `has_tracks` at the render_video level.
+    const trackColorable =
+      opts.overlayTrackIndexMap != null ||
+      (!Array.isArray(source) && "labeledFrames" in source);
+    let overlayColors: RGB[] | null = null;
+    if (
+      colorScheme === "track" &&
+      trackColorable &&
+      globalTrackIndexMap.size > 0 &&
+      Array.isArray(effectiveOverlay) &&
+      effectiveOverlay.length > 0
+    ) {
+      const ovPal = getPalette(
+        opts.palette as PaletteName,
+        Math.max(globalTrackIndexMap.size, 1),
+      );
+      overlayColors = (effectiveOverlay as { track?: Track | null }[]).map(
+        (el) => {
+          const tidx = el.track ? globalTrackIndexMap.get(el.track) : undefined;
+          return tidx !== undefined ? ovPal[tidx % ovPal.length] : ovPal[0];
+        },
+      );
+    }
     const overlayOpts = {
       alpha: opts.overlayAlpha,
       palette: opts.overlayPalette,
       outline: opts.overlayOutline,
       outlineWidth: opts.overlayOutlineWidth,
       outlineColor: opts.overlayOutlineColor,
+      colors: overlayColors,
     };
     if (opts.scale === 1) {
       // Fast path: blend directly on the scaled canvas (== source resolution).
       const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
       applyOverlay(
         imageData as unknown as ImageData,
-        opts.overlay,
+        effectiveOverlay,
         overlayOpts,
       );
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -194,7 +277,7 @@ export async function renderImage(
       const imageData = srcCtx.getImageData(0, 0, width, height);
       applyOverlay(
         imageData as unknown as ImageData,
-        opts.overlay,
+        effectiveOverlay,
         overlayOpts,
       );
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -209,18 +292,15 @@ export async function renderImage(
   const edgeInds = skeleton?.edgeIndices ?? [];
   const nodeNames = skeleton?.nodeNames ?? [];
 
-  // Determine color scheme
-  const hasTracks = instances.some((inst) => inst.track != null);
-  const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
-
-  // Build color map
+  // Build color map. Pose track colors key off the global track map/list so
+  // they stay stable across frames (matches the overlay coloring above).
   const colors = buildColorMap(
     colorScheme,
     instances,
     nodeNames.length,
     opts.palette,
-    tracks,
-    trackIndexMap,
+    globalTracks,
+    globalTrackIndexMap,
   );
 
   // Create render context for callbacks
@@ -380,7 +460,7 @@ export async function renderImage(
     // Per-instance callback
     if (opts.perInstanceCallback) {
       const trackIdx = instance.track
-        ? (trackIndexMap.get(instance.track) ?? null)
+        ? (globalTrackIndexMap.get(instance.track) ?? null)
         : null;
       const instCtx = new InstanceContext(
         ctx as unknown as CanvasRenderingContext2D,
@@ -411,6 +491,21 @@ export async function renderImage(
     scaledWidth,
     scaledHeight,
   ) as unknown as ImageData;
+}
+
+/**
+ * The single `LabeledFrame` that `renderImage` renders for a non-array source:
+ * the `LabeledFrame` itself, or a `Labels`' first labeled frame. Used to
+ * auto-resolve that frame's segmentation masks as the overlay. Returns
+ * `undefined` for an empty `Labels`.
+ */
+function renderedLabeledFrame(
+  source: Labels | LabeledFrame,
+): LabeledFrame | undefined {
+  if ("labeledFrames" in source) {
+    return (source as Labels).labeledFrames[0];
+  }
+  return source as LabeledFrame;
 }
 
 /**

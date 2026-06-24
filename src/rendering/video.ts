@@ -4,15 +4,17 @@ import type { ChildProcess } from "child_process";
 import type { Labels } from "../model/labels.js";
 import type { LabeledFrame } from "../model/labeled-frame.js";
 import type { Video } from "../model/video.js";
-import type { Instance, PredictedInstance } from "../model/instance.js";
+import type { Instance, PredictedInstance, Track } from "../model/instance.js";
 import type { LabelImage } from "../model/label-image.js";
 import type {
+  ColorScheme,
   Overlay,
   RenderOptions,
   VideoOptions,
   VideoOverlay,
 } from "./types.js";
 import { renderImage } from "./render.js";
+import { determineColorScheme } from "./colors.js";
 
 /**
  * Check if ffmpeg is available in PATH.
@@ -48,88 +50,10 @@ export async function renderVideo(
     );
   }
 
-  // Extract labeled frames
-  const frames = Array.isArray(source) ? source : source.labeledFrames;
-
-  // Apply frame selection
-  let selectedFrames = frames;
-  if (options.frameInds) {
-    selectedFrames = options.frameInds
-      .map((i) => frames[i])
-      .filter((f): f is LabeledFrame => f !== undefined);
-  } else if (options.start !== undefined || options.end !== undefined) {
-    const start = options.start ?? 0;
-    const end = options.end ?? frames.length;
-    selectedFrames = frames.slice(start, end);
-  }
-
-  if (selectedFrames.length === 0) {
-    throw new Error("No frames to render");
-  }
-
-  // Resolve the per-frame overlay parameter (mirrors Python render_video,
-  // core.py L1719-1754). Auto-detect: when no explicit overlay is given and a
-  // Labels source has label images for the rendered video, use them as a
-  // per-frame LabelImage[] (indexed by render position). Mirrors core.py
-  // L1549-1556.
-  let videoOverlay: VideoOverlay | undefined = options.overlay;
-  if (
-    videoOverlay === undefined &&
-    !Array.isArray(source) &&
-    source.labelImages.length > 0
-  ) {
-    const targetVideo = selectedFrames[0].video;
-    const videoLabelImages = source.getLabelImages({ video: targetVideo });
-    if (videoLabelImages.length > 0) {
-      videoOverlay = videoLabelImages;
-    }
-  }
-  const overlayForFrame = makeOverlayResolver(videoOverlay);
-
-  // Build per-video temporal context for motion trails once (keyed by frame
-  // index), using ALL source frames so a trail can reach back before the
-  // selected range. Each rendered frame then gets its video's frame map.
-  const framesByVideo = new Map<Video, Map<number, LabeledFrame>>();
-  // Shared points cache + canonical track list (computed once, like Python's
-  // render_video) so trail colors are stable across the whole pass and we avoid
-  // re-extracting instance points across overlapping trail windows.
-  const trailPtsCache = options.showTrails
-    ? new Map<Instance | PredictedInstance, number[][]>()
-    : undefined;
-  const canonicalTracks = Array.isArray(source) ? undefined : source.tracks;
-  if (options.showTrails) {
-    for (const lf of frames) {
-      let videoFrames = framesByVideo.get(lf.video);
-      if (!videoFrames) {
-        videoFrames = new Map<number, LabeledFrame>();
-        framesByVideo.set(lf.video, videoFrames);
-      }
-      videoFrames.set(lf.frameIdx, lf);
-    }
-  }
-  // Build the per-frame render options. Overlay is resolved per frame (static
-  // value, position-indexed list, frame-index-keyed Map, or callable) and
-  // passed through as the single-frame `overlay` that renderImage understands.
-  const optsForFrame = (
-    frame: LabeledFrame,
-    position: number,
-  ): RenderOptions => {
-    // Strip the video-level (per-frame) `overlay` so the spread does not leak a
-    // `VideoOverlay` into the single-frame `RenderOptions`; it is replaced by
-    // the resolved single-frame overlay below.
-    const { overlay: _ignored, ...rest } = options;
-    void _ignored;
-    const base: RenderOptions = options.showTrails
-      ? {
-          ...rest,
-          trailFrames: framesByVideo.get(frame.video),
-          trailTracks: options.trailTracks ?? canonicalTracks,
-          trailPtsCache,
-        }
-      : { ...rest };
-    base.overlay = overlayForFrame(frame, position);
-    return base;
-  };
+  // Resolve frame selection + the per-frame render-option builder (overlay,
+  // resolved color scheme, global track map). Shared with the ffmpeg-free
+  // per-frame rendering path so coloring is identical with or without ffmpeg.
+  const { selectedFrames, optsForFrame } = buildFrameRenderer(source, options);
 
   // Get frame dimensions from first frame
   const firstImage = await renderImage(
@@ -234,6 +158,170 @@ export async function renderVideo(
 
     ffmpeg.on("error", reject);
   });
+}
+
+/**
+ * The selected frames plus a per-frame `RenderOptions` builder shared by
+ * {@link renderVideo} and its ffmpeg-free per-frame rendering path.
+ */
+export interface FrameRenderer {
+  /** Frames to render, after applying `frameInds` / `start` / `end`. */
+  selectedFrames: LabeledFrame[];
+  /**
+   * Build the single-frame `RenderOptions` for `frame` at render `position`.
+   * Resolves the per-frame overlay, the video-level color scheme, and the
+   * global track -> index map (all computed once for the whole pass).
+   */
+  optsForFrame: (frame: LabeledFrame, position: number) => RenderOptions;
+}
+
+/**
+ * Resolve the frame selection and per-frame render-option builder for a video
+ * render pass.
+ *
+ * Extracted from {@link renderVideo} so the SAME coloring code path (per-frame
+ * overlay resolution, the video-level resolved color scheme, and the global
+ * track -> index map) can be exercised without ffmpeg: render each frame with
+ * `renderImage(frame, optsForFrame(frame, i))`. The global track map keys
+ * overlay (mask / ROI / bbox) and pose colors off the project's `Labels.tracks`
+ * (stable across frames), so a mask's color follows its GLOBAL track identity
+ * rather than its per-frame position within `frame.masks` (fixes JS #162
+ * flicker). Mirrors Python render_video `_track_idx_map` (core.py L1929-1934).
+ */
+export function buildFrameRenderer(
+  source: Labels | LabeledFrame[],
+  options: VideoOptions = {},
+): FrameRenderer {
+  // Extract labeled frames
+  const frames = Array.isArray(source) ? source : source.labeledFrames;
+
+  // Apply frame selection
+  let selectedFrames = frames;
+  if (options.frameInds) {
+    selectedFrames = options.frameInds
+      .map((i) => frames[i])
+      .filter((f): f is LabeledFrame => f !== undefined);
+  } else if (options.start !== undefined || options.end !== undefined) {
+    const start = options.start ?? 0;
+    const end = options.end ?? frames.length;
+    selectedFrames = frames.slice(start, end);
+  }
+
+  if (selectedFrames.length === 0) {
+    throw new Error("No frames to render");
+  }
+
+  // Resolve the per-frame overlay parameter (mirrors Python render_video,
+  // core.py L1719-1754). Auto-detect: when no explicit overlay is given and a
+  // Labels source has label images for the rendered video, use them as a
+  // per-frame LabelImage[] (indexed by render position). Mirrors core.py
+  // L1549-1556.
+  let videoOverlay: VideoOverlay | undefined = options.overlay;
+  if (
+    videoOverlay === undefined &&
+    !Array.isArray(source) &&
+    source.labelImages.length > 0
+  ) {
+    const targetVideo = selectedFrames[0].video;
+    const videoLabelImages = source.getLabelImages({ video: targetVideo });
+    if (videoLabelImages.length > 0) {
+      videoOverlay = videoLabelImages;
+    }
+  }
+  // Auto-use segmentation masks as overlay when no explicit overlay (and no
+  // label images) resolved. Masks live on specific frames at arbitrary frame
+  // indices, so resolve them per-frame via a callable keyed by the source frame
+  // index rather than a position-indexed list. label images take precedence
+  // (resolved above). Mirrors Python render_video (core.py L1572-1588).
+  if (
+    videoOverlay === undefined &&
+    !Array.isArray(source) &&
+    source.masks.length > 0
+  ) {
+    const targetVideo = selectedFrames[0].video;
+    const labels = source;
+    if (labels.getMasks({ video: targetVideo }).length > 0) {
+      videoOverlay = (frameIdx: number) =>
+        labels.getMasks({ video: targetVideo, frameIdx });
+    }
+  }
+  const overlayForFrame = makeOverlayResolver(videoOverlay);
+
+  // Build per-video temporal context for motion trails once (keyed by frame
+  // index), using ALL source frames so a trail can reach back before the
+  // selected range. Each rendered frame then gets its video's frame map.
+  const framesByVideo = new Map<Video, Map<number, LabeledFrame>>();
+  // Shared points cache + canonical track list (computed once, like Python's
+  // render_video) so trail colors are stable across the whole pass and we avoid
+  // re-extracting instance points across overlapping trail windows.
+  const trailPtsCache = options.showTrails
+    ? new Map<Instance | PredictedInstance, number[][]>()
+    : undefined;
+  const canonicalTracks = Array.isArray(source) ? undefined : source.tracks;
+
+  // Resolve the color scheme ONCE at the video level (mirrors Python
+  // render_video, core.py L1754-1758): keyed off the project's global track
+  // list so a mask-/centroid-only tracked project resolves "auto" -> "track".
+  // The resolved scheme is then passed to each frame's renderImage so a bare
+  // per-frame LabeledFrame (which has no `.tracks`) does not fall back to
+  // positional "instance"/"node" coloring.
+  const globalTracks: Track[] = canonicalTracks ?? [];
+  const hasTracks = globalTracks.length > 0;
+  const resolvedScheme: ColorScheme = determineColorScheme(
+    options.colorBy ?? "auto",
+    hasTracks,
+    false,
+  );
+  // Global track -> index map (stable across frames) used to color overlay
+  // elements (masks/ROIs/bboxes) by track identity. Mirrors Python
+  // render_video `_track_idx_map` (core.py L1929-1934). Keyed off the project
+  // track list so a mask's color follows its GLOBAL track identity rather than
+  // its per-frame position within `frame.masks` (fixes flicker, JS #162).
+  const overlayTrackIndexMap: Map<Track, number> | undefined = hasTracks
+    ? new Map(globalTracks.map((t, i) => [t, i]))
+    : undefined;
+
+  if (options.showTrails) {
+    for (const lf of frames) {
+      let videoFrames = framesByVideo.get(lf.video);
+      if (!videoFrames) {
+        videoFrames = new Map<number, LabeledFrame>();
+        framesByVideo.set(lf.video, videoFrames);
+      }
+      videoFrames.set(lf.frameIdx, lf);
+    }
+  }
+  // Build the per-frame render options. Overlay is resolved per frame (static
+  // value, position-indexed list, frame-index-keyed Map, or callable) and
+  // passed through as the single-frame `overlay` that renderImage understands.
+  const optsForFrame = (
+    frame: LabeledFrame,
+    position: number,
+  ): RenderOptions => {
+    // Strip the video-level (per-frame) `overlay` so the spread does not leak a
+    // `VideoOverlay` into the single-frame `RenderOptions`; it is replaced by
+    // the resolved single-frame overlay below.
+    const { overlay: _ignored, ...rest } = options;
+    void _ignored;
+    const base: RenderOptions = options.showTrails
+      ? {
+          ...rest,
+          trailFrames: framesByVideo.get(frame.video),
+          trailTracks: options.trailTracks ?? canonicalTracks,
+          trailPtsCache,
+        }
+      : { ...rest };
+    base.overlay = overlayForFrame(frame, position);
+    // Pass the video-level resolved color scheme and global track->index map so
+    // each bare per-frame LabeledFrame still colors poses AND overlay elements
+    // by GLOBAL track identity (stable across frames), instead of resolving
+    // "auto" per frame or coloring overlays by per-frame list position.
+    base.colorBy = resolvedScheme;
+    base.overlayTrackIndexMap = overlayTrackIndexMap;
+    return base;
+  };
+
+  return { selectedFrames, optsForFrame };
 }
 
 /** Whether a value is a `LabelImage`-like object (Int32Array-backed `data`). */
