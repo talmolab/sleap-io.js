@@ -1440,10 +1440,11 @@ export class TrackMatcher {
   method: TrackMatchMethod;
 
   /**
-   * @param method - The matching method (default NAME). A bare string is coerced
-   *   + validated.
+   * @param method - The matching method (default IDENTITY — matches only the
+   *   same Track object; correctness-first). Use NAME to match by track name. A
+   *   bare string is coerced + validated.
    */
-  constructor(method: TrackMatchMethod | string = TrackMatchMethod.NAME) {
+  constructor(method: TrackMatchMethod | string = TrackMatchMethod.IDENTITY) {
     this.method =
       typeof method === "string" ? toTrackMatchMethod(method) : method;
   }

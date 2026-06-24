@@ -86,7 +86,11 @@ function coerceVideoMatcher(
   return x;
 }
 
-/** Coerce a track-matcher argument: `null` -> default `TrackMatcher()` (NAME). */
+/**
+ * Coerce a track-matcher argument: `null` -> default `TrackMatcher()`, whose
+ * constructor default is now IDENTITY (matches only the same Track object;
+ * correctness-first). Pass `"name"` to opt in to name-based matching.
+ */
 function coerceTrackMatcher(
   x: string | TrackMatcher | null | undefined,
 ): TrackMatcher {
@@ -1659,7 +1663,13 @@ export class Labels {
    * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE; string ->
    *   validated; else used as-is).
    * @param opts.video - Video matcher (`null` -> AUTO).
-   * @param opts.track - Track matcher (`null` -> NAME).
+   * @param opts.track - Track matcher (`null` -> IDENTITY). The default matches
+   *   tracks only by object identity (the same Track instance) and appends all
+   *   other tracks as new — a correctness-first default that never collapses
+   *   distinct tracks by their (often arbitrary, tracker-assigned) names. Pass
+   *   `"name"` to match tracks by their name attribute instead, for cases where
+   *   track names are semantically meaningful (e.g. user-assigned identities or
+   *   identity-classification model outputs).
    * @param opts.frame - The frame merge strategy as a RAW string (default
    *   `"auto"`; NOT validated against the enum — an invalid value falls through
    *   `LabeledFrame.merge`'s strategy chain into the AUTO branch).
@@ -1900,6 +1910,17 @@ export class Labels {
         }
       }
 
+      // Warn (diagnostic only) if any name-matched track pair carries instances
+      // that diverge spatially on every shared frame. This does not alter
+      // trackMap or any merge result.
+      this._warnTrackNameDivergence(
+        other,
+        videoMap,
+        trackMap,
+        trackMatcher,
+        instanceMatcher,
+      );
+
       // ----- §6.7 STEP 4: frames ------------------------------------------
       total = other.labeledFrames.length;
 
@@ -2064,6 +2085,123 @@ export class Labels {
   }
 
   /**
+   * Warn when name-matched tracks diverge spatially on all shared frames.
+   *
+   * Faithful port of Python `Labels._warn_track_name_divergence`
+   * (labels.py:3672-3776, PR talmolab/sleap-io#448). Name-based track merging
+   * silently coalesces tracks that share a name across two `Labels`. If those
+   * tracks actually label different animals, this can glue distinct tracks
+   * together. This helper emits a diagnostic `console.warn` (purely additive; it
+   * never changes the merge result) when a track pair matched by name carries
+   * instances on overlapping frames that do not spatially correspond under the
+   * merge's instance matcher.
+   *
+   * The check is a no-op unless track matching is by NAME (divergence is
+   * meaningless for identity/object track matching) and the instance matcher is
+   * spatial (SPATIAL or IOU). A warning fires at most once per colliding
+   * `(otherTrack, selfTrack)` pair, only when the pair has at least one shared
+   * frame with instances on both sides and zero spatial instance matches across
+   * all such frames.
+   *
+   * @param other - The other `Labels` being merged into `self`.
+   * @param videoMap - Mapping from `other` videos to the matched `self` videos,
+   *   as built in {@link merge}.
+   * @param trackMap - Mapping from `other` tracks to the matched `self` tracks
+   *   (or back to themselves if appended as new), as built in {@link merge}.
+   * @param trackMatcher - The `TrackMatcher` used for the merge. The check is
+   *   skipped unless its method is NAME.
+   * @param instanceMatcher - The `InstanceMatcher` used for the merge. Reused
+   *   here as the divergence primitive (no new threshold introduced). Skipped
+   *   when its method is IDENTITY (see below).
+   */
+  private _warnTrackNameDivergence(
+    other: Labels,
+    videoMap: Map<Video, Video>,
+    trackMap: Map<Track, Track>,
+    trackMatcher: TrackMatcher,
+    instanceMatcher: InstanceMatcher,
+  ): void {
+    // Only name-based merging can silently glue distinct tracks together.
+    if (trackMatcher.method !== TrackMatchMethod.NAME) {
+      return;
+    }
+
+    // Divergence is a spatial question. An IDENTITY instance matcher compares
+    // track-object identity, which is always false across a name collision (the
+    // tracks are distinct objects by definition), so it cannot assess spatial
+    // divergence and would warn unconditionally. Skip it.
+    if (instanceMatcher.method === InstanceMatchMethod.IDENTITY) {
+      return;
+    }
+
+    // Select true name collisions: an otherTrack coalesced onto a distinct
+    // selfTrack object with an equal name (not a track appended as new).
+    const collidingPairs: Array<[Track, Track]> = [];
+    for (const [otherTrack, selfTrack] of trackMap.entries()) {
+      if (selfTrack !== otherTrack && selfTrack.name === otherTrack.name) {
+        collidingPairs.push([otherTrack, selfTrack]);
+      }
+    }
+    if (collidingPairs.length === 0) {
+      return;
+    }
+
+    for (const [otherTrack, selfTrack] of collidingPairs) {
+      let nShared = 0;
+      let nMatches = 0;
+      let divergentVideo: Video | null = null;
+
+      for (const otherFrame of other.labeledFrames) {
+        const mappedVideo = videoMap.get(otherFrame.video) ?? otherFrame.video;
+        const matchingFrames = this.find({
+          video: mappedVideo,
+          frameIdx: otherFrame.frameIdx,
+        });
+        if (matchingFrames.length === 0) {
+          continue;
+        }
+
+        const selfInsts: Instance[] = [];
+        for (const frame of matchingFrames) {
+          for (const inst of frame.instances) {
+            if (inst.track === selfTrack) {
+              selfInsts.push(inst);
+            }
+          }
+        }
+        const otherInsts = otherFrame.instances.filter(
+          (inst) => inst.track === otherTrack,
+        );
+        if (selfInsts.length === 0 || otherInsts.length === 0) {
+          continue;
+        }
+
+        nShared += 1;
+        nMatches += instanceMatcher.findMatches(selfInsts, otherInsts).length;
+        if (divergentVideo === null) {
+          divergentVideo = mappedVideo;
+        }
+      }
+
+      if (nShared >= 1 && nMatches === 0) {
+        const videoRepr =
+          divergentVideo != null
+            ? filenameRepr(divergentVideo.filename)
+            : "None";
+        console.warn(
+          `Track '${selfTrack.name}' was merged by name across labels that ` +
+            `share video ${videoRepr} but instances on that track ` +
+            `diverge spatially on all ${nShared} overlapping frame(s) (no ` +
+            `instance matched under the merge's instance matcher). If these ` +
+            `tracking runs label different animals, name-based merging may ` +
+            `glue distinct tracks together. Review the merge or resolve tracks ` +
+            `at the instance level.`,
+        );
+      }
+    }
+  }
+
+  /**
    * Build correspondence maps between this `Labels` and another WITHOUT mutating
    * either (read-only twin of {@link merge}).
    *
@@ -2078,7 +2216,13 @@ export class Labels {
    * @param other - The `Labels` to match against (maps `other` -> `self`).
    * @param opts.video - Video matcher (`null` -> AUTO).
    * @param opts.skeleton - Skeleton matcher (`null` -> STRUCTURE).
-   * @param opts.track - Track matcher (`null` -> NAME).
+   * @param opts.track - Track matcher (`null` -> IDENTITY). The default matches
+   *   tracks only by object identity (the same Track instance); all other tracks
+   *   map to `null` — a correctness-first default that never collapses distinct
+   *   tracks by their (often arbitrary, tracker-assigned) names. Pass `"name"` to
+   *   match tracks by their name attribute instead, for cases where track names
+   *   are semantically meaningful (e.g. user-assigned identities or
+   *   identity-classification model outputs).
    */
   async match(
     other: Labels,
