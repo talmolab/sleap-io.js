@@ -21,7 +21,14 @@ import { Video } from "../model/video.js";
 const HEADER_ROWS = 4;
 
 /** Required columns in a spots CSV (used for format detection). */
-const SPOTS_SIGNATURE = ["LABEL", "ID", "TRACK_ID", "QUALITY", "POSITION_X", "POSITION_Y"];
+const SPOTS_SIGNATURE = [
+  "LABEL",
+  "ID",
+  "TRACK_ID",
+  "QUALITY",
+  "POSITION_X",
+  "POSITION_Y",
+];
 
 /** Options for loading TrackMate CSV files. */
 export interface TrackMateOptions {
@@ -42,7 +49,8 @@ export function isTrackMateFile(filePath: string): boolean {
     const buf = Buffer.alloc(1024);
     const bytesRead = fs.readSync(fd, buf, 0, 1024, 0);
     fs.closeSync(fd);
-    const firstLine = buf.toString("utf-8", 0, bytesRead).split("\n")[0]?.trim() ?? "";
+    const firstLine =
+      buf.toString("utf-8", 0, bytesRead).split("\n")[0]?.trim() ?? "";
     const cols = firstLine.split(",");
     return SPOTS_SIGNATURE.every((sig, i) => cols[i] === sig);
   } catch {
@@ -143,7 +151,9 @@ export function readTrackMateCsv(
   }
 
   // Parse edges if available
-  const targetToCost = edgesPath ? parseEdges(edgesPath) : new Map<number, number>();
+  const targetToCost = edgesPath
+    ? parseEdges(edgesPath)
+    : new Map<number, number>();
 
   // Parse spots CSV
   const content = fs.readFileSync(spotsPath, "utf-8");
@@ -151,7 +161,10 @@ export function readTrackMateCsv(
 
   // Read header to find column indices and validate
   const header = lines[0]?.split(",") ?? [];
-  if (header.length < SPOTS_SIGNATURE.length || !SPOTS_SIGNATURE.every((sig, i) => header[i] === sig)) {
+  if (
+    header.length < SPOTS_SIGNATURE.length ||
+    !SPOTS_SIGNATURE.every((sig, i) => header[i] === sig)
+  ) {
     throw new Error(
       `Not a TrackMate spots CSV. Expected columns starting with ${SPOTS_SIGNATURE.join(", ")}.`,
     );
@@ -193,15 +206,17 @@ export function readTrackMateCsv(
     const x = parseFloat(row[col["POSITION_X"]]);
     const y = parseFloat(row[col["POSITION_Y"]]);
 
-    const zVal = col["POSITION_Z"] !== undefined ? parseFloat(row[col["POSITION_Z"]]) : 0;
+    const zVal =
+      col["POSITION_Z"] !== undefined ? parseFloat(row[col["POSITION_Z"]]) : 0;
     const z = zVal !== 0 ? zVal : null;
 
     const frameIdx = parseInt(row[col["FRAME"]], 10);
     const score = parseFloat(row[col["QUALITY"]]);
 
-    const track = tidStr ? trackMap.get(parseInt(tidStr, 10)) ?? null : null;
+    const track = tidStr ? (trackMap.get(parseInt(tidStr, 10)) ?? null) : null;
     const trackingScore = targetToCost.get(spotId) ?? null;
-    const label = col["LABEL"] !== undefined ? row[col["LABEL"]] : `ID${spotId}`;
+    const label =
+      col["LABEL"] !== undefined ? row[col["LABEL"]] : `ID${spotId}`;
 
     const centroid = new PredictedCentroid({
       x,
@@ -213,15 +228,22 @@ export function readTrackMateCsv(
       name: label,
       source: "trackmate",
     });
-    centroidsByFrame.set(frameIdx, [...(centroidsByFrame.get(frameIdx) ?? []), centroid]);
+    centroidsByFrame.set(frameIdx, [
+      ...(centroidsByFrame.get(frameIdx) ?? []),
+      centroid,
+    ]);
   }
 
   // Assemble Labels with LabeledFrames
   const videos = videoObj ? [videoObj] : [];
   const video = videoObj ?? new Video({ filename: "" });
   const labeledFrames: LabeledFrame[] = [];
-  for (const [frameIdx, frameCentroids] of [...centroidsByFrame.entries()].sort((a, b) => a[0] - b[0])) {
-    labeledFrames.push(new LabeledFrame({ video, frameIdx, centroids: frameCentroids }));
+  for (const [frameIdx, frameCentroids] of [...centroidsByFrame.entries()].sort(
+    (a, b) => a[0] - b[0],
+  )) {
+    labeledFrames.push(
+      new LabeledFrame({ video, frameIdx, centroids: frameCentroids }),
+    );
   }
   const labels = new Labels({ labeledFrames, videos, tracks });
   labels.provenance["filename"] = spotsPath;

@@ -7,7 +7,9 @@ import path from "node:path";
 const fixtureRoot = fileURLToPath(new URL("./data", import.meta.url));
 
 async function loadFixture(filename: string) {
-  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false });
+  return loadSlp(path.join(fixtureRoot, "slp", filename), {
+    openVideos: false,
+  });
 }
 
 describe("SLP read fixtures", () => {
@@ -23,7 +25,9 @@ describe("SLP read fixtures", () => {
   });
 
   it("reads provenance metadata", async () => {
-    const labels = await loadFixture("predictions_1.2.7_provenance_and_tracking.slp");
+    const labels = await loadFixture(
+      "predictions_1.2.7_provenance_and_tracking.slp",
+    );
     expect(labels.provenance.sleap_version).toBe("1.2.7");
   });
 

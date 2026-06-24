@@ -18,7 +18,7 @@ export class LruCache<K, V> {
    */
   constructor(
     private readonly maxBytes: number,
-    private readonly sizeOf: (value: V) => number
+    private readonly sizeOf: (value: V) => number,
   ) {}
 
   get size(): number {

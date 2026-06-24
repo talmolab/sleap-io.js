@@ -26,7 +26,10 @@ describe("Labels.replaceVideos", () => {
     const oldVideo = new Video({ filename: "old.mp4" });
     const newVideo = new Video({ filename: "new.mp4" });
     const suggestion = new SuggestionFrame({ video: oldVideo, frameIdx: 0 });
-    const labels = new Labels({ videos: [oldVideo], suggestions: [suggestion] });
+    const labels = new Labels({
+      videos: [oldVideo],
+      suggestions: [suggestion],
+    });
 
     labels.replaceVideos({ oldVideos: [oldVideo], newVideos: [newVideo] });
 
@@ -56,7 +59,11 @@ describe("Labels.replaceVideos", () => {
       height: 4,
       width: 4,
     });
-    const lf = new LabeledFrame({ video: oldVideo, frameIdx: 0, masks: [mask] });
+    const lf = new LabeledFrame({
+      video: oldVideo,
+      frameIdx: 0,
+      masks: [mask],
+    });
     const labels = new Labels({ labeledFrames: [lf], videos: [oldVideo] });
 
     labels.replaceVideos({ oldVideos: [oldVideo], newVideos: [newVideo] });
@@ -68,9 +75,16 @@ describe("Labels.replaceVideos", () => {
     const oldVideo = new Video({ filename: "old.mp4" });
     const newVideo = new Video({ filename: "new.mp4" });
     const bbox = new UserBoundingBox({
-      x1: 0, y1: 0, x2: 10, y2: 10,
+      x1: 0,
+      y1: 0,
+      x2: 10,
+      y2: 10,
     });
-    const lf = new LabeledFrame({ video: oldVideo, frameIdx: 0, bboxes: [bbox] });
+    const lf = new LabeledFrame({
+      video: oldVideo,
+      frameIdx: 0,
+      bboxes: [bbox],
+    });
     const labels = new Labels({ labeledFrames: [lf], videos: [oldVideo] });
 
     labels.replaceVideos({ oldVideos: [oldVideo], newVideos: [newVideo] });
@@ -82,7 +96,11 @@ describe("Labels.replaceVideos", () => {
     const oldVideo = new Video({ filename: "old.mp4" });
     const newVideo = new Video({ filename: "new.mp4" });
     const centroid = new UserCentroid({ x: 1, y: 2 });
-    const lf = new LabeledFrame({ video: oldVideo, frameIdx: 0, centroids: [centroid] });
+    const lf = new LabeledFrame({
+      video: oldVideo,
+      frameIdx: 0,
+      centroids: [centroid],
+    });
     const labels = new Labels({ labeledFrames: [lf], videos: [oldVideo] });
 
     labels.replaceVideos({ oldVideos: [oldVideo], newVideos: [newVideo] });
@@ -98,7 +116,11 @@ describe("Labels.replaceVideos", () => {
       height: 2,
       width: 2,
     });
-    const lf = new LabeledFrame({ video: oldVideo, frameIdx: 0, labelImages: [li] });
+    const lf = new LabeledFrame({
+      video: oldVideo,
+      frameIdx: 0,
+      labelImages: [li],
+    });
     const labels = new Labels({ labeledFrames: [lf], videos: [oldVideo] });
 
     labels.replaceVideos({ oldVideos: [oldVideo], newVideos: [newVideo] });
@@ -137,7 +159,10 @@ describe("Labels.replaceVideos", () => {
     const newA = new Video({ filename: "new_a.mp4" });
     const frameA = new LabeledFrame({ video: videoA, frameIdx: 0 });
     const frameB = new LabeledFrame({ video: videoB, frameIdx: 0 });
-    const labels = new Labels({ labeledFrames: [frameA, frameB], videos: [videoA, videoB] });
+    const labels = new Labels({
+      labeledFrames: [frameA, frameB],
+      videos: [videoA, videoB],
+    });
 
     labels.replaceVideos({ oldVideos: [videoA], newVideos: [newA] });
 

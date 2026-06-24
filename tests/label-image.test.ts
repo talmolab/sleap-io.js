@@ -7,7 +7,10 @@ import {
   normalizeLabelIds,
 } from "../src/model/label-image.js";
 import { Track } from "../src/model/instance.js";
-import { SegmentationMask, PredictedSegmentationMask } from "../src/model/mask.js";
+import {
+  SegmentationMask,
+  PredictedSegmentationMask,
+} from "../src/model/mask.js";
 import { UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
 import { Video } from "../src/model/video.js";
 
@@ -199,14 +202,10 @@ describe("LabelImage", () => {
       const li = new UserLabelImage({ data, height, width });
 
       const mask1 = li.getObjectMask(1);
-      expect(mask1).toEqual(
-        new Uint8Array([0, 1, 0, 0, 1, 0, 0, 0, 0]),
-      );
+      expect(mask1).toEqual(new Uint8Array([0, 1, 0, 0, 1, 0, 0, 0, 0]));
 
       const mask2 = li.getObjectMask(2);
-      expect(mask2).toEqual(
-        new Uint8Array([0, 0, 0, 1, 0, 1, 0, 0, 0]),
-      );
+      expect(mask2).toEqual(new Uint8Array([0, 0, 0, 1, 0, 1, 0, 0, 0]));
     });
 
     it("returns all zeros for non-existent label ID", () => {
@@ -575,9 +574,7 @@ describe("LabelImage", () => {
       expect(li.nObjects).toBe(1);
       expect(li.labelIds).toEqual([1]);
       expect(li.tracks).toEqual([track]);
-      expect(li.getObjectMask(1)).toEqual(
-        new Uint8Array([0, 1, 1, 0]),
-      );
+      expect(li.getObjectMask(1)).toEqual(new Uint8Array([0, 1, 1, 0]));
     });
 
     it("sparse IDs (3, 7, 15) sort correctly", () => {
@@ -605,22 +602,35 @@ describe("LabelImage", () => {
 describe("LabelImage abstract base and subclasses", () => {
   it("LabelImage cannot be instantiated directly", () => {
     const data = new Int32Array(4);
-    expect(() => new (LabelImage as any)({ data, height: 2, width: 2 })).toThrow(TypeError);
+    expect(
+      () => new (LabelImage as any)({ data, height: 2, width: 2 }),
+    ).toThrow(TypeError);
   });
 
   it("UserLabelImage isPredicted is false", () => {
-    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const { data, height, width } = makeLabelData([
+      [1, 0],
+      [0, 2],
+    ]);
     const li = new UserLabelImage({ data, height, width });
     expect(li.isPredicted).toBe(false);
     expect(li).toBeInstanceOf(UserLabelImage);
   });
 
   it("PredictedLabelImage has score, scoreMap, isPredicted", () => {
-    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const { data, height, width } = makeLabelData([
+      [1, 0],
+      [0, 2],
+    ]);
     const sm = new Float32Array(4).fill(0.5);
     const li = new PredictedLabelImage({
-      data, height, width, score: 0.88, scoreMap: sm,
-      scoreMapScale: [2, 2], scoreMapOffset: [1, 1],
+      data,
+      height,
+      width,
+      score: 0.88,
+      scoreMap: sm,
+      scoreMapScale: [2, 2],
+      scoreMapOffset: [1, 1],
     });
     expect(li.isPredicted).toBe(true);
     expect(li.score).toBe(0.88);
@@ -640,8 +650,14 @@ describe("LabelImage abstract base and subclasses", () => {
 
 describe("LabelImage.fromStack", () => {
   it("creates label images from 2D array stack", () => {
-    const frame1 = [[1, 0], [0, 2]];
-    const frame2 = [[0, 1], [2, 0]];
+    const frame1 = [
+      [1, 0],
+      [0, 2],
+    ];
+    const frame2 = [
+      [0, 1],
+      [2, 0],
+    ];
     const result = LabelImage.fromStack({ data: [frame1, frame2] });
     expect(result).toHaveLength(2);
     expect(result[0].height).toBe(2);
@@ -653,9 +669,18 @@ describe("LabelImage.fromStack", () => {
   });
 
   it("createTracks auto-creates shared Track objects", () => {
-    const frame1 = [[1, 0], [0, 2]];
-    const frame2 = [[0, 1], [2, 0]];
-    const result = LabelImage.fromStack({ data: [frame1, frame2], createTracks: true });
+    const frame1 = [
+      [1, 0],
+      [0, 2],
+    ];
+    const frame2 = [
+      [0, 1],
+      [2, 0],
+    ];
+    const result = LabelImage.fromStack({
+      data: [frame1, frame2],
+      createTracks: true,
+    });
     // Both frames should share the same Track references
     const tracks1 = result[0].tracks;
     const tracks2 = result[1].tracks;
@@ -666,16 +691,28 @@ describe("LabelImage.fromStack", () => {
   });
 
   it("accepts custom categories as Map", () => {
-    const frame = [[1, 2], [0, 0]];
-    const cats = new Map<number, string>([[1, "cell"], [2, "nucleus"]]);
+    const frame = [
+      [1, 2],
+      [0, 0],
+    ];
+    const cats = new Map<number, string>([
+      [1, "cell"],
+      [2, "nucleus"],
+    ]);
     const result = LabelImage.fromStack({ data: [frame], categories: cats });
     expect(result[0].objects.get(1)?.category).toBe("cell");
     expect(result[0].objects.get(2)?.category).toBe("nucleus");
   });
 
   it("accepts custom categories as Array (1-indexed)", () => {
-    const frame = [[1, 2], [0, 0]];
-    const result = LabelImage.fromStack({ data: [frame], categories: ["cell", "nucleus"] });
+    const frame = [
+      [1, 2],
+      [0, 0],
+    ];
+    const result = LabelImage.fromStack({
+      data: [frame],
+      categories: ["cell", "nucleus"],
+    });
     expect(result[0].objects.get(1)?.category).toBe("cell");
     expect(result[0].objects.get(2)?.category).toBe("nucleus");
   });
@@ -708,14 +745,26 @@ describe("LabelImage scale/offset", () => {
   });
 
   it("imageExtent accounts for scale", () => {
-    const { data, height, width } = makeLabelData([[1, 0], [0, 1]]);
+    const { data, height, width } = makeLabelData([
+      [1, 0],
+      [0, 1],
+    ]);
     const li = new UserLabelImage({ data, height, width, scale: [2, 2] });
     expect(li.imageExtent).toEqual({ height: 1, width: 1 });
   });
 
   it("resampled returns identity scale/offset", () => {
-    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
-    const li = new UserLabelImage({ data, height, width, scale: [2, 2], offset: [5, 5] });
+    const { data, height, width } = makeLabelData([
+      [1, 0],
+      [0, 2],
+    ]);
+    const li = new UserLabelImage({
+      data,
+      height,
+      width,
+      scale: [2, 2],
+      offset: [5, 5],
+    });
     const resampled = li.resampled(1, 1);
     expect(resampled.scale).toEqual([1, 1]);
     expect(resampled.offset).toEqual([0, 0]);
@@ -725,9 +774,18 @@ describe("LabelImage scale/offset", () => {
   });
 
   it("resampled preserves PredictedLabelImage", () => {
-    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const { data, height, width } = makeLabelData([
+      [1, 0],
+      [0, 2],
+    ]);
     const sm = new Float32Array(4).fill(0.5);
-    const li = new PredictedLabelImage({ data, height, width, score: 0.9, scoreMap: sm });
+    const li = new PredictedLabelImage({
+      data,
+      height,
+      width,
+      score: 0.9,
+      scoreMap: sm,
+    });
     const resampled = li.resampled(1, 1);
     expect(resampled).toBeInstanceOf(PredictedLabelImage);
     const pli = resampled as PredictedLabelImage;
@@ -737,14 +795,27 @@ describe("LabelImage scale/offset", () => {
   });
 
   it("fromMasks validates consistent scale/offset", () => {
-    const m1 = SegmentationMask.fromArray(new Uint8Array([1, 0, 0, 0]), 2, 2, { scale: [2, 2] });
-    const m2 = SegmentationMask.fromArray(new Uint8Array([0, 1, 0, 0]), 2, 2, { scale: [3, 3] });
+    const m1 = SegmentationMask.fromArray(new Uint8Array([1, 0, 0, 0]), 2, 2, {
+      scale: [2, 2],
+    });
+    const m2 = SegmentationMask.fromArray(new Uint8Array([0, 1, 0, 0]), 2, 2, {
+      scale: [3, 3],
+    });
     expect(() => LabelImage.fromMasks([m1, m2])).toThrow("same scale");
   });
 
   it("toMasks propagates scale/offset", () => {
-    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
-    const li = new UserLabelImage({ data, height, width, scale: [2, 2], offset: [5, 5] });
+    const { data, height, width } = makeLabelData([
+      [1, 0],
+      [0, 2],
+    ]);
+    const li = new UserLabelImage({
+      data,
+      height,
+      width,
+      scale: [2, 2],
+      offset: [5, 5],
+    });
     const masks = li.toMasks();
     for (const mask of masks) {
       expect(mask.scale).toEqual([2, 2]);
@@ -753,7 +824,10 @@ describe("LabelImage scale/offset", () => {
   });
 
   it("toMasks creates PredictedSegmentationMask from PredictedLabelImage", () => {
-    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const { data, height, width } = makeLabelData([
+      [1, 0],
+      [0, 2],
+    ]);
     const li = new PredictedLabelImage({ data, height, width, score: 0.9 });
     const masks = li.toMasks();
     expect(masks).toHaveLength(2);
@@ -765,12 +839,21 @@ describe("LabelImage scale/offset", () => {
   });
 
   it("toMasks uses per-object score when available", () => {
-    const { data, height, width } = makeLabelData([[1, 0], [0, 2]]);
+    const { data, height, width } = makeLabelData([
+      [1, 0],
+      [0, 2],
+    ]);
     const objects = new Map<number, LabelImageObjectInfo>([
       [1, { track: null, category: "", name: "", instance: null, score: 0.7 }],
       [2, { track: null, category: "", name: "", instance: null, score: 0.3 }],
     ]);
-    const li = new PredictedLabelImage({ data, height, width, objects, score: 0.5 });
+    const li = new PredictedLabelImage({
+      data,
+      height,
+      width,
+      objects,
+      score: 0.5,
+    });
     const masks = li.toMasks();
     expect((masks[0] as PredictedSegmentationMask).score).toBe(0.7);
     expect((masks[1] as PredictedSegmentationMask).score).toBe(0.3);
@@ -778,7 +861,9 @@ describe("LabelImage scale/offset", () => {
 
   it("scale must be positive", () => {
     const { data, height, width } = makeLabelData([[0]]);
-    expect(() => new UserLabelImage({ data, height, width, scale: [-1, 1] })).toThrow("Scale must be positive");
+    expect(
+      () => new UserLabelImage({ data, height, width, scale: [-1, 1] }),
+    ).toThrow("Scale must be positive");
   });
 });
 
@@ -994,9 +1079,9 @@ describe("LabelImage.fromBinaryMasks", () => {
   });
 
   it("throws on empty mask list", () => {
-    expect(() =>
-      LabelImage.fromBinaryMasks([] as number[][][]),
-    ).toThrow("empty mask list");
+    expect(() => LabelImage.fromBinaryMasks([] as number[][][])).toThrow(
+      "empty mask list",
+    );
   });
 
   it("throws on mismatched mask dimensions", () => {
@@ -1405,7 +1490,9 @@ describe("LabelImage.toBboxes", () => {
       data,
       height: 10,
       width: 10,
-      objects: new Map([[1, { track: null, category: "", name: "", instance: null }]]),
+      objects: new Map([
+        [1, { track: null, category: "", name: "", instance: null }],
+      ]),
     });
     const bboxes = li.toBboxes();
     expect(bboxes).toHaveLength(1);
@@ -1479,15 +1566,23 @@ describe("LabelImage.toBboxes", () => {
       height: 5,
       width: 5,
       objects: new Map([
-        [1, { track: null, category: "", name: "", instance: null, score: 0.9 }],
-        [2, { track: null, category: "", name: "", instance: null, score: 0.8 }],
+        [
+          1,
+          { track: null, category: "", name: "", instance: null, score: 0.9 },
+        ],
+        [
+          2,
+          { track: null, category: "", name: "", instance: null, score: 0.8 },
+        ],
       ]),
       score: 0.5,
     });
     const bboxes = li.toBboxes();
     expect(bboxes).toHaveLength(2);
     expect(bboxes.every((bb) => bb instanceof PredictedBoundingBox)).toBe(true);
-    const scores = new Set(bboxes.map((bb) => (bb as PredictedBoundingBox).score));
+    const scores = new Set(
+      bboxes.map((bb) => (bb as PredictedBoundingBox).score),
+    );
     expect(scores).toEqual(new Set([0.9, 0.8]));
   });
 
@@ -1501,7 +1596,10 @@ describe("LabelImage.toBboxes", () => {
       height: 2,
       width: 2,
       objects: new Map([
-        [1, { track: null, category: "", name: "", instance: null, score: null }],
+        [
+          1,
+          { track: null, category: "", name: "", instance: null, score: null },
+        ],
       ]),
       score: 0.75,
     });
@@ -1527,7 +1625,9 @@ describe("LabelImage.toBboxes", () => {
       data,
       height: 10,
       width: 10,
-      objects: new Map([[1, { track: null, category: "", name: "", instance: null }]]),
+      objects: new Map([
+        [1, { track: null, category: "", name: "", instance: null }],
+      ]),
       scale: [0.5, 0.5],
       offset: [10, 20],
     });

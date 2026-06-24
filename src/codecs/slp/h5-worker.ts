@@ -417,7 +417,7 @@ export function createH5Worker(): Worker {
     () => {
       URL.revokeObjectURL(url);
     },
-    { once: true }
+    { once: true },
   );
 
   return worker;

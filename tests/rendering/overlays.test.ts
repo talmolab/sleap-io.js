@@ -126,7 +126,10 @@ describe("drawMasks", () => {
     drawMasks(img, [mask]); // default color [255,0,0], alpha 0.3
 
     // Inside the block: white blended toward red at alpha 0.3.
-    expectRGBNear(pixel(img, 3, 3), blendRGB([255, 255, 255], [255, 0, 0], 0.3));
+    expectRGBNear(
+      pixel(img, 3, 3),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.3),
+    );
     // Outside the block: untouched.
     expectRGBNear(pixel(img, 0, 0), [255, 255, 255]);
     expectRGBNear(pixel(img, 9, 9), [255, 255, 255]);
@@ -152,8 +155,16 @@ describe("drawMasks", () => {
 
   it("uses per-mask colors when provided", async () => {
     const img = await makeImage(12, 12, [255, 255, 255]);
-    const m0 = UserSegmentationMask.fromArray(squareMask(12, 12, 0, 0, 4, 4), 12, 12);
-    const m1 = UserSegmentationMask.fromArray(squareMask(12, 12, 6, 6, 10, 10), 12, 12);
+    const m0 = UserSegmentationMask.fromArray(
+      squareMask(12, 12, 0, 0, 4, 4),
+      12,
+      12,
+    );
+    const m1 = UserSegmentationMask.fromArray(
+      squareMask(12, 12, 6, 6, 10, 10),
+      12,
+      12,
+    );
 
     drawMasks(img, [m0, m1], {
       colors: [
@@ -163,8 +174,14 @@ describe("drawMasks", () => {
       alpha: 0.4,
     });
 
-    expectRGBNear(pixel(img, 1, 1), blendRGB([255, 255, 255], [255, 0, 0], 0.4));
-    expectRGBNear(pixel(img, 7, 7), blendRGB([255, 255, 255], [0, 0, 255], 0.4));
+    expectRGBNear(
+      pixel(img, 1, 1),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.4),
+    );
+    expectRGBNear(
+      pixel(img, 7, 7),
+      blendRGB([255, 255, 255], [0, 0, 255], 0.4),
+    );
   });
 
   it("is a no-op for an empty mask list", async () => {
@@ -191,8 +208,14 @@ describe("drawMasks", () => {
     drawMasks(img, [mask], { color: [255, 0, 0], alpha: 0.5 });
 
     // After nearest-neighbor downscale to 2x2, the whole 2x2 extent is fg.
-    expectRGBNear(pixel(img, 0, 0), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
-    expectRGBNear(pixel(img, 1, 1), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
+    expectRGBNear(
+      pixel(img, 0, 0),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
+    expectRGBNear(
+      pixel(img, 1, 1),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
     // Beyond the 2x2 extent: untouched.
     expectRGBNear(pixel(img, 5, 5), [255, 255, 255]);
   });
@@ -210,8 +233,14 @@ describe("drawMasks", () => {
     drawMasks(img, [mask], { color: [0, 255, 0], alpha: 0.5 });
 
     // Offset (ox=4, oy=5): fg lands at image rows 5-7, cols 4-6.
-    expectRGBNear(pixel(img, 4, 5), blendRGB([255, 255, 255], [0, 255, 0], 0.5));
-    expectRGBNear(pixel(img, 6, 7), blendRGB([255, 255, 255], [0, 255, 0], 0.5));
+    expectRGBNear(
+      pixel(img, 4, 5),
+      blendRGB([255, 255, 255], [0, 255, 0], 0.5),
+    );
+    expectRGBNear(
+      pixel(img, 6, 7),
+      blendRGB([255, 255, 255], [0, 255, 0], 0.5),
+    );
     // Origin untouched (offset moved the mask away).
     expectRGBNear(pixel(img, 0, 0), [255, 255, 255]);
   });
@@ -226,11 +255,19 @@ describe("drawMasks", () => {
       offset: [4, 4], // 4..8 but image is only 6 wide/tall -> clipped to 4..6
     });
 
-    expect(() => drawMasks(img, [mask], { color: [255, 0, 0], alpha: 0.5 })).not.toThrow();
+    expect(() =>
+      drawMasks(img, [mask], { color: [255, 0, 0], alpha: 0.5 }),
+    ).not.toThrow();
 
     // Inside the visible clipped window.
-    expectRGBNear(pixel(img, 5, 5), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
-    expectRGBNear(pixel(img, 4, 4), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
+    expectRGBNear(
+      pixel(img, 5, 5),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
+    expectRGBNear(
+      pixel(img, 4, 4),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
     // Outside the placement window untouched.
     expectRGBNear(pixel(img, 0, 0), [255, 255, 255]);
   });
@@ -264,8 +301,14 @@ describe("drawMasks", () => {
     ).not.toThrow();
 
     // Visible window is image (0,0)-(1,1); it shows the blended mask fg.
-    expectRGBNear(pixel(img, 0, 0), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
-    expectRGBNear(pixel(img, 1, 1), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
+    expectRGBNear(
+      pixel(img, 0, 0),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
+    expectRGBNear(
+      pixel(img, 1, 1),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
     // Beyond the placed 4x4 (which now ends at image (1,1)): untouched.
     expectRGBNear(pixel(img, 3, 3), [255, 255, 255]);
   });
@@ -286,8 +329,14 @@ describe("drawMasks", () => {
     drawMasks(img, [mask], { color: [255, 0, 0], alpha: 0.5 });
 
     // 2x2 extent placed at (3,3) covers image (3,3)-(4,4).
-    expectRGBNear(pixel(img, 3, 3), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
-    expectRGBNear(pixel(img, 4, 4), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
+    expectRGBNear(
+      pixel(img, 3, 3),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
+    expectRGBNear(
+      pixel(img, 4, 4),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
     // Before the offset and beyond the extent: untouched.
     expectRGBNear(pixel(img, 2, 2), [255, 255, 255]);
     expectRGBNear(pixel(img, 5, 5), [255, 255, 255]);
@@ -295,8 +344,16 @@ describe("drawMasks", () => {
 
   it("blends overlapping masks sequentially", async () => {
     const img = await makeImage(10, 10, [255, 255, 255]);
-    const m0 = UserSegmentationMask.fromArray(squareMask(10, 10, 2, 2, 6, 6), 10, 10);
-    const m1 = UserSegmentationMask.fromArray(squareMask(10, 10, 4, 4, 8, 8), 10, 10);
+    const m0 = UserSegmentationMask.fromArray(
+      squareMask(10, 10, 2, 2, 6, 6),
+      10,
+      10,
+    );
+    const m1 = UserSegmentationMask.fromArray(
+      squareMask(10, 10, 4, 4, 8, 8),
+      10,
+      10,
+    );
 
     drawMasks(img, [m0, m1], {
       colors: [
@@ -307,9 +364,15 @@ describe("drawMasks", () => {
     });
 
     // Non-overlap of m0 (rows/cols 2-3): just red blended once.
-    expectRGBNear(pixel(img, 2, 2), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
+    expectRGBNear(
+      pixel(img, 2, 2),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
     // Non-overlap of m1 (rows/cols 6-7): just blue blended once.
-    expectRGBNear(pixel(img, 7, 7), blendRGB([255, 255, 255], [0, 0, 255], 0.5));
+    expectRGBNear(
+      pixel(img, 7, 7),
+      blendRGB([255, 255, 255], [0, 0, 255], 0.5),
+    );
     // Overlap (rows/cols 4-5): red first, then blue on top of that result.
     const afterRed = blendRGB([255, 255, 255], [255, 0, 0], 0.5);
     const afterBlue = blendRGB(afterRed, [0, 0, 255], 0.5);
@@ -330,15 +393,33 @@ describe("drawMasks", () => {
     ).not.toThrow();
 
     // Only the top-left 6x6 of the 20x20 mask is visible; the whole image is fg.
-    expectRGBNear(pixel(img, 0, 0), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
-    expectRGBNear(pixel(img, 5, 5), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
+    expectRGBNear(
+      pixel(img, 0, 0),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
+    expectRGBNear(
+      pixel(img, 5, 5),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
   });
 
   it("cycles a short per-mask colors array via modulo", async () => {
     const img = await makeImage(12, 12, [255, 255, 255]);
-    const m0 = UserSegmentationMask.fromArray(squareMask(12, 12, 0, 0, 3, 3), 12, 12);
-    const m1 = UserSegmentationMask.fromArray(squareMask(12, 12, 4, 4, 7, 7), 12, 12);
-    const m2 = UserSegmentationMask.fromArray(squareMask(12, 12, 8, 8, 11, 11), 12, 12);
+    const m0 = UserSegmentationMask.fromArray(
+      squareMask(12, 12, 0, 0, 3, 3),
+      12,
+      12,
+    );
+    const m1 = UserSegmentationMask.fromArray(
+      squareMask(12, 12, 4, 4, 7, 7),
+      12,
+      12,
+    );
+    const m2 = UserSegmentationMask.fromArray(
+      squareMask(12, 12, 8, 8, 11, 11),
+      12,
+      12,
+    );
 
     // Two colors for three masks: index 2 must reuse colors[0] (modulo cycling),
     // not index out of bounds with `undefined`.
@@ -352,16 +433,29 @@ describe("drawMasks", () => {
       }),
     ).not.toThrow();
 
-    expectRGBNear(pixel(img, 1, 1), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
-    expectRGBNear(pixel(img, 5, 5), blendRGB([255, 255, 255], [0, 0, 255], 0.5));
+    expectRGBNear(
+      pixel(img, 1, 1),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
+    expectRGBNear(
+      pixel(img, 5, 5),
+      blendRGB([255, 255, 255], [0, 0, 255], 0.5),
+    );
     // m2 wraps back to colors[0] = red.
-    expectRGBNear(pixel(img, 9, 9), blendRGB([255, 255, 255], [255, 0, 0], 0.5));
+    expectRGBNear(
+      pixel(img, 9, 9),
+      blendRGB([255, 255, 255], [255, 0, 0], 0.5),
+    );
   });
 
   it("clamps an out-of-range alpha into [0, 1]", async () => {
     const high = await makeImage(8, 8, [255, 255, 255]);
     const opaque = await makeImage(8, 8, [255, 255, 255]);
-    const mask = UserSegmentationMask.fromArray(squareMask(8, 8, 0, 0, 4, 4), 8, 8);
+    const mask = UserSegmentationMask.fromArray(
+      squareMask(8, 8, 0, 0, 4, 4),
+      8,
+      8,
+    );
 
     // alpha = 2.0 must clamp to 1.0 (fully replace with the color), never
     // produce out-of-range/negative blends.
@@ -393,8 +487,14 @@ describe("drawLabelImage", () => {
     drawLabelImage(img, li, { alpha: 0.3, palette: "distinct" });
 
     // LUT: id1 -> distinct[1], id2 -> distinct[2].
-    expectRGBNear(pixel(img, 1, 1), blendRGB([255, 255, 255], DISTINCT[1], 0.3));
-    expectRGBNear(pixel(img, 5, 5), blendRGB([255, 255, 255], DISTINCT[2], 0.3));
+    expectRGBNear(
+      pixel(img, 1, 1),
+      blendRGB([255, 255, 255], DISTINCT[1], 0.3),
+    );
+    expectRGBNear(
+      pixel(img, 5, 5),
+      blendRGB([255, 255, 255], DISTINCT[2], 0.3),
+    );
     // Background (label 0) untouched.
     expectRGBNear(pixel(img, 7, 0), [255, 255, 255]);
   });
@@ -463,12 +563,11 @@ describe("drawLabelImage", () => {
   });
 
   it("makes a thicker outline when outlineWidth > 1 (dilation)", async () => {
-    const buildOutlined = async (
-      width: number,
-    ): Promise<ImageData> => {
+    const buildOutlined = async (width: number): Promise<ImageData> => {
       const img = await makeImage(12, 12, [255, 255, 255]);
       const data = new Int32Array(12 * 12);
-      for (let r = 3; r < 9; r++) for (let c = 3; c < 9; c++) data[r * 12 + c] = 1;
+      for (let r = 3; r < 9; r++)
+        for (let c = 3; c < 9; c++) data[r * 12 + c] = 1;
       const li = UserLabelImage.fromArray(data, 12, 12);
       drawLabelImage(img, li, {
         alpha: 0.3,
@@ -485,7 +584,11 @@ describe("drawLabelImage", () => {
     const countBlack = (img: ImageData): number => {
       let n = 0;
       for (let i = 0; i < img.data.length; i += 4) {
-        if (img.data[i] === 0 && img.data[i + 1] === 0 && img.data[i + 2] === 0) {
+        if (
+          img.data[i] === 0 &&
+          img.data[i + 1] === 0 &&
+          img.data[i + 2] === 0
+        ) {
           n++;
         }
       }
@@ -515,7 +618,12 @@ describe("drawLabelImage", () => {
   it("honors an offset spatial transform for placement", async () => {
     const img = await makeImage(10, 10, [255, 255, 255]);
     const data = new Int32Array(3 * 3).fill(1);
-    const li = new UserLabelImage({ data, height: 3, width: 3, offset: [4, 5] });
+    const li = new UserLabelImage({
+      data,
+      height: 3,
+      width: 3,
+      offset: [4, 5],
+    });
 
     drawLabelImage(img, li, { alpha: 0.5, palette: "distinct" });
 
@@ -718,8 +826,12 @@ describe("drawBboxes", () => {
       return false;
     };
 
-    expect(hasColor(4, 27, (r, g, b) => r > 150 && g < 100 && b < 100)).toBe(true);
-    expect(hasColor(48, 72, (r, g, b) => b > 150 && r < 100 && g < 100)).toBe(true);
+    expect(hasColor(4, 27, (r, g, b) => r > 150 && g < 100 && b < 100)).toBe(
+      true,
+    );
+    expect(hasColor(48, 72, (r, g, b) => b > 150 && r < 100 && g < 100)).toBe(
+      true,
+    );
   });
 
   it("is a no-op for an empty bbox list", async () => {
@@ -796,7 +908,9 @@ describe("drawRois", () => {
 
   it("draws a filled dot for a Point geometry", async () => {
     const img = await makeImage(30, 30, [255, 255, 255]);
-    const roi = new UserROI({ geometry: { type: "Point", coordinates: [15, 15] } });
+    const roi = new UserROI({
+      geometry: { type: "Point", coordinates: [15, 15] },
+    });
 
     drawRois(img, [roi], { color: [0, 0, 255], lineWidth: 4 });
 
@@ -956,20 +1070,37 @@ describe("applyOverlay", () => {
 
     applyOverlay(img, li, { alpha: 0.3, palette: "distinct" });
 
-    expectRGBNear(pixel(img, 1, 1), blendRGB([255, 255, 255], DISTINCT[1], 0.3));
+    expectRGBNear(
+      pixel(img, 1, 1),
+      blendRGB([255, 255, 255], DISTINCT[1], 0.3),
+    );
     expectRGBNear(pixel(img, 7, 7), [255, 255, 255]);
   });
 
   it("dispatches a SegmentationMask[] with per-item palette colors", async () => {
     const img = await makeImage(12, 12, [255, 255, 255]);
-    const m0 = UserSegmentationMask.fromArray(squareMask(12, 12, 0, 0, 4, 4), 12, 12);
-    const m1 = UserSegmentationMask.fromArray(squareMask(12, 12, 6, 6, 10, 10), 12, 12);
+    const m0 = UserSegmentationMask.fromArray(
+      squareMask(12, 12, 0, 0, 4, 4),
+      12,
+      12,
+    );
+    const m1 = UserSegmentationMask.fromArray(
+      squareMask(12, 12, 6, 6, 10, 10),
+      12,
+      12,
+    );
 
     applyOverlay(img, [m0, m1], { alpha: 0.4, palette: "distinct" });
 
     // Per-item colors from getPalette("distinct", 2): [0] and [1].
-    expectRGBNear(pixel(img, 1, 1), blendRGB([255, 255, 255], DISTINCT[0], 0.4));
-    expectRGBNear(pixel(img, 7, 7), blendRGB([255, 255, 255], DISTINCT[1], 0.4));
+    expectRGBNear(
+      pixel(img, 1, 1),
+      blendRGB([255, 255, 255], DISTINCT[0], 0.4),
+    );
+    expectRGBNear(
+      pixel(img, 7, 7),
+      blendRGB([255, 255, 255], DISTINCT[1], 0.4),
+    );
   });
 
   it("dispatches an ROI[] to the vector path", async () => {
@@ -1025,10 +1156,9 @@ describe("applyOverlay", () => {
   it("throws a TypeError for an unknown element type", async () => {
     const img = await makeImage(8, 8, [255, 255, 255]);
     expect(() =>
-      applyOverlay(
-        img,
-        [{ foo: "bar" }] as unknown as Parameters<typeof applyOverlay>[1],
-      ),
+      applyOverlay(img, [{ foo: "bar" }] as unknown as Parameters<
+        typeof applyOverlay
+      >[1]),
     ).toThrow(TypeError);
   });
 
@@ -1143,7 +1273,9 @@ describe("renderImage with overlay", () => {
       4,
     );
     // Higher alpha pulls the green channel further from white.
-    expect(pixel(highAlpha, 20, 20)[1]).toBeLessThan(pixel(lowAlpha, 20, 20)[1]);
+    expect(pixel(highAlpha, 20, 20)[1]).toBeLessThan(
+      pixel(lowAlpha, 20, 20)[1],
+    );
   });
 
   it("renders a segmentation-only LabeledFrame (no instances) without throwing", async () => {
@@ -1180,7 +1312,8 @@ describe("renderImage with overlay", () => {
   it("applies a LabelImage overlay passed directly", async () => {
     const video = createVideo();
     const data = new Int32Array(30 * 30);
-    for (let r = 5; r < 20; r++) for (let c = 5; c < 20; c++) data[r * 30 + c] = 1;
+    for (let r = 5; r < 20; r++)
+      for (let c = 5; c < 20; c++) data[r * 30 + c] = 1;
     const li = UserLabelImage.fromArray(data, 30, 30);
     const frame = new LabeledFrame({
       video,
@@ -1271,8 +1404,18 @@ describe("renderVideo per-frame overlay", () => {
     // Attach the per-frame masks to each frame so renderImage has something to
     // render (the empty-frame guard is annotation-aware). The callable overlay
     // independently selects which mask to draw per frame index.
-    const f0 = new LabeledFrame({ video, frameIdx: 0, instances: [], masks: [maskA] });
-    const f1 = new LabeledFrame({ video, frameIdx: 1, instances: [], masks: [maskB] });
+    const f0 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [],
+      masks: [maskA],
+    });
+    const f1 = new LabeledFrame({
+      video,
+      frameIdx: 1,
+      instances: [],
+      masks: [maskB],
+    });
     const overlayFn = (frameIdx: number): SegmentationMask[] =>
       frameIdx === 0 ? [maskA] : [maskB];
 
@@ -1333,9 +1476,17 @@ describe("renderVideo per-frame overlay", () => {
 
     expect(Array.from(imgA.data)).not.toEqual(Array.from(imgB.data));
     // maskA region tinted in A, white in B; vice versa for maskB region.
-    expectRGBNear(pixel(imgA, 3, 3), blendRGB([255, 255, 255], DISTINCT[0], 0.5), 4);
+    expectRGBNear(
+      pixel(imgA, 3, 3),
+      blendRGB([255, 255, 255], DISTINCT[0], 0.5),
+      4,
+    );
     expectRGBNear(pixel(imgB, 3, 3), [255, 255, 255]);
-    expectRGBNear(pixel(imgB, 15, 15), blendRGB([255, 255, 255], DISTINCT[0], 0.5), 4);
+    expectRGBNear(
+      pixel(imgB, 15, 15),
+      blendRGB([255, 255, 255], DISTINCT[0], 0.5),
+      4,
+    );
     expectRGBNear(pixel(imgA, 15, 15), [255, 255, 255]);
   });
 });

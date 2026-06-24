@@ -84,7 +84,12 @@ afterEach(() => {
 });
 
 /** Write a tiny valid PNG of the given size into `dir` and return its path. */
-function writeTestPng(dir: string, name: string, width: number, height: number): string {
+function writeTestPng(
+  dir: string,
+  name: string,
+  width: number,
+  height: number,
+): string {
   const rgba = new Uint8Array(width * height * 4).fill(0);
   const png = encodePng(rgba, width, height);
   const p = path.join(dir, name);
@@ -122,8 +127,12 @@ describe("data.yaml + skeleton", () => {
 
 describe("detectLineFormat", () => {
   it("auto-detects per-line formats", () => {
-    expect(detectLineFormat(["0", "0.5", "0.5", "0.2", "0.3"])).toBe("detection");
-    expect(detectLineFormat(["0", "0.5", "0.5", "0.2", "0.3", "0.9"])).toBe("detection_conf");
+    expect(detectLineFormat(["0", "0.5", "0.5", "0.2", "0.3"])).toBe(
+      "detection",
+    );
+    expect(detectLineFormat(["0", "0.5", "0.5", "0.2", "0.3", "0.9"])).toBe(
+      "detection_conf",
+    );
     expect(detectLineFormat(Array(8).fill("0"))).toBe("pose"); // 5 + 3*1
     expect(detectLineFormat(Array(11).fill("0"))).toBe("pose"); // 5 + 3*2
     expect(detectLineFormat(Array(9).fill("0"))).toBe("segmentation"); // 4 polygon pts
@@ -137,8 +146,17 @@ describe("detectLineFormat", () => {
 
 describe("parseLabelFile (pose)", () => {
   it("parses a single-instance label file", () => {
-    const labelFile = path.join(ultralyticsDataset, "train", "labels", "image_001.txt");
-    const { instances, rois, bboxes } = parseLabelFile(labelFile, ultralyticsSkeleton(), [480, 640]);
+    const labelFile = path.join(
+      ultralyticsDataset,
+      "train",
+      "labels",
+      "image_001.txt",
+    );
+    const { instances, rois, bboxes } = parseLabelFile(
+      labelFile,
+      ultralyticsSkeleton(),
+      [480, 640],
+    );
     expect(instances.length).toBe(1);
     expect(rois.length).toBe(0);
     expect(bboxes.length).toBe(0);
@@ -156,8 +174,17 @@ describe("parseLabelFile (pose)", () => {
   });
 
   it("parses a multi-instance label file", () => {
-    const labelFile = path.join(ultralyticsDataset, "train", "labels", "image_002.txt");
-    const { instances, rois } = parseLabelFile(labelFile, ultralyticsSkeleton(), [480, 640]);
+    const labelFile = path.join(
+      ultralyticsDataset,
+      "train",
+      "labels",
+      "image_002.txt",
+    );
+    const { instances, rois } = parseLabelFile(
+      labelFile,
+      ultralyticsSkeleton(),
+      [480, 640],
+    );
     expect(instances.length).toBe(2);
     expect(rois.length).toBe(0);
     for (const instance of instances) {
@@ -168,7 +195,11 @@ describe("parseLabelFile (pose)", () => {
   it("handles empty label files", () => {
     const labelFile = path.join(tmp, "empty.txt");
     fs.writeFileSync(labelFile, "");
-    const { instances, rois, bboxes } = parseLabelFile(labelFile, ultralyticsSkeleton(), [480, 640]);
+    const { instances, rois, bboxes } = parseLabelFile(
+      labelFile,
+      ultralyticsSkeleton(),
+      [480, 640],
+    );
     expect(instances.length).toBe(0);
     expect(rois.length).toBe(0);
     expect(bboxes.length).toBe(0);
@@ -177,13 +208,21 @@ describe("parseLabelFile (pose)", () => {
   it("skips malformed lines without crashing", () => {
     const labelFile = path.join(tmp, "malformed.txt");
     fs.writeFileSync(labelFile, "invalid line\n0 0.5\n");
-    const { instances, rois } = parseLabelFile(labelFile, ultralyticsSkeleton(), [480, 640]);
+    const { instances, rois } = parseLabelFile(
+      labelFile,
+      ultralyticsSkeleton(),
+      [480, 640],
+    );
     expect(instances.length).toBe(0);
     expect(rois.length).toBe(0);
   });
 
   it("rejects instances when keypoint count mismatches skeleton", () => {
-    const skeleton = new Skeleton([new Node("a"), new Node("b"), new Node("c")]);
+    const skeleton = new Skeleton([
+      new Node("a"),
+      new Node("b"),
+      new Node("c"),
+    ]);
     const labelFile = path.join(tmp, "mismatch.txt");
     fs.writeFileSync(labelFile, "0 0.5 0.5 0.2 0.4 0.1 0.1 2 0.2 0.2 2\n"); // only 2 keypoints
     const { instances } = parseLabelFile(labelFile, skeleton, [100, 100]);
@@ -193,7 +232,11 @@ describe("parseLabelFile (pose)", () => {
   it("warns and skips on non-numeric class id", () => {
     const labelFile = path.join(tmp, "invalid_data.txt");
     fs.writeFileSync(labelFile, "not_a_number 0.5 0.5 0.2 0.2\n");
-    const { instances } = parseLabelFile(labelFile, ultralyticsSkeleton(), [480, 640]);
+    const { instances } = parseLabelFile(
+      labelFile,
+      ultralyticsSkeleton(),
+      [480, 640],
+    );
     expect(instances.length).toBe(0);
   });
 
@@ -231,7 +274,10 @@ describe("readLabels", () => {
     expect(labels.labeledFrames.length).toBe(2);
     expect(labels.skeletons.length).toBe(1);
     expect(labels.skeletons[0].nodes.length).toBe(5);
-    const total = labels.labeledFrames.reduce((s, f) => s + f.instances.length, 0);
+    const total = labels.labeledFrames.reduce(
+      (s, f) => s + f.instances.length,
+      0,
+    );
     expect(total).toBe(3); // 1 + 2
   });
 
@@ -239,12 +285,18 @@ describe("readLabels", () => {
     const labels = readLabels(ultralyticsDataset, { split: "val" });
     expect(labels.labeledFrames.length).toBe(1);
     expect(labels.skeletons.length).toBe(1);
-    const total = labels.labeledFrames.reduce((s, f) => s + f.instances.length, 0);
+    const total = labels.labeledFrames.reduce(
+      (s, f) => s + f.instances.length,
+      0,
+    );
     expect(total).toBe(1);
   });
 
   it("uses a custom skeleton when provided", () => {
-    const nodes = Array.from({ length: 5 }, (_, i) => new Node(`custom_node_${i}`));
+    const nodes = Array.from(
+      { length: 5 },
+      (_, i) => new Node(`custom_node_${i}`),
+    );
     const custom = new Skeleton({ nodes, name: "custom" });
     const labels = readLabels(ultralyticsDataset, { skeleton: custom });
     expect(labels.skeletons[0]).toBe(custom);
@@ -267,7 +319,9 @@ describe("readLabels", () => {
   });
 
   it("throws when data.yaml is missing", () => {
-    expect(() => readLabels(path.join(tmp, "nonexistent"))).toThrow(/data\.yaml not found/);
+    expect(() => readLabels(path.join(tmp, "nonexistent"))).toThrow(
+      /data\.yaml not found/,
+    );
   });
 
   it("throws when images directory is missing", () => {
@@ -275,7 +329,9 @@ describe("readLabels", () => {
       path.join(tmp, "data.yaml"),
       "kpt_shape: [1, 3]\ntrain: train/images\n",
     );
-    expect(() => readLabels(tmp, { split: "train" })).toThrow(/Images directory not found/);
+    expect(() => readLabels(tmp, { split: "train" })).toThrow(
+      /Images directory not found/,
+    );
   });
 
   it("throws when labels directory is missing", () => {
@@ -284,7 +340,9 @@ describe("readLabels", () => {
       "kpt_shape: [2, 3]\ntrain: train/images\nnode_names: [a, b]\n",
     );
     fs.mkdirSync(path.join(tmp, "train", "images"), { recursive: true });
-    expect(() => readLabels(tmp, { split: "train" })).toThrow(/Labels directory not found/);
+    expect(() => readLabels(tmp, { split: "train" })).toThrow(
+      /Labels directory not found/,
+    );
   });
 
   it("reads image dimensions from the file header (denormalization)", () => {
@@ -328,7 +386,11 @@ describe("writeLabelFile (pose)", () => {
   });
 
   it("writes an empty file when no points are visible", () => {
-    const skeleton = new Skeleton([new Node("a"), new Node("b"), new Node("c")]);
+    const skeleton = new Skeleton([
+      new Node("a"),
+      new Node("b"),
+      new Node("c"),
+    ]);
     const pointsData = [
       [NaN, NaN, 0],
       [NaN, NaN, 0],
@@ -346,7 +408,11 @@ describe("writeLabelFile (pose)", () => {
   });
 
   it("skips instances whose point count mismatches the skeleton", () => {
-    const skeleton = new Skeleton([new Node("a"), new Node("b"), new Node("c")]);
+    const skeleton = new Skeleton([
+      new Node("a"),
+      new Node("b"),
+      new Node("c"),
+    ]);
     const instance = Instance.fromNumpy({
       pointsData: [
         [10, 20, 1],
@@ -368,7 +434,10 @@ describe("writeLabelFile (pose)", () => {
 describe("writeLabels (pose) round trips", () => {
   it("writes a single split with images + labels", async () => {
     // Three frames backed by real on-disk images (so the copy path runs).
-    const skeleton = new Skeleton([new Node("head"), new Node("tail")], [new Edge(new Node("head"), new Node("tail"))]);
+    const skeleton = new Skeleton(
+      [new Node("head"), new Node("tail")],
+      [new Edge(new Node("head"), new Node("tail"))],
+    );
     const frames: LabeledFrame[] = [];
     for (let i = 0; i < 3; i++) {
       const imgPath = writeTestPng(tmp, `src_${i}.png`, 64, 48);
@@ -402,7 +471,9 @@ describe("writeLabels (pose) round trips", () => {
 
     const images = fs.readdirSync(path.join(outDir, "train", "images")).sort();
     expect(images).toEqual(["0000000.png", "0000001.png", "0000002.png"]);
-    const labelFiles = fs.readdirSync(path.join(outDir, "train", "labels")).sort();
+    const labelFiles = fs
+      .readdirSync(path.join(outDir, "train", "labels"))
+      .sort();
     expect(labelFiles).toEqual(["0000000.txt", "0000001.txt", "0000002.txt"]);
   });
 
@@ -412,19 +483,27 @@ describe("writeLabels (pose) round trips", () => {
     await writeLabels(original, outDir, { splitRatios: { train: 1.0 } });
     const reloaded = readLabels(outDir, { split: "train" });
     expect(reloaded.labeledFrames.length).toBe(original.labeledFrames.length);
-    expect(reloaded.skeletons[0].nodes.length).toBe(original.skeletons[0].nodes.length);
+    expect(reloaded.skeletons[0].nodes.length).toBe(
+      original.skeletons[0].nodes.length,
+    );
   });
 
   it("saveUltralytics is a convenience wrapper", async () => {
     const skeleton = new Skeleton([new Node("p")]);
     const imgPath = writeTestPng(tmp, "single.png", 32, 32);
-    const instance = Instance.fromNumpy({ pointsData: [[10, 10, 1]], skeleton });
+    const instance = Instance.fromNumpy({
+      pointsData: [[10, 10, 1]],
+      skeleton,
+    });
     const frame = new LabeledFrame({
       video: new Video({ filename: imgPath, openBackend: false }),
       frameIdx: 0,
       instances: [instance],
     });
-    const labels = new Labels({ labeledFrames: [frame], skeletons: [skeleton] });
+    const labels = new Labels({
+      labeledFrames: [frame],
+      skeletons: [skeleton],
+    });
     const outDir = path.join(tmp, "save_ultralytics");
     await saveUltralytics(labels, outDir);
     expect(fs.existsSync(path.join(outDir, "data.yaml"))).toBe(true);
@@ -435,7 +514,9 @@ describe("writeLabels (pose) round trips", () => {
     const skeleton = new Skeleton([new Node("node")]);
     const labels = new Labels({ labeledFrames: [], skeletons: [skeleton] });
     await expect(
-      writeLabels(labels, path.join(tmp, "bad"), { splitRatios: { train: 0.5, val: 0.6 } }),
+      writeLabels(labels, path.join(tmp, "bad"), {
+        splitRatios: { train: 0.5, val: 0.6 },
+      }),
     ).rejects.toThrow(/Split ratios must sum to 1\.0/);
   });
 
@@ -451,7 +532,10 @@ describe("writeLabels (pose) round trips", () => {
     const frames: LabeledFrame[] = [];
     for (let i = 0; i < 10; i++) {
       const imgPath = writeTestPng(tmp, `tw_${i}.png`, 16, 16);
-      const instance = Instance.fromNumpy({ pointsData: [[i, i, 1]], skeleton });
+      const instance = Instance.fromNumpy({
+        pointsData: [[i, i, 1]],
+        skeleton,
+      });
       frames.push(
         new LabeledFrame({
           video: new Video({ filename: imgPath, openBackend: false }),
@@ -583,9 +667,14 @@ describe("detection format", () => {
   it("normalizes/denormalizes detection coordinates correctly", () => {
     const labelFile = path.join(tmp, "det.txt");
     fs.writeFileSync(labelFile, "0 0.5 0.5 0.4 0.6\n");
-    const { instances, rois, bboxes } = parseLabelFile(labelFile, new Skeleton([]), [100, 200], {
-      classNames: new Map([[0, "obj"]]),
-    });
+    const { instances, rois, bboxes } = parseLabelFile(
+      labelFile,
+      new Skeleton([]),
+      [100, 200],
+      {
+        classNames: new Map([[0, "obj"]]),
+      },
+    );
     expect(instances.length).toBe(0);
     expect(rois.length).toBe(0);
     expect(bboxes.length).toBe(1);
@@ -609,10 +698,25 @@ describe("detection format", () => {
   it("writes UserBoundingBox (5 values) and PredictedBoundingBox (6 values)", () => {
     const bboxes = [
       new UserBoundingBox({ x1: 60, y1: 20, x2: 140, y2: 80, category: "cat" }),
-      new PredictedBoundingBox({ x1: 30, y1: 10, x2: 70, y2: 40, category: "dog", score: 0.9 }),
+      new PredictedBoundingBox({
+        x1: 30,
+        y1: 10,
+        x2: 70,
+        y2: 40,
+        category: "dog",
+        score: 0.9,
+      }),
     ];
     const labelPath = path.join(tmp, "bbox.txt");
-    writeBboxLabelFile(labelPath, bboxes, [100, 200], new Map([["cat", 0], ["dog", 1]]));
+    writeBboxLabelFile(
+      labelPath,
+      bboxes,
+      [100, 200],
+      new Map([
+        ["cat", 0],
+        ["dog", 1],
+      ]),
+    );
     const lines = fs.readFileSync(labelPath, "utf-8").trim().split("\n");
     expect(lines.length).toBe(2);
 
@@ -628,9 +732,17 @@ describe("detection format", () => {
     expect(Number(parts1[5])).toBeCloseTo(0.9, 4);
 
     // Round-trip.
-    const { bboxes: readBack } = parseLabelFile(labelPath, new Skeleton([]), [100, 200], {
-      classNames: new Map([[0, "cat"], [1, "dog"]]),
-    });
+    const { bboxes: readBack } = parseLabelFile(
+      labelPath,
+      new Skeleton([]),
+      [100, 200],
+      {
+        classNames: new Map([
+          [0, "cat"],
+          [1, "dog"],
+        ]),
+      },
+    );
     expect(readBack.length).toBe(2);
     expect(readBack[0]).toBeInstanceOf(UserBoundingBox);
     expect(readBack[0].category).toBe("cat");
@@ -647,9 +759,14 @@ describe("segmentation format", () => {
   it("parses + writes a segmentation polygon round-trip", () => {
     const labelFile = path.join(tmp, "seg.txt");
     fs.writeFileSync(labelFile, "0 0.1 0.1 0.9 0.2 0.8 0.9 0.2 0.8\n");
-    const { instances, rois, bboxes } = parseLabelFile(labelFile, new Skeleton([]), [100, 200], {
-      classNames: new Map([[0, "animal"]]),
-    });
+    const { instances, rois, bboxes } = parseLabelFile(
+      labelFile,
+      new Skeleton([]),
+      [100, 200],
+      {
+        classNames: new Map([[0, "animal"]]),
+      },
+    );
     expect(instances.length).toBe(0);
     expect(rois.length).toBe(1);
     expect(bboxes.length).toBe(0);
@@ -659,16 +776,22 @@ describe("segmentation format", () => {
     expect(roi.category).toBe("animal");
     expect(roi.area).toBeGreaterThan(0);
 
-    const coords = (roi.geometry as { coordinates: number[][][] }).coordinates[0];
+    const coords = (roi.geometry as { coordinates: number[][][] })
+      .coordinates[0];
     expect(coords.length).toBe(5); // 4 vertices + closing point
     expect(coords[0][0]).toBeCloseTo(0.1 * 200, 4);
     expect(coords[0][1]).toBeCloseTo(0.1 * 100, 4);
 
     const labelOut = path.join(tmp, "seg_out.txt");
     writeRoiLabelFile(labelOut, rois, [100, 200], new Map([["animal", 0]]));
-    const { rois: rois2, bboxes: bboxes2 } = parseLabelFile(labelOut, new Skeleton([]), [100, 200], {
-      classNames: new Map([[0, "animal"]]),
-    });
+    const { rois: rois2, bboxes: bboxes2 } = parseLabelFile(
+      labelOut,
+      new Skeleton([]),
+      [100, 200],
+      {
+        classNames: new Map([[0, "animal"]]),
+      },
+    );
     expect(rois2.length).toBe(1);
     expect(bboxes2.length).toBe(0);
     expect(rois2[0].isBbox).toBe(false);
@@ -676,26 +799,29 @@ describe("segmentation format", () => {
   });
 
   it("explodes MultiPolygon ROIs into separate lines", () => {
-    const multi = UserROI.fromMultiPolygon([
+    const multi = UserROI.fromMultiPolygon(
       [
         [
-          [0, 0],
-          [50, 0],
-          [50, 50],
-          [0, 50],
-          [0, 0],
+          [
+            [0, 0],
+            [50, 0],
+            [50, 50],
+            [0, 50],
+            [0, 0],
+          ],
         ],
-      ],
-      [
         [
-          [60, 60],
-          [100, 60],
-          [100, 100],
-          [60, 100],
-          [60, 60],
+          [
+            [60, 60],
+            [100, 60],
+            [100, 100],
+            [60, 100],
+            [60, 60],
+          ],
         ],
       ],
-    ], { category: "obj" });
+      { category: "obj" },
+    );
     const labelPath = path.join(tmp, "multi.txt");
     writeRoiLabelFile(labelPath, [multi], [200, 200], new Map([["obj", 0]]));
     const lines = fs.readFileSync(labelPath, "utf-8").trim().split("\n");
@@ -745,10 +871,18 @@ describe("segmentation format", () => {
       verbose: false,
     });
 
-    expect(fs.readdirSync(path.join(datasetPath, "train", "images")).length).toBe(8);
-    expect(fs.readdirSync(path.join(datasetPath, "val", "images")).length).toBe(2);
-    expect(fs.readdirSync(path.join(datasetPath, "train", "labels")).length).toBe(8);
-    expect(fs.readdirSync(path.join(datasetPath, "val", "labels")).length).toBe(2);
+    expect(
+      fs.readdirSync(path.join(datasetPath, "train", "images")).length,
+    ).toBe(8);
+    expect(fs.readdirSync(path.join(datasetPath, "val", "images")).length).toBe(
+      2,
+    );
+    expect(
+      fs.readdirSync(path.join(datasetPath, "train", "labels")).length,
+    ).toBe(8);
+    expect(fs.readdirSync(path.join(datasetPath, "val", "labels")).length).toBe(
+      2,
+    );
   });
 });
 
@@ -789,7 +923,12 @@ describe("readLabelsSet", () => {
       fs.mkdirSync(imagesDir, { recursive: true });
       fs.mkdirSync(labelsDir, { recursive: true });
       for (let i = 0; i < 2; i++) {
-        writeTestPng(imagesDir, `img_${String(i).padStart(3, "0")}.png`, 10, 10);
+        writeTestPng(
+          imagesDir,
+          `img_${String(i).padStart(3, "0")}.png`,
+          10,
+          10,
+        );
         fs.writeFileSync(
           path.join(labelsDir, `img_${String(i).padStart(3, "0")}.txt`),
           "0 0.5 0.5 0.4 0.4 0.4 0.4 2 0.5 0.5 2 0.6 0.6 2\n",
@@ -826,7 +965,11 @@ describe("readLabelsSet", () => {
   it("uses a custom skeleton", () => {
     const datasetPath = path.join(tmp, "yolo");
     createDataset(datasetPath, ["train"]);
-    const skeleton = new Skeleton([new Node("head"), new Node("body"), new Node("tail")]);
+    const skeleton = new Skeleton([
+      new Node("head"),
+      new Node("body"),
+      new Node("tail"),
+    ]);
     const set = readLabelsSet(datasetPath, { skeleton });
     expect(set.get("train")!.skeletons[0].nodes[0].name).toBe("head");
     expect(set.get("train")!.skeletons[0].nodes[2].name).toBe("tail");
@@ -835,7 +978,9 @@ describe("readLabelsSet", () => {
   it("ignores missing splits", () => {
     const datasetPath = path.join(tmp, "yolo");
     createDataset(datasetPath, ["train"]);
-    const set = readLabelsSet(datasetPath, { splits: ["train", "val", "test"] });
+    const set = readLabelsSet(datasetPath, {
+      splits: ["train", "val", "test"],
+    });
     expect(set.size).toBe(1);
     expect(set.get("train")).toBeDefined();
   });
@@ -864,7 +1009,10 @@ describe("createSplitsFromLabels", () => {
   function dummyLabels(n: number): Labels {
     const skeleton = new Skeleton([new Node("a")]);
     const frames = Array.from({ length: n }, (_, i) => {
-      const instance = Instance.fromNumpy({ pointsData: [[i, i, 1]], skeleton });
+      const instance = Instance.fromNumpy({
+        pointsData: [[i, i, 1]],
+        skeleton,
+      });
       return new LabeledFrame({
         video: new Video({ filename: `f_${i}.mp4`, openBackend: false }),
         frameIdx: i,
@@ -875,13 +1023,20 @@ describe("createSplitsFromLabels", () => {
   }
 
   it("creates two-way splits with correct counts", () => {
-    const splits = createSplitsFromLabels(dummyLabels(10), { train: 0.8, val: 0.2 });
+    const splits = createSplitsFromLabels(dummyLabels(10), {
+      train: 0.8,
+      val: 0.2,
+    });
     expect(splits.train.labeledFrames.length).toBe(8);
     expect(splits.val.labeledFrames.length).toBe(2);
   });
 
   it("creates three-way splits with correct counts", () => {
-    const splits = createSplitsFromLabels(dummyLabels(10), { train: 0.6, val: 0.2, test: 0.2 });
+    const splits = createSplitsFromLabels(dummyLabels(10), {
+      train: 0.6,
+      val: 0.2,
+      test: 0.2,
+    });
     expect(splits.train.labeledFrames.length).toBe(6);
     expect(splits.val.labeledFrames.length).toBe(2);
     expect(splits.test.labeledFrames.length).toBe(2);
@@ -916,7 +1071,9 @@ describe("encodePng", () => {
   it("produces a valid PNG signature + probeable dimensions", () => {
     const png = encodePng(new Uint8Array(4 * 4 * 4).fill(255), 4, 4);
     // PNG signature.
-    expect(Array.from(png.slice(0, 8))).toEqual([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+    expect(Array.from(png.slice(0, 8))).toEqual([
+      0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+    ]);
     const p = path.join(tmp, "enc.png");
     fs.writeFileSync(p, png);
     expect(probeImageSize(p)).toEqual([4, 4]);
@@ -960,15 +1117,24 @@ describe("Python-parity edge cases", () => {
     const ds = path.join(tmp, "exts");
     fs.mkdirSync(path.join(ds, "train", "images"), { recursive: true });
     fs.mkdirSync(path.join(ds, "train", "labels"), { recursive: true });
-    fs.writeFileSync(path.join(ds, "data.yaml"), "kpt_shape: [1, 3]\ntrain: train/images\nnames: [animal]\n");
+    fs.writeFileSync(
+      path.join(ds, "data.yaml"),
+      "kpt_shape: [1, 3]\ntrain: train/images\nnames: [animal]\n",
+    );
     writeTestPng(path.join(ds, "train", "images"), "a.png", 10, 10);
     // A GIF header (10x10) that the reader must ignore.
     fs.writeFileSync(
       path.join(ds, "train", "images", "b.gif"),
       Buffer.from([0x47, 0x49, 0x46, 0x38, 0x39, 0x61, 10, 0, 10, 0]),
     );
-    fs.writeFileSync(path.join(ds, "train", "labels", "a.txt"), "0 0.5 0.5 0.2 0.2 0.5 0.5 2\n");
-    fs.writeFileSync(path.join(ds, "train", "labels", "b.txt"), "0 0.5 0.5 0.2 0.2 0.5 0.5 2\n");
+    fs.writeFileSync(
+      path.join(ds, "train", "labels", "a.txt"),
+      "0 0.5 0.5 0.2 0.2 0.5 0.5 2\n",
+    );
+    fs.writeFileSync(
+      path.join(ds, "train", "labels", "b.txt"),
+      "0 0.5 0.5 0.2 0.2 0.5 0.5 2\n",
+    );
     const labels = readLabels(ds, { split: "train" });
     expect(labels.labeledFrames.length).toBe(1); // only a.png
   });
@@ -983,7 +1149,11 @@ describe("Python-parity edge cases", () => {
     }
     const labels = new Labels({ labeledFrames: lfs });
     const ds = path.join(tmp, "bankers");
-    await writeLabels(labels, ds, { splitRatios: { train: 0.5, val: 0.5 }, task: "segment", verbose: false });
+    await writeLabels(labels, ds, {
+      splitRatios: { train: 0.5, val: 0.5 },
+      task: "segment",
+      verbose: false,
+    });
     // boundary train = roundHalfToEven(0.5*5 = 2.5) = 2; val gets the remaining 3.
     expect(fs.readdirSync(path.join(ds, "train", "images")).length).toBe(2);
     expect(fs.readdirSync(path.join(ds, "val", "images")).length).toBe(3);
@@ -998,9 +1168,14 @@ describe("Python-parity edge cases", () => {
       frameIdx: 0,
       instances: [instance],
     });
-    const labels = new Labels({ labeledFrames: [frame], skeletons: [skeleton] });
+    const labels = new Labels({
+      labeledFrames: [frame],
+      skeletons: [skeleton],
+    });
     // 0.999999 is within ~1e-5 of 1.0 → accepted (was rejected by the old 1e-8 tolerance).
-    await writeLabels(labels, path.join(tmp, "tol"), { splitRatios: { train: 0.999999 } });
+    await writeLabels(labels, path.join(tmp, "tol"), {
+      splitRatios: { train: 0.999999 },
+    });
     expect(fs.existsSync(path.join(tmp, "tol", "data.yaml"))).toBe(true);
   });
 
@@ -1018,12 +1193,18 @@ describe("Python-parity edge cases", () => {
     const good0 = mk("g0.png");
     // Middle frame: a non-existent, non-image source → skipped on write.
     const bad = new LabeledFrame({
-      video: new Video({ filename: path.join(tmp, "missing.mp4"), openBackend: false }),
+      video: new Video({
+        filename: path.join(tmp, "missing.mp4"),
+        openBackend: false,
+      }),
       frameIdx: 7,
       instances: [Instance.fromNumpy({ pointsData: [[5, 5, 1]], skeleton })],
     });
     const good2 = mk("g2.png");
-    const labels = new Labels({ labeledFrames: [good0, bad, good2], skeletons: [skeleton] });
+    const labels = new Labels({
+      labeledFrames: [good0, bad, good2],
+      skeletons: [skeleton],
+    });
     const ds = path.join(tmp, "gap");
     await writeLabels(labels, ds, { splitRatios: { train: 1.0 } });
     const images = fs.readdirSync(path.join(ds, "train", "images")).sort();

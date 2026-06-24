@@ -22,9 +22,16 @@ describe("createVideoBackend", () => {
   beforeEach(() => {
     // Mock browser globals for WebCodecs detection
     (globalThis as any).window = globalThis;
-    (globalThis as any).document = { createElement: vi.fn(() => ({})), head: { appendChild: vi.fn() } };
-    globalThis.VideoDecoder = { isConfigSupported: async () => ({ supported: true }) } as any;
-    globalThis.EncodedVideoChunk = class { constructor() {} } as any;
+    (globalThis as any).document = {
+      createElement: vi.fn(() => ({})),
+      head: { appendChild: vi.fn() },
+    };
+    globalThis.VideoDecoder = {
+      isConfigSupported: async () => ({ supported: true }),
+    } as any;
+    globalThis.EncodedVideoChunk = class {
+      constructor() {}
+    } as any;
     (globalThis as any).createImageBitmap = async () => ({ close() {} });
     vi.resetModules();
   });
@@ -40,7 +47,9 @@ describe("createVideoBackend", () => {
 
   it("selects MediaBunny for .webm files", async () => {
     const { createVideoBackend } = await import("../../src/video/factory.js");
-    await expect(createVideoBackend("video.webm")).rejects.toThrow(/MediaBunny/);
+    await expect(createVideoBackend("video.webm")).rejects.toThrow(
+      /MediaBunny/,
+    );
   });
 
   it("selects MediaBunny for .mkv files", async () => {
@@ -52,7 +61,7 @@ describe("createVideoBackend", () => {
     const { createVideoBackend } = await import("../../src/video/factory.js");
     // Forcing mediabunny on an mp4 should attempt MediaBunny, not Mp4Box
     await expect(
-      createVideoBackend("video.mp4", { backend: "mediabunny" })
+      createVideoBackend("video.mp4", { backend: "mediabunny" }),
     ).rejects.toThrow(/MediaBunny/);
   });
 
@@ -67,7 +76,7 @@ describe("createVideoBackend", () => {
     const { createVideoBackend } = await import("../../src/video/factory.js");
     const file = new File([new Blob(["fake"])], "clip.mp4");
     await expect(
-      createVideoBackend(file, { backend: "mediabunny" })
+      createVideoBackend(file, { backend: "mediabunny" }),
     ).rejects.toThrow(/MediaBunny/);
   });
 
@@ -93,7 +102,9 @@ describe("createVideoBackend", () => {
         caught = e;
       }
       expect(caught).toBeInstanceOf(UnsupportedVideoFormatError);
-      expect((caught as InstanceType<typeof UnsupportedVideoFormatError>).extension).toBe(ext);
+      expect(
+        (caught as InstanceType<typeof UnsupportedVideoFormatError>).extension,
+      ).toBe(ext);
       // Traceable, not an opaque MediaBunny mid-decode failure; points at MP4.
       expect((caught as Error).message).not.toMatch(/MediaBunny/);
       expect((caught as Error).message).toMatch(/MP4/);
@@ -105,7 +116,9 @@ describe("createVideoBackend", () => {
       "../../src/video/factory.js"
     );
     const file = new File([new Blob(["fake"])], "clip.avi");
-    await expect(createVideoBackend(file)).rejects.toThrow(UnsupportedVideoFormatError);
+    await expect(createVideoBackend(file)).rejects.toThrow(
+      UnsupportedVideoFormatError,
+    );
   });
 
   it("honors an explicit backend override for unsupported extensions (escape hatch)", async () => {
@@ -113,7 +126,7 @@ describe("createVideoBackend", () => {
     // Forcing a backend bypasses the unsupported-format guard, so this attempts
     // MediaBunny (mock throws /MediaBunny/) rather than UnsupportedVideoFormatError.
     await expect(
-      createVideoBackend("clip.avi", { backend: "mediabunny" })
+      createVideoBackend("clip.avi", { backend: "mediabunny" }),
     ).rejects.toThrow(/MediaBunny/);
   });
 });

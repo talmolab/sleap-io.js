@@ -36,7 +36,7 @@ export type Trail = Array<[number, number]>;
  */
 export function resolveTrailNode(
   trailNode: string | string[],
-  skeleton: Skeleton
+  skeleton: Skeleton,
 ): TrailTarget[] {
   const names = typeof trailNode === "string" ? [trailNode] : [...trailNode];
 
@@ -49,8 +49,8 @@ export function resolveTrailNode(
     } catch {
       throw new Error(
         `Unknown trailNode ${JSON.stringify(name)}; skeleton nodes: ${JSON.stringify(
-          skeleton.nodeNames
-        )}`
+          skeleton.nodeNames,
+        )}`,
       );
     }
   });
@@ -73,7 +73,7 @@ export function resolveTrailNode(
 export function nTrailPaletteColors(
   hasTracks: boolean,
   nTracks: number,
-  frames: Iterable<LabeledFrame>
+  frames: Iterable<LabeledFrame>,
 ): number {
   if (hasTracks) {
     return Math.max(nTracks, 1);
@@ -221,7 +221,7 @@ export function computeTrails(opts: {
         if (!entry) {
           const arr: Trail = Array.from(
             { length: nPoints },
-            () => [NaN, NaN] as [number, number]
+            () => [NaN, NaN] as [number, number],
           );
           entry = { arr, keyIdx };
           trailData.set(dkey, entry);

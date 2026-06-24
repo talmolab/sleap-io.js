@@ -1,12 +1,19 @@
 import { describe, it, expect } from "./bun-test";
 import { Labels } from "../src/model/labels.js";
 import { ROI, PredictedROI } from "../src/model/roi.js";
-import { SegmentationMask, UserSegmentationMask, PredictedSegmentationMask } from "../src/model/mask.js";
+import {
+  SegmentationMask,
+  UserSegmentationMask,
+  PredictedSegmentationMask,
+} from "../src/model/mask.js";
 import { Video } from "../src/model/video.js";
 import { Track } from "../src/model/instance.js";
 import { Skeleton, Instance } from "../src/index.js";
 import { UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
-import { UserLabelImage, PredictedLabelImage } from "../src/model/label-image.js";
+import {
+  UserLabelImage,
+  PredictedLabelImage,
+} from "../src/model/label-image.js";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
 import { readSlp } from "../src/codecs/slp/read.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
@@ -24,8 +31,9 @@ async function readFormatId(bytes: Uint8Array): Promise<number> {
   module.FS.writeFile(memPath, bytes);
   const file = new H5File(memPath, "r");
   try {
-    const fmtAttr = (file.get("metadata") as { attrs: Record<string, { value?: number }> })
-      .attrs["format_id"];
+    const fmtAttr = (
+      file.get("metadata") as { attrs: Record<string, { value?: number }> }
+    ).attrs["format_id"];
     return Number(fmtAttr?.value ?? fmtAttr);
   } finally {
     file.close();
@@ -53,7 +61,10 @@ describe("SLP ROI/Mask I/O", () => {
     const video = new Video({ filename: "test.mp4" });
     const track = new Track("track0");
     const skeleton = new Skeleton({ nodes: ["A", "B"] });
-    const inst = new Instance({ points: { A: [10, 20], B: [30, 40] }, skeleton });
+    const inst = new Instance({
+      points: { A: [10, 20], B: [30, 40] },
+      skeleton,
+    });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
     const bboxRoi = ROI.fromBbox(10, 20, 100, 200, {
@@ -65,7 +76,12 @@ describe("SLP ROI/Mask I/O", () => {
     });
 
     const polyRoi = ROI.fromPolygon(
-      [[0, 0], [100, 0], [100, 100], [0, 100]],
+      [
+        [0, 0],
+        [100, 0],
+        [100, 100],
+        [0, 100],
+      ],
       {
         name: "roi2",
         category: "region",
@@ -167,7 +183,11 @@ describe("SLP ROI/Mask I/O", () => {
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
     // Build a 100x100 binary mask raster shared by both masks.
-    const maskData = makeMaskRaster(100, 100, (r, c) => r >= 10 && r < 30 && c >= 20 && c < 50);
+    const maskData = makeMaskRaster(
+      100,
+      100,
+      (r, c) => r >= 10 && r < 30 && c >= 20 && c < 50,
+    );
     const { encodeRle } = await import("../src/model/mask.js");
     const rle = encodeRle(maskData, 100, 100);
 
@@ -201,13 +221,16 @@ describe("SLP ROI/Mask I/O", () => {
     // Recording a link bumps the format to 2.4.
     expect(await readFormatId(bytes)).toBeGreaterThanOrEqual(2.4);
 
-    const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
     loaded.materialize();
 
     // Both masks survive: exactly one predicted, one user.
     expect(loaded.masks.length).toBe(2);
     const loadedPred = loaded.masks.find(
-      (m): m is PredictedSegmentationMask => m instanceof PredictedSegmentationMask,
+      (m): m is PredictedSegmentationMask =>
+        m instanceof PredictedSegmentationMask,
     )!;
     const loadedUser = loaded.masks.find(
       (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
@@ -233,7 +256,11 @@ describe("SLP ROI/Mask I/O", () => {
     const inst = new Instance({ points: { A: [10, 20] }, skeleton });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
-    const maskData = makeMaskRaster(40, 40, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const maskData = makeMaskRaster(
+      40,
+      40,
+      (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15,
+    );
     const { encodeRle } = await import("../src/model/mask.js");
     const rle = encodeRle(maskData, 40, 40);
 
@@ -247,7 +274,11 @@ describe("SLP ROI/Mask I/O", () => {
     const userMask = predMask.toUser(false);
     expect(userMask.fromPredicted).toBeNull();
 
-    const lfMask = new LabeledFrame({ video, frameIdx: 1, masks: [predMask, userMask] });
+    const lfMask = new LabeledFrame({
+      video,
+      frameIdx: 1,
+      masks: [predMask, userMask],
+    });
     const labels = new Labels({
       labeledFrames: [frame, lfMask],
       videos: [video],
@@ -258,7 +289,9 @@ describe("SLP ROI/Mask I/O", () => {
     // No mask records a link -> format must NOT be bumped to 2.4.
     expect(await readFormatId(bytes)).toBeLessThan(2.4);
 
-    const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
     loaded.materialize();
     const loadedUser = loaded.masks.find(
       (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
@@ -272,7 +305,11 @@ describe("SLP ROI/Mask I/O", () => {
     const inst = new Instance({ points: { A: [10, 20] }, skeleton });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
-    const maskData = makeMaskRaster(50, 50, (r, c) => r >= 10 && r < 25 && c >= 10 && c < 25);
+    const maskData = makeMaskRaster(
+      50,
+      50,
+      (r, c) => r >= 10 && r < 25 && c >= 10 && c < 25,
+    );
     const { encodeRle } = await import("../src/model/mask.js");
     const rle = encodeRle(maskData, 50, 50);
 
@@ -303,7 +340,8 @@ describe("SLP ROI/Mask I/O", () => {
     loaded.materialize();
 
     const loadedPred = loaded.masks.find(
-      (m): m is PredictedSegmentationMask => m instanceof PredictedSegmentationMask,
+      (m): m is PredictedSegmentationMask =>
+        m instanceof PredictedSegmentationMask,
     )!;
     const loadedUsers = loaded.masks.filter(
       (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
@@ -321,7 +359,11 @@ describe("SLP ROI/Mask I/O", () => {
     const inst = new Instance({ points: { A: [10, 20] }, skeleton });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
-    const maskData = makeMaskRaster(40, 40, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const maskData = makeMaskRaster(
+      40,
+      40,
+      (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15,
+    );
     const { encodeRle } = await import("../src/model/mask.js");
     const rle = encodeRle(maskData, 40, 40);
 
@@ -347,7 +389,9 @@ describe("SLP ROI/Mask I/O", () => {
     // Source absent -> no recorded link -> format not bumped.
     expect(await readFormatId(bytes)).toBeLessThan(2.4);
 
-    const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
     loaded.materialize();
     expect(loaded.masks.length).toBe(1);
     const loadedUser = loaded.masks.find(
@@ -364,8 +408,16 @@ describe("SLP ROI/Mask I/O", () => {
     const { encodeRle } = await import("../src/model/mask.js");
 
     // Distinct rasters so the loaded masks are individually identifiable.
-    const rasterA = makeMaskRaster(30, 30, (r, c) => r >= 2 && r < 8 && c >= 2 && c < 8);
-    const rasterB = makeMaskRaster(30, 30, (r, c) => r >= 20 && r < 26 && c >= 20 && c < 26);
+    const rasterA = makeMaskRaster(
+      30,
+      30,
+      (r, c) => r >= 2 && r < 8 && c >= 2 && c < 8,
+    );
+    const rasterB = makeMaskRaster(
+      30,
+      30,
+      (r, c) => r >= 20 && r < 26 && c >= 20 && c < 26,
+    );
 
     const predA = new PredictedSegmentationMask({
       rleCounts: encodeRle(rasterA, 30, 30),
@@ -396,10 +448,12 @@ describe("SLP ROI/Mask I/O", () => {
     loaded.materialize();
 
     const loadedUserA = loaded.masks.find(
-      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask && m.name === "A",
+      (m): m is UserSegmentationMask =>
+        m instanceof UserSegmentationMask && m.name === "A",
     )!;
     const loadedUserB = loaded.masks.find(
-      (m): m is UserSegmentationMask => m instanceof UserSegmentationMask && m.name === "B",
+      (m): m is UserSegmentationMask =>
+        m instanceof UserSegmentationMask && m.name === "B",
     )!;
     expect(loadedUserA.fromPredicted).not.toBeNull();
     expect(loadedUserB.fromPredicted).not.toBeNull();
@@ -416,7 +470,11 @@ describe("SLP ROI/Mask I/O", () => {
     const inst = new Instance({ points: { A: [10, 20] }, skeleton });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
-    const maskData = makeMaskRaster(60, 60, (r, c) => r >= 10 && r < 30 && c >= 10 && c < 30);
+    const maskData = makeMaskRaster(
+      60,
+      60,
+      (r, c) => r >= 10 && r < 30 && c >= 10 && c < 30,
+    );
     const { encodeRle } = await import("../src/model/mask.js");
     const predMask = new PredictedSegmentationMask({
       rleCounts: encodeRle(maskData, 60, 60),
@@ -426,7 +484,11 @@ describe("SLP ROI/Mask I/O", () => {
     });
     const userMask = predMask.toUser(true);
 
-    const lfMask = new LabeledFrame({ video, frameIdx: 4, masks: [predMask, userMask] });
+    const lfMask = new LabeledFrame({
+      video,
+      frameIdx: 4,
+      masks: [predMask, userMask],
+    });
     const labels = new Labels({
       labeledFrames: [frame, lfMask],
       videos: [video],
@@ -439,7 +501,8 @@ describe("SLP ROI/Mask I/O", () => {
     twice.materialize();
 
     const loadedPred = twice.masks.find(
-      (m): m is PredictedSegmentationMask => m instanceof PredictedSegmentationMask,
+      (m): m is PredictedSegmentationMask =>
+        m instanceof PredictedSegmentationMask,
     )!;
     const loadedUser = twice.masks.find(
       (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
@@ -462,7 +525,11 @@ describe("SLP ROI/Mask I/O", () => {
     expect(userInst.fromPredicted).toBe(predInst);
 
     // Predicted mask adopted to a user mask (mask fromPredicted).
-    const maskData = makeMaskRaster(40, 40, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const maskData = makeMaskRaster(
+      40,
+      40,
+      (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15,
+    );
     const { encodeRle } = await import("../src/model/mask.js");
     const predMask = new PredictedSegmentationMask({
       rleCounts: encodeRle(maskData, 40, 40),
@@ -491,7 +558,8 @@ describe("SLP ROI/Mask I/O", () => {
       (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
     )!;
     const loadedPredMask = loaded.masks.find(
-      (m): m is PredictedSegmentationMask => m instanceof PredictedSegmentationMask,
+      (m): m is PredictedSegmentationMask =>
+        m instanceof PredictedSegmentationMask,
     )!;
     expect(loadedUserMask.fromPredicted).toBe(loadedPredMask);
 
@@ -509,7 +577,11 @@ describe("SLP ROI/Mask I/O", () => {
     const inst = new Instance({ points: { A: [10, 20] }, skeleton });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
-    const maskData = makeMaskRaster(40, 40, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const maskData = makeMaskRaster(
+      40,
+      40,
+      (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15,
+    );
     const { encodeRle } = await import("../src/model/mask.js");
     const predMask = new PredictedSegmentationMask({
       rleCounts: encodeRle(maskData, 40, 40),
@@ -518,7 +590,11 @@ describe("SLP ROI/Mask I/O", () => {
       score: 0.8,
     });
     const userMask = predMask.toUser(true);
-    const lfMask = new LabeledFrame({ video, frameIdx: 1, masks: [predMask, userMask] });
+    const lfMask = new LabeledFrame({
+      video,
+      frameIdx: 1,
+      masks: [predMask, userMask],
+    });
     const labels = new Labels({
       labeledFrames: [frame, lfMask],
       videos: [video],
@@ -537,7 +613,12 @@ describe("SLP ROI/Mask I/O", () => {
       const f = new H5File(memPath, "a");
       const masksDs = f.get("masks") as {
         attrs: Record<string, { value?: unknown }>;
-        create_attribute: (name: string, value: unknown, shape: unknown, dtype: string) => void;
+        create_attribute: (
+          name: string,
+          value: unknown,
+          shape: unknown,
+          dtype: string,
+        ) => void;
         delete_attribute: (name: string) => void;
       };
       const fieldNames: string[] = JSON.parse(
@@ -560,7 +641,9 @@ describe("SLP ROI/Mask I/O", () => {
     const legacyBytes = module.FS.readFile(memPath) as Uint8Array;
     module.FS.unlink(memPath);
 
-    const loaded = await readSlp(new Uint8Array(legacyBytes).buffer, { openVideos: false });
+    const loaded = await readSlp(new Uint8Array(legacyBytes).buffer, {
+      openVideos: false,
+    });
     loaded.materialize();
     const loadedUser = loaded.masks.find(
       (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
@@ -574,7 +657,11 @@ describe("SLP ROI/Mask I/O", () => {
     const inst = new Instance({ points: { A: [10, 20] }, skeleton });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
-    const maskData = makeMaskRaster(40, 40, (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15);
+    const maskData = makeMaskRaster(
+      40,
+      40,
+      (r, c) => r >= 5 && r < 15 && c >= 5 && c < 15,
+    );
     const { encodeRle } = await import("../src/model/mask.js");
     const predMask = new PredictedSegmentationMask({
       rleCounts: encodeRle(maskData, 40, 40),
@@ -583,7 +670,11 @@ describe("SLP ROI/Mask I/O", () => {
       score: 0.8,
     });
     const userMask = predMask.toUser(true);
-    const lfMask = new LabeledFrame({ video, frameIdx: 1, masks: [predMask, userMask] });
+    const lfMask = new LabeledFrame({
+      video,
+      frameIdx: 1,
+      masks: [predMask, userMask],
+    });
     const labels = new Labels({
       labeledFrames: [frame, lfMask],
       videos: [video],
@@ -602,7 +693,10 @@ describe("SLP ROI/Mask I/O", () => {
       const masksDs = f.get("masks") as {
         shape: number[];
         attrs: Record<string, { value?: unknown }>;
-        write_slice: (ranges: Array<[number, number]>, data: Float64Array) => void;
+        write_slice: (
+          ranges: Array<[number, number]>,
+          data: Float64Array,
+        ) => void;
       };
       const fieldNames: string[] = JSON.parse(
         String((masksDs.attrs["field_names"] as { value?: unknown }).value),
@@ -623,7 +717,9 @@ describe("SLP ROI/Mask I/O", () => {
     const corruptBytes = module.FS.readFile(memPath) as Uint8Array;
     module.FS.unlink(memPath);
 
-    const loaded = await readSlp(new Uint8Array(corruptBytes).buffer, { openVideos: false });
+    const loaded = await readSlp(new Uint8Array(corruptBytes).buffer, {
+      openVideos: false,
+    });
     loaded.materialize();
     const loadedUser = loaded.masks.find(
       (m): m is UserSegmentationMask => m instanceof UserSegmentationMask,
@@ -767,10 +863,21 @@ describe("SLP BoundingBox I/O", () => {
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
     const bb1 = new UserBoundingBox({
-      x1: 0, y1: 20, x2: 100, y2: 100, track, category: "animal", name: "bb1", source: "manual",
+      x1: 0,
+      y1: 20,
+      x2: 100,
+      y2: 100,
+      track,
+      category: "animal",
+      name: "bb1",
+      source: "manual",
     });
     const bb2 = new PredictedBoundingBox({
-      x1: 0, y1: 5, x2: 40, y2: 55, score: 0.95,
+      x1: 0,
+      y1: 5,
+      x2: 40,
+      y2: 55,
+      score: 0.95,
     });
 
     const lfBb1 = new LabeledFrame({ video, frameIdx: 3, bboxes: [bb1] });
@@ -836,12 +943,27 @@ describe("SLP ROI instance association (format 1.6)", () => {
   it("round-trips ROI instance references", async () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A", "B"] });
-    const inst0 = new Instance({ points: { A: [10, 20], B: [30, 40] }, skeleton });
-    const inst1 = new Instance({ points: { A: [50, 60], B: [70, 80] }, skeleton });
-    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst0, inst1] });
+    const inst0 = new Instance({
+      points: { A: [10, 20], B: [30, 40] },
+      skeleton,
+    });
+    const inst1 = new Instance({
+      points: { A: [50, 60], B: [70, 80] },
+      skeleton,
+    });
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [inst0, inst1],
+    });
 
     const roi = ROI.fromPolygon(
-      [[0, 0], [100, 0], [100, 100], [0, 100]],
+      [
+        [0, 0],
+        [100, 0],
+        [100, 100],
+        [0, 100],
+      ],
       { name: "inst-roi", instance: inst1 },
     );
     frame.rois.push(roi);
@@ -889,12 +1011,28 @@ describe("SLP Predicted Variant Roundtrips", () => {
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
     const roi = new PredictedROI({
-      geometry: { type: "Polygon", coordinates: [[[0, 0], [10, 0], [10, 10], [0, 10], [0, 0]]] },
-      score: 0.75, name: "pred", category: "obj",
+      geometry: {
+        type: "Polygon",
+        coordinates: [
+          [
+            [0, 0],
+            [10, 0],
+            [10, 10],
+            [0, 10],
+            [0, 0],
+          ],
+        ],
+      },
+      score: 0.75,
+      name: "pred",
+      category: "obj",
     });
 
     const labels = new Labels({
-      labeledFrames: [frame], videos: [video], skeletons: [skeleton], rois: [roi],
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
+      rois: [roi],
     });
 
     const loaded = await roundTrip(labels);
@@ -915,13 +1053,20 @@ describe("SLP Predicted Variant Roundtrips", () => {
     data[12] = 1; // single pixel
     const rle = (await import("../src/model/mask.js")).encodeRle(data, 5, 5);
     const mask = new PredictedSegmentationMask({
-      rleCounts: rle, height: 5, width: 5, score: 0.92,
-      name: "pmask", category: "seg", instance: inst,
+      rleCounts: rle,
+      height: 5,
+      width: 5,
+      score: 0.92,
+      name: "pmask",
+      category: "seg",
+      instance: inst,
     });
 
     frame.masks.push(mask);
     const labels = new Labels({
-      labeledFrames: [frame], videos: [video], skeletons: [skeleton],
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
     });
 
     const loaded = await roundTrip(labels);
@@ -929,7 +1074,9 @@ describe("SLP Predicted Variant Roundtrips", () => {
     expect(loaded.masks).toHaveLength(1);
     expect(loaded.masks[0].isPredicted).toBe(true);
     expect(loaded.masks[0]).toBeInstanceOf(PredictedSegmentationMask);
-    expect((loaded.masks[0] as PredictedSegmentationMask).score).toBeCloseTo(0.92);
+    expect((loaded.masks[0] as PredictedSegmentationMask).score).toBeCloseTo(
+      0.92,
+    );
     expect(loaded.masks[0].name).toBe("pmask");
   });
 
@@ -943,19 +1090,26 @@ describe("SLP Predicted Variant Roundtrips", () => {
     data[0] = 1;
     data[4] = 2;
     const li = new PredictedLabelImage({
-      data, height: 3, width: 3, score: 0.85,
+      data,
+      height: 3,
+      width: 3,
+      score: 0.85,
     });
 
     frame.labelImages.push(li);
     const labels = new Labels({
-      labeledFrames: [frame], videos: [video], skeletons: [skeleton],
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
     });
 
     const loaded = await roundTrip(labels);
     expect(loaded.labelImages).toHaveLength(1);
     expect(loaded.labelImages[0].isPredicted).toBe(true);
     expect(loaded.labelImages[0]).toBeInstanceOf(PredictedLabelImage);
-    expect((loaded.labelImages[0] as PredictedLabelImage).score).toBeCloseTo(0.85);
+    expect((loaded.labelImages[0] as PredictedLabelImage).score).toBeCloseTo(
+      0.85,
+    );
   });
 });
 
@@ -967,13 +1121,17 @@ describe("SLP Scale/Offset Roundtrips", () => {
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
 
     const mask = SegmentationMask.fromArray(
-      new Uint8Array([1, 0, 0, 1, 0, 0, 1, 0, 0]), 3, 3,
+      new Uint8Array([1, 0, 0, 1, 0, 0, 1, 0, 0]),
+      3,
+      3,
       { video, frameIdx: 0, scale: [2, 3], offset: [10, 20] },
     );
 
     frame.masks.push(mask);
     const labels = new Labels({
-      labeledFrames: [frame], videos: [video], skeletons: [skeleton],
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
     });
 
     const loaded = await roundTrip(labels);
@@ -993,13 +1151,18 @@ describe("SLP Scale/Offset Roundtrips", () => {
     const data = new Int32Array(4);
     data[0] = 1;
     const li = new UserLabelImage({
-      data, height: 2, width: 2,
-      scale: [0.5, 0.5], offset: [3, 7],
+      data,
+      height: 2,
+      width: 2,
+      scale: [0.5, 0.5],
+      offset: [3, 7],
     });
 
     frame.labelImages.push(li);
     const labels = new Labels({
-      labeledFrames: [frame], videos: [video], skeletons: [skeleton],
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [skeleton],
     });
 
     const loaded = await roundTrip(labels);

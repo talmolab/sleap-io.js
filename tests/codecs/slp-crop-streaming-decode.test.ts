@@ -50,7 +50,10 @@ describe("readVideoCropsStreaming — h5wasm payload forms", () => {
   });
 
   it("returns an empty map when /video_crops is absent", async () => {
-    const file: any = { keys: () => [], getDatasetValue: async () => ({ value: null }) };
+    const file: any = {
+      keys: () => [],
+      getDatasetValue: async () => ({ value: null }),
+    };
     const map = await readVideoCropsStreaming(file);
     expect(map.size).toBe(0);
   });

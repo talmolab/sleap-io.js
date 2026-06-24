@@ -155,7 +155,7 @@ function fakeJpeg(len: number, seed: number): Uint8Array {
 async function encodePng(
   width: number,
   height: number,
-  rgb: [number, number, number]
+  rgb: [number, number, number],
 ): Promise<Uint8Array> {
   const sc = await import("skia-canvas");
   const canvas = new sc.Canvas(width, height);
@@ -169,7 +169,7 @@ async function encodePng(
 async function encodeJpeg(
   width: number,
   height: number,
-  rgb: [number, number, number]
+  rgb: [number, number, number],
 ): Promise<Uint8Array> {
   const sc = await import("skia-canvas");
   const canvas = new sc.Canvas(width, height);
@@ -180,12 +180,17 @@ async function encodeJpeg(
   return new Uint8Array(buf);
 }
 
-function px(img: ImageData, x: number, y: number): [number, number, number, number] {
+function px(
+  img: ImageData,
+  x: number,
+  y: number,
+): [number, number, number, number] {
   const i = (y * img.width + x) * 4;
   return [img.data[i], img.data[i + 1], img.data[i + 2], img.data[i + 3]];
 }
 
-const blobOf = (bytes: Uint8Array): Blob => new Blob([bytes.buffer as ArrayBuffer]);
+const blobOf = (bytes: Uint8Array): Blob =>
+  new Blob([bytes.buffer as ArrayBuffer]);
 
 // ---------------------------------------------------------------------------
 // Header
@@ -412,8 +417,8 @@ describe("SeqVideoBackend — fps", () => {
           fps: 5, // header fps deliberately wrong
           frames,
           timestamps,
-        })
-      )
+        }),
+      ),
     );
     expect(be.fps).toBeCloseTo(100, 1);
     be.close();
@@ -437,8 +442,8 @@ describe("SeqVideoBackend — fps", () => {
           fps: 5,
           frames,
           timestamps,
-        })
-      )
+        }),
+      ),
     );
     expect(be.numFrames).toBe(150);
     expect(be.fps).toBeCloseTo(100, 1);
@@ -456,8 +461,8 @@ describe("SeqVideoBackend — fps", () => {
           fps: 24,
           frames: [new Uint8Array([0])],
           timestamps: [{ sec: 1, ms: 0 }],
-        })
-      )
+        }),
+      ),
     );
     expect(be.fps).toBe(24);
     be.close();
@@ -483,8 +488,8 @@ describe("SeqVideoBackend — fps", () => {
           fps: 7,
           frames,
           timestamps,
-        })
-      )
+        }),
+      ),
     );
     expect(be.fps).toBe(7);
     be.close();
@@ -586,7 +591,9 @@ describe("SeqVideoBackend — errors", () => {
       payloads: [fakeJpeg(20, 1)],
       timestamps: [{ sec: 1, ms: 0 }],
     });
-    await expect(SeqVideoBackend.create(blobOf(bytes))).rejects.toThrow("Bayer");
+    await expect(SeqVideoBackend.create(blobOf(bytes))).rejects.toThrow(
+      "Bayer",
+    );
   });
 
   it("rejects a missing file path", async () => {

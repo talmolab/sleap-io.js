@@ -34,7 +34,9 @@ describe("Centroid", () => {
   it("constructs UserCentroid with all options", () => {
     const track = new Track("track1");
     const c = new UserCentroid({
-      x: 100, y: 200, z: 1.5,
+      x: 100,
+      y: 200,
+      z: 1.5,
       track,
       trackingScore: 0.8,
       category: "cell",
@@ -90,7 +92,13 @@ describe("Centroid", () => {
 
   it("toInstance creates PredictedInstance from PredictedCentroid", () => {
     const track = new Track("t");
-    const c = new PredictedCentroid({ x: 50, y: 60, score: 0.9, track, trackingScore: 0.5 });
+    const c = new PredictedCentroid({
+      x: 50,
+      y: 60,
+      score: 0.9,
+      track,
+      trackingScore: 0.5,
+    });
     const inst = c.toInstance();
     expect(inst).toBeInstanceOf(PredictedInstance);
     expect((inst as PredictedInstance).score).toBe(0.9);
@@ -181,7 +189,9 @@ describe("Centroid", () => {
   it("fromInstance throws with no visible points", () => {
     const skel = new Skeleton(["a"]);
     const inst = new Instance({
-      points: [{ xy: [Number.NaN, Number.NaN], visible: false, complete: false }],
+      points: [
+        { xy: [Number.NaN, Number.NaN], visible: false, complete: false },
+      ],
       skeleton: skel,
     });
     expect(() => Centroid.fromInstance(inst)).toThrow(/No visible points/);
@@ -193,7 +203,9 @@ describe("Centroid", () => {
       points: [{ xy: [10, 20], visible: true, complete: true }],
       skeleton: skel,
     });
-    expect(() => Centroid.fromInstance(inst, { method: "invalid" })).toThrow(/Unknown method/);
+    expect(() => Centroid.fromInstance(inst, { method: "invalid" })).toThrow(
+      /Unknown method/,
+    );
   });
 });
 
@@ -213,7 +225,9 @@ describe("Instance.centroidXy", () => {
   it("returns null when no points visible", () => {
     const skel = new Skeleton(["a"]);
     const inst = new Instance({
-      points: [{ xy: [Number.NaN, Number.NaN], visible: false, complete: false }],
+      points: [
+        { xy: [Number.NaN, Number.NaN], visible: false, complete: false },
+      ],
       skeleton: skel,
     });
     expect(inst.centroidXy).toBeNull();
@@ -248,7 +262,9 @@ describe("Labels.getCentroids", () => {
     const lf1v1 = new LabeledFrame({ video: v1, frameIdx: 1 });
     lf1v1.centroids.push(new UserCentroid({ x: 3, y: 4 }));
     const lf0v2 = new LabeledFrame({ video: v2, frameIdx: 0 });
-    lf0v2.centroids.push(new PredictedCentroid({ x: 5, y: 6, score: 0.9, track: t1 }));
+    lf0v2.centroids.push(
+      new PredictedCentroid({ x: 5, y: 6, score: 0.9, track: t1 }),
+    );
 
     const labels = new Labels({
       labeledFrames: [lf0v1, lf1v1, lf0v2],

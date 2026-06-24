@@ -28,8 +28,20 @@ describe("Labels.dedupSkeletons", () => {
     const sA = skel(["head", "thorax"], "A");
     const sB = skel(["head", "thorax"], "B");
     const video = new Video({ filename: "v.mp4" });
-    const instA = Instance.fromArray([[1, 2], [3, 4]], sA);
-    const instB = Instance.fromArray([[5, 6], [7, 8]], sB);
+    const instA = Instance.fromArray(
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      sA,
+    );
+    const instB = Instance.fromArray(
+      [
+        [5, 6],
+        [7, 8],
+      ],
+      sB,
+    );
     const frame = new LabeledFrame({
       video,
       frameIdx: 0,
@@ -60,8 +72,21 @@ describe("Labels.dedupSkeletons", () => {
     const c2 = skel(["m"], "c2");
     const video = new Video({ filename: "v.mp4" });
     const instances = [
-      Instance.fromArray([[1, 1], [2, 2]], a2),
-      Instance.fromArray([[3, 3], [4, 4], [5, 5]], b2),
+      Instance.fromArray(
+        [
+          [1, 1],
+          [2, 2],
+        ],
+        a2,
+      ),
+      Instance.fromArray(
+        [
+          [3, 3],
+          [4, 4],
+          [5, 5],
+        ],
+        b2,
+      ),
       Instance.fromArray([[6, 6]], c2),
     ];
     const frame = new LabeledFrame({ video, frameIdx: 0, instances });
@@ -114,7 +139,13 @@ describe("Labels.dedupSkeletons", () => {
   it("is a no-op on a copied Labels (clones are 1-per-equivalence-class)", () => {
     const s = skel(["head", "thorax"], "fly");
     const video = new Video({ filename: "v.mp4" });
-    const instance = Instance.fromArray([[1, 2], [3, 4]], s);
+    const instance = Instance.fromArray(
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      s,
+    );
     const frame = new LabeledFrame({
       video,
       frameIdx: 0,
@@ -135,7 +166,14 @@ describe("Labels.dedupSkeletons", () => {
     const sA = skel(["head", "thorax"], "A");
     const sB = skel(["head", "thorax"], "B");
     const video = new Video({ filename: "v.mp4" });
-    const pred = PredictedInstance.fromArray([[1, 2], [3, 4]], sB, 0.9);
+    const pred = PredictedInstance.fromArray(
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      sB,
+      0.9,
+    );
     const frame = new LabeledFrame({
       video,
       frameIdx: 0,
@@ -158,8 +196,20 @@ describe("loadSlp does not auto-dedup skeletons (helper is opt-in)", () => {
     const sA = skel(["head", "thorax"], "A");
     const sB = skel(["head", "thorax"], "B");
     const video = new Video({ filename: "v.mp4" });
-    const instA = Instance.fromArray([[1, 2], [3, 4]], sA);
-    const instB = Instance.fromArray([[5, 6], [7, 8]], sB);
+    const instA = Instance.fromArray(
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      sA,
+    );
+    const instB = Instance.fromArray(
+      [
+        [5, 6],
+        [7, 8],
+      ],
+      sB,
+    );
     const frame = new LabeledFrame({
       video,
       frameIdx: 0,
@@ -189,8 +239,20 @@ describe("loadSlp does not auto-dedup skeletons (helper is opt-in)", () => {
     const sA = skel(["head", "thorax"], "A");
     const sB = skel(["head", "thorax"], "B");
     const video = new Video({ filename: "v.mp4" });
-    const instA = Instance.fromArray([[1, 2], [3, 4]], sA);
-    const instB = Instance.fromArray([[5, 6], [7, 8]], sB);
+    const instA = Instance.fromArray(
+      [
+        [1, 2],
+        [3, 4],
+      ],
+      sA,
+    );
+    const instB = Instance.fromArray(
+      [
+        [5, 6],
+        [7, 8],
+      ],
+      sB,
+    );
     const frame = new LabeledFrame({
       video,
       frameIdx: 0,

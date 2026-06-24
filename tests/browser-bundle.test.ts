@@ -81,7 +81,10 @@ describe("Browser bundle isolation (issue #70)", () => {
 
       for (const pattern of NODE_ONLY_PATTERNS) {
         const match = content.match(pattern);
-        expect(match, `${fileName} contains Node-only import: ${match?.[0]}`).toBeNull();
+        expect(
+          match,
+          `${fileName} contains Node-only import: ${match?.[0]}`,
+        ).toBeNull();
       }
     }
   });

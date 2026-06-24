@@ -28,7 +28,9 @@
 export type Hdf5Slice = Array<[number, number] | []>;
 
 // PNG magic bytes: 0x89 P N G \r \n 0x1A \n
-export const PNG_MAGIC = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+export const PNG_MAGIC = new Uint8Array([
+  0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+]);
 
 // JPEG magic bytes: 0xFF 0xD8 0xFF
 export const JPEG_MAGIC = new Uint8Array([0xff, 0xd8, 0xff]);
@@ -50,7 +52,11 @@ export function magicFor(format: string): Uint8Array {
  * This deliberately avoids `buffer.subarray(pos)` (which allocates a throwaway
  * view at every byte position — the ~30× self-inflicted cost in the old scan).
  */
-export function matchesMagicAt(buffer: Uint8Array, pos: number, magic: Uint8Array): boolean {
+export function matchesMagicAt(
+  buffer: Uint8Array,
+  pos: number,
+  magic: Uint8Array,
+): boolean {
   if (pos + magic.length > buffer.length) return false;
   for (let k = 0; k < magic.length; k++) {
     if (buffer[pos + k] !== magic[k]) return false;
@@ -60,7 +66,10 @@ export function matchesMagicAt(buffer: Uint8Array, pos: number, magic: Uint8Arra
 
 /** Whether the buffer starts with a PNG or JPEG signature. */
 export function startsWithImageMagic(buffer: Uint8Array): boolean {
-  return matchesMagicAt(buffer, 0, PNG_MAGIC) || matchesMagicAt(buffer, 0, JPEG_MAGIC);
+  return (
+    matchesMagicAt(buffer, 0, PNG_MAGIC) ||
+    matchesMagicAt(buffer, 0, JPEG_MAGIC)
+  );
 }
 
 /**
@@ -74,7 +83,7 @@ export function startsWithImageMagic(buffer: Uint8Array): boolean {
 export function findEncodedFrameOffsets(
   buffer: Uint8Array,
   format: string,
-  expectedFrameCount: number
+  expectedFrameCount: number,
 ): number[] {
   const magic = magicFor(format);
   const m0 = magic[0];
@@ -138,7 +147,10 @@ export type EmbeddedLayout = "padded" | "vlen" | "concat" | "ambiguous1d";
  * otherwise it is `concat` (bytes). When the frame count is unknown the 1D case
  * is `ambiguous1d` and must be resolved by reading the value.
  */
-export function classifyLayout(shape: number[], frameCount: number): EmbeddedLayout {
+export function classifyLayout(
+  shape: number[],
+  frameCount: number,
+): EmbeddedLayout {
   if (shape.length >= 2) return "padded";
   if (shape.length === 1) {
     if (frameCount > 0) return shape[0] === frameCount ? "vlen" : "concat";
@@ -150,7 +162,7 @@ export function classifyLayout(shape: number[], frameCount: number): EmbeddedLay
 /** Build a hyperslab slice selecting only row `index` along the first dim. */
 export function rowSlice(shape: number[], index: number): Hdf5Slice {
   return shape.map(
-    (dim, d) => (d === 0 ? [index, index + 1] : [0, dim]) as [number, number]
+    (dim, d) => (d === 0 ? [index, index + 1] : [0, dim]) as [number, number],
   );
 }
 
@@ -170,7 +182,10 @@ export function asUint8Array(value: unknown): Uint8Array | null {
   if (Array.isArray(value)) {
     return Uint8Array.from(value as number[]);
   }
-  if (typeof value === "object" && "buffer" in (value as Record<string, unknown>)) {
+  if (
+    typeof value === "object" &&
+    "buffer" in (value as Record<string, unknown>)
+  ) {
     return new Uint8Array((value as { buffer: ArrayBuffer }).buffer);
   }
   return null;
@@ -225,7 +240,7 @@ export interface H5wasmModule {
     count: bigint[],
     offset: bigint[],
     strides: bigint[],
-    dataPtr: bigint
+    dataPtr: bigint,
   ): unknown;
   /** HDF5 datatype class enum; `H5T_VLEN.value` is the vlen class id. */
   H5T_class_t?: { H5T_VLEN: { value: number } };
@@ -261,9 +276,14 @@ export interface H5wasmVlenDataset {
 export function readVlenElementManual(
   Module: H5wasmModule | null | undefined,
   dataset: H5wasmVlenDataset,
-  index: number
+  index: number,
 ): Uint8Array | null {
-  if (!Module || !Module._malloc || !Module.HEAPU8 || !Module.get_dataset_data) {
+  if (
+    !Module ||
+    !Module._malloc ||
+    !Module.HEAPU8 ||
+    !Module.get_dataset_data
+  ) {
     return null;
   }
   const md = dataset.metadata;
@@ -273,7 +293,8 @@ export function readVlenElementManual(
   // of misreading. `metadata.vlen` is often false even for genuine vlen
   // datasets, so the datatype-class check carries the detection.
   const vlenClass = Module.H5T_class_t?.H5T_VLEN.value;
-  const isVlen = md?.vlen === true || (vlenClass != null && md?.type === vlenClass);
+  const isVlen =
+    md?.vlen === true || (vlenClass != null && md?.type === vlenClass);
   if (!isVlen || md?.size !== 8) return null;
 
   const dataPtr = Module._malloc(md.size);
@@ -286,7 +307,7 @@ export function readVlenElementManual(
       [1n],
       [BigInt(index)],
       [1n],
-      BigInt(dataPtr)
+      BigInt(dataPtr),
     );
     // `HEAPU32` is not exported by h5wasm; build a u32 view over `HEAPU8.buffer`.
     // Rebuild it every call — wasm heap growth can detach the prior ArrayBuffer.
@@ -310,7 +331,7 @@ export function readVlenElementManual(
  */
 export async function readEmbeddedFrameBytes(
   reader: EmbeddedFrameReader,
-  index: number
+  index: number,
 ): Promise<Uint8Array | null> {
   if (index < 0) return null;
   const meta = await reader.getMeta();
@@ -350,7 +371,11 @@ export async function readEmbeddedFrameBytes(
   }
 
   // 1D concatenated with known sizes: exact byte-range slice.
-  if (layout === "concat" && reader.frameSizes && reader.frameSizes.length > index) {
+  if (
+    layout === "concat" &&
+    reader.frameSizes &&
+    reader.frameSizes.length > index
+  ) {
     reader.legacy.offsets ??= computeOffsetsFromSizes(reader.frameSizes);
     const offsets = reader.legacy.offsets;
     const start = offsets[index];
@@ -371,7 +396,11 @@ export async function readEmbeddedFrameBytes(
       if (!buf) return null;
       reader.legacy.whole = buf;
       if (encoded && startsWithImageMagic(buf)) {
-        reader.legacy.offsets = findEncodedFrameOffsets(buf, reader.format, reader.frameCount);
+        reader.legacy.offsets = findEncodedFrameOffsets(
+          buf,
+          reader.format,
+          reader.frameCount,
+        );
       }
     }
   }

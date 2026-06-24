@@ -62,7 +62,15 @@ describe("Labels.merge — AUTO video matching (GROUP B7-B11)", () => {
         video: predVideo,
         frameIdx: 0,
         instances: [
-          predInst([[100, 200], [150, 250], [200, 300]], skeleton, 0.95),
+          predInst(
+            [
+              [100, 200],
+              [150, 250],
+              [200, 300],
+            ],
+            skeleton,
+            0.95,
+          ),
         ],
       }),
     ];
@@ -92,7 +100,16 @@ describe("Labels.merge — AUTO video matching (GROUP B7-B11)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[100, 200], [150, 250]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [100, 200],
+              [150, 250],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -122,7 +139,16 @@ describe("Labels.merge — AUTO video matching (GROUP B7-B11)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[100, 200], [150, 250]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [100, 200],
+              [150, 250],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -150,7 +176,16 @@ describe("Labels.merge — AUTO video matching (GROUP B7-B11)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 5,
-        instances: [predInst([[50, 60], [70, 80]], skeleton, 0.85)],
+        instances: [
+          predInst(
+            [
+              [50, 60],
+              [70, 80],
+            ],
+            skeleton,
+            0.85,
+          ),
+        ],
       }),
     ];
 
@@ -171,14 +206,26 @@ describe("Labels.merge — AUTO video matching (GROUP B7-B11)", () => {
     const labels = new Labels({ skeletons: [skeleton] });
     labels.videos = [videoA];
 
-    const predVideo = makeVideo("/predictions/video_b.mp4", [200, 1920, 1080, 3]);
+    const predVideo = makeVideo(
+      "/predictions/video_b.mp4",
+      [200, 1920, 1080, 3],
+    );
     const predictions = new Labels({ skeletons: [skeleton] });
     predictions.videos = [predVideo];
     predictions.labeledFrames = [
       new LabeledFrame({
         video: predVideo,
         frameIdx: 10,
-        instances: [predInst([[100, 200], [300, 400]], skeleton, 0.95)],
+        instances: [
+          predInst(
+            [
+              [100, 200],
+              [300, 400],
+            ],
+            skeleton,
+            0.95,
+          ),
+        ],
       }),
     ];
 

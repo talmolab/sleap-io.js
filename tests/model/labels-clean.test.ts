@@ -23,7 +23,11 @@
  *   pruning by reference identity.
  */
 import { describe, it, expect } from "../bun-test";
-import { Instance, PredictedInstance, Track } from "../../src/model/instance.js";
+import {
+  Instance,
+  PredictedInstance,
+  Track,
+} from "../../src/model/instance.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 import { Video } from "../../src/model/video.js";
 import { LabeledFrame } from "../../src/model/labeled-frame.js";
@@ -65,14 +69,17 @@ describe("Labels.clean", () => {
     const maskData: boolean[][] = Array.from({ length: 10 }, () =>
       new Array(10).fill(false),
     );
-    for (let r = 2; r < 8; r++) for (let cc = 2; cc < 8; cc++) maskData[r][cc] = true;
+    for (let r = 2; r < 8; r++)
+      for (let cc = 2; cc < 8; cc++) maskData[r][cc] = true;
     const m = UserSegmentationMask.fromArray(maskData, 10, 10);
     const roi = UserROI.fromBbox(0, 0, 10, 10, { video });
     const li = new UserLabelImage({
       data: Int32Array.from([0, 1]),
       height: 1,
       width: 2,
-      objects: new Map([[1, { track: null, category: "cell", name: "", instance: null }]]),
+      objects: new Map([
+        [1, { track: null, category: "cell", name: "", instance: null }],
+      ]),
     });
 
     const lf0 = new LabeledFrame({ video, frameIdx: 0, centroids: [c] });

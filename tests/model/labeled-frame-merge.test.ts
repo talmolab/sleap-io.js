@@ -59,7 +59,9 @@ describe("LabeledFrame.merge", () => {
     );
     const frame2 = new LabeledFrame({ video, frameIdx: 0, instances: [inst2] });
 
-    const [merged, conflicts] = frame1.merge(frame2, { frame: "keep_original" });
+    const [merged, conflicts] = frame1.merge(frame2, {
+      frame: "keep_original",
+    });
 
     expect(merged.length).toBe(1);
     expect(merged[0]).toBe(inst1);
@@ -121,7 +123,9 @@ describe("LabeledFrame.merge", () => {
     inst2.track = new Track("track1");
     const frame2 = new LabeledFrame({ video, frameIdx: 0, instances: [inst2] });
 
-    const [merged, conflicts] = frame1.merge(frame2, { frame: "update_tracks" });
+    const [merged, conflicts] = frame1.merge(frame2, {
+      frame: "update_tracks",
+    });
 
     expect(merged.length).toBe(1);
     expect(merged.includes(inst1)).toBe(true);
@@ -390,7 +394,9 @@ describe("LabeledFrame.unusedPredictedMasks", () => {
     return encodeRle(flat, 5, 5);
   }
 
-  function makePred(offset: [number, number] = [0, 0]): PredictedSegmentationMask {
+  function makePred(
+    offset: [number, number] = [0, 0],
+  ): PredictedSegmentationMask {
     return new PredictedSegmentationMask({
       rleCounts: rle3x3(),
       height: 5,
@@ -467,7 +473,9 @@ describe("LabeledFrame.mergeAnnotations link-first mask merge (auto)", () => {
     return encodeRle(flat, 5, 5);
   }
 
-  function makePred(offset: [number, number] = [0, 0]): PredictedSegmentationMask {
+  function makePred(
+    offset: [number, number] = [0, 0],
+  ): PredictedSegmentationMask {
     return new PredictedSegmentationMask({
       rleCounts: rle3x3(),
       height: 5,

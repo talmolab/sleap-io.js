@@ -255,9 +255,7 @@ function symNamePairs(sk: Skeleton): Array<[string, string]> {
     .sort((a, b) => (a.join("\0") < b.join("\0") ? -1 : 1));
 }
 
-function sortPairs(
-  pairs: Array<[string, string]>
-): Array<[string, string]> {
+function sortPairs(pairs: Array<[string, string]>): Array<[string, string]> {
   return [...pairs].sort((a, b) => (a.join("\0") < b.join("\0") ? -1 : 1));
 }
 
@@ -358,13 +356,13 @@ describe("edge-less skeletons: SLP encoder guard (nodes listed, not link-derived
 
     const tmp = join(
       tmpdir(),
-      `edgeless-guard-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`
+      `edgeless-guard-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`,
     );
     writeFileSync(tmp, bytes);
     try {
       const file = new H5File(tmp, "r");
       const meta = JSON.parse(
-        file.get("metadata").attrs.json.value as string
+        file.get("metadata").attrs.json.value as string,
       ) as {
         skeletons: Array<{ nodes: Array<{ id: number }>; links: unknown[] }>;
         nodes: Array<{ name: string }>;
@@ -377,7 +375,10 @@ describe("edge-less skeletons: SLP encoder guard (nodes listed, not link-derived
       // Only ONE link exists (A-B); the node count must exceed link-reachable
       // nodes, proving the encoder did not derive the list from links.
       const linkReachable = new Set<number>();
-      for (const link of skel.links as Array<{ source: number; target: number }>) {
+      for (const link of skel.links as Array<{
+        source: number;
+        target: number;
+      }>) {
         linkReachable.add(link.source);
         linkReachable.add(link.target);
       }
@@ -408,14 +409,16 @@ describe("edge-less skeletons: SLP encoder guard (nodes listed, not link-derived
     const bytes = await saveSlpToBytes(labelsForSkeleton(sk));
     const tmp = join(
       tmpdir(),
-      `edgeless-symguard-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`
+      `edgeless-symguard-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`,
     );
     writeFileSync(tmp, bytes);
     try {
       const file = new H5File(tmp, "r");
       const meta = JSON.parse(
-        file.get("metadata").attrs.json.value as string
-      ) as { skeletons: Array<{ nodes: Array<{ id: number }>; links: unknown[] }> };
+        file.get("metadata").attrs.json.value as string,
+      ) as {
+        skeletons: Array<{ nodes: Array<{ id: number }>; links: unknown[] }>;
+      };
       file.close();
       const skel = meta.skeletons[0];
       expect(skel.nodes.map((n) => n.id)).toEqual([0, 1, 2]);
@@ -436,7 +439,7 @@ describe("edge-less skeletons: readSkeletonJson (Python jsonpickle golden bytes)
   for (const c of JSONPICKLE_CASES) {
     it(`decodes Python encode_skeleton bytes for ${c.key} (no decode-to-empty)`, () => {
       const sk = readSkeletonJson(
-        PY_JSONPICKLE[c.key as keyof typeof PY_JSONPICKLE]
+        PY_JSONPICKLE[c.key as keyof typeof PY_JSONPICKLE],
       );
       const expectedNames = c.jsonpickleNames ?? c.names;
       // Node SET + count must match (the #148 bug was decode-to-empty).
@@ -504,7 +507,7 @@ describe("edge-less skeletons: training-config skeleton extraction", () => {
       expect(skeletons.length).toBe(1);
       expect(skeletons[0].nodes.length).toBe(c.names.length);
       expect(new Set(skeletons[0].nodeNames)).toEqual(
-        new Set(c.jsonpickleNames ?? c.names)
+        new Set(c.jsonpickleNames ?? c.names),
       );
       expect(skeletons[0].edges.length).toBe(c.edgePairs.length);
       expect(skeletons[0].symmetries.length).toBe(c.symPairs.length);
@@ -532,7 +535,7 @@ function pythonRunner(): { cmd: string; args: string[] } | null {
     execFileSync(
       "uv",
       ["run", "--with", "sleap-io", "python", "-c", "import sleap_io"],
-      { stdio: "pipe", timeout: 120_000 }
+      { stdio: "pipe", timeout: 120_000 },
     );
     return { cmd: "uv", args: ["run", "--with", "sleap-io", "python"] };
   } catch {
@@ -542,11 +545,11 @@ function pythonRunner(): { cmd: string; args: string[] } | null {
 
 function runPython(
   runner: { cmd: string; args: string[] },
-  script: string
+  script: string,
 ): string {
   const pyPath = join(
     tmpdir(),
-    `edgeless-py-${Date.now()}-${Math.random().toString(16).slice(2)}.py`
+    `edgeless-py-${Date.now()}-${Math.random().toString(16).slice(2)}.py`,
   );
   try {
     writeFileSync(pyPath, script);
@@ -582,7 +585,7 @@ describePy("edge-less skeletons: Python <-> JS SLP cross-compat", () => {
           tmpdir(),
           `edgeless-js-${c.key}-${Date.now()}-${Math.random()
             .toString(16)
-            .slice(2)}.slp`
+            .slice(2)}.slp`,
         );
         writeFileSync(slpPath, bytes);
         tmpFiles.push(slpPath);
@@ -613,7 +616,7 @@ print("OK: Python read all JS-written edge-less skeletons")
 `;
       const out = runPython(r, script);
       expect(out).toContain(
-        "OK: Python read all JS-written edge-less skeletons"
+        "OK: Python read all JS-written edge-less skeletons",
       );
     } finally {
       for (const f of tmpFiles) {

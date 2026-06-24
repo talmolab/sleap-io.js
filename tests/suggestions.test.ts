@@ -17,13 +17,21 @@ describe("SuggestionFrame", () => {
 
   it("accepts explicit group", () => {
     const video = new Video({ filename: "test.mp4" });
-    const suggestion = new SuggestionFrame({ video, frameIdx: 0, group: "initial" });
+    const suggestion = new SuggestionFrame({
+      video,
+      frameIdx: 0,
+      group: "initial",
+    });
     expect(suggestion.group).toBe("initial");
   });
 
   it("extracts group from metadata if not explicitly set", () => {
     const video = new Video({ filename: "test.mp4" });
-    const suggestion = new SuggestionFrame({ video, frameIdx: 0, metadata: { group: "batch1" } });
+    const suggestion = new SuggestionFrame({
+      video,
+      frameIdx: 0,
+      metadata: { group: "batch1" },
+    });
     expect(suggestion.group).toBe("batch1");
   });
 
@@ -35,10 +43,16 @@ describe("SuggestionFrame", () => {
       new SuggestionFrame({ video, frameIdx: 5, group: "group_b" }),
       new SuggestionFrame({ video, frameIdx: 10 }),
     ];
-    const labels = new Labels({ videos: [video], skeletons: [skeleton], suggestions });
+    const labels = new Labels({
+      videos: [video],
+      skeletons: [skeleton],
+      suggestions,
+    });
 
     const bytes = await saveSlpToBytes(labels);
-    const loaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
 
     expect(loaded.suggestions.length).toBe(3);
     expect(loaded.suggestions[0].group).toBe("group_a");
@@ -47,7 +61,10 @@ describe("SuggestionFrame", () => {
   });
 
   it("reads suggestions from fixture files", async () => {
-    const labels = await loadSlp(path.join(fixtureRoot, "slp", "centered_pair_predictions.slp"), { openVideos: false });
+    const labels = await loadSlp(
+      path.join(fixtureRoot, "slp", "centered_pair_predictions.slp"),
+      { openVideos: false },
+    );
     for (const suggestion of labels.suggestions) {
       expect(suggestion.group).toBeDefined();
       expect(typeof suggestion.group).toBe("string");

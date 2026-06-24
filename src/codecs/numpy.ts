@@ -1,6 +1,10 @@
 import { Labels } from "../model/labels.js";
 import { LabeledFrame } from "../model/labeled-frame.js";
-import { PredictedInstance, Track, predictedPointsFromArray } from "../model/instance.js";
+import {
+  PredictedInstance,
+  Track,
+  predictedPointsFromArray,
+} from "../model/instance.js";
 import { Skeleton } from "../model/skeleton.js";
 import { Video } from "../model/video.js";
 
@@ -17,7 +21,7 @@ import { Video } from "../model/video.js";
  */
 export function toNumpy(
   labels: Labels,
-  options?: { returnConfidence?: boolean; video?: Video; numFrames?: number }
+  options?: { returnConfidence?: boolean; video?: Video; numFrames?: number },
 ): number[][][][] {
   return labels.numpy({
     returnConfidence: options?.returnConfidence,
@@ -36,7 +40,7 @@ export function fromNumpy(
     returnConfidence?: boolean;
     trackNames?: string[];
     firstFrame?: number;
-  }
+  },
 ): Labels {
   if (data.length === 0 || data[0].length === undefined) {
     throw new Error("Input array must have 4 dimensions.");
@@ -66,7 +70,7 @@ export function labelsFromNumpy(
     trackNames?: string[];
     firstFrame?: number;
     returnConfidence?: boolean;
-  }
+  },
 ): Labels {
   const frameCount = data.length;
   if (!frameCount || data[0].length === undefined) {
@@ -78,7 +82,9 @@ export function labelsFromNumpy(
     throw new Error("Input array must have node dimension.");
   }
 
-  const trackNames = options.trackNames ?? Array.from({ length: trackCount }, (_, idx) => `track${idx}`);
+  const trackNames =
+    options.trackNames ??
+    Array.from({ length: trackCount }, (_, idx) => `track${idx}`);
   const tracks = trackNames.map((name) => new Track(name));
   const labeledFrames: LabeledFrame[] = [];
   const startFrame = options.firstFrame ?? 0;
@@ -88,7 +94,9 @@ export function labelsFromNumpy(
     for (let trackIdx = 0; trackIdx < trackCount; trackIdx += 1) {
       const points = data[frameIdx][trackIdx];
       if (!points) continue;
-      const hasData = points.some((point) => point.some((value) => !Number.isNaN(value)));
+      const hasData = points.some((point) =>
+        point.some((value) => !Number.isNaN(value)),
+      );
       if (!hasData) continue;
 
       const arrayPoints = points.map((point) => {
@@ -99,18 +107,23 @@ export function labelsFromNumpy(
       });
 
       const instance = new PredictedInstance({
-        points: predictedPointsFromArray(arrayPoints, options.skeleton.nodeNames),
+        points: predictedPointsFromArray(
+          arrayPoints,
+          options.skeleton.nodeNames,
+        ),
         skeleton: options.skeleton,
         track: tracks[trackIdx],
       });
       instances.push(instance);
     }
 
-    labeledFrames.push(new LabeledFrame({
-      video: options.video,
-      frameIdx: startFrame + frameIdx,
-      instances,
-    }));
+    labeledFrames.push(
+      new LabeledFrame({
+        video: options.video,
+        frameIdx: startFrame + frameIdx,
+        instances,
+      }),
+    );
   }
 
   return new Labels({
@@ -121,9 +134,14 @@ export function labelsFromNumpy(
   });
 }
 
-function resolveSkeleton(options: { skeleton?: Skeleton; skeletons?: Skeleton[] | Skeleton }): Skeleton {
+function resolveSkeleton(options: {
+  skeleton?: Skeleton;
+  skeletons?: Skeleton[] | Skeleton;
+}): Skeleton {
   if (options.skeleton) return options.skeleton;
-  if (Array.isArray(options.skeletons) && options.skeletons.length) return options.skeletons[0];
-  if (options.skeletons && !Array.isArray(options.skeletons)) return options.skeletons;
+  if (Array.isArray(options.skeletons) && options.skeletons.length)
+    return options.skeletons[0];
+  if (options.skeletons && !Array.isArray(options.skeletons))
+    return options.skeletons;
   throw new Error("fromNumpy requires a skeleton.");
 }

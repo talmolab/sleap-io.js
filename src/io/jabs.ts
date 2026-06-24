@@ -80,7 +80,9 @@ export const JABS_DEFAULT_SYMMETRY_INDICES: Array<[number, number]> = [
 /** Build a fresh copy of the default JABS "Mouse" skeleton. */
 export function makeJabsDefaultSkeleton(): Skeleton {
   const nodes = JABS_DEFAULT_KEYPOINT_NAMES.map((name) => new Node(name));
-  const edges = JABS_DEFAULT_EDGE_INDICES.map(([a, b]) => new Edge(nodes[a], nodes[b]));
+  const edges = JABS_DEFAULT_EDGE_INDICES.map(
+    ([a, b]) => new Edge(nodes[a], nodes[b]),
+  );
   const symmetries = JABS_DEFAULT_SYMMETRY_INDICES.map(
     ([a, b]) => new Symmetry([nodes[a], nodes[b]]),
   );
@@ -103,8 +105,14 @@ export const JABS_DEFAULT_SKELETON: Skeleton = makeJabsDefaultSkeleton();
 
 /** Create a `Skeleton` with `numPoints` nodes connected in a line. */
 export function makeSimpleSkeleton(name: string, numPoints: number): Skeleton {
-  const nodes = Array.from({ length: numPoints }, (_, i) => new Node(`${name}_kp${i}`));
-  const edges = Array.from({ length: Math.max(0, numPoints - 1) }, (_, i) => new Edge(nodes[i], nodes[i + 1]));
+  const nodes = Array.from(
+    { length: numPoints },
+    (_, i) => new Node(`${name}_kp${i}`),
+  );
+  const edges = Array.from(
+    { length: Math.max(0, numPoints - 1) },
+    (_, i) => new Edge(nodes[i], nodes[i + 1]),
+  );
   return new Skeleton({ nodes, edges, name });
 }
 
@@ -145,7 +153,12 @@ export function predictionToInstance(
 
   if (scores.length === 0) return null;
   const meanScore = scores.reduce((a, b) => a + b, 0) / scores.length;
-  return PredictedInstance.fromNumpy({ pointsData, skeleton, track: track ?? null, score: meanScore });
+  return PredictedInstance.fromNumpy({
+    pointsData,
+    skeleton,
+    track: track ?? null,
+    score: meanScore,
+  });
 }
 
 /**
@@ -156,12 +169,19 @@ export function predictionToInstance(
  * NOT y/x-flipped, unlike poses). Category is `"arena"` for `corners`,
  * `"anchor"` otherwise; `source` is `"jabs"`.
  */
-export function staticObjectToRoi(name: string, coords: number[][], video: Video): UserROI {
+export function staticObjectToRoi(
+  name: string,
+  coords: number[][],
+  video: Video,
+): UserROI {
   let geometry: Geometry;
   if (coords.length === 1) {
     geometry = { type: "Point", coordinates: [coords[0][0], coords[0][1]] };
   } else {
-    geometry = { type: "MultiPoint", coordinates: coords.map(([x, y]) => [x, y]) };
+    geometry = {
+      type: "MultiPoint",
+      coordinates: coords.map(([x, y]) => [x, y]),
+    };
   }
   const category = name === "corners" ? "arena" : "anchor";
   return new UserROI({ geometry, name, category, source: "jabs", video });
@@ -241,7 +261,10 @@ export interface LoadJabsOptions {
  * @param labelsPath - Path to the JABS pose file.
  * @param options - Optional `skeleton` override.
  */
-export async function loadJabs(labelsPath: string, options?: LoadJabsOptions): Promise<Labels> {
+export async function loadJabs(
+  labelsPath: string,
+  options?: LoadJabsOptions,
+): Promise<Labels> {
   const skeleton = options?.skeleton ?? JABS_DEFAULT_SKELETON;
 
   // Video name is the pose file minus the pose-est suffix.
@@ -263,14 +286,18 @@ export async function loadJabs(labelsPath: string, options?: LoadJabsOptions): P
   try {
     const pointsDs = getDataset(file, "poseest/points");
     if (pointsDs == null) {
-      throw new Error(`JABS pose file is missing 'poseest/points': ${labelsPath}`);
+      throw new Error(
+        `JABS pose file is missing 'poseest/points': ${labelsPath}`,
+      );
     }
     const pShape = Array.from(pointsDs.shape, num);
     const numFrames = pShape[0];
 
     // Resolve pose version from the `poseest` group's `version` attribute.
     const poseest = file.get("poseest") as H5Group | null;
-    const verRaw = poseest?.attrs ? attrValue(poseest.attrs["version"]) : undefined;
+    const verRaw = poseest?.attrs
+      ? attrValue(poseest.attrs["version"])
+      : undefined;
     let poseVersion: number;
     if (verRaw != null && (verRaw as ArrayLike<unknown>).length > 0) {
       poseVersion = Number((verRaw as ArrayLike<number | bigint>)[0]);
@@ -291,7 +318,8 @@ export async function loadJabs(labelsPath: string, options?: LoadJabsOptions): P
     const N = pShape[pShape.length - 2];
 
     const pointsVal = pointsDs.value;
-    const confVal = (getDataset(file, "poseest/confidence")?.value ?? []) as ArrayLike<number | bigint>;
+    const confVal = (getDataset(file, "poseest/confidence")?.value ??
+      []) as ArrayLike<number | bigint>;
 
     if (poseVersion === 2) {
       tracks.set(1, new Track("1"));
@@ -308,23 +336,32 @@ export async function loadJabs(labelsPath: string, options?: LoadJabsOptions): P
       const idDs = getDataset(file, "poseest/instance_track_id");
       const countDs = getDataset(file, "poseest/instance_count");
       if (idDs == null) {
-        throw new Error(`JABS pose file is missing 'poseest/instance_track_id': ${labelsPath}`);
+        throw new Error(
+          `JABS pose file is missing 'poseest/instance_track_id': ${labelsPath}`,
+        );
       }
       if (countDs == null) {
-        throw new Error(`JABS pose file is missing 'poseest/instance_count': ${labelsPath}`);
+        throw new Error(
+          `JABS pose file is missing 'poseest/instance_count': ${labelsPath}`,
+        );
       }
       idVal = idDs.value;
       instanceCountVal = countDs.value;
     } else if (poseVersion > 3) {
       const idDs = getDataset(file, "poseest/instance_embed_id");
       if (idDs == null) {
-        throw new Error(`JABS pose file is missing 'poseest/instance_embed_id': ${labelsPath}`);
+        throw new Error(
+          `JABS pose file is missing 'poseest/instance_embed_id': ${labelsPath}`,
+        );
       }
       idVal = idDs.value;
     }
 
     /** Extract one instance's [x, y] keypoints (flipped from y,x) + confidence. */
-    const extractInstance = (f: number, slot: number): { data: number[][]; conf: number[] } => {
+    const extractInstance = (
+      f: number,
+      slot: number,
+    ): { data: number[][]; conf: number[] } => {
       const data: number[][] = [];
       const conf: number[] = [];
       for (let n = 0; n < N; n++) {
@@ -365,7 +402,12 @@ export async function loadJabs(labelsPath: string, options?: LoadJabsOptions): P
             tracks.set(poseId, new Track(String(poseId)));
           }
           const { data, conf } = extractInstance(frameIdx, curId);
-          const inst = predictionToInstance(data, conf, skeleton, tracks.get(poseId));
+          const inst = predictionToInstance(
+            data,
+            conf,
+            skeleton,
+            tracks.get(poseId),
+          );
           if (inst) instances.push(inst);
         }
       }
@@ -378,7 +420,8 @@ export async function loadJabs(labelsPath: string, options?: LoadJabsOptions): P
     const rootKeys = typeof file.keys === "function" ? file.keys() : [];
     if (poseVersion >= 5 && rootKeys.includes("static_objects")) {
       const soGroup = file.get("static_objects") as H5Group | null;
-      const objNames = soGroup && typeof soGroup.keys === "function" ? soGroup.keys() : [];
+      const objNames =
+        soGroup && typeof soGroup.keys === "function" ? soGroup.keys() : [];
       for (const objName of objNames) {
         const ds = getDataset(file, `static_objects/${objName}`);
         if (ds == null) continue;

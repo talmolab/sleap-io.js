@@ -11,7 +11,8 @@ import {
   readVlenElementManual,
 } from "./embedded-frame.js";
 
-const isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+const isBrowser =
+  typeof window !== "undefined" && typeof document !== "undefined";
 
 /**
  * Video backend for embedded images in HDF5 files (synchronous h5wasm).
@@ -54,7 +55,9 @@ export class Hdf5VideoBackend implements VideoBackend {
     // Build O(1) lookup map from frame numbers
     const frameNumbers = options.frameNumbers ?? [];
     this.frameNumbers = frameNumbers;
-    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
+    this.frameNumberToIndex = new Map(
+      frameNumbers.map((num, idx) => [num, idx]),
+    );
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";
     this.shape = options.shape;
@@ -67,16 +70,24 @@ export class Hdf5VideoBackend implements VideoBackend {
     const dataset = this.file.get(this.datasetPath);
     if (!dataset) return null;
     // Use O(1) Map lookup; if no frame numbers provided, use frameIndex directly
-    const index = this.frameNumberToIndex.size > 0
-      ? this.frameNumberToIndex.get(frameIndex)
-      : frameIndex;
+    const index =
+      this.frameNumberToIndex.size > 0
+        ? this.frameNumberToIndex.get(frameIndex)
+        : frameIndex;
     if (index === undefined) return null;
 
-    const rawBytes = await readEmbeddedFrameBytes(this.buildReader(dataset), index);
+    const rawBytes = await readEmbeddedFrameBytes(
+      this.buildReader(dataset),
+      index,
+    );
     if (!rawBytes || rawBytes.length === 0) return null;
 
     if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes(rawBytes, this.format, this.channelOrder);
+      const decoded = await decodeImageBytes(
+        rawBytes,
+        this.format,
+        this.channelOrder,
+      );
       return decoded ?? rawBytes;
     }
 
@@ -91,7 +102,10 @@ export class Hdf5VideoBackend implements VideoBackend {
       format: this.format,
       frameSizes: this.frameSizes,
       legacy: this.legacy,
-      getMeta: async () => ({ shape: dataset.shape ?? [], dtype: dataset.dtype }),
+      getMeta: async () => ({
+        shape: dataset.shape ?? [],
+        dtype: dataset.dtype,
+      }),
       readSlice: async (slice?: Hdf5Slice): Promise<SliceReadResult> => {
         const value = slice ? dataset.slice(slice) : dataset.value;
         return { value, shape: dataset.shape ?? [] };
@@ -112,7 +126,7 @@ export class Hdf5VideoBackend implements VideoBackend {
 async function decodeImageBytes(
   bytes: Uint8Array,
   format: string,
-  channelOrder: string
+  channelOrder: string,
 ): Promise<VideoFrame | null> {
   if (!isBrowser || typeof createImageBitmap === "undefined") return null;
   const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
@@ -151,7 +165,7 @@ async function decodeImageBytes(
 function decodeRawFrame(
   bytes: Uint8Array,
   shape: [number, number, number, number] | undefined,
-  channelOrder: string
+  channelOrder: string,
 ): VideoFrame | null {
   if (!isBrowser || !shape) return null;
   const [, height, width, channels] = shape;
@@ -168,7 +182,7 @@ function decodeRawFrame(
     const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
     const g = bytes[base + 1] ?? 0;
     const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
-    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
+    const a = channels === 4 ? (bytes[base + 3] ?? 255) : 255;
     const out = i * 4;
     rgba[out] = r;
     rgba[out + 1] = g;

@@ -58,7 +58,12 @@ function isImageBitmap(value: unknown): boolean {
   }
   // Fallback duck-type: an ImageBitmap exposes width/height + close() but no
   // readable `data` buffer.
-  const v = value as { width?: unknown; height?: unknown; close?: unknown; data?: unknown };
+  const v = value as {
+    width?: unknown;
+    height?: unknown;
+    close?: unknown;
+    data?: unknown;
+  };
   return (
     v != null &&
     typeof v.width === "number" &&
@@ -101,7 +106,7 @@ function resolveFill(fill: Fill, channels: number): number[] {
     // Pad/truncate to the channel count (extra channels reuse the last value).
     const out = new Array<number>(channels);
     for (let c = 0; c < channels; c++) {
-      out[c] = c < fill.length ? fill[c] : fill[fill.length - 1] ?? 0;
+      out[c] = c < fill.length ? fill[c] : (fill[fill.length - 1] ?? 0);
     }
     return out;
   }
@@ -117,7 +122,7 @@ function resolveFill(fill: Fill, channels: number): number[] {
 function asImageData(
   data: Uint8ClampedArray<ArrayBuffer>,
   width: number,
-  height: number
+  height: number,
 ): ImageData {
   if (
     typeof globalThis !== "undefined" &&
@@ -144,18 +149,26 @@ function asImageData(
  * @returns For an `ImageData` input, an `ImageData`-shaped RGBA result; for a
  *   {@link RawFrame} input, a {@link RawFrame} with the same channel count.
  */
-export function cropFrame(frame: ImageData, crop: CropRect, fill?: Fill): ImageData;
-export function cropFrame(frame: RawFrame, crop: CropRect, fill?: Fill): RawFrame;
+export function cropFrame(
+  frame: ImageData,
+  crop: CropRect,
+  fill?: Fill,
+): ImageData;
+export function cropFrame(
+  frame: RawFrame,
+  crop: CropRect,
+  fill?: Fill,
+): RawFrame;
 export function cropFrame(
   frame: FrameLike,
   crop: CropRect,
-  fill: Fill = 0
+  fill: Fill = 0,
 ): ImageData | RawFrame {
   if (isImageBitmap(frame)) {
     throw new Error(
       "cropFrame cannot crop a raw ImageBitmap: its pixels are not synchronously " +
         "readable. Rasterize it to an ImageData (e.g. via OffscreenCanvas or " +
-        "skia-canvas) before cropping. This is handled by CropVideoBackend.getFrame."
+        "skia-canvas) before cropping. This is handled by CropVideoBackend.getFrame.",
     );
   }
 

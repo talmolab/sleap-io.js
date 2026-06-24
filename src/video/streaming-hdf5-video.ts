@@ -10,7 +10,8 @@ import {
   readEmbeddedFrameBytes,
 } from "./embedded-frame.js";
 
-const isBrowser = typeof window !== "undefined" && typeof document !== "undefined";
+const isBrowser =
+  typeof window !== "undefined" && typeof document !== "undefined";
 
 /**
  * Video backend for embedded images in HDF5 files accessed via streaming.
@@ -58,7 +59,9 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     // Build O(1) lookup map from frame numbers
     const frameNumbers = options.frameNumbers ?? [];
     this.frameNumbers = frameNumbers;
-    this.frameNumberToIndex = new Map(frameNumbers.map((num, idx) => [num, idx]));
+    this.frameNumberToIndex = new Map(
+      frameNumbers.map((num, idx) => [num, idx]),
+    );
     this.format = options.format ?? "png";
     this.channelOrder = options.channelOrder ?? "RGB";
     this.frameSizes = options.frameSizes;
@@ -70,9 +73,10 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
 
   async getFrame(frameIndex: number): Promise<VideoFrame | null> {
     // Use O(1) Map lookup; if no frame numbers provided, use frameIndex directly
-    const index = this.frameNumberToIndex.size > 0
-      ? this.frameNumberToIndex.get(frameIndex)
-      : frameIndex;
+    const index =
+      this.frameNumberToIndex.size > 0
+        ? this.frameNumberToIndex.get(frameIndex)
+        : frameIndex;
     if (index === undefined) return null;
 
     let rawBytes: Uint8Array | null;
@@ -84,7 +88,11 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     if (!rawBytes || rawBytes.length === 0) return null;
 
     if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes(rawBytes, this.format, this.channelOrder);
+      const decoded = await decodeImageBytes(
+        rawBytes,
+        this.format,
+        this.channelOrder,
+      );
       return decoded ?? rawBytes;
     }
 
@@ -100,7 +108,11 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
       if (!rawBytes || rawBytes.length === 0) return;
 
       if (isEncodedFormat(this.format)) {
-        const decoded = await decodeImageBytes(rawBytes, this.format, this.channelOrder);
+        const decoded = await decodeImageBytes(
+          rawBytes,
+          this.format,
+          this.channelOrder,
+        );
         if (decoded && "width" in decoded && "height" in decoded) {
           // Use source frame count if available, otherwise infer from max frame number
           let fc = sourceFrameCount ?? 0;
@@ -118,7 +130,9 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
           this.shape = [fc, decoded.height, decoded.width, channels];
         }
       }
-    } catch { /* probe failed, shape stays undefined */ }
+    } catch {
+      /* probe failed, shape stays undefined */
+    }
   }
 
   /** Build a single-frame reader bound to the streaming worker file. */
@@ -164,7 +178,7 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
 async function decodeImageBytes(
   bytes: Uint8Array,
   format: string,
-  channelOrder: string
+  channelOrder: string,
 ): Promise<VideoFrame | null> {
   if (!isBrowser || typeof createImageBitmap === "undefined") return null;
   const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
@@ -203,7 +217,7 @@ async function decodeImageBytes(
 function decodeRawFrame(
   bytes: Uint8Array,
   shape: [number, number, number, number] | undefined,
-  channelOrder: string
+  channelOrder: string,
 ): VideoFrame | null {
   if (!isBrowser || !shape) return null;
   const [, height, width, channels] = shape;
@@ -220,7 +234,7 @@ function decodeRawFrame(
     const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
     const g = bytes[base + 1] ?? 0;
     const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
-    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
+    const a = channels === 4 ? (bytes[base + 3] ?? 255) : 255;
     const out = i * 4;
     rgba[out] = r;
     rgba[out + 1] = g;

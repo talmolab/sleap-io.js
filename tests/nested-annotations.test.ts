@@ -11,8 +11,14 @@ import { Video } from "../src/model/video.js";
 import { UserCentroid, PredictedCentroid } from "../src/model/centroid.js";
 import { UserBoundingBox, PredictedBoundingBox } from "../src/model/bbox.js";
 import { UserROI, PredictedROI } from "../src/model/roi.js";
-import { UserSegmentationMask, PredictedSegmentationMask } from "../src/model/mask.js";
-import { UserLabelImage, PredictedLabelImage } from "../src/model/label-image.js";
+import {
+  UserSegmentationMask,
+  PredictedSegmentationMask,
+} from "../src/model/mask.js";
+import {
+  UserLabelImage,
+  PredictedLabelImage,
+} from "../src/model/label-image.js";
 import type { LabelImageObjectInfo } from "../src/model/label-image.js";
 import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
@@ -30,10 +36,15 @@ async function roundTripLazy(labels: Labels): Promise<Labels> {
 describe("LabeledFrame annotation fields", () => {
   it("has centroids, bboxes, masks, labelImages, rois fields", () => {
     const video = new Video({ filename: "test.mp4" });
-    const c = new UserCentroid({ x: 1, y: 2});
-    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10});
+    const c = new UserCentroid({ x: 1, y: 2 });
+    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 });
 
-    const lf = new LabeledFrame({ video, frameIdx: 0, centroids: [c], bboxes: [b] });
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [c],
+      bboxes: [b],
+    });
     expect(lf.centroids).toHaveLength(1);
     expect(lf.centroids[0]).toBe(c);
     expect(lf.bboxes).toHaveLength(1);
@@ -45,10 +56,16 @@ describe("LabeledFrame annotation fields", () => {
 
   it("removePredictions removes predicted annotations", () => {
     const video = new Video({ filename: "test.mp4" });
-    const cUser = new UserCentroid({ x: 1, y: 2});
+    const cUser = new UserCentroid({ x: 1, y: 2 });
     const cPred = new PredictedCentroid({ x: 3, y: 4, score: 0.9 });
-    const bUser = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10});
-    const bPred = new PredictedBoundingBox({ x1: 5, y1: 5, x2: 15, y2: 15, score: 0.8 });
+    const bUser = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 });
+    const bPred = new PredictedBoundingBox({
+      x1: 5,
+      y1: 5,
+      x2: 15,
+      y2: 15,
+      score: 0.8,
+    });
 
     const lf = new LabeledFrame({
       video,
@@ -66,11 +83,15 @@ describe("LabeledFrame annotation fields", () => {
 
   it("mergeAnnotations merges, deduplicates, and copies new items", () => {
     const video = new Video({ filename: "test.mp4" });
-    const shared = new UserCentroid({ x: 1, y: 2});
-    const unique = new UserCentroid({ x: 3, y: 4});
+    const shared = new UserCentroid({ x: 1, y: 2 });
+    const unique = new UserCentroid({ x: 3, y: 4 });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [shared] });
-    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [shared, unique] });
+    const lf2 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [shared, unique],
+    });
 
     lf1.mergeAnnotations(lf2);
 
@@ -91,7 +112,12 @@ describe("Labels annotation on LabeledFrames", () => {
     const c2 = new UserCentroid({ x: 3, y: 4 });
     const b1 = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 });
 
-    const lf0 = new LabeledFrame({ video, frameIdx: 0, centroids: [c1], bboxes: [b1] });
+    const lf0 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [c1],
+      bboxes: [b1],
+    });
     const lf1 = new LabeledFrame({ video, frameIdx: 1, centroids: [c2] });
 
     const labels = new Labels({ labeledFrames: [lf0, lf1], videos: [video] });
@@ -114,7 +140,12 @@ describe("Labels annotation on LabeledFrames", () => {
     const skeleton = new Skeleton({ nodes: ["A"] });
     const inst = new Instance({ points: { A: [10, 20] }, skeleton });
     const c = new UserCentroid({ x: 1, y: 2 });
-    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c] });
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [inst],
+      centroids: [c],
+    });
 
     const labels = new Labels({ labeledFrames: [lf] });
 
@@ -133,7 +164,10 @@ describe("Labels annotation on LabeledFrames", () => {
     const lfV1 = new LabeledFrame({ video: v1, frameIdx: 0, centroids: [c1] });
     const lfV2 = new LabeledFrame({ video: v2, frameIdx: 0, centroids: [c2] });
 
-    const labels = new Labels({ labeledFrames: [lfV1, lfV2], videos: [v1, v2] });
+    const labels = new Labels({
+      labeledFrames: [lfV1, lfV2],
+      videos: [v1, v2],
+    });
 
     expect(labels.labeledFrames).toHaveLength(2);
     expect(lfV1.centroids[0]).toBe(c1);
@@ -237,7 +271,13 @@ describe("Labels track collection from annotations", () => {
   it("append collects annotation tracks", () => {
     const video = new Video({ filename: "test.mp4" });
     const tBbox = new Track("t_bbox");
-    const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, track: tBbox });
+    const b = new UserBoundingBox({
+      x1: 0,
+      y1: 0,
+      x2: 10,
+      y2: 10,
+      track: tBbox,
+    });
     const lf = new LabeledFrame({ video, frameIdx: 0, bboxes: [b] });
 
     const labels = new Labels({ videos: [video] });
@@ -269,7 +309,13 @@ describe("SLP round-trip with annotations", () => {
     const inst = new Instance({ points: { A: [10, 20] }, skeleton, track });
     const c = new UserCentroid({ x: 1, y: 2, track });
     const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 });
-    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c], bboxes: [b] });
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [inst],
+      centroids: [c],
+      bboxes: [b],
+    });
 
     const labels = new Labels({ labeledFrames: [lf] });
 
@@ -290,17 +336,19 @@ describe("SLP round-trip with annotations", () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });
     const track = new Track("t1");
-    const centroids = Array.from({ length: 5 }, (_, i) =>
-      new PredictedCentroid({
-        x: i,
-        y: i * 2,
-        track,
-        score: 0.9,
-      }),
+    const centroids = Array.from(
+      { length: 5 },
+      (_, i) =>
+        new PredictedCentroid({
+          x: i,
+          y: i * 2,
+          track,
+          score: 0.9,
+        }),
     );
 
-    const frames = centroids.map((c, i) =>
-      new LabeledFrame({ video, frameIdx: i, centroids: [c] })
+    const frames = centroids.map(
+      (c, i) => new LabeledFrame({ video, frameIdx: i, centroids: [c] }),
     );
     const labels = new Labels({
       labeledFrames: frames,
@@ -328,7 +376,13 @@ describe("Lazy read with annotations", () => {
     const inst = new Instance({ points: { A: [10, 20] }, skeleton, track });
     const c = new UserCentroid({ x: 1, y: 2, track });
     const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10 });
-    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c], bboxes: [b] });
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [inst],
+      centroids: [c],
+      bboxes: [b],
+    });
 
     const labels = new Labels({ labeledFrames: [lf] });
 
@@ -377,7 +431,12 @@ describe("Lazy read with annotations", () => {
     const inst = new Instance({ points: { A: [10, 20] }, skeleton, track });
     const c = new UserCentroid({ x: 1, y: 2, track });
 
-    const lf0 = new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c] });
+    const lf0 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [inst],
+      centroids: [c],
+    });
     const labels = new Labels({
       labeledFrames: [lf0],
     });
@@ -399,7 +458,15 @@ describe("Lazy read with annotations", () => {
     const b = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, track });
 
     const labels = new Labels({
-      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c], bboxes: [b] })],
+      labeledFrames: [
+        new LabeledFrame({
+          video,
+          frameIdx: 0,
+          instances: [inst],
+          centroids: [c],
+          bboxes: [b],
+        }),
+      ],
     });
 
     const lazy = await roundTripLazy(labels);
@@ -423,7 +490,14 @@ describe("Lazy read with annotations", () => {
     const c = new UserCentroid({ x: 1, y: 2, track });
 
     const labels = new Labels({
-      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c] })],
+      labeledFrames: [
+        new LabeledFrame({
+          video,
+          frameIdx: 0,
+          instances: [inst],
+          centroids: [c],
+        }),
+      ],
     });
 
     const lazy = await roundTripLazy(labels);
@@ -443,7 +517,12 @@ describe("Lazy read with annotations", () => {
       return new LabeledFrame({ video, frameIdx: i, centroids: [c] });
     });
 
-    const labels = new Labels({ labeledFrames: frames, videos: [video], skeletons: [skeleton], tracks: [track] });
+    const labels = new Labels({
+      labeledFrames: frames,
+      videos: [video],
+      skeletons: [skeleton],
+      tracks: [track],
+    });
     const lazy = await roundTripLazy(labels);
 
     // at(-1) should return the last supplementary frame
@@ -468,7 +547,14 @@ describe("Lazy read with annotations", () => {
     const c = new UserCentroid({ x: 1, y: 2, track });
 
     const labels = new Labels({
-      labeledFrames: [new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [c] })],
+      labeledFrames: [
+        new LabeledFrame({
+          video,
+          frameIdx: 0,
+          instances: [inst],
+          centroids: [c],
+        }),
+      ],
     });
 
     // Write -> lazy read -> save lazy directly -> eager read.
@@ -476,7 +562,9 @@ describe("Lazy read with annotations", () => {
     const lazy = await roundTripLazy(labels);
     expect(lazy.isLazy).toBe(true);
     const bytes2 = await saveSlpToBytes(lazy);
-    const loaded = await readSlp(new Uint8Array(bytes2).buffer, { openVideos: false });
+    const loaded = await readSlp(new Uint8Array(bytes2).buffer, {
+      openVideos: false,
+    });
 
     expect(loaded.centroids).toHaveLength(1);
     expect(loaded.centroids[0].x).toBe(1);
@@ -487,8 +575,8 @@ describe("Lazy read with annotations", () => {
 describe("mergeAnnotations strategies", () => {
   it("keep_original keeps self's annotations and discards other's", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfC = new UserCentroid({ x: 1, y: 2});
-    const otherC = new UserCentroid({ x: 3, y: 4});
+    const selfC = new UserCentroid({ x: 1, y: 2 });
+    const otherC = new UserCentroid({ x: 3, y: 4 });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
@@ -501,8 +589,8 @@ describe("mergeAnnotations strategies", () => {
 
   it("keep_new replaces with copies of other's", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfC = new UserCentroid({ x: 1, y: 2});
-    const otherC = new UserCentroid({ x: 3, y: 4});
+    const selfC = new UserCentroid({ x: 1, y: 2 });
+    const otherC = new UserCentroid({ x: 3, y: 4 });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfC] });
     const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherC] });
@@ -517,13 +605,21 @@ describe("mergeAnnotations strategies", () => {
 
   it("replace_predictions keeps user from self, replaces predicted with other's", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfUser = new UserCentroid({ x: 1, y: 2});
+    const selfUser = new UserCentroid({ x: 1, y: 2 });
     const selfPred = new PredictedCentroid({ x: 5, y: 6, score: 0.9 });
     const otherPred = new PredictedCentroid({ x: 7, y: 8, score: 0.8 });
-    const otherUser = new UserCentroid({ x: 9, y: 10});
+    const otherUser = new UserCentroid({ x: 9, y: 10 });
 
-    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser, selfPred] });
-    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherPred, otherUser] });
+    const lf1 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [selfUser, selfPred],
+    });
+    const lf2 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [otherPred, otherUser],
+    });
 
     lf1.mergeAnnotations(lf2, "replace_predictions");
 
@@ -537,12 +633,20 @@ describe("mergeAnnotations strategies", () => {
 
   it("auto spatial matching resolves user-vs-predicted", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfUser = new UserCentroid({ x: 1, y: 2});
+    const selfUser = new UserCentroid({ x: 1, y: 2 });
     const selfPred = new PredictedCentroid({ x: 5, y: 6, score: 0.9 });
     const otherPred = new PredictedCentroid({ x: 7, y: 8, score: 0.8 });
 
-    const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser, selfPred] });
-    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherPred] });
+    const lf1 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [selfUser, selfPred],
+    });
+    const lf2 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [otherPred],
+    });
 
     lf1.mergeAnnotations(lf2, "auto");
 
@@ -554,12 +658,16 @@ describe("mergeAnnotations strategies", () => {
 
   it("auto adds unmatched user from other", () => {
     const video = new Video({ filename: "test.mp4" });
-    const selfUser = new UserCentroid({ x: 1, y: 2});
+    const selfUser = new UserCentroid({ x: 1, y: 2 });
     // Far away — won't match self_user (distance > 5.0)
-    const otherUser = new UserCentroid({ x: 50, y: 60});
+    const otherUser = new UserCentroid({ x: 50, y: 60 });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfUser] });
-    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
+    const lf2 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [otherUser],
+    });
 
     lf1.mergeAnnotations(lf2, "auto");
 
@@ -573,10 +681,14 @@ describe("mergeAnnotations strategies", () => {
   it("auto user replaces prediction when spatially matched", () => {
     const video = new Video({ filename: "test.mp4" });
     const selfPred = new PredictedCentroid({ x: 10, y: 20, score: 0.9 });
-    const otherUser = new UserCentroid({ x: 11, y: 20.5});
+    const otherUser = new UserCentroid({ x: 11, y: 20.5 });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
-    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
+    const lf2 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [otherUser],
+    });
 
     lf1.mergeAnnotations(lf2, "auto");
 
@@ -590,10 +702,14 @@ describe("mergeAnnotations strategies", () => {
     const video = new Video({ filename: "test.mp4" });
     const selfPred = new PredictedCentroid({ x: 10, y: 20, score: 0.9 });
     // Far away — no match
-    const otherUser = new UserCentroid({ x: 80, y: 90});
+    const otherUser = new UserCentroid({ x: 80, y: 90 });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
-    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUser] });
+    const lf2 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [otherUser],
+    });
 
     lf1.mergeAnnotations(lf2, "auto");
 
@@ -606,10 +722,17 @@ describe("mergeAnnotations strategies", () => {
   it("auto spatial matching works for bounding boxes", () => {
     const video = new Video({ filename: "test.mp4" });
     const selfPred = new PredictedBoundingBox({
-      x1: 10, y1: 10, x2: 20, y2: 20, score: 0.8,
+      x1: 10,
+      y1: 10,
+      x2: 20,
+      y2: 20,
+      score: 0.8,
     });
     const otherUser = new UserBoundingBox({
-      x1: 11, y1: 11, x2: 21, y2: 21,
+      x1: 11,
+      y1: 11,
+      x2: 21,
+      y2: 21,
     });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, bboxes: [selfPred] });
@@ -659,11 +782,15 @@ describe("mergeAnnotations strategies", () => {
     // One prediction in self
     const selfPred = new PredictedCentroid({ x: 10, y: 10, score: 0.9 });
     // Two users in other, both within threshold of selfPred
-    const otherUserA = new UserCentroid({ x: 11, y: 10}); // dist=1.0
-    const otherUserB = new UserCentroid({ x: 10, y: 11}); // dist=1.0
+    const otherUserA = new UserCentroid({ x: 11, y: 10 }); // dist=1.0
+    const otherUserB = new UserCentroid({ x: 10, y: 11 }); // dist=1.0
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, centroids: [selfPred] });
-    const lf2 = new LabeledFrame({ video, frameIdx: 0, centroids: [otherUserA, otherUserB] });
+    const lf2 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      centroids: [otherUserA, otherUserB],
+    });
 
     lf1.mergeAnnotations(lf2, "auto");
 
@@ -744,7 +871,9 @@ describe("mergeAnnotations strategies", () => {
       data: new Int32Array([0, 1]),
       height: 1,
       width: 2,
-      objects: new Map([[1, { track: trackA, category: "cell", name: "", instance: null }]]),
+      objects: new Map([
+        [1, { track: trackA, category: "cell", name: "", instance: null }],
+      ]),
       video,
       frameIdx: 0,
     });
@@ -752,13 +881,19 @@ describe("mergeAnnotations strategies", () => {
       data: new Int32Array([0, 2]),
       height: 1,
       width: 2,
-      objects: new Map([[2, { track: trackB, category: "cell", name: "", instance: null }]]),
+      objects: new Map([
+        [2, { track: trackB, category: "cell", name: "", instance: null }],
+      ]),
       video,
       frameIdx: 0,
     });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liSelf] });
-    const lf2 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liOther] });
+    const lf2 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      labelImages: [liOther],
+    });
 
     lf1.mergeAnnotations(lf2, "update_tracks");
 
@@ -774,7 +909,9 @@ describe("mergeAnnotations strategies", () => {
       data: new Int32Array([0, 1]),
       height: 1,
       width: 2,
-      objects: new Map([[1, { track, category: "cell", name: "", instance: null }]]),
+      objects: new Map([
+        [1, { track, category: "cell", name: "", instance: null }],
+      ]),
       video,
       frameIdx: 0,
     });
@@ -782,14 +919,20 @@ describe("mergeAnnotations strategies", () => {
       data: new Int32Array([0, 2]),
       height: 1,
       width: 2,
-      objects: new Map([[2, { track, category: "cell", name: "", instance: null }]]),
+      objects: new Map([
+        [2, { track, category: "cell", name: "", instance: null }],
+      ]),
       video,
       frameIdx: 0,
       score: 0.9,
     });
 
     const lf1 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liSelf] });
-    const lf2 = new LabeledFrame({ video, frameIdx: 0, labelImages: [liOther] });
+    const lf2 = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      labelImages: [liOther],
+    });
 
     lf1.mergeAnnotations(lf2, "auto");
 
@@ -804,7 +947,15 @@ describe("mergeAnnotations strategies", () => {
     const selfPred = new PredictedROI({
       geometry: {
         type: "Polygon",
-        coordinates: [[[10, 10], [20, 10], [20, 20], [10, 20], [10, 10]]],
+        coordinates: [
+          [
+            [10, 10],
+            [20, 10],
+            [20, 20],
+            [10, 20],
+            [10, 10],
+          ],
+        ],
       },
       video,
       frameIdx: 0,
@@ -813,7 +964,15 @@ describe("mergeAnnotations strategies", () => {
     const otherUser = new UserROI({
       geometry: {
         type: "Polygon",
-        coordinates: [[[11, 11], [21, 11], [21, 21], [11, 21], [11, 11]]],
+        coordinates: [
+          [
+            [11, 11],
+            [21, 11],
+            [21, 21],
+            [11, 21],
+            [11, 11],
+          ],
+        ],
       },
       video,
       frameIdx: 0,
@@ -840,7 +999,15 @@ describe("mergeAnnotations strategies", () => {
     const normalRoi = new UserROI({
       geometry: {
         type: "Polygon",
-        coordinates: [[[10, 10], [20, 10], [20, 20], [10, 20], [10, 10]]],
+        coordinates: [
+          [
+            [10, 10],
+            [20, 10],
+            [20, 20],
+            [10, 20],
+            [10, 10],
+          ],
+        ],
       },
       video,
       frameIdx: 0,
@@ -871,7 +1038,15 @@ describe("_annotationCentroidXy", () => {
     const roi = new UserROI({
       geometry: {
         type: "Polygon",
-        coordinates: [[[0, 0], [10, 0], [10, 20], [0, 20], [0, 0]]],
+        coordinates: [
+          [
+            [0, 0],
+            [10, 0],
+            [10, 20],
+            [0, 20],
+            [0, 0],
+          ],
+        ],
       },
     });
     expect(_annotationCentroidXy(roi, "rois")).toEqual([5, 10]);
@@ -946,7 +1121,12 @@ describe("_findAnnotationMatches", () => {
       new UserCentroid({ x: 11, y: 10 }),
       new UserCentroid({ x: 21, y: 20 }),
     ];
-    const matches = _findAnnotationMatches(selfList, otherList, "centroids", 5.0);
+    const matches = _findAnnotationMatches(
+      selfList,
+      otherList,
+      "centroids",
+      5.0,
+    );
     expect(matches).toHaveLength(2);
   });
 });

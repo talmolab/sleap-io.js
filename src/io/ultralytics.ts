@@ -53,7 +53,11 @@ import { Instance, Track } from "../model/instance.js";
 import { Skeleton, Node, Edge } from "../model/skeleton.js";
 import { Video } from "../model/video.js";
 import { ROI, UserROI } from "../model/roi.js";
-import { BoundingBox, UserBoundingBox, PredictedBoundingBox } from "../model/bbox.js";
+import {
+  BoundingBox,
+  UserBoundingBox,
+  PredictedBoundingBox,
+} from "../model/bbox.js";
 
 // =============================================================================
 // Types
@@ -63,7 +67,11 @@ import { BoundingBox, UserBoundingBox, PredictedBoundingBox } from "../model/bbo
 export type ImageShape = [number, number];
 
 /** Auto-detected YOLO annotation format for a single label line. */
-export type LineFormat = "detection" | "detection_conf" | "segmentation" | "pose";
+export type LineFormat =
+  | "detection"
+  | "detection_conf"
+  | "segmentation"
+  | "pose";
 
 /** Result of {@link parseLabelFile}: the 3-tuple of parsed annotations. */
 export interface ParsedLabelFile {
@@ -84,7 +92,15 @@ const READ_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp"];
  * {@link READ_IMAGE_EXTENSIONS} (the writer's copy path is a documented JS
  * image-I/O divergence, so it accepts a few more on-disk formats).
  */
-const IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".tif", ".bmp", ".gif"];
+const IMAGE_EXTENSIONS = [
+  ".jpg",
+  ".jpeg",
+  ".png",
+  ".tiff",
+  ".tif",
+  ".bmp",
+  ".gif",
+];
 
 // =============================================================================
 // data.yaml parsing / skeleton construction
@@ -103,7 +119,9 @@ export function parseDataYaml(yamlPath: string): Record<string, unknown> {
  * (`names: {0: cat, 1: dog}`). Keys are coerced to integers so lookups work
  * regardless of how the YAML parser represented numeric keys.
  */
-export function classNamesFromConfig(config: Record<string, unknown>): Map<number, string> {
+export function classNamesFromConfig(
+  config: Record<string, unknown>,
+): Map<number, string> {
   const raw = config["names"];
   const result = new Map<number, string>();
   if (Array.isArray(raw)) {
@@ -120,21 +138,31 @@ export function classNamesFromConfig(config: Record<string, unknown>): Map<numbe
 }
 
 /** Create a {@link Skeleton} from an Ultralytics configuration object. */
-export function createSkeletonFromConfig(config: Record<string, unknown>): Skeleton {
+export function createSkeletonFromConfig(
+  config: Record<string, unknown>,
+): Skeleton {
   const kptShape = (config["kpt_shape"] as number[] | undefined) ?? [1, 3];
   const numKeypoints = kptShape[0];
 
   const nodeNames =
     (config["node_names"] as string[] | undefined) ??
     Array.from({ length: numKeypoints }, (_, i) => `point_${i}`);
-  const nodes = nodeNames.slice(0, numKeypoints).map((name) => new Node(String(name)));
+  const nodes = nodeNames
+    .slice(0, numKeypoints)
+    .map((name) => new Node(String(name)));
 
   const edges: Edge[] = [];
-  const connections = (config["skeleton"] as Array<[number, number]> | undefined) ?? [];
+  const connections =
+    (config["skeleton"] as Array<[number, number]> | undefined) ?? [];
   for (const connection of connections) {
     if (Array.isArray(connection) && connection.length === 2) {
       const [srcIdx, dstIdx] = connection;
-      if (srcIdx >= 0 && srcIdx < nodes.length && dstIdx >= 0 && dstIdx < nodes.length) {
+      if (
+        srcIdx >= 0 &&
+        srcIdx < nodes.length &&
+        dstIdx >= 0 &&
+        dstIdx < nodes.length
+      ) {
         edges.push(new Edge(nodes[srcIdx], nodes[dstIdx]));
       }
     }
@@ -267,13 +295,15 @@ export function parseLabelFile(
     try {
       const parts = line.split(/\s+/);
       if (parts.length < 5) {
-        console.warn(`Invalid line ${lineNum} in ${labelPath}: insufficient data`);
+        console.warn(
+          `Invalid line ${lineNum} in ${labelPath}: insufficient data`,
+        );
         continue;
       }
 
       const fmt = detectLineFormat(parts);
       const classId = parseStrictInt(parts[0]);
-      const category = classNames ? classNames.get(classId) ?? "" : "";
+      const category = classNames ? (classNames.get(classId) ?? "") : "";
 
       if (fmt === "detection" || fmt === "detection_conf") {
         const xCenterNorm = parseStrictFloat(parts[1]);
@@ -293,17 +323,35 @@ export function parseLabelFile(
         if (fmt === "detection_conf") {
           const score = parseStrictFloat(parts[5]);
           bboxes.push(
-            new PredictedBoundingBox({ x1, y1, x2: x1 + wPx, y2: y1 + hPx, category, score }),
+            new PredictedBoundingBox({
+              x1,
+              y1,
+              x2: x1 + wPx,
+              y2: y1 + hPx,
+              category,
+              score,
+            }),
           );
         } else {
-          bboxes.push(new UserBoundingBox({ x1, y1, x2: x1 + wPx, y2: y1 + hPx, category }));
+          bboxes.push(
+            new UserBoundingBox({
+              x1,
+              y1,
+              x2: x1 + wPx,
+              y2: y1 + hPx,
+              category,
+            }),
+          );
         }
       } else if (fmt === "segmentation") {
         // class_id x1 y1 x2 y2 ... xn yn
         const coordValues = parts.slice(1).map(parseStrictFloat);
         const coords: number[][] = [];
         for (let i = 0; i + 1 < coordValues.length; i += 2) {
-          coords.push([coordValues[i] * widthPx, coordValues[i + 1] * heightPx]);
+          coords.push([
+            coordValues[i] * widthPx,
+            coordValues[i + 1] * heightPx,
+          ]);
         }
         rois.push(UserROI.fromPolygon(coords, { category }));
       } else {
@@ -344,7 +392,9 @@ export function parseLabelFile(
         instances.push(Instance.fromNumpy({ pointsData: points, skeleton }));
       }
     } catch (e) {
-      console.warn(`Error parsing line ${lineNum} in ${labelPath}: ${(e as Error).message}`);
+      console.warn(
+        `Error parsing line ${lineNum} in ${labelPath}: ${(e as Error).message}`,
+      );
       continue;
     }
   }
@@ -485,7 +535,9 @@ export function writeRoiLabelFile(
       const w = (maxX - minX) / widthPx;
       const h = (maxY - minY) / heightPx;
       out.push(
-        [String(classId), fmt6(xCenter), fmt6(yCenter), fmt6(w), fmt6(h)].join(" "),
+        [String(classId), fmt6(xCenter), fmt6(yCenter), fmt6(w), fmt6(h)].join(
+          " ",
+        ),
       );
     }
   }
@@ -551,7 +603,8 @@ export function createDataYaml(
   options?: CreateDataYamlOptions,
 ): void {
   const task = options?.task ?? "pose";
-  const classNames = options?.classNames ?? new Map<number, string>([[0, "animal"]]);
+  const classNames =
+    options?.classNames ?? new Map<number, string>([[0, "animal"]]);
 
   // Pass `names` as a Map so the YAML emitter writes integer keys
   // (`0: animal`) matching Ultralytics/Python output rather than quoted
@@ -567,10 +620,16 @@ export function createDataYaml(
     // Pose-specific fields.
     const connections: Array<[number, number]> = [];
     for (const edge of skeleton.edges) {
-      connections.push([skeleton.index(edge.source), skeleton.index(edge.destination)]);
+      connections.push([
+        skeleton.index(edge.source),
+        skeleton.index(edge.destination),
+      ]);
     }
     config["kpt_shape"] = [skeleton.nodes.length, 3];
-    config["flip_idx"] = Array.from({ length: skeleton.nodes.length }, (_, i) => i);
+    config["flip_idx"] = Array.from(
+      { length: skeleton.nodes.length },
+      (_, i) => i,
+    );
     config["skeleton"] = connections;
     config["node_names"] = skeleton.nodes.map((node) => node.name);
   }
@@ -593,7 +652,9 @@ export function buildClassNamesFromRois(rois: ROI[]): Map<number, string> {
 }
 
 /** Build a class-id → name map from the distinct, sorted bbox categories. */
-export function buildClassNamesFromBboxes(bboxes: BoundingBox[]): Map<number, string> {
+export function buildClassNamesFromBboxes(
+  bboxes: BoundingBox[],
+): Map<number, string> {
   return buildClassNames(bboxes.map((bbox) => bbox.category));
 }
 
@@ -635,7 +696,10 @@ export interface ReadLabelsOptions {
  *   the `data.yaml` file itself.
  * @param options - Optional split / skeleton / fallback image size.
  */
-export function readLabels(datasetPath: string, options?: ReadLabelsOptions): Labels {
+export function readLabels(
+  datasetPath: string,
+  options?: ReadLabelsOptions,
+): Labels {
   const split = options?.split ?? "train";
   const imageSize = options?.imageSize ?? [480, 640];
   let skeleton = options?.skeleton ?? null;
@@ -682,7 +746,9 @@ export function readLabels(datasetPath: string, options?: ReadLabelsOptions): La
 
   const imageFiles = fs
     .readdirSync(imagesDir)
-    .filter((name) => READ_IMAGE_EXTENSIONS.includes(path.extname(name).toLowerCase()))
+    .filter((name) =>
+      READ_IMAGE_EXTENSIONS.includes(path.extname(name).toLowerCase()),
+    )
     .sort();
 
   for (const imageName of imageFiles) {
@@ -699,11 +765,16 @@ export function readLabels(datasetPath: string, options?: ReadLabelsOptions): La
     if (fs.existsSync(labelFile)) {
       const imgShape = probeImageSize(imageFile) ?? imageSize;
       const parseSkeleton = skeleton ?? new Skeleton({ nodes: [] });
-      ({ instances, rois, bboxes } = parseLabelFile(labelFile, parseSkeleton, imgShape, {
-        classNames,
-        video,
-        frameIdx: 0,
-      }));
+      ({ instances, rois, bboxes } = parseLabelFile(
+        labelFile,
+        parseSkeleton,
+        imgShape,
+        {
+          classNames,
+          video,
+          frameIdx: 0,
+        },
+      ));
 
       // Assign synthetic tracks based on per-frame instance order.
       for (let i = 0; i < instances.length; i++) {
@@ -749,7 +820,10 @@ export interface ReadLabelsSetOptions {
  * @param datasetPath - Path to the dataset root directory.
  * @param options - Optional splits / skeleton / fallback image size.
  */
-export function readLabelsSet(datasetPath: string, options?: ReadLabelsSetOptions): LabelsSet {
+export function readLabelsSet(
+  datasetPath: string,
+  options?: ReadLabelsSetOptions,
+): LabelsSet {
   const imageSize = options?.imageSize;
   let skeleton = options?.skeleton ?? null;
   let splits = options?.splits;
@@ -783,7 +857,12 @@ export function readLabelsSet(datasetPath: string, options?: ReadLabelsSetOption
           for (const connection of connections) {
             if (Array.isArray(connection) && connection.length === 2) {
               const [srcIdx, dstIdx] = connection;
-              if (srcIdx >= 0 && srcIdx < nodes.length && dstIdx >= 0 && dstIdx < nodes.length) {
+              if (
+                srcIdx >= 0 &&
+                srcIdx < nodes.length &&
+                dstIdx >= 0 &&
+                dstIdx < nodes.length
+              ) {
                 edges.push(new Edge(nodes[srcIdx], nodes[dstIdx]));
               }
             }
@@ -799,7 +878,10 @@ export function readLabelsSet(datasetPath: string, options?: ReadLabelsSetOption
         const kptShape = dataConfig["kpt_shape"] as number[];
         if (Array.isArray(kptShape) && kptShape.length >= 2) {
           const nKeypoints = kptShape[0];
-          const nodes = Array.from({ length: nKeypoints }, (_, i) => new Node(String(i)));
+          const nodes = Array.from(
+            { length: nKeypoints },
+            (_, i) => new Node(String(i)),
+          );
           skeleton = new Skeleton({ nodes });
         }
       }
@@ -903,11 +985,25 @@ export async function writeLabels(
   });
 
   if (task === "detect") {
-    writeBboxLabels(labels, datasetPath, splitRatios, classNames, imageFormat, imageQuality);
+    writeBboxLabels(
+      labels,
+      datasetPath,
+      splitRatios,
+      classNames,
+      imageFormat,
+      imageQuality,
+    );
     return;
   }
   if (task === "segment") {
-    writeRoiLabels(labels, datasetPath, splitRatios, classNames, imageFormat, imageQuality);
+    writeRoiLabels(
+      labels,
+      datasetPath,
+      splitRatios,
+      classNames,
+      imageFormat,
+      imageQuality,
+    );
     return;
   }
 
@@ -932,9 +1028,17 @@ export async function writeLabels(
     const frames = splitData.labeledFrames;
     for (let lfIdx = 0; lfIdx < frames.length; lfIdx++) {
       const frame = frames[lfIdx];
-      const written = await writeFrameImage(frame, imagesDir, lfIdx, imageFormat, imageQuality);
+      const written = await writeFrameImage(
+        frame,
+        imagesDir,
+        lfIdx,
+        imageFormat,
+        imageQuality,
+      );
       if (written === null) {
-        console.warn(`Could not load frame ${frame.frameIdx} from video, skipping.`);
+        console.warn(
+          `Could not load frame ${frame.frameIdx} from video, skipping.`,
+        );
         continue;
       }
       const labelPath = path.join(labelsDir, `${pad7(lfIdx)}.txt`);
@@ -975,7 +1079,8 @@ function writeBboxLabels(
     splitRatios,
     imageFormat,
     imageQuality,
-    (labelPath, items, shape) => writeBboxLabelFile(labelPath, items, shape, nameToId),
+    (labelPath, items, shape) =>
+      writeBboxLabelFile(labelPath, items, shape, nameToId),
   );
 }
 
@@ -1010,7 +1115,8 @@ function writeRoiLabels(
     splitRatios,
     imageFormat,
     imageQuality,
-    (labelPath, items, shape) => writeRoiLabelFile(labelPath, items, shape, nameToId),
+    (labelPath, items, shape) =>
+      writeRoiLabelFile(labelPath, items, shape, nameToId),
   );
 }
 
@@ -1142,7 +1248,10 @@ export function createSplitsFromLabels(
  * @param datasetPath - Path to the dataset root or its `data.yaml` file.
  * @param options - Optional split / skeleton / fallback image size.
  */
-export function loadUltralytics(datasetPath: string, options?: ReadLabelsOptions): Labels {
+export function loadUltralytics(
+  datasetPath: string,
+  options?: ReadLabelsOptions,
+): Labels {
   return readLabels(datasetPath, options);
 }
 
@@ -1212,8 +1321,14 @@ async function writeFrameImage(
  * If `video` is backed by a readable on-disk image file, copy it into
  * `imagesDir` as `NNNNNNN.<sourceExt>` and return its probed shape; else `null`.
  */
-function copyImageFileFrom(video: Video, imagesDir: string, lfIdx: number): WrittenImage | null {
-  const filename = Array.isArray(video.filename) ? video.filename[0] : video.filename;
+function copyImageFileFrom(
+  video: Video,
+  imagesDir: string,
+  lfIdx: number,
+): WrittenImage | null {
+  const filename = Array.isArray(video.filename)
+    ? video.filename[0]
+    : video.filename;
   if (typeof filename !== "string" || filename.length === 0) return null;
   const ext = path.extname(filename).toLowerCase();
   if (!IMAGE_EXTENSIONS.includes(ext)) return null;
@@ -1241,7 +1356,12 @@ export function probeImageSize(filePath: string): ImageShape | null {
     if (n < 2) return null;
 
     // PNG: 8-byte signature, then IHDR with width/height as big-endian uint32.
-    if (head[0] === 0x89 && head[1] === 0x50 && head[2] === 0x4e && head[3] === 0x47) {
+    if (
+      head[0] === 0x89 &&
+      head[1] === 0x50 &&
+      head[2] === 0x4e &&
+      head[3] === 0x47
+    ) {
       const width = head.readUInt32BE(16);
       const height = head.readUInt32BE(20);
       return [height, width];
@@ -1303,14 +1423,22 @@ function probeJpegSize(fd: number): ImageShape | null {
     }
     const marker = buf[offset + 1];
     // Standalone markers without a length field.
-    if (marker === 0xd8 || marker === 0xd9 || (marker >= 0xd0 && marker <= 0xd7)) {
+    if (
+      marker === 0xd8 ||
+      marker === 0xd9 ||
+      (marker >= 0xd0 && marker <= 0xd7)
+    ) {
       offset += 2;
       continue;
     }
     const segLen = buf.readUInt16BE(offset + 2);
     // SOF markers (baseline + progressive), excluding DHT(0xC4)/DAC(0xCC)/RSTn.
     const isSof =
-      marker >= 0xc0 && marker <= 0xcf && marker !== 0xc4 && marker !== 0xc8 && marker !== 0xcc;
+      marker >= 0xc0 &&
+      marker <= 0xcf &&
+      marker !== 0xc4 &&
+      marker !== 0xc8 &&
+      marker !== 0xcc;
     if (isSof) {
       const height = buf.readUInt16BE(offset + 5);
       const width = buf.readUInt16BE(offset + 7);
@@ -1329,8 +1457,10 @@ function probeTiffSize(fd: number): ImageShape | null {
   fs.readSync(fd, buf, 0, size, 0);
 
   const le = buf[0] === 0x49;
-  const readU16 = (o: number) => (le ? buf.readUInt16LE(o) : buf.readUInt16BE(o));
-  const readU32 = (o: number) => (le ? buf.readUInt32LE(o) : buf.readUInt32BE(o));
+  const readU16 = (o: number) =>
+    le ? buf.readUInt16LE(o) : buf.readUInt16BE(o);
+  const readU32 = (o: number) =>
+    le ? buf.readUInt32LE(o) : buf.readUInt32BE(o);
 
   const ifdOffset = readU32(4);
   if (ifdOffset + 2 > buf.length) return null;
@@ -1385,16 +1515,22 @@ export function encodePng(
   height: number,
   compressLevel: number | null = null,
 ): Uint8Array {
-  const level = compressLevel == null ? 6 : Math.min(9, Math.max(0, compressLevel));
+  const level =
+    compressLevel == null ? 6 : Math.min(9, Math.max(0, compressLevel));
 
   // Filtered raw scanlines: each row prefixed with filter-type byte 0 (None).
   const stride = width * 4;
   const raw = new Uint8Array((stride + 1) * height);
   for (let y = 0; y < height; y++) {
     raw[y * (stride + 1)] = 0;
-    raw.set(rgba.subarray(y * stride, y * stride + stride), y * (stride + 1) + 1);
+    raw.set(
+      rgba.subarray(y * stride, y * stride + stride),
+      y * (stride + 1) + 1,
+    );
   }
-  const compressed = deflate(raw, { level: level as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 });
+  const compressed = deflate(raw, {
+    level: level as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
+  });
 
   const ihdr = new Uint8Array(13);
   const dv = new DataView(ihdr.buffer);
@@ -1406,7 +1542,9 @@ export function encodePng(
   ihdr[11] = 0; // filter
   ihdr[12] = 0; // interlace
 
-  const signature = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  const signature = new Uint8Array([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  ]);
   const chunks = [
     signature,
     pngChunk("IHDR", ihdr),
@@ -1530,11 +1668,15 @@ function parseStrictFloat(s: string): number {
 
 /** Source-video grouping key (first filename element for image sequences). */
 function videoKey(video: Video): string {
-  return Array.isArray(video.filename) ? String(video.filename[0]) : String(video.filename);
+  return Array.isArray(video.filename)
+    ? String(video.filename[0])
+    : String(video.filename);
 }
 
 /** Invert a class-id → name map to a name → class-id map. */
-function invertClassNames(classNames: Map<number, string>): Map<string, number> {
+function invertClassNames(
+  classNames: Map<number, string>,
+): Map<string, number> {
   const result = new Map<string, number>();
   for (const [id, name] of classNames) result.set(name, id);
   return result;

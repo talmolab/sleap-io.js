@@ -1,5 +1,10 @@
 import { describe, it, expect, vi, beforeEach } from "../bun-test";
-import { renderImage, toPNG, toJPEG, toDataURL } from "../../src/rendering/render";
+import {
+  renderImage,
+  toPNG,
+  toJPEG,
+  toDataURL,
+} from "../../src/rendering/render";
 import { RenderContext, InstanceContext } from "../../src/rendering/context";
 import { Skeleton } from "../../src/model/skeleton";
 import { Instance, Track } from "../../src/model/instance";
@@ -74,14 +79,14 @@ describe("renderImage", () => {
     });
 
     it("throws when no instances and no image provided", async () => {
-      await expect(renderImage([], { width: 100, height: 100 })).rejects.toThrow(
-        "No instances to render"
-      );
+      await expect(
+        renderImage([], { width: 100, height: 100 }),
+      ).rejects.toThrow("No instances to render");
     });
 
     it("throws when no frame size can be determined", async () => {
       await expect(renderImage([instance], {})).rejects.toThrow(
-        "Cannot determine frame size"
+        "Cannot determine frame size",
       );
     });
   });
@@ -136,7 +141,7 @@ describe("renderImage", () => {
       });
 
       await expect(
-        renderImage(frame, { width: 80, height: 80 })
+        renderImage(frame, { width: 80, height: 80 }),
       ).rejects.toThrow("No instances to render");
     });
   });
@@ -267,7 +272,13 @@ describe("renderImage", () => {
     });
 
     it("supports different marker shapes", async () => {
-      const shapes = ["circle", "square", "diamond", "triangle", "cross"] as const;
+      const shapes = [
+        "circle",
+        "square",
+        "diamond",
+        "triangle",
+        "cross",
+      ] as const;
 
       for (const shape of shapes) {
         const imageData = await renderImage([instance], {
@@ -388,7 +399,10 @@ describe("renderImage", () => {
     });
 
     it("handles many tracks correctly with track-based coloring", async () => {
-      const tracks = Array.from({ length: 20 }, (_, i) => new Track(`track_${i}`));
+      const tracks = Array.from(
+        { length: 20 },
+        (_, i) => new Track(`track_${i}`),
+      );
       const instances = tracks.map((track, i) => {
         const inst = createTestInstance(skeleton, track);
         inst.points[0].xy = [10 + i * 4, 30];
@@ -566,7 +580,7 @@ describe("RenderContext", () => {
       [],
       [],
       2.0, // scale
-      [10, 20] // offset
+      [10, 20], // offset
     );
 
     const [canvasX, canvasY] = ctx.worldToCanvas(50, 60);
@@ -589,7 +603,7 @@ describe("InstanceContext", () => {
         [Number.NaN, Number.NaN], // Invalid point should be skipped
       ],
       [],
-      ["a", "b", "c"]
+      ["a", "b", "c"],
     );
 
     const centroid = ctx.getCentroid();
@@ -606,7 +620,7 @@ describe("InstanceContext", () => {
         [Number.NaN, Number.NaN],
       ],
       [],
-      ["a", "b"]
+      ["a", "b"],
     );
 
     expect(ctx.getCentroid()).toBeNull();
@@ -622,7 +636,7 @@ describe("InstanceContext", () => {
         [20, 50],
       ],
       [],
-      ["a", "b", "c"]
+      ["a", "b", "c"],
     );
 
     const bbox = ctx.getBbox();
@@ -636,7 +650,7 @@ describe("InstanceContext", () => {
       0,
       [[Number.NaN, Number.NaN]],
       [],
-      ["a"]
+      ["a"],
     );
 
     expect(ctx.getBbox()).toBeNull();

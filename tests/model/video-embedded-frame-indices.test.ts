@@ -28,7 +28,10 @@ function backendWith(frameNumbers?: number[]): VideoBackend {
 
 describe("Video.embeddedFrameIndices", () => {
   it("returns sorted, de-duplicated frame numbers from an embedded backend", () => {
-    const video = new Video({ filename: "x", backend: backendWith([20, 10, 10, 30]) });
+    const video = new Video({
+      filename: "x",
+      backend: backendWith([20, 10, 10, 30]),
+    });
     expect(video.embeddedFrameIndices).toEqual([10, 20, 30]);
   });
 

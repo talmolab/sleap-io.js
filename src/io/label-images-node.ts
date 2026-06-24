@@ -16,7 +16,7 @@ import { setLabelImageFileReader } from "./label-images.js";
  * matching Python `read_label_images`.
  */
 async function readTiffPath(
-  path: string
+  path: string,
 ): Promise<Uint8Array | { files: Uint8Array[] }> {
   const stat = fs.statSync(path);
   if (stat.isDirectory()) {
@@ -25,7 +25,7 @@ async function readTiffPath(
       .filter((name) => /\.tiff?$/i.test(name))
       .sort();
     const files = entries.map(
-      (name) => new Uint8Array(fs.readFileSync(nodePath.join(path, name)))
+      (name) => new Uint8Array(fs.readFileSync(nodePath.join(path, name))),
     );
     return { files };
   }

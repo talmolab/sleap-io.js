@@ -1,6 +1,10 @@
 import type { Instance } from "./instance.js";
 import { Track } from "./instance.js";
-import { type BoundingBox, UserBoundingBox, PredictedBoundingBox } from "./bbox.js";
+import {
+  type BoundingBox,
+  UserBoundingBox,
+  PredictedBoundingBox,
+} from "./bbox.js";
 import {
   SegmentationMask,
   UserSegmentationMask,
@@ -63,7 +67,9 @@ export class LabelImage {
     }
     const scale = options.scale ?? [1, 1];
     if (scale[0] <= 0 || scale[1] <= 0) {
-      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
+      throw new Error(
+        `Scale must be positive, got [${scale[0]}, ${scale[1]}].`,
+      );
     }
     this.data = options.data;
     this.height = options.height;
@@ -138,7 +144,13 @@ export class LabelImage {
    * The returned label image has scale=[1,1] and offset=[0,0].
    */
   resampled(targetHeight: number, targetWidth: number): LabelImage {
-    const resizedData = resizeNearest(this.data, this.height, this.width, targetHeight, targetWidth);
+    const resizedData = resizeNearest(
+      this.data,
+      this.height,
+      this.width,
+      targetHeight,
+      targetWidth,
+    );
     const baseOpts: LabelImageOptions = {
       data: resizedData,
       height: targetHeight,
@@ -320,7 +332,11 @@ export class LabelImage {
     }
 
     // Build objects dict
-    const allIds = new Set([...sortedIds, ...trackMap.keys(), ...catMap.keys()]);
+    const allIds = new Set([
+      ...sortedIds,
+      ...trackMap.keys(),
+      ...catMap.keys(),
+    ]);
     const objects = new Map<number, LabelImageObjectInfo>();
     for (const lid of Array.from(allIds).sort((a, b) => a - b)) {
       objects.set(lid, {
@@ -616,9 +632,7 @@ export class LabelImage {
       const seen = new Set<number>();
       for (const id of options.labelIds) {
         if (id <= 0) {
-          throw new Error(
-            `All labelIds must be positive, got ${id}.`,
-          );
+          throw new Error(`All labelIds must be positive, got ${id}.`);
         }
         if (seen.has(id)) {
           throw new Error(`Duplicate labelId: ${id}.`);
@@ -730,10 +744,12 @@ export class LabelImage {
       };
       if (this instanceof PredictedLabelImage) {
         const pli = this as PredictedLabelImage;
-        result.push(new PredictedSegmentationMask({
-          ...baseOpts,
-          score: info.score ?? pli.score,
-        }));
+        result.push(
+          new PredictedSegmentationMask({
+            ...baseOpts,
+            score: info.score ?? pli.score,
+          }),
+        );
       } else {
         result.push(new UserSegmentationMask(baseOpts));
       }

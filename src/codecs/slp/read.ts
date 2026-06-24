@@ -1,8 +1,23 @@
 import { openH5File, OpenH5Options, SlpSource } from "./h5.js";
-import { attrToNumber, attrToString, parseJsonAttr, parseSkeletons, resolveCameraKey, reconstructInstance3D, resolveIdentity, resolveVideoFilename } from "./parsers.js";
+import {
+  attrToNumber,
+  attrToString,
+  parseJsonAttr,
+  parseSkeletons,
+  resolveCameraKey,
+  reconstructInstance3D,
+  resolveIdentity,
+  resolveVideoFilename,
+} from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
-import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "../../model/instance.js";
+import {
+  Instance,
+  PredictedInstance,
+  Track,
+  pointsFromArray,
+  predictedPointsFromArray,
+} from "../../model/instance.js";
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video, type VideoBackendError } from "../../model/video.js";
@@ -15,14 +30,42 @@ import { CropVideoBackend } from "../../video/crop-backend.js";
 import { resolveSourceFrameCount } from "./frame-count.js";
 import type { CropRect } from "../../transform/points.js";
 import type { Fill } from "../../transform/frame.js";
-import { Camera, CameraGroup, FrameGroup, InstanceGroup, RecordingSession } from "../../model/camera.js";
+import {
+  Camera,
+  CameraGroup,
+  FrameGroup,
+  InstanceGroup,
+  RecordingSession,
+} from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
-import { ROI, UserROI, PredictedROI, AnnotationType, decodeWkb } from "../../model/roi.js";
-import { SegmentationMask, UserSegmentationMask, PredictedSegmentationMask } from "../../model/mask.js";
-import { BoundingBox, UserBoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
-import { Centroid, UserCentroid, PredictedCentroid } from "../../model/centroid.js";
-import { LabelImage, UserLabelImage, PredictedLabelImage } from "../../model/label-image.js";
+import {
+  ROI,
+  UserROI,
+  PredictedROI,
+  AnnotationType,
+  decodeWkb,
+} from "../../model/roi.js";
+import {
+  SegmentationMask,
+  UserSegmentationMask,
+  PredictedSegmentationMask,
+} from "../../model/mask.js";
+import {
+  BoundingBox,
+  UserBoundingBox,
+  PredictedBoundingBox,
+} from "../../model/bbox.js";
+import {
+  Centroid,
+  UserCentroid,
+  PredictedCentroid,
+} from "../../model/centroid.js";
+import {
+  LabelImage,
+  UserLabelImage,
+  PredictedLabelImage,
+} from "../../model/label-image.js";
 import type { LabelImageObjectInfo } from "../../model/label-image.js";
 import { inflate } from "pako";
 
@@ -30,7 +73,7 @@ const textDecoder = new TextDecoder();
 
 export async function readSlp(
   source: SlpSource,
-  options?: { openVideos?: boolean; h5?: OpenH5Options }
+  options?: { openVideos?: boolean; h5?: OpenH5Options },
 ): Promise<Labels> {
   const { file, close } = await openH5File(source, options?.h5);
   try {
@@ -39,15 +82,31 @@ export async function readSlp(
       throw new Error("Missing /metadata group in SLP file");
     }
 
-    const metadataAttrs = (metadataGroup as unknown as { attrs?: Record<string, any> }).attrs ?? {};
-    const formatId = Number(metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0);
-    const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<string, unknown> | null;
+    const metadataAttrs =
+      (metadataGroup as unknown as { attrs?: Record<string, any> }).attrs ?? {};
+    const formatId = Number(
+      metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
+    );
+    const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<
+      string,
+      unknown
+    > | null;
 
-    const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
+    const labelsPath =
+      typeof source === "string"
+        ? source
+        : (options?.h5?.filenameHint ?? "slp-data.slp");
     const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
     const videoCrops = readVideoCrops(file);
-    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId, videoCrops);
+    const videos = await readVideos(
+      file.get("videos_json"),
+      labelsPath,
+      options?.openVideos ?? true,
+      file,
+      formatId,
+      videoCrops,
+    );
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
     const framesData = normalizeStructDataset(file.get("frames"));
@@ -65,7 +124,6 @@ export async function readSlp(
       videos,
       formatId,
     });
-
 
     // Read negative frames
     const negativeFramesDs = file.get("negative_frames");
@@ -86,12 +144,28 @@ export async function readSlp(
     }
 
     const identities = readIdentities(file.get("identities_json"));
-    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, labeledFrames, identities);
+    const sessions = readSessions(
+      file.get("sessions_json"),
+      videos,
+      skeletons,
+      labeledFrames,
+      identities,
+    );
     const allInstances = labeledFrames.flatMap((f) => f.instances);
-    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(file, videos, tracks, allInstances);
+    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
+      file,
+      videos,
+      tracks,
+      allInstances,
+    );
     const maskTuples = readMasks(file, videos, tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
-    const labelImageTuples = readLabelImages(file, videos, tracks, allInstances);
+    const labelImageTuples = readLabelImages(
+      file,
+      videos,
+      tracks,
+      allInstances,
+    );
 
     // Distribute annotations into LabeledFrames using routing tuples
     const frameMap = new Map<string, LabeledFrame>();
@@ -99,7 +173,10 @@ export async function readSlp(
       const vidIdx = videos.indexOf(lf.video);
       frameMap.set(`${vidIdx}:${lf.frameIdx}`, lf);
     }
-    const getOrCreateFrame = (vidIdx: number, frameIdx: number): LabeledFrame => {
+    const getOrCreateFrame = (
+      vidIdx: number,
+      frameIdx: number,
+    ): LabeledFrame => {
       const key = `${vidIdx}:${frameIdx}`;
       let lf = frameMap.get(key);
       if (!lf) {
@@ -141,8 +218,15 @@ export async function readSlp(
     // labelImages get their .instance set on read (ROIs are already resolved
     // in readRoisWithMigration since it receives `instances`).
     const allInstancesFlat = labeledFrames.flatMap((lf) => lf.instances);
-    const resolveInstanceRef = (ann: { _instanceIdx: number | null; instance: Instance | null }): void => {
-      if (ann._instanceIdx !== null && ann._instanceIdx >= 0 && ann._instanceIdx < allInstancesFlat.length) {
+    const resolveInstanceRef = (ann: {
+      _instanceIdx: number | null;
+      instance: Instance | null;
+    }): void => {
+      if (
+        ann._instanceIdx !== null &&
+        ann._instanceIdx >= 0 &&
+        ann._instanceIdx < allInstancesFlat.length
+      ) {
         ann.instance = allInstancesFlat[ann._instanceIdx];
         ann._instanceIdx = null;
       }
@@ -181,15 +265,13 @@ export async function readSlp(
   }
 }
 
-
-
 /**
  * Read an SLP file in lazy mode. Frames are not materialized until accessed.
  * Returns a Labels object with a LazyFrameList that loads frames on demand.
  */
 export async function readSlpLazy(
   source: SlpSource,
-  options?: { openVideos?: boolean; h5?: OpenH5Options }
+  options?: { openVideos?: boolean; h5?: OpenH5Options },
 ): Promise<Labels> {
   const { file, close } = await openH5File(source, options?.h5);
   try {
@@ -198,15 +280,31 @@ export async function readSlpLazy(
       throw new Error("Missing /metadata group in SLP file");
     }
 
-    const metadataAttrs = (metadataGroup as unknown as { attrs?: Record<string, any> }).attrs ?? {};
-    const formatId = Number(metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0);
-    const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<string, unknown> | null;
+    const metadataAttrs =
+      (metadataGroup as unknown as { attrs?: Record<string, any> }).attrs ?? {};
+    const formatId = Number(
+      metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
+    );
+    const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<
+      string,
+      unknown
+    > | null;
 
-    const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
+    const labelsPath =
+      typeof source === "string"
+        ? source
+        : (options?.h5?.filenameHint ?? "slp-data.slp");
     const skeletons = parseSkeletons(metadataJson);
     const tracks = readTracks(file.get("tracks_json"));
     const videoCrops = readVideoCrops(file);
-    const videos = await readVideos(file.get("videos_json"), labelsPath, options?.openVideos ?? true, file, formatId, videoCrops);
+    const videos = await readVideos(
+      file.get("videos_json"),
+      labelsPath,
+      options?.openVideos ?? true,
+      file,
+      formatId,
+      videoCrops,
+    );
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
     // Read raw data but don't build frames yet
@@ -244,8 +342,18 @@ export async function readSlpLazy(
     // Read sessions eagerly - they don't depend on frame data.
     // Pass empty labeledFrames since frames aren't materialized yet.
     const identities = readIdentities(file.get("identities_json"));
-    const sessions = readSessions(file.get("sessions_json"), videos, skeletons, [], identities);
-    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(file, videos, tracks);
+    const sessions = readSessions(
+      file.get("sessions_json"),
+      videos,
+      skeletons,
+      [],
+      identities,
+    );
+    const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
+      file,
+      videos,
+      tracks,
+    );
     const maskTuples = readMasks(file, videos, tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
     const labelImageTuples = readLabelImages(file, videos, tracks);
@@ -439,7 +547,14 @@ function readVideoCrops(file: any): Map<number, VideoCropEntry> {
   return out;
 }
 
-async function readVideos(dataset: any, labelsPath: string, openVideos: boolean, file: any, formatId: number, videoCrops?: Map<number, VideoCropEntry>): Promise<Video[]> {
+async function readVideos(
+  dataset: any,
+  labelsPath: string,
+  openVideos: boolean,
+  file: any,
+  formatId: number,
+  videoCrops?: Map<number, VideoCropEntry>,
+): Promise<Video[]> {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const videos: Video[] = [];
@@ -447,7 +562,10 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
   for (let videoIndex = 0; videoIndex < values.length; videoIndex++) {
     const entry = values[videoIndex];
     if (!entry) continue;
-    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
+    const parsed =
+      typeof entry === "string"
+        ? JSON.parse(entry)
+        : JSON.parse(textDecoder.decode(entry));
     const backendMeta = parsed.backend ?? {};
     let filename = resolveVideoFilename(backendMeta, parsed);
     let datasetPath = backendMeta.dataset ?? null;
@@ -478,7 +596,8 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
     if (datasetPath) {
       const videoDs = file.get(datasetPath);
       if (videoDs) {
-        const attrs = (videoDs as { attrs?: Record<string, unknown> }).attrs ?? {};
+        const attrs =
+          (videoDs as { attrs?: Record<string, unknown> }).attrs ?? {};
         if (!format) {
           format = attrToString(attrs.format);
         }
@@ -528,7 +647,10 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
     // 1. JSON metadata (backendMeta.channel_order)
     // 2. HDF5 dataset attribute (channelOrderFromAttrs)
     // 3. Legacy fallback based on format_id (BGR for < 1.4)
-    const channelOrder = (backendMeta.channel_order as string | undefined) ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
+    const channelOrder =
+      (backendMeta.channel_order as string | undefined) ??
+      channelOrderFromAttrs ??
+      (formatId < 1.4 ? "BGR" : "RGB");
 
     let backend = null;
     let backendError: VideoBackendError | null = null;
@@ -552,17 +674,20 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
         // actionable message / resolver instead of the load throwing.
         backend = null;
         backendError = {
-          kind: err instanceof UnsupportedVideoFormatError
-            ? "unsupported-format"
-            : isImageSource(filename)
-              ? "image-sequence"
-              : "decode",
+          kind:
+            err instanceof UnsupportedVideoFormatError
+              ? "unsupported-format"
+              : isImageSource(filename)
+                ? "image-sequence"
+                : "decode",
           message: err instanceof Error ? err.message : String(err),
         };
       }
     }
 
-    const sourceVideo = parsed.source_video ? new Video({ filename: parsed.source_video.filename ?? "" }) : null;
+    const sourceVideo = parsed.source_video
+      ? new Video({ filename: parsed.source_video.filename ?? "" })
+      : null;
 
     // Crop reconstruction (SLP 2.3): the backend just built from videos_json is
     // the UNCROPPED inner. If a /video_crops entry exists for this index, wrap it
@@ -586,7 +711,12 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
       const innerShape = backendMetadata.shape as number[] | undefined;
       if (innerShape && innerShape.length === 4) {
         backendMetadata.source_shape = [...innerShape];
-        backendMetadata.shape = [innerShape[0], cy2 - cy1, cx2 - cx1, innerShape[3]];
+        backendMetadata.shape = [
+          innerShape[0],
+          cy2 - cy1,
+          cx2 - cx1,
+          innerShape[3],
+        ];
       }
       backendMetadata.crop = [...cropEntry.crop];
       backendMetadata.crop_fill = cropEntry.fill;
@@ -601,7 +731,7 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
         sourceVideo,
         openBackend: openVideos,
         embedded,
-      })
+      }),
     );
   }
 
@@ -610,16 +740,23 @@ async function readVideos(dataset: any, labelsPath: string, openVideos: boolean,
 
 function readFrameNumbers(file: any, datasetPath: string | null): number[] {
   if (!datasetPath) return [];
-  const groupPath = datasetPath.endsWith("/video") ? datasetPath.slice(0, -6) : datasetPath;
+  const groupPath = datasetPath.endsWith("/video")
+    ? datasetPath.slice(0, -6)
+    : datasetPath;
   const frameDataset = file.get(`${groupPath}/frame_numbers`);
   if (!frameDataset) return [];
   const values = frameDataset.value ?? [];
   return Array.from(values).map((v: any) => Number(v));
 }
 
-function readFrameSizes(file: any, datasetPath: string | null): number[] | undefined {
+function readFrameSizes(
+  file: any,
+  datasetPath: string | null,
+): number[] | undefined {
   if (!datasetPath) return undefined;
-  const groupPath = datasetPath.endsWith("/video") ? datasetPath.slice(0, -6) : datasetPath;
+  const groupPath = datasetPath.endsWith("/video")
+    ? datasetPath.slice(0, -6)
+    : datasetPath;
   const sizesDataset = file.get(`${groupPath}/frame_sizes`);
   if (!sizesDataset) return undefined;
   const values = sizesDataset.value ?? [];
@@ -664,11 +801,21 @@ function readSuggestions(dataset: any, videos: Video[]): SuggestionFrame[] {
   const values = dataset.value ?? [];
   const suggestions: SuggestionFrame[] = [];
   for (const entry of values) {
-    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
+    const parsed =
+      typeof entry === "string"
+        ? JSON.parse(entry)
+        : JSON.parse(textDecoder.decode(entry));
     const videoIndex = Number(parsed.video ?? 0);
     const video = videos[videoIndex];
     if (!video) continue;
-    suggestions.push(new SuggestionFrame({ video, frameIdx: parsed.frame_idx ?? parsed.frameIdx ?? 0, group: parsed.group != null ? String(parsed.group) : undefined, metadata: parsed }));
+    suggestions.push(
+      new SuggestionFrame({
+        video,
+        frameIdx: parsed.frame_idx ?? parsed.frameIdx ?? 0,
+        group: parsed.group != null ? String(parsed.group) : undefined,
+        metadata: parsed,
+      }),
+    );
   }
   return suggestions;
 }
@@ -678,23 +825,37 @@ function readIdentities(dataset: any): Identity[] {
   const values = dataset.value ?? [];
   const identities: Identity[] = [];
   for (const entry of values) {
-    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
+    const parsed =
+      typeof entry === "string"
+        ? JSON.parse(entry)
+        : JSON.parse(textDecoder.decode(entry));
     const { name, color, ...rest } = parsed;
-    identities.push(new Identity({
-      name: name ?? "",
-      color: color ?? undefined,
-      metadata: rest,
-    }));
+    identities.push(
+      new Identity({
+        name: name ?? "",
+        color: color ?? undefined,
+        metadata: rest,
+      }),
+    );
   }
   return identities;
 }
 
-function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labeledFrames: LabeledFrame[], identities?: Identity[]): RecordingSession[] {
+function readSessions(
+  dataset: any,
+  videos: Video[],
+  skeletons: Skeleton[],
+  labeledFrames: LabeledFrame[],
+  identities?: Identity[],
+): RecordingSession[] {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const sessions: RecordingSession[] = [];
   for (const entry of values) {
-    const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder.decode(entry));
+    const parsed =
+      typeof entry === "string"
+        ? JSON.parse(entry)
+        : JSON.parse(textDecoder.decode(entry));
     const cameraGroup = new CameraGroup();
     const cameraMap = new Map<string, Camera>();
     const calibration = asRecord(parsed.calibration);
@@ -713,22 +874,36 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
       cameraMap.set(String(key), camera);
     }
 
-    const session = new RecordingSession({ cameraGroup, metadata: (parsed.metadata as Record<string, unknown> | undefined) ?? {} });
+    const session = new RecordingSession({
+      cameraGroup,
+      metadata: (parsed.metadata as Record<string, unknown> | undefined) ?? {},
+    });
     const map = asRecord(parsed.camcorder_to_video_idx_map);
     for (const [cameraKey, videoIdx] of Object.entries(map)) {
-      const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+      const camera = resolveCameraKey(
+        cameraKey,
+        cameraMap,
+        cameraGroup.cameras,
+      );
       const video = videos[Number(videoIdx)];
       if (camera && video) {
         session.addVideo(video, camera);
       }
     }
 
-    const frameGroups = Array.isArray(parsed.frame_group_dicts) ? parsed.frame_group_dicts : [];
+    const frameGroups = Array.isArray(parsed.frame_group_dicts)
+      ? parsed.frame_group_dicts
+      : [];
     for (const group of frameGroups) {
       const groupRecord = asRecord(group);
-      const frameIdx = (groupRecord.frame_idx as number | undefined) ?? (groupRecord.frameIdx as number | undefined) ?? 0;
+      const frameIdx =
+        (groupRecord.frame_idx as number | undefined) ??
+        (groupRecord.frameIdx as number | undefined) ??
+        0;
       const instanceGroups: InstanceGroup[] = [];
-      const instanceGroupList = Array.isArray(groupRecord.instance_groups) ? groupRecord.instance_groups : [];
+      const instanceGroupList = Array.isArray(groupRecord.instance_groups)
+        ? groupRecord.instance_groups
+        : [];
       for (const instanceGroup of instanceGroupList) {
         const instanceGroupRecord = asRecord(instanceGroup);
         const instanceByCamera = new Map<Camera, Instance>();
@@ -736,20 +911,38 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
         // Read JS-format instances (camera key -> point data)
         const instancesRecord = asRecord(instanceGroupRecord.instances);
         for (const [cameraKey, points] of Object.entries(instancesRecord)) {
-          const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+          const camera = resolveCameraKey(
+            cameraKey,
+            cameraMap,
+            cameraGroup.cameras,
+          );
           if (!camera) {
-            console.warn(`Camera key "${cameraKey}" not found in session calibration — skipping 2D instance data for this camera.`);
+            console.warn(
+              `Camera key "${cameraKey}" not found in session calibration — skipping 2D instance data for this camera.`,
+            );
             continue;
           }
           const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
-          instanceByCamera.set(camera, new Instance({ points: points as Record<string, number[]>, skeleton }));
+          instanceByCamera.set(
+            camera,
+            new Instance({
+              points: points as Record<string, number[]>,
+              skeleton,
+            }),
+          );
         }
 
         // Fall back to Python-format camcorder_to_lf_and_inst_idx_map
         if (instanceByCamera.size === 0) {
-          const lfInstMap = asRecord(instanceGroupRecord.camcorder_to_lf_and_inst_idx_map);
+          const lfInstMap = asRecord(
+            instanceGroupRecord.camcorder_to_lf_and_inst_idx_map,
+          );
           for (const [camIdx, value] of Object.entries(lfInstMap)) {
-            const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+            const camera = resolveCameraKey(
+              camIdx,
+              cameraMap,
+              cameraGroup.cameras,
+            );
             if (!camera) continue;
             const pair = value as unknown as [number, number];
             const lf = labeledFrames[Number(pair[0])];
@@ -760,7 +953,10 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
           }
         }
 
-        const instance3d = reconstructInstance3D(instanceGroupRecord, skeletons);
+        const instance3d = reconstructInstance3D(
+          instanceGroupRecord,
+          skeletons,
+        );
         const identity = resolveIdentity(instanceGroupRecord, identities);
 
         instanceGroups.push(
@@ -769,17 +965,28 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
             score: instanceGroupRecord.score as number | undefined,
             instance3d,
             identity,
-            metadata: (instanceGroupRecord.metadata as Record<string, unknown> | undefined) ?? {},
-          })
+            metadata:
+              (instanceGroupRecord.metadata as
+                | Record<string, unknown>
+                | undefined) ?? {},
+          }),
         );
       }
 
       const labeledFrameByCamera = new Map<Camera, LabeledFrame>();
       const labeledFrameMap = asRecord(groupRecord.labeled_frame_by_camera);
-      for (const [cameraKey, labeledFrameIdx] of Object.entries(labeledFrameMap)) {
-        const camera = resolveCameraKey(cameraKey, cameraMap, cameraGroup.cameras);
+      for (const [cameraKey, labeledFrameIdx] of Object.entries(
+        labeledFrameMap,
+      )) {
+        const camera = resolveCameraKey(
+          cameraKey,
+          cameraMap,
+          cameraGroup.cameras,
+        );
         if (!camera) {
-          console.warn(`Camera key "${cameraKey}" not found in session calibration — skipping labeled frame mapping.`);
+          console.warn(
+            `Camera key "${cameraKey}" not found in session calibration — skipping labeled frame mapping.`,
+          );
           continue;
         }
         const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
@@ -794,7 +1001,11 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
           const igRecord = asRecord(instanceGroup);
           const lfInstMap = asRecord(igRecord.camcorder_to_lf_and_inst_idx_map);
           for (const [camIdx, value] of Object.entries(lfInstMap)) {
-            const camera = resolveCameraKey(camIdx, cameraMap, cameraGroup.cameras);
+            const camera = resolveCameraKey(
+              camIdx,
+              cameraMap,
+              cameraGroup.cameras,
+            );
             if (!camera) continue;
             const pair = value as unknown as [number, number];
             const lf = labeledFrames[Number(pair[0])];
@@ -809,8 +1020,9 @@ function readSessions(dataset: any, videos: Video[], skeletons: Skeleton[], labe
           frameIdx: Number(frameIdx),
           instanceGroups,
           labeledFrameByCamera,
-          metadata: (groupRecord.metadata as Record<string, unknown> | undefined) ?? {},
-        })
+          metadata:
+            (groupRecord.metadata as Record<string, unknown> | undefined) ?? {},
+        }),
       );
     }
     sessions.push(session);
@@ -825,17 +1037,24 @@ function asRecord(value: unknown): Record<string, unknown> {
   return {};
 }
 
-
 function readAttrString(dataset: any, name: string): string[] {
   const attrs = (dataset as { attrs?: Record<string, any> }).attrs ?? {};
   const raw = attrs[name];
   if (!raw) return [];
   const value = raw.value ?? raw;
   if (typeof value === "string") {
-    try { return JSON.parse(value); } catch { return []; }
+    try {
+      return JSON.parse(value);
+    } catch {
+      return [];
+    }
   }
   if (value instanceof Uint8Array) {
-    try { return JSON.parse(textDecoder.decode(value)); } catch { return []; }
+    try {
+      return JSON.parse(textDecoder.decode(value));
+    } catch {
+      return [];
+    }
   }
   if (Array.isArray(value)) return value.map(String);
   return [];
@@ -847,7 +1066,12 @@ function readRoisAndBboxes(
   tracks: Track[],
   instances?: Array<Instance | PredictedInstance>,
 ): { rois: [ROI, number, number][]; bboxes: [BoundingBox, number, number][] } {
-  const { rois, migratedBboxes } = readRoisWithMigration(file, videos, tracks, instances);
+  const { rois, migratedBboxes } = readRoisWithMigration(
+    file,
+    videos,
+    tracks,
+    instances,
+  );
   let bboxes = readBboxes(file, videos, tracks);
   if (bboxes.length === 0 && migratedBboxes.length > 0) {
     bboxes = migratedBboxes;
@@ -860,7 +1084,10 @@ function readRoisWithMigration(
   videos: Video[],
   tracks: Track[],
   instances?: Array<Instance | PredictedInstance>,
-): { rois: [ROI, number, number][]; migratedBboxes: [BoundingBox, number, number][] } {
+): {
+  rois: [ROI, number, number][];
+  migratedBboxes: [BoundingBox, number, number][];
+} {
   const roisDs = file.get("rois");
   if (!roisDs) return { rois: [], migratedBboxes: [] };
   const roisData = normalizeStructDataset(roisDs);
@@ -869,12 +1096,18 @@ function readRoisWithMigration(
 
   const wkbDs = file.get("roi_wkb");
   if (!wkbDs) return { rois: [], migratedBboxes: [] };
-  const wkbFlat: Uint8Array = wkbDs.value instanceof Uint8Array
-    ? wkbDs.value
-    : new Uint8Array(wkbDs.value ?? []);
+  const wkbFlat: Uint8Array =
+    wkbDs.value instanceof Uint8Array
+      ? wkbDs.value
+      : new Uint8Array(wkbDs.value ?? []);
 
   // v1.9+: string datasets; fallback to JSON attrs
-  const categories = readStringMetadata(file, "roi_categories", roisDs, "categories");
+  const categories = readStringMetadata(
+    file,
+    "roi_categories",
+    roisDs,
+    "categories",
+  );
   const names = readStringMetadata(file, "roi_names", roisDs, "names");
   const sources = readStringMetadata(file, "roi_sources", roisDs, "sources");
 
@@ -899,24 +1132,35 @@ function readRoisWithMigration(
     const geometry = decodeWkb(wkbBytes);
 
     const videoIdx = Number(videoIndices[i]);
-    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+    const video =
+      videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
 
     const frameIdxVal = Number(frameIndices[i]);
 
     const trackIdx = Number(trackIndices[i]);
-    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const track =
+      trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
 
     const annotType = Number(annotationTypes[i]);
 
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const isPred =
+      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
 
-    const roiTsVal = trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
+    const roiTsVal =
+      trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
     const roiTrackingScore = Number.isNaN(roiTsVal) ? null : roiTsVal;
 
     // Migration: annotation_type === 1 (BOUNDING_BOX) -> BoundingBox object
     // Skip predicted ROIs during bbox migration (only migrate user-type box-shaped ROIs)
     if (annotType === AnnotationType.BOUNDING_BOX && !isPred) {
-      const tmpRoi = new UserROI({ geometry, name: names[i] ?? "", category: categories[i] ?? "", source: sources[i] ?? "", video, track });
+      const tmpRoi = new UserROI({
+        geometry,
+        name: names[i] ?? "",
+        category: categories[i] ?? "",
+        source: sources[i] ?? "",
+        video,
+        track,
+      });
       const b = tmpRoi.bounds;
       const scoreVal = Number(scores[i]);
       const bboxScore = Number.isNaN(scoreVal) ? null : scoreVal;
@@ -965,7 +1209,10 @@ function readRoisWithMigration(
       let roi: ROI;
       if (isPred) {
         const scoreVal = Number(scores[i]);
-        roi = new PredictedROI({ ...roiOptions, score: Number.isNaN(scoreVal) ? 0 : scoreVal });
+        roi = new PredictedROI({
+          ...roiOptions,
+          score: Number.isNaN(scoreVal) ? 0 : scoreVal,
+        });
       } else {
         roi = new UserROI(roiOptions);
       }
@@ -987,7 +1234,11 @@ function readRoisWithMigration(
   return { rois, migratedBboxes };
 }
 
-function readBboxes(file: any, _videos: Video[], tracks: Track[]): [BoundingBox, number, number][] {
+function readBboxes(
+  file: any,
+  _videos: Video[],
+  tracks: Track[],
+): [BoundingBox, number, number][] {
   const bboxesDs = file.get("bboxes");
   if (!bboxesDs) return [];
   const bboxesData = normalizeStructDataset(bboxesDs);
@@ -1002,7 +1253,12 @@ function readBboxes(file: any, _videos: Video[], tracks: Track[]): [BoundingBox,
   if (!count) return [];
 
   // v1.9+: string datasets at root level; fallback to JSON attrs on dataset
-  const categories = readStringMetadata(file, "bbox_categories", bboxesDs, "categories");
+  const categories = readStringMetadata(
+    file,
+    "bbox_categories",
+    bboxesDs,
+    "categories",
+  );
   const names = readStringMetadata(file, "bbox_names", bboxesDs, "names");
   const sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
 
@@ -1027,7 +1283,8 @@ function readBboxes(file: any, _videos: Video[], tracks: Track[]): [BoundingBox,
     const frameIdxVal = Number(frameIndices[i]);
 
     const trackIdx = Number(trackIndices[i]);
-    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const track =
+      trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
 
     const scoreVal = Number(bboxScores[i]);
     const instanceIdx = Number(instanceIndices[i]);
@@ -1050,7 +1307,8 @@ function readBboxes(file: any, _videos: Video[], tracks: Track[]): [BoundingBox,
       by2 = Number(y2s[i]);
     }
 
-    const tsVal = trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
+    const tsVal =
+      trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
     const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
 
     const options = {
@@ -1086,7 +1344,12 @@ function readBboxes(file: any, _videos: Video[], tracks: Track[]): [BoundingBox,
  * Read string metadata from a root-level dataset or fall back to a JSON attribute.
  * v1.9+ writes string datasets; older files use JSON-encoded attrs.
  */
-function readStringMetadata(file: any, datasetPath: string, dataset: any, attrName: string): string[] {
+function readStringMetadata(
+  file: any,
+  datasetPath: string,
+  dataset: any,
+  attrName: string,
+): string[] {
   const ds = file.get(datasetPath);
   if (ds) {
     // Try the "json" attribute on the string dataset first
@@ -1095,7 +1358,7 @@ function readStringMetadata(file: any, datasetPath: string, dataset: any, attrNa
     // Fall back to raw value
     const val = ds.value;
     if (Array.isArray(val)) {
-      return val.map((v: any) => typeof v === "string" ? v : String(v ?? ""));
+      return val.map((v: any) => (typeof v === "string" ? v : String(v ?? "")));
     }
   }
   return readAttrString(dataset, attrName);
@@ -1105,8 +1368,15 @@ function readStringMetadata(file: any, datasetPath: string, dataset: any, attrNa
  * Read score maps from index + data datasets.
  * Returns a Map from annotation index to { scoreMap, height, width }.
  */
-function readScoreMaps(file: any, indexPath: string, dataPath: string): Map<number, { scoreMap: Float32Array; height: number; width: number }> {
-  const result = new Map<number, { scoreMap: Float32Array; height: number; width: number }>();
+function readScoreMaps(
+  file: any,
+  indexPath: string,
+  dataPath: string,
+): Map<number, { scoreMap: Float32Array; height: number; width: number }> {
+  const result = new Map<
+    number,
+    { scoreMap: Float32Array; height: number; width: number }
+  >();
   const indexDs = file.get(indexPath);
   const dataDs = file.get(dataPath);
   if (!indexDs || !dataDs) return result;
@@ -1118,8 +1388,10 @@ function readScoreMaps(file: any, indexPath: string, dataPath: string): Map<numb
   const smHeights = indexData.height ?? [];
   const smWidths = indexData.width ?? [];
 
-  const dataFlat: Uint8Array = dataDs.value instanceof Uint8Array
-    ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+  const dataFlat: Uint8Array =
+    dataDs.value instanceof Uint8Array
+      ? dataDs.value
+      : new Uint8Array(dataDs.value ?? []);
 
   for (let i = 0; i < idxCol.length; i++) {
     const annotIdx = Number(idxCol[i]);
@@ -1137,7 +1409,10 @@ function readScoreMaps(file: any, indexPath: string, dataPath: string): Map<numb
       );
     }
     const scoreMap = new Float32Array(
-      decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength),
+      decompressed.buffer.slice(
+        decompressed.byteOffset,
+        decompressed.byteOffset + decompressed.byteLength,
+      ),
     );
 
     result.set(annotIdx, { scoreMap, height: h, width: w });
@@ -1145,7 +1420,11 @@ function readScoreMaps(file: any, indexPath: string, dataPath: string): Map<numb
   return result;
 }
 
-function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationMask, number, number][] {
+function readMasks(
+  file: any,
+  _videos: Video[],
+  tracks: Track[],
+): [SegmentationMask, number, number][] {
   const masksDs = file.get("masks");
   if (!masksDs) return [];
   const masksData = normalizeStructDataset(masksDs);
@@ -1154,12 +1433,18 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
 
   const rleDs = file.get("mask_rle");
   if (!rleDs) return [];
-  const rleFlat: Uint8Array = rleDs.value instanceof Uint8Array
-    ? rleDs.value
-    : new Uint8Array(rleDs.value ?? []);
+  const rleFlat: Uint8Array =
+    rleDs.value instanceof Uint8Array
+      ? rleDs.value
+      : new Uint8Array(rleDs.value ?? []);
 
   // v1.9+: string datasets at root level; fallback to JSON attrs on mask dataset
-  const categories = readStringMetadata(file, "mask_categories", masksDs, "categories");
+  const categories = readStringMetadata(
+    file,
+    "mask_categories",
+    masksDs,
+    "categories",
+  );
   const names = readStringMetadata(file, "mask_names", masksDs, "names");
   const sources = readStringMetadata(file, "mask_sources", masksDs, "sources");
 
@@ -1185,7 +1470,11 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
   const offsetYCol = masksData.offset_y ?? [];
 
   // Read score maps if present
-  const scoreMaps = readScoreMaps(file, "mask_score_map_index", "mask_score_maps");
+  const scoreMaps = readScoreMaps(
+    file,
+    "mask_score_map_index",
+    "mask_score_maps",
+  );
 
   const masks: [SegmentationMask, number, number][] = [];
   // Deferred from_predicted re-link: collect (userMaskIdx, srcIdx) pairs and
@@ -1200,7 +1489,11 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
     // Convert packed uint8 bytes back to Uint32Array (4 bytes per count, little-endian)
     const numCounts = rleRaw.byteLength / 4;
     const rleCounts = new Uint32Array(numCounts);
-    const rleView = new DataView(rleRaw.buffer, rleRaw.byteOffset, rleRaw.byteLength);
+    const rleView = new DataView(
+      rleRaw.buffer,
+      rleRaw.byteOffset,
+      rleRaw.byteLength,
+    );
     for (let j = 0; j < numCounts; j++) {
       rleCounts[j] = rleView.getUint32(j * 4, true);
     }
@@ -1210,14 +1503,18 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
     const frameIdxVal = Number(frameIndices[i]);
 
     const trackIdx = Number(trackIndices[i]);
-    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const track =
+      trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
 
     const scaleX = scaleXCol.length > i ? Number(scaleXCol[i]) : 1;
     const scaleY = scaleYCol.length > i ? Number(scaleYCol[i]) : 1;
     const offsetX = offsetXCol.length > i ? Number(offsetXCol[i]) : 0;
     const offsetY = offsetYCol.length > i ? Number(offsetYCol[i]) : 0;
 
-    const maskTsVal = maskTrackingScoreCol.length > i ? Number(maskTrackingScoreCol[i]) : Number.NaN;
+    const maskTsVal =
+      maskTrackingScoreCol.length > i
+        ? Number(maskTrackingScoreCol[i])
+        : Number.NaN;
     const maskTrackingScore = Number.isNaN(maskTsVal) ? null : maskTsVal;
 
     const baseOptions = {
@@ -1234,7 +1531,8 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
     };
 
     // Determine if predicted based on is_predicted column or NaN score fallback
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const isPred =
+      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
     let mask: SegmentationMask;
 
     if (isPred) {
@@ -1248,7 +1546,8 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
     } else {
       mask = new UserSegmentationMask(baseOptions);
       // Collect from_predicted link for deferred re-link (user masks only).
-      const fpIdx = fromPredictedCol.length > i ? Number(fromPredictedCol[i]) : -1;
+      const fpIdx =
+        fromPredictedCol.length > i ? Number(fromPredictedCol[i]) : -1;
       if (fpIdx >= 0) fromPredictedPairs.push([i, fpIdx]);
     }
 
@@ -1265,8 +1564,9 @@ function readMasks(file: any, _videos: Video[], tracks: Track[]): [SegmentationM
   // indices leave fromPredicted at its constructor default (null).
   for (const [i, fpIdx] of fromPredictedPairs) {
     if (fpIdx >= 0 && fpIdx < masks.length) {
-      (masks[i][0] as UserSegmentationMask).fromPredicted =
-        masks[fpIdx][0] as PredictedSegmentationMask;
+      (masks[i][0] as UserSegmentationMask).fromPredicted = masks[
+        fpIdx
+      ][0] as PredictedSegmentationMask;
     }
   }
 
@@ -1299,7 +1599,12 @@ function readLabelImages(
   const dataEnds = liData.data_end ?? [];
 
   // v1.9+: string datasets; fallback to JSON attrs
-  const sources = readStringMetadata(file, "label_image_sources", liDs, "sources");
+  const sources = readStringMetadata(
+    file,
+    "label_image_sources",
+    liDs,
+    "sources",
+  );
 
   // v1.9+ columns (may not exist in older files)
   const isPredictedCol = liData.is_predicted ?? [];
@@ -1323,8 +1628,10 @@ function readLabelImages(
   if (isChunked) {
     dataChunked = dataDs.value; // 3D array or flat typed array with shape metadata
   } else {
-    dataFlat = dataDs.value instanceof Uint8Array
-      ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+    dataFlat =
+      dataDs.value instanceof Uint8Array
+        ? dataDs.value
+        : new Uint8Array(dataDs.value ?? []);
   }
 
   // Read objects table (may not exist if all label images have 0 objects)
@@ -1343,14 +1650,28 @@ function readLabelImages(
     objTrackIndices = objData.track ?? [];
     objInstanceIndices = objData.instance ?? [];
     // v1.9+: string datasets at root level
-    objCategories = readStringMetadata(file, "label_image_obj_categories", objDs, "categories");
-    objNames = readStringMetadata(file, "label_image_obj_names", objDs, "names");
+    objCategories = readStringMetadata(
+      file,
+      "label_image_obj_categories",
+      objDs,
+      "categories",
+    );
+    objNames = readStringMetadata(
+      file,
+      "label_image_obj_names",
+      objDs,
+      "names",
+    );
     objScoreCol = objData.score ?? [];
     objTrackingScoreCol = objData.tracking_score ?? [];
   }
 
   // Read score maps if present
-  const liScoreMaps = readScoreMaps(file, "label_image_score_map_index", "label_image_score_maps");
+  const liScoreMaps = readScoreMaps(
+    file,
+    "label_image_score_map_index",
+    "label_image_score_maps",
+  );
 
   const labelImages: [LabelImage, number, number][] = [];
   for (let i = 0; i < videoIndices.length; i++) {
@@ -1367,7 +1688,11 @@ function readLabelImages(
       const frameSize = height * width;
       if (dataChunked instanceof Int32Array) {
         // Flat typed array with shape [T, H, W] — slice by frame index
-        pixelData = new Int32Array(dataChunked.buffer, dataChunked.byteOffset + i * frameSize * 4, frameSize);
+        pixelData = new Int32Array(
+          dataChunked.buffer,
+          dataChunked.byteOffset + i * frameSize * 4,
+          frameSize,
+        );
       } else if (ArrayBuffer.isView(dataChunked)) {
         // Other typed array — convert to Int32Array
         const offset = i * frameSize;
@@ -1388,7 +1713,10 @@ function readLabelImages(
       // Convert bytes back to Int32Array (little-endian, matches native).
       // Use buffer.slice() to guarantee 4-byte alignment for Int32Array.
       pixelData = new Int32Array(
-        decompressed.buffer.slice(decompressed.byteOffset, decompressed.byteOffset + decompressed.byteLength)
+        decompressed.buffer.slice(
+          decompressed.byteOffset,
+          decompressed.byteOffset + decompressed.byteLength,
+        ),
       );
     }
 
@@ -1401,7 +1729,8 @@ function readLabelImages(
     for (let j = objStart; j < objStart + nObj; j++) {
       const labelId = Number(objLabelIds[j]);
       const trackIdx = Number(objTrackIndices[j]);
-      const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+      const track =
+        trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
       const instIdx = Number(objInstanceIndices[j]);
       let instance: Instance | null = null;
 
@@ -1412,21 +1741,24 @@ function readLabelImages(
       }
 
       const objScore = objScoreCol.length > j ? Number(objScoreCol[j]) : null;
-      const objTsVal = objTrackingScoreCol.length > j ? Number(objTrackingScoreCol[j]) : null;
+      const objTsVal =
+        objTrackingScoreCol.length > j ? Number(objTrackingScoreCol[j]) : null;
 
       objects.set(labelId, {
         track,
         category: objCategories[j] ?? "",
         name: objNames[j] ?? "",
         instance,
-        score: (objScore !== null && !Number.isNaN(objScore)) ? objScore : null,
-        trackingScore: (objTsVal !== null && !Number.isNaN(objTsVal)) ? objTsVal : null,
+        score: objScore !== null && !Number.isNaN(objScore) ? objScore : null,
+        trackingScore:
+          objTsVal !== null && !Number.isNaN(objTsVal) ? objTsVal : null,
         _instanceIdx: instIdx >= 0 ? instIdx : -1,
       });
     }
 
     // Determine if predicted
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const isPred =
+      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
 
     // v2.1+: spatial metadata
     const liScaleX = liScaleXCol.length > i ? Number(liScaleXCol[i]) : 1;
@@ -1483,7 +1815,12 @@ function normalizeStructDataset(dataset: any): Record<string, any[]> {
     return mapStructuredRows(raw, fieldNames);
   }
 
-  if (raw && ArrayBuffer.isView(raw) && Array.isArray(dataset.shape) && dataset.shape.length === 2) {
+  if (
+    raw &&
+    ArrayBuffer.isView(raw) &&
+    Array.isArray(dataset.shape) &&
+    dataset.shape.length === 2
+  ) {
     const [rowCount, colCount] = dataset.shape as [number, number];
     const rows: any[][] = [];
     for (let i = 0; i < rowCount; i += 1) {
@@ -1502,7 +1839,10 @@ function normalizeStructDataset(dataset: any): Record<string, any[]> {
   return {};
 }
 
-function mapStructuredRows(rows: any[][], fieldNames: string[]): Record<string, any[]> {
+function mapStructuredRows(
+  rows: any[][],
+  fieldNames: string[],
+): Record<string, any[]> {
   if (!fieldNames.length) {
     return rows.reduce((acc: Record<string, any[]>, row: any[], idx) => {
       acc[String(idx)] = row;
@@ -1521,7 +1861,9 @@ function getFieldNames(dataset: any): string[] {
   if (fields.length) return fields;
   const compoundMembers = dataset.metadata?.compound_type?.members;
   if (Array.isArray(compoundMembers) && compoundMembers.length) {
-    const names = compoundMembers.map((member: { name?: string }) => member.name).filter((name: string | undefined): name is string => !!name);
+    const names = compoundMembers
+      .map((member: { name?: string }) => member.name)
+      .filter((name: string | undefined): name is string => !!name);
     if (names.length) return names;
   }
   const attr = dataset.attrs?.field_names ?? dataset.attrs?.fieldNames;
@@ -1533,7 +1875,10 @@ function getFieldNames(dataset: any): string[] {
       const parsed = JSON.parse(value);
       if (Array.isArray(parsed)) return parsed.map((entry) => String(entry));
     } catch {
-      return value.split(",").map((entry) => entry.trim()).filter(Boolean);
+      return value
+        .split(",")
+        .map((entry) => entry.trim())
+        .filter(Boolean);
     }
   }
   if (value instanceof Uint8Array) {
@@ -1558,7 +1903,16 @@ function buildLabeledFrames(options: {
   formatId: number;
 }): LabeledFrame[] {
   const frames: LabeledFrame[] = [];
-  const { framesData, instancesData, pointsData, predPointsData, skeletons, tracks, videos, formatId } = options;
+  const {
+    framesData,
+    instancesData,
+    pointsData,
+    predPointsData,
+    skeletons,
+    tracks,
+    videos,
+    formatId,
+  } = options;
   const frameIds = framesData.frame_id ?? [];
   const videoIdToIndex = buildVideoIdMap(framesData, videos);
   const instanceById = new Map<number, Instance | PredictedInstance>();
@@ -1581,16 +1935,28 @@ function buildLabeledFrames(options: {
       const pointStart = Number(instancesData.point_id_start?.[instIdx] ?? 0);
       const pointEnd = Number(instancesData.point_id_end?.[instIdx] ?? 0);
       const score = Number(instancesData.score?.[instIdx] ?? 0);
-      const rawTrackingScore = formatId < 1.2 ? 0 : Number(instancesData.tracking_score?.[instIdx] ?? 0);
-      const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
-      const fromPredicted = Number(instancesData.from_predicted?.[instIdx] ?? -1);
+      const rawTrackingScore =
+        formatId < 1.2
+          ? 0
+          : Number(instancesData.tracking_score?.[instIdx] ?? 0);
+      const trackingScore = Number.isNaN(rawTrackingScore)
+        ? 0
+        : rawTrackingScore;
+      const fromPredicted = Number(
+        instancesData.from_predicted?.[instIdx] ?? -1,
+      );
       const skeleton = skeletons[skeletonId] ?? skeletons[0];
       const track = trackId >= 0 ? tracks[trackId] : null;
 
       let instance: Instance | PredictedInstance;
       if (instanceType === 0) {
         const points = slicePoints(pointsData, pointStart, pointEnd);
-        instance = new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton, track, trackingScore });
+        instance = new Instance({
+          points: pointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          trackingScore,
+        });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -1601,7 +1967,13 @@ function buildLabeledFrames(options: {
         }
       } else {
         const points = slicePoints(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({ points: predictedPointsFromArray(points, skeleton.nodeNames), skeleton, track, score, trackingScore });
+        instance = new PredictedInstance({
+          points: predictedPointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          score,
+          trackingScore,
+        });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -1619,7 +1991,11 @@ function buildLabeledFrames(options: {
   for (const [instanceId, fromPredictedId] of fromPredictedPairs) {
     const instance = instanceById.get(instanceId);
     const predicted = instanceById.get(fromPredictedId);
-    if (instance && predicted instanceof PredictedInstance && instance instanceof Instance) {
+    if (
+      instance &&
+      predicted instanceof PredictedInstance &&
+      instance instanceof Instance
+    ) {
       instance.fromPredicted = predicted;
     }
   }
@@ -1627,7 +2003,10 @@ function buildLabeledFrames(options: {
   return frames;
 }
 
-function buildVideoIdMap(framesData: Record<string, any[]>, videos: Video[]): Map<number, number> {
+function buildVideoIdMap(
+  framesData: Record<string, any[]>,
+  videos: Video[],
+): Map<number, number> {
   const videoIds = new Set<number>();
   for (const value of framesData.video ?? []) {
     videoIds.add(Number(value));
@@ -1646,7 +2025,10 @@ function buildVideoIdMap(framesData: Record<string, any[]>, videos: Video[]): Ma
   const map = new Map<number, number>();
   for (let index = 0; index < videos.length; index += 1) {
     const video = videos[index];
-    const dataset = (video.backend?.dataset ?? (video.backendMetadata?.dataset as string | undefined)) ?? "";
+    const dataset =
+      video.backend?.dataset ??
+      (video.backendMetadata?.dataset as string | undefined) ??
+      "";
     const parsedId = parseVideoIdFromDataset(dataset);
     if (parsedId != null) {
       map.set(parsedId, index);
@@ -1663,7 +2045,11 @@ function parseVideoIdFromDataset(dataset: string): number | null {
   return Number.isNaN(id) ? null : id;
 }
 
-function readCentroids(file: any, _videos: Video[], tracks: Track[]): [Centroid, number, number][] {
+function readCentroids(
+  file: any,
+  _videos: Video[],
+  tracks: Track[],
+): [Centroid, number, number][] {
   const centroidsDs = file.get("centroids");
   if (!centroidsDs) return [];
   const data = normalizeStructDataset(centroidsDs);
@@ -1671,9 +2057,24 @@ function readCentroids(file: any, _videos: Video[], tracks: Track[]): [Centroid,
   const count = xs.length;
   if (!count) return [];
 
-  const categories = readStringMetadata(file, "centroid_categories", centroidsDs, "categories");
-  const names = readStringMetadata(file, "centroid_names", centroidsDs, "names");
-  const sources = readStringMetadata(file, "centroid_sources", centroidsDs, "sources");
+  const categories = readStringMetadata(
+    file,
+    "centroid_categories",
+    centroidsDs,
+    "categories",
+  );
+  const names = readStringMetadata(
+    file,
+    "centroid_names",
+    centroidsDs,
+    "names",
+  );
+  const sources = readStringMetadata(
+    file,
+    "centroid_sources",
+    centroidsDs,
+    "sources",
+  );
 
   const ys = data.y ?? [];
   const zs = data.z ?? [];
@@ -1692,12 +2093,14 @@ function readCentroids(file: any, _videos: Video[], tracks: Track[]): [Centroid,
     const frameIdxVal = Number(frameIndices[i]);
 
     const trackIdx = Number(trackIndices[i]);
-    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const track =
+      trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
 
     const zVal = zs.length > i ? Number(zs[i]) : Number.NaN;
     const z = Number.isNaN(zVal) ? null : zVal;
 
-    const tsVal = trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
+    const tsVal =
+      trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
     const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
 
     const instanceIdx = Number(instanceIndices[i]);
@@ -1713,12 +2116,16 @@ function readCentroids(file: any, _videos: Video[], tracks: Track[]): [Centroid,
       source: sources[i] ?? "",
     };
 
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const isPred =
+      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
 
     let centroid: Centroid;
     if (isPred) {
       const scoreVal = Number(scores[i]);
-      centroid = new PredictedCentroid({ ...options, score: Number.isNaN(scoreVal) ? 0 : scoreVal });
+      centroid = new PredictedCentroid({
+        ...options,
+        score: Number.isNaN(scoreVal) ? 0 : scoreVal,
+      });
     } else {
       centroid = new UserCentroid(options);
     }
@@ -1732,7 +2139,12 @@ function readCentroids(file: any, _videos: Video[], tracks: Track[]): [Centroid,
   return centroids;
 }
 
-function slicePoints(data: Record<string, any[]>, start: number, end: number, predicted = false): number[][] {
+function slicePoints(
+  data: Record<string, any[]>,
+  start: number,
+  end: number,
+  predicted = false,
+): number[][] {
   const xs = data.x ?? [];
   const ys = data.y ?? [];
   const visible = data.visible ?? [];

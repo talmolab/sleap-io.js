@@ -65,32 +65,43 @@ function createMp4BoxMock() {
 }
 
 function createFetchMock(supportsRange = true) {
-  return vi.fn(async (_url: string, options?: { method?: string; headers?: Record<string, string> }) => {
-    if (options?.headers?.Range) {
-      if (supportsRange) {
+  return vi.fn(
+    async (
+      _url: string,
+      options?: { method?: string; headers?: Record<string, string> },
+    ) => {
+      if (options?.headers?.Range) {
+        if (supportsRange) {
+          return {
+            ok: true,
+            status: 206,
+            headers: {
+              get(name: string) {
+                return name.toLowerCase() === "content-range"
+                  ? "bytes 0-0/1024"
+                  : null;
+              },
+            },
+            arrayBuffer: async () => new ArrayBuffer(1),
+          } as any;
+        }
         return {
           ok: true,
-          status: 206,
+          status: 200,
           headers: {
-            get(name: string) {
-              return name.toLowerCase() === "content-range" ? "bytes 0-0/1024" : null;
+            get() {
+              return null;
             },
           },
-          arrayBuffer: async () => new ArrayBuffer(1),
+          blob: async () => new Blob([new Uint8Array(16)]),
         } as any;
       }
       return {
         ok: true,
-        status: 200,
-        headers: { get() { return null; } },
         blob: async () => new Blob([new Uint8Array(16)]),
       } as any;
-    }
-    return {
-      ok: true,
-      blob: async () => new Blob([new Uint8Array(16)]),
-    } as any;
-  });
+    },
+  );
 }
 
 describe("Mp4BoxVideoBackend", () => {
@@ -108,7 +119,7 @@ describe("Mp4BoxVideoBackend", () => {
 
     (globalThis as any).window = globalThis;
     (globalThis as any).document = {
-      createElement: vi.fn(() => ({ })),
+      createElement: vi.fn(() => ({})),
       head: { appendChild: vi.fn() },
     };
 
@@ -165,7 +176,9 @@ describe("Mp4BoxVideoBackend", () => {
   });
 
   it("returns frame times sorted by CTS", async () => {
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
     const backend = new Mp4BoxVideoBackend("https://example.com/video.mp4");
     const times = await backend.getFrameTimes();
     expect(times).toEqual([0, 1, 2]);
@@ -174,7 +187,9 @@ describe("Mp4BoxVideoBackend", () => {
   });
 
   it("selects mp4box backend for mp4 files", async () => {
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
     const { createVideoBackend } = await import("../../src/video/factory.js");
     const backend = await createVideoBackend("https://example.com/video.mp4");
     expect(backend).toBeInstanceOf(Mp4BoxVideoBackend);
@@ -185,7 +200,9 @@ describe("Mp4BoxVideoBackend", () => {
   });
 
   it("accepts a Blob source without calling fetch", async () => {
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
     const blob = new Blob([new Uint8Array(16)]);
     const backend = new Mp4BoxVideoBackend(blob);
     const times = await backend.getFrameTimes();
@@ -195,8 +212,12 @@ describe("Mp4BoxVideoBackend", () => {
   });
 
   it("accepts a File source without calling fetch", async () => {
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
-    const file = new File([new Uint8Array(16)], "test.mp4", { type: "video/mp4" });
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const file = new File([new Uint8Array(16)], "test.mp4", {
+      type: "video/mp4",
+    });
     const backend = new Mp4BoxVideoBackend(file);
     const times = await backend.getFrameTimes();
     expect(times).toEqual([0, 1, 2]);
@@ -207,7 +228,9 @@ describe("Mp4BoxVideoBackend", () => {
 
   it("falls back to blob when range requests are not supported", async () => {
     globalThis.fetch = createFetchMock(false) as any;
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
     const backend = new Mp4BoxVideoBackend("https://example.com/video.mp4");
     const times = await backend.getFrameTimes();
     expect(times).toEqual([0, 1, 2]);
@@ -215,7 +238,9 @@ describe("Mp4BoxVideoBackend", () => {
   });
 
   it("does not send HEAD requests", async () => {
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
     const backend = new Mp4BoxVideoBackend("https://example.com/video.mp4");
     await backend.getFrameTimes();
     const calls = (globalThis.fetch as any).mock.calls;
@@ -225,7 +250,9 @@ describe("Mp4BoxVideoBackend", () => {
   });
 
   it("cache hit returns immediately without decoding", async () => {
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
     const backend = new Mp4BoxVideoBackend("https://example.com/video.mp4");
     await backend.getFrameTimes();
 
@@ -238,7 +265,9 @@ describe("Mp4BoxVideoBackend", () => {
   });
 
   it("concurrent getFrame calls all resolve without hanging", async () => {
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
     const blob = new Blob([new Uint8Array(16)]);
     const backend = new Mp4BoxVideoBackend(blob);
     const results = await Promise.all([
@@ -252,7 +281,9 @@ describe("Mp4BoxVideoBackend", () => {
 
   it("rapid sequential calls only decode the latest frame", async () => {
     let decodeRangeCallCount = 0;
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
     const blob = new Blob([new Uint8Array(16)]);
     const backend = new Mp4BoxVideoBackend(blob);
     await backend.getFrameTimes();
@@ -274,7 +305,9 @@ describe("Mp4BoxVideoBackend", () => {
   });
 
   it("AbortSignal cancels decode before it starts", async () => {
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
     const blob = new Blob([new Uint8Array(16)]);
     const backend = new Mp4BoxVideoBackend(blob);
     const controller = new AbortController();
@@ -285,7 +318,9 @@ describe("Mp4BoxVideoBackend", () => {
   });
 
   it("returns null for out-of-range frame indices", async () => {
-    const { Mp4BoxVideoBackend } = await import("../../src/video/mp4box-video.js");
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
     const blob = new Blob([new Uint8Array(16)]);
     const backend = new Mp4BoxVideoBackend(blob);
     expect(await backend.getFrame(-1)).toBeNull();

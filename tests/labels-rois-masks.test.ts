@@ -17,7 +17,12 @@ describe("Labels ROI and Mask integration", () => {
     const video = new Video({ filename: "test.mp4" });
     const roi = ROI.fromBbox(10, 20, 100, 200, { video });
     const mask = SegmentationMask.fromArray(new Uint8Array(16), 4, 4);
-    const lf = new LabeledFrame({ video, frameIdx: 0, rois: [roi], masks: [mask] });
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      rois: [roi],
+      masks: [mask],
+    });
     const labels = new Labels({ labeledFrames: [lf], videos: [video] });
     expect(labels.rois).toHaveLength(1);
     expect(labels.masks).toHaveLength(1);
@@ -149,11 +154,19 @@ describe("Labels ROI and Mask integration", () => {
     const roi1 = ROI.fromBbox(0, 0, 10, 10, { video: v1, category: "animal" });
     const roi2 = ROI.fromBbox(0, 0, 10, 10, { video: v1, category: "arena" });
     const roi3 = ROI.fromBbox(0, 0, 10, 10, { video: v1, category: "animal" });
-    const lf0 = new LabeledFrame({ video: v1, frameIdx: 0, rois: [roi1, roi2] });
+    const lf0 = new LabeledFrame({
+      video: v1,
+      frameIdx: 0,
+      rois: [roi1, roi2],
+    });
     const lf5 = new LabeledFrame({ video: v1, frameIdx: 5, rois: [roi3] });
     const labels = new Labels({ labeledFrames: [lf0, lf5] });
 
-    const result = labels.getRois({ video: v1, category: "animal", frameIdx: 0 });
+    const result = labels.getRois({
+      video: v1,
+      category: "animal",
+      frameIdx: 0,
+    });
     expect(result).toEqual([roi1]);
   });
 
@@ -171,8 +184,12 @@ describe("Labels ROI and Mask integration", () => {
 
   it("getMasks filters by category", () => {
     const v = new Video({ filename: "test.mp4" });
-    const m1 = SegmentationMask.fromArray(new Uint8Array(4), 2, 2, { category: "bg" });
-    const m2 = SegmentationMask.fromArray(new Uint8Array(4), 2, 2, { category: "fg" });
+    const m1 = SegmentationMask.fromArray(new Uint8Array(4), 2, 2, {
+      category: "bg",
+    });
+    const m2 = SegmentationMask.fromArray(new Uint8Array(4), 2, 2, {
+      category: "fg",
+    });
     const lf = new LabeledFrame({ video: v, frameIdx: 0, masks: [m1, m2] });
     const labels = new Labels({ labeledFrames: [lf] });
 
@@ -207,7 +224,13 @@ describe("Labels ROI and Mask integration", () => {
 describe("getBboxes", () => {
   it("returns all bboxes without filters", () => {
     const bb1 = new UserBoundingBox({ x1: 0, y1: 10, x2: 100, y2: 90 });
-    const bb2 = new PredictedBoundingBox({ x1: 0, y1: 5, x2: 40, y2: 35, score: 0.9 });
+    const bb2 = new PredictedBoundingBox({
+      x1: 0,
+      y1: 5,
+      x2: 40,
+      y2: 35,
+      score: 0.9,
+    });
     const v = new Video({ filename: "test.mp4" });
     const lf = new LabeledFrame({ video: v, frameIdx: 0, bboxes: [bb1, bb2] });
     const labels = new Labels({ labeledFrames: [lf] });
@@ -228,7 +251,13 @@ describe("getBboxes", () => {
 
   it("filters by predicted", () => {
     const bb1 = new UserBoundingBox({ x1: 0, y1: 10, x2: 100, y2: 90 });
-    const bb2 = new PredictedBoundingBox({ x1: 0, y1: 5, x2: 40, y2: 35, score: 0.9 });
+    const bb2 = new PredictedBoundingBox({
+      x1: 0,
+      y1: 5,
+      x2: 40,
+      y2: 35,
+      score: 0.9,
+    });
     const v = new Video({ filename: "test.mp4" });
     const lf = new LabeledFrame({ video: v, frameIdx: 0, bboxes: [bb1, bb2] });
     const labels = new Labels({ labeledFrames: [lf] });

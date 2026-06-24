@@ -48,9 +48,21 @@ describe("Labels.extract", () => {
     const skel = new Skeleton({ nodes: ["a", "b"] });
     const labels = new Labels({
       labeledFrames: [
-        new LabeledFrame({ video: video1, frameIdx: 0, instances: [zeros2x2(skel)] }),
-        new LabeledFrame({ video: video1, frameIdx: 1, instances: [zeros2x2(skel)] }),
-        new LabeledFrame({ video: video2, frameIdx: 0, instances: [zeros2x2(skel)] }),
+        new LabeledFrame({
+          video: video1,
+          frameIdx: 0,
+          instances: [zeros2x2(skel)],
+        }),
+        new LabeledFrame({
+          video: video1,
+          frameIdx: 1,
+          instances: [zeros2x2(skel)],
+        }),
+        new LabeledFrame({
+          video: video2,
+          frameIdx: 0,
+          instances: [zeros2x2(skel)],
+        }),
       ],
       suggestions: [
         new SuggestionFrame({ video: video1, frameIdx: 2 }),
@@ -156,7 +168,9 @@ describe("Labels.extract", () => {
     // Shared within the extracted subgraph (copied exactly once).
     expect(t0).toBe(t1);
     // Same shared video too.
-    expect(extracted.labeledFrames[0].video).toBe(extracted.labeledFrames[1].video);
+    expect(extracted.labeledFrames[0].video).toBe(
+      extracted.labeledFrames[1].video,
+    );
     expect(extracted.labeledFrames[0].video).not.toBe(video);
     // Source unchanged.
     expect(inst0.track).toBe(track);
@@ -320,7 +334,11 @@ describe("Labels.split", () => {
         }),
       );
     }
-    return new Labels({ labeledFrames: lfs, videos: [video], skeletons: [skel] });
+    return new Labels({
+      labeledFrames: lfs,
+      videos: [video],
+      skeletons: [skel],
+    });
   }
 
   it("fraction split n=0.6 -> 6 / 4", () => {
@@ -375,7 +393,12 @@ describe("Labels.split", () => {
       const inst = Instance.fromArray([[i, 0.0]], skeleton);
       const c = new UserCentroid({ x: i, y: 0.0 });
       lfs.push(
-        new LabeledFrame({ video, frameIdx: i, instances: [inst], centroids: [c] }),
+        new LabeledFrame({
+          video,
+          frameIdx: i,
+          instances: [inst],
+          centroids: [c],
+        }),
       );
     }
     const labels = new Labels({

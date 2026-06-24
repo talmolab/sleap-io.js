@@ -90,7 +90,7 @@ interface SourceData {
  */
 export async function renderImage(
   source: Labels | LabeledFrame | (Instance | PredictedInstance)[],
-  options: RenderOptions = {}
+  options: RenderOptions = {},
 ): Promise<ImageData> {
   // Merge with defaults
   const opts = { ...DEFAULT_OPTIONS, ...options };
@@ -111,9 +111,7 @@ export async function renderImage(
     !hasNonInstanceAnnotations(source) &&
     !trailsPossible
   ) {
-    throw new Error(
-      "No instances to render and no background image provided"
-    );
+    throw new Error("No instances to render and no background image provided");
   }
 
   // Determine frame dimensions
@@ -122,7 +120,7 @@ export async function renderImage(
 
   if (!width || !height) {
     throw new Error(
-      "Cannot determine frame size. Provide image, width/height options, or ensure source has frame data."
+      "Cannot determine frame size. Provide image, width/height options, or ensure source has frame data.",
     );
   }
 
@@ -222,7 +220,7 @@ export async function renderImage(
     nodeNames.length,
     opts.palette,
     tracks,
-    trackIndexMap
+    trackIndexMap,
   );
 
   // Create render context for callbacks
@@ -235,7 +233,7 @@ export async function renderImage(
     edgeInds,
     nodeNames,
     opts.scale,
-    [0, 0]
+    [0, 0],
   );
 
   // Pre-render callback
@@ -251,7 +249,7 @@ export async function renderImage(
     const framesByIdx = resolveTrailFrames(
       labelsFrame,
       frameIdx,
-      options.trailFrames
+      options.trailFrames,
     );
     // The current frame may be empty, so fall back to a skeleton from the trail
     // context for resolving node-name targets.
@@ -263,13 +261,13 @@ export async function renderImage(
       const trailTracks =
         "labeledFrames" in labelsFrame
           ? labelsFrame.tracks
-          : options.trailTracks ?? collectTracks(framesByIdx.values());
+          : (options.trailTracks ?? collectTracks(framesByIdx.values()));
       const trailHasTracks = trailTracks.length > 0;
       const trailTrackIndexMap = new Map(trailTracks.map((t, i) => [t, i]));
       const nColors = nTrailPaletteColors(
         trailHasTracks,
         trailTracks.length,
-        framesByIdx.values()
+        framesByIdx.values(),
       );
       const trailPalette = getPalette(opts.palette as PaletteName, nColors);
       const trailTargets = resolveTrailNode(opts.trailNode, trailSkeleton);
@@ -300,7 +298,7 @@ export async function renderImage(
         drawTrails(
           ctx as unknown as CanvasRenderingContext2D,
           trails,
-          trailDrawOpts
+          trailDrawOpts,
         );
       }
     }
@@ -338,7 +336,7 @@ export async function renderImage(
         // Edge color: use node color for 'node' scheme, else instance color
         const edgeColor: RGB =
           colorScheme === "node"
-            ? colors.nodeColors?.[dstIdx] ?? instanceColor
+            ? (colors.nodeColors?.[dstIdx] ?? instanceColor)
             : instanceColor;
 
         ctx.strokeStyle = rgbToCSS(edgeColor, opts.alpha);
@@ -366,7 +364,7 @@ export async function renderImage(
 
         const nodeColor: RGB =
           colorScheme === "node"
-            ? colors.nodeColors?.[nodeIdx] ?? instanceColor
+            ? (colors.nodeColors?.[nodeIdx] ?? instanceColor)
             : instanceColor;
 
         drawMarker(
@@ -374,7 +372,7 @@ export async function renderImage(
           x * opts.scale,
           y * opts.scale,
           scaledMarkerSize,
-          rgbToCSS(nodeColor, opts.alpha)
+          rgbToCSS(nodeColor, opts.alpha),
         );
       }
     }
@@ -394,7 +392,7 @@ export async function renderImage(
         instance.track?.name ?? null,
         "score" in instance ? (instance as PredictedInstance).score : null,
         opts.scale,
-        [0, 0]
+        [0, 0],
       );
       opts.perInstanceCallback(instCtx);
     }
@@ -407,7 +405,12 @@ export async function renderImage(
 
   // Return ImageData
   // Cast to standard ImageData for compatibility
-  return ctx.getImageData(0, 0, scaledWidth, scaledHeight) as unknown as ImageData;
+  return ctx.getImageData(
+    0,
+    0,
+    scaledWidth,
+    scaledHeight,
+  ) as unknown as ImageData;
 }
 
 /**
@@ -421,7 +424,7 @@ export async function renderImage(
  * extend when that lands.
  */
 function hasNonInstanceAnnotations(
-  source: Labels | LabeledFrame | (Instance | PredictedInstance)[]
+  source: Labels | LabeledFrame | (Instance | PredictedInstance)[],
 ): boolean {
   if (Array.isArray(source)) return false;
   const lf: LabeledFrame | undefined =
@@ -452,7 +455,7 @@ function hasNonInstanceAnnotations(
 function resolveTrailFrames(
   source: Labels | LabeledFrame,
   frameIdx: number,
-  trailFrames?: LabeledFrame[] | Map<number, LabeledFrame>
+  trailFrames?: LabeledFrame[] | Map<number, LabeledFrame>,
 ): Map<number, LabeledFrame> | null {
   if ("labeledFrames" in source) {
     const rendered = source.labeledFrames[0];
@@ -474,7 +477,7 @@ function resolveTrailFrames(
 
 /** First instance skeleton found across the trail context frames, or `null`. */
 function firstSkeletonIn(
-  framesByIdx: Map<number, LabeledFrame> | null
+  framesByIdx: Map<number, LabeledFrame> | null,
 ): Skeleton | null {
   if (!framesByIdx) return null;
   for (const lf of framesByIdx.values()) {
@@ -488,7 +491,7 @@ function firstSkeletonIn(
  */
 function extractSourceData(
   source: Labels | LabeledFrame | (Instance | PredictedInstance)[],
-  options: RenderOptions
+  options: RenderOptions,
 ): SourceData {
   // Case 1: Array of Instances
   if (Array.isArray(source)) {
@@ -517,7 +520,11 @@ function extractSourceData(
   }
 
   // Case 2: LabeledFrame
-  if ("instances" in source && "frameIdx" in source && !("labeledFrames" in source)) {
+  if (
+    "instances" in source &&
+    "frameIdx" in source &&
+    !("labeledFrames" in source)
+  ) {
     const frame = source as LabeledFrame;
     const skeleton =
       frame.instances.length > 0 ? frame.instances[0].skeleton : null;
@@ -577,9 +584,7 @@ function extractSourceData(
   const firstFrame = labels.labeledFrames[0];
   const skeleton =
     labels.skeletons?.[0] ??
-    (firstFrame.instances.length > 0
-      ? firstFrame.instances[0].skeleton
-      : null);
+    (firstFrame.instances.length > 0 ? firstFrame.instances[0].skeleton : null);
 
   // Try to get video dimensions
   let frameSize: [number, number] = [options.width ?? 0, options.height ?? 0];
@@ -627,14 +632,14 @@ function buildColorMap(
   nNodes: number,
   paletteName: string,
   tracks: Track[],
-  trackIndexMap: Map<Track, number>
+  trackIndexMap: Map<Track, number>,
 ): { instanceColors?: RGB[]; nodeColors?: RGB[] } {
   switch (scheme) {
     case "instance":
       return {
         instanceColors: getPalette(
           paletteName as PaletteName,
-          Math.max(1, instances.length)
+          Math.max(1, instances.length),
         ),
       };
 
@@ -668,7 +673,7 @@ function buildColorMap(
       return {
         instanceColors: getPalette(
           paletteName as PaletteName,
-          Math.max(1, instances.length)
+          Math.max(1, instances.length),
         ),
       };
   }
@@ -693,7 +698,7 @@ export async function toPNG(imageData: ImageData): Promise<Buffer> {
  */
 export async function toJPEG(
   imageData: ImageData,
-  quality: number = 0.9
+  quality: number = 0.9,
 ): Promise<Buffer> {
   const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
@@ -708,7 +713,7 @@ export async function toJPEG(
  */
 export async function toDataURL(
   imageData: ImageData,
-  format: "png" | "jpeg" = "png"
+  format: "png" | "jpeg" = "png",
 ): Promise<string> {
   const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
@@ -726,7 +731,7 @@ export async function toDataURL(
  */
 export async function saveImage(
   imageData: ImageData,
-  path: string
+  path: string,
 ): Promise<void> {
   const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);

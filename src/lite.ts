@@ -129,7 +129,7 @@ export interface SlpMetadata {
  */
 export async function loadSlpMetadata(
   source: JsfiveSource,
-  options?: { filename?: string }
+  options?: { filename?: string },
 ): Promise<SlpMetadata> {
   const file = openJsfiveFile(source, options?.filename);
 
@@ -152,9 +152,12 @@ export async function loadSlpMetadata(
     const formatId = Number(
       (metadataAttrs.format_id as { value?: unknown })?.value ??
         metadataAttrs.format_id ??
-        1.0
+        1.0,
     );
-    const metadataJson = parseJsonAttr(metadataAttrs.json) as Record<string, unknown> | null;
+    const metadataJson = parseJsonAttr(metadataAttrs.json) as Record<
+      string,
+      unknown
+    > | null;
 
     if (!metadataJson) {
       throw new Error("Invalid SLP file: missing metadata.attrs.json");
@@ -190,7 +193,8 @@ export async function loadSlpMetadata(
       if (attrs.format !== undefined) enriched.format = String(attrs.format);
       if (attrs.width !== undefined) enriched.width = Number(attrs.width);
       if (attrs.height !== undefined) enriched.height = Number(attrs.height);
-      if (attrs.channels !== undefined) enriched.channels = Number(attrs.channels);
+      if (attrs.channels !== undefined)
+        enriched.channels = Number(attrs.channels);
 
       // Try to get frame count from shape
       const shape = getShape(videoDs);
@@ -230,7 +234,7 @@ export async function loadSlpMetadata(
 
     // Check for embedded images by looking at video metadata
     const hasEmbeddedImages = videos.some(
-      (v) => v.embedded && (v.format || v.width)
+      (v) => v.embedded && (v.format || v.width),
     );
 
     return {
@@ -243,7 +247,9 @@ export async function loadSlpMetadata(
       sessions,
       counts,
       hasEmbeddedImages,
-      provenance: metadataJson.provenance as Record<string, unknown> | undefined,
+      provenance: metadataJson.provenance as
+        | Record<string, unknown>
+        | undefined,
     };
   } finally {
     file.close();

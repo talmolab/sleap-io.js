@@ -16,7 +16,7 @@ import { ImageVideoBackend } from "../../src/video/image-video.js";
 async function makePng(
   w: number,
   h: number,
-  rgb: [number, number, number]
+  rgb: [number, number, number],
 ): Promise<Uint8Array> {
   const sc = await import("skia-canvas");
   const canvas = new sc.Canvas(w, h);
@@ -54,7 +54,10 @@ describe("ImageVideoBackend", () => {
   it("reports C=1 for a grayscale first frame (Python detect_grayscale parity)", async () => {
     const gray = await makePng(2, 2, [128, 128, 128]);
     const { fn } = stubReader({ "g.png": gray });
-    const be = await ImageVideoBackend.create({ filename: ["g.png"], reader: fn });
+    const be = await ImageVideoBackend.create({
+      filename: ["g.png"],
+      reader: fn,
+    });
     expect(be.shape).toEqual([1, 2, 2, 1]);
   });
 
@@ -75,7 +78,10 @@ describe("ImageVideoBackend", () => {
   it("returns null for an out-of-range frame index", async () => {
     const red = await makePng(2, 2, [255, 0, 0]);
     const { fn } = stubReader({ "0.png": red });
-    const be = await ImageVideoBackend.create({ filename: ["0.png"], reader: fn });
+    const be = await ImageVideoBackend.create({
+      filename: ["0.png"],
+      reader: fn,
+    });
     expect(await be.getFrame(1)).toBeNull();
     expect(await be.getFrame(-1)).toBeNull();
   });
@@ -83,7 +89,10 @@ describe("ImageVideoBackend", () => {
   it("caches decoded frames (reader hit once per index)", async () => {
     const red = await makePng(2, 2, [255, 0, 0]);
     const { fn, reads } = stubReader({ "0.png": red });
-    const be = await ImageVideoBackend.create({ filename: ["0.png"], reader: fn });
+    const be = await ImageVideoBackend.create({
+      filename: ["0.png"],
+      reader: fn,
+    });
     await be.getFrame(0);
     await be.getFrame(0);
     // One read for the shape probe + at most one for the frame; never re-read.

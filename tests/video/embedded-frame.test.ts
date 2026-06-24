@@ -15,7 +15,11 @@ import {
   trimPaddedRow,
 } from "../../src/video/embedded-frame.js";
 import { Hdf5VideoBackend } from "../../src/video/hdf5-video.js";
-import { getH5Module, ensureH5StagingDir, openH5File } from "../../src/codecs/slp/h5.js";
+import {
+  getH5Module,
+  ensureH5StagingDir,
+  openH5File,
+} from "../../src/codecs/slp/h5.js";
 import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -80,8 +84,15 @@ describe("embedded-frame helpers", () => {
   });
 
   it("rowSlice selects only the first dim", () => {
-    expect(rowSlice([3, 100], 1)).toEqual([[1, 2], [0, 100]]);
-    expect(rowSlice([3, 4, 5], 2)).toEqual([[2, 3], [0, 4], [0, 5]]);
+    expect(rowSlice([3, 100], 1)).toEqual([
+      [1, 2],
+      [0, 100],
+    ]);
+    expect(rowSlice([3, 4, 5], 2)).toEqual([
+      [2, 3],
+      [0, 4],
+      [0, 5],
+    ]);
   });
 
   it("computeOffsetsFromSizes is a cumulative sum", () => {
@@ -129,7 +140,12 @@ describe("readEmbeddedFrameBytes", () => {
     expect(out).not.toBeNull();
     expect(Array.from(out!)).toEqual([0x89, 0x50, 0x4e, 0x47, 0x01]);
     // Exactly one slice, targeting only row 1 — never the whole dataset.
-    expect(calls).toEqual([[[1, 2], [0, M]]]);
+    expect(calls).toEqual([
+      [
+        [1, 2],
+        [0, M],
+      ],
+    ]);
   });
 
   it("padded 2D: trims to frame_sizes[index] when present", async () => {
@@ -173,12 +189,18 @@ describe("readEmbeddedFrameBytes", () => {
       frameCount: 2, // == 2 -> vlen
       format: "png",
       onSlice: () => {
-        throw new Error("readSlice must not be called for vlen when readVlenElement exists");
+        throw new Error(
+          "readSlice must not be called for vlen when readVlenElement exists",
+        );
       },
       onVlenElement: (i) => blobs[i],
     });
-    expect(Array.from((await readEmbeddedFrameBytes(reader, 1))!)).toEqual([0x89, 0x50, 0x02]);
-    expect(Array.from((await readEmbeddedFrameBytes(reader, 0))!)).toEqual([0x89, 0x50, 0x01]);
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 1))!)).toEqual([
+      0x89, 0x50, 0x02,
+    ]);
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 0))!)).toEqual([
+      0x89, 0x50, 0x01,
+    ]);
     expect(vlenCalls).toEqual([1, 0]);
     expect(calls.length).toBe(0); // no hyperslab slice, no whole read
   });
@@ -187,19 +209,28 @@ describe("readEmbeddedFrameBytes", () => {
     // When the backend can't do the manual read (no Module access), the vlen
     // layout falls back to a single whole-dataset read + cache — never the
     // crashing per-element hyperslab slice.
-    const blobs = [int8([0x89, 0x50, 0x01]), int8([0x89, 0x50, 0x02]), int8([0x89, 0x50, 0x03])];
+    const blobs = [
+      int8([0x89, 0x50, 0x01]),
+      int8([0x89, 0x50, 0x02]),
+      int8([0x89, 0x50, 0x03]),
+    ];
     const { reader, calls } = fakeReader({
       shape: [3],
       frameCount: 3, // == length -> vlen
       format: "png",
       onSlice: (slice) => {
         // Only the whole-dataset read (no slice arg) is allowed.
-        if (slice !== undefined) throw new Error("vlen fallback must not sub-slice");
+        if (slice !== undefined)
+          throw new Error("vlen fallback must not sub-slice");
         return blobs;
       },
     });
-    expect(Array.from((await readEmbeddedFrameBytes(reader, 0))!)).toEqual([0x89, 0x50, 0x01]);
-    expect(Array.from((await readEmbeddedFrameBytes(reader, 2))!)).toEqual([0x89, 0x50, 0x03]);
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 0))!)).toEqual([
+      0x89, 0x50, 0x01,
+    ]);
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 2))!)).toEqual([
+      0x89, 0x50, 0x03,
+    ]);
     expect(calls).toEqual([undefined]); // whole read exactly once, then cached
   });
 
@@ -251,8 +282,12 @@ describe("readEmbeddedFrameBytes", () => {
         return whole; // TypedArray -> magic-scan branch
       },
     });
-    expect(Array.from((await readEmbeddedFrameBytes(reader, 0))!)).toEqual(Array.from(frameA));
-    expect(Array.from((await readEmbeddedFrameBytes(reader, 1))!)).toEqual(Array.from(frameB));
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 0))!)).toEqual(
+      Array.from(frameA),
+    );
+    expect(Array.from((await readEmbeddedFrameBytes(reader, 1))!)).toEqual(
+      Array.from(frameB),
+    );
     expect(calls.length).toBe(1); // read whole once, cached
   });
 });
@@ -312,7 +347,11 @@ function fakeModule(blobs: Uint8Array[]): {
 }
 
 describe("readVlenElementManual", () => {
-  const vlenDs = { file_id: 0, path: "/video0/video", metadata: { size: 8, type: 9 } };
+  const vlenDs = {
+    file_id: 0,
+    path: "/video0/video",
+    metadata: { size: 8, type: 9 },
+  };
 
   it("reads one element, copies the bytes, and frees the inner blob + struct", () => {
     const blobs = [
@@ -343,9 +382,21 @@ describe("readVlenElementManual", () => {
   it("returns null (falls back) when not a wasm32 vlen dataset", () => {
     const { Module } = fakeModule([Uint8Array.from([1, 2, 3])]);
     // Wrong hvl_t size.
-    expect(readVlenElementManual(Module, { file_id: 0, path: "x", metadata: { size: 16, type: 9 } }, 0)).toBeNull();
+    expect(
+      readVlenElementManual(
+        Module,
+        { file_id: 0, path: "x", metadata: { size: 16, type: 9 } },
+        0,
+      ),
+    ).toBeNull();
     // Not the vlen datatype class (and vlen flag false).
-    expect(readVlenElementManual(Module, { file_id: 0, path: "x", metadata: { size: 8, type: 0 } }, 0)).toBeNull();
+    expect(
+      readVlenElementManual(
+        Module,
+        { file_id: 0, path: "x", metadata: { size: 8, type: 0 } },
+        0,
+      ),
+    ).toBeNull();
     // No Module.
     expect(readVlenElementManual(null, vlenDs, 0)).toBeNull();
   });
@@ -399,12 +450,16 @@ async function makePaddedFixture(frames: Uint8Array[]): Promise<{
  * not whole-dataset reads — is used. frame_numbers/frame_sizes are passed
  * through unwrapped (the backend reads those eagerly and small).
  */
-function wrapWithSpy(rf: any, close: () => void): { file: any; spy: { value: number; slice: number } } {
+function wrapWithSpy(
+  rf: any,
+  close: () => void,
+): { file: any; spy: { value: number; slice: number } } {
   const spy = { value: 0, slice: 0 };
   const file = {
     get(p: string) {
       const ds = rf.get(p);
-      if (!ds || p.endsWith("frame_numbers") || p.endsWith("frame_sizes")) return ds;
+      if (!ds || p.endsWith("frame_numbers") || p.endsWith("frame_sizes"))
+        return ds;
       return new Proxy(ds, {
         get(target, prop, recv) {
           if (prop === "value") {
@@ -457,9 +512,17 @@ describe("Hdf5VideoBackend single-frame slicing (2D padded)", () => {
     // A JPEG payload that contains the 3-byte JPEG magic (FF D8 FF) mid-stream,
     // which would defeat the old magic-byte scan but is irrelevant to slicing.
     const frame = Uint8Array.from([
-      0xff, 0xd8, 0xff, 0xe0, // SOI + APP0
-      0x12, 0xff, 0xd8, 0xff, 0x34, // embedded false-positive magic
-      0xff, 0xd9, // EOI
+      0xff,
+      0xd8,
+      0xff,
+      0xe0, // SOI + APP0
+      0x12,
+      0xff,
+      0xd8,
+      0xff,
+      0x34, // embedded false-positive magic
+      0xff,
+      0xd9, // EOI
     ]);
     const { file, spy } = await makePaddedFixture([frame]);
 
@@ -495,8 +558,12 @@ describe("Hdf5VideoBackend single-frame slicing (2D padded)", () => {
       channelOrder: "RGB",
     });
 
-    expect(Array.from((await backend.getFrame(20)) as Uint8Array)).toEqual(Array.from(frame20));
-    expect(Array.from((await backend.getFrame(10)) as Uint8Array)).toEqual(Array.from(frame10));
+    expect(Array.from((await backend.getFrame(20)) as Uint8Array)).toEqual(
+      Array.from(frame20),
+    );
+    expect(Array.from((await backend.getFrame(10)) as Uint8Array)).toEqual(
+      Array.from(frame10),
+    );
     expect(await backend.getFrame(15)).toBeNull(); // not an embedded frame number
     expect(spy.value).toBe(0);
 
@@ -506,11 +573,15 @@ describe("Hdf5VideoBackend single-frame slicing (2D padded)", () => {
 
 describe("Hdf5VideoBackend frame reads (real vlen pkg.slp)", () => {
   it("reads a vlen element via the manual hvl_t path — neither slice() nor value", async () => {
-    const bytes = fs.readFileSync(path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"));
+    const bytes = fs.readFileSync(
+      path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"),
+    );
     const { file: rawFile, close } = await openH5File(new Uint8Array(bytes));
     const { file, spy } = wrapWithSpy(rawFile, close);
 
-    const frameNumbers = Array.from(rawFile.get("video0/frame_numbers").value).map((v: any) => Number(v));
+    const frameNumbers = Array.from(
+      rawFile.get("video0/frame_numbers").value,
+    ).map((v: any) => Number(v));
     const backend = new Hdf5VideoBackend({
       filename: ".",
       file,
@@ -531,9 +602,15 @@ describe("Hdf5VideoBackend frame reads (real vlen pkg.slp)", () => {
 
     // Byte-for-byte identical to the same element from the safe whole-dataset read.
     const whole = rawFile.get("video0/video").value as Int8Array[];
-    const ref = new Uint8Array(whole[0].buffer, whole[0].byteOffset, whole[0].length);
+    const ref = new Uint8Array(
+      whole[0].buffer,
+      whole[0].byteOffset,
+      whole[0].length,
+    );
     expect(out.length).toBe(ref.length);
-    expect(Array.from(out.subarray(0, 16))).toEqual(Array.from(ref.subarray(0, 16)));
+    expect(Array.from(out.subarray(0, 16))).toEqual(
+      Array.from(ref.subarray(0, 16)),
+    );
 
     file._close();
   });
@@ -546,7 +623,9 @@ describe("Hdf5VideoBackend frame reads (real vlen pkg.slp)", () => {
   // does not. This is the regression guard for the N>1 case that minimal_instance
   // (N=1) can't cover, since a 1-element slice happens to select the whole dataset.
   it("multi-frame (N>1) vlen: reads every frame via the manual path, byte-identical, flat heap", async () => {
-    const bytes = fs.readFileSync(path.join(fixtureRoot, "slp", "vlen_multiframe.pkg.slp"));
+    const bytes = fs.readFileSync(
+      path.join(fixtureRoot, "slp", "vlen_multiframe.pkg.slp"),
+    );
     const { file: rawFile, close } = await openH5File(new Uint8Array(bytes));
     const { file, spy } = wrapWithSpy(rawFile, close);
 
@@ -555,7 +634,9 @@ describe("Hdf5VideoBackend frame reads (real vlen pkg.slp)", () => {
     expect(ds.metadata.size).toBe(8); // wasm32 hvl_t
     const whole = ds.value as Int8Array[]; // safe whole-read ground truth (off the raw file)
 
-    const frameNumbers = Array.from(rawFile.get("video0/frame_numbers").value).map((v: any) => Number(v));
+    const frameNumbers = Array.from(
+      rawFile.get("video0/frame_numbers").value,
+    ).map((v: any) => Number(v));
     const backend = new Hdf5VideoBackend({
       filename: ".",
       file,
@@ -569,13 +650,19 @@ describe("Hdf5VideoBackend frame reads (real vlen pkg.slp)", () => {
     // the whole-read — and NO abort (the whole point of the fix).
     for (let i = 0; i < frameNumbers.length; i++) {
       const out = (await backend.getFrame(frameNumbers[i])) as Uint8Array;
-      const ref = new Uint8Array(whole[i].buffer, whole[i].byteOffset, whole[i].length);
+      const ref = new Uint8Array(
+        whole[i].buffer,
+        whole[i].byteOffset,
+        whole[i].length,
+      );
       expect(Array.from(out.subarray(0, 4))).toEqual([0x89, 0x50, 0x4e, 0x47]);
       expect(out.length).toBe(ref.length);
       expect(Array.from(out)).toEqual(Array.from(ref));
     }
     // Per-element lengths genuinely vary (it is vlen, not 2D-padded/concat).
-    expect([...new Set(frameNumbers.map((_, i) => whole[i].length))].length).toBeGreaterThan(1);
+    expect(
+      [...new Set(frameNumbers.map((_, i) => whole[i].length))].length,
+    ).toBeGreaterThan(1);
 
     // The crashing high-level slice() is never called, and the whole vlen dataset
     // is never read through the backend — only the manual per-element read.
@@ -587,7 +674,8 @@ describe("Hdf5VideoBackend frame reads (real vlen pkg.slp)", () => {
     // whole-dataset read on the hot path).
     const mod: any = await getH5Module();
     const heap0 = mod.Module.HEAPU8.byteLength;
-    for (let r = 0; r < 300; r++) await backend.getFrame(frameNumbers[r % frameNumbers.length]);
+    for (let r = 0; r < 300; r++)
+      await backend.getFrame(frameNumbers[r % frameNumbers.length]);
     expect(mod.Module.HEAPU8.byteLength).toBe(heap0);
 
     file._close();

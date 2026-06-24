@@ -4,12 +4,22 @@ import { Video } from "./video.js";
 import { Identity } from "./identity.js";
 import { Instance3D } from "./instance3d.js";
 
-export function rodriguesTransformation(input: number[][] | number[]): { matrix: number[][]; vector: number[] } {
+export function rodriguesTransformation(input: number[][] | number[]): {
+  matrix: number[][];
+  vector: number[];
+} {
   if (input.length === 3 && Array.isArray(input[0]) === false) {
     const rvec = input as number[];
     const theta = Math.hypot(rvec[0], rvec[1], rvec[2]);
     if (theta === 0) {
-      return { matrix: [[1, 0, 0],[0, 1, 0],[0, 0, 1]], vector: rvec };
+      return {
+        matrix: [
+          [1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1],
+        ],
+        vector: rvec,
+      };
     }
     const axis = rvec.map((v) => v / theta);
     const [x, y, z] = axis;
@@ -20,7 +30,11 @@ export function rodriguesTransformation(input: number[][] | number[]): { matrix:
       [z, 0, -x],
       [-y, x, 0],
     ];
-    const I = [[1, 0, 0],[0, 1, 0],[0, 0, 1]];
+    const I = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1],
+    ];
     const KK = multiply3x3(K, K);
     const matrix = add3x3(add3x3(I, scale3x3(K, sin)), scale3x3(KK, 1 - cos));
     return { matrix, vector: rvec };
@@ -65,7 +79,14 @@ export class Camera {
   distortions?: number[];
   size?: [number, number];
 
-  constructor(options: { name?: string; rvec: number[]; tvec: number[]; matrix?: number[][]; distortions?: number[]; size?: [number, number] }) {
+  constructor(options: {
+    name?: string;
+    rvec: number[];
+    tvec: number[];
+    matrix?: number[][];
+    distortions?: number[];
+    size?: [number, number];
+  }) {
     this.name = options.name;
     this.rvec = options.rvec;
     this.tvec = options.tvec;
@@ -79,7 +100,10 @@ export class CameraGroup {
   cameras: Camera[];
   metadata: Record<string, unknown>;
 
-  constructor(options?: { cameras?: Camera[]; metadata?: Record<string, unknown> }) {
+  constructor(options?: {
+    cameras?: Camera[];
+    metadata?: Record<string, unknown>;
+  }) {
     this.cameras = options?.cameras ?? [];
     this.metadata = options?.metadata ?? {};
   }
@@ -101,7 +125,10 @@ export class InstanceGroup {
     instance3d?: Instance3D;
     metadata?: Record<string, unknown>;
   }) {
-    this.instanceByCamera = options.instanceByCamera instanceof Map ? options.instanceByCamera : new Map();
+    this.instanceByCamera =
+      options.instanceByCamera instanceof Map
+        ? options.instanceByCamera
+        : new Map();
     if (!(options.instanceByCamera instanceof Map)) {
       for (const [key, value] of Object.entries(options.instanceByCamera)) {
         const camera = key as unknown as Camera;
@@ -122,7 +149,9 @@ export class InstanceGroup {
 
   set points(value: number[][] | undefined) {
     if (this.instance3d?.points && value != null) {
-      console.warn("Setting points on an InstanceGroup that has an Instance3D — the getter will return instance3d.points, not this value. Set instance3d.points directly instead.");
+      console.warn(
+        "Setting points on an InstanceGroup that has an Instance3D — the getter will return instance3d.points, not this value. Set instance3d.points directly instead.",
+      );
     }
     this._points = value;
   }
@@ -141,12 +170,17 @@ export class FrameGroup {
   constructor(options: {
     frameIdx: number;
     instanceGroups: InstanceGroup[];
-    labeledFrameByCamera: Map<Camera, LabeledFrame> | Record<string, LabeledFrame>;
+    labeledFrameByCamera:
+      | Map<Camera, LabeledFrame>
+      | Record<string, LabeledFrame>;
     metadata?: Record<string, unknown>;
   }) {
     this.frameIdx = options.frameIdx;
     this.instanceGroups = options.instanceGroups;
-    this.labeledFrameByCamera = options.labeledFrameByCamera instanceof Map ? options.labeledFrameByCamera : new Map();
+    this.labeledFrameByCamera =
+      options.labeledFrameByCamera instanceof Map
+        ? options.labeledFrameByCamera
+        : new Map();
     if (!(options.labeledFrameByCamera instanceof Map)) {
       for (const [key, value] of Object.entries(options.labeledFrameByCamera)) {
         const camera = key as unknown as Camera;

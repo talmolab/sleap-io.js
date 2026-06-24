@@ -41,7 +41,7 @@ export async function rasterizeBitmap(bitmap: ImageBitmap): Promise<ImageData> {
       "Rasterizing a frame returned as an ImageBitmap requires an image " +
         "rasterizer (a browser with OffscreenCanvas, or the optional " +
         "`skia-canvas` package on Node). " +
-        `Original error: ${(err as Error).message}`
+        `Original error: ${(err as Error).message}`,
     );
   }
 }
@@ -84,7 +84,7 @@ export async function decodeEncoded(bytes: Uint8Array): Promise<ImageData> {
     throw new Error(
       "Decoding undecoded JPEG/PNG image bytes requires an image decoder " +
         "(a browser, or the optional `skia-canvas` package on Node). " +
-        `Original error: ${(err as Error).message}`
+        `Original error: ${(err as Error).message}`,
     );
   }
 }

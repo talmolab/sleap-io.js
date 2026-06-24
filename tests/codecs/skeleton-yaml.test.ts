@@ -1,5 +1,8 @@
 import { describe, it, expect } from "../bun-test";
-import { decodeYamlSkeleton, encodeYamlSkeleton } from "../../src/codecs/skeleton-yaml.js";
+import {
+  decodeYamlSkeleton,
+  encodeYamlSkeleton,
+} from "../../src/codecs/skeleton-yaml.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
@@ -49,7 +52,7 @@ describe("skeleton YAML codec", () => {
     expect(skeletons).toHaveLength(1);
     const skeleton = skeletons[0];
     expect(skeleton.name).toBe(
-      "M:/talmo/data/leap_datasets/BermanFlies/2018-05-03_cluster-sampled.k=10,n=150.labels.mat"
+      "M:/talmo/data/leap_datasets/BermanFlies/2018-05-03_cluster-sampled.k=10,n=150.labels.mat",
     );
     expect(skeleton.nodeNames).toHaveLength(32);
     expect(skeleton.edges.length).toBeGreaterThan(0);

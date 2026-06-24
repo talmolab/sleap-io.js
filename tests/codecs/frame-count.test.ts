@@ -32,9 +32,9 @@ describe("resolveSourceFrameCount", () => {
 
   it("derives max(frame_numbers)+1 when neither attr nor json count exists (PyQt pkg.slp)", () => {
     // mice_hc video0: frame_numbers up to 12167 -> seekbar extent 12168.
-    expect(
-      resolveSourceFrameCount({ frameNumbers: [214, 705, 12167] }),
-    ).toBe(12168);
+    expect(resolveSourceFrameCount({ frameNumbers: [214, 705, 12167] })).toBe(
+      12168,
+    );
   });
 
   it("returns undefined when nothing is available", () => {

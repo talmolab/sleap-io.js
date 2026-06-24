@@ -27,7 +27,10 @@ import { join } from "node:path";
 setDefaultTimeout(120_000);
 
 function tmpSlp(): string {
-  return join(tmpdir(), `sleap-io-js-test-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`);
+  return join(
+    tmpdir(),
+    `sleap-io-js-test-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`,
+  );
 }
 
 describe("Python compatibility (#76)", () => {
@@ -44,17 +47,31 @@ describe("Python compatibility (#76)", () => {
     });
     const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
     const roi = ROI.fromBbox(10, 20, 100, 200, {
-      name: "roi1", category: "arena", source: "manual", video, track,
+      name: "roi1",
+      category: "arena",
+      source: "manual",
+      video,
+      track,
     });
 
     const maskData = new Uint8Array(10 * 10);
-    maskData[0] = 1; maskData[1] = 1;
+    maskData[0] = 1;
+    maskData[1] = 1;
     const mask = SegmentationMask.fromArray(maskData, 10, 10, {
-      name: "mask1", category: "cell", source: "model",
+      name: "mask1",
+      category: "cell",
+      source: "model",
     });
 
     const bbox = new UserBoundingBox({
-      x1: 0, y1: 20, x2: 100, y2: 100, track, category: "animal", name: "bb1", source: "manual",
+      x1: 0,
+      y1: 20,
+      x2: 100,
+      y2: 100,
+      track,
+      category: "animal",
+      name: "bb1",
+      source: "manual",
     });
 
     frame.masks.push(mask);
@@ -79,8 +96,14 @@ describe("Python compatibility (#76)", () => {
 
     function expectFixedString(ds: any, attrName: string) {
       const attr = ds.attrs[attrName];
-      expect(attr.metadata.type, `${ds.path}@${attrName} should be H5T_STRING`).toBe(3);
-      expect(attr.metadata.vlen, `${ds.path}@${attrName} should not be vlen`).toBe(false);
+      expect(
+        attr.metadata.type,
+        `${ds.path}@${attrName} should be H5T_STRING`,
+      ).toBe(3);
+      expect(
+        attr.metadata.vlen,
+        `${ds.path}@${attrName} should not be vlen`,
+      ).toBe(false);
     }
 
     try {
@@ -176,7 +199,13 @@ describe("Python compatibility (#76)", () => {
     try {
       const frames = file.get("frames") as any;
       const frameFields = JSON.parse(frames.attrs["field_names"].value);
-      expect(frameFields).toEqual(["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"]);
+      expect(frameFields).toEqual([
+        "frame_id",
+        "video",
+        "frame_idx",
+        "instance_id_start",
+        "instance_id_end",
+      ]);
 
       const instances = file.get("instances") as any;
       const instFields = JSON.parse(instances.attrs["field_names"].value);
@@ -194,7 +223,10 @@ describe("Python compatibility (#76)", () => {
   });
 
   it("Python can decode metadata and skeletons from JS-written SLP", async () => {
-    const skeleton = new Skeleton({ name: "fly", nodes: ["head", "thorax", "abdomen"] });
+    const skeleton = new Skeleton({
+      name: "fly",
+      nodes: ["head", "thorax", "abdomen"],
+    });
     skeleton.addEdge("head", "thorax");
     skeleton.addEdge("thorax", "abdomen");
     const video = new Video({ filename: "test.mp4" });
@@ -254,14 +286,24 @@ assert len(skel.edges) == 2, f"Expected 2 edges, got {len(skel.edges)}"
 print("OK: Python reads metadata and skeletons from JS-written SLP")
 `;
       writeFileSync(pyPath, pyScript);
-      const result = execFileSync("uv", ["run", "--with", "sleap-io", "python", pyPath], {
-        encoding: "utf-8",
-        timeout: 30000,
-      });
-      expect(result).toContain("OK: Python reads metadata and skeletons from JS-written SLP");
+      const result = execFileSync(
+        "uv",
+        ["run", "--with", "sleap-io", "python", pyPath],
+        {
+          encoding: "utf-8",
+          timeout: 30000,
+        },
+      );
+      expect(result).toContain(
+        "OK: Python reads metadata and skeletons from JS-written SLP",
+      );
     } finally {
-      try { unlinkSync(slpPath); } catch {}
-      try { unlinkSync(pyPath); } catch {}
+      try {
+        unlinkSync(slpPath);
+      } catch {}
+      try {
+        unlinkSync(pyPath);
+      } catch {}
     }
   });
 });

@@ -290,7 +290,8 @@ function getDs(file: H5ReadFile, name: string): H5ReadDataset | null {
 function decodeStringElement(v: unknown): string {
   if (typeof v === "string") return v;
   if (v instanceof Uint8Array) return textDecoder.decode(v);
-  if (Array.isArray(v)) return textDecoder.decode(Uint8Array.from(v as number[]));
+  if (Array.isArray(v))
+    return textDecoder.decode(Uint8Array.from(v as number[]));
   return String(v);
 }
 
@@ -299,7 +300,8 @@ function decodeStringArray(value: unknown): string[] {
   if (value == null) return [];
   if (typeof value === "string") return [value];
   if (value instanceof Uint8Array) return [textDecoder.decode(value)];
-  if (Array.isArray(value)) return (value as unknown[]).map(decodeStringElement);
+  if (Array.isArray(value))
+    return (value as unknown[]).map(decodeStringElement);
   if (typeof (value as { length?: number }).length === "number") {
     return Array.from(value as ArrayLike<unknown>).map(decodeStringElement);
   }
@@ -474,7 +476,8 @@ export async function readLabels(
     } else {
       // Legacy file: check the transpose attribute (default true).
       const transposeRaw = unwrapAttr(fileAttrs["transpose"]);
-      const wasTransposed = transposeRaw === undefined ? true : Boolean(transposeRaw);
+      const wasTransposed =
+        transposeRaw === undefined ? true : Boolean(transposeRaw);
       if (wasTransposed) {
         storedOrder = PRESETS["matlab"];
       } else {
@@ -498,7 +501,11 @@ export async function readLabels(
     const tracksData = tracksT.data; // canonical (frame, track, node, xy)
 
     // --- Build 3D / 2D stored orders by dropping dims and renumbering. ---
-    const storedOrder3d = renumberOrder(storedOrder, ["frame", "track", "node"]);
+    const storedOrder3d = renumberOrder(storedOrder, [
+      "frame",
+      "track",
+      "node",
+    ]);
     const storedOrder2d = renumberOrder(storedOrder, ["frame", "track"]);
 
     const axes3d = getTransposeAxes(storedOrder3d, canonicalOrder3d, 3);
@@ -533,7 +540,9 @@ export async function readLabels(
 
     // --- String arrays. ---
     const trackNamesDs = getDs(file, "track_names");
-    const trackNames = trackNamesDs ? decodeStringArray(trackNamesDs.value) : [];
+    const trackNames = trackNamesDs
+      ? decodeStringArray(trackNamesDs.value)
+      : [];
 
     const nodeNamesDs = getDs(file, "node_names");
     const nodeNames = nodeNamesDs ? decodeStringArray(nodeNamesDs.value) : [];
@@ -682,7 +691,9 @@ export async function readLabels(
           skeleton,
           score: Number.isNaN(instanceScore) ? 0.0 : instanceScore,
           track: tracks[trackIdx] ?? undefined,
-          trackingScore: Number.isNaN(trackingScore) ? undefined : trackingScore,
+          trackingScore: Number.isNaN(trackingScore)
+            ? undefined
+            : trackingScore,
         });
         instances.push(inst);
       }
@@ -774,7 +785,8 @@ function untrackedFrameInstances(
       let skip = false;
       for (const userInst of userInsts) {
         if (
-          (userInst as { fromPredicted?: unknown }).fromPredicted !== undefined &&
+          (userInst as { fromPredicted?: unknown }).fromPredicted !==
+            undefined &&
           (userInst as { fromPredicted?: unknown }).fromPredicted === inst
         ) {
           skip = true;
@@ -801,7 +813,8 @@ function untrackedFrameInstances(
 /** One instance per track (port of `_tracked_frame_instances`). */
 function trackedFrameInstances(lf: LabeledFrame): Map<Track, InstanceLike> {
   const trackToInstance = new Map<Track, InstanceLike>();
-  for (const inst of (lf.predictedInstances ?? []) as unknown as InstanceLike[]) {
+  for (const inst of (lf.predictedInstances ??
+    []) as unknown as InstanceLike[]) {
     if (inst.track != null) trackToInstance.set(inst.track, inst);
   }
   for (const inst of (lf.userInstances ?? []) as unknown as InstanceLike[]) {
@@ -871,7 +884,9 @@ export function toAnalysisArrays(
 
   // Canonical-shape matrices.
   const occupancy = new Float64Array(nFrames * nTracks); // 0-filled
-  const locations = new Float64Array(nFrames * nTracks * nodeCount * 2).fill(NaN);
+  const locations = new Float64Array(nFrames * nTracks * nodeCount * 2).fill(
+    NaN,
+  );
   const pointScores = new Float64Array(nFrames * nTracks * nodeCount).fill(NaN);
   const instanceScores = new Float64Array(nFrames * nTracks).fill(NaN);
   const trackingScores = new Float64Array(nFrames * nTracks).fill(NaN);
@@ -1043,8 +1058,15 @@ interface H5WriteFile {
     compression?: string | number;
     compression_opts?: number | number[];
   }): void;
-  create_attribute(name: string, value: unknown, shape?: unknown, dtype?: unknown): void;
-  get(name: string): { create_attribute: (n: string, v: unknown) => void } | null;
+  create_attribute(
+    name: string,
+    value: unknown,
+    shape?: unknown,
+    dtype?: unknown,
+  ): void;
+  get(
+    name: string,
+  ): { create_attribute: (n: string, v: unknown) => void } | null;
   close(): void;
 }
 
@@ -1139,7 +1161,11 @@ export async function writeLabels(
   const axes4d = getTransposeAxes(canonicalOrder4d, axisOrder, 4);
   const axes3d = getTransposeAxes(canonicalOrder3d, targetOrder3d, 3);
   const axes2d = getTransposeAxes(canonicalOrder2d, targetOrder2d, 2);
-  const axesOccupancy = getTransposeAxes(canonicalOrder2d, targetOrderOccupancy, 2);
+  const axesOccupancy = getTransposeAxes(
+    canonicalOrder2d,
+    targetOrderOccupancy,
+    2,
+  );
 
   // Reorder arrays.
   const locationsT = transposeFlat(
@@ -1162,7 +1188,11 @@ export async function writeLabels(
     [nFrames, nTracks],
     axes2d,
   );
-  const occupancyT = transposeFlat(arrays.occupancy, [nFrames, nTracks], axesOccupancy);
+  const occupancyT = transposeFlat(
+    arrays.occupancy,
+    [nFrames, nTracks],
+    axesOccupancy,
+  );
 
   // Dimension-name attributes.
   const dims4d = getDimsTuple(axisOrder, 4);
@@ -1184,10 +1214,9 @@ export async function writeLabels(
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/analysis_${Date.now()}_${Math.random().toString(16).slice(2)}.h5`;
-  const f = new (module as unknown as { File: new (p: string, m: string) => H5WriteFile }).File(
-    memPath,
-    "w",
-  );
+  const f = new (
+    module as unknown as { File: new (p: string, m: string) => H5WriteFile }
+  ).File(memPath, "w");
 
   try {
     // Numeric dataset writer with a JSON-array-string `dims` attribute.
@@ -1225,10 +1254,25 @@ export async function writeLabels(
 
     // Core matrices.
     writeNumeric("tracks", locationsT.data, locationsT.shape, dims4d);
-    writeNumeric("track_occupancy", occupancyT.data, occupancyT.shape, dimsOccupancy);
+    writeNumeric(
+      "track_occupancy",
+      occupancyT.data,
+      occupancyT.shape,
+      dimsOccupancy,
+    );
     writeNumeric("point_scores", pointScoresT.data, pointScoresT.shape, dims3d);
-    writeNumeric("instance_scores", instanceScoresT.data, instanceScoresT.shape, dims2d);
-    writeNumeric("tracking_scores", trackingScoresT.data, trackingScoresT.shape, dims2d);
+    writeNumeric(
+      "instance_scores",
+      instanceScoresT.data,
+      instanceScoresT.shape,
+      dims2d,
+    );
+    writeNumeric(
+      "tracking_scores",
+      trackingScoresT.data,
+      trackingScoresT.shape,
+      dims2d,
+    );
 
     // String datasets (h5py-native).
     f.create_dataset({ name: "track_names", data: arrays.trackNames });

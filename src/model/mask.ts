@@ -1,7 +1,11 @@
 import type { Track, Instance } from "./instance.js";
 import { ROI, _registerMaskFactory } from "./roi.js";
 import type { Geometry } from "./roi.js";
-import { type BoundingBox, UserBoundingBox, PredictedBoundingBox } from "./bbox.js";
+import {
+  type BoundingBox,
+  UserBoundingBox,
+  PredictedBoundingBox,
+} from "./bbox.js";
 
 export function encodeRle(
   mask: Uint8Array,
@@ -116,7 +120,9 @@ export class SegmentationMask {
     }
     const scale = options.scale ?? [1, 1];
     if (scale[0] <= 0 || scale[1] <= 0) {
-      throw new Error(`Scale must be positive, got [${scale[0]}, ${scale[1]}].`);
+      throw new Error(
+        `Scale must be positive, got [${scale[0]}, ${scale[1]}].`,
+      );
     }
     this.rleCounts = options.rleCounts;
     this.height = options.height;
@@ -135,7 +141,10 @@ export class SegmentationMask {
     mask: Uint8Array | boolean[][],
     height: number,
     width: number,
-    options?: Omit<SegmentationMaskOptions, "rleCounts" | "height" | "width"> & { stride?: number },
+    options?: Omit<
+      SegmentationMaskOptions,
+      "rleCounts" | "height" | "width"
+    > & { stride?: number },
   ): UserSegmentationMask {
     let flat: Uint8Array;
     if (mask instanceof Uint8Array) {
@@ -232,7 +241,13 @@ export class SegmentationMask {
    */
   resampled(targetHeight: number, targetWidth: number): SegmentationMask {
     const srcData = this.data;
-    const resized = resizeNearest(srcData, this.height, this.width, targetHeight, targetWidth);
+    const resized = resizeNearest(
+      srcData,
+      this.height,
+      this.width,
+      targetHeight,
+      targetWidth,
+    );
     const rleCounts = encodeRle(resized, targetHeight, targetWidth);
 
     const baseOpts: SegmentationMaskOptions = {
@@ -269,7 +284,8 @@ export class SegmentationMask {
 
     return new UserSegmentationMask({
       ...baseOpts,
-      fromPredicted: this instanceof UserSegmentationMask ? this.fromPredicted : null,
+      fromPredicted:
+        this instanceof UserSegmentationMask ? this.fromPredicted : null,
     });
   }
 
@@ -354,7 +370,8 @@ export class SegmentationMask {
     }
 
     return ROI.fromPolygon(
-      (geometry as { type: "Polygon"; coordinates: number[][][] }).coordinates[0],
+      (geometry as { type: "Polygon"; coordinates: number[][][] })
+        .coordinates[0],
       {
         name: this.name,
         category: this.category,
@@ -466,10 +483,20 @@ export class PredictedSegmentationMask extends SegmentationMask {
 
 // Register mask factory for ROI.toMask() to use
 _registerMaskFactory(
-  (mask: Uint8Array, height: number, width: number, options: Record<string, unknown>) => {
-    return SegmentationMask.fromArray(mask, height, width, options as Omit<
-      SegmentationMaskOptions,
-      "rleCounts" | "height" | "width"
-    >);
+  (
+    mask: Uint8Array,
+    height: number,
+    width: number,
+    options: Record<string, unknown>,
+  ) => {
+    return SegmentationMask.fromArray(
+      mask,
+      height,
+      width,
+      options as Omit<
+        SegmentationMaskOptions,
+        "rleCounts" | "height" | "width"
+      >,
+    );
   },
 );

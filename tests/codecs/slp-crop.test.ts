@@ -39,7 +39,11 @@ const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 const FIXTURE = path.join(fixtureRoot, "slp", "cropped_format_2_3.pkg.slp");
 
 /** Grayscale value of the RGBA pixel (x,y) in an ImageData-shaped frame. */
-function gray(frame: { data: ArrayLike<number>; width: number }, x: number, y: number): number {
+function gray(
+  frame: { data: ArrayLike<number>; width: number },
+  x: number,
+  y: number,
+): number {
   return frame.data[(y * frame.width + x) * 4];
 }
 
@@ -62,9 +66,7 @@ function makeBackend(
 }
 
 /** Read the file-level metadata/datasets from saved SLP bytes via h5wasm/node. */
-async function inspectSlp(
-  bytes: Uint8Array,
-): Promise<{
+async function inspectSlp(bytes: Uint8Array): Promise<{
   keys: string[];
   formatId: number;
   videoCrops: unknown;
@@ -77,8 +79,9 @@ async function inspectSlp(
   const file = new H5File(memPath, "r");
   try {
     const keys = file.keys() as string[];
-    const fmtAttr = (file.get("metadata") as { attrs: Record<string, { value?: number }> })
-      .attrs["format_id"];
+    const fmtAttr = (
+      file.get("metadata") as { attrs: Record<string, { value?: number }> }
+    ).attrs["format_id"];
     const formatId = Number(fmtAttr?.value ?? fmtAttr);
     let videoCrops: unknown;
     let videoCropsShape: number[] | undefined;
@@ -137,8 +140,9 @@ describe("PYTHON -> JS: committed format-2.3 cropped fixture", () => {
     const module = await ready;
     const file = new H5File(FIXTURE, "r");
     try {
-      const fmt = (file.get("metadata") as { attrs: Record<string, { value?: number }> })
-        .attrs["format_id"];
+      const fmt = (
+        file.get("metadata") as { attrs: Record<string, { value?: number }> }
+      ).attrs["format_id"];
       expect(Number(fmt?.value ?? fmt)).toBe(2.3);
       expect((file.keys() as string[]).includes("video_crops")).toBe(true);
     } finally {
@@ -155,9 +159,23 @@ describe("FORMAT_ID + /video_crops byte-stability", () => {
       backend: makeBackend(640, 480, "/data/big.mp4"),
     });
     const cropped = src.crop([100, 50, 300, 250], { fill: 7 });
-    const inst = Instance.fromArray([[10, 20], [30, 40]], skel);
-    const lf = new LabeledFrame({ video: cropped, frameIdx: 0, instances: [inst] });
-    const labels = new Labels({ skeletons: [skel], videos: [cropped], labeledFrames: [lf] });
+    const inst = Instance.fromArray(
+      [
+        [10, 20],
+        [30, 40],
+      ],
+      skel,
+    );
+    const lf = new LabeledFrame({
+      video: cropped,
+      frameIdx: 0,
+      instances: [inst],
+    });
+    const labels = new Labels({
+      skeletons: [skel],
+      videos: [cropped],
+      labeledFrames: [lf],
+    });
 
     const bytes = await saveSlpToBytes(labels);
     const info = await inspectSlp(bytes);
@@ -182,7 +200,11 @@ describe("FORMAT_ID + /video_crops byte-stability", () => {
     });
     const inst = Instance.fromArray([[1, 2]], skel);
     const lf = new LabeledFrame({ video: v, frameIdx: 0, instances: [inst] });
-    const labels = new Labels({ skeletons: [skel], videos: [v], labeledFrames: [lf] });
+    const labels = new Labels({
+      skeletons: [skel],
+      videos: [v],
+      labeledFrames: [lf],
+    });
 
     const bytes = await saveSlpToBytes(labels);
     const info = await inspectSlp(bytes);
@@ -192,11 +214,17 @@ describe("FORMAT_ID + /video_crops byte-stability", () => {
     const entry = info.videosJson[0];
     expect(entry).not.toHaveProperty("crop");
     expect(entry).not.toHaveProperty("crop_fill");
-    expect((entry.backend as Record<string, unknown>)).not.toHaveProperty("crop");
-    expect((entry.backend as Record<string, unknown>)).not.toHaveProperty("crop_fill");
-    expect((entry.backend as Record<string, unknown>)).not.toHaveProperty("source_shape");
+    expect(entry.backend as Record<string, unknown>).not.toHaveProperty("crop");
+    expect(entry.backend as Record<string, unknown>).not.toHaveProperty(
+      "crop_fill",
+    );
+    expect(entry.backend as Record<string, unknown>).not.toHaveProperty(
+      "source_shape",
+    );
     // videos_json still describes the full (uncropped) shape.
-    expect((entry.backend as Record<string, unknown>).shape).toEqual([1, 480, 640, 1]);
+    expect((entry.backend as Record<string, unknown>).shape).toEqual([
+      1, 480, 640, 1,
+    ]);
   });
 });
 
@@ -209,8 +237,16 @@ describe("videos_json UNCROPPED INVARIANT", () => {
     });
     const cropped = src.crop([100, 50, 300, 250], { fill: 7 });
     const inst = Instance.fromArray([[5, 5]], skel);
-    const lf = new LabeledFrame({ video: cropped, frameIdx: 0, instances: [inst] });
-    const labels = new Labels({ skeletons: [skel], videos: [cropped], labeledFrames: [lf] });
+    const lf = new LabeledFrame({
+      video: cropped,
+      frameIdx: 0,
+      instances: [inst],
+    });
+    const labels = new Labels({
+      skeletons: [skel],
+      videos: [cropped],
+      labeledFrames: [lf],
+    });
 
     const bytes = await saveSlpToBytes(labels);
     const info = await inspectSlp(bytes);
@@ -223,7 +259,9 @@ describe("videos_json UNCROPPED INVARIANT", () => {
     expect(backend).not.toHaveProperty("source_shape");
 
     // Reload: the crop is re-applied from /video_crops only.
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
     const rv = reloaded.videos[0];
     expect(rv._cropTuple()).toEqual([100, 50, 300, 250]);
     expect(rv._cropFill()).toBe(7);
@@ -241,12 +279,22 @@ describe("JS -> JS round-trip preserves the crop", () => {
     });
     const cropped = src.crop([16, 32, 144, 160], { fill: 42 });
     const inst = Instance.fromArray([[1, 1]], skel);
-    const lf = new LabeledFrame({ video: cropped, frameIdx: 0, instances: [inst] });
-    const labels = new Labels({ skeletons: [skel], videos: [cropped], labeledFrames: [lf] });
+    const lf = new LabeledFrame({
+      video: cropped,
+      frameIdx: 0,
+      instances: [inst],
+    });
+    const labels = new Labels({
+      skeletons: [skel],
+      videos: [cropped],
+      labeledFrames: [lf],
+    });
 
     const bytes = await saveSlpToBytes(labels);
 
-    const reClosed = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reClosed = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
     const vc = reClosed.videos[0];
     expect(vc._cropTuple()).toEqual([16, 32, 144, 160]);
     expect(vc._cropFill()).toBe(42);
@@ -260,8 +308,16 @@ describe("nested crop-of-crop write throws", () => {
     const skel = new Skeleton({ name: "s", nodes: ["a"] });
     const inner = makeBackend(640, 480, "/data/big.mp4");
     // Different fills -> wrap NESTS (no flatten), so inner stays a crop wrapper.
-    const c1 = CropVideoBackend.wrap({ inner, crop: [100, 50, 300, 250], fill: 0 });
-    const c2 = CropVideoBackend.wrap({ inner: c1, crop: [10, 10, 50, 50], fill: 9 });
+    const c1 = CropVideoBackend.wrap({
+      inner,
+      crop: [100, 50, 300, 250],
+      fill: 0,
+    });
+    const c2 = CropVideoBackend.wrap({
+      inner: c1,
+      crop: [10, 10, 50, 50],
+      fill: 9,
+    });
     expect(c2.inner instanceof CropVideoBackend).toBe(true); // genuinely nested
 
     const v = new Video({ filename: "/data/big.mp4", backend: c2 });
@@ -272,7 +328,11 @@ describe("nested crop-of-crop write throws", () => {
     };
     const inst = Instance.fromArray([[1, 1]], skel);
     const lf = new LabeledFrame({ video: v, frameIdx: 0, instances: [inst] });
-    const labels = new Labels({ skeletons: [skel], videos: [v], labeledFrames: [lf] });
+    const labels = new Labels({
+      skeletons: [skel],
+      videos: [v],
+      labeledFrames: [lf],
+    });
 
     await expect(saveSlpToBytes(labels)).rejects.toThrow(/nested crop-of-crop/);
   });

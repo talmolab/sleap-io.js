@@ -14,7 +14,9 @@ import { ready, File as H5File } from "h5wasm/node";
 const fixtureRoot = fileURLToPath(new URL("./data", import.meta.url));
 
 async function loadFixture(filename: string) {
-  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false });
+  return loadSlp(path.join(fixtureRoot, "slp", filename), {
+    openVideos: false,
+  });
 }
 
 describe("saveSlpToBytes", () => {
@@ -83,7 +85,11 @@ describe("saveSlpToBytes", () => {
 
     expect(loaded.skeletons.length).toBe(1);
     expect(loaded.skeletons[0].name).toBe("fly");
-    expect(loaded.skeletons[0].nodeNames).toEqual(["head", "thorax", "abdomen"]);
+    expect(loaded.skeletons[0].nodeNames).toEqual([
+      "head",
+      "thorax",
+      "abdomen",
+    ]);
     expect(loaded.skeletons[0].edges.length).toBe(2);
     expect(loaded.videos.length).toBe(1);
     expect(loaded.videos[0].filename).toBe("video.mp4");
@@ -110,8 +116,12 @@ describe("saveSlpToBytes", () => {
     expect(loaded.tracks.length).toBe(original.tracks.length);
 
     for (let i = 0; i < original.labeledFrames.length; i++) {
-      expect(loaded.labeledFrames[i].frameIdx).toBe(original.labeledFrames[i].frameIdx);
-      expect(loaded.labeledFrames[i].instances.length).toBe(original.labeledFrames[i].instances.length);
+      expect(loaded.labeledFrames[i].frameIdx).toBe(
+        original.labeledFrames[i].frameIdx,
+      );
+      expect(loaded.labeledFrames[i].instances.length).toBe(
+        original.labeledFrames[i].instances.length,
+      );
     }
   });
 
@@ -180,11 +190,20 @@ describe("saveSlpToBytes", () => {
 
     const centroids = [
       new UserCentroid({ x: 10, y: 20, track, category: "cell" }),
-      new PredictedCentroid({ x: 50, y: 60, z: 3.5, score: 0.95, track, trackingScore: 0.8, name: "spot1", source: "trackmate" }),
+      new PredictedCentroid({
+        x: 50,
+        y: 60,
+        z: 3.5,
+        score: 0.95,
+        track,
+        trackingScore: 0.8,
+        name: "spot1",
+        source: "trackmate",
+      }),
     ];
 
-    const frames = centroids.map((cent, i) =>
-      new LabeledFrame({ video, frameIdx: i, centroids: [cent] })
+    const frames = centroids.map(
+      (cent, i) => new LabeledFrame({ video, frameIdx: i, centroids: [cent] }),
     );
     const labels = new Labels({
       labeledFrames: frames,
@@ -228,8 +247,21 @@ describe("saveSlpToBytes", () => {
     const track = new Track("t1");
 
     const bboxes = [
-      new UserBoundingBox({ x1: 0, y1: 0, x2: 100, y2: 100, trackingScore: 0.75 }),
-      new PredictedBoundingBox({ x1: 10, y1: 10, x2: 50, y2: 50, score: 0.9, track }),
+      new UserBoundingBox({
+        x1: 0,
+        y1: 0,
+        x2: 100,
+        y2: 100,
+        trackingScore: 0.75,
+      }),
+      new PredictedBoundingBox({
+        x1: 10,
+        y1: 10,
+        x2: 50,
+        y2: 50,
+        score: 0.9,
+        track,
+      }),
     ];
 
     const lfBbox = new LabeledFrame({ video, frameIdx: 0, bboxes });

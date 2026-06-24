@@ -6,7 +6,7 @@ import { readSkeletonJson } from "./skeleton-json.js";
  * Training configs embed skeleton definitions in data.labels.skeletons[].
  */
 export function readTrainingConfigSkeletons(
-  json: string | Record<string, unknown>
+  json: string | Record<string, unknown>,
 ): Skeleton[] {
   const data =
     typeof json === "string"
@@ -30,7 +30,7 @@ export function readTrainingConfigSkeletons(
  * Extract the first skeleton from a SLEAP training config JSON file.
  */
 export function readTrainingConfigSkeleton(
-  json: string | Record<string, unknown>
+  json: string | Record<string, unknown>,
 ): Skeleton {
   const skeletons = readTrainingConfigSkeletons(json);
   return skeletons[0];
@@ -40,7 +40,7 @@ export function readTrainingConfigSkeleton(
  * Detect whether a JSON object or string is a training config format.
  */
 export function isTrainingConfig(
-  json: string | Record<string, unknown>
+  json: string | Record<string, unknown>,
 ): boolean {
   const data =
     typeof json === "string"

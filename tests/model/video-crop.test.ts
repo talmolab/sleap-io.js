@@ -70,14 +70,16 @@ describe("resolveCropRect — Python parity for every spec form", () => {
   });
 
   it("roi bounds + margin expands symmetrically", () => {
-    const roi = { bounds: [2.2, 3.7, 8.1, 9.4] as [number, number, number, number] };
+    const roi = {
+      bounds: [2.2, 3.7, 8.1, 9.4] as [number, number, number, number],
+    };
     expect(resolveCropRect(null, { roi, margin: 2 })).toEqual([0, 1, 11, 12]);
   });
 
   it("throws on multiple specs", () => {
-    expect(() =>
-      resolveCropRect([0, 0, 1, 1], { bbox: [0, 0, 1, 1] }),
-    ).toThrow(/Exactly one/);
+    expect(() => resolveCropRect([0, 0, 1, 1], { bbox: [0, 0, 1, 1] })).toThrow(
+      /Exactly one/,
+    );
   });
 
   it("throws on zero specs", () => {
@@ -123,7 +125,9 @@ describe("Video.crop — basic facade", () => {
     expect(
       v.crop(null, { center: [50, 40], size: [10, 20] })._cropTuple(),
     ).toEqual([45, 30, 55, 50]);
-    const roi = { bounds: [2.2, 3.7, 8.1, 9.4] as [number, number, number, number] };
+    const roi = {
+      bounds: [2.2, 3.7, 8.1, 9.4] as [number, number, number, number],
+    };
     expect(v.crop(null, { roi, margin: 2 })._cropTuple()).toEqual([
       0, 1, 11, 12,
     ]);

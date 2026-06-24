@@ -80,7 +80,7 @@ function isImageBitmap(value: unknown): boolean {
 
 /** Detect an `ImageData`-shaped object (RGBA buffer with width/height). */
 function isImageDataLike(
-  value: unknown
+  value: unknown,
 ): value is { data: Uint8ClampedArray; width: number; height: number } {
   const v = value as {
     data?: unknown;
@@ -150,7 +150,7 @@ export class CropVideoBackend implements VideoBackend {
     inner: VideoBackend,
     crop: CropRect,
     fill: Fill,
-    ownsInner: boolean
+    ownsInner: boolean,
   ) {
     this.inner = inner;
     this.crop = [
@@ -277,7 +277,9 @@ export class CropVideoBackend implements VideoBackend {
     // Raw bytes (Uint8Array or ArrayBuffer) from a Node backend: either
     // undecoded encoded frames or raw interleaved pixel data.
     const bytes =
-      frame instanceof ArrayBuffer ? new Uint8Array(frame) : (frame as Uint8Array);
+      frame instanceof ArrayBuffer
+        ? new Uint8Array(frame)
+        : (frame as Uint8Array);
     if (isEncodedBytes(bytes)) {
       return decodeEncoded(bytes);
     }
@@ -287,7 +289,7 @@ export class CropVideoBackend implements VideoBackend {
       throw new Error(
         "CropVideoBackend.getFrame received raw pixel bytes but the inner " +
           "backend has no resolved shape to interpret them. Provide a shape on " +
-          "the inner backend, or use a backend that returns decoded frames."
+          "the inner backend, or use a backend that returns decoded frames.",
       );
     }
     const [, height, width, channels] = innerShape;
@@ -317,7 +319,7 @@ export class CropVideoBackend implements VideoBackend {
   toCropCoords<T extends FlatPoints>(points: T): T;
   toCropCoords(points: PointPairs): [number, number][];
   toCropCoords(
-    points: FlatPoints | PointPairs
+    points: FlatPoints | PointPairs,
   ): FlatPoints | [number, number][] {
     return cropPoints(points as FlatPoints, this.crop);
   }
@@ -331,7 +333,7 @@ export class CropVideoBackend implements VideoBackend {
   toSourceCoords<T extends FlatPoints>(points: T): T;
   toSourceCoords(points: PointPairs): [number, number][];
   toSourceCoords(
-    points: FlatPoints | PointPairs
+    points: FlatPoints | PointPairs,
   ): FlatPoints | [number, number][] {
     return uncropPoints(points as FlatPoints, this.crop);
   }

@@ -15,7 +15,7 @@ import path from "node:path";
 import fs from "node:fs";
 
 const jpgPath = fileURLToPath(
-  new URL("../data/videos/imgs/img.00.jpg", import.meta.url)
+  new URL("../data/videos/imgs/img.00.jpg", import.meta.url),
 );
 const realJpg = new Uint8Array(fs.readFileSync(jpgPath));
 

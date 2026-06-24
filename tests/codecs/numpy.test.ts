@@ -12,7 +12,9 @@ import path from "node:path";
 const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 
 async function loadFixture(filename: string) {
-  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false });
+  return loadSlp(path.join(fixtureRoot, "slp", filename), {
+    openVideos: false,
+  });
 }
 
 function buildSparseLabels(options: {
@@ -25,9 +27,21 @@ function buildSparseLabels(options: {
   const frame = new LabeledFrame({
     video,
     frameIdx: options.labeledFrameIdx,
-    instances: [Instance.fromArray([[1, 2], [3, 4]], skeleton)],
+    instances: [
+      Instance.fromArray(
+        [
+          [1, 2],
+          [3, 4],
+        ],
+        skeleton,
+      ),
+    ],
   });
-  return new Labels({ labeledFrames: [frame], videos: [video], skeletons: [skeleton] });
+  return new Labels({
+    labeledFrames: [frame],
+    videos: [video],
+    skeletons: [skeleton],
+  });
 }
 
 describe("numpy codec", () => {
@@ -96,8 +110,8 @@ describe("numpy codec", () => {
   it("matches Labels.fromNumpy", () => {
     const arr = Array.from({ length: 2 }, () =>
       Array.from({ length: 2 }, () =>
-        Array.from({ length: 3 }, () => [Math.random(), Math.random()])
-      )
+        Array.from({ length: 3 }, () => [Math.random(), Math.random()]),
+      ),
     );
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton(["a", "b", "c"]);
@@ -123,7 +137,12 @@ describe("numpy codec", () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton(["node1", "node2"]);
 
-    const labels = fromNumpy(arr, { video, skeleton, trackNames: ["mouse1", "mouse2"], firstFrame: 10 });
+    const labels = fromNumpy(arr, {
+      video,
+      skeleton,
+      trackNames: ["mouse1", "mouse2"],
+      firstFrame: 10,
+    });
     expect(labels.tracks[0].name).toBe("mouse1");
     expect(labels.labeledFrames[0].frameIdx).toBe(10);
   });
@@ -132,14 +151,21 @@ describe("numpy codec", () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton(["node1"]);
 
-    expect(() => fromNumpy([] as any, { video, skeleton })).toThrow(/4 dimensions/);
+    expect(() => fromNumpy([] as any, { video, skeleton })).toThrow(
+      /4 dimensions/,
+    );
     expect(() => fromNumpy([[[[0, 0]]]] as any, { skeleton })).toThrow(/video/);
     expect(() => fromNumpy([[[[0, 0]]]] as any, { video })).toThrow(/skeleton/);
-    expect(() => fromNumpy([[[[0, 0]]]] as any, { video, videos: [video], skeleton })).toThrow(/both/);
+    expect(() =>
+      fromNumpy([[[[0, 0]]]] as any, { video, videos: [video], skeleton }),
+    ).toThrow(/both/);
   });
 
   it("sizes output to video.shape[0] when known and labels are sparse", () => {
-    const labels = buildSparseLabels({ shape: [10, 1, 1, 1], labeledFrameIdx: 3 });
+    const labels = buildSparseLabels({
+      shape: [10, 1, 1, 1],
+      labeledFrameIdx: 3,
+    });
     const arr = labels.numpy();
     expect(arr.length).toBe(10);
     expect(arr[3][0][0]).toEqual([1, 2]);
@@ -160,7 +186,10 @@ describe("numpy codec", () => {
   });
 
   it("numFrames overrides video.shape[0] when both provided", () => {
-    const labels = buildSparseLabels({ shape: [5, 1, 1, 1], labeledFrameIdx: 1 });
+    const labels = buildSparseLabels({
+      shape: [5, 1, 1, 1],
+      labeledFrameIdx: 1,
+    });
     const arr = labels.numpy({ numFrames: 12 });
     expect(arr.length).toBe(12);
   });
@@ -175,7 +204,10 @@ describe("numpy codec", () => {
   });
 
   it("ignores numFrames <= 0", () => {
-    const labels = buildSparseLabels({ shape: [6, 1, 1, 1], labeledFrameIdx: 1 });
+    const labels = buildSparseLabels({
+      shape: [6, 1, 1, 1],
+      labeledFrameIdx: 1,
+    });
     const arr = labels.numpy({ numFrames: 0 });
     expect(arr.length).toBe(6);
   });
@@ -184,7 +216,9 @@ describe("numpy codec", () => {
     const labels = buildSparseLabels({ shape: null, labeledFrameIdx: 2 });
     expect(labels.numpy({ numFrames: 9.7 }).length).toBe(9);
     expect(labels.numpy({ numFrames: Number.NaN }).length).toBe(3);
-    expect(labels.numpy({ numFrames: Number.POSITIVE_INFINITY }).length).toBe(3);
+    expect(labels.numpy({ numFrames: Number.POSITIVE_INFINITY }).length).toBe(
+      3,
+    );
     expect(labels.numpy({ numFrames: -2.5 }).length).toBe(3);
   });
 

@@ -12,20 +12,36 @@ import path from "node:path";
 const fixtureRoot = fileURLToPath(new URL("./data", import.meta.url));
 
 async function loadFixture(filename: string) {
-  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false });
+  return loadSlp(path.join(fixtureRoot, "slp", filename), {
+    openVideos: false,
+  });
 }
 
 async function loadFixtureLazy(filename: string) {
-  return loadSlp(path.join(fixtureRoot, "slp", filename), { openVideos: false, lazy: true });
+  return loadSlp(path.join(fixtureRoot, "slp", filename), {
+    openVideos: false,
+    lazy: true,
+  });
 }
 
 describe("Unit 1: Source Video Restoration Mode", () => {
   it("embed='source' restores sourceVideo paths", async () => {
     const sourceVideo = new Video({ filename: "original.mp4" });
-    const embeddedVideo = new Video({ filename: ".", embedded: true, sourceVideo });
+    const embeddedVideo = new Video({
+      filename: ".",
+      embedded: true,
+      sourceVideo,
+    });
     const skeleton = new Skeleton({ nodes: ["A", "B"] });
-    const inst = new Instance({ points: { A: [10, 20], B: [30, 40] }, skeleton });
-    const frame = new LabeledFrame({ video: embeddedVideo, frameIdx: 0, instances: [inst] });
+    const inst = new Instance({
+      points: { A: [10, 20], B: [30, 40] },
+      skeleton,
+    });
+    const frame = new LabeledFrame({
+      video: embeddedVideo,
+      frameIdx: 0,
+      instances: [inst],
+    });
     const labels = new Labels({
       labeledFrames: [frame],
       videos: [embeddedVideo],
@@ -33,7 +49,9 @@ describe("Unit 1: Source Video Restoration Mode", () => {
     });
 
     const bytes = await saveSlpToBytes(labels, { embed: "source" });
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
 
     expect(reloaded.videos[0].filename).toBe("original.mp4");
     expect(reloaded.videos[0].hasEmbeddedImages).toBe(false);
@@ -51,7 +69,9 @@ describe("Unit 1: Source Video Restoration Mode", () => {
     });
 
     const bytes = await saveSlpToBytes(labels, { embed: "source" });
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
 
     expect(reloaded.videos[0].filename).toBe("video.mp4");
   });
@@ -59,7 +79,9 @@ describe("Unit 1: Source Video Restoration Mode", () => {
   it("embed='source' does not embed frame data", async () => {
     const labels = await loadFixture("minimal_instance.slp");
     const bytes = await saveSlpToBytes(labels, { embed: "source" });
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
 
     expect(reloaded.videos[0].hasEmbeddedImages).toBe(false);
     expect(reloaded.labeledFrames.length).toBe(labels.labeledFrames.length);
@@ -67,13 +89,25 @@ describe("Unit 1: Source Video Restoration Mode", () => {
 
   it("embed='source' with multiple videos restores only those with sourceVideo", async () => {
     const sourceVideo = new Video({ filename: "original.mp4" });
-    const embeddedVideo = new Video({ filename: ".", embedded: true, sourceVideo });
+    const embeddedVideo = new Video({
+      filename: ".",
+      embedded: true,
+      sourceVideo,
+    });
     const plainVideo = new Video({ filename: "other.mp4" });
     const skeleton = new Skeleton({ nodes: ["X"] });
     const inst1 = new Instance({ points: { X: [5, 5] }, skeleton });
     const inst2 = new Instance({ points: { X: [15, 25] }, skeleton });
-    const frame1 = new LabeledFrame({ video: embeddedVideo, frameIdx: 0, instances: [inst1] });
-    const frame2 = new LabeledFrame({ video: plainVideo, frameIdx: 0, instances: [inst2] });
+    const frame1 = new LabeledFrame({
+      video: embeddedVideo,
+      frameIdx: 0,
+      instances: [inst1],
+    });
+    const frame2 = new LabeledFrame({
+      video: plainVideo,
+      frameIdx: 0,
+      instances: [inst2],
+    });
     const labels = new Labels({
       labeledFrames: [frame1, frame2],
       videos: [embeddedVideo, plainVideo],
@@ -81,7 +115,9 @@ describe("Unit 1: Source Video Restoration Mode", () => {
     });
 
     const bytes = await saveSlpToBytes(labels, { embed: "source" });
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
 
     expect(reloaded.videos[0].filename).toBe("original.mp4");
     expect(reloaded.videos[1].filename).toBe("other.mp4");
@@ -114,9 +150,13 @@ describe("Unit 2: Format 1.2 tracking_score Handling", () => {
     });
 
     const bytes = await saveSlpToBytes(labels);
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
 
-    expect(reloaded.labeledFrames[0].instances[0].trackingScore).toBeCloseTo(0.75);
+    expect(reloaded.labeledFrames[0].instances[0].trackingScore).toBeCloseTo(
+      0.75,
+    );
   });
 
   it("tracking_score defaults to 0 for PredictedInstance", async () => {
@@ -135,7 +175,9 @@ describe("Unit 2: Format 1.2 tracking_score Handling", () => {
     });
 
     const bytes = await saveSlpToBytes(labels);
-    const reloaded = await readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
+    const reloaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
 
     expect(reloaded.labeledFrames[0].instances[0].trackingScore).toBe(0);
   });
@@ -261,8 +303,23 @@ describe("Unit 3: Lazy toNumpy() Fast Path", () => {
   it("lazy toNumpy() on empty store returns empty", async () => {
     const { LazyDataStore } = await import("../src/model/lazy.js");
     const store = new LazyDataStore({
-      framesData: { frame_id: [], video: [], frame_idx: [], instance_id_start: [], instance_id_end: [] },
-      instancesData: { instance_type: [], skeleton: [], track: [], point_id_start: [], point_id_end: [], score: [], tracking_score: [], from_predicted: [] },
+      framesData: {
+        frame_id: [],
+        video: [],
+        frame_idx: [],
+        instance_id_start: [],
+        instance_id_end: [],
+      },
+      instancesData: {
+        instance_type: [],
+        skeleton: [],
+        track: [],
+        point_id_start: [],
+        point_id_end: [],
+        score: [],
+        tracking_score: [],
+        from_predicted: [],
+      },
       pointsData: { x: [], y: [], visible: [], complete: [] },
       predPointsData: { x: [], y: [], visible: [], complete: [], score: [] },
       skeletons: [new Skeleton({ nodes: ["A"] })],

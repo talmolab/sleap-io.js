@@ -44,7 +44,7 @@ export interface LoadLabelImagesOptions {
  * `label-images-node.ts`; absent in the browser graph (issue #70).
  */
 export type LabelImageFileReader = (
-  path: string
+  path: string,
 ) => Promise<Uint8Array | { files: Uint8Array[] }>;
 
 let fileReader: LabelImageFileReader | null = null;
@@ -73,7 +73,7 @@ const warnedMessages = new Set<string>();
 
 async function decodeTiff(
   bytes: Uint8Array,
-  opts?: { pages?: number[]; ignoreImageData?: boolean }
+  opts?: { pages?: number[]; ignoreImageData?: boolean },
 ): Promise<TiffIfdLike[]> {
   // `tiff` is an optionalDependency (issue #140 decision 3): externalized in the
   // tsup build and lazy-imported here so it resolves from the consumer's install
@@ -85,7 +85,7 @@ async function decodeTiff(
   } catch {
     throw new Error(
       "Reading TIFF label images requires the optional `tiff` package. " +
-        "Install it with: npm install tiff"
+        "Install it with: npm install tiff",
     );
   }
   try {
@@ -98,7 +98,7 @@ async function decodeTiff(
     if (/bit\s*depth/i.test(m) && /(32|64)/.test(m)) {
       throw new Error(
         `32-bit integer TIFFs are not yet supported (${m}). Re-export the label ` +
-          "image as uint16, or split into <=65535 objects."
+          "image as uint16, or split into <=65535 objects.",
       );
     }
     throw err;
@@ -115,12 +115,12 @@ async function decodeTiff(
  */
 export async function loadLabelImages(
   source: string | File | Blob,
-  options: LoadLabelImagesOptions = {}
+  options: LoadLabelImagesOptions = {},
 ): Promise<UserLabelImage[]> {
   const pagesAs: PagesAs = options.pagesAs ?? "auto";
   if (pagesAs !== "auto" && pagesAs !== "time" && pagesAs !== "classes") {
     throw new Error(
-      `pagesAs must be 'auto', 'time', or 'classes'; got ${JSON.stringify(pagesAs)}.`
+      `pagesAs must be 'auto', 'time', or 'classes'; got ${JSON.stringify(pagesAs)}.`,
     );
   }
 
@@ -134,7 +134,7 @@ export async function loadLabelImages(
   if (!fileReader) {
     throw new Error(
       "Reading TIFF label images from a path requires the Node entry point " +
-        "(`@talmolab/sleap-io.js`). In the browser, pass a File/Blob instead."
+        "(`@talmolab/sleap-io.js`). In the browser, pass a File/Blob instead.",
     );
   }
   const read = await fileReader(source as string);
@@ -150,7 +150,7 @@ async function decodeSingleFile(
   bytes: Uint8Array,
   pagesAs: PagesAs,
   options: LoadLabelImagesOptions,
-  source: string
+  source: string,
 ): Promise<UserLabelImage[]> {
   // Cheap header scan: validate dtype, count pages, read page-0 metadata.
   const meta = await decodeTiff(bytes, { ignoreImageData: true });
@@ -167,7 +167,7 @@ async function decodeSingleFile(
   if (layout === "TCYX") {
     throw new Error(
       "4D TCYX (time + channel) TIFF stacks are not yet supported. Pass " +
-        "pagesAs: 'time' or 'classes' explicitly, or split the stack by channel."
+        "pagesAs: 'time' or 'classes' explicitly, or split the stack by channel.",
     );
   }
 
@@ -199,7 +199,7 @@ async function decodeDirectory(
   files: Uint8Array[],
   pagesAs: PagesAs,
   options: LoadLabelImagesOptions,
-  source: string
+  source: string,
 ): Promise<UserLabelImage[]> {
   if (files.length === 0) return [];
   const fileIndices = normalizeFrames(options.frames, files.length);
@@ -222,7 +222,7 @@ function validatePageDtype(ifd: TiffIfdLike): void {
   if (ifd.samplesPerPixel !== 1) {
     throw new Error(
       `Expected a single-channel (2D) label-image page, got ${ifd.samplesPerPixel} ` +
-        "samples per pixel. Multi-channel/RGB TIFFs are not supported."
+        "samples per pixel. Multi-channel/RGB TIFFs are not supported.",
     );
   }
   // MVP supports only unsigned 8/16-bit label rasters. Float, signed, and 32-bit
@@ -232,18 +232,18 @@ function validatePageDtype(ifd: TiffIfdLike): void {
   if (fmt === 3) {
     throw new Error(
       `Floating-point TIFFs are not supported as label images (bitsPerSample=${ifd.bitsPerSample}). ` +
-        "Re-export as uint8 or uint16."
+        "Re-export as uint8 or uint16.",
     );
   }
   if (fmt === 2) {
     throw new Error(
-      "Signed-integer TIFFs are not supported as label images. Re-export as uint8 or uint16."
+      "Signed-integer TIFFs are not supported as label images. Re-export as uint8 or uint16.",
     );
   }
   if (ifd.bitsPerSample !== 8 && ifd.bitsPerSample !== 16) {
     throw new Error(
       `Only 8- and 16-bit unsigned label images are supported (got ${ifd.bitsPerSample}-bit). ` +
-        "Re-export as uint16, or split into <=65535 objects."
+        "Re-export as uint16, or split into <=65535 objects.",
     );
   }
 }
@@ -261,7 +261,10 @@ function dtypeName(ifd: TiffIfdLike): string {
  * ImageJ-hyperstack and OME-XML metadata are authoritative; a plain multi-page
  * TIFF reports `"unknown"`. A single page is always `"YX"`.
  */
-export function inferAxes(description: string | undefined, nPages: number): Layout {
+export function inferAxes(
+  description: string | undefined,
+  nPages: number,
+): Layout {
   if (nPages === 1) return "YX";
   if (!description) return "unknown";
 
@@ -280,7 +283,7 @@ function dimsToLayout(c: number, z: number, t: number): Layout {
 
 /** Parse ImageJ-hyperstack `key=value` ImageDescription. */
 function parseImageJDims(
-  desc: string
+  desc: string,
 ): { c: number; z: number; t: number } | null {
   if (!/(^|\n)ImageJ=/.test(desc)) return null;
   const get = (key: string): number => {
@@ -291,7 +294,9 @@ function parseImageJDims(
 }
 
 /** Parse OME-XML `<Pixels SizeC/SizeT/SizeZ=...>` ImageDescription. */
-function parseOmeDims(desc: string): { c: number; z: number; t: number } | null {
+function parseOmeDims(
+  desc: string,
+): { c: number; z: number; t: number } | null {
   if (!/<\s*OME[\s>]|openmicroscopy\.org/i.test(desc)) return null;
   const pixels = desc.match(/<\s*Pixels\b[^>]*>/i);
   const attrs = pixels ? pixels[0] : desc;
@@ -350,7 +355,7 @@ function pagesCouldBeClassStack(pages: number[][][]): boolean {
 function buildTimeStack(
   pages: number[][][],
   options: LoadLabelImagesOptions,
-  source: string
+  source: string,
 ): UserLabelImage[] {
   return LabelImage.fromStack({
     data: pages,
@@ -364,10 +369,12 @@ function buildTimeStack(
 function buildClassStack(
   pages: number[][][],
   options: LoadLabelImagesOptions,
-  source: string
+  source: string,
 ): UserLabelImage {
   const labelIds = inferLabelIdsFromPages(pages);
-  const masks = pages.map((page) => page.map((row) => row.map((v) => (v > 0 ? 1 : 0))));
+  const masks = pages.map((page) =>
+    page.map((row) => row.map((v) => (v > 0 ? 1 : 0))),
+  );
   const categories = coerceCategoriesToList(options.categories, pages.length);
   return LabelImage.fromBinaryMasks(masks, {
     labelIds: labelIds ?? undefined,
@@ -379,7 +386,7 @@ function buildClassStack(
 /** Coerce categories to a positional list of length `n`, or `null` if all empty. */
 function coerceCategoriesToList(
   categories: Map<number, string> | string[] | null | undefined,
-  n: number
+  n: number,
 ): string[] | null {
   if (categories == null) return null;
   let list: string[];
@@ -397,7 +404,7 @@ function coerceCategoriesToList(
 
 function normalizeFrames(
   frames: number[] | null | undefined,
-  n: number
+  n: number,
 ): number[] {
   if (frames == null) return Array.from({ length: n }, (_, i) => i);
   return frames.filter((i) => i >= 0 && i < n);

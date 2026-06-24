@@ -2,7 +2,10 @@ import { describe, it, expect, beforeEach, afterEach, vi } from "../bun-test";
 import { readFileSync } from "fs";
 import { resolve } from "path";
 
-const WEBM_PATH = resolve(__dirname, "../data/videos/centered_pair_low_quality.webm");
+const WEBM_PATH = resolve(
+  __dirname,
+  "../data/videos/centered_pair_low_quality.webm",
+);
 
 describe("MediaBunnyVideoBackend integration (real WebM file)", () => {
   beforeEach(() => {

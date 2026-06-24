@@ -12,8 +12,8 @@ import fs from "node:fs";
 
 const realJpg = new Uint8Array(
   fs.readFileSync(
-    fileURLToPath(new URL("../data/videos/imgs/img.00.jpg", import.meta.url))
-  )
+    fileURLToPath(new URL("../data/videos/imgs/img.00.jpg", import.meta.url)),
+  ),
 );
 const names = (n: number) => Array.from({ length: n }, (_, i) => `img${i}.jpg`);
 
@@ -58,10 +58,19 @@ describe("ImageVideoBackend.prefetch (mechanism)", () => {
       active--;
       return realJpg;
     };
-    return { reader, reads, get maxActive() { return maxActive; } };
+    return {
+      reader,
+      reads,
+      get maxActive() {
+        return maxActive;
+      },
+    };
   }
 
-  async function make(t: { reader: (p: string) => Promise<Uint8Array> }, opts = {}) {
+  async function make(
+    t: { reader: (p: string) => Promise<Uint8Array> },
+    opts = {},
+  ) {
     return ImageVideoBackend.create({
       filename: names(50),
       shape: [50, 8, 8, 3],
@@ -80,7 +89,10 @@ describe("ImageVideoBackend.prefetch (mechanism)", () => {
     const t = trackingReader();
     const be = await make(t);
     await be.prefetch([2, 4, 6]);
-    expect(t.reads.filter((p) => ["img2.jpg", "img4.jpg", "img6.jpg"].includes(p)).length).toBe(3);
+    expect(
+      t.reads.filter((p) => ["img2.jpg", "img4.jpg", "img6.jpg"].includes(p))
+        .length,
+    ).toBe(3);
     // Now getFrame(4) must NOT trigger another read (bytes already cached).
     const before = t.reads.length;
     await be.getFrame(4);

@@ -1,5 +1,9 @@
 import type { Track } from "./instance.js";
-import { Instance, PredictedInstance, _registerCentroidFactory } from "./instance.js";
+import {
+  Instance,
+  PredictedInstance,
+  _registerCentroidFactory,
+} from "./instance.js";
 import { Skeleton } from "./skeleton.js";
 
 /** Shared single-node skeleton for centroid-to-instance conversions. */
@@ -17,7 +21,8 @@ export function getCentroidSkeleton(): Skeleton {
  * Module-level constant for the centroid skeleton.
  * Lazily initialized on first access.
  */
-export const CENTROID_SKELETON: Skeleton = /* @__PURE__ */ (() => getCentroidSkeleton())();
+export const CENTROID_SKELETON: Skeleton = /* @__PURE__ */ (() =>
+  getCentroidSkeleton())();
 
 /** Options for constructing a Centroid. */
 export interface CentroidOptions {
@@ -144,14 +149,22 @@ export class Centroid {
    */
   static fromInstance(
     instance: Instance | PredictedInstance,
-    options?: { method?: string; node?: string | number; [key: string]: unknown },
+    options?: {
+      method?: string;
+      node?: string | number;
+      [key: string]: unknown;
+    },
   ): Centroid {
     const method = options?.method ?? "centerOfMass";
 
     // Gather visible points
     const visiblePoints: [number, number][] = [];
     for (const point of instance.points) {
-      if (point.visible && !Number.isNaN(point.xy[0]) && !Number.isNaN(point.xy[1])) {
+      if (
+        point.visible &&
+        !Number.isNaN(point.xy[0]) &&
+        !Number.isNaN(point.xy[1])
+      ) {
         visiblePoints.push(point.xy);
       }
     }
@@ -163,8 +176,10 @@ export class Centroid {
       if (!visiblePoints.length) {
         throw new Error("No visible points for centerOfMass.");
       }
-      x = visiblePoints.reduce((sum, p) => sum + p[0], 0) / visiblePoints.length;
-      y = visiblePoints.reduce((sum, p) => sum + p[1], 0) / visiblePoints.length;
+      x =
+        visiblePoints.reduce((sum, p) => sum + p[0], 0) / visiblePoints.length;
+      y =
+        visiblePoints.reduce((sum, p) => sum + p[1], 0) / visiblePoints.length;
     } else if (method === "bboxCenter") {
       if (!visiblePoints.length) {
         throw new Error("No visible points for bboxCenter.");
@@ -186,7 +201,9 @@ export class Centroid {
       }
       const pt = instance.points[nodeIdx];
       if (!pt || Number.isNaN(pt.xy[0])) {
-        throw new Error(`Anchor node ${JSON.stringify(node)} is not visible in this instance.`);
+        throw new Error(
+          `Anchor node ${JSON.stringify(node)} is not visible in this instance.`,
+        );
       }
       x = pt.xy[0];
       y = pt.xy[1];
@@ -208,7 +225,10 @@ export class Centroid {
     };
 
     // Check if instance is predicted (has score property)
-    if ("score" in instance && typeof (instance as PredictedInstance).score === "number") {
+    if (
+      "score" in instance &&
+      typeof (instance as PredictedInstance).score === "number"
+    ) {
       return new PredictedCentroid({
         ...centroidOptions,
         score: (instance as PredictedInstance).score,

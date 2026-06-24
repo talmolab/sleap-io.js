@@ -33,11 +33,17 @@ export interface JsfiveFile {
  * @param filename - Optional filename hint for error messages
  * @returns JsfiveFile interface for reading the file
  */
-export function openJsfiveFile(source: JsfiveSource, filename?: string): JsfiveFile {
+export function openJsfiveFile(
+  source: JsfiveSource,
+  filename?: string,
+): JsfiveFile {
   let buffer: ArrayBuffer;
   if (source instanceof Uint8Array) {
     // Create a proper ArrayBuffer copy to avoid SharedArrayBuffer issues
-    const slice = source.buffer.slice(source.byteOffset, source.byteOffset + source.byteLength);
+    const slice = source.buffer.slice(
+      source.byteOffset,
+      source.byteOffset + source.byteLength,
+    );
     buffer = slice as ArrayBuffer;
   } else {
     buffer = source;
@@ -64,7 +70,9 @@ export function openJsfiveFile(source: JsfiveSource, filename?: string): JsfiveF
 /**
  * Check if an item is a jsfive dataset (has value property).
  */
-export function isDataset(item: JsfiveDataset | JsfiveGroup | null): item is JsfiveDataset {
+export function isDataset(
+  item: JsfiveDataset | JsfiveGroup | null,
+): item is JsfiveDataset {
   if (!item) return false;
   return "value" in item || "shape" in item;
 }
@@ -72,7 +80,9 @@ export function isDataset(item: JsfiveDataset | JsfiveGroup | null): item is Jsf
 /**
  * Check if an item is a jsfive group (has keys property but no value).
  */
-export function isGroup(item: JsfiveDataset | JsfiveGroup | null): item is JsfiveGroup {
+export function isGroup(
+  item: JsfiveDataset | JsfiveGroup | null,
+): item is JsfiveGroup {
   if (!item) return false;
   return "keys" in item && !("value" in item);
 }
@@ -80,7 +90,9 @@ export function isGroup(item: JsfiveDataset | JsfiveGroup | null): item is Jsfiv
 /**
  * Safely get attributes from a dataset or group.
  */
-export function getAttrs(item: JsfiveDataset | JsfiveGroup | null): Record<string, unknown> {
+export function getAttrs(
+  item: JsfiveDataset | JsfiveGroup | null,
+): Record<string, unknown> {
   if (!item) return {};
   return (item.attrs ?? {}) as Record<string, unknown>;
 }

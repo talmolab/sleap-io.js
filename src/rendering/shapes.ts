@@ -10,7 +10,7 @@ type DrawMarkerFn = (
   size: number,
   fillColor: string,
   edgeColor?: string,
-  edgeWidth?: number
+  edgeWidth?: number,
 ) => void;
 
 /**
@@ -23,7 +23,7 @@ export function drawCircle(
   size: number,
   fillColor: string,
   edgeColor?: string,
-  edgeWidth: number = 1
+  edgeWidth: number = 1,
 ): void {
   ctx.beginPath();
   ctx.arc(x, y, size, 0, Math.PI * 2);
@@ -48,7 +48,7 @@ export function drawSquare(
   size: number,
   fillColor: string,
   edgeColor?: string,
-  edgeWidth: number = 1
+  edgeWidth: number = 1,
 ): void {
   const half = size;
   ctx.fillStyle = fillColor;
@@ -71,7 +71,7 @@ export function drawDiamond(
   size: number,
   fillColor: string,
   edgeColor?: string,
-  edgeWidth: number = 1
+  edgeWidth: number = 1,
 ): void {
   ctx.beginPath();
   ctx.moveTo(x, y - size); // Top
@@ -100,7 +100,7 @@ export function drawTriangle(
   size: number,
   fillColor: string,
   edgeColor?: string,
-  edgeWidth: number = 1
+  edgeWidth: number = 1,
 ): void {
   const h = size * 0.866; // Height factor for equilateral triangle
 
@@ -130,7 +130,7 @@ export function drawCross(
   size: number,
   fillColor: string,
   _edgeColor?: string,
-  edgeWidth: number = 2
+  edgeWidth: number = 2,
 ): void {
   ctx.strokeStyle = fillColor;
   ctx.lineWidth = edgeWidth;
@@ -207,7 +207,7 @@ export interface DrawTrailsOptions {
 export function drawTrails(
   ctx: CanvasRenderingContext2D,
   trails: Array<Array<[number, number] | number[]>>,
-  options: DrawTrailsOptions = {}
+  options: DrawTrailsOptions = {},
 ): void {
   if (trails.length === 0) return;
 
@@ -224,7 +224,7 @@ export function drawTrails(
   if (colors !== undefined && colors.length !== trails.length) {
     throw new Error(
       `colors has length ${colors.length} but there are ${trails.length} ` +
-        "trails; they must be the same length."
+        "trails; they must be the same length.",
     );
   }
 

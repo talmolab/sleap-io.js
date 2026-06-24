@@ -1,13 +1,24 @@
 import YAML from "yaml";
-import { Skeleton, Node, Edge, Symmetry, NodeOrIndex } from "../model/skeleton.js";
+import {
+  Skeleton,
+  Node,
+  Edge,
+  Symmetry,
+  NodeOrIndex,
+} from "../model/skeleton.js";
 
 type YAMLNodeEntry = { name: string } | string;
 
 type YAMLEdgeEntry =
-  | { source: { name: string } | string; destination: { name: string } | string }
+  | {
+      source: { name: string } | string;
+      destination: { name: string } | string;
+    }
   | [NodeOrIndex, NodeOrIndex];
 
-type YAMLSymmetryEntry = Array<{ name: string } | string> | [NodeOrIndex, NodeOrIndex];
+type YAMLSymmetryEntry =
+  | Array<{ name: string } | string>
+  | [NodeOrIndex, NodeOrIndex];
 
 type YAMLSkeletonData = {
   nodes: YAMLNodeEntry[];
@@ -28,7 +39,10 @@ function resolveName(value: { name?: string } | string): string {
   throw new Error("Invalid name reference in skeleton YAML.");
 }
 
-function decodeSkeleton(data: YAMLSkeletonData, fallbackName?: string): Skeleton {
+function decodeSkeleton(
+  data: YAMLSkeletonData,
+  fallbackName?: string,
+): Skeleton {
   if (!data?.nodes) throw new Error("Skeleton YAML missing nodes.");
   const nodes = data.nodes.map((entry) => new Node(getNodeName(entry)));
 
@@ -54,7 +68,8 @@ function decodeSkeleton(data: YAMLSkeletonData, fallbackName?: string): Skeleton
     const rightName = resolveName(right as { name?: string } | string);
     const leftNode = nodes.find((node) => node.name === leftName);
     const rightNode = nodes.find((node) => node.name === rightName);
-    if (!leftNode || !rightNode) throw new Error("Symmetry references unknown node.");
+    if (!leftNode || !rightNode)
+      throw new Error("Symmetry references unknown node.");
     return new Symmetry([leftNode, rightNode]);
   });
 
@@ -75,7 +90,7 @@ export function decodeYamlSkeleton(yamlData: string): Skeleton | Skeleton[] {
   }
 
   return Object.entries(parsed).map(([name, skeletonData]) =>
-    decodeSkeleton(skeletonData as YAMLSkeletonData, name)
+    decodeSkeleton(skeletonData as YAMLSkeletonData, name),
   );
 }
 

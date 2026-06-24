@@ -1,5 +1,11 @@
 import { LabeledFrame } from "./labeled-frame.js";
-import { Instance, PredictedInstance, Track, pointsFromArray, predictedPointsFromArray } from "./instance.js";
+import {
+  Instance,
+  PredictedInstance,
+  Track,
+  pointsFromArray,
+  predictedPointsFromArray,
+} from "./instance.js";
 import { Skeleton } from "./skeleton.js";
 import { Video } from "./video.js";
 import type { Centroid } from "./centroid.js";
@@ -126,7 +132,9 @@ export class LazyDataStore {
     const rawVideoId = Number(this.framesData.video?.[frameIdx] ?? 0);
     const videoIndex = rawVideoId;
     const frameIndex = Number(this.framesData.frame_idx?.[frameIdx] ?? 0);
-    const instStart = Number(this.framesData.instance_id_start?.[frameIdx] ?? 0);
+    const instStart = Number(
+      this.framesData.instance_id_start?.[frameIdx] ?? 0,
+    );
     const instEnd = Number(this.framesData.instance_id_end?.[frameIdx] ?? 0);
     const video = this.videos[videoIndex];
     if (!video) return null;
@@ -136,22 +144,38 @@ export class LazyDataStore {
     const fromPredictedPairs: Array<[number, number]> = [];
 
     for (let instIdx = instStart; instIdx < instEnd; instIdx++) {
-      const instanceType = Number(this.instancesData.instance_type?.[instIdx] ?? 0);
+      const instanceType = Number(
+        this.instancesData.instance_type?.[instIdx] ?? 0,
+      );
       const skeletonId = Number(this.instancesData.skeleton?.[instIdx] ?? 0);
       const trackId = Number(this.instancesData.track?.[instIdx] ?? -1);
-      const pointStart = Number(this.instancesData.point_id_start?.[instIdx] ?? 0);
+      const pointStart = Number(
+        this.instancesData.point_id_start?.[instIdx] ?? 0,
+      );
       const pointEnd = Number(this.instancesData.point_id_end?.[instIdx] ?? 0);
       const score = Number(this.instancesData.score?.[instIdx] ?? 0);
-      const rawTrackingScore = this.formatId < 1.2 ? 0 : Number(this.instancesData.tracking_score?.[instIdx] ?? 0);
-      const trackingScore = Number.isNaN(rawTrackingScore) ? 0 : rawTrackingScore;
-      const fromPredicted = Number(this.instancesData.from_predicted?.[instIdx] ?? -1);
+      const rawTrackingScore =
+        this.formatId < 1.2
+          ? 0
+          : Number(this.instancesData.tracking_score?.[instIdx] ?? 0);
+      const trackingScore = Number.isNaN(rawTrackingScore)
+        ? 0
+        : rawTrackingScore;
+      const fromPredicted = Number(
+        this.instancesData.from_predicted?.[instIdx] ?? -1,
+      );
       const skeleton = this.skeletons[skeletonId] ?? this.skeletons[0];
       const track = trackId >= 0 ? this.tracks[trackId] : null;
 
       let instance: Instance | PredictedInstance;
       if (instanceType === 0) {
         const points = this.slicePoints(this.pointsData, pointStart, pointEnd);
-        instance = new Instance({ points: pointsFromArray(points, skeleton.nodeNames), skeleton, track, trackingScore });
+        instance = new Instance({
+          points: pointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          trackingScore,
+        });
         if (this.formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -161,8 +185,19 @@ export class LazyDataStore {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = this.slicePoints(this.predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({ points: predictedPointsFromArray(points, skeleton.nodeNames), skeleton, track, score, trackingScore });
+        const points = this.slicePoints(
+          this.predPointsData,
+          pointStart,
+          pointEnd,
+          true,
+        );
+        instance = new PredictedInstance({
+          points: predictedPointsFromArray(points, skeleton.nodeNames),
+          skeleton,
+          track,
+          score,
+          trackingScore,
+        });
         if (this.formatId < 1.1) {
           instance.points.forEach((point) => {
             point.xy = [point.xy[0] - 0.5, point.xy[1] - 0.5];
@@ -178,7 +213,11 @@ export class LazyDataStore {
     for (const [instanceId, fromPredictedId] of fromPredictedPairs) {
       const instance = instanceById.get(instanceId);
       const predicted = instanceById.get(fromPredictedId);
-      if (instance && predicted instanceof PredictedInstance && instance instanceof Instance) {
+      if (
+        instance &&
+        predicted instanceof PredictedInstance &&
+        instance instanceof Instance
+      ) {
         instance.fromPredicted = predicted;
       }
     }
@@ -222,7 +261,11 @@ export class LazyDataStore {
    *   Non-finite, non-positive, or fractional values are sanitized via
    *   `Math.floor` and ignored when `<= 0`.
    */
-  toNumpy(options?: { video?: Video; returnConfidence?: boolean; numFrames?: number }): number[][][][] {
+  toNumpy(options?: {
+    video?: Video;
+    returnConfidence?: boolean;
+    numFrames?: number;
+  }): number[][][][] {
     const targetVideo = options?.video ?? this.videos[0];
     if (!targetVideo) return [];
 
@@ -260,8 +303,12 @@ export class LazyDataStore {
     if (!matchingFrames.length) return [];
 
     const rawOverride = options?.numFrames;
-    const override = Number.isFinite(rawOverride) && (rawOverride as number) > 0 ? Math.floor(rawOverride as number) : 0;
-    const effectiveLength = override > 0 ? override : (targetVideo.shape?.[0] ?? 0);
+    const override =
+      Number.isFinite(rawOverride) && (rawOverride as number) > 0
+        ? Math.floor(rawOverride as number)
+        : 0;
+    const effectiveLength =
+      override > 0 ? override : (targetVideo.shape?.[0] ?? 0);
     if (effectiveLength > 0) {
       maxFrameIdx = Math.max(maxFrameIdx, effectiveLength - 1);
     }
@@ -272,8 +319,10 @@ export class LazyDataStore {
     // Allocate NaN-filled output
     const output: number[][][][] = Array.from({ length: maxFrameIdx + 1 }, () =>
       Array.from({ length: trackCount }, () =>
-        Array.from({ length: nodeCount }, () => Array.from({ length: channelCount }, () => Number.NaN))
-      )
+        Array.from({ length: nodeCount }, () =>
+          Array.from({ length: channelCount }, () => Number.NaN),
+        ),
+      ),
     );
 
     // Instance column data
@@ -304,7 +353,8 @@ export class LazyDataStore {
       for (let instIdx = iStart; instIdx < iEnd; instIdx++) {
         const isPredicted = Number(instTypes[instIdx]) === 1;
         const trackId = Number(instTracks[instIdx]);
-        const trackIndex = trackId >= 0 && this.tracks.length ? trackId : localIdx;
+        const trackIndex =
+          trackId >= 0 && this.tracks.length ? trackId : localIdx;
         localIdx++;
 
         const trackSlot = frameSlot[trackIndex];
@@ -351,7 +401,12 @@ export class LazyDataStore {
     return frames;
   }
 
-  private slicePoints(data: Record<string, any[]>, start: number, end: number, predicted = false): number[][] {
+  private slicePoints(
+    data: Record<string, any[]>,
+    start: number,
+    end: number,
+    predicted = false,
+  ): number[][] {
     const xs = data.x ?? [];
     const ys = data.y ?? [];
     const visible = data.visible ?? [];

@@ -26,10 +26,18 @@ import path from "node:path";
 import fs from "node:fs";
 import { Labels } from "../../src/model/labels.js";
 import { LabeledFrame } from "../../src/model/labeled-frame.js";
-import { Instance, PredictedInstance, Track } from "../../src/model/instance.js";
+import {
+  Instance,
+  PredictedInstance,
+  Track,
+} from "../../src/model/instance.js";
 import { Skeleton } from "../../src/model/skeleton.js";
 import { Video } from "../../src/model/video.js";
-import { MergeResult, VideoMatcher, VideoMatchMethod } from "../../src/model/matching.js";
+import {
+  MergeResult,
+  VideoMatcher,
+  VideoMatchMethod,
+} from "../../src/model/matching.js";
 
 // --- helpers ----------------------------------------------------------------
 
@@ -48,7 +56,11 @@ function makeVideo(
   return v;
 }
 
-function userInst(points: number[][], skeleton: Skeleton, track?: Track): Instance {
+function userInst(
+  points: number[][],
+  skeleton: Skeleton,
+  track?: Track,
+): Instance {
   return new Instance({
     points: Instance.fromArray(points, skeleton).points,
     skeleton,
@@ -79,7 +91,15 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 0,
-        instances: [userInst([[10, 10], [20, 20]], skeleton)],
+        instances: [
+          userInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+          ),
+        ],
       }),
     );
 
@@ -88,7 +108,15 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 1,
-        instances: [userInst([[30, 30], [40, 40]], skeleton)],
+        instances: [
+          userInst(
+            [
+              [30, 30],
+              [40, 40],
+            ],
+            skeleton,
+          ),
+        ],
       }),
     );
 
@@ -111,7 +139,15 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 0,
-        instances: [userInst([[10, 10], [20, 20]], skeleton)],
+        instances: [
+          userInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+          ),
+        ],
       }),
     );
 
@@ -120,7 +156,15 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 0,
-        instances: [userInst([[11, 11], [21, 21]], skeleton)],
+        instances: [
+          userInst(
+            [
+              [11, 11],
+              [21, 21],
+            ],
+            skeleton,
+          ),
+        ],
       }),
     );
 
@@ -147,7 +191,15 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 0,
-        instances: [userInst([[10, 10], [20, 20]], skeleton1)],
+        instances: [
+          userInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton1,
+          ),
+        ],
       }),
     );
 
@@ -156,7 +208,16 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 1,
-        instances: [userInst([[10, 10], [15, 15], [20, 20]], skeleton2)],
+        instances: [
+          userInst(
+            [
+              [10, 10],
+              [15, 15],
+              [20, 20],
+            ],
+            skeleton2,
+          ),
+        ],
       }),
     );
 
@@ -184,7 +245,16 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 0,
-        instances: [userInst([[10, 10], [20, 20]], skeleton, track1)],
+        instances: [
+          userInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            track1,
+          ),
+        ],
       }),
     );
 
@@ -193,7 +263,16 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 1,
-        instances: [userInst([[30, 30], [40, 40]], skeleton, track2)],
+        instances: [
+          userInst(
+            [
+              [30, 30],
+              [40, 40],
+            ],
+            skeleton,
+            track2,
+          ),
+        ],
       }),
     );
 
@@ -217,7 +296,15 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 0,
-        instances: [userInst([[10, 10], [20, 20]], skeleton1)],
+        instances: [
+          userInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton1,
+          ),
+        ],
       }),
     );
 
@@ -226,7 +313,15 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 0,
-        instances: [userInst([[10, 10], [20, 20]], skeleton2)],
+        instances: [
+          userInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton2,
+          ),
+        ],
       }),
     );
 
@@ -249,7 +344,15 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 0,
-        instances: [userInst([[10, 10], [20, 20]], skeleton)],
+        instances: [
+          userInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+          ),
+        ],
       }),
     );
 
@@ -258,14 +361,24 @@ describe("Labels.merge — basics (GROUP B)", () => {
       new LabeledFrame({
         video,
         frameIdx: 1,
-        instances: [userInst([[30, 30], [40, 40]], skeleton)],
+        instances: [
+          userInst(
+            [
+              [30, 30],
+              [40, 40],
+            ],
+            skeleton,
+          ),
+        ],
       }),
     );
 
     await labels1.merge(labels2);
 
     expect("merge_history" in labels1.provenance).toBe(true);
-    const history = labels1.provenance.merge_history as Array<Record<string, unknown>>;
+    const history = labels1.provenance.merge_history as Array<
+      Record<string, unknown>
+    >;
     expect(history.length).toBe(1);
     const rec = history[0];
     expect("timestamp" in rec).toBe(true);
@@ -304,7 +417,16 @@ describe("Labels.merge — source_video awareness (GROUP C)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 10,
-        instances: [predInst([[50, 60], [70, 80]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [50, 60],
+              [70, 80],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -313,7 +435,8 @@ describe("Labels.merge — source_video awareness (GROUP C)", () => {
     expect(result.successful).toBeTruthy();
     expect(result.framesMerged).toBe(1);
     expect(baseLabels.videos.length).toBe(2); // no new video
-    const merged = baseLabels.labeledFrames[baseLabels.labeledFrames.length - 1];
+    const merged =
+      baseLabels.labeledFrames[baseLabels.labeledFrames.length - 1];
     expect(merged.video).toBe(videoB);
   });
 
@@ -329,14 +452,27 @@ describe("Labels.merge — source_video awareness (GROUP C)", () => {
 
     // source has no explicit shape in Python (only filename) — leave shape unset.
     const source = makeVideo("/data/recordings/experiment_002.mp4");
-    const predVideo = makeVideo("training_run_2024_12_15.pkg.slp", shape, source);
+    const predVideo = makeVideo(
+      "training_run_2024_12_15.pkg.slp",
+      shape,
+      source,
+    );
     const predictions = new Labels({ skeletons: [skeleton] });
     predictions.videos = [predVideo];
     predictions.labeledFrames = [
       new LabeledFrame({
         video: predVideo,
         frameIdx: 5,
-        instances: [predInst([[25, 35], [45, 55]], skeleton, 0.85)],
+        instances: [
+          predInst(
+            [
+              [25, 35],
+              [45, 55],
+            ],
+            skeleton,
+            0.85,
+          ),
+        ],
       }),
     ];
 
@@ -344,7 +480,8 @@ describe("Labels.merge — source_video awareness (GROUP C)", () => {
 
     expect(result.successful).toBeTruthy();
     expect(baseLabels.videos.length).toBe(2);
-    const merged = baseLabels.labeledFrames[baseLabels.labeledFrames.length - 1];
+    const merged =
+      baseLabels.labeledFrames[baseLabels.labeledFrames.length - 1];
     expect(merged.video).toBe(baseVideo2);
   });
 
@@ -359,7 +496,11 @@ describe("Labels.merge — source_video awareness (GROUP C)", () => {
     baseLabels.videos = [videoA, videoB];
 
     const intermediateSource = makeVideo("/data/video_b.mp4");
-    const intermediate = makeVideo("intermediate.pkg.slp", undefined, intermediateSource);
+    const intermediate = makeVideo(
+      "intermediate.pkg.slp",
+      undefined,
+      intermediateSource,
+    );
     const final = makeVideo("final.pkg.slp", shape, intermediate);
 
     const predictions = new Labels({ skeletons: [skeleton] });
@@ -368,7 +509,16 @@ describe("Labels.merge — source_video awareness (GROUP C)", () => {
       new LabeledFrame({
         video: final,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -376,7 +526,8 @@ describe("Labels.merge — source_video awareness (GROUP C)", () => {
 
     expect(result.successful).toBeTruthy();
     expect(baseLabels.videos.length).toBe(2);
-    const merged = baseLabels.labeledFrames[baseLabels.labeledFrames.length - 1];
+    const merged =
+      baseLabels.labeledFrames[baseLabels.labeledFrames.length - 1];
     expect(merged.video).toBe(videoB);
   });
 });
@@ -403,7 +554,16 @@ describe("Labels.merge — cross-platform paths (GROUP D)", () => {
       new LabeledFrame({
         video: linuxVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 20], [30, 40]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 20],
+              [30, 40],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -431,7 +591,16 @@ describe("Labels.merge — cross-platform paths (GROUP D)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 20], [30, 40]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 20],
+              [30, 40],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -453,7 +622,11 @@ describe("Labels.merge — ImageVideo (GROUP E)", () => {
   // E1 test_merge_imagevideo_basic (lines 972-1015)
   it("E1: identical image-path lists (copies) -> same video, pred frame added", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
-    const paths = ["/data/img_000.jpg", "/data/img_001.jpg", "/data/img_002.jpg"];
+    const paths = [
+      "/data/img_000.jpg",
+      "/data/img_001.jpg",
+      "/data/img_002.jpg",
+    ];
     const shape: [number, number, number, number] = [3, 480, 640, 3];
 
     const video1 = makeVideo([...paths], shape);
@@ -463,7 +636,15 @@ describe("Labels.merge — ImageVideo (GROUP E)", () => {
       new LabeledFrame({
         video: video1,
         frameIdx: 0,
-        instances: [userInst([[10, 10], [20, 20]], skeleton)],
+        instances: [
+          userInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+          ),
+        ],
       }),
     ];
 
@@ -474,7 +655,16 @@ describe("Labels.merge — ImageVideo (GROUP E)", () => {
       new LabeledFrame({
         video: video2,
         frameIdx: 1,
-        instances: [predInst([[30, 30], [40, 40]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [30, 30],
+              [40, 40],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -489,7 +679,10 @@ describe("Labels.merge — ImageVideo (GROUP E)", () => {
   it("E2: IMAGE_DEDUP remaps pred frame_idx 0 (img_002) onto base frame 2", async () => {
     const skeleton = new Skeleton({ nodes: ["head", "tail"] });
 
-    const basePaths = Array.from({ length: 5 }, (_, i) => `/data/img_${String(i).padStart(3, "0")}.jpg`);
+    const basePaths = Array.from(
+      { length: 5 },
+      (_, i) => `/data/img_${String(i).padStart(3, "0")}.jpg`,
+    );
     const baseVideo = makeVideo(basePaths, [5, 480, 640, 3]);
     const baseLabels = new Labels({ skeletons: [skeleton] });
     baseLabels.videos = [baseVideo];
@@ -508,7 +701,16 @@ describe("Labels.merge — ImageVideo (GROUP E)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[50, 50], [60, 60]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [50, 50],
+              [60, 60],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -536,14 +738,26 @@ describe("Labels.merge — shape rejection (GROUP F)", () => {
     const labels = new Labels({ skeletons: [skeleton] });
     labels.videos = [videoA];
 
-    const predVideo = makeVideo("/predictions/video_a.mp4", [100, 1080, 1920, 1]);
+    const predVideo = makeVideo(
+      "/predictions/video_a.mp4",
+      [100, 1080, 1920, 1],
+    );
     const predictions = new Labels({ skeletons: [skeleton] });
     predictions.videos = [predVideo];
     predictions.labeledFrames = [
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -568,7 +782,16 @@ describe("Labels.merge — shape rejection (GROUP F)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -593,7 +816,16 @@ describe("Labels.merge — shape rejection (GROUP F)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -620,7 +852,16 @@ describe("Labels.merge — shape rejection (GROUP F)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -652,7 +893,16 @@ describe("Labels.merge — leaf-path uniqueness (GROUP G)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -679,7 +929,16 @@ describe("Labels.merge — leaf-path uniqueness (GROUP G)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -706,7 +965,16 @@ describe("Labels.merge — leaf-path uniqueness (GROUP G)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -733,7 +1001,16 @@ describe("Labels.merge — leaf-path uniqueness (GROUP G)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -761,7 +1038,16 @@ describe("Labels.merge — leaf-path uniqueness (GROUP G)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -809,7 +1095,16 @@ describe("Labels.merge — samefile matching (GROUP H)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -845,7 +1140,16 @@ describe("Labels.merge — samefile matching (GROUP H)", () => {
         new LabeledFrame({
           video: predVideo,
           frameIdx: 0,
-          instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+          instances: [
+            predInst(
+              [
+                [10, 10],
+                [20, 20],
+              ],
+              skeleton,
+              0.9,
+            ),
+          ],
         }),
       ];
       result = await labels.merge(predictions);
@@ -881,7 +1185,16 @@ describe("Labels.merge — original_video OR-logic (GROUP J)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -909,7 +1222,16 @@ describe("Labels.merge — original_video OR-logic (GROUP J)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -938,7 +1260,16 @@ describe("Labels.merge — original_video OR-logic (GROUP J)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -966,7 +1297,16 @@ describe("Labels.merge — original_video OR-logic (GROUP J)", () => {
       new LabeledFrame({
         video: predVideo,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 
@@ -995,7 +1335,16 @@ describe("Labels.merge — original_video OR-logic (GROUP J)", () => {
       new LabeledFrame({
         video: final,
         frameIdx: 0,
-        instances: [predInst([[10, 10], [20, 20]], skeleton, 0.9)],
+        instances: [
+          predInst(
+            [
+              [10, 10],
+              [20, 20],
+            ],
+            skeleton,
+            0.9,
+          ),
+        ],
       }),
     ];
 

@@ -40,8 +40,16 @@ describe("lazy SLP write fast path", () => {
     const video = new Video({ filename: "v.mp4" });
     const skeleton = new Skeleton({ nodes: ["A", "B"] });
     const track = new Track("t1");
-    const inst1 = new Instance({ points: { A: [1, 2], B: [3, 4] }, skeleton, track });
-    const inst2 = new Instance({ points: { A: [5, 6], B: [7, 8] }, skeleton, track });
+    const inst1 = new Instance({
+      points: { A: [1, 2], B: [3, 4] },
+      skeleton,
+      track,
+    });
+    const inst2 = new Instance({
+      points: { A: [5, 6], B: [7, 8] },
+      skeleton,
+      track,
+    });
     const lf0 = new LabeledFrame({ video, frameIdx: 0, instances: [inst1] });
     const lf1 = new LabeledFrame({ video, frameIdx: 1, instances: [inst2] });
     const labels = new Labels({ labeledFrames: [lf0, lf1] });
@@ -103,7 +111,13 @@ describe("lazy SLP write fast path", () => {
     const video = new Video({ filename: "v.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });
     const inst = new Instance({ points: { A: [0, 0] }, skeleton });
-    const b1 = new UserBoundingBox({ x1: 0, y1: 0, x2: 10, y2: 10, category: "obj" });
+    const b1 = new UserBoundingBox({
+      x1: 0,
+      y1: 0,
+      x2: 10,
+      y2: 10,
+      category: "obj",
+    });
     const b2 = new PredictedBoundingBox({
       x1: 5,
       y1: 5,
@@ -121,7 +135,9 @@ describe("lazy SLP write fast path", () => {
 
     const loaded = await lazyRoundTrip(labels);
     expect(loaded.labeledFrames[0].bboxes).toHaveLength(2);
-    expect(loaded.labeledFrames[0].bboxes.find((b) => b.category === "obj")).toBeDefined();
+    expect(
+      loaded.labeledFrames[0].bboxes.find((b) => b.category === "obj"),
+    ).toBeDefined();
   });
 
   it("preserves frame-bound masks", async () => {
@@ -184,8 +200,14 @@ describe("lazy SLP write fast path", () => {
     const v2 = new Video({ filename: "v2.mp4" });
     const skeleton = new Skeleton({ nodes: ["A"] });
     const inst = new Instance({ points: { A: [0, 0] }, skeleton });
-    const frameRoi = UserROI.fromBbox(0, 0, 50, 50, { video: v1, category: "frame-roi" });
-    const staticRoi = UserROI.fromBbox(0, 0, 100, 100, { video: v2, category: "arena" });
+    const frameRoi = UserROI.fromBbox(0, 0, 50, 50, {
+      video: v1,
+      category: "frame-roi",
+    });
+    const staticRoi = UserROI.fromBbox(0, 0, 100, 100, {
+      video: v2,
+      category: "arena",
+    });
     const lf = new LabeledFrame({
       video: v1,
       frameIdx: 0,

@@ -365,7 +365,10 @@ export class Labels {
     const annFrameIdx = new Map<unknown, number>();
     for (const lf of this.labeledFrames) {
       for (const ann of [
-        ...lf.centroids, ...lf.bboxes, ...lf.masks, ...lf.rois,
+        ...lf.centroids,
+        ...lf.bboxes,
+        ...lf.masks,
+        ...lf.rois,
         ...lf.instances,
       ]) {
         annFrameIdx.set(ann, lf.frameIdx);
@@ -491,7 +494,9 @@ export class Labels {
       // requireSameOrder: true — dedup reassigns instances to the canonical
       // skeleton without remapping point positions, so only skeletons whose
       // node ORDER also matches can be safely collapsed (points are positional).
-      const existing = canonicals.find((c) => skel.matches(c, { requireSameOrder: true }));
+      const existing = canonicals.find((c) =>
+        skel.matches(c, { requireSameOrder: true }),
+      );
       if (existing) {
         canonicalFor.set(skel, existing);
       } else {
@@ -586,8 +591,17 @@ export class Labels {
     // Resolve deferred instance references on per-frame annotations
     const allInstances = this.labeledFrames.flatMap((f) => f.instances);
     for (const lf of this.labeledFrames) {
-      for (const ann of [...lf.centroids, ...lf.bboxes, ...lf.masks, ...lf.rois] as DeferredInstanceRef[]) {
-        if (ann._instanceIdx !== null && ann._instanceIdx >= 0 && ann._instanceIdx < allInstances.length) {
+      for (const ann of [
+        ...lf.centroids,
+        ...lf.bboxes,
+        ...lf.masks,
+        ...lf.rois,
+      ] as DeferredInstanceRef[]) {
+        if (
+          ann._instanceIdx !== null &&
+          ann._instanceIdx >= 0 &&
+          ann._instanceIdx < allInstances.length
+        ) {
           ann.instance = allInstances[ann._instanceIdx];
           ann._instanceIdx = null;
         }
@@ -647,12 +661,15 @@ export class Labels {
    * still works. When the video does not resolve to a project video the foreign
    * reference is used as-is, so identity-based lookups yield no results.
    */
-  find(options: { video?: Video | string | URL; frameIdx?: number }): LabeledFrame[] {
+  find(options: {
+    video?: Video | string | URL;
+    frameIdx?: number;
+  }): LabeledFrame[] {
     if (this._lazyFrameList) this.materialize();
     // Canonicalize a foreign Video / filename to the matching project Video.
     const resolved =
       options.video !== undefined
-        ? this._resolveVideo(options.video) ?? undefined
+        ? (this._resolveVideo(options.video) ?? undefined)
         : undefined;
     // Fast path: O(1) lookup when both video and frameIdx are specified
     if (resolved !== undefined && options.frameIdx !== undefined) {
@@ -663,7 +680,10 @@ export class Labels {
       if (resolved && frame.video !== resolved) {
         return false;
       }
-      if (options.frameIdx !== undefined && frame.frameIdx !== options.frameIdx) {
+      if (
+        options.frameIdx !== undefined &&
+        frame.frameIdx !== options.frameIdx
+      ) {
         return false;
       }
       return true;
@@ -737,7 +757,7 @@ export class Labels {
     // `_resolveVideo` for its documented divergence from `matchVideo`).
     const video =
       filters.video !== undefined
-        ? this._resolveVideo(filters.video) ?? undefined
+        ? (this._resolveVideo(filters.video) ?? undefined)
         : undefined;
     let results: ROI[];
     if (video !== undefined && filters.frameIdx !== undefined) {
@@ -784,7 +804,7 @@ export class Labels {
     // `_resolveVideo` for its documented divergence from `matchVideo`).
     const video =
       filters.video !== undefined
-        ? this._resolveVideo(filters.video) ?? undefined
+        ? (this._resolveVideo(filters.video) ?? undefined)
         : undefined;
     let results: SegmentationMask[];
     if (video !== undefined && filters.frameIdx !== undefined) {
@@ -831,7 +851,7 @@ export class Labels {
     // `_resolveVideo` for its documented divergence from `matchVideo`).
     const video =
       filters.video !== undefined
-        ? this._resolveVideo(filters.video) ?? undefined
+        ? (this._resolveVideo(filters.video) ?? undefined)
         : undefined;
     let results: BoundingBox[];
     if (video !== undefined && filters.frameIdx !== undefined) {
@@ -878,7 +898,7 @@ export class Labels {
     // `_resolveVideo` for its documented divergence from `matchVideo`).
     const video =
       filters.video !== undefined
-        ? this._resolveVideo(filters.video) ?? undefined
+        ? (this._resolveVideo(filters.video) ?? undefined)
         : undefined;
     let results: Centroid[];
     if (video !== undefined && filters.frameIdx !== undefined) {
@@ -924,7 +944,7 @@ export class Labels {
     // `_resolveVideo` for its documented divergence from `matchVideo`).
     const video =
       filters.video !== undefined
-        ? this._resolveVideo(filters.video) ?? undefined
+        ? (this._resolveVideo(filters.video) ?? undefined)
         : undefined;
     let results: LabelImage[];
     if (video !== undefined && filters.frameIdx !== undefined) {
@@ -945,7 +965,9 @@ export class Labels {
     }
     if (filters.track !== undefined) {
       results = results.filter((li) =>
-        Array.from(li.objects.values()).some((info) => info.track === filters.track),
+        Array.from(li.objects.values()).some(
+          (info) => info.track === filters.track,
+        ),
       );
     }
     if (filters.category !== undefined) {
@@ -1008,7 +1030,8 @@ export class Labels {
 
     // Update static ROIs
     for (const roi of this._staticRois) {
-      if (roi.video && videoMap.has(roi.video)) roi.video = videoMap.get(roi.video)!;
+      if (roi.video && videoMap.has(roi.video))
+        roi.video = videoMap.get(roi.video)!;
     }
 
     this.videos = this.videos.map((v) => videoMap!.get(v) ?? v);
@@ -1034,11 +1057,11 @@ export class Labels {
     const toRemove = new Set(videos);
 
     this.labeledFrames = this.labeledFrames.filter(
-      (lf) => !toRemove.has(lf.video)
+      (lf) => !toRemove.has(lf.video),
     );
     this.suggestions = this.suggestions.filter((s) => !toRemove.has(s.video));
     this._staticRois = this._staticRois.filter(
-      (roi) => !roi.video || !toRemove.has(roi.video)
+      (roi) => !roi.video || !toRemove.has(roi.video),
     );
     this.videos = this.videos.filter((v) => !toRemove.has(v));
 
@@ -1093,7 +1116,12 @@ export class Labels {
         const nodes = [...sym.nodes];
         return new Symmetry([nodeMap.get(nodes[0])!, nodeMap.get(nodes[1])!]);
       });
-      const ns = new Skeleton({ nodes: newNodes, edges: newEdges, symmetries: newSymmetries, name: s.name });
+      const ns = new Skeleton({
+        nodes: newNodes,
+        edges: newEdges,
+        symmetries: newSymmetries,
+        name: s.name,
+      });
       skeletonMap.set(s, ns);
       return ns;
     });
@@ -1107,13 +1135,17 @@ export class Labels {
     });
 
     // Helper: clone an instance with remapped skeleton/track
-    const cloneInstance = (inst: Instance | PredictedInstance): Instance | PredictedInstance => {
+    const cloneInstance = (
+      inst: Instance | PredictedInstance,
+    ): Instance | PredictedInstance => {
       const newPoints = inst.points.map((p) => ({
         ...p,
         xy: [...p.xy] as [number, number],
       }));
       const newSkeleton = skeletonMap.get(inst.skeleton) ?? inst.skeleton;
-      const newTrack = inst.track ? (trackMap.get(inst.track) ?? inst.track) : null;
+      const newTrack = inst.track
+        ? (trackMap.get(inst.track) ?? inst.track)
+        : null;
       if (inst instanceof PredictedInstance) {
         return new PredictedInstance({
           points: newPoints as any,
@@ -1165,14 +1197,18 @@ export class Labels {
         if (objectRefs) {
           for (const [id, [track, inst]] of objectRefs) {
             const info = (item as any).objects.get(id);
-            if (info) { info.track = track; info.instance = inst; }
+            if (info) {
+              info.track = track;
+              info.instance = inst;
+            }
           }
         }
 
         // Remap refs on clone
         for (const [key, val] of saved) {
           if (key === "video") (clone as any).video = videoMap.get(val) ?? val;
-          else if (key === "track") (clone as any).track = trackMap.get(val) ?? val;
+          else if (key === "track")
+            (clone as any).track = trackMap.get(val) ?? val;
           else if (key === "instance") (clone as any).instance = null;
         }
         if (objectRefs) {
@@ -1202,19 +1238,21 @@ export class Labels {
 
       // Copy supplementary frames (annotation-only, non-lazy)
       if (this._lazyFrameList?._supplementary.length) {
-        newLazyFrames._supplementary = this._lazyFrameList._supplementary.map((lf) => {
-          return new LabeledFrame({
-            video: videoMap.get(lf.video) ?? lf.video,
-            frameIdx: lf.frameIdx,
-            instances: lf.instances.map(cloneInstance),
-            isNegative: lf.isNegative,
-            centroids: cloneAncillary(lf.centroids) as Centroid[],
-            bboxes: cloneAncillary(lf.bboxes) as BoundingBox[],
-            masks: cloneAncillary(lf.masks) as SegmentationMask[],
-            labelImages: cloneAncillary(lf.labelImages) as LabelImage[],
-            rois: cloneAncillary(lf.rois) as ROI[],
-          });
-        });
+        newLazyFrames._supplementary = this._lazyFrameList._supplementary.map(
+          (lf) => {
+            return new LabeledFrame({
+              video: videoMap.get(lf.video) ?? lf.video,
+              frameIdx: lf.frameIdx,
+              instances: lf.instances.map(cloneInstance),
+              isNegative: lf.isNegative,
+              centroids: cloneAncillary(lf.centroids) as Centroid[],
+              bboxes: cloneAncillary(lf.bboxes) as BoundingBox[],
+              masks: cloneAncillary(lf.masks) as SegmentationMask[],
+              labelImages: cloneAncillary(lf.labelImages) as LabelImage[],
+              rois: cloneAncillary(lf.rois) as ROI[],
+            });
+          },
+        );
       }
 
       labelsCopy = new Labels({
@@ -1287,14 +1325,28 @@ export class Labels {
 
   static fromNumpy(
     data: number[][][][],
-    options: { videos?: Video[]; video?: Video; skeletons?: Skeleton[] | Skeleton; skeleton?: Skeleton; trackNames?: string[]; firstFrame?: number; returnConfidence?: boolean }
+    options: {
+      videos?: Video[];
+      video?: Video;
+      skeletons?: Skeleton[] | Skeleton;
+      skeleton?: Skeleton;
+      trackNames?: string[];
+      firstFrame?: number;
+      returnConfidence?: boolean;
+    },
   ): Labels {
     const video = options.video ?? options.videos?.[0];
     if (!video) throw new Error("fromNumpy requires a video.");
     if (options.video && options.videos) {
       throw new Error("Cannot specify both video and videos.");
     }
-    const skeletons = Array.isArray(options.skeletons) ? options.skeletons : options.skeletons ? [options.skeletons] : options.skeleton ? [options.skeleton] : [];
+    const skeletons = Array.isArray(options.skeletons)
+      ? options.skeletons
+      : options.skeletons
+        ? [options.skeletons]
+        : options.skeleton
+          ? [options.skeleton]
+          : [];
     if (!skeletons.length) throw new Error("fromNumpy requires a skeleton.");
     return labelsFromNumpy(data, {
       video,
@@ -1335,24 +1387,36 @@ export class Labels {
     if (this._lazyDataStore) {
       return this._lazyDataStore.toNumpy({ ...options, video: targetVideo });
     }
-    const frames = this.labeledFrames.filter((frame) => frame.video.matchesPath(targetVideo, true));
+    const frames = this.labeledFrames.filter((frame) =>
+      frame.video.matchesPath(targetVideo, true),
+    );
     if (!frames.length) return [];
 
     let maxFrame = Math.max(...frames.map((frame) => frame.frameIdx));
     const rawOverride = options?.numFrames;
-    const override = Number.isFinite(rawOverride) && (rawOverride as number) > 0 ? Math.floor(rawOverride as number) : 0;
-    const effectiveLength = override > 0 ? override : (targetVideo.shape?.[0] ?? 0);
+    const override =
+      Number.isFinite(rawOverride) && (rawOverride as number) > 0
+        ? Math.floor(rawOverride as number)
+        : 0;
+    const effectiveLength =
+      override > 0 ? override : (targetVideo.shape?.[0] ?? 0);
     if (effectiveLength > 0) {
       maxFrame = Math.max(maxFrame, effectiveLength - 1);
     }
-    const tracks = this.tracks.length ? this.tracks.length : Math.max(1, ...frames.map((frame) => frame.instances.length));
+    const tracks = this.tracks.length
+      ? this.tracks.length
+      : Math.max(1, ...frames.map((frame) => frame.instances.length));
     const nodes = this.skeletons[0]?.nodes.length ?? 0;
     const channelCount = options?.returnConfidence ? 3 : 2;
 
-    const videoArray: number[][][][] = Array.from({ length: maxFrame + 1 }, () =>
-      Array.from({ length: tracks }, () =>
-        Array.from({ length: nodes }, () => Array.from({ length: channelCount }, () => Number.NaN))
-      )
+    const videoArray: number[][][][] = Array.from(
+      { length: maxFrame + 1 },
+      () =>
+        Array.from({ length: tracks }, () =>
+          Array.from({ length: nodes }, () =>
+            Array.from({ length: channelCount }, () => Number.NaN),
+          ),
+        ),
     );
 
     for (const frame of frames) {
@@ -1367,7 +1431,10 @@ export class Labels {
           if (!trackSlot[nodeIdx]) return;
           const row = [point.xy[0], point.xy[1]];
           if (options?.returnConfidence) {
-            const score = "score" in point ? (point as { score: number }).score : Number.NaN;
+            const score =
+              "score" in point
+                ? (point as { score: number }).score
+                : Number.NaN;
             row.push(score);
           }
           trackSlot[nodeIdx] = row;
@@ -1429,9 +1496,11 @@ export class Labels {
     videoMap: Map<Video, Video>,
     trackMap: Map<Track, Track>,
   ): void {
-    for (const ann of [...frame.centroids, ...frame.bboxes, ...frame.masks] as Array<
-      Centroid | BoundingBox | SegmentationMask
-    >) {
+    for (const ann of [
+      ...frame.centroids,
+      ...frame.bboxes,
+      ...frame.masks,
+    ] as Array<Centroid | BoundingBox | SegmentationMask>) {
       if (ann.track != null && trackMap.has(ann.track)) {
         ann.track = trackMap.get(ann.track)!;
       }
@@ -1472,9 +1541,10 @@ export class Labels {
     skeletonMap: Map<Skeleton, Skeleton>,
     trackMap: Map<Track, Track>,
   ): Instance | PredictedInstance {
-    const mappedSkeleton = skeletonMap.get(instance.skeleton) ?? instance.skeleton;
+    const mappedSkeleton =
+      skeletonMap.get(instance.skeleton) ?? instance.skeleton;
     const mappedTrack = instance.track
-      ? trackMap.get(instance.track) ?? instance.track
+      ? (trackMap.get(instance.track) ?? instance.track)
       : null;
 
     // Deep/independent copy of the points so the source is never aliased.
@@ -1656,7 +1726,8 @@ export class Labels {
                     Array.isArray(otherVideo.filename) &&
                     Array.isArray(selfVideo.filename)
                   ) {
-                    const otherBasenames = otherVideo.filename.map(pathBasename);
+                    const otherBasenames =
+                      otherVideo.filename.map(pathBasename);
                     const selfBasenames = selfVideo.filename.map(pathBasename);
                     otherBasenames.forEach((bn, oldIdx) => {
                       const newIdx = selfBasenames.indexOf(bn);
@@ -1673,7 +1744,8 @@ export class Labels {
                     Array.isArray(otherVideo.filename) &&
                     Array.isArray(dedupedVideo.filename)
                   ) {
-                    const otherBasenames = otherVideo.filename.map(pathBasename);
+                    const otherBasenames =
+                      otherVideo.filename.map(pathBasename);
                     const dedupedBasenames =
                       dedupedVideo.filename.map(pathBasename);
                     const selfBasenames = Array.isArray(selfVideo.filename)
@@ -1707,7 +1779,8 @@ export class Labels {
                   Array.isArray(mergedVideo.filename)
                 ) {
                   const otherBasenames = otherVideo.filename.map(pathBasename);
-                  const mergedBasenames = mergedVideo.filename.map(pathBasename);
+                  const mergedBasenames =
+                    mergedVideo.filename.map(pathBasename);
                   otherBasenames.forEach((bn, oldIdx) => {
                     const newIdx = mergedBasenames.indexOf(bn);
                     if (newIdx !== -1) {
@@ -2548,10 +2621,7 @@ export class Labels {
         );
         const newSymmetries = s.symmetries.map((sym) => {
           const nodes = [...sym.nodes];
-          return new Symmetry([
-            nodeMap.get(nodes[0])!,
-            nodeMap.get(nodes[1])!,
-          ]);
+          return new Symmetry([nodeMap.get(nodes[0])!, nodeMap.get(nodes[1])!]);
         });
         ns = new Skeleton({
           nodes: newNodes,
@@ -2622,11 +2692,11 @@ export class Labels {
           anyClone.instance = null;
         }
         // LabelImage: copy the objects Map and remap nested track refs.
-        if (
-          "objects" in anyClone &&
-          anyClone.objects instanceof Map
-        ) {
-          const oldObjects = anyClone.objects as Map<number, Record<string, unknown>>;
+        if ("objects" in anyClone && anyClone.objects instanceof Map) {
+          const oldObjects = anyClone.objects as Map<
+            number,
+            Record<string, unknown>
+          >;
           const newObjects = new Map<number, Record<string, unknown>>();
           for (const [id, info] of oldObjects) {
             const newInfo = { ...info };
