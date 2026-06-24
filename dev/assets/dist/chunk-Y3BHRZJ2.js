@@ -12555,12 +12555,24 @@ function writeRois(file, rois, videos, tracks, instances, contexts) {
     wkbFlat.set(chunk, offset);
     offset += chunk.length;
   }
-  file.create_dataset({
-    name: "roi_wkb",
-    data: wkbFlat,
-    shape: [wkbFlat.length],
-    dtype: "<B"
-  });
+  if (wkbFlat.length > 0) {
+    file.create_dataset({
+      name: "roi_wkb",
+      data: wkbFlat,
+      shape: [wkbFlat.length],
+      dtype: "<B",
+      chunks: [wkbFlat.length],
+      compression: "gzip",
+      compression_opts: 1
+    });
+  } else {
+    file.create_dataset({
+      name: "roi_wkb",
+      data: wkbFlat,
+      shape: [wkbFlat.length],
+      dtype: "<B"
+    });
+  }
 }
 function writeMasks(file, masks, videos, tracks, instances, contexts) {
   if (!masks.length) return;
@@ -12681,12 +12693,24 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
     rleFlat.set(chunk, offset);
     offset += chunk.length;
   }
-  file.create_dataset({
-    name: "mask_rle",
-    data: rleFlat,
-    shape: [rleFlat.length],
-    dtype: "<B"
-  });
+  if (rleFlat.length > 0) {
+    file.create_dataset({
+      name: "mask_rle",
+      data: rleFlat,
+      shape: [rleFlat.length],
+      dtype: "<B",
+      chunks: [rleFlat.length],
+      compression: "gzip",
+      compression_opts: 1
+    });
+  } else {
+    file.create_dataset({
+      name: "mask_rle",
+      data: rleFlat,
+      shape: [rleFlat.length],
+      dtype: "<B"
+    });
+  }
   if (scoreMapIndexRows.length > 0) {
     createMatrixDataset(
       file,
