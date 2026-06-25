@@ -971,6 +971,7 @@ export {
   Instance3D,
   PredictedInstance3D,
   parseJsonAttr,
+  missingMetadataJsonError,
   parseMetadataJson,
   attrToString,
   attrToNumber,
