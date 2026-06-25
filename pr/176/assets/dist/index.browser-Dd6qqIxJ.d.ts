@@ -3155,8 +3155,9 @@ declare function isAnalysisH5File(source: string | ArrayBuffer | Uint8Array): Pr
  * @param options.lazy - If true, use lazy loading for on-demand frame materialization (default: false)
  * @param options.onProgress - Optional callback fired as loading advances through
  *   its stages: (current, total, message?), where current/total count completed
- *   stages and message labels the stage about to run. Only the streaming reader
- *   currently emits these (the path used in browser/Tauri).
+ *   stages and message labels the stage about to run. Emitted by all reader
+ *   paths (streaming, eager, and lazy); the final call is (total, total,
+ *   "Finalizing"). Stage counts differ by path (streaming is finer-grained).
  * @returns Loaded Labels object
  */
 declare function loadSlp(source: SlpSource, options?: {
