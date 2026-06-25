@@ -1,4 +1,4 @@
-import { VideoBackend, VideoFrame } from "./backend.js";
+import type { VideoBackend, VideoFrame } from "./backend.js";
 import type { StreamingH5File } from "../codecs/slp/h5-streaming.js";
 import {
   type EmbeddedFrameReader,
@@ -133,6 +133,20 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     } catch {
       /* probe failed, shape stays undefined */
     }
+  }
+
+  /**
+   * Crop pushdown hook (Item 1 of JS issue #153). Always returns `null`: this
+   * streaming embedded backend stores opaque encoded blobs (PNG/JPEG) or
+   * per-frame-indexed raw rows, neither of which can be spatially hyperslabbed
+   * without first decoding the whole frame. Pushdown is structurally impossible
+   * here, so the crop wrapper falls back to full-decode + `cropFrame`. (A raw
+   * rank-4 chunked HDF5 pixel-array backend, which COULD push down over the
+   * worker's `dataset.slice`, does not exist in the JS port yet; see backend.ts
+   * `readCrop` doc.) Short-circuits before any network read.
+   */
+  async readCrop(): Promise<null> {
+    return null;
   }
 
   /** Build a single-frame reader bound to the streaming worker file. */

@@ -124,6 +124,16 @@ describe("PYTHON -> JS: committed format-2.3 cropped fixture", () => {
     expect(gray(frame, 74, 94)).not.toBe(0);
   });
 
+  it("reloaded crop tile OWNS its inner (per-tile ownership, no auto-share on read — JS#153 item 2)", async () => {
+    const labels = await readSlp(FIXTURE, { openVideos: true });
+    const v = labels.videos[0];
+    expect(v.backend instanceof CropVideoBackend).toBe(true);
+    // On read each video entry rebuilds a private inner, so the tile owns it
+    // (ownsInner defaults to true). Sharing is opt-in/in-memory only via
+    // Video.crop({ shareDecode: true }). Mirrors Python slp.py:393-401.
+    expect((v.backend as CropVideoBackend).ownsInner).toBe(true);
+  });
+
   it("closed read (openVideos=false): cropped shape + crop metadata, null backend", async () => {
     const labels = await readSlp(FIXTURE, { openVideos: false });
     const v = labels.videos[0];
