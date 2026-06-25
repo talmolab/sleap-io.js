@@ -17,7 +17,8 @@ import {
 import {
   attrToNumber,
   attrToString,
-  parseJsonAttr,
+  parseMetadataJson,
+  missingMetadataJsonError,
   parseJsonEntry,
   parseSkeletons,
   parseTracks,
@@ -156,8 +157,13 @@ export async function readSlpStreaming(
 
 /**
  * Read Labels from an already-opened StreamingH5File.
+ *
+ * Exported for direct testing of the streaming metadata-error path: the full
+ * streaming reader (`readSlpStreaming`) is browser/Worker-gated and unreachable
+ * from the all-Node test suite, so the error-routing here is exercised by
+ * driving this function with a minimal `getAttrs`-providing stub.
  */
-async function readFromStreamingFile(
+export async function readFromStreamingFile(
   file: StreamingH5File,
   url: string,
   filenameHint?: string,
@@ -189,19 +195,33 @@ async function readFromStreamingFile(
     onProgress?.(n, total, message ?? STAGES[n]);
 
   report(0);
-  const metadataAttrs = await file.getAttrs("metadata");
+  const labelsPath =
+    filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
+  // A missing `metadata` group surfaces from the worker as a thrown
+  // "Path not found: metadata"; treat that the same as a missing `json`
+  // attribute (both indicate a truncated/corrupt file) and route it through
+  // the same helpful error. Mirrors Python sleap-io PR #446, where
+  // `read_metadata` catches the `KeyError` from BOTH cases and maps them to
+  // the same `ValueError`, and matches the eager/lazy readers in read.ts.
+  let metadataAttrs: Record<string, unknown>;
+  try {
+    metadataAttrs = await file.getAttrs("metadata");
+  } catch {
+    throw missingMetadataJsonError(labelsPath);
+  }
   const formatId = Number(
     (metadataAttrs["format_id"] as { value?: number })?.value ??
       metadataAttrs["format_id"] ??
       1.0,
   );
-  const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<
-    string,
-    unknown
-  > | null;
+  // Throws the same helpful error if the `metadata` group exists but its
+  // required `json` attribute is missing/empty (truncated/corrupt file);
+  // mirrors Python sleap-io PR #446 and matches the eager/lazy readers.
+  const metadataJson = parseMetadataJson(
+    metadataAttrs["json"],
+    labelsPath,
+  ) as Record<string, unknown> | null;
 
-  const labelsPath =
-    filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
   const skeletons = parseSkeletons(metadataJson);
 
   report(1);
