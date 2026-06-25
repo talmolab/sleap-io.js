@@ -17,7 +17,7 @@ import {
 import {
   attrToNumber,
   attrToString,
-  parseJsonAttr,
+  parseMetadataJson,
   parseJsonEntry,
   parseSkeletons,
   parseTracks,
@@ -195,13 +195,16 @@ async function readFromStreamingFile(
       metadataAttrs["format_id"] ??
       1.0,
   );
-  const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<
-    string,
-    unknown
-  > | null;
-
   const labelsPath =
     filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
+  // Throws a helpful error if the `metadata` group exists but its required
+  // `json` attribute is missing/empty (truncated/corrupt file); mirrors Python
+  // sleap-io PR #446 and matches the eager/lazy readers in read.ts.
+  const metadataJson = parseMetadataJson(
+    metadataAttrs["json"],
+    labelsPath,
+  ) as Record<string, unknown> | null;
+
   const skeletons = parseSkeletons(metadataJson);
 
   report(1);

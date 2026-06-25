@@ -2,7 +2,7 @@ import { openH5File, OpenH5Options, SlpSource } from "./h5.js";
 import {
   attrToNumber,
   attrToString,
-  parseJsonAttr,
+  parseMetadataJson,
   parseSkeletons,
   resolveCameraKey,
   reconstructInstance3D,
@@ -131,15 +131,18 @@ export async function readSlp(
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
     );
-    const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<
-      string,
-      unknown
-    > | null;
-
     const labelsPath =
       typeof source === "string"
         ? source
         : (options?.h5?.filenameHint ?? "slp-data.slp");
+    // Throws a helpful error if the `metadata` group exists but its required
+    // `json` attribute is missing/empty (truncated/corrupt file); mirrors
+    // Python sleap-io PR #446.
+    const metadataJson = parseMetadataJson(
+      metadataAttrs["json"],
+      labelsPath,
+    ) as Record<string, unknown> | null;
+
     const skeletons = parseSkeletons(metadataJson);
     report(1); // Reading tracks
     const tracks = readTracks(file.get("tracks_json"));
@@ -386,15 +389,18 @@ export async function readSlpLazy(
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
     );
-    const metadataJson = parseJsonAttr(metadataAttrs["json"]) as Record<
-      string,
-      unknown
-    > | null;
-
     const labelsPath =
       typeof source === "string"
         ? source
         : (options?.h5?.filenameHint ?? "slp-data.slp");
+    // Throws a helpful error if the `metadata` group exists but its required
+    // `json` attribute is missing/empty (truncated/corrupt file); mirrors
+    // Python sleap-io PR #446.
+    const metadataJson = parseMetadataJson(
+      metadataAttrs["json"],
+      labelsPath,
+    ) as Record<string, unknown> | null;
+
     const skeletons = parseSkeletons(metadataJson);
     report(1); // Reading tracks
     const tracks = readTracks(file.get("tracks_json"));

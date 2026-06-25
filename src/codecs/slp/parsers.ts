@@ -35,6 +35,73 @@ export function parseJsonAttr(attr: unknown): unknown {
 }
 
 /**
+ * Determine whether a `/metadata` `json` HDF5 attribute holds usable content.
+ *
+ * Mirrors the precondition for which Python's `read_metadata` raises (an absent
+ * `json` attribute surfaces as a `KeyError`). An attribute is considered absent
+ * when it is `undefined`/`null`, an empty string (including a `{ value }`
+ * wrapper around one), or an empty byte buffer. A non-empty value -- even one
+ * that is malformed JSON -- is treated as present so that downstream parsing can
+ * surface the real decode error rather than masking it as corruption (see
+ * Python #446's `test_read_metadata_malformed_json_not_remasked`).
+ */
+function hasMetadataJsonAttr(attr: unknown): boolean {
+  if (attr === undefined || attr === null) return false;
+  const value = (attr as { value?: unknown }).value ?? attr;
+  if (typeof value === "string") return value.length > 0;
+  if (value instanceof Uint8Array) return value.length > 0;
+  if (value && typeof value === "object" && "buffer" in value) {
+    return new Uint8Array((value as { buffer: ArrayBuffer }).buffer).length > 0;
+  }
+  // Already-parsed objects (e.g. from the streaming worker) are usable as-is.
+  return true;
+}
+
+/**
+ * Build the helpful error message for a corrupt `.slp` whose `/metadata` group
+ * is missing its required `json` attribute. Mirrors the wording/intent of
+ * Python sleap-io PR #446 (`read_metadata` raising `ValueError`).
+ */
+export function missingMetadataJsonError(labelsPath: string): Error {
+  return new Error(
+    `The SLEAP labels file '${labelsPath}' is missing its required ` +
+      "metadata JSON blob (the 'metadata' HDF5 group has no readable 'json' " +
+      "attribute) and is likely corrupt. If you have a working .slp file " +
+      "with the same skeleton, you can copy the attribute into a BACKUP " +
+      "COPY of the corrupt file with h5py (back up first):\n" +
+      "    import h5py\n" +
+      "    with h5py.File('working.slp', 'r') as src, " +
+      "h5py.File('corrupt_copy.slp', 'a') as dst:\n" +
+      "        dst['metadata'].attrs['json'] = src['metadata'].attrs['json']\n" +
+      "Only do this if the skeletons match exactly, otherwise the loaded " +
+      "data will be wrong.",
+  );
+}
+
+/**
+ * Parse the `/metadata` group's `json` HDF5 attribute, raising a helpful error
+ * when it is absent.
+ *
+ * The `.slp` reader needs the JSON-encoded metadata blob to recover skeletons,
+ * provenance, etc. When the `metadata` group exists but the `json` attribute is
+ * missing/empty (a truncated, foreign, or otherwise corrupt file), the legacy
+ * code silently parsed it as `null` and failed later with an opaque error. This
+ * mirrors Python sleap-io PR #446: surface a clear, actionable error naming the
+ * file and the missing attribute instead. Malformed-but-present JSON still
+ * surfaces as the underlying parse error.
+ *
+ * @param attr The raw `json` attribute value as read from the HDF5 file.
+ * @param labelsPath Path/identifier of the `.slp` file (used in the message).
+ * @throws {Error} If the `json` attribute is absent or empty.
+ */
+export function parseMetadataJson(attr: unknown, labelsPath: string): unknown {
+  if (!hasMetadataJsonAttr(attr)) {
+    throw missingMetadataJsonError(labelsPath);
+  }
+  return parseJsonAttr(attr);
+}
+
+/**
  * Trim trailing nulls and whitespace from a string (for fixed-width HDF5 strings).
  */
 function trimHdf5String(str: string): string {
