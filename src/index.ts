@@ -57,6 +57,14 @@ export {
   type CropWrapOptions,
 } from "./video/crop-backend.js";
 export * from "./io/main.js";
+export * from "./io/remote.js";
+export {
+  parseGdrive,
+  urlFromConfirmation,
+  checkDownloadHost,
+  openGdrive,
+  DEFAULT_MAX_BYTES,
+} from "./io/gdrive.js";
 export * from "./io/geojson.js";
 export * from "./io/trackmate.js";
 export * from "./io/ultralytics.js";

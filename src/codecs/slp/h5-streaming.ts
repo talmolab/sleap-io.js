@@ -22,6 +22,12 @@ export interface StreamingH5Options {
   h5wasmUrl?: string;
   /** Filename hint for the HDF5 file. */
   filenameHint?: string;
+  /**
+   * Extra HTTP request headers forwarded to the worker's `openUrl`. When
+   * non-empty, the worker buffer-downloads the file (authenticated) instead of
+   * using header-free `createLazyFile` range streaming.
+   */
+  headers?: Record<string, string>;
 }
 
 /**
@@ -175,7 +181,11 @@ export class StreamingH5File {
 
     const filename =
       options?.filenameHint || url.split("/").pop()?.split("?")[0] || "data.h5";
-    const result = await this.send("openUrl", { url, filename });
+    const result = await this.send("openUrl", {
+      url,
+      filename,
+      headers: options?.headers,
+    });
     this._keys = (result.keys as string[]) || [];
     this._isOpen = true;
   }

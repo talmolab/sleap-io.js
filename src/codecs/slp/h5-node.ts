@@ -12,10 +12,13 @@
 import {
   _registerNodeH5,
   _registerNodeFileOps,
+  fetchRemoteSlpBytes,
   type H5Module,
+  type OpenH5Options,
   type SlpSource,
   type H5File,
 } from "./h5.js";
+import { isUrl } from "../../io/remote.js";
 import { _registerFileWriter } from "./write.js";
 
 let modulePromise: Promise<H5Module> | null = null;
@@ -34,35 +37,53 @@ async function getH5ModuleNode(): Promise<H5Module> {
 async function openH5FileNode(
   module: H5Module,
   source: SlpSource,
-): Promise<{ file: H5File; close: () => void }> {
+  options?: OpenH5Options,
+): Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }> {
+  // Remote URL: h5wasm/node cannot open a URL directly, so download the bytes
+  // (header-aware, scheme-resolved, redacted) and stage them to a temp file.
+  // Surface the bytes so embedded-pkg.slp reopens reuse them.
+  if (typeof source === "string" && isUrl(source)) {
+    const bytes = await fetchRemoteSlpBytes(source, options);
+    return openBytesNode(module, bytes);
+  }
+
   if (typeof source === "string") {
     const file = new module.File(source, "r");
     return { file, close: () => file.close() };
   }
 
   if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
-    const { writeFileSync, unlinkSync } = await import("node:fs");
-    const { tmpdir } = await import("node:os");
-    const { join } = await import("node:path");
     const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join(
-      tmpdir(),
-      `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`,
-    );
-    writeFileSync(tempPath, data);
-    const file = new module.File(tempPath, "r");
-    return {
-      file,
-      close: () => {
-        file.close();
-        unlinkSync(tempPath);
-      },
-    };
+    return openBytesNode(module, data);
   }
 
   throw new Error(
     "Node environments only support string paths or byte buffers for SLP inputs.",
   );
+}
+
+/** Stage bytes to a temp file and open them with h5wasm/node. */
+async function openBytesNode(
+  module: H5Module,
+  data: Uint8Array,
+): Promise<{ file: H5File; close: () => void; urlBytes: Uint8Array }> {
+  const { writeFileSync, unlinkSync } = await import("node:fs");
+  const { tmpdir } = await import("node:os");
+  const { join } = await import("node:path");
+  const tempPath = join(
+    tmpdir(),
+    `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`,
+  );
+  writeFileSync(tempPath, data);
+  const file = new module.File(tempPath, "r");
+  return {
+    file,
+    close: () => {
+      file.close();
+      unlinkSync(tempPath);
+    },
+    urlBytes: data,
+  };
 }
 
 // Register Node providers on import (side-effect)

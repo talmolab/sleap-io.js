@@ -40,7 +40,7 @@ self.onmessage = async function(e) {
         break;
 
       case 'openUrl':
-        const urlResult = await openRemoteFile(payload.url, payload.filename);
+        const urlResult = await openRemoteFile(payload.url, payload.filename, payload.headers);
         respond(id, urlResult);
         break;
 
@@ -126,13 +126,40 @@ async function initH5Wasm(h5wasmUrl) {
   FS = h5wasm.FS;
 }
 
-async function openRemoteFile(url, filename = 'data.h5') {
+async function openRemoteFile(url, filename = 'data.h5', headers) {
   if (!h5wasmModule) {
     throw new Error('h5wasm not initialized');
   }
 
   // Close any existing file
   closeFile();
+
+  // createLazyFile (synchronous XHR) has NO header API. When custom headers are
+  // present we cannot authenticate a range stream, so buffer-download the file
+  // with the headers applied and mount it as a MEMFS buffer instead. Header-free
+  // requests keep the efficient createLazyFile range streaming path.
+  const hasHeaders = headers && typeof headers === 'object' && Object.keys(headers).length > 0;
+  if (hasHeaders) {
+    const response = await fetch(url, { headers });
+    if (!response.ok) {
+      throw new Error('Failed to fetch remote HDF5 file: ' + response.status);
+    }
+    const data = new Uint8Array(await response.arrayBuffer());
+    const basename = (filename.split('/').pop() || '').split('\\\\').pop() || 'data.h5';
+    mountPath = '/remote-buffer-' + Date.now() + '/' + basename;
+    mountType = 'buffer';
+    currentFilename = basename;
+    const dir = mountPath.substring(0, mountPath.lastIndexOf('/'));
+    FS.mkdir(dir);
+    FS.writeFile(mountPath, data);
+    currentFile = new h5wasm.File(mountPath, 'r');
+    return {
+      success: true,
+      path: currentFile.path,
+      filename: currentFile.filename,
+      keys: currentFile.keys()
+    };
+  }
 
   // Create mount point
   mountPath = '/remote-' + Date.now();

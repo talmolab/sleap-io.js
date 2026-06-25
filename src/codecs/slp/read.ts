@@ -112,7 +112,15 @@ export async function readSlp(
   const onProgress = options?.onProgress;
   const report = (i: number) => onProgress?.(i, total, EAGER_STAGES[i]);
 
-  const { file, close } = await openH5File(source, options?.h5);
+  const { file, close, urlBytes } = await openH5File(source, options?.h5);
+  // Remote auth context to persist onto video backends (so reopens/probes stay
+  // authenticated). Only present when loading a remote `.slp` with headers, or
+  // when Drive bytes were resolved (reused for embedded reopen).
+  const remote = {
+    urlHeaders: options?.h5?.headers,
+    urlStreamMode: options?.h5?.stream,
+    urlBytes,
+  };
   try {
     report(0); // Reading metadata
     const metadataGroup = file.get("metadata");
@@ -153,6 +161,7 @@ export async function readSlp(
       openVideos
         ? (i, n) => onProgress?.(2, total, `Opening videos (${i}/${n})`)
         : undefined,
+      remote,
     );
     report(3); // Reading suggestions
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
@@ -363,7 +372,12 @@ export async function readSlpLazy(
   const onProgress = options?.onProgress;
   const report = (i: number) => onProgress?.(i, total, LAZY_STAGES[i]);
 
-  const { file, close } = await openH5File(source, options?.h5);
+  const { file, close, urlBytes } = await openH5File(source, options?.h5);
+  const remote = {
+    urlHeaders: options?.h5?.headers,
+    urlStreamMode: options?.h5?.stream,
+    urlBytes,
+  };
   try {
     report(0); // Reading metadata
     const metadataGroup = file.get("metadata");
@@ -404,6 +418,7 @@ export async function readSlpLazy(
       openVideos
         ? (i, n) => onProgress?.(2, total, `Opening videos (${i}/${n})`)
         : undefined,
+      remote,
     );
     report(3); // Reading suggestions
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
@@ -661,8 +676,14 @@ async function readVideos(
   formatId: number,
   videoCrops?: Map<number, VideoCropEntry>,
   onVideoProgress?: (current: number, total: number) => void,
+  remote?: {
+    urlHeaders?: Record<string, string>;
+    urlStreamMode?: import("./h5.js").StreamMode;
+    urlBytes?: Uint8Array;
+  },
 ): Promise<Video[]> {
   if (!dataset) return [];
+  const urlHeaders = remote?.urlHeaders;
   const values = dataset.value ?? [];
   const videos: Video[] = [];
 
@@ -773,6 +794,11 @@ async function readVideos(
           channelOrder,
           shape,
           fps: backendMeta.fps,
+          // Persist the remote `.slp` auth headers onto remote/embedded video
+          // backends so reopens / existence probes stay authenticated. The
+          // factory only uses them for URL-backed backends; embedded/local
+          // backends ignore them.
+          headers: urlHeaders,
         });
       } catch (err) {
         // Resilient load: a single video whose backend can't be built — an
@@ -835,17 +861,27 @@ async function readVideos(
       backendMetadata.crop_fill = cropEntry.fill;
     }
 
-    videos.push(
-      new Video({
-        filename,
-        backend,
-        backendError,
-        backendMetadata,
-        sourceVideo,
-        openBackend: openVideos,
-        embedded,
-      }),
-    );
+    const video = new Video({
+      filename,
+      backend,
+      backendError,
+      backendMetadata,
+      sourceVideo,
+      openBackend: openVideos,
+      embedded,
+    });
+    // Persist remote auth headers / stream mode (and any Drive bytes) so a later
+    // reopen or Video.exists() probe stays authenticated. Mirrors Python
+    // HDF5Video._url_headers. Only meaningful for videos backed by a remote
+    // `.slp` (urlHeaders is undefined for local loads).
+    if (urlHeaders || remote?.urlStreamMode || remote?.urlBytes) {
+      video._setUrlPersistence({
+        headers: urlHeaders,
+        streamMode: remote?.urlStreamMode,
+        bytes: remote?.urlBytes,
+      });
+    }
+    videos.push(video);
   }
 
   return videos;

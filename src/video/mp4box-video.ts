@@ -1,4 +1,5 @@
 import { VideoBackend, VideoFrame } from "./backend.js";
+import { RemoteIOError, raiseRemote, statusToMessage } from "../io/remote.js";
 
 const isBrowser =
   typeof window !== "undefined" && typeof document !== "undefined";
@@ -69,10 +70,16 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   private fileBlob: Blob | null;
   private decodeQueue: Promise<void>;
   private latestRequestedFrame: number | null;
+  /** Extra HTTP headers (e.g. Authorization) applied to every byte fetch. */
+  private headers: Record<string, string>;
 
   constructor(
     source: string | File | Blob,
-    options?: { cacheSize?: number; lookahead?: number },
+    options?: {
+      cacheSize?: number;
+      lookahead?: number;
+      headers?: Record<string, string>;
+    },
   ) {
     if (!hasWebCodecs) {
       throw new Error("Mp4BoxVideoBackend requires WebCodecs support.");
@@ -83,6 +90,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     this.filename =
       source instanceof Blob ? ((source as File).name ?? "") : source;
     this.dataset = null;
+    this.headers = options?.headers ?? {};
     this.samples = [];
     this.keyframeIndices = [];
     this.cache = new Map();
@@ -218,9 +226,16 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   }
 
   private async openSource(): Promise<void> {
-    const response = await fetch(this.filename, {
-      headers: { Range: "bytes=0-0" },
-    });
+    // Range always wins over a user-supplied Range header (never let a user
+    // header override the byte range we need).
+    let response: Response;
+    try {
+      response = await fetch(this.filename, {
+        headers: { ...this.headers, Range: "bytes=0-0" },
+      });
+    } catch (e) {
+      raiseRemote(this.filename, e);
+    }
 
     if (response.status === 206) {
       const contentRange = response.headers.get("Content-Range");
@@ -233,11 +248,26 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     }
 
     if (!response.ok && response.status !== 206) {
-      throw new Error(`Failed to fetch video: ${response.status}`);
+      throw new RemoteIOError({
+        message: statusToMessage(response.status),
+        url: this.filename,
+        status: response.status,
+      });
     }
 
-    const full = await fetch(this.filename);
-    if (!full.ok) throw new Error(`Failed to fetch video: ${full.status}`);
+    let full: Response;
+    try {
+      full = await fetch(this.filename, { headers: { ...this.headers } });
+    } catch (e) {
+      raiseRemote(this.filename, e);
+    }
+    if (!full.ok) {
+      throw new RemoteIOError({
+        message: statusToMessage(full.status),
+        url: this.filename,
+        status: full.status,
+      });
+    }
     const blob = await full.blob();
     this.fileBlob = blob;
     this.fileSize = blob.size;
@@ -247,9 +277,14 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   private async readChunk(offset: number, size: number): Promise<ArrayBuffer> {
     const end = Math.min(offset + size, this.fileSize);
     if (this.supportsRangeRequests) {
-      const response = await fetch(this.filename, {
-        headers: { Range: `bytes=${offset}-${end - 1}` },
-      });
+      let response: Response;
+      try {
+        response = await fetch(this.filename, {
+          headers: { ...this.headers, Range: `bytes=${offset}-${end - 1}` },
+        });
+      } catch (e) {
+        raiseRemote(this.filename, e);
+      }
       return await response.arrayBuffer();
     }
     if (this.fileBlob) {

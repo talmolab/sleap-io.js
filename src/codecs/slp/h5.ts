@@ -1,3 +1,12 @@
+import {
+  RemoteIOError,
+  isUrl,
+  raiseRemote,
+  resolveUrl,
+  statusToMessage,
+} from "../../io/remote.js";
+import { openGdrive } from "../../io/gdrive.js";
+
 export type H5Module = typeof import("h5wasm");
 export type H5File = InstanceType<H5Module["File"]>;
 
@@ -19,6 +28,18 @@ export type OpenH5Options = {
   stream?: StreamMode;
   /** Filename hint for the HDF5 file */
   filenameHint?: string;
+  /**
+   * Extra HTTP request headers (e.g. `{ Authorization: "Bearer …" }`) applied to
+   * every remote byte fetch for this file AND persisted onto embedded-video
+   * backends so later reopens/probes stay authenticated. Header NAMES are
+   * case-insensitive; `"Accept-Encoding"` is always overridden to `"identity"`
+   * on range requests. Ignored for Google Drive URLs (credentials are stripped).
+   *
+   * Limitation: `createLazyFile` (Emscripten synchronous XHR) cannot carry
+   * custom headers, so authenticated remote `.slp` is downloaded in full;
+   * range streaming with custom headers is not yet supported on the main thread.
+   */
+  headers?: Record<string, string>;
 };
 
 // Re-export streaming utilities for advanced use cases
@@ -53,7 +74,8 @@ let _nodeOpenFile:
   | ((
       module: H5Module,
       source: SlpSource,
-    ) => Promise<{ file: H5File; close: () => void }>)
+      options?: OpenH5Options,
+    ) => Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }>)
   | null = null;
 
 /**
@@ -66,7 +88,8 @@ export function _registerNodeH5(
   openFile: (
     module: H5Module,
     source: SlpSource,
-  ) => Promise<{ file: H5File; close: () => void }>,
+    options?: OpenH5Options,
+  ) => Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }>,
 ): void {
   _nodeGetModule = getModule;
   _nodeOpenFile = openFile;
@@ -167,18 +190,14 @@ export async function getH5EmscriptenModule(): Promise<unknown> {
 export async function openH5File(
   source: SlpSource,
   options?: OpenH5Options,
-): Promise<{ file: H5File; close: () => void }> {
+): Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }> {
   const module = await getH5Module();
 
   if (_nodeOpenFile) {
-    return _nodeOpenFile(module, source);
+    return _nodeOpenFile(module, source, options);
   }
 
   return openH5FileBrowser(module, source, options);
-}
-
-function isProbablyUrl(value: string): boolean {
-  return /^https?:\/\//i.test(value);
 }
 
 function isFileHandle(value: SlpSource): value is FileSystemFileHandle {
@@ -189,10 +208,10 @@ async function openH5FileBrowser(
   module: H5Module,
   source: SlpSource,
   options?: OpenH5Options,
-): Promise<{ file: H5File; close: () => void }> {
+): Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }> {
   const fs = getH5FileSystem(module);
 
-  if (typeof source === "string" && isProbablyUrl(source)) {
+  if (typeof source === "string" && isUrl(source)) {
     return openFromUrl(module, fs, source, options);
   }
 
@@ -225,18 +244,43 @@ async function openFromUrl(
   fs: H5FileSystem,
   url: string,
   options?: OpenH5Options,
-): Promise<{ file: H5File; close: () => void }> {
+): Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }> {
   const filename =
     options?.filenameHint ??
     url.split("/").pop()?.split("?")[0] ??
     "slp-data.slp";
   const streamMode = options?.stream ?? "auto";
+  const hasHeaders = !!(
+    options?.headers && Object.keys(options.headers).length > 0
+  );
 
-  if (fs.createLazyFile && (streamMode === "auto" || streamMode === "range")) {
+  // Resolve the scheme: http(s) passthrough, gs:// -> storage.googleapis.com,
+  // Drive flagged for the buffered resolver, s3/az/abfs rejected (redacted).
+  const { url: resolved, gdrive } = resolveUrl(url);
+
+  // Google Drive: resolve ONCE to bytes and feed the in-memory open path. Drive
+  // is always download-mode; streamMode/range are ignored. Surface the bytes so
+  // embedded-pkg.slp reopens reuse them (per-file download quota).
+  if (gdrive) {
+    const bytes = await openGdrive(url, { headers: options?.headers });
+    const localPath = "/tmp-slp.slp";
+    fs.writeFile(localPath, bytes);
+    const file = new module.File(localPath, "r");
+    return { file, close: () => file.close(), urlBytes: bytes };
+  }
+
+  // createLazyFile (Emscripten synchronous XHR) cannot carry custom headers.
+  // Only use it for range/auto WITHOUT headers; with headers we fall back to the
+  // header-aware full-download path below so the request stays authenticated.
+  if (
+    !hasHeaders &&
+    fs.createLazyFile &&
+    (streamMode === "auto" || streamMode === "range")
+  ) {
     const mountPath = `/slp-remote-${Date.now()}`;
     fs.mkdir?.(mountPath);
     try {
-      fs.createLazyFile(mountPath, filename, url, true, false);
+      fs.createLazyFile(mountPath, filename, resolved, true, false);
       const file = new module.File(`${mountPath}/${filename}`, "r");
       return {
         file,
@@ -251,17 +295,27 @@ async function openFromUrl(
     }
   }
 
-  const response = await fetch(url);
+  // Header-aware full download. All URL-bearing errors go through RemoteIOError
+  // (redacted); the raw transport error is never re-thrown.
+  const init: RequestInit = { headers: options?.headers ?? {} };
+  let response: Response;
+  try {
+    response = await fetch(resolved, init);
+  } catch (e) {
+    raiseRemote(resolved, e);
+  }
   if (!response.ok) {
-    throw new Error(
-      `Failed to fetch SLP file: ${response.status} ${response.statusText}`,
-    );
+    throw new RemoteIOError({
+      message: statusToMessage(response.status),
+      url: resolved,
+      status: response.status,
+    });
   }
   const buffer = new Uint8Array(await response.arrayBuffer());
   const localPath = "/tmp-slp.slp";
   fs.writeFile(localPath, buffer);
   const file = new module.File(localPath, "r");
-  return { file, close: () => file.close() };
+  return { file, close: () => file.close(), urlBytes: buffer };
 }
 
 async function openFromFile(
@@ -293,6 +347,43 @@ async function openFromFile(
   fs.writeFile(localPath, buffer);
   const h5file = new module.File(localPath, "r");
   return { file: h5file, close: () => h5file.close() };
+}
+
+/**
+ * Resolve a remote `.slp` URL and download its bytes (header-aware, redacted).
+ *
+ * Routes through {@link resolveUrl}: `gs://` -> `storage.googleapis.com`,
+ * Google Drive -> {@link openGdrive}, `s3://`/`az://`/`abfs://` -> a redacted
+ * {@link RemoteIOError}. Used by the Node provider (which cannot stream a URL
+ * via h5wasm) and as a building block for the browser download path. All
+ * URL-bearing errors go through {@link RemoteIOError}; the raw transport error
+ * is never re-thrown.
+ *
+ * @internal
+ */
+export async function fetchRemoteSlpBytes(
+  url: string,
+  options?: OpenH5Options,
+): Promise<Uint8Array> {
+  const { url: resolved, gdrive } = resolveUrl(url);
+  if (gdrive) {
+    return openGdrive(url, { headers: options?.headers });
+  }
+  const init: RequestInit = { headers: options?.headers ?? {} };
+  let response: Response;
+  try {
+    response = await fetch(resolved, init);
+  } catch (e) {
+    raiseRemote(resolved, e);
+  }
+  if (!response.ok) {
+    throw new RemoteIOError({
+      message: statusToMessage(response.status),
+      url: resolved,
+      status: response.status,
+    });
+  }
+  return new Uint8Array(await response.arrayBuffer());
 }
 
 export function getH5FileSystem(module: H5Module): H5FileSystem {
