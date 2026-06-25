@@ -9,7 +9,7 @@ type MaskFactory = (
   mask: Uint8Array,
   height: number,
   width: number,
-  options: Record<string, unknown>,
+  options: Record<string, unknown> & { score?: number },
 ) => SegmentationMask;
 let _maskFactory: MaskFactory | null = null;
 export function _registerMaskFactory(factory: MaskFactory): void {
@@ -294,13 +294,17 @@ export class ROI {
       );
     }
     const mask = rasterizeGeometry(this.geometry, height, width);
-    return _maskFactory(mask, height, width, {
+    const options: Record<string, unknown> & { score?: number } = {
       name: this.name,
       category: this.category,
       source: this.source,
       track: this.track,
       instance: this.instance,
-    });
+    };
+    if (this instanceof PredictedROI) {
+      options.score = this.score;
+    }
+    return _maskFactory(mask, height, width, options);
   }
 
   private _allPoints(): number[][] {

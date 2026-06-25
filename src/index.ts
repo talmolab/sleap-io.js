@@ -60,6 +60,8 @@ export * from "./io/main.js";
 export * from "./io/geojson.js";
 export * from "./io/trackmate.js";
 export * from "./io/ultralytics.js";
+export * from "./io/coco.js";
+export * from "./io/coco-node.js";
 export * from "./io/jabs.js";
 export * from "./codecs/dictionary.js";
 export * from "./codecs/numpy.js";
