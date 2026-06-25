@@ -522,7 +522,9 @@ declare class PredictedCentroid extends Centroid {
     get isPredicted(): boolean;
 }
 
-type MaskFactory = (mask: Uint8Array, height: number, width: number, options: Record<string, unknown>) => SegmentationMask;
+type MaskFactory = (mask: Uint8Array, height: number, width: number, options: Record<string, unknown> & {
+    score?: number;
+}) => SegmentationMask;
 declare function _registerMaskFactory(factory: MaskFactory): void;
 declare enum AnnotationType {
     DEFAULT = 0,
@@ -3627,6 +3629,161 @@ declare function writeGeoJSON(rois: ROI[]): string;
  */
 declare function readGeoJSON(json: string): ROI[];
 
+/**
+ * COCO-style dataset reader (read path only).
+ *
+ * Port of the read path of `sleap_io/io/coco.py`. Supports both pose-estimation
+ * datasets (keypoints) and detection-only datasets (bounding boxes and/or
+ * segmentation as polygons or RLE), decoding them into a {@link Labels} object.
+ *
+ * This module is browser-safe: it never imports `fs`/`path` at the top level.
+ * The path-based Node loader lives in `coco-node.ts`. The COCO *writing* path
+ * (`convert_labels`, `write_labels`, panoptic) is intentionally NOT ported.
+ */
+
+/** A COCO category definition. */
+interface CocoCategory {
+    id: number;
+    name?: string;
+    supercategory?: string;
+    keypoints?: string[];
+    skeleton?: number[][];
+}
+/** A COCO image entry. */
+interface CocoImage {
+    id: number;
+    file_name: string;
+    height?: number;
+    width?: number;
+    [key: string]: unknown;
+}
+/** A COCO RLE segmentation dict. */
+interface CocoRle {
+    counts: number[] | string;
+    size: [number, number];
+}
+/** A COCO segmentation field: polygon list, RLE dict, or null. */
+type CocoSegmentation = number[][] | CocoRle | null | undefined;
+/** A COCO annotation entry. */
+interface CocoAnnotation {
+    id?: number;
+    image_id: number;
+    category_id: number;
+    keypoints?: number[];
+    num_keypoints?: number;
+    bbox?: number[];
+    segmentation?: CocoSegmentation;
+    area?: number;
+    iscrowd?: number;
+    score?: number | null;
+    track_id?: number | string;
+    instance_id?: number | string;
+    attributes?: {
+        object_id?: number | string;
+        [key: string]: unknown;
+    };
+    [key: string]: unknown;
+}
+/** A parsed COCO annotation document. */
+interface CocoJson {
+    images: CocoImage[];
+    annotations: CocoAnnotation[];
+    categories: CocoCategory[];
+    [key: string]: unknown;
+}
+/** Options for reading a COCO dataset. */
+interface ReadCocoOptions {
+    /** Root dir for resolving image paths. Node loader defaults to dirname(jsonPath). */
+    datasetRoot?: string;
+    /** false → 3 channels (RGB), true → 1 channel. Default false. */
+    grayscale?: boolean;
+    /** "mask" | "roi". Default "mask". Validated up front. */
+    segmentationFormat?: "mask" | "roi";
+    /** One shared Track per category name. Default false. */
+    categoryAsTrack?: boolean;
+    /**
+     * Browser-safe image resolver. Given a COCO file_name and datasetRoot, return
+     * the resolved path string, or null if unresolvable (→ image skipped). The
+     * Node loader supplies a default fs-based resolver replicating Python's
+     * resolve_image_path (direct + prefixes + recursive basename glob). If omitted
+     * in the browser core, the resolver defaults to identity-join:
+     *   datasetRoot ? `${datasetRoot}/${file_name}` : file_name  (never null).
+     */
+    resolveImage?: (fileName: string, datasetRoot: string | undefined) => string | null;
+}
+/**
+ * Predicate mirroring Python `_is_coco_data`: true when the value is a non-array
+ * object whose `images`, `annotations`, and `categories` fields are all arrays.
+ */
+declare function isCocoData(data: unknown): boolean;
+/**
+ * Parse a COCO JSON string-or-object and validate the required top-level fields.
+ * Mirrors Python `parse_coco_json` (minus the file read, which is Node-only).
+ */
+declare function parseCocoJson(jsonOrObject: string | CocoJson): CocoJson;
+/**
+ * Create a {@link Skeleton} from a COCO category. Keypoint names become nodes;
+ * 1-based skeleton connections become edges (out-of-range / non-pair entries are
+ * skipped). Mirrors Python `create_skeleton_from_category`.
+ */
+declare function createSkeletonFromCategory(category: CocoCategory): Skeleton;
+/**
+ * Decode flat COCO `[x1,y1,v1,...]` keypoints into `(N, 3)` rows `[x, y, flag]`.
+ * Visibility 0 → `[NaN, NaN, 0]` (not labeled); any other value → `[x, y, 1]`.
+ * Mirrors Python `decode_keypoints`.
+ */
+declare function decodeKeypoints(keypoints: number[], numKeypoints: number, skeleton: Skeleton): number[][];
+/**
+ * Decode COCO compressed (LEB128 / pycocotools `frString`) RLE `counts` to a
+ * list of run lengths. Each byte minus 48 yields 6 bits: low 5 bits are data,
+ * `0x20` is the continuation flag, and `0x10` on the final byte marks a negative
+ * value (sign-extended). Runs after index 2 are stored as a delta from the run
+ * two positions earlier. Mirrors Python `_decode_compressed_rle_counts`.
+ *
+ * Note: JS bitwise ops are 32-bit signed. The shifts here are safe for run
+ * lengths up to 2^31; very large masks (run > 2^31) could overflow, which is out
+ * of scope for COCO fixtures.
+ */
+declare function decodeCompressedRleCounts(counts: string): number[];
+/**
+ * Decode COCO RLE `counts`/`size` to a row-major `H×W` boolean 2D array. COCO
+ * RLE is column-major (Fortran); this transposes internally so the result is
+ * row-major. Uncompressed (number[]) and compressed (string) counts are both
+ * supported. Mirrors Python `_decode_coco_rle`.
+ */
+declare function decodeCocoRle(counts: number[] | string, size: [number, number]): boolean[][];
+/** Metadata forwarded to created masks/ROIs/bboxes. */
+interface DecodeKwargs {
+    category?: string;
+    instance?: Instance | null;
+    track?: Track | null;
+}
+/**
+ * Decode a COCO `segmentation` field into masks and/or ROIs. RLE always becomes
+ * a {@link SegmentationMask} at its native size. Polygons rasterize to a mask in
+ * `"mask"` mode (when image dims are positive) or stay as one ROI per ring in
+ * `"roi"` mode (or `"mask"` mode without dims). A `score` selects predicted
+ * variants. Mirrors Python `_decode_segmentation`.
+ */
+declare function decodeSegmentation(segmentation: CocoSegmentation, height: number, width: number, segmentationFormat: "mask" | "roi", kwargs: DecodeKwargs, score?: number | null): {
+    masks: SegmentationMask[];
+    rois: ROI[];
+};
+/**
+ * Read a COCO dataset from a JSON string or parsed object into {@link Labels}.
+ * Browser-safe core (no `fs`); image resolution is delegated to
+ * `options.resolveImage` (defaults to identity-join). Mirrors Python
+ * `read_labels` (read path).
+ */
+declare function readCoco(jsonOrObject: string | CocoJson, options?: ReadCocoOptions): Labels;
+/**
+ * Read multiple COCO splits (browser-safe core). Each split is read
+ * independently with fresh track dicts. Mirrors Python `read_labels_set` minus
+ * the directory glob (which lives in the Node loader). The provenance `split`
+ * key is set per split.
+ */
+declare function readCocoSet(splits: Record<string, string | CocoJson>, options?: ReadCocoOptions): Record<string, Labels>;
+
 type LabelsDict = {
     version: string;
     skeletons: Array<{
@@ -4314,4 +4471,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { IOU_MATCHER as $, VideoMatchMethod as A, BoundingBox as B, CropVideoBackend as C, DEFAULT_MAX_BYTES as D, ErrorMode as E, FrameStrategy as F, SkeletonMatcher as G, InstanceMatcher as H, type ImageBytesReader as I, TrackMatcher as J, VideoMatcher as K, Labels as L, ConflictResolution as M, MergeError as N, SkeletonMismatchError as O, MergeResult as P, MatchResult as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, MergeProgressBar as W, STRUCTURE_SKELETON_MATCHER as X, SUBSET_SKELETON_MATCHER as Y, OVERLAP_SKELETON_MATCHER as Z, DUPLICATE_MATCHER as _, LabeledFrame as a, PredictedLabelImage as a$, IDENTITY_INSTANCE_MATCHER as a0, NAME_TRACK_MATCHER as a1, IDENTITY_TRACK_MATCHER as a2, AUTO_VIDEO_MATCHER as a3, PATH_VIDEO_MATCHER as a4, BASENAME_VIDEO_MATCHER as a5, IMAGE_DEDUP_VIDEO_MATCHER as a6, SHAPE_VIDEO_MATCHER as a7, setFsResolver as a8, type FsResolver as a9, type Geometry as aA, type ROIOptions as aB, rasterizeGeometry as aC, encodeWkb as aD, decodeWkb as aE, PredictedROI as aF, encodeRle as aG, decodeRle as aH, resizeNearest as aI, type SegmentationMaskOptions as aJ, SegmentationMask as aK, type UserSegmentationMaskOptions as aL, UserSegmentationMask as aM, PredictedSegmentationMask as aN, type BoundingBoxOptions as aO, UserBoundingBox as aP, PredictedBoundingBox as aQ, getCentroidSkeleton as aR, CENTROID_SKELETON as aS, type CentroidOptions as aT, Centroid as aU, UserCentroid as aV, PredictedCentroid as aW, type LabelImageObjectInfo as aX, type LabelImageOptions as aY, LabelImage as aZ, UserLabelImage as a_, type MergeStrategy as aa, _relinkFromPredicted as ab, _annotationCentroidXy as ac, _findAnnotationMatches as ad, _findAnnotationLinkMatches as ae, _resolveMergedIsNegative as af, EXISTS_TTL_MS as ag, type CropOptions as ah, resolveCropRect as ai, type VideoBackendErrorKind as aj, type VideoBackendError as ak, SuggestionFrame as al, rodriguesTransformation as am, Camera as an, CameraGroup as ao, InstanceGroup as ap, FrameGroup as aq, RecordingSession as ar, makeCameraFromDict as as, Identity as at, Instance3D as au, PredictedInstance3D as av, LazyDataStore as aw, LazyFrameList as ax, _registerMaskFactory as ay, AnnotationType as az, LabelsSet as b, isTrainingConfig as b$, normalizeLabelIds as b0, type VideoFrame as b1, type VideoBackend as b2, Mp4BoxVideoBackend as b3, type MediaBunnyOptions as b4, MediaBunnyVideoBackend as b5, StreamingHdf5VideoBackend as b6, type ImageVideoOptions as b7, computePrefetchWindow as b8, ImageVideoBackend as b9, resolveUrl as bA, statusToMessage as bB, raiseRemote as bC, identityHeaders as bD, stripCrossOriginHeaders as bE, withRetries as bF, parseRetryAfterMs as bG, fetchRetrying as bH, headOrRangeProbe as bI, type GeoJSONFeature as bJ, type GeoJSONFeatureCollection as bK, roisToGeoJSON as bL, roisFromGeoJSON as bM, writeGeoJSON as bN, readGeoJSON as bO, type LabelsDict as bP, toDict as bQ, fromDict as bR, toNumpy as bS, fromNumpy as bT, labelsFromNumpy as bU, decodeYamlSkeleton as bV, encodeYamlSkeleton as bW, readSkeletonJson as bX, writeSkeletonJson as bY, readTrainingConfigSkeletons as bZ, readTrainingConfigSkeleton as b_, loadSlp as ba, saveSlp as bb, loadAnalysisH5 as bc, saveAnalysisH5 as bd, loadSlpSet as be, saveSlpSet as bf, loadVideo as bg, loadLabelImages as bh, setLabelImageFileReader as bi, type PagesAs as bj, type LoadLabelImagesOptions as bk, type LabelImageFileReader as bl, saveSlpToBytes as bm, isAnalysisH5File as bn, URL_SCHEMES as bo, CLOUD_SCHEMES as bp, GDRIVE_HOSTS as bq, SENSITIVE_HEADERS as br, SENSITIVE_QUERY_PARAMS as bs, RETRYABLE_STATUSES as bt, isUrl as bu, isGdriveUrl as bv, redactUrl as bw, redactedCauseSummary as bx, RemoteIOError as by, type ResolvedUrl as bz, type RenderOptions as c, type RGB as c0, type RGBA as c1, type ColorSpec as c2, type ColorScheme as c3, type PaletteName as c4, type MarkerShape as c5, type Overlay as c6, type VideoOverlay as c7, NAMED_COLORS as c8, PALETTES as c9, type RawLabelImage as cA, cropPoints as cB, uncropPoints as cC, type CropRect as cD, type FlatPoints as cE, type PointPairs as cF, cropFrame as cG, type FrameLike as cH, type RawFrame as cI, type Fill as cJ, getPalette as ca, resolveColor as cb, rgbToCSS as cc, determineColorScheme as cd, drawCircle as ce, drawSquare as cf, drawDiamond as cg, drawTriangle as ch, drawCross as ci, drawTrails as cj, getMarkerFunction as ck, MARKER_FUNCTIONS as cl, type DrawTrailsOptions as cm, resolveTrailNode as cn, computeTrails as co, nTrailPaletteColors as cp, collectTracks as cq, type TrailTarget as cr, type Trail as cs, RenderContext as ct, InstanceContext as cu, drawMasks as cv, drawLabelImage as cw, drawBboxes as cx, drawRois as cy, applyOverlay as cz, type VideoOptions as d, SeqHeader as e, SeqIndex as f, getImageBytesReader as g, BlobByteSource as h, type ByteSource as i, createVideoBackend as j, UnsupportedVideoFormatError as k, type VideoBackendType as l, type CropWrapOptions as m, checkDownloadHost as n, openGdrive as o, parseGdrive as p, StreamingH5File as q, openStreamingH5 as r, setImageBytesReader as s, openH5Worker as t, urlFromConfirmation as u, isStreamingSupported as v, type StreamingH5Source as w, readSlpStreaming as x, SkeletonMatchMethod as y, InstanceMatchMethod as z };
+export { DUPLICATE_MATCHER as $, InstanceMatchMethod as A, BoundingBox as B, CropVideoBackend as C, DEFAULT_MAX_BYTES as D, VideoMatchMethod as E, FrameStrategy as F, ErrorMode as G, SkeletonMatcher as H, type ImageBytesReader as I, InstanceMatcher as J, TrackMatcher as K, Labels as L, VideoMatcher as M, ConflictResolution as N, MergeError as O, SkeletonMismatchError as P, MergeResult as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, MatchResult as W, MergeProgressBar as X, STRUCTURE_SKELETON_MATCHER as Y, SUBSET_SKELETON_MATCHER as Z, OVERLAP_SKELETON_MATCHER as _, LabeledFrame as a, UserLabelImage as a$, IOU_MATCHER as a0, IDENTITY_INSTANCE_MATCHER as a1, NAME_TRACK_MATCHER as a2, IDENTITY_TRACK_MATCHER as a3, AUTO_VIDEO_MATCHER as a4, PATH_VIDEO_MATCHER as a5, BASENAME_VIDEO_MATCHER as a6, IMAGE_DEDUP_VIDEO_MATCHER as a7, SHAPE_VIDEO_MATCHER as a8, setFsResolver as a9, AnnotationType as aA, type Geometry as aB, type ROIOptions as aC, rasterizeGeometry as aD, encodeWkb as aE, decodeWkb as aF, PredictedROI as aG, encodeRle as aH, decodeRle as aI, resizeNearest as aJ, type SegmentationMaskOptions as aK, SegmentationMask as aL, type UserSegmentationMaskOptions as aM, UserSegmentationMask as aN, PredictedSegmentationMask as aO, type BoundingBoxOptions as aP, UserBoundingBox as aQ, PredictedBoundingBox as aR, getCentroidSkeleton as aS, CENTROID_SKELETON as aT, type CentroidOptions as aU, Centroid as aV, UserCentroid as aW, PredictedCentroid as aX, type LabelImageObjectInfo as aY, type LabelImageOptions as aZ, LabelImage as a_, type FsResolver as aa, type MergeStrategy as ab, _relinkFromPredicted as ac, _annotationCentroidXy as ad, _findAnnotationMatches as ae, _findAnnotationLinkMatches as af, _resolveMergedIsNegative as ag, EXISTS_TTL_MS as ah, type CropOptions as ai, resolveCropRect as aj, type VideoBackendErrorKind as ak, type VideoBackendError as al, SuggestionFrame as am, rodriguesTransformation as an, Camera as ao, CameraGroup as ap, InstanceGroup as aq, FrameGroup as ar, RecordingSession as as, makeCameraFromDict as at, Identity as au, Instance3D as av, PredictedInstance3D as aw, LazyDataStore as ax, LazyFrameList as ay, _registerMaskFactory as az, LabelsSet as b, decodeCocoRle as b$, PredictedLabelImage as b0, normalizeLabelIds as b1, type VideoFrame as b2, type VideoBackend as b3, Mp4BoxVideoBackend as b4, type MediaBunnyOptions as b5, MediaBunnyVideoBackend as b6, StreamingHdf5VideoBackend as b7, type ImageVideoOptions as b8, computePrefetchWindow as b9, type ResolvedUrl as bA, resolveUrl as bB, statusToMessage as bC, raiseRemote as bD, identityHeaders as bE, stripCrossOriginHeaders as bF, withRetries as bG, parseRetryAfterMs as bH, fetchRetrying as bI, headOrRangeProbe as bJ, type GeoJSONFeature as bK, type GeoJSONFeatureCollection as bL, roisToGeoJSON as bM, roisFromGeoJSON as bN, writeGeoJSON as bO, readGeoJSON as bP, type CocoCategory as bQ, type CocoImage as bR, type CocoRle as bS, type CocoSegmentation as bT, type CocoAnnotation as bU, type CocoJson as bV, isCocoData as bW, parseCocoJson as bX, createSkeletonFromCategory as bY, decodeKeypoints as bZ, decodeCompressedRleCounts as b_, ImageVideoBackend as ba, loadSlp as bb, saveSlp as bc, loadAnalysisH5 as bd, saveAnalysisH5 as be, loadSlpSet as bf, saveSlpSet as bg, loadVideo as bh, loadLabelImages as bi, setLabelImageFileReader as bj, type PagesAs as bk, type LoadLabelImagesOptions as bl, type LabelImageFileReader as bm, saveSlpToBytes as bn, isAnalysisH5File as bo, URL_SCHEMES as bp, CLOUD_SCHEMES as bq, GDRIVE_HOSTS as br, SENSITIVE_HEADERS as bs, SENSITIVE_QUERY_PARAMS as bt, RETRYABLE_STATUSES as bu, isUrl as bv, isGdriveUrl as bw, redactUrl as bx, redactedCauseSummary as by, RemoteIOError as bz, type ReadCocoOptions as c, decodeSegmentation as c0, readCoco as c1, readCocoSet as c2, type LabelsDict as c3, toDict as c4, fromDict as c5, toNumpy as c6, fromNumpy as c7, labelsFromNumpy as c8, decodeYamlSkeleton as c9, getMarkerFunction as cA, MARKER_FUNCTIONS as cB, type DrawTrailsOptions as cC, resolveTrailNode as cD, computeTrails as cE, nTrailPaletteColors as cF, collectTracks as cG, type TrailTarget as cH, type Trail as cI, RenderContext as cJ, InstanceContext as cK, drawMasks as cL, drawLabelImage as cM, drawBboxes as cN, drawRois as cO, applyOverlay as cP, type RawLabelImage as cQ, cropPoints as cR, uncropPoints as cS, type CropRect as cT, type FlatPoints as cU, type PointPairs as cV, cropFrame as cW, type FrameLike as cX, type RawFrame as cY, type Fill as cZ, encodeYamlSkeleton as ca, readSkeletonJson as cb, writeSkeletonJson as cc, readTrainingConfigSkeletons as cd, readTrainingConfigSkeleton as ce, isTrainingConfig as cf, type RGB as cg, type RGBA as ch, type ColorSpec as ci, type ColorScheme as cj, type PaletteName as ck, type MarkerShape as cl, type Overlay as cm, type VideoOverlay as cn, NAMED_COLORS as co, PALETTES as cp, getPalette as cq, resolveColor as cr, rgbToCSS as cs, determineColorScheme as ct, drawCircle as cu, drawSquare as cv, drawDiamond as cw, drawTriangle as cx, drawCross as cy, drawTrails as cz, type RenderOptions as d, type VideoOptions as e, SeqHeader as f, getImageBytesReader as g, SeqIndex as h, BlobByteSource as i, type ByteSource as j, createVideoBackend as k, UnsupportedVideoFormatError as l, type VideoBackendType as m, type CropWrapOptions as n, checkDownloadHost as o, parseGdrive as p, openGdrive as q, StreamingH5File as r, setImageBytesReader as s, openStreamingH5 as t, urlFromConfirmation as u, openH5Worker as v, isStreamingSupported as w, type StreamingH5Source as x, readSlpStreaming as y, SkeletonMatchMethod as z };

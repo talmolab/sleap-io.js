@@ -433,13 +433,17 @@ var ROI = class _ROI {
       );
     }
     const mask = rasterizeGeometry(this.geometry, height, width);
-    return _maskFactory(mask, height, width, {
+    const options = {
       name: this.name,
       category: this.category,
       source: this.source,
       track: this.track,
       instance: this.instance
-    });
+    };
+    if (this instanceof PredictedROI) {
+      options.score = this.score;
+    }
+    return _maskFactory(mask, height, width, options);
   }
   _allPoints() {
     if (this.geometry.type === "Point") {
@@ -1295,12 +1299,18 @@ var PredictedSegmentationMask = class extends SegmentationMask {
 };
 _registerMaskFactory(
   (mask, height, width, options) => {
-    return SegmentationMask.fromArray(
-      mask,
-      height,
-      width,
-      options
-    );
+    const { score, ...rest } = options;
+    const rleCounts = encodeRle(mask, height, width);
+    if (score !== void 0) {
+      return new PredictedSegmentationMask({
+        rleCounts,
+        height,
+        width,
+        ...rest,
+        score
+      });
+    }
+    return new UserSegmentationMask({ rleCounts, height, width, ...rest });
   }
 );
 
@@ -16098,6 +16108,412 @@ function readGeoJSON(json) {
   return roisFromGeoJSON(JSON.parse(json));
 }
 
+// src/io/coco.ts
+function isCocoData(data) {
+  return typeof data === "object" && data !== null && !Array.isArray(data) && ["images", "annotations", "categories"].every(
+    (k) => Array.isArray(data[k])
+  );
+}
+function parseCocoJson(jsonOrObject) {
+  const coco = typeof jsonOrObject === "string" ? JSON.parse(jsonOrObject) : jsonOrObject;
+  for (const field of ["images", "annotations", "categories"]) {
+    if (!Array.isArray(coco?.[field])) {
+      throw new Error(`Missing required COCO field: ${field}`);
+    }
+  }
+  return coco;
+}
+function createSkeletonFromCategory(category) {
+  if (!("keypoints" in category) || category.keypoints === void 0) {
+    throw new Error(
+      `Category '${category.name ?? ""}' has no keypoint definitions`
+    );
+  }
+  const nodes = category.keypoints.map((name2) => new Node(name2));
+  const edges = [];
+  if (Array.isArray(category.skeleton)) {
+    for (const conn of category.skeleton) {
+      if (Array.isArray(conn) && conn.length === 2) {
+        const srcIdx = conn[0] - 1;
+        const dstIdx = conn[1] - 1;
+        if (srcIdx >= 0 && srcIdx < nodes.length && dstIdx >= 0 && dstIdx < nodes.length) {
+          edges.push(new Edge(nodes[srcIdx], nodes[dstIdx]));
+        }
+      }
+    }
+  }
+  const name = category.name ?? "unknown";
+  return new Skeleton({ nodes, edges, name });
+}
+function decodeKeypoints(keypoints, numKeypoints, skeleton) {
+  if (keypoints.length !== numKeypoints * 3) {
+    throw new Error(
+      `Keypoints length ${keypoints.length} doesn't match expected ${numKeypoints * 3}`
+    );
+  }
+  if (skeleton.nodeNames.length !== numKeypoints) {
+    throw new Error(
+      `Skeleton has ${skeleton.nodeNames.length} nodes but annotation has ${numKeypoints} keypoints`
+    );
+  }
+  const points = [];
+  for (let i = 0; i < numKeypoints; i++) {
+    const x = keypoints[i * 3];
+    const y = keypoints[i * 3 + 1];
+    const v = keypoints[i * 3 + 2];
+    if (v === 0) {
+      points.push([Number.NaN, Number.NaN, 0]);
+    } else {
+      points.push([x, y, 1]);
+    }
+  }
+  return points;
+}
+function decodeCompressedRleCounts(counts) {
+  const bytes = new TextEncoder().encode(counts);
+  const runLengths = [];
+  let p = 0;
+  let m = 0;
+  while (p < bytes.length) {
+    let x = 0;
+    let k = 0;
+    let more = 1;
+    while (more) {
+      const c = bytes[p] - 48;
+      x |= (c & 31) << 5 * k;
+      more = c & 32;
+      p += 1;
+      k += 1;
+      if (!more && c & 16) {
+        x |= -1 << 5 * k;
+      }
+    }
+    if (m > 2) {
+      x += runLengths[m - 2];
+    }
+    runLengths.push(x);
+    m += 1;
+  }
+  return runLengths;
+}
+function decodeCocoRle(counts, size) {
+  const runs = typeof counts === "string" ? decodeCompressedRleCounts(counts) : counts;
+  const [height, width] = size;
+  const total = height * width;
+  const flat = new Uint8Array(total);
+  let pos = 0;
+  for (let i = 0; i < runs.length; i++) {
+    const count = runs[i];
+    if (i % 2 === 1) {
+      const end = Math.min(pos + count, total);
+      for (let k = pos; k < end; k++) flat[k] = 1;
+    }
+    pos += count;
+  }
+  const out = Array.from(
+    { length: height },
+    () => new Array(width).fill(false)
+  );
+  for (let idx = 0; idx < total; idx++) {
+    const col = Math.floor(idx / height);
+    const row = idx % height;
+    out[row][col] = flat[idx] === 1;
+  }
+  return out;
+}
+function makeSegMaskFromBinary(mask2d, height, width, opts) {
+  const flat = new Uint8Array(height * width);
+  for (let r = 0; r < height; r++) {
+    for (let c = 0; c < width; c++) {
+      flat[r * width + c] = mask2d[r][c] ? 1 : 0;
+    }
+  }
+  const rleCounts = encodeRle(flat, height, width);
+  const { score, ...rest } = opts;
+  if (score !== void 0 && score !== null) {
+    return new PredictedSegmentationMask({
+      rleCounts,
+      height,
+      width,
+      ...rest,
+      score
+    });
+  }
+  return new UserSegmentationMask({ rleCounts, height, width, ...rest });
+}
+function closeRing(ring) {
+  if (ring.length === 0) return ring;
+  const first = ring[0];
+  const last = ring[ring.length - 1];
+  if (first[0] !== last[0] || first[1] !== last[1]) {
+    return [...ring, [first[0], first[1]]];
+  }
+  return ring;
+}
+function decodeSegmentation(segmentation, height, width, segmentationFormat, kwargs, score) {
+  const masks = [];
+  const rois = [];
+  if (segmentation == null) {
+    return { masks, rois };
+  }
+  const predicted = score !== void 0 && score !== null;
+  if (!Array.isArray(segmentation) && typeof segmentation === "object") {
+    const rle = segmentation;
+    const [nativeH, nativeW] = rle.size;
+    const mask2d = decodeCocoRle(rle.counts, rle.size);
+    masks.push(
+      makeSegMaskFromBinary(mask2d, nativeH, nativeW, { ...kwargs, score })
+    );
+    return { masks, rois };
+  }
+  if (Array.isArray(segmentation) && segmentation.length > 0) {
+    const polygons = [];
+    for (const ring of segmentation) {
+      const coords = [];
+      for (let i = 0; i < ring.length - 1; i += 2) {
+        coords.push([Number(ring[i]), Number(ring[i + 1])]);
+      }
+      if (coords.length >= 3) {
+        polygons.push(coords);
+      }
+    }
+    if (polygons.length === 0) {
+      return { masks, rois };
+    }
+    const roiOpts = {
+      category: kwargs.category,
+      instance: kwargs.instance,
+      track: kwargs.track
+    };
+    if (segmentationFormat === "mask" && height > 0 && width > 0) {
+      let roi;
+      if (polygons.length === 1) {
+        const geometry = {
+          type: "Polygon",
+          coordinates: [closeRing(polygons[0])]
+        };
+        roi = predicted ? new PredictedROI({ geometry, score, ...roiOpts }) : new UserROI({ geometry, ...roiOpts });
+      } else {
+        const geometry = {
+          type: "MultiPolygon",
+          coordinates: polygons.map((ring) => [closeRing(ring)])
+        };
+        roi = predicted ? new PredictedROI({ geometry, score, ...roiOpts }) : new UserROI({ geometry, ...roiOpts });
+      }
+      masks.push(roi.toMask(height, width));
+    } else {
+      for (const coords of polygons) {
+        if (predicted) {
+          rois.push(
+            new PredictedROI({
+              geometry: { type: "Polygon", coordinates: [closeRing(coords)] },
+              score,
+              ...roiOpts
+            })
+          );
+        } else {
+          rois.push(UserROI.fromPolygon(coords, roiOpts));
+        }
+      }
+    }
+  }
+  return { masks, rois };
+}
+function readCoco(jsonOrObject, options = {}) {
+  const fmt = options.segmentationFormat ?? "mask";
+  if (fmt !== "mask" && fmt !== "roi") {
+    throw new Error(
+      `segmentationFormat must be 'mask' or 'roi', got ${JSON.stringify(fmt)}.`
+    );
+  }
+  const grayscale = options.grayscale ?? false;
+  const categoryAsTrack = options.categoryAsTrack ?? false;
+  const datasetRoot = options.datasetRoot;
+  const resolveImage = options.resolveImage ?? ((fileName, root) => root ? `${root}/${fileName}` : fileName);
+  const coco = parseCocoJson(jsonOrObject);
+  const categoryTrackDict = /* @__PURE__ */ new Map();
+  function categoryTrack(catName) {
+    if (!categoryAsTrack || !catName) return null;
+    let t = categoryTrackDict.get(catName);
+    if (!t) {
+      t = new Track(catName);
+      categoryTrackDict.set(catName, t);
+    }
+    return t;
+  }
+  const skeletons = /* @__PURE__ */ new Map();
+  const categoryNames = /* @__PURE__ */ new Map();
+  for (const cat of coco.categories) {
+    categoryNames.set(cat.id, cat.name ?? "");
+    if (Array.isArray(cat.keypoints) && cat.keypoints.length > 0) {
+      skeletons.set(cat.id, createSkeletonFromCategory(cat));
+    }
+  }
+  const trackDict = /* @__PURE__ */ new Map();
+  const imageAnnotations = /* @__PURE__ */ new Map();
+  for (const ann of coco.annotations) {
+    let list = imageAnnotations.get(ann.image_id);
+    if (!list) {
+      list = [];
+      imageAnnotations.set(ann.image_id, list);
+    }
+    list.push(ann);
+  }
+  const shapeToImages = /* @__PURE__ */ new Map();
+  const imageIdToPath = /* @__PURE__ */ new Map();
+  const imageIdToShape = /* @__PURE__ */ new Map();
+  const imageIdToFrameIdx = /* @__PURE__ */ new Map();
+  for (const img of coco.images) {
+    const imageId = img.id;
+    const fileName = img.file_name;
+    const height = img.height ?? 0;
+    const width = img.width ?? 0;
+    const resolved = resolveImage(fileName, datasetRoot);
+    if (resolved == null) continue;
+    imageIdToPath.set(imageId, resolved);
+    const shapeKey = `${height},${width}`;
+    imageIdToShape.set(imageId, [height, width]);
+    let group = shapeToImages.get(shapeKey);
+    if (!group) {
+      group = [];
+      shapeToImages.set(shapeKey, group);
+    }
+    imageIdToFrameIdx.set(imageId, group.length);
+    group.push(resolved);
+  }
+  const channels = grayscale ? 1 : 3;
+  const shapeToVideo = /* @__PURE__ */ new Map();
+  for (const [shapeKey, paths] of shapeToImages) {
+    const [height, width] = shapeKey.split(",").map(Number);
+    const video = new Video({
+      filename: paths,
+      openBackend: false,
+      backendMetadata: {
+        shape: [paths.length, height, width, channels],
+        grayscale
+      }
+    });
+    shapeToVideo.set(shapeKey, video);
+  }
+  const labeledFrames = [];
+  for (const img of coco.images) {
+    const imageId = img.id;
+    if (!imageIdToPath.has(imageId)) continue;
+    const [imgHeight, imgWidth] = imageIdToShape.get(imageId);
+    const shapeKey = `${imgHeight},${imgWidth}`;
+    const video = shapeToVideo.get(shapeKey);
+    const frameIdx = imageIdToFrameIdx.get(imageId);
+    const instances = [];
+    const masks = [];
+    const rois = [];
+    const bboxes = [];
+    const annotations = imageAnnotations.get(imageId) ?? [];
+    for (const ann of annotations) {
+      const categoryId = ann.category_id;
+      const catName = categoryNames.get(categoryId) ?? "";
+      const hasKpts = Array.isArray(ann.keypoints) && ann.keypoints.length > 0;
+      if (hasKpts && skeletons.has(categoryId)) {
+        const skeleton = skeletons.get(categoryId);
+        const trackId = ann.attributes?.object_id || ann.track_id || ann.instance_id;
+        let track;
+        if (trackId != null) {
+          let t = trackDict.get(trackId);
+          if (!t) {
+            t = new Track(`track_${trackId}`);
+            trackDict.set(trackId, t);
+          }
+          track = t;
+        } else {
+          track = categoryTrack(catName);
+        }
+        const expected = skeleton.nodeNames.length;
+        const pointsData = decodeKeypoints(
+          ann.keypoints,
+          expected,
+          skeleton
+        );
+        const instance = Instance.fromNumpy({ pointsData, skeleton, track });
+        instances.push(instance);
+        const segResult = decodeSegmentation(
+          ann.segmentation,
+          imgHeight,
+          imgWidth,
+          fmt,
+          { category: catName, instance, track }
+        );
+        masks.push(...segResult.masks);
+        rois.push(...segResult.rois);
+        if (ann.bbox != null) {
+          const [x, y, w, h] = ann.bbox;
+          bboxes.push(
+            BoundingBox.fromXywh(x, y, w, h, {
+              category: catName,
+              instance,
+              track
+            })
+          );
+        }
+      } else {
+        const kwargs = {
+          category: catName,
+          track: categoryTrack(catName)
+        };
+        const score = ann.score;
+        const segResult = decodeSegmentation(
+          ann.segmentation,
+          imgHeight,
+          imgWidth,
+          fmt,
+          kwargs,
+          score
+        );
+        masks.push(...segResult.masks);
+        rois.push(...segResult.rois);
+        if (ann.bbox != null && segResult.masks.length === 0 && segResult.rois.length === 0) {
+          const [x, y, w, h] = ann.bbox;
+          if (score !== void 0 && score !== null) {
+            const bboxOpts = {
+              x1: x,
+              y1: y,
+              x2: x + w,
+              y2: y + h,
+              category: catName,
+              track: kwargs.track,
+              score
+            };
+            bboxes.push(new PredictedBoundingBox(bboxOpts));
+          } else {
+            bboxes.push(
+              BoundingBox.fromXywh(x, y, w, h, {
+                category: catName,
+                track: kwargs.track
+              })
+            );
+          }
+        }
+      }
+    }
+    const frame = new LabeledFrame({ video, frameIdx, instances });
+    frame.masks.push(...masks);
+    frame.rois.push(...rois);
+    frame.bboxes.push(...bboxes);
+    labeledFrames.push(frame);
+  }
+  return new Labels({
+    labeledFrames,
+    provenance: { source: datasetRoot ?? "" }
+  });
+}
+function readCocoSet(splits, options = {}) {
+  const result = {};
+  for (const [splitName, json] of Object.entries(splits)) {
+    const labels = readCoco(json, options);
+    labels.provenance = { ...labels.provenance, split: splitName };
+    result[splitName] = labels;
+  }
+  return result;
+}
+
 // src/codecs/skeleton-yaml.ts
 import YAML from "yaml";
 function getNodeName(entry) {
@@ -17060,6 +17476,15 @@ export {
   roisFromGeoJSON,
   writeGeoJSON,
   readGeoJSON,
+  isCocoData,
+  parseCocoJson,
+  createSkeletonFromCategory,
+  decodeKeypoints,
+  decodeCompressedRleCounts,
+  decodeCocoRle,
+  decodeSegmentation,
+  readCoco,
+  readCocoSet,
   decodeYamlSkeleton,
   encodeYamlSkeleton,
   readSkeletonJson,
