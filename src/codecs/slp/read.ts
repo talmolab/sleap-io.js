@@ -71,12 +71,50 @@ import { inflate } from "pako";
 
 const textDecoder = new TextDecoder();
 
+/**
+ * Ordered stage labels for the eager reader. `total` is derived from
+ * `EAGER_STAGES.length` so the count can never drift from the labels — the
+ * single source of truth for the eager path's progress. These are coarser than
+ * the streaming reader's stages (frames/instances/points are read together as
+ * one "Building labeled frames" step), which is fine: the consumer always gets
+ * a consistent (current, total, message).
+ */
+const EAGER_STAGES = [
+  "Reading metadata",
+  "Reading tracks",
+  "Reading videos",
+  "Reading suggestions",
+  "Building labeled frames",
+  "Reading identities",
+  "Reading sessions",
+  "Reading annotations",
+] as const;
+
 export async function readSlp(
   source: SlpSource,
-  options?: { openVideos?: boolean; h5?: OpenH5Options },
+  options?: {
+    openVideos?: boolean;
+    h5?: OpenH5Options;
+    /**
+     * Optional progress callback fired as loading advances through its stages.
+     * `current` counts completed stages out of `total`; `message` labels the
+     * stage about to run. Matches the (current, total, message?) convention used
+     * elsewhere in the library (Labels.merge, RenderOptions.onProgress). The
+     * stages are coarser than the streaming reader's, but the contract is the
+     * same. Reporting is a pure side effect and never alters the loaded Labels.
+     */
+    onProgress?: (current: number, total: number, message?: string) => void;
+  },
 ): Promise<Labels> {
+  // `total` is derived from the stage list (single source of truth) so the
+  // count cannot drift from the labels. `report(i)` fires the i-th stage label.
+  const total = EAGER_STAGES.length;
+  const onProgress = options?.onProgress;
+  const report = (i: number) => onProgress?.(i, total, EAGER_STAGES[i]);
+
   const { file, close } = await openH5File(source, options?.h5);
   try {
+    report(0); // Reading metadata
     const metadataGroup = file.get("metadata");
     if (!metadataGroup) {
       throw new Error("Missing /metadata group in SLP file");
@@ -97,18 +135,29 @@ export async function readSlp(
         ? source
         : (options?.h5?.filenameHint ?? "slp-data.slp");
     const skeletons = parseSkeletons(metadataJson);
+    report(1); // Reading tracks
     const tracks = readTracks(file.get("tracks_json"));
     const videoCrops = readVideoCrops(file);
+    // Hold the bar at the "Reading videos" stage while videos open; the
+    // per-video sub-reporter surfaces "Opening videos (i/n)" when openVideos is
+    // true (probing embedded backends can be slow). Mirrors the streaming path.
+    report(2); // Reading videos
+    const openVideos = options?.openVideos ?? true;
     const videos = await readVideos(
       file.get("videos_json"),
       labelsPath,
-      options?.openVideos ?? true,
+      openVideos,
       file,
       formatId,
       videoCrops,
+      openVideos
+        ? (i, n) => onProgress?.(2, total, `Opening videos (${i}/${n})`)
+        : undefined,
     );
+    report(3); // Reading suggestions
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
+    report(4); // Building labeled frames
     const framesData = normalizeStructDataset(file.get("frames"));
     const instancesData = normalizeStructDataset(file.get("instances"));
     const pointsData = normalizeStructDataset(file.get("points"));
@@ -143,7 +192,9 @@ export async function readSlp(
       }
     }
 
+    report(5); // Reading identities
     const identities = readIdentities(file.get("identities_json"));
+    report(6); // Reading sessions
     const sessions = readSessions(
       file.get("sessions_json"),
       videos,
@@ -151,6 +202,7 @@ export async function readSlp(
       labeledFrames,
       identities,
     );
+    report(7); // Reading annotations
     const allInstances = labeledFrames.flatMap((f) => f.instances);
     const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
       file,
@@ -249,6 +301,7 @@ export async function readSlp(
       }
     }
 
+    onProgress?.(total, total, "Finalizing");
     return new Labels({
       labeledFrames,
       videos,
@@ -266,15 +319,53 @@ export async function readSlp(
 }
 
 /**
+ * Ordered stage labels for the lazy reader. As with EAGER_STAGES, `total` is
+ * derived from `LAZY_STAGES.length` (single source of truth). The lazy path
+ * does NOT materialize labeled frames up front — it reads the raw frame/
+ * instance/point columns into a LazyDataStore — so the "Reading frame data"
+ * stage reads raw data rather than constructing LabeledFrames. The stages
+ * otherwise mirror the eager reader's real steps.
+ */
+const LAZY_STAGES = [
+  "Reading metadata",
+  "Reading tracks",
+  "Reading videos",
+  "Reading suggestions",
+  "Reading frame data",
+  "Reading identities",
+  "Reading sessions",
+  "Reading annotations",
+] as const;
+
+/**
  * Read an SLP file in lazy mode. Frames are not materialized until accessed.
  * Returns a Labels object with a LazyFrameList that loads frames on demand.
  */
 export async function readSlpLazy(
   source: SlpSource,
-  options?: { openVideos?: boolean; h5?: OpenH5Options },
+  options?: {
+    openVideos?: boolean;
+    h5?: OpenH5Options;
+    /**
+     * Optional progress callback fired as loading advances through its stages.
+     * `current` counts completed stages out of `total`; `message` labels the
+     * stage about to run. Matches the (current, total, message?) convention used
+     * elsewhere in the library (Labels.merge, RenderOptions.onProgress). The
+     * lazy path's stages are coarser than the streaming reader's. Reporting is a
+     * pure side effect and never alters the loaded Labels.
+     */
+    onProgress?: (current: number, total: number, message?: string) => void;
+  },
 ): Promise<Labels> {
+  // `total` is derived from the stage list (single source of truth) so the
+  // count cannot drift from the labels. `report(i)` fires the i-th stage label.
+  const total = LAZY_STAGES.length;
+  const onProgress = options?.onProgress;
+  const report = (i: number) => onProgress?.(i, total, LAZY_STAGES[i]);
+
   const { file, close } = await openH5File(source, options?.h5);
   try {
+    report(0); // Reading metadata
     const metadataGroup = file.get("metadata");
     if (!metadataGroup) {
       throw new Error("Missing /metadata group in SLP file");
@@ -295,18 +386,29 @@ export async function readSlpLazy(
         ? source
         : (options?.h5?.filenameHint ?? "slp-data.slp");
     const skeletons = parseSkeletons(metadataJson);
+    report(1); // Reading tracks
     const tracks = readTracks(file.get("tracks_json"));
     const videoCrops = readVideoCrops(file);
+    // Hold the bar at the "Reading videos" stage while videos open; the
+    // per-video sub-reporter surfaces "Opening videos (i/n)" when openVideos is
+    // true. Mirrors the streaming and eager paths.
+    report(2); // Reading videos
+    const openVideos = options?.openVideos ?? true;
     const videos = await readVideos(
       file.get("videos_json"),
       labelsPath,
-      options?.openVideos ?? true,
+      openVideos,
       file,
       formatId,
       videoCrops,
+      openVideos
+        ? (i, n) => onProgress?.(2, total, `Opening videos (${i}/${n})`)
+        : undefined,
     );
+    report(3); // Reading suggestions
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
+    report(4); // Reading frame data
     // Read raw data but don't build frames yet
     const framesData = normalizeStructDataset(file.get("frames"));
     const instancesData = normalizeStructDataset(file.get("instances"));
@@ -341,7 +443,9 @@ export async function readSlpLazy(
 
     // Read sessions eagerly - they don't depend on frame data.
     // Pass empty labeledFrames since frames aren't materialized yet.
+    report(5); // Reading identities
     const identities = readIdentities(file.get("identities_json"));
+    report(6); // Reading sessions
     const sessions = readSessions(
       file.get("sessions_json"),
       videos,
@@ -349,6 +453,7 @@ export async function readSlpLazy(
       [],
       identities,
     );
+    report(7); // Reading annotations
     const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
       file,
       videos,
@@ -450,6 +555,7 @@ export async function readSlpLazy(
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;
 
+    onProgress?.(total, total, "Finalizing");
     return labels;
   } finally {
     close();
@@ -554,12 +660,14 @@ async function readVideos(
   file: any,
   formatId: number,
   videoCrops?: Map<number, VideoCropEntry>,
+  onVideoProgress?: (current: number, total: number) => void,
 ): Promise<Video[]> {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const videos: Video[] = [];
 
   for (let videoIndex = 0; videoIndex < values.length; videoIndex++) {
+    onVideoProgress?.(videoIndex + 1, values.length);
     const entry = values[videoIndex];
     if (!entry) continue;
     const parsed =
