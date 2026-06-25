@@ -3,6 +3,7 @@ import {
   attrToNumber,
   attrToString,
   parseMetadataJson,
+  missingMetadataJsonError,
   parseSkeletons,
   resolveCameraKey,
   reconstructInstance3D,
@@ -121,9 +122,17 @@ export async function readSlp(
   };
   try {
     report(0); // Reading metadata
+    const labelsPath =
+      typeof source === "string"
+        ? source
+        : (options?.h5?.filenameHint ?? "slp-data.slp");
     const metadataGroup = file.get("metadata");
+    // A missing `metadata` group is treated the same as a missing `json`
+    // attribute: both indicate a truncated/corrupt file. Mirrors Python
+    // sleap-io PR #446, where `read_metadata` catches the `KeyError` from
+    // BOTH cases and maps them to the same helpful `ValueError`.
     if (!metadataGroup) {
-      throw new Error("Missing /metadata group in SLP file");
+      throw missingMetadataJsonError(labelsPath);
     }
 
     const metadataAttrs =
@@ -131,13 +140,9 @@ export async function readSlp(
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
     );
-    const labelsPath =
-      typeof source === "string"
-        ? source
-        : (options?.h5?.filenameHint ?? "slp-data.slp");
-    // Throws a helpful error if the `metadata` group exists but its required
-    // `json` attribute is missing/empty (truncated/corrupt file); mirrors
-    // Python sleap-io PR #446.
+    // Throws the same helpful error if the `metadata` group exists but its
+    // required `json` attribute is missing/empty (truncated/corrupt file);
+    // mirrors Python sleap-io PR #446.
     const metadataJson = parseMetadataJson(
       metadataAttrs["json"],
       labelsPath,
@@ -379,9 +384,16 @@ export async function readSlpLazy(
   };
   try {
     report(0); // Reading metadata
+    const labelsPath =
+      typeof source === "string"
+        ? source
+        : (options?.h5?.filenameHint ?? "slp-data.slp");
     const metadataGroup = file.get("metadata");
+    // A missing `metadata` group is treated the same as a missing `json`
+    // attribute: both indicate a truncated/corrupt file. Mirrors Python
+    // sleap-io PR #446 (and the eager/streaming readers).
     if (!metadataGroup) {
-      throw new Error("Missing /metadata group in SLP file");
+      throw missingMetadataJsonError(labelsPath);
     }
 
     const metadataAttrs =
@@ -389,13 +401,9 @@ export async function readSlpLazy(
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
     );
-    const labelsPath =
-      typeof source === "string"
-        ? source
-        : (options?.h5?.filenameHint ?? "slp-data.slp");
-    // Throws a helpful error if the `metadata` group exists but its required
-    // `json` attribute is missing/empty (truncated/corrupt file); mirrors
-    // Python sleap-io PR #446.
+    // Throws the same helpful error if the `metadata` group exists but its
+    // required `json` attribute is missing/empty (truncated/corrupt file);
+    // mirrors Python sleap-io PR #446.
     const metadataJson = parseMetadataJson(
       metadataAttrs["json"],
       labelsPath,

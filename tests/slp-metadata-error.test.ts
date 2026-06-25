@@ -16,6 +16,8 @@
  */
 import { describe, it, expect } from "./bun-test";
 import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
+import { readFromStreamingFile } from "../src/codecs/slp/read-streaming.js";
+import type { StreamingH5File } from "../src/codecs/slp/h5-streaming.js";
 import {
   parseMetadataJson,
   missingMetadataJsonError,
@@ -69,6 +71,39 @@ async function buildFixture(opts: {
   // The reader touches these datasets after metadata; include empties so that,
   // absent the metadata error, reads would proceed (proving the throw is what
   // stops them) rather than tripping over a missing dataset first.
+  f.create_dataset({ name: "tracks_json", data: [], shape: [0], dtype: "S" });
+  f.create_dataset({
+    name: "suggestions_json",
+    data: [],
+    shape: [0],
+    dtype: "S",
+  });
+  f.create_dataset({ name: "videos_json", data: [], shape: [0], dtype: "S" });
+  f.close();
+
+  const out = FS.readFile(p);
+  FS.unlink(p);
+  return new Uint8Array(out).buffer;
+}
+
+/**
+ * Build a minimal in-memory `.slp` buffer with NO `metadata` group at all,
+ * reproducing the case Python's
+ * `test_read_metadata_missing_metadata_group_raises_valueerror` exercises
+ * (`f.require_group("other")` with no `metadata`). The non-metadata datasets
+ * are still present so that, absent the metadata error, the reader could
+ * otherwise proceed — proving the throw is specifically about the absent group.
+ */
+async function buildNoMetadataGroupFixture(): Promise<ArrayBuffer> {
+  const h5 = await import("h5wasm");
+  await h5.ready;
+  const FS = h5.FS;
+  const p = memPath();
+  FS.writeFile(p, new Uint8Array(0));
+  const f = new h5.File(p, "w");
+
+  // An unrelated group, but deliberately NO `metadata` group.
+  f.create_group("other");
   f.create_dataset({ name: "tracks_json", data: [], shape: [0], dtype: "S" });
   f.create_dataset({
     name: "suggestions_json",
@@ -164,6 +199,102 @@ describe("missing /metadata json attribute raises a helpful error", () => {
     const labels = await readSlp(buf, { openVideos: false });
     expect(labels).toBeDefined();
     expect(labels.skeletons.length).toBe(0);
+  });
+});
+
+describe("a missing /metadata GROUP raises the same helpful error", () => {
+  // Mirrors Python's test_read_metadata_missing_metadata_group_raises_valueerror.
+  // Python catches the KeyError from BOTH a missing `metadata` group AND a
+  // missing `json` attr and maps both to the same ValueError; the JS readers
+  // unify these through `missingMetadataJsonError` too.
+  it("readSlp (eager) throws the corruption error when the group is absent", async () => {
+    const buf = await buildNoMetadataGroupFixture();
+    await expect(
+      readSlp(buf, { openVideos: false, h5: { filenameHint: "nogroup.slp" } }),
+    ).rejects.toThrow(CORRUPT_MESSAGE);
+    await expect(
+      readSlp(buf, { openVideos: false, h5: { filenameHint: "nogroup.slp" } }),
+    ).rejects.toThrow("nogroup.slp");
+  });
+
+  it("readSlpLazy throws the same error when the group is absent", async () => {
+    const buf = await buildNoMetadataGroupFixture();
+    await expect(
+      readSlpLazy(buf, {
+        openVideos: false,
+        h5: { filenameHint: "nogroup.slp" },
+      }),
+    ).rejects.toThrow(CORRUPT_MESSAGE);
+  });
+});
+
+describe("the streaming reader funnels through the same helpful error", () => {
+  // The full streaming reader (`readSlpStreaming`) is browser/Worker-gated and
+  // unreachable from the all-Node suite (see streaming-field-names.test.ts), so
+  // we drive `readFromStreamingFile` directly with a minimal `getAttrs`-only
+  // stub. The metadata read is the first thing the function does, so no other
+  // `file` method is reached before the error is thrown.
+
+  /** A StreamingH5File stub exposing only `getAttrs` (all the reader needs to
+   * reach the metadata error). `getAttrs` either returns the serialized attrs
+   * or throws, mirroring the real worker's behavior. */
+  function stubFile(
+    getAttrs: (path: string) => Promise<Record<string, unknown>>,
+  ): StreamingH5File {
+    return { getAttrs } as unknown as StreamingH5File;
+  }
+
+  it("throws when the worker reports a missing /metadata group", async () => {
+    // The worker's getAttrs throws "Path not found: metadata" for an absent
+    // group; the reader maps that to the helpful corruption error.
+    const file = stubFile(async (path) => {
+      throw new Error(`Path not found: ${path}`);
+    });
+    await expect(
+      readFromStreamingFile(file, "https://example.com/stream.slp"),
+    ).rejects.toThrow(CORRUPT_MESSAGE);
+    await expect(
+      readFromStreamingFile(file, "https://example.com/stream.slp"),
+    ).rejects.toThrow("stream.slp");
+  });
+
+  it("throws when the /metadata group is present but `json` is missing", async () => {
+    // Group present (only an unrelated attr), json attr deleted — the corrupt
+    // fixture scenario, but driven through the streaming code path.
+    const file = stubFile(async () => ({
+      format_id: { value: 1.1 },
+    }));
+    await expect(
+      readFromStreamingFile(
+        file,
+        "https://example.com/x.slp",
+        "corrupt-stream.slp",
+      ),
+    ).rejects.toThrow(CORRUPT_MESSAGE);
+    await expect(
+      readFromStreamingFile(
+        file,
+        "https://example.com/x.slp",
+        "corrupt-stream.slp",
+      ),
+    ).rejects.toThrow("corrupt-stream.slp");
+  });
+
+  it("does NOT mask malformed-but-present json as corruption (streaming)", async () => {
+    // A present (non-empty) but invalid json attr must fail at the parse step,
+    // not be re-reported as missing/corrupt — Python's
+    // test_read_metadata_malformed_json_not_remasked, via the streaming path.
+    const file = stubFile(async () => ({
+      json: { value: "{not valid json" },
+    }));
+    let caught: unknown;
+    try {
+      await readFromStreamingFile(file, "https://example.com/x.slp");
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(Error);
+    expect((caught as Error).message).not.toContain(CORRUPT_MESSAGE);
   });
 });
 
