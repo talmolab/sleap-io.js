@@ -10,6 +10,7 @@ import {
   SlpSource,
   isStreamingSupported,
 } from "../codecs/slp/h5.js";
+import { redactedCauseSummary } from "./remote.js";
 import {
   readLabels as readAnalysisH5,
   writeLabels as writeAnalysisH5,
@@ -87,14 +88,16 @@ export async function loadSlp(
       try {
         return await readSlpStreaming(streamingSource, {
           filenameHint: options?.h5?.filenameHint,
+          headers: options?.h5?.headers,
           openVideos,
           onProgress: options?.onProgress,
         });
       } catch (e) {
         if (streamMode === "auto") {
+          // Redact: the raw error can embed ?token= / userinfo (a remote URL).
           console.warn(
             "[sleap-io] Worker-based loading failed, falling back to main thread:",
-            e,
+            redactedCauseSummary(e),
           );
         } else {
           throw e;

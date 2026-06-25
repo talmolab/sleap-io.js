@@ -6,6 +6,7 @@ import { MediaBunnyVideoBackend } from "./mediabunny-video.js";
 import { SeqVideoBackend } from "./seq-video.js";
 import { ImageVideoBackend } from "./image-video.js";
 import { openH5File } from "../codecs/slp/h5.js";
+import { RemoteIOError, isUrl, redactUrl, resolveUrl } from "../io/remote.js";
 
 /** Supported video backend identifiers for user selection. */
 export type VideoBackendType = "mp4box" | "mediabunny" | "media";
@@ -84,6 +85,13 @@ export async function createVideoBackend(
     shape?: [number, number, number, number];
     fps?: number;
     backend?: VideoBackendType;
+    /**
+     * Extra HTTP request headers (e.g. `{ Authorization: "Bearer …" }`) applied
+     * to remote video byte fetches. Forwarded to {@link Mp4BoxVideoBackend} and
+     * {@link MediaBunnyVideoBackend.fromUrl}. URL filenames are run through
+     * {@link resolveUrl} (rejecting `s3://`/`az://`/`abfs://`).
+     */
+    headers?: Record<string, string>;
   },
 ): Promise<VideoBackend> {
   // Image-sequence video (Python `ImageVideo`): `source` is a LIST of image
@@ -99,10 +107,15 @@ export async function createVideoBackend(
   const filename = isBlob ? ((source as File).name ?? "") : (source as string);
   const normalized = filename.split("?")[0]?.toLowerCase() ?? "";
   const ext = normalized.split(".").pop() ?? "";
+  const headers = options?.headers;
 
-  // HDF5/SLP files always use the HDF5 backend (not overridable)
+  // HDF5/SLP files always use the HDF5 backend (not overridable). Embedded
+  // videos reuse the parent `.slp` (resolved/authenticated by the SLP reader),
+  // so they are NOT run through the video scheme gate below.
   if (options?.embedded || ext === "slp" || ext === "h5" || ext === "hdf5") {
-    const { file } = await openH5File(isBlob ? (source as File) : filename);
+    const { file } = await openH5File(isBlob ? (source as File) : filename, {
+      headers,
+    });
     const datasetPath = options?.dataset ?? "";
     return new Hdf5VideoBackend({
       filename,
@@ -134,19 +147,29 @@ export async function createVideoBackend(
     });
   }
 
+  // For real remote VIDEO backends (below), resolve the URL through the scheme
+  // gate: gs:// -> storage.googleapis.com, http(s) passthrough, s3/az/abfs ->
+  // RemoteIOError, Google Drive video -> unsupported. Local paths and Blobs are
+  // left untouched. (HDF5/seq/image sources above are never resolved here.)
+  const videoUrl =
+    !isBlob && typeof filename === "string" && isUrl(filename)
+      ? resolveVideoUrl(filename)
+      : filename;
+
   // User-specified backend override
   if (options?.backend === "mediabunny") {
     if (isBlob)
       return MediaBunnyVideoBackend.fromBlob(source as Blob, filename);
-    return MediaBunnyVideoBackend.fromUrl(filename);
+    return MediaBunnyVideoBackend.fromUrl(videoUrl, { headers });
   }
   if (options?.backend === "mp4box") {
-    return new Mp4BoxVideoBackend(source);
+    if (isBlob) return new Mp4BoxVideoBackend(source);
+    return new Mp4BoxVideoBackend(videoUrl, { headers });
   }
   if (options?.backend === "media") {
     if (isBlob)
       return new MediaVideoBackend(URL.createObjectURL(source as Blob));
-    return new MediaVideoBackend(filename);
+    return new MediaVideoBackend(videoUrl);
   }
 
   // Formats no web backend can decode: fail loudly with a clean, catchable
@@ -164,17 +187,36 @@ export async function createVideoBackend(
 
   // MP4: prefer Mp4Box (better sequential performance)
   if (supportsWebCodecs && ext === "mp4") {
-    return new Mp4BoxVideoBackend(source);
+    if (isBlob) return new Mp4BoxVideoBackend(source);
+    return new Mp4BoxVideoBackend(videoUrl, { headers });
   }
 
   // Non-MP4 video formats: use MediaBunny
   if (supportsWebCodecs && MEDIABUNNY_EXTENSIONS.includes(ext)) {
     if (isBlob)
       return MediaBunnyVideoBackend.fromBlob(source as Blob, filename);
-    return MediaBunnyVideoBackend.fromUrl(filename);
+    return MediaBunnyVideoBackend.fromUrl(videoUrl, { headers });
   }
 
   // Fallback: HTML5 video element
   if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source as Blob));
-  return new MediaVideoBackend(filename);
+  return new MediaVideoBackend(videoUrl);
+}
+
+/**
+ * Resolve a video URL through the scheme gate. `gs://`/`gcs://` map to
+ * `storage.googleapis.com`; `http(s)://` pass through; `s3://`/`az://`/`abfs://`
+ * throw a redacted {@link RemoteIOError}; Google Drive videos are unsupported.
+ */
+function resolveVideoUrl(url: string): string {
+  const { url: resolved, gdrive } = resolveUrl(url);
+  if (gdrive) {
+    // Drive video is unsupported (single-file download quota; no range access).
+    throw new RemoteIOError({
+      message: `Google Drive videos are not supported: ${redactUrl(url)}`,
+      url,
+      status: null,
+    });
+  }
+  return resolved;
 }

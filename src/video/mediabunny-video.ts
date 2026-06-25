@@ -43,11 +43,17 @@ export class MediaBunnyVideoBackend implements VideoBackend {
 
   static async fromUrl(
     url: string,
-    options?: MediaBunnyOptions,
+    options?: MediaBunnyOptions & { headers?: Record<string, string> },
   ): Promise<MediaBunnyVideoBackend> {
     const backend = new MediaBunnyVideoBackend(url, options);
+    // MediaBunny applies the custom headers to every byte fetch and overrides
+    // `Range`/`signal` itself (so a user `Range` header cannot clobber it).
+    const requestInit =
+      options?.headers && Object.keys(options.headers).length > 0
+        ? { headers: options.headers }
+        : undefined;
     backend.input = new Input({
-      source: new UrlSource(url),
+      source: new UrlSource(url, requestInit ? { requestInit } : undefined),
       formats: ALL_FORMATS,
     });
     await backend.initialize();

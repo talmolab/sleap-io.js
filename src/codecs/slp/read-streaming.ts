@@ -61,6 +61,12 @@ export interface StreamingSlpOptions {
   h5wasmUrl?: string;
   /** Filename hint for the HDF5 file */
   filenameHint?: string;
+  /**
+   * Extra HTTP request headers (e.g. `{ Authorization: "Bearer …" }`) forwarded
+   * to the streaming worker. When non-empty, the worker downloads the file in a
+   * buffer (authenticated) rather than using header-free range streaming.
+   */
+  headers?: Record<string, string>;
   /** Whether to open video backends for embedded videos (default: false) */
   openVideos?: boolean;
   /**
@@ -118,6 +124,7 @@ export async function readSlpStreaming(
   const file = await openH5Worker(source, {
     h5wasmUrl: options?.h5wasmUrl,
     filenameHint: options?.filenameHint,
+    headers: options?.headers,
   });
 
   const openVideos = options?.openVideos ?? false;

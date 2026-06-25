@@ -1,4 +1,10 @@
 import { VideoBackend, VideoFrame } from "./backend.js";
+import {
+  RemoteIOError,
+  fetchRetrying,
+  identityHeaders,
+  statusToMessage,
+} from "../io/remote.js";
 
 const isBrowser =
   typeof window !== "undefined" && typeof document !== "undefined";
@@ -69,10 +75,16 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   private fileBlob: Blob | null;
   private decodeQueue: Promise<void>;
   private latestRequestedFrame: number | null;
+  /** Extra HTTP headers (e.g. Authorization) applied to every byte fetch. */
+  private headers: Record<string, string>;
 
   constructor(
     source: string | File | Blob,
-    options?: { cacheSize?: number; lookahead?: number },
+    options?: {
+      cacheSize?: number;
+      lookahead?: number;
+      headers?: Record<string, string>;
+    },
   ) {
     if (!hasWebCodecs) {
       throw new Error("Mp4BoxVideoBackend requires WebCodecs support.");
@@ -83,6 +95,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     this.filename =
       source instanceof Blob ? ((source as File).name ?? "") : source;
     this.dataset = null;
+    this.headers = options?.headers ?? {};
     this.samples = [];
     this.keyframeIndices = [];
     this.cache = new Map();
@@ -218,8 +231,12 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   }
 
   private async openSource(): Promise<void> {
-    const response = await fetch(this.filename, {
-      headers: { Range: "bytes=0-0" },
+    // Ranged probe: force Accept-Encoding: identity so a gzip transfer-encoding
+    // can't corrupt byte-range semantics, and let Range win over any
+    // user-supplied Range header (never let a user header override the byte
+    // range we need). Retried with backoff on transient failures / 429/5xx.
+    const response = await fetchRetrying(this.filename, {
+      headers: { ...identityHeaders(this.headers), Range: "bytes=0-0" },
     });
 
     if (response.status === 206) {
@@ -233,11 +250,23 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     }
 
     if (!response.ok && response.status !== 206) {
-      throw new Error(`Failed to fetch video: ${response.status}`);
+      throw new RemoteIOError({
+        message: statusToMessage(response.status),
+        url: this.filename,
+        status: response.status,
+      });
     }
 
-    const full = await fetch(this.filename);
-    if (!full.ok) throw new Error(`Failed to fetch video: ${full.status}`);
+    const full = await fetchRetrying(this.filename, {
+      headers: { ...this.headers },
+    });
+    if (!full.ok) {
+      throw new RemoteIOError({
+        message: statusToMessage(full.status),
+        url: this.filename,
+        status: full.status,
+      });
+    }
     const blob = await full.blob();
     this.fileBlob = blob;
     this.fileSize = blob.size;
@@ -247,8 +276,13 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   private async readChunk(offset: number, size: number): Promise<ArrayBuffer> {
     const end = Math.min(offset + size, this.fileSize);
     if (this.supportsRangeRequests) {
-      const response = await fetch(this.filename, {
-        headers: { Range: `bytes=${offset}-${end - 1}` },
+      // Ranged read: force Accept-Encoding: identity (gzip would corrupt the
+      // byte range) and retry transient failures with backoff.
+      const response = await fetchRetrying(this.filename, {
+        headers: {
+          ...identityHeaders(this.headers),
+          Range: `bytes=${offset}-${end - 1}`,
+        },
       });
       return await response.arrayBuffer();
     }

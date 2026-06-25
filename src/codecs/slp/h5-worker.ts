@@ -22,6 +22,70 @@ let h5wasmModule = null;
 let FS = null;
 let currentFile = null;
 let mountPath = null;
+
+// Inlined subset of ../../io/remote.ts (the worker runs in an isolated context
+// via importScripts and cannot import the module). Keep in lockstep with
+// RETRYABLE_STATUSES / withRetries / identityHeaders there.
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+// Force Accept-Encoding: identity (drop any user-supplied value, any case) so a
+// gzip transfer-encoding cannot corrupt ranged reads. Applied to remote fetches
+// here for parity with the main-thread ranged paths.
+function identityHeadersWorker(headers) {
+  const out = {};
+  for (const k of Object.keys(headers || {})) {
+    if (k.toLowerCase() === 'accept-encoding') continue;
+    out[k] = headers[k];
+  }
+  out['Accept-Encoding'] = 'identity';
+  return out;
+}
+
+function parseRetryAfterMsWorker(value) {
+  if (!value) return undefined;
+  const secs = parseInt(value, 10);
+  if (!isFinite(secs) || String(secs) !== String(value).trim()) return undefined;
+  return Math.min(secs * 1000, 30000);
+}
+
+// fetch wrapped in retry/backoff: retries transient network errors and
+// retryable statuses (429/5xx), honoring Retry-After. Returns the Response for
+// any non-retryable status so the caller handles it. Mirrors fetchRetrying in
+// ../../io/remote.ts. Errors are NOT redacted here because the worker only ever
+// sees URLs the main thread already resolved; the main thread re-wraps worker
+// failures, and no token-bearing URL reaches this transport in the streaming
+// path (Drive/headers route through the buffer download, not createLazyFile).
+async function fetchRetryingWorker(url, init, retries) {
+  const max = retries == null ? 3 : retries;
+  let attempt = 0;
+  while (true) {
+    let response;
+    let networkError = false;
+    try {
+      response = await fetch(url, init);
+    } catch (e) {
+      networkError = true;
+    }
+    if (!networkError && !RETRYABLE_STATUSES.has(response.status)) {
+      return response;
+    }
+    if (attempt >= max) {
+      if (networkError) throw new Error('Failed to fetch remote HDF5 file');
+      return response;
+    }
+    let delayMs = Math.min(200 * Math.pow(2, attempt), 30000);
+    if (!networkError) {
+      const ra = parseRetryAfterMsWorker(
+        response.headers && response.headers.get
+          ? response.headers.get('Retry-After')
+          : null,
+      );
+      if (ra != null) delayMs = Math.min(ra, 30000);
+    }
+    attempt += 1;
+    await new Promise(function(r) { setTimeout(r, delayMs); });
+  }
+}
 // Track how the current file was mounted so closeFile can clean up correctly:
 // 'remote' = MEMFS dir + createLazyFile, 'local' = WORKERFS mount,
 // 'buffer' = MEMFS dir + FS.writeFile. Required because FS.rmdir fails on
@@ -40,7 +104,7 @@ self.onmessage = async function(e) {
         break;
 
       case 'openUrl':
-        const urlResult = await openRemoteFile(payload.url, payload.filename);
+        const urlResult = await openRemoteFile(payload.url, payload.filename, payload.headers);
         respond(id, urlResult);
         break;
 
@@ -126,13 +190,42 @@ async function initH5Wasm(h5wasmUrl) {
   FS = h5wasm.FS;
 }
 
-async function openRemoteFile(url, filename = 'data.h5') {
+async function openRemoteFile(url, filename = 'data.h5', headers) {
   if (!h5wasmModule) {
     throw new Error('h5wasm not initialized');
   }
 
   // Close any existing file
   closeFile();
+
+  // createLazyFile (synchronous XHR) has NO header API. When custom headers are
+  // present we cannot authenticate a range stream, so buffer-download the file
+  // with the headers applied and mount it as a MEMFS buffer instead. Header-free
+  // requests keep the efficient createLazyFile range streaming path.
+  const hasHeaders = headers && typeof headers === 'object' && Object.keys(headers).length > 0;
+  if (hasHeaders) {
+    // Retried with backoff on transient failures / 429/5xx; identity encoding
+    // forced so a gzip transfer-encoding can't corrupt the bytes.
+    const response = await fetchRetryingWorker(url, { headers: identityHeadersWorker(headers) });
+    if (!response.ok) {
+      throw new Error('Failed to fetch remote HDF5 file: ' + response.status);
+    }
+    const data = new Uint8Array(await response.arrayBuffer());
+    const basename = (filename.split('/').pop() || '').split('\\\\').pop() || 'data.h5';
+    mountPath = '/remote-buffer-' + Date.now() + '/' + basename;
+    mountType = 'buffer';
+    currentFilename = basename;
+    const dir = mountPath.substring(0, mountPath.lastIndexOf('/'));
+    FS.mkdir(dir);
+    FS.writeFile(mountPath, data);
+    currentFile = new h5wasm.File(mountPath, 'r');
+    return {
+      success: true,
+      path: currentFile.path,
+      filename: currentFile.filename,
+      keys: currentFile.keys()
+    };
+  }
 
   // Create mount point
   mountPath = '/remote-' + Date.now();

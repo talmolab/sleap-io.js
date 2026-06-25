@@ -327,4 +327,81 @@ describe("Mp4BoxVideoBackend", () => {
     expect(await backend.getFrame(999)).toBeNull();
     backend.close();
   });
+
+  it("forwards custom headers alongside Range on range fetches", async () => {
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend("https://example.com/video.mp4", {
+      headers: { Authorization: "Bearer T" },
+    });
+    await backend.getFrameTimes();
+    const calls = (globalThis.fetch as any).mock.calls;
+    // Every fetch carries the custom header AND a Range (Range wins).
+    for (const c of calls) {
+      const headers = c[1]?.headers ?? {};
+      expect(headers.Authorization).toBe("Bearer T");
+      expect(headers.Range).toBeTruthy();
+    }
+    backend.close();
+  });
+
+  it("forces Accept-Encoding: identity on every ranged fetch", async () => {
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend("https://example.com/video.mp4", {
+      // A user-supplied Accept-Encoding (any case) must be overridden, never
+      // honored, so a gzip transfer-encoding can't corrupt range semantics.
+      headers: { "accept-encoding": "gzip", Authorization: "Bearer T" },
+    });
+    await backend.getFrameTimes();
+    const calls = (globalThis.fetch as any).mock.calls;
+    // Every ranged fetch (probe + readChunk) carries identity encoding, drops
+    // the user's lowercase accept-encoding, and keeps the auth header.
+    const ranged = calls.filter((c: any) => c[1]?.headers?.Range);
+    expect(ranged.length).toBeGreaterThan(0);
+    for (const c of ranged) {
+      const headers = c[1].headers as Record<string, string>;
+      expect(headers["Accept-Encoding"]).toBe("identity");
+      expect(headers["accept-encoding"]).toBeUndefined();
+      expect(headers.Authorization).toBe("Bearer T");
+    }
+    backend.close();
+  });
+
+  it("does not let a user-supplied Range header override the byte range", async () => {
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend("https://example.com/video.mp4", {
+      headers: { Range: "bytes=999-1000", Authorization: "Bearer T" },
+    });
+    await backend.getFrameTimes();
+    const calls = (globalThis.fetch as any).mock.calls;
+    // The probe is bytes=0-0; the user Range must not clobber it.
+    const probe = calls.find((c: any) => c[1]?.headers?.Range === "bytes=0-0");
+    expect(probe).toBeTruthy();
+    expect(probe[1].headers.Authorization).toBe("Bearer T");
+    backend.close();
+  });
+
+  it("routes a custom-header video URL through createVideoBackend", async () => {
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const { createVideoBackend } = await import("../../src/video/factory.js");
+    const backend = await createVideoBackend("https://example.com/video.mp4", {
+      headers: { Authorization: "Bearer T" },
+    });
+    expect(backend).toBeInstanceOf(Mp4BoxVideoBackend);
+    if (backend instanceof Mp4BoxVideoBackend) {
+      await backend.getFrameTimes();
+      const calls = (globalThis.fetch as any).mock.calls;
+      expect(
+        calls.every((c: any) => c[1]?.headers?.Authorization === "Bearer T"),
+      ).toBe(true);
+      backend.close();
+    }
+  });
 });

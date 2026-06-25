@@ -1,4 +1,4 @@
-import { VideoBackend, VideoFrame } from "../video/backend.js";
+import type { VideoBackend, VideoFrame } from "../video/backend.js";
 import { CropVideoBackend } from "../video/crop-backend.js";
 import {
   cropPoints,
@@ -8,6 +8,13 @@ import {
   type PointPairs,
 } from "../transform/points.js";
 import type { Fill } from "../transform/frame.js";
+import { headOrRangeProbe, isUrl } from "../io/remote.js";
+
+/**
+ * Default TTL (ms) for the per-instance {@link Video.exists} URL probe cache.
+ * Analogous to Python's `SLEAP_IO_EXISTS_TTL`.
+ */
+export const EXISTS_TTL_MS = 60_000;
 
 /**
  * Bounding-box / region specs accepted by {@link Video.crop} and
@@ -154,6 +161,10 @@ export class Video {
   private _embedded: boolean;
   private _shape: [number, number, number, number] | null = null;
   private _fps: number | null = null;
+  /** Auth headers persisted from a remote `.slp` load (mirror Python `_url_headers`). */
+  private _urlHeaders?: Record<string, string>;
+  /** Per-instance TTL cache for {@link exists}. */
+  private _existsCache?: { key: string; value: boolean; expiresAt: number };
 
   constructor(options: {
     filename: string | string[];
@@ -239,6 +250,72 @@ export class Video {
 
   close(): void {
     this.backend?.close();
+  }
+
+  /**
+   * Persist the remote auth headers from a remote `.slp` load so later
+   * {@link exists} probes (and any URL-backed backend) stay authenticated.
+   * Mirrors Python's `HDF5Video._url_headers`. Internal — set by the SLP reader.
+   * @internal
+   */
+  _setUrlPersistence(persistence: { headers?: Record<string, string> }): void {
+    if (persistence.headers) this._urlHeaders = persistence.headers;
+  }
+
+  /**
+   * The auth headers to use for remote requests on this video, preferring the
+   * value persisted on this `Video`, then any persisted on the backend. Mirrors
+   * Python `Video._backend_url_headers`.
+   * @internal
+   */
+  _backendUrlHeaders(): Record<string, string> | undefined {
+    return (
+      this._urlHeaders ??
+      // Python-parity placeholder: no JS backend currently sets `_urlHeaders`,
+      // so this fallback is inert today. Kept so a future URL-backed backend
+      // that carries its own headers (as Python's HDF5Video does) is honored
+      // without changing this accessor.
+      (this.backend as { _urlHeaders?: Record<string, string> } | null)
+        ?._urlHeaders
+    );
+  }
+
+  /**
+   * Non-throwing check that this video's source is reachable.
+   *
+   * For a URL filename, probes with HEAD (falling back to a `Range: bytes=0-0`
+   * GET), forwarding any persisted auth headers, and caches the result
+   * per-instance for {@link EXISTS_TTL_MS}. Never throws (a probe failure → a
+   * cached `false`). For a non-URL (local/embedded) filename, this returns
+   * `true` only when a backend is present (the JS port has no generic
+   * filesystem stat); callers needing real local existence should use a Node
+   * file check.
+   *
+   * Port of Python `Video.exists`.
+   */
+  async exists(): Promise<boolean> {
+    const filename = this.filename;
+    // Image sequences / non-URL paths: presence is implied by an open backend.
+    if (Array.isArray(filename) || !isUrl(filename)) {
+      return this.backend != null;
+    }
+
+    const dataset = (this.backendMetadata?.dataset as string | undefined) ?? "";
+    const key = `${filename} ${dataset}`;
+    const now = Date.now();
+    if (
+      this._existsCache &&
+      this._existsCache.key === key &&
+      this._existsCache.expiresAt > now
+    ) {
+      return this._existsCache.value;
+    }
+
+    const value = await headOrRangeProbe(filename, {
+      headers: this._backendUrlHeaders(),
+    });
+    this._existsCache = { key, value, expiresAt: now + EXISTS_TTL_MS };
+    return value;
   }
 
   /**
@@ -799,7 +876,7 @@ function shapeTupleEqual(
 
 /** Real key-presence check (a stored `null`/`undefined` still counts as present). */
 function hasOwn(obj: Record<string, unknown>, key: string): boolean {
-  return Object.prototype.hasOwnProperty.call(obj, key);
+  return Object.hasOwn(obj, key);
 }
 
 /**
