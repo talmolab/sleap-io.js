@@ -296,6 +296,37 @@ labels.materialize();
 > const [frame] = labels.find({ video, frameIdx: 42 });   // LabeledFrame | undefined
 > ```
 
+### Tracking load progress
+
+Pass an `onProgress` callback to `loadSlp` to surface load progress (for example,
+to drive a progress bar). It fires `(current, total, message?)` as the loader
+advances through its stages: `current` counts completed stages out of `total`,
+and `message` labels the stage about to run. The final call is always
+`(total, total, "Finalizing")`. This matches the `(current, total, message?)`
+convention used elsewhere in the library (`Labels.merge`,
+`RenderOptions.onProgress`).
+
+```ts
+import { loadSlp } from "@talmolab/sleap-io.js";
+
+const labels = await loadSlp("dataset.slp", {
+  onProgress: (current, total, message) => {
+    // Update a progress bar: current / total, with a stage label.
+    const pct = Math.round((current / total) * 100);
+    console.log(`[${pct}%] ${message ?? ""}`);
+  },
+});
+```
+
+All reader paths emit progress — the streaming reader (browser, HTTP range
+requests), the eager reader, and the lazy reader (Node, or the no-Worker browser
+fallback). The stage lists differ per path (the streaming reader reports finer
+stages than the eager/lazy readers), but the `(current, total, message?)`
+contract is identical, so a single bar works for any path. When `openVideos` is
+enabled, the videos stage additionally reports `"Opening videos (i/n)"` as each
+embedded video backend is opened. Reporting is a pure side effect and never
+changes the loaded `Labels`.
+
 ## Saving with Embedded Frames
 
 Embed video frames directly into the SLP file:
@@ -602,6 +633,7 @@ See [lite.md](./lite.md) for full documentation.
 | `h5.stream` | `"auto"` \| `"range"` \| `"download"` | `"auto"` | HDF5 streaming mode |
 | `h5.filenameHint` | `string` | `undefined` | Filename hint for embedded video paths |
 | `lazy` | `boolean` | `false` | Use lazy loading for on-demand frame materialization |
+| `onProgress` | `(current, total, message?) => void` | `undefined` | Progress callback fired per load stage; ends with `(total, total, "Finalizing")`. Emitted by all reader paths (streaming/eager/lazy). See [Tracking load progress](#tracking-load-progress). |
 
 ### `loadVideo(source)`
 

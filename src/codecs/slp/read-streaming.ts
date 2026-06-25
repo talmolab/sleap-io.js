@@ -162,11 +162,26 @@ async function readFromStreamingFile(
   // `file` — so each phase can be surfaced as it starts without any cross-worker
   // messaging. `current` counts completed stages; `message` labels the stage
   // about to run. (Shape matches Labels.merge / RenderOptions.onProgress.)
-  const STAGES = 10;
-  const report = (n: number, message: string) =>
-    onProgress?.(n, STAGES, message);
+  //
+  // `total` is DERIVED from this ordered label list (single source of truth) so
+  // the count can never drift from the stages. report(i) fires STAGES[i].
+  const STAGES = [
+    "Reading metadata", // 0
+    "Reading tracks", // 1
+    "Reading video metadata", // 2 (also holds the bar for "Opening videos (i/n)")
+    "Reading suggestions", // 3
+    "Reading frames", // 4
+    "Reading instances", // 5
+    "Reading points", // 6
+    "Building labeled frames", // 7
+    "Reading identities", // 8
+    "Reading sessions", // 9
+  ] as const;
+  const total = STAGES.length;
+  const report = (n: number, message?: string) =>
+    onProgress?.(n, total, message ?? STAGES[n]);
 
-  report(0, "Reading metadata");
+  report(0);
   const metadataAttrs = await file.getAttrs("metadata");
   const formatId = Number(
     (metadataAttrs["format_id"] as { value?: number })?.value ??
@@ -182,11 +197,11 @@ async function readFromStreamingFile(
     filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
   const skeletons = parseSkeletons(metadataJson);
 
-  report(1, "Reading tracks");
+  report(1);
   const tracks = await readTracksStreaming(file);
 
   // Read per-video crop records (SLP 2.3; empty on old/uncropped files).
-  report(2, "Reading video metadata");
+  report(2);
   const videoCrops = await readVideoCropsStreaming(file);
 
   // Read video metadata (and optionally create backends for embedded videos).
@@ -201,20 +216,20 @@ async function readFromStreamingFile(
     openVideos ? (i, n) => report(2, `Opening videos (${i}/${n})`) : undefined,
   );
 
-  report(3, "Reading suggestions");
+  report(3);
   const suggestions = await readSuggestionsStreaming(file, videos);
 
   // Read frame/instance/point data
-  report(4, "Reading frames");
+  report(4);
   const framesData = await readStructDatasetStreaming(file, "frames");
-  report(5, "Reading instances");
+  report(5);
   const instancesData = await readStructDatasetStreaming(file, "instances");
-  report(6, "Reading points");
+  report(6);
   const pointsData = await readStructDatasetStreaming(file, "points");
   const predPointsData = await readStructDatasetStreaming(file, "pred_points");
 
   // Build labeled frames
-  report(7, "Building labeled frames");
+  report(7);
   const labeledFrames = buildLabeledFrames({
     framesData,
     instancesData,
@@ -227,11 +242,11 @@ async function readFromStreamingFile(
   });
 
   // Read identities
-  report(8, "Reading identities");
+  report(8);
   const identities = await readIdentitiesStreaming(file);
 
   // Read sessions
-  report(9, "Reading sessions");
+  report(9);
   const sessions = await readSessionsStreaming(
     file,
     videos,
@@ -240,7 +255,7 @@ async function readFromStreamingFile(
     identities,
   );
 
-  onProgress?.(STAGES, STAGES, "Finalizing");
+  onProgress?.(total, total, "Finalizing");
   return new Labels({
     labeledFrames,
     videos,
