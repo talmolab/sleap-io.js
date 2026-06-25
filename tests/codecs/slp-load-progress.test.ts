@@ -154,7 +154,11 @@ describe("SLP load progress — onProgress callback", () => {
         onProgress: spy.onProgress,
       });
       const without = await loadSlp(PLAIN, { lazy: true, openVideos: false });
-      // Materialize lazy frames before fingerprinting (length forces it).
+      // Materialize lazy frames so labeledFrames is populated; a LazyFrameList
+      // reports length 0 until materialized, which would make the frame/instance
+      // comparison vacuous (0 === 0).
+      withSpy.materialize();
+      without.materialize();
       expect(fingerprint(withSpy)).toEqual(fingerprint(without));
       expect(spy.calls.length).toBeGreaterThan(0);
     });
