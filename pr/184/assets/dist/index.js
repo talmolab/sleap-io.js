@@ -86,10 +86,15 @@ import {
   collectTracks,
   computePrefetchWindow,
   computeTrails,
+  createSkeletonFromCategory,
   createVideoBackend,
   cropFrame,
   cropPoints,
+  decodeCocoRle,
+  decodeCompressedRleCounts,
+  decodeKeypoints,
   decodeRle,
+  decodeSegmentation,
   decodeWkb,
   decodeYamlSkeleton,
   determineColorScheme,
@@ -109,6 +114,7 @@ import {
   getMarkerFunction,
   getPalette,
   isAnalysisH5File,
+  isCocoData,
   isStreamingSupported,
   isTrainingConfig,
   labelsFromNumpy,
@@ -124,7 +130,10 @@ import {
   openH5File,
   openH5Worker,
   openStreamingH5,
+  parseCocoJson,
   rasterizeGeometry,
+  readCoco,
+  readCocoSet,
   readGeoJSON,
   readSkeletonJson,
   readSlpStreaming,
@@ -153,7 +162,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-WWBDYUK3.js";
+} from "./chunk-ZZTVVLU3.js";
 import {
   Edge,
   Instance,
@@ -193,9 +202,9 @@ async function openH5FileNode(module, source) {
   if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
     const { writeFileSync: writeFileSync2, unlinkSync } = await import("fs");
     const { tmpdir } = await import("os");
-    const { join: join5 } = await import("path");
+    const { join: join6 } = await import("path");
     const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join5(
+    const tempPath = join6(
       tmpdir(),
       `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`
     );
@@ -223,19 +232,19 @@ _registerNodeFileOps({
     const { writeFile } = await import("fs/promises");
     await writeFile(filename, bytes);
   },
-  fileExists: async (path4) => {
-    const { existsSync: existsSync4 } = await import("fs");
-    return existsSync4(path4);
+  fileExists: async (path5) => {
+    const { existsSync: existsSync5 } = await import("fs");
+    return existsSync5(path5);
   },
   readPackageVersion: async () => {
     try {
       const { readFile } = await import("fs/promises");
       const { fileURLToPath } = await import("url");
-      const { dirname: dirname4, join: join5 } = await import("path");
-      const here = dirname4(fileURLToPath(import.meta.url));
+      const { dirname: dirname5, join: join6 } = await import("path");
+      const here = dirname5(fileURLToPath(import.meta.url));
       const candidates = [
-        join5(here, "..", "..", "..", "package.json"),
-        join5(here, "..", "..", "..", "..", "package.json")
+        join6(here, "..", "..", "..", "package.json"),
+        join6(here, "..", "..", "..", "..", "package.json")
       ];
       for (const candidate of candidates) {
         try {
@@ -255,9 +264,9 @@ _registerNodeFileOps({
 import * as fs from "fs";
 import * as nodePath from "path";
 var nodeFsResolver = {
-  async exists(path4) {
+  async exists(path5) {
     try {
-      await fs.promises.access(path4);
+      await fs.promises.access(path5);
       return true;
     } catch {
       return false;
@@ -268,11 +277,11 @@ var nodeFsResolver = {
     const s2 = await fs.promises.stat(path22);
     return s1.dev === s2.dev && s1.ino === s2.ino;
   },
-  async realpath(path4) {
+  async realpath(path5) {
     try {
-      return await fs.promises.realpath(path4);
+      return await fs.promises.realpath(path5);
     } catch {
-      return nodePath.resolve(path4);
+      return nodePath.resolve(path5);
     }
   }
 };
@@ -284,8 +293,8 @@ var NodeFileByteSource = class {
   path;
   fd = null;
   fileSize = null;
-  constructor(path4) {
-    this.path = path4;
+  constructor(path5) {
+    this.path = path5;
   }
   ensureOpen() {
     if (this.fd === null) {
@@ -313,28 +322,28 @@ var NodeFileByteSource = class {
     }
   }
 };
-setSeqFileByteSourceFactory((path4) => new NodeFileByteSource(path4));
+setSeqFileByteSourceFactory((path5) => new NodeFileByteSource(path5));
 
 // src/io/label-images-node.ts
 import * as fs3 from "fs";
 import * as nodePath2 from "path";
-async function readTiffPath(path4) {
-  const stat = fs3.statSync(path4);
+async function readTiffPath(path5) {
+  const stat = fs3.statSync(path5);
   if (stat.isDirectory()) {
-    const entries = fs3.readdirSync(path4).filter((name) => /\.tiff?$/i.test(name)).sort();
+    const entries = fs3.readdirSync(path5).filter((name) => /\.tiff?$/i.test(name)).sort();
     const files = entries.map(
-      (name) => new Uint8Array(fs3.readFileSync(nodePath2.join(path4, name)))
+      (name) => new Uint8Array(fs3.readFileSync(nodePath2.join(path5, name)))
     );
     return { files };
   }
-  return new Uint8Array(fs3.readFileSync(path4));
+  return new Uint8Array(fs3.readFileSync(path5));
 }
 setLabelImageFileReader(readTiffPath);
 
 // src/video/node-image-reader.ts
 import * as fs4 from "fs";
-async function nodeImageReader(path4) {
-  return new Uint8Array(await fs4.promises.readFile(path4));
+async function nodeImageReader(path5) {
+  return new Uint8Array(await fs4.promises.readFile(path5));
 }
 setDefaultImageBytesReader(nodeImageReader);
 
@@ -1427,6 +1436,70 @@ function invertClassNames(classNames) {
   return result;
 }
 
+// src/io/coco-node.ts
+import * as fs7 from "fs";
+import * as path3 from "path";
+function recursiveFindByBasename(root, base) {
+  let entries;
+  try {
+    entries = fs7.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const full = path3.join(root, entry.name);
+    if (entry.isFile()) {
+      if (entry.name === base) return full;
+    } else if (entry.isDirectory()) {
+      const hit = recursiveFindByBasename(full, base);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+function resolveImagePath(fileName, datasetRoot) {
+  let p = path3.join(datasetRoot, fileName);
+  if (fs7.existsSync(p) && fs7.statSync(p).isFile()) return p;
+  for (const prefix of ["images", "imgs", "data/images"]) {
+    p = path3.join(datasetRoot, prefix, fileName);
+    if (fs7.existsSync(p) && fs7.statSync(p).isFile()) return p;
+  }
+  const base = path3.basename(fileName);
+  const hit = recursiveFindByBasename(datasetRoot, base);
+  if (hit) return hit;
+  return null;
+}
+function loadCoco(jsonPath, options = {}) {
+  if (!fs7.existsSync(jsonPath)) {
+    throw new Error(`COCO annotation file not found: ${jsonPath}`);
+  }
+  const text = fs7.readFileSync(jsonPath, "utf-8");
+  const datasetRoot = options.datasetRoot ?? path3.dirname(jsonPath);
+  const resolveImage = options.resolveImage ?? ((fileName, root) => resolveImagePath(fileName, root ?? datasetRoot));
+  return readCoco(text, { ...options, datasetRoot, resolveImage });
+}
+function loadCocoSet(datasetPath, options = {}) {
+  const { jsonFiles, ...readOptions } = options;
+  let files = jsonFiles;
+  if (files === void 0) {
+    files = fs7.readdirSync(datasetPath).filter((f) => f.endsWith(".json"));
+    if (files.length === 0) {
+      throw new Error(`No JSON annotation files found in ${datasetPath}`);
+    }
+  }
+  const result = {};
+  for (const file of files) {
+    const splitName = path3.basename(file, ".json");
+    const labels = loadCoco(path3.join(datasetPath, file), {
+      ...readOptions,
+      datasetRoot: datasetPath
+    });
+    labels.provenance = { ...labels.provenance, split: splitName };
+    result[splitName] = labels;
+  }
+  return result;
+}
+
 // src/io/jabs.ts
 var JABS_DEFAULT_KEYPOINT_NAMES = [
   "NOSE",
@@ -1679,15 +1752,15 @@ async function loadJabs(labelsPath, options) {
 }
 
 // src/io/dlc.ts
-import * as fs7 from "fs";
-import * as path3 from "path";
+import * as fs8 from "fs";
+import * as path4 from "path";
 import YAML2 from "yaml";
 function warn(msg) {
   console.warn(msg);
 }
 function isDlcFile(filename) {
   try {
-    const lines = fs7.readFileSync(filename, "utf-8").split(/\r?\n/).slice(0, 4).map((l) => l.trim());
+    const lines = fs8.readFileSync(filename, "utf-8").split(/\r?\n/).slice(0, 4).map((l) => l.trim());
     const content = lines.join("\n").toLowerCase();
     const hasScorer = content.includes("scorer");
     const hasCoords = content.includes("coords");
@@ -1709,27 +1782,27 @@ var DLC_CONFIG_KEYS = [
 function isDlcProjectPath(filename) {
   let stat;
   try {
-    stat = fs7.statSync(filename);
+    stat = fs8.statSync(filename);
   } catch {
     return false;
   }
   if (stat.isDirectory()) {
-    return fs7.existsSync(path3.join(filename, "config.yaml")) && fs7.existsSync(path3.join(filename, "labeled-data"));
+    return fs8.existsSync(path4.join(filename, "config.yaml")) && fs8.existsSync(path4.join(filename, "labeled-data"));
   }
-  if (path3.basename(filename) === "config.yaml" && stat.isFile()) {
+  if (path4.basename(filename) === "config.yaml" && stat.isFile()) {
     const cfg = readDlcConfig(filename);
     return cfg !== null && looksLikeDlcConfig(cfg);
   }
   return false;
 }
 function readDlcConfig(p) {
-  if (!fs7.existsSync(p) || !fs7.statSync(p).isFile()) {
+  if (!fs8.existsSync(p) || !fs8.statSync(p).isFile()) {
     warn(`DLC config file not found: ${p}`);
     return null;
   }
   let cfg;
   try {
-    cfg = YAML2.parse(fs7.readFileSync(p, "utf-8"));
+    cfg = YAML2.parse(fs8.readFileSync(p, "utf-8"));
   } catch (e) {
     warn(`Failed to parse DLC config ${p}: ${e}`);
     return null;
@@ -1748,18 +1821,18 @@ function looksLikeDlcConfig(cfg) {
   return DLC_CONFIG_KEYS.filter((k) => Object.hasOwn(obj, k)).length >= 2;
 }
 function discoverConfig(csvPath, maxLevels = 3) {
-  const start = path3.dirname(path3.resolve(csvPath));
+  const start = path4.dirname(path4.resolve(csvPath));
   const dirs = [start];
   let cur = start;
   for (let i = 0; i < maxLevels; i += 1) {
-    const parent = path3.dirname(cur);
+    const parent = path4.dirname(cur);
     if (parent === cur) break;
     dirs.push(parent);
     cur = parent;
   }
   for (const d of dirs) {
-    const candidate = path3.join(d, "config.yaml");
-    if (fs7.existsSync(candidate) && fs7.statSync(candidate).isFile()) {
+    const candidate = path4.join(d, "config.yaml");
+    if (fs8.existsSync(candidate) && fs8.statSync(candidate).isFile()) {
       const cfg = readDlcConfig(candidate);
       if (cfg !== null && looksLikeDlcConfig(cfg)) return candidate;
     }
@@ -1860,10 +1933,10 @@ function setSourceVideo(video, folderName, stemMap, searchPaths) {
   const { original, rect } = entry;
   let resolvedPath = original;
   if (searchPaths?.length) {
-    const basename4 = original.replace(/\\/g, "/").split("/").pop() ?? original;
+    const basename5 = original.replace(/\\/g, "/").split("/").pop() ?? original;
     for (const dir of searchPaths) {
-      const candidate = path3.join(dir, basename4);
-      if (fs7.existsSync(candidate)) {
+      const candidate = path4.join(dir, basename5);
+      if (fs8.existsSync(candidate)) {
         resolvedPath = candidate;
         break;
       }
@@ -1873,7 +1946,7 @@ function setSourceVideo(video, folderName, stemMap, searchPaths) {
   return { path: resolvedPath, rect };
 }
 function readDlcDataframe(filename) {
-  const raw = fs7.readFileSync(filename, "utf-8").split(/\r?\n/);
+  const raw = fs8.readFileSync(filename, "utf-8").split(/\r?\n/);
   if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
   const cells = raw.map((line) => line.split(","));
   let isMultianimal = false;
@@ -2032,7 +2105,7 @@ function parseMultiAnimalRow(columns, values, skeleton, tracks) {
   return instances;
 }
 function extractFrameIndex(imgPath) {
-  const base = path3.basename(imgPath);
+  const base = path4.basename(imgPath);
   const stem = base.replace(/\.[^.]*$/, "");
   const matches = stem.match(/\d+/g);
   return matches ? parseInt(matches[matches.length - 1], 10) : 0;
@@ -2042,7 +2115,7 @@ function videoNameFor(imgPath) {
   if (parts.length >= 2 && parts[0] === "labeled-data") {
     return parts[1];
   }
-  return path3.basename(path3.dirname(imgPath)) || "default";
+  return path4.basename(path4.dirname(imgPath)) || "default";
 }
 function loadDlc(filename, options) {
   const cfg = resolveConfig(filename, options?.config ?? null);
@@ -2080,7 +2153,7 @@ function loadDlcCsv(filename, opts) {
     if (!videoImagePaths.has(videoName)) videoImagePaths.set(videoName, []);
     videoImagePaths.get(videoName).push(imgPath);
   }
-  const csvDir = path3.dirname(path3.resolve(filename));
+  const csvDir = path4.dirname(path4.resolve(filename));
   const videos = /* @__PURE__ */ new Map();
   const sortedVideoPaths = /* @__PURE__ */ new Map();
   for (const [videoName, imgPaths] of videoImagePaths) {
@@ -2090,11 +2163,11 @@ function loadDlcCsv(filename, opts) {
     const actualImageFiles = [];
     for (const imgPath of sortedImgPaths) {
       const candidates = [
-        path3.join(csvDir, imgPath),
-        path3.join(csvDir, path3.basename(imgPath)),
-        path3.join(path3.dirname(csvDir), imgPath)
+        path4.join(csvDir, imgPath),
+        path4.join(csvDir, path4.basename(imgPath)),
+        path4.join(path4.dirname(csvDir), imgPath)
       ];
-      const found = candidates.find((c) => fs7.existsSync(c));
+      const found = candidates.find((c) => fs8.existsSync(c));
       if (found) actualImageFiles.push(found);
     }
     if (actualImageFiles.length > 0) {
@@ -2147,13 +2220,13 @@ function loadDlcCsv(filename, opts) {
 function resolveProjectConfigPath(config) {
   let stat = null;
   try {
-    stat = fs7.statSync(config);
+    stat = fs8.statSync(config);
   } catch {
     stat = null;
   }
   if (stat?.isDirectory()) {
-    const candidate = path3.join(config, "config.yaml");
-    if (fs7.existsSync(candidate) && fs7.statSync(candidate).isFile()) {
+    const candidate = path4.join(config, "config.yaml");
+    if (fs8.existsSync(candidate) && fs8.statSync(candidate).isFile()) {
       return candidate;
     }
     throw new Error(`No config.yaml found in DLC project directory: ${config}`);
@@ -2161,18 +2234,18 @@ function resolveProjectConfigPath(config) {
   return config;
 }
 function findProjectCsvs(projectDir, scorer) {
-  const labeledDir = path3.join(projectDir, "labeled-data");
+  const labeledDir = path4.join(projectDir, "labeled-data");
   const folders = [];
-  if (!fs7.existsSync(labeledDir) || !fs7.statSync(labeledDir).isDirectory()) {
+  if (!fs8.existsSync(labeledDir) || !fs8.statSync(labeledDir).isDirectory()) {
     return folders;
   }
-  const subs = fs7.readdirSync(labeledDir).sort();
+  const subs = fs8.readdirSync(labeledDir).sort();
   for (const sub of subs) {
-    const subDir = path3.join(labeledDir, sub);
-    if (!fs7.statSync(subDir).isDirectory()) continue;
-    let csv = path3.join(subDir, `CollectedData_${scorer}.csv`);
-    if (!fs7.existsSync(csv) || !fs7.statSync(csv).isFile()) {
-      const candidates = fs7.readdirSync(subDir).filter((f) => f.endsWith(".csv")).sort().map((f) => path3.join(subDir, f)).filter((c) => isDlcFile(c));
+    const subDir = path4.join(labeledDir, sub);
+    if (!fs8.statSync(subDir).isDirectory()) continue;
+    let csv = path4.join(subDir, `CollectedData_${scorer}.csv`);
+    if (!fs8.existsSync(csv) || !fs8.statSync(csv).isFile()) {
+      const candidates = fs8.readdirSync(subDir).filter((f) => f.endsWith(".csv")).sort().map((f) => path4.join(subDir, f)).filter((c) => isDlcFile(c));
       if (candidates.length === 0) continue;
       csv = candidates[0];
     }
@@ -2187,12 +2260,12 @@ function loadDlcProject(config, options) {
   if (cfg === null) {
     throw new Error(`Could not read DLC config: ${configPath}`);
   }
-  const projectDir = path3.dirname(configPath);
+  const projectDir = path4.dirname(configPath);
   const scorer = cfg.scorer ?? null;
   const folders = findProjectCsvs(projectDir, scorer);
   if (folders.length === 0) {
     throw new Error(
-      `No DLC annotation CSVs found under ${path3.join(projectDir, "labeled-data")}`
+      `No DLC annotation CSVs found under ${path4.join(projectDir, "labeled-data")}`
     );
   }
   const nodeNames = [];
@@ -2252,7 +2325,7 @@ function getTrainingSetFolder(projectDir, cfg, iteration) {
   const it = iteration == null ? cfg.iteration ?? 0 : iteration;
   const task = cfg.Task ?? "";
   const date = cfg.date ?? "";
-  return path3.join(
+  return path4.join(
     projectDir,
     "training-datasets",
     `iteration-${it}`,
@@ -2265,7 +2338,7 @@ function selectDocumentationPickle(projectDir, cfg, selectors) {
     cfg,
     selectors.iteration
   );
-  const pickles = (fs7.existsSync(trainsetDir) && fs7.statSync(trainsetDir).isDirectory() ? fs7.readdirSync(trainsetDir).filter((f) => /^Documentation_data-.*\.pickle$/.test(f)) : []).sort();
+  const pickles = (fs8.existsSync(trainsetDir) && fs8.statSync(trainsetDir).isDirectory() ? fs8.readdirSync(trainsetDir).filter((f) => /^Documentation_data-.*\.pickle$/.test(f)) : []).sort();
   if (pickles.length === 0) {
     throw new Error(
       `No DLC Documentation_data-*.pickle found in ${trainsetDir}. Run create_training_dataset in DLC to generate splits.`
@@ -2277,14 +2350,14 @@ function selectDocumentationPickle(projectDir, cfg, selectors) {
     const m = pattern.exec(name);
     if (m) {
       parsed.push({
-        path: path3.join(trainsetDir, name),
+        path: path4.join(trainsetDir, name),
         fracInt: parseInt(m[2], 10),
         shuffleInt: parseInt(m[3], 10)
       });
     }
   }
   if (parsed.length === 0) {
-    if (pickles.length === 1) return path3.join(trainsetDir, pickles[0]);
+    if (pickles.length === 1) return path4.join(trainsetDir, pickles[0]);
     throw new Error(
       `Could not parse train_fraction/shuffle from pickles in ${trainsetDir}: ` + JSON.stringify(pickles)
     );
@@ -2299,7 +2372,7 @@ function selectDocumentationPickle(projectDir, cfg, selectors) {
   }
   if (candidates.length === 0) {
     const available = parsed.map((c) => [
-      path3.basename(c.path),
+      path4.basename(c.path),
       c.fracInt,
       c.shuffleInt
     ]);
@@ -2309,7 +2382,7 @@ function selectDocumentationPickle(projectDir, cfg, selectors) {
   }
   if (candidates.length > 1) {
     const available = candidates.map((c) => [
-      path3.basename(c.path),
+      path4.basename(c.path),
       c.fracInt,
       c.shuffleInt
     ]);
@@ -2320,7 +2393,7 @@ function selectDocumentationPickle(projectDir, cfg, selectors) {
   return candidates[0].path;
 }
 function readDlcSplit(picklePath) {
-  const buf = fs7.readFileSync(picklePath);
+  const buf = fs8.readFileSync(picklePath);
   const meta = readPickle(buf);
   return [extractIndexArray(meta[1]), extractIndexArray(meta[2])];
 }
@@ -2332,7 +2405,7 @@ function extractIndexArray(value) {
 function readCsvScorer(csv) {
   let first;
   try {
-    const content = fs7.readFileSync(csv, "utf-8");
+    const content = fs8.readFileSync(csv, "utf-8");
     first = content.split(/\r?\n/)[0]?.trim() ?? "";
   } catch {
     return null;
@@ -2345,13 +2418,13 @@ function dlcMergedOrder(projectDir, cfg) {
   const stemMap = videoSetsStemMap(cfg);
   const included = [];
   for (const stem of stemMap.keys()) {
-    const csv = path3.join(
+    const csv = path4.join(
       projectDir,
       "labeled-data",
       stem,
       `CollectedData_${scorer}.csv`
     );
-    if (!fs7.existsSync(csv) || !fs7.statSync(csv).isFile()) continue;
+    if (!fs8.existsSync(csv) || !fs8.statSync(csv).isFile()) continue;
     const csvScorer = readCsvScorer(csv);
     if (scorer != null && csvScorer != null && csvScorer !== scorer) {
       warn(
@@ -2370,7 +2443,7 @@ function dlcMergedOrder(projectDir, cfg) {
   for (const [, csv] of included) {
     const df = readDlcDataframe(csv);
     for (const idx of df.index) {
-      merged.push([path3.basename(path3.dirname(idx)), path3.basename(idx)]);
+      merged.push([path4.basename(path4.dirname(idx)), path4.basename(idx)]);
     }
   }
   merged.sort((a, b) => {
@@ -2419,7 +2492,7 @@ function loadDlcSplits(config, options) {
   if (cfg === null) {
     throw new Error(`Could not read DLC config: ${configPath}`);
   }
-  const projectDir = path3.dirname(configPath);
+  const projectDir = path4.dirname(configPath);
   const labels = loadDlcProject(configPath, {
     videoSearchPaths: options?.videoSearchPaths
   });
@@ -2442,7 +2515,7 @@ function loadDlcSplits(config, options) {
     const lf = labels.labeledFrames[g];
     const filename = lf.video.filename;
     const fname = Array.isArray(filename) ? filename[lf.frameIdx] : filename;
-    const key = `${path3.basename(path3.dirname(fname))}${SEP}${path3.basename(fname)}`;
+    const key = `${path4.basename(path4.dirname(fname))}${SEP}${path4.basename(fname)}`;
     lfLookup.set(key, g);
   }
   const mapIndices = (indices) => {
@@ -3798,12 +3871,12 @@ async function toDataURL(imageData, format = "png") {
   ctx.putImageData(imageData, 0, 0);
   return canvas.toDataURL(`image/${format}`);
 }
-async function saveImage(imageData, path4) {
+async function saveImage(imageData, path5) {
   const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   ctx.putImageData(imageData, 0, 0);
-  await canvas.saveAs(path4);
+  await canvas.saveAs(path5);
 }
 
 // src/rendering/video.ts
@@ -4100,12 +4173,17 @@ export {
   computePrefetchWindow,
   computeTrails,
   createDataYaml,
+  createSkeletonFromCategory,
   createSkeletonFromConfig,
   createSplitsFromLabels,
   createVideoBackend,
   cropFrame,
   cropPoints,
+  decodeCocoRle,
+  decodeCompressedRleCounts,
+  decodeKeypoints,
   decodeRle,
+  decodeSegmentation,
   decodeWkb,
   decodeYamlSkeleton,
   denormalizeCoordinates,
@@ -4135,6 +4213,7 @@ export {
   getMarkerFunction,
   getPalette,
   isAnalysisH5File,
+  isCocoData,
   isDlcFile,
   isDlcProjectPath,
   isStreamingSupported,
@@ -4142,6 +4221,8 @@ export {
   isTrainingConfig,
   labelsFromNumpy,
   loadAnalysisH5,
+  loadCoco,
+  loadCocoSet,
   loadDlc,
   loadDlcProject,
   loadDlcSplits,
@@ -4161,6 +4242,7 @@ export {
   normalizeLabelIds,
   openH5Worker,
   openStreamingH5,
+  parseCocoJson,
   parseDataYaml,
   parseDlcCrop,
   parseLabelFile,
@@ -4173,6 +4255,8 @@ export {
   predictionToInstance,
   probeImageSize,
   rasterizeGeometry,
+  readCoco,
+  readCocoSet,
   readCsvScorer,
   readDlcConfig,
   readDlcDataframe,
