@@ -650,6 +650,31 @@ function parseJsonAttr(attr) {
   }
   return JSON.parse(String(value));
 }
+function hasMetadataJsonAttr(attr) {
+  if (attr === void 0 || attr === null) return false;
+  const value = attr.value ?? attr;
+  if (typeof value === "string") return value.length > 0;
+  if (value instanceof Uint8Array) return value.length > 0;
+  if (value && typeof value === "object" && "buffer" in value) {
+    return new Uint8Array(value.buffer).length > 0;
+  }
+  return true;
+}
+function missingMetadataJsonError(labelsPath) {
+  return new Error(
+    `The SLEAP labels file '${labelsPath}' is missing its required metadata JSON blob (the 'metadata' HDF5 group has no readable 'json' attribute) and is likely corrupt. If you have a working .slp file with the same skeleton, you can copy the attribute into a BACKUP COPY of the corrupt file with h5py (back up first):
+    import h5py
+    with h5py.File('working.slp', 'r') as src, h5py.File('corrupt_copy.slp', 'a') as dst:
+        dst['metadata'].attrs['json'] = src['metadata'].attrs['json']
+Only do this if the skeletons match exactly, otherwise the loaded data will be wrong.`
+  );
+}
+function parseMetadataJson(attr, labelsPath) {
+  if (!hasMetadataJsonAttr(attr)) {
+    throw missingMetadataJsonError(labelsPath);
+  }
+  return parseJsonAttr(attr);
+}
 function trimHdf5String(str) {
   return str.trim().replace(/\0+$/, "");
 }
@@ -946,6 +971,8 @@ export {
   Instance3D,
   PredictedInstance3D,
   parseJsonAttr,
+  missingMetadataJsonError,
+  parseMetadataJson,
   attrToString,
   attrToNumber,
   parseJsonEntry,

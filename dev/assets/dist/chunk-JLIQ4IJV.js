@@ -10,8 +10,9 @@ import {
   _registerCentroidFactory,
   attrToNumber,
   attrToString,
-  parseJsonAttr,
+  missingMetadataJsonError,
   parseJsonEntry,
+  parseMetadataJson,
   parseSkeletons,
   parseSuggestions,
   parseTracks,
@@ -22,7 +23,7 @@ import {
   resolveCameraKey,
   resolveIdentity,
   resolveVideoFilename
-} from "./chunk-5RPVZ6CR.js";
+} from "./chunk-Q5V2SXKT.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -11041,12 +11042,20 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   const total = STAGES.length;
   const report = (n, message) => onProgress?.(n, total, message ?? STAGES[n]);
   report(0);
-  const metadataAttrs = await file.getAttrs("metadata");
+  const labelsPath = filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
+  let metadataAttrs;
+  try {
+    metadataAttrs = await file.getAttrs("metadata");
+  } catch {
+    throw missingMetadataJsonError(labelsPath);
+  }
   const formatId = Number(
     metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
   );
-  const metadataJson = parseJsonAttr(metadataAttrs["json"]);
-  const labelsPath = filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
+  const metadataJson = parseMetadataJson(
+    metadataAttrs["json"],
+    labelsPath
+  );
   const skeletons = parseSkeletons(metadataJson);
   report(1);
   const tracks = await readTracksStreaming(file);
@@ -14450,16 +14459,19 @@ async function readSlp(source, options) {
   };
   try {
     report(0);
+    const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const metadataGroup = file.get("metadata");
     if (!metadataGroup) {
-      throw new Error("Missing /metadata group in SLP file");
+      throw missingMetadataJsonError(labelsPath);
     }
     const metadataAttrs = metadataGroup.attrs ?? {};
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
     );
-    const metadataJson = parseJsonAttr(metadataAttrs["json"]);
-    const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
+    const metadataJson = parseMetadataJson(
+      metadataAttrs["json"],
+      labelsPath
+    );
     const skeletons = parseSkeletons(metadataJson);
     report(1);
     const tracks = readTracks(file.get("tracks_json"));
@@ -14629,16 +14641,19 @@ async function readSlpLazy(source, options) {
   };
   try {
     report(0);
+    const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const metadataGroup = file.get("metadata");
     if (!metadataGroup) {
-      throw new Error("Missing /metadata group in SLP file");
+      throw missingMetadataJsonError(labelsPath);
     }
     const metadataAttrs = metadataGroup.attrs ?? {};
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
     );
-    const metadataJson = parseJsonAttr(metadataAttrs["json"]);
-    const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
+    const metadataJson = parseMetadataJson(
+      metadataAttrs["json"],
+      labelsPath
+    );
     const skeletons = parseSkeletons(metadataJson);
     report(1);
     const tracks = readTracks(file.get("tracks_json"));
