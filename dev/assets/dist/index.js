@@ -202,9 +202,9 @@ async function openH5FileNode(module, source) {
   if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
     const { writeFileSync: writeFileSync2, unlinkSync } = await import("fs");
     const { tmpdir } = await import("os");
-    const { join: join5 } = await import("path");
+    const { join: join6 } = await import("path");
     const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join5(
+    const tempPath = join6(
       tmpdir(),
       `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`
     );
@@ -232,19 +232,19 @@ _registerNodeFileOps({
     const { writeFile } = await import("fs/promises");
     await writeFile(filename, bytes);
   },
-  fileExists: async (path4) => {
-    const { existsSync: existsSync4 } = await import("fs");
-    return existsSync4(path4);
+  fileExists: async (path5) => {
+    const { existsSync: existsSync5 } = await import("fs");
+    return existsSync5(path5);
   },
   readPackageVersion: async () => {
     try {
       const { readFile } = await import("fs/promises");
       const { fileURLToPath } = await import("url");
-      const { dirname: dirname4, join: join5 } = await import("path");
-      const here = dirname4(fileURLToPath(import.meta.url));
+      const { dirname: dirname5, join: join6 } = await import("path");
+      const here = dirname5(fileURLToPath(import.meta.url));
       const candidates = [
-        join5(here, "..", "..", "..", "package.json"),
-        join5(here, "..", "..", "..", "..", "package.json")
+        join6(here, "..", "..", "..", "package.json"),
+        join6(here, "..", "..", "..", "..", "package.json")
       ];
       for (const candidate of candidates) {
         try {
@@ -264,9 +264,9 @@ _registerNodeFileOps({
 import * as fs from "fs";
 import * as nodePath from "path";
 var nodeFsResolver = {
-  async exists(path4) {
+  async exists(path5) {
     try {
-      await fs.promises.access(path4);
+      await fs.promises.access(path5);
       return true;
     } catch {
       return false;
@@ -277,11 +277,11 @@ var nodeFsResolver = {
     const s2 = await fs.promises.stat(path22);
     return s1.dev === s2.dev && s1.ino === s2.ino;
   },
-  async realpath(path4) {
+  async realpath(path5) {
     try {
-      return await fs.promises.realpath(path4);
+      return await fs.promises.realpath(path5);
     } catch {
-      return nodePath.resolve(path4);
+      return nodePath.resolve(path5);
     }
   }
 };
@@ -293,8 +293,8 @@ var NodeFileByteSource = class {
   path;
   fd = null;
   fileSize = null;
-  constructor(path4) {
-    this.path = path4;
+  constructor(path5) {
+    this.path = path5;
   }
   ensureOpen() {
     if (this.fd === null) {
@@ -322,28 +322,28 @@ var NodeFileByteSource = class {
     }
   }
 };
-setSeqFileByteSourceFactory((path4) => new NodeFileByteSource(path4));
+setSeqFileByteSourceFactory((path5) => new NodeFileByteSource(path5));
 
 // src/io/label-images-node.ts
 import * as fs3 from "fs";
 import * as nodePath2 from "path";
-async function readTiffPath(path4) {
-  const stat = fs3.statSync(path4);
+async function readTiffPath(path5) {
+  const stat = fs3.statSync(path5);
   if (stat.isDirectory()) {
-    const entries = fs3.readdirSync(path4).filter((name) => /\.tiff?$/i.test(name)).sort();
+    const entries = fs3.readdirSync(path5).filter((name) => /\.tiff?$/i.test(name)).sort();
     const files = entries.map(
-      (name) => new Uint8Array(fs3.readFileSync(nodePath2.join(path4, name)))
+      (name) => new Uint8Array(fs3.readFileSync(nodePath2.join(path5, name)))
     );
     return { files };
   }
-  return new Uint8Array(fs3.readFileSync(path4));
+  return new Uint8Array(fs3.readFileSync(path5));
 }
 setLabelImageFileReader(readTiffPath);
 
 // src/video/node-image-reader.ts
 import * as fs4 from "fs";
-async function nodeImageReader(path4) {
-  return new Uint8Array(await fs4.promises.readFile(path4));
+async function nodeImageReader(path5) {
+  return new Uint8Array(await fs4.promises.readFile(path5));
 }
 setDefaultImageBytesReader(nodeImageReader);
 
@@ -1751,6 +1751,1213 @@ async function loadJabs(labelsPath, options) {
   }
 }
 
+// src/io/dlc.ts
+import * as fs8 from "fs";
+import * as path4 from "path";
+import YAML2 from "yaml";
+function warn(msg) {
+  console.warn(msg);
+}
+function isDlcFile(filename) {
+  try {
+    const lines = fs8.readFileSync(filename, "utf-8").split(/\r?\n/).slice(0, 4).map((l) => l.trim());
+    const content = lines.join("\n").toLowerCase();
+    const hasScorer = content.includes("scorer");
+    const hasCoords = content.includes("coords");
+    const hasXy = content.includes("x") && content.includes("y");
+    const hasBodyparts = content.includes("bodyparts") || content.includes("animal") || content.includes("individual");
+    return hasScorer && hasCoords && hasXy && hasBodyparts;
+  } catch {
+    return false;
+  }
+}
+var DLC_CONFIG_KEYS = [
+  "video_sets",
+  "bodyparts",
+  "scorer",
+  "Task",
+  "skeleton",
+  "individuals"
+];
+function isDlcProjectPath(filename) {
+  let stat;
+  try {
+    stat = fs8.statSync(filename);
+  } catch {
+    return false;
+  }
+  if (stat.isDirectory()) {
+    return fs8.existsSync(path4.join(filename, "config.yaml")) && fs8.existsSync(path4.join(filename, "labeled-data"));
+  }
+  if (path4.basename(filename) === "config.yaml" && stat.isFile()) {
+    const cfg = readDlcConfig(filename);
+    return cfg !== null && looksLikeDlcConfig(cfg);
+  }
+  return false;
+}
+function readDlcConfig(p) {
+  if (!fs8.existsSync(p) || !fs8.statSync(p).isFile()) {
+    warn(`DLC config file not found: ${p}`);
+    return null;
+  }
+  let cfg;
+  try {
+    cfg = YAML2.parse(fs8.readFileSync(p, "utf-8"));
+  } catch (e) {
+    warn(`Failed to parse DLC config ${p}: ${e}`);
+    return null;
+  }
+  if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+    warn(`DLC config ${p} did not parse to a mapping.`);
+    return null;
+  }
+  return cfg;
+}
+function looksLikeDlcConfig(cfg) {
+  if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+    return false;
+  }
+  const obj = cfg;
+  return DLC_CONFIG_KEYS.filter((k) => Object.hasOwn(obj, k)).length >= 2;
+}
+function discoverConfig(csvPath, maxLevels = 3) {
+  const start = path4.dirname(path4.resolve(csvPath));
+  const dirs = [start];
+  let cur = start;
+  for (let i = 0; i < maxLevels; i += 1) {
+    const parent = path4.dirname(cur);
+    if (parent === cur) break;
+    dirs.push(parent);
+    cur = parent;
+  }
+  for (const d of dirs) {
+    const candidate = path4.join(d, "config.yaml");
+    if (fs8.existsSync(candidate) && fs8.statSync(candidate).isFile()) {
+      const cfg = readDlcConfig(candidate);
+      if (cfg !== null && looksLikeDlcConfig(cfg)) return candidate;
+    }
+  }
+  return null;
+}
+function resolveConfig(csvPath, config) {
+  if (config === false) return null;
+  if (config == null) {
+    const discovered = discoverConfig(csvPath);
+    return discovered !== null ? readDlcConfig(discovered) : null;
+  }
+  return readDlcConfig(config);
+}
+function attachConfigSkeleton(skeleton, cfg) {
+  const task = cfg.Task;
+  if (task && skeleton.name == null) {
+    skeleton.name = String(task);
+  }
+  const rawEdges = cfg.skeleton ?? [];
+  const nodeNames = new Set(skeleton.nodeNames);
+  const valid = [];
+  const dropped = [];
+  for (const entry of rawEdges) {
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      dropped.push(entry);
+      continue;
+    }
+    const src = String(entry[0]);
+    const dst = String(entry[1]);
+    if (nodeNames.has(src) && nodeNames.has(dst)) {
+      valid.push([src, dst]);
+    } else {
+      dropped.push([src, dst]);
+    }
+  }
+  for (const [src, dst] of valid) {
+    skeleton.addEdge(src, dst);
+  }
+  if (dropped.length) {
+    warn(
+      `Dropped ${dropped.length} DLC skeleton edge(s) referencing bodyparts not present in the labeled data: ${JSON.stringify(dropped)}`
+    );
+  }
+}
+function parseDlcCrop(crop) {
+  if (crop == null) return null;
+  let parts;
+  if (typeof crop === "string") {
+    parts = crop.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  } else if (Array.isArray(crop)) {
+    parts = [...crop];
+  } else {
+    return null;
+  }
+  if (parts.length !== 4) return null;
+  const nums = [];
+  for (const p of parts) {
+    if (typeof p === "number") {
+      if (!Number.isFinite(p)) return null;
+      nums.push(Math.trunc(p));
+      continue;
+    }
+    const s = String(p).trim();
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return null;
+    const v = Number(s);
+    if (!Number.isFinite(v)) return null;
+    nums.push(Math.trunc(v));
+  }
+  const [x1, x2, y1, y2] = nums;
+  if (x2 <= x1 || y2 <= y1) {
+    warn(
+      `Ignoring inverted DLC crop ${JSON.stringify(crop)}: expected x1 < x2 and y1 < y2 (width-range-first 'x1, x2, y1, y2').`
+    );
+    return null;
+  }
+  if (x1 === 0 && y1 === 0) return null;
+  return [x1, y1, x2, y2];
+}
+function videoSetsStemMap(cfg) {
+  const out = /* @__PURE__ */ new Map();
+  const videoSets = cfg.video_sets ?? {};
+  for (const [key, value] of Object.entries(videoSets)) {
+    const keyStr = String(key);
+    if (keyStr.includes("WILL BE AUTOMATICALLY UPDATED")) continue;
+    const name = keyStr.replace(/\\/g, "/").split("/").pop() ?? "";
+    const stem = name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : name;
+    if (stem) {
+      const crop = value && typeof value === "object" ? value.crop : null;
+      out.set(stem, { original: keyStr, rect: parseDlcCrop(crop) });
+    }
+  }
+  return out;
+}
+function setSourceVideo(video, folderName, stemMap, searchPaths) {
+  const entry = stemMap.get(folderName);
+  if (entry === void 0) return null;
+  const { original, rect } = entry;
+  let resolvedPath = original;
+  if (searchPaths?.length) {
+    const basename5 = original.replace(/\\/g, "/").split("/").pop() ?? original;
+    for (const dir of searchPaths) {
+      const candidate = path4.join(dir, basename5);
+      if (fs8.existsSync(candidate)) {
+        resolvedPath = candidate;
+        break;
+      }
+    }
+  }
+  video.sourceVideo = new Video({ filename: resolvedPath, openBackend: false });
+  return { path: resolvedPath, rect };
+}
+function readDlcDataframe(filename) {
+  const raw = fs8.readFileSync(filename, "utf-8").split(/\r?\n/);
+  if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
+  const cells = raw.map((line) => line.split(","));
+  let isMultianimal = false;
+  let isMultiindex = false;
+  try {
+    if (cells.length < 5) throw new Error("too few rows to peek");
+    isMultianimal = cells[1][0] === "individuals";
+    isMultiindex = cells[4][0] === "labeled-data";
+  } catch {
+    isMultianimal = false;
+    isMultiindex = false;
+  }
+  const headerRowIdxs = isMultianimal ? [1, 2, 3] : [0, 1, 2];
+  const dataStartRow = isMultianimal ? 4 : 3;
+  const indexColCount = isMultiindex ? 3 : 1;
+  const columns = [];
+  const headerRow0 = cells[headerRowIdxs[0]] ?? [];
+  const ncols = headerRow0.length;
+  for (let j = indexColCount; j < ncols; j += 1) {
+    columns.push([
+      cells[headerRowIdxs[0]]?.[j] ?? "",
+      cells[headerRowIdxs[1]]?.[j] ?? "",
+      cells[headerRowIdxs[2]]?.[j] ?? ""
+    ]);
+  }
+  const index = [];
+  const rows = [];
+  for (let r = dataStartRow; r < cells.length; r += 1) {
+    const row = cells[r];
+    if (!row) continue;
+    if (row.every((c) => c === "")) continue;
+    let idxStr;
+    if (isMultiindex) {
+      idxStr = [row[0] ?? "", row[1] ?? "", row[2] ?? ""].join("/");
+    } else {
+      idxStr = row[0] ?? "";
+    }
+    index.push(idxStr);
+    const values = [];
+    for (let j = indexColCount; j < ncols; j += 1) {
+      const cell = row[j];
+      if (cell === void 0 || cell === "") {
+        values.push(null);
+      } else {
+        const v = parseFloat(cell);
+        values.push(Number.isNaN(v) ? null : v);
+      }
+    }
+    rows.push(values);
+  }
+  return { index, columns, rows, isMultianimal };
+}
+function parseSingleAnimalStructure(df) {
+  const collected = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const [, bodypart, coord] of df.columns) {
+    if (coord === "x" && bodypart !== "" && bodypart != null) {
+      if (!seen.has(bodypart)) {
+        seen.add(bodypart);
+        collected.push(bodypart);
+      }
+    }
+  }
+  const nodeNames = [...new Set(collected)].sort();
+  return new Skeleton({ nodes: nodeNames.map((n) => new Node(n)) });
+}
+function parseMultiAnimalStructure(df) {
+  const trackMap = /* @__PURE__ */ new Map();
+  const collected = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const [individual, bodypart, coord] of df.columns) {
+    if (coord !== "x") continue;
+    if (individual !== "" && individual != null && individual !== "individuals" && !trackMap.has(individual)) {
+      trackMap.set(individual, new Track(individual));
+    }
+    if (bodypart !== "" && bodypart != null && bodypart !== "bodyparts" && !seen.has(bodypart)) {
+      seen.add(bodypart);
+      collected.push(bodypart);
+    }
+  }
+  const nodeNames = [...new Set(collected)].sort();
+  const skeleton = new Skeleton({ nodes: nodeNames.map((n) => new Node(n)) });
+  const tracks = [...trackMap.values()];
+  return { skeleton, tracks };
+}
+function parseSingleAnimalRow(columns, values, skeleton) {
+  const bodypartsData = /* @__PURE__ */ new Map();
+  for (let c = 0; c < columns.length; c += 1) {
+    const [, bodypart, coord] = columns[c];
+    if (bodypart && bodypart !== "") {
+      let bp = bodypartsData.get(bodypart);
+      if (!bp) {
+        bp = {};
+        bodypartsData.set(bodypart, bp);
+      }
+      if (coord === "x") bp.x = values[c];
+      else if (coord === "y") bp.y = values[c];
+    }
+  }
+  let hasValidPoints = false;
+  const pointsData = skeleton.nodeNames.map((name) => {
+    const bp = bodypartsData.get(name);
+    const x = bp?.x;
+    const y = bp?.y;
+    if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
+      hasValidPoints = true;
+      return [Number(x), Number(y)];
+    }
+    return [Number.NaN, Number.NaN];
+  });
+  if (hasValidPoints) {
+    return [Instance.fromNumpy({ pointsData, skeleton })];
+  }
+  return [];
+}
+function parseMultiAnimalRow(columns, values, skeleton, tracks) {
+  const instancesDict = /* @__PURE__ */ new Map();
+  for (let c = 0; c < columns.length; c += 1) {
+    const [individual, bodypart, coord] = columns[c];
+    if (!individual || individual === "" || individual === "individuals") {
+      continue;
+    }
+    let bps = instancesDict.get(individual);
+    if (!bps) {
+      bps = /* @__PURE__ */ new Map();
+      instancesDict.set(individual, bps);
+    }
+    if (bodypart && bodypart !== "") {
+      let bp = bps.get(bodypart);
+      if (!bp) {
+        bp = {};
+        bps.set(bodypart, bp);
+      }
+      if (coord === "x") bp.x = values[c];
+      else if (coord === "y") bp.y = values[c];
+    }
+  }
+  const instances = [];
+  for (const [individual, bodypartsData] of instancesDict) {
+    const track = tracks.find((t) => t.name === individual) ?? null;
+    let hasValidPoints = false;
+    const pointsData = skeleton.nodeNames.map((name) => {
+      const bp = bodypartsData.get(name);
+      const x = bp?.x;
+      const y = bp?.y;
+      if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
+        hasValidPoints = true;
+        return [Number(x), Number(y)];
+      }
+      return [Number.NaN, Number.NaN];
+    });
+    if (hasValidPoints) {
+      instances.push(Instance.fromNumpy({ pointsData, skeleton, track }));
+    }
+  }
+  return instances;
+}
+function extractFrameIndex(imgPath) {
+  const base = path4.basename(imgPath);
+  const stem = base.replace(/\.[^.]*$/, "");
+  const matches = stem.match(/\d+/g);
+  return matches ? parseInt(matches[matches.length - 1], 10) : 0;
+}
+function videoNameFor(imgPath) {
+  const parts = imgPath.split("/");
+  if (parts.length >= 2 && parts[0] === "labeled-data") {
+    return parts[1];
+  }
+  return path4.basename(path4.dirname(imgPath)) || "default";
+}
+function loadDlc(filename, options) {
+  const cfg = resolveConfig(filename, options?.config ?? null);
+  return loadDlcCsv(filename, {
+    config: cfg,
+    videoSearchPaths: options?.videoSearchPaths
+  });
+}
+function loadDlcCsv(filename, opts) {
+  const df = readDlcDataframe(filename);
+  const { isMultianimal } = df;
+  let skeleton;
+  let tracks;
+  if (opts.skeleton) {
+    skeleton = opts.skeleton;
+    tracks = opts.tracks ?? [];
+  } else {
+    if (isMultianimal) {
+      const parsed = parseMultiAnimalStructure(df);
+      skeleton = parsed.skeleton;
+      tracks = parsed.tracks;
+    } else {
+      skeleton = parseSingleAnimalStructure(df);
+      tracks = [];
+    }
+    if (opts.config != null) {
+      attachConfigSkeleton(skeleton, opts.config);
+    }
+  }
+  const videoImagePaths = /* @__PURE__ */ new Map();
+  const frameMap = /* @__PURE__ */ new Map();
+  for (const imgPath of df.index) {
+    frameMap.set(imgPath, extractFrameIndex(imgPath));
+    const videoName = videoNameFor(imgPath);
+    if (!videoImagePaths.has(videoName)) videoImagePaths.set(videoName, []);
+    videoImagePaths.get(videoName).push(imgPath);
+  }
+  const csvDir = path4.dirname(path4.resolve(filename));
+  const videos = /* @__PURE__ */ new Map();
+  const sortedVideoPaths = /* @__PURE__ */ new Map();
+  for (const [videoName, imgPaths] of videoImagePaths) {
+    const sortedImgPaths = [...imgPaths].sort(
+      (a, b) => (frameMap.get(a) ?? 0) - (frameMap.get(b) ?? 0)
+    );
+    const actualImageFiles = [];
+    for (const imgPath of sortedImgPaths) {
+      const candidates = [
+        path4.join(csvDir, imgPath),
+        path4.join(csvDir, path4.basename(imgPath)),
+        path4.join(path4.dirname(csvDir), imgPath)
+      ];
+      const found = candidates.find((c) => fs8.existsSync(c));
+      if (found) actualImageFiles.push(found);
+    }
+    if (actualImageFiles.length > 0) {
+      videos.set(
+        videoName,
+        new Video({ filename: actualImageFiles, openBackend: false })
+      );
+      sortedVideoPaths.set(videoName, sortedImgPaths);
+    }
+  }
+  const dlcCrops = {};
+  if (opts.config != null && videos.size > 0) {
+    const stemMap = videoSetsStemMap(opts.config);
+    for (const [videoName, video] of videos) {
+      const result = setSourceVideo(
+        video,
+        videoName,
+        stemMap,
+        opts.videoSearchPaths
+      );
+      if (result != null && result.rect != null) {
+        dlcCrops[result.path] = [...result.rect];
+      }
+    }
+  }
+  const allFrames = [];
+  for (let r = 0; r < df.index.length; r += 1) {
+    const imgPath = df.index[r];
+    const videoName = videoNameFor(imgPath);
+    if (!videos.has(videoName)) continue;
+    const video = videos.get(videoName);
+    const sortedPaths = sortedVideoPaths.get(videoName);
+    const videoFrameIdx = sortedPaths.indexOf(imgPath);
+    const instances = isMultianimal ? parseMultiAnimalRow(df.columns, df.rows[r], skeleton, tracks) : parseSingleAnimalRow(df.columns, df.rows[r], skeleton);
+    allFrames.push(
+      new LabeledFrame({ video, frameIdx: videoFrameIdx, instances })
+    );
+  }
+  const labels = new Labels({
+    labeledFrames: allFrames,
+    videos: [...videos.values()],
+    tracks,
+    skeletons: skeleton.nodes.length ? [skeleton] : []
+  });
+  if (Object.keys(dlcCrops).length) {
+    labels.provenance.dlc_crops = dlcCrops;
+  }
+  return labels;
+}
+function resolveProjectConfigPath(config) {
+  let stat = null;
+  try {
+    stat = fs8.statSync(config);
+  } catch {
+    stat = null;
+  }
+  if (stat?.isDirectory()) {
+    const candidate = path4.join(config, "config.yaml");
+    if (fs8.existsSync(candidate) && fs8.statSync(candidate).isFile()) {
+      return candidate;
+    }
+    throw new Error(`No config.yaml found in DLC project directory: ${config}`);
+  }
+  return config;
+}
+function findProjectCsvs(projectDir, scorer) {
+  const labeledDir = path4.join(projectDir, "labeled-data");
+  const folders = [];
+  if (!fs8.existsSync(labeledDir) || !fs8.statSync(labeledDir).isDirectory()) {
+    return folders;
+  }
+  const subs = fs8.readdirSync(labeledDir).sort();
+  for (const sub of subs) {
+    const subDir = path4.join(labeledDir, sub);
+    if (!fs8.statSync(subDir).isDirectory()) continue;
+    let csv = path4.join(subDir, `CollectedData_${scorer}.csv`);
+    if (!fs8.existsSync(csv) || !fs8.statSync(csv).isFile()) {
+      const candidates = fs8.readdirSync(subDir).filter((f) => f.endsWith(".csv")).sort().map((f) => path4.join(subDir, f)).filter((c) => isDlcFile(c));
+      if (candidates.length === 0) continue;
+      csv = candidates[0];
+    }
+    folders.push([sub, csv]);
+  }
+  return folders;
+}
+function loadDlcProject(config, options) {
+  const videoSearchPaths = options?.videoSearchPaths;
+  const configPath = resolveProjectConfigPath(config);
+  const cfg = readDlcConfig(configPath);
+  if (cfg === null) {
+    throw new Error(`Could not read DLC config: ${configPath}`);
+  }
+  const projectDir = path4.dirname(configPath);
+  const scorer = cfg.scorer ?? null;
+  const folders = findProjectCsvs(projectDir, scorer);
+  if (folders.length === 0) {
+    throw new Error(
+      `No DLC annotation CSVs found under ${path4.join(projectDir, "labeled-data")}`
+    );
+  }
+  const nodeNames = [];
+  const trackNames = [];
+  for (const [, csv] of folders) {
+    const df = readDlcDataframe(csv);
+    if (df.isMultianimal) {
+      const { skeleton: folderSkeleton, tracks: folderTracks } = parseMultiAnimalStructure(df);
+      for (const track of folderTracks) {
+        if (!trackNames.includes(track.name)) trackNames.push(track.name);
+      }
+      for (const name of folderSkeleton.nodeNames) {
+        if (!nodeNames.includes(name)) nodeNames.push(name);
+      }
+    } else {
+      const folderSkeleton = parseSingleAnimalStructure(df);
+      for (const name of folderSkeleton.nodeNames) {
+        if (!nodeNames.includes(name)) nodeNames.push(name);
+      }
+    }
+  }
+  const sharedSkeleton = new Skeleton({
+    nodes: [...new Set(nodeNames)].sort().map((n) => new Node(n))
+  });
+  attachConfigSkeleton(sharedSkeleton, cfg);
+  const sharedTracks = trackNames.map((n) => new Track(n));
+  const allFrames = [];
+  const allVideos = [];
+  const dlcCrops = {};
+  for (const [, csv] of folders) {
+    const folderLabels = loadDlcCsv(csv, {
+      config: cfg,
+      videoSearchPaths,
+      skeleton: sharedSkeleton,
+      tracks: sharedTracks
+    });
+    allFrames.push(...folderLabels.labeledFrames);
+    allVideos.push(...folderLabels.videos);
+    const crops = folderLabels.provenance.dlc_crops;
+    if (crops) Object.assign(dlcCrops, crops);
+  }
+  const labels = new Labels({
+    labeledFrames: allFrames,
+    videos: allVideos,
+    tracks: sharedTracks,
+    skeletons: sharedSkeleton.nodes.length ? [sharedSkeleton] : []
+  });
+  labels.provenance.dlc_project = String(configPath);
+  labels.provenance.dlc_scorer = scorer;
+  labels.provenance.dlc_task = cfg.Task ?? null;
+  if (Object.keys(dlcCrops).length) {
+    labels.provenance.dlc_crops = dlcCrops;
+  }
+  return labels;
+}
+function getTrainingSetFolder(projectDir, cfg, iteration) {
+  const it = iteration == null ? cfg.iteration ?? 0 : iteration;
+  const task = cfg.Task ?? "";
+  const date = cfg.date ?? "";
+  return path4.join(
+    projectDir,
+    "training-datasets",
+    `iteration-${it}`,
+    `UnaugmentedDataSet_${task}${date}`
+  );
+}
+function selectDocumentationPickle(projectDir, cfg, selectors) {
+  const trainsetDir = getTrainingSetFolder(
+    projectDir,
+    cfg,
+    selectors.iteration
+  );
+  const pickles = (fs8.existsSync(trainsetDir) && fs8.statSync(trainsetDir).isDirectory() ? fs8.readdirSync(trainsetDir).filter((f) => /^Documentation_data-.*\.pickle$/.test(f)) : []).sort();
+  if (pickles.length === 0) {
+    throw new Error(
+      `No DLC Documentation_data-*.pickle found in ${trainsetDir}. Run create_training_dataset in DLC to generate splits.`
+    );
+  }
+  const pattern = /^Documentation_data-(.+)_(\d+)shuffle(\d+)\.pickle$/;
+  const parsed = [];
+  for (const name of pickles) {
+    const m = pattern.exec(name);
+    if (m) {
+      parsed.push({
+        path: path4.join(trainsetDir, name),
+        fracInt: parseInt(m[2], 10),
+        shuffleInt: parseInt(m[3], 10)
+      });
+    }
+  }
+  if (parsed.length === 0) {
+    if (pickles.length === 1) return path4.join(trainsetDir, pickles[0]);
+    throw new Error(
+      `Could not parse train_fraction/shuffle from pickles in ${trainsetDir}: ` + JSON.stringify(pickles)
+    );
+  }
+  let candidates = parsed;
+  if (selectors.trainFraction != null) {
+    const fracInt = Math.round(selectors.trainFraction * 100);
+    candidates = candidates.filter((c) => c.fracInt === fracInt);
+  }
+  if (selectors.shuffle != null) {
+    candidates = candidates.filter((c) => c.shuffleInt === selectors.shuffle);
+  }
+  if (candidates.length === 0) {
+    const available = parsed.map((c) => [
+      path4.basename(c.path),
+      c.fracInt,
+      c.shuffleInt
+    ]);
+    throw new Error(
+      `No Documentation pickle matched train_fraction=${selectors.trainFraction}, shuffle=${selectors.shuffle}. Available: ${JSON.stringify(available)}`
+    );
+  }
+  if (candidates.length > 1) {
+    const available = candidates.map((c) => [
+      path4.basename(c.path),
+      c.fracInt,
+      c.shuffleInt
+    ]);
+    throw new Error(
+      `Multiple DLC splits found; specify trainFraction and/or shuffle. Available (name, train%, shuffle): ${JSON.stringify(available)}`
+    );
+  }
+  return candidates[0].path;
+}
+function readDlcSplit(picklePath) {
+  const buf = fs8.readFileSync(picklePath);
+  const meta = readPickle(buf);
+  return [extractIndexArray(meta[1]), extractIndexArray(meta[2])];
+}
+function extractIndexArray(value) {
+  const raw = value instanceof NumpyArray ? value.values : value;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((i) => Number(i)).filter((i) => i !== -1 && !Number.isNaN(i));
+}
+function readCsvScorer(csv) {
+  let first;
+  try {
+    const content = fs8.readFileSync(csv, "utf-8");
+    first = content.split(/\r?\n/)[0]?.trim() ?? "";
+  } catch {
+    return null;
+  }
+  const parts = first.split(",");
+  return parts.length > 1 ? parts[1] : null;
+}
+function dlcMergedOrder(projectDir, cfg) {
+  const scorer = cfg.scorer ?? null;
+  const stemMap = videoSetsStemMap(cfg);
+  const included = [];
+  for (const stem of stemMap.keys()) {
+    const csv = path4.join(
+      projectDir,
+      "labeled-data",
+      stem,
+      `CollectedData_${scorer}.csv`
+    );
+    if (!fs8.existsSync(csv) || !fs8.statSync(csv).isFile()) continue;
+    const csvScorer = readCsvScorer(csv);
+    if (scorer != null && csvScorer != null && csvScorer !== scorer) {
+      warn(
+        `Skipping ${csv} labeled by '${csvScorer}' (project scorer is '${scorer}'); this matches DLC's training-set merge behavior.`
+      );
+      continue;
+    }
+    included.push([stem, csv]);
+  }
+  if (included.length === 0) {
+    for (const [folder, csv] of findProjectCsvs(projectDir, scorer)) {
+      included.push([folder, csv]);
+    }
+  }
+  const merged = [];
+  for (const [, csv] of included) {
+    const df = readDlcDataframe(csv);
+    for (const idx of df.index) {
+      merged.push([path4.basename(path4.dirname(idx)), path4.basename(idx)]);
+    }
+  }
+  merged.sort((a, b) => {
+    if (a[0] < b[0]) return -1;
+    if (a[0] > b[0]) return 1;
+    if (a[1] < b[1]) return -1;
+    if (a[1] > b[1]) return 1;
+    return 0;
+  });
+  return merged;
+}
+function warnIfNonlexicographic(merged) {
+  const lastDigitsRun = (fname) => {
+    const nums = fname.match(/\d+/g);
+    return nums ? parseInt(nums[nums.length - 1], 10) : -1;
+  };
+  const lexCmp = (a, b) => {
+    if (a[0] < b[0]) return -1;
+    if (a[0] > b[0]) return 1;
+    if (a[1] < b[1]) return -1;
+    if (a[1] > b[1]) return 1;
+    return 0;
+  };
+  const numericCmp = (a, b) => {
+    if (a[0] < b[0]) return -1;
+    if (a[0] > b[0]) return 1;
+    const na = lastDigitsRun(a[1]);
+    const nb = lastDigitsRun(b[1]);
+    if (na !== nb) return na - nb;
+    if (a[1] < b[1]) return -1;
+    if (a[1] > b[1]) return 1;
+    return 0;
+  };
+  const lex = [...merged].sort(lexCmp);
+  const num2 = [...merged].sort(numericCmp);
+  const differ = lex.length !== num2.length || lex.some((m, i) => m[0] !== num2[i][0] || m[1] !== num2[i][1]);
+  if (differ) {
+    warn(
+      "DLC split import: image filenames are not zero-padded, so DLC's lexicographic ordering differs from numeric order (e.g. 'img10' < 'img2'). Train/test assignment follows DLC's lexicographic order; verify the result."
+    );
+  }
+}
+function loadDlcSplits(config, options) {
+  const configPath = resolveProjectConfigPath(config);
+  const cfg = readDlcConfig(configPath);
+  if (cfg === null) {
+    throw new Error(`Could not read DLC config: ${configPath}`);
+  }
+  const projectDir = path4.dirname(configPath);
+  const labels = loadDlcProject(configPath, {
+    videoSearchPaths: options?.videoSearchPaths
+  });
+  const merged = dlcMergedOrder(projectDir, cfg);
+  warnIfNonlexicographic(merged);
+  if (merged.length && labels.labeledFrames.length === 0) {
+    warn(
+      "DLC split import: the project's labeled images were not found on disk, so no frames could be loaded and the train/test splits will be empty. Restore the referenced images under 'labeled-data/' (or pass videoSearchPaths) and try again."
+    );
+  }
+  const picklePath = selectDocumentationPickle(projectDir, cfg, {
+    shuffle: options?.shuffle,
+    trainFraction: options?.trainFraction,
+    iteration: options?.iteration
+  });
+  const [trainIdx, testIdx] = readDlcSplit(picklePath);
+  const SEP = "\0";
+  const lfLookup = /* @__PURE__ */ new Map();
+  for (let g = 0; g < labels.labeledFrames.length; g += 1) {
+    const lf = labels.labeledFrames[g];
+    const filename = lf.video.filename;
+    const fname = Array.isArray(filename) ? filename[lf.frameIdx] : filename;
+    const key = `${path4.basename(path4.dirname(fname))}${SEP}${path4.basename(fname)}`;
+    lfLookup.set(key, g);
+  }
+  const mapIndices = (indices) => {
+    const out = [];
+    for (const i of indices) {
+      if (i >= 0 && i < merged.length) {
+        const [folder, fname] = merged[i];
+        const g = lfLookup.get(`${folder}${SEP}${fname}`);
+        if (g !== void 0) out.push(g);
+      }
+    }
+    return out;
+  };
+  const trainGlobal = mapIndices(trainIdx);
+  const testGlobal = mapIndices(testIdx);
+  const train = labels.extract(trainGlobal, true);
+  const test = labels.extract(testGlobal, true);
+  return new LabelsSet({ train, test });
+}
+var PickleGlobalRef = class {
+  constructor(module, name) {
+    this.module = module;
+    this.name = name;
+  }
+};
+var NumpyDtype = class {
+  kind;
+  // "i" (signed), "u" (unsigned), "f" (float), etc.
+  itemsize;
+  // bytes per element
+  littleEndian;
+  constructor(name) {
+    let s = name;
+    let little = true;
+    if (s.length > 0 && (s[0] === "<" || s[0] === ">" || s[0] === "=" || s[0] === "|")) {
+      little = s[0] !== ">";
+      s = s.slice(1);
+    }
+    this.kind = s.length > 0 ? s[0] : "i";
+    const size = parseInt(s.slice(1), 10);
+    this.itemsize = Number.isNaN(size) ? 8 : size;
+    this.littleEndian = little;
+  }
+};
+var NumpyArray = class {
+  constructor(values) {
+    this.values = values;
+  }
+};
+function asByteBuffer(raw) {
+  if (Buffer.isBuffer(raw)) return raw;
+  if (raw instanceof Uint8Array) return Buffer.from(raw);
+  if (typeof raw === "string") return Buffer.from(raw, "latin1");
+  return null;
+}
+function decodeIntBuffer(buf, dtype) {
+  const { itemsize, kind, littleEndian } = dtype;
+  const signed = kind === "i";
+  const out = [];
+  const n = Math.floor(buf.length / itemsize);
+  for (let i = 0; i < n; i += 1) {
+    const off = i * itemsize;
+    let v;
+    switch (itemsize) {
+      case 1:
+        v = signed ? buf.readInt8(off) : buf.readUInt8(off);
+        break;
+      case 2:
+        v = littleEndian ? signed ? buf.readInt16LE(off) : buf.readUInt16LE(off) : signed ? buf.readInt16BE(off) : buf.readUInt16BE(off);
+        break;
+      case 4:
+        v = littleEndian ? signed ? buf.readInt32LE(off) : buf.readUInt32LE(off) : signed ? buf.readInt32BE(off) : buf.readUInt32BE(off);
+        break;
+      case 8: {
+        const big = littleEndian ? signed ? buf.readBigInt64LE(off) : buf.readBigUInt64LE(off) : signed ? buf.readBigInt64BE(off) : buf.readBigUInt64BE(off);
+        v = Number(big);
+        break;
+      }
+      default:
+        return out;
+    }
+    out.push(v);
+  }
+  return out;
+}
+function buildNumpyArray(rawdata, dtype) {
+  if (!(dtype instanceof NumpyDtype)) return null;
+  if (dtype.kind !== "i" && dtype.kind !== "u") return null;
+  const buf = asByteBuffer(rawdata);
+  if (buf === null) return null;
+  return new NumpyArray(decodeIntBuffer(buf, dtype));
+}
+function readPickle(buffer) {
+  const MARK = /* @__PURE__ */ Symbol("mark");
+  const stack = [];
+  const memo = /* @__PURE__ */ new Map();
+  let pos = 0;
+  const popMark = () => {
+    const items = [];
+    while (stack.length > 0) {
+      const top = stack.pop();
+      if (top === MARK) return items.reverse();
+      items.push(top);
+    }
+    throw new Error("pickle: MARK not found on stack");
+  };
+  const readLine = () => {
+    let end = pos;
+    while (end < buffer.length && buffer[end] !== 10) end += 1;
+    const s = buffer.toString("latin1", pos, end);
+    pos = end + 1;
+    return s;
+  };
+  const reduce = (func, args) => {
+    if (func instanceof PickleGlobalRef) {
+      if (func.module.startsWith("numpy") && func.name === "dtype") {
+        const name = args[0];
+        if (typeof name === "string") return new NumpyDtype(name);
+        return { __reduce__: [func.module, func.name], args };
+      }
+      if (func.module.startsWith("numpy") && func.name === "_frombuffer") {
+        const arr = buildNumpyArray(args[0], args[1]);
+        if (arr !== null) return arr;
+      }
+      if (func.module.startsWith("numpy") && (func.name === "_reconstruct" || func.name === "ndarray")) {
+        return { __numpy__: true };
+      }
+      if (func.module === "_codecs" && func.name === "encode") {
+        const buf = asByteBuffer(args[0]);
+        if (buf !== null) return buf;
+      }
+      return { __reduce__: [func.module, func.name], args };
+    }
+    return { __reduce__: func, args };
+  };
+  const build = (obj, state) => {
+    if (obj instanceof NumpyDtype) {
+      if (Array.isArray(state) && typeof state[1] === "string") {
+        const bo = state[1];
+        if (bo === ">") obj.littleEndian = false;
+        else if (bo === "<" || bo === "=") obj.littleEndian = true;
+      }
+      return obj;
+    }
+    if (obj && typeof obj === "object" && obj.__numpy__) {
+      if (Array.isArray(state)) {
+        const rawdata = state[state.length - 1];
+        const dtype = state.length >= 3 ? state[2] : void 0;
+        const arr = buildNumpyArray(rawdata, dtype);
+        if (arr !== null) return arr;
+        obj.rawdata = rawdata;
+      }
+      return obj;
+    }
+    return obj;
+  };
+  while (pos < buffer.length) {
+    const op = buffer[pos];
+    pos += 1;
+    switch (op) {
+      case 128:
+        pos += 1;
+        break;
+      case 149:
+        pos += 8;
+        break;
+      case 46:
+        return stack.pop();
+      case 40:
+        stack.push(MARK);
+        break;
+      case 78:
+        stack.push(null);
+        break;
+      case 136:
+        stack.push(true);
+        break;
+      case 137:
+        stack.push(false);
+        break;
+      // ---- ints ----
+      case 75:
+        stack.push(buffer[pos]);
+        pos += 1;
+        break;
+      case 77:
+        stack.push(buffer.readUInt16LE(pos));
+        pos += 2;
+        break;
+      case 74:
+        stack.push(buffer.readInt32LE(pos));
+        pos += 4;
+        break;
+      case 73: {
+        const s = readLine();
+        if (s === "00") stack.push(false);
+        else if (s === "01") stack.push(true);
+        else stack.push(parseInt(s, 10));
+        break;
+      }
+      case 138: {
+        const n = buffer[pos];
+        pos += 1;
+        let val = 0;
+        for (let i = 0; i < n; i += 1) val += buffer[pos + i] * 2 ** (8 * i);
+        if (n > 0 && buffer[pos + n - 1] & 128) val -= 2 ** (8 * n);
+        pos += n;
+        stack.push(val);
+        break;
+      }
+      case 139: {
+        const n = buffer.readUInt32LE(pos);
+        pos += 4;
+        let val = 0;
+        for (let i = 0; i < n; i += 1) val += buffer[pos + i] * 2 ** (8 * i);
+        if (n > 0 && buffer[pos + n - 1] & 128) val -= 2 ** (8 * n);
+        pos += n;
+        stack.push(val);
+        break;
+      }
+      case 76: {
+        const s = readLine().replace(/L$/, "");
+        stack.push(parseInt(s, 10));
+        break;
+      }
+      // ---- floats ----
+      case 71:
+        stack.push(buffer.readDoubleBE(pos));
+        pos += 8;
+        break;
+      case 70:
+        stack.push(parseFloat(readLine()));
+        break;
+      // ---- strings / unicode / bytes ----
+      case 140: {
+        const len = buffer[pos];
+        pos += 1;
+        stack.push(buffer.toString("utf-8", pos, pos + len));
+        pos += len;
+        break;
+      }
+      case 88: {
+        const len = buffer.readUInt32LE(pos);
+        pos += 4;
+        stack.push(buffer.toString("utf-8", pos, pos + len));
+        pos += len;
+        break;
+      }
+      case 141: {
+        const len = Number(buffer.readBigUInt64LE(pos));
+        pos += 8;
+        stack.push(buffer.toString("utf-8", pos, pos + len));
+        pos += len;
+        break;
+      }
+      case 85: {
+        const len = buffer[pos];
+        pos += 1;
+        stack.push(buffer.toString("latin1", pos, pos + len));
+        pos += len;
+        break;
+      }
+      case 84: {
+        const len = buffer.readUInt32LE(pos);
+        pos += 4;
+        stack.push(buffer.toString("latin1", pos, pos + len));
+        pos += len;
+        break;
+      }
+      case 67: {
+        const len = buffer[pos];
+        pos += 1;
+        stack.push(buffer.subarray(pos, pos + len));
+        pos += len;
+        break;
+      }
+      case 66: {
+        const len = buffer.readUInt32LE(pos);
+        pos += 4;
+        stack.push(buffer.subarray(pos, pos + len));
+        pos += len;
+        break;
+      }
+      case 142: {
+        const len = Number(buffer.readBigUInt64LE(pos));
+        pos += 8;
+        stack.push(buffer.subarray(pos, pos + len));
+        pos += len;
+        break;
+      }
+      case 150: {
+        const len = Number(buffer.readBigUInt64LE(pos));
+        pos += 8;
+        stack.push(buffer.subarray(pos, pos + len));
+        pos += len;
+        break;
+      }
+      // ---- lists ----
+      case 93:
+        stack.push([]);
+        break;
+      case 108:
+        stack.push(popMark());
+        break;
+      case 97: {
+        const value = stack.pop();
+        stack[stack.length - 1].push(value);
+        break;
+      }
+      case 101: {
+        const items = popMark();
+        const list = stack[stack.length - 1];
+        for (const it of items) list.push(it);
+        break;
+      }
+      // ---- dicts ----
+      case 125:
+        stack.push(/* @__PURE__ */ new Map());
+        break;
+      case 100: {
+        const items = popMark();
+        const map = /* @__PURE__ */ new Map();
+        for (let i = 0; i < items.length; i += 2) {
+          map.set(items[i], items[i + 1]);
+        }
+        stack.push(map);
+        break;
+      }
+      case 115: {
+        const value = stack.pop();
+        const key = stack.pop();
+        stack[stack.length - 1].set(key, value);
+        break;
+      }
+      case 117: {
+        const items = popMark();
+        const map = stack[stack.length - 1];
+        for (let i = 0; i < items.length; i += 2) {
+          map.set(items[i], items[i + 1]);
+        }
+        break;
+      }
+      // ---- tuples ----
+      case 41:
+        stack.push([]);
+        break;
+      case 116:
+        stack.push(popMark());
+        break;
+      case 133: {
+        const a = stack.pop();
+        stack.push([a]);
+        break;
+      }
+      case 134: {
+        const b = stack.pop();
+        const a = stack.pop();
+        stack.push([a, b]);
+        break;
+      }
+      case 135: {
+        const c = stack.pop();
+        const b = stack.pop();
+        const a = stack.pop();
+        stack.push([a, b, c]);
+        break;
+      }
+      // ---- memo ----
+      case 113:
+        memo.set(buffer[pos], stack[stack.length - 1]);
+        pos += 1;
+        break;
+      case 114:
+        memo.set(buffer.readUInt32LE(pos), stack[stack.length - 1]);
+        pos += 4;
+        break;
+      case 148:
+        memo.set(memo.size, stack[stack.length - 1]);
+        break;
+      case 112: {
+        const idx = parseInt(readLine(), 10);
+        memo.set(idx, stack[stack.length - 1]);
+        break;
+      }
+      case 104:
+        stack.push(memo.get(buffer[pos]));
+        pos += 1;
+        break;
+      case 106:
+        stack.push(memo.get(buffer.readUInt32LE(pos)));
+        pos += 4;
+        break;
+      case 103:
+        stack.push(memo.get(parseInt(readLine(), 10)));
+        break;
+      // ---- globals / reduce / build / newobj ----
+      case 99: {
+        const module = readLine();
+        const name = readLine();
+        stack.push(new PickleGlobalRef(module, name));
+        break;
+      }
+      case 147: {
+        const name = stack.pop();
+        const module = stack.pop();
+        stack.push(new PickleGlobalRef(String(module), String(name)));
+        break;
+      }
+      case 82: {
+        const args = stack.pop();
+        const func = stack.pop();
+        stack.push(reduce(func, args));
+        break;
+      }
+      case 98: {
+        const state = stack.pop();
+        const obj = stack[stack.length - 1];
+        stack[stack.length - 1] = build(obj, state);
+        break;
+      }
+      case 129: {
+        const args = stack.pop();
+        const cls = stack.pop();
+        stack.push(reduce(cls, args));
+        break;
+      }
+      case 146: {
+        stack.pop();
+        const args = stack.pop();
+        const cls = stack.pop();
+        stack.push(reduce(cls, args));
+        break;
+      }
+      default:
+        throw new Error(
+          `pickle: unsupported opcode 0x${op.toString(16)} at offset ${pos - 1}`
+        );
+    }
+  }
+  throw new Error("pickle: reached end of buffer without STOP");
+}
+
 // src/rendering/overlays.ts
 import { createRequire } from "module";
 var requireCjs = createRequire(import.meta.url);
@@ -2664,21 +3871,21 @@ async function toDataURL(imageData, format = "png") {
   ctx.putImageData(imageData, 0, 0);
   return canvas.toDataURL(`image/${format}`);
 }
-async function saveImage(imageData, path4) {
+async function saveImage(imageData, path5) {
   const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   ctx.putImageData(imageData, 0, 0);
-  await canvas.saveAs(path4);
+  await canvas.saveAs(path5);
 }
 
 // src/rendering/video.ts
 async function checkFfmpeg() {
   const { spawn } = await import("child_process");
-  return new Promise((resolve2) => {
+  return new Promise((resolve3) => {
     const proc = spawn("ffmpeg", ["-version"]);
-    proc.on("error", () => resolve2(false));
-    proc.on("close", (code) => resolve2(code === 0));
+    proc.on("error", () => resolve3(false));
+    proc.on("close", (code) => resolve3(code === 0));
   });
 }
 async function renderVideo(source, outputPath, options = {}) {
@@ -2750,7 +3957,7 @@ async function renderVideo(source, outputPath, options = {}) {
     const canWrite = ffmpeg.stdin.write(buffer);
     if (!canWrite) {
       await new Promise(
-        (resolve2) => ffmpeg.stdin?.once("drain", resolve2)
+        (resolve3) => ffmpeg.stdin?.once("drain", resolve3)
       );
     }
     if (options.onProgress) {
@@ -2758,10 +3965,10 @@ async function renderVideo(source, outputPath, options = {}) {
     }
   }
   ffmpeg.stdin?.end();
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     ffmpeg.on("close", (code) => {
       if (code === 0) {
-        resolve2();
+        resolve3();
       } else {
         reject(new Error(`ffmpeg exited with code ${code}`));
       }
@@ -2957,6 +4164,7 @@ export {
   _relinkFromPredicted,
   _resolveMergedIsNegative,
   applyOverlay,
+  attachConfigSkeleton,
   buildClassNamesFromBboxes,
   buildClassNamesFromRois,
   checkFfmpeg,
@@ -2981,6 +4189,8 @@ export {
   denormalizeCoordinates,
   detectLineFormat,
   determineColorScheme,
+  discoverConfig,
+  dlcMergedOrder,
   drawBboxes,
   drawCircle,
   drawCross,
@@ -2995,6 +4205,7 @@ export {
   encodeRle,
   encodeWkb,
   encodeYamlSkeleton,
+  extractFrameIndex,
   fromDict,
   fromNumpy,
   getCentroidSkeleton,
@@ -3003,6 +4214,8 @@ export {
   getPalette,
   isAnalysisH5File,
   isCocoData,
+  isDlcFile,
+  isDlcProjectPath,
   isStreamingSupported,
   isTrackMateFile,
   isTrainingConfig,
@@ -3010,6 +4223,9 @@ export {
   loadAnalysisH5,
   loadCoco,
   loadCocoSet,
+  loadDlc,
+  loadDlcProject,
+  loadDlcSplits,
   loadJabs,
   loadLabelImages,
   loadSlp,
@@ -3017,6 +4233,7 @@ export {
   loadTrackMate,
   loadUltralytics,
   loadVideo,
+  looksLikeDlcConfig,
   makeCameraFromDict,
   makeJabsDefaultSkeleton,
   makeSimpleSkeleton,
@@ -3027,6 +4244,7 @@ export {
   openStreamingH5,
   parseCocoJson,
   parseDataYaml,
+  parseDlcCrop,
   parseLabelFile,
   pointsEmpty,
   pointsFromArray,
@@ -3039,9 +4257,14 @@ export {
   rasterizeGeometry,
   readCoco,
   readCocoSet,
+  readCsvScorer,
+  readDlcConfig,
+  readDlcDataframe,
+  readDlcSplit,
   readGeoJSON,
   readLabels,
   readLabelsSet,
+  readPickle,
   readSkeletonJson,
   readSlpStreaming,
   readTrackMateCsv,
@@ -3051,6 +4274,7 @@ export {
   renderVideo,
   resizeNearest,
   resolveColor,
+  resolveConfig,
   resolveCropRect,
   resolveTrailNode,
   rgbToCSS,
@@ -3066,6 +4290,7 @@ export {
   setFsResolver,
   setImageBytesReader,
   setLabelImageFileReader,
+  setSourceVideo,
   staticObjectToRoi,
   toDataURL,
   toDict,
@@ -3073,6 +4298,8 @@ export {
   toNumpy,
   toPNG,
   uncropPoints,
+  videoSetsStemMap,
+  warnIfNonlexicographic,
   writeBboxLabelFile,
   writeGeoJSON,
   writeLabelFile,

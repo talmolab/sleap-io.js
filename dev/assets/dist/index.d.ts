@@ -440,6 +440,251 @@ interface LoadJabsOptions {
 declare function loadJabs(labelsPath: string, options?: LoadJabsOptions): Promise<Labels>;
 
 /**
+ * DeepLabCut (DLC) format I/O (read path).
+ *
+ * TypeScript port of `sleap_io/io/dlc.py` (READ path only), adapted to the
+ * JS/Node data model and runtime.
+ *
+ * In addition to reading a single DLC annotation CSV ({@link loadDlc}), this
+ * module can import an entire DLC *project* from its `config.yaml`
+ * ({@link loadDlcProject}) and recover the train/test splits stored by
+ * `create_training_dataset` ({@link loadDlcSplits}).
+ *
+ * ## Format overview
+ *
+ * - **Single-animal (SADLC)** CSV: 3 header rows (`scorer` / `bodyparts` /
+ *   `coords`) followed by one row per labeled image; each bodypart contributes
+ *   an `x` and a `y` column.
+ * - **Multi-animal (maDLC / MAUDLC)** CSV: 4 header rows (a leading `scorer`
+ *   row, then `individuals` / `bodyparts` / `coords`); the `individuals` level
+ *   names the animal each column belongs to. MAUDLC adds a `single` individual
+ *   carrying unique (single-animal) bodyparts.
+ * - Image paths appear either as a single column
+ *   (`labeled-data/video/img000.png`) or split across three index columns
+ *   (`labeled-data`, `video`, `img000.png`); the latter is joined with `/`.
+ * - A project `config.yaml` supplies skeleton edges (the `skeleton:` list),
+ *   the `scorer`/`Task`/`date`, and `video_sets` (source-video links + crops).
+ *
+ * When a config is available, the returned `Labels` gains skeleton edges and
+ * per-video `Video.sourceVideo` links that link each `labeled-data/<video>/`
+ * image folder back to its original video file (matched by filename stem).
+ * DLC's `video_sets[...].crop` is a virtual read-time crop; its rect (DLC's
+ * width-range-first `x1, x2, y1, y2` reordered to the sleap rect
+ * `(x1, y1, x2, y2)`) is recorded under `provenance["dlc_crops"]`, keyed by
+ * source-video path. No offset is ever applied to point coordinates.
+ *
+ * ## Node-only
+ *
+ * DLC datasets are directory trees of many files (a project dir, per-image
+ * folders), so this module reads through the Node `fs`/`path` APIs (like
+ * `io/ultralytics.ts` / `io/jabs.ts` / `io/trackmate.ts`) and is exported only
+ * from the Node entry point (`src/index.ts`), never the browser bundle.
+ *
+ * ## Divergences from Python `dlc.py`
+ *
+ * 1. **No crop view.** The JS `Video` has no `from_crop` / `is_cropped` /
+ *    `crop_rect` / `to_source_coords`. Python links a `Video.from_crop` view
+ *    when a non-identity crop's source video exists on disk; JS cannot, so
+ *    `sourceVideo` is **always** a closed `Video` ({@link Video} with
+ *    `openBackend: false`) and the crop lives only in
+ *    `provenance["dlc_crops"]`. Point coordinates are unaffected either way.
+ * 2. **Errors.** Python's `ValueError` / `FileNotFoundError` distinction
+ *    collapses to a single `Error` with the same message text.
+ * 3. **Warnings** are emitted via `console.warn` (vs Python `warnings.warn`);
+ *    message text is preserved so callers / tests can match on substrings.
+ * 4. **No `addEdges`.** Edges are added one pair at a time via
+ *    `Skeleton.addEdge`, after validating both endpoints exist.
+ * 5. **Pickle decoding.** `loadDlcSplits` requires reading a Python pickle
+ *    (the DLC `Documentation_data-*.pickle`); a minimal protocol 2-5 opcode
+ *    interpreter is implemented here ({@link readPickle}) since the repo has no
+ *    pickle dependency. It decodes the train/test index arrays whether they are
+ *    plain Python `list[int]` or **numpy integer ndarrays** — the latter being
+ *    what real DeepLabCut writes (`SplitTrials` slices `np.random.permutation`
+ *    and `save_metadata` pickles the resulting `np.ndarray`s directly). Both
+ *    the modern `_frombuffer`/`BYTEARRAY8` and the older `_reconstruct`+`BUILD`
+ *    numpy encodings are handled. `loadDlc` / `loadDlcProject` need no pickle.
+ * 6. **`**kwargs` ignored.** Python's forwarded loader kwargs (PR #488/#492) are
+ *    modeled as an index signature on the options objects and ignored.
+ */
+
+/**
+ * Check if a file appears to be a DLC annotation CSV.
+ *
+ * Reads the first four lines as raw text and looks for DLC's characteristic
+ * header tokens. Any read error (missing/empty file) yields `false`.
+ */
+declare function isDlcFile(filename: string): boolean;
+/**
+ * Return whether a path refers to a DLC project (directory containing both
+ * `config.yaml` and `labeled-data/`, or a `config.yaml` file validating as a
+ * DLC project config).
+ */
+declare function isDlcProjectPath(filename: string): boolean;
+type Config = Record<string, unknown>;
+/**
+ * Read a DLC project `config.yaml` into a dictionary, or `null` if the file is
+ * missing or does not parse to a mapping. A warning is emitted on failure so a
+ * malformed/foreign config never breaks plain CSV loading.
+ */
+declare function readDlcConfig(p: string): Config | null;
+/** Return whether a parsed mapping looks like a DLC project config (>=2 keys). */
+declare function looksLikeDlcConfig(cfg: unknown): boolean;
+/**
+ * Search upward from a CSV for a DLC project `config.yaml` (up to `maxLevels`
+ * parent directories). Returns the path to a validated config, or `null`.
+ */
+declare function discoverConfig(csvPath: string, maxLevels?: number): string | null;
+/**
+ * Resolve the `config` argument of {@link loadDlc} to a parsed config dict.
+ *
+ * - `false` disables config entirely (strict legacy output).
+ * - `null`/`undefined` auto-discovers `config.yaml` by walking up from the CSV.
+ * - a string forces a specific config path.
+ */
+declare function resolveConfig(csvPath: string, config: string | false | null): Config | null;
+/**
+ * Attach skeleton edges (and name) from a DLC config to a `Skeleton` in place.
+ * Edges referencing bodyparts not present in the skeleton are dropped with a
+ * warning. Resolution is strictly name-based.
+ */
+declare function attachConfigSkeleton(skeleton: Skeleton, cfg: Config): void;
+/**
+ * Parse a DLC `video_sets[...].crop` value into a sleap crop rect.
+ *
+ * DLC stores the crop width-range-first as `x1, x2, y1, y2` (string or list);
+ * this is reordered to `(x1, y1, x2, y2)` with x2/y2 exclusive, 0-indexed.
+ * Returns `null` when missing/empty/unparsable, wrong arity, inverted (warns),
+ * or an identity crop at origin `(0, 0)`.
+ */
+declare function parseDlcCrop(crop: unknown): [number, number, number, number] | null;
+type StemEntry = {
+    original: string;
+    rect: [number, number, number, number] | null;
+};
+/**
+ * Map video filename stems to original paths and crop rects from config.
+ * Windows backslash separators are normalized; placeholder entries are skipped.
+ * Preserves config (object key) order.
+ */
+declare function videoSetsStemMap(cfg: Config): Map<string, StemEntry>;
+/**
+ * Link an image-folder `Video` back to its original source video. Returns
+ * `{ path, rect }` for the linked source, or `null` on a stem mismatch.
+ *
+ * JS divergence: `video.sourceVideo` is always a closed `Video`
+ * (`openBackend: false`); there is no crop view (see module banner).
+ */
+declare function setSourceVideo(video: Video, folderName: string, stemMap: Map<string, StemEntry>, searchPaths?: string[]): {
+    path: string;
+    rect: [number, number, number, number] | null;
+} | null;
+type ColumnTuple = [string, string, string];
+interface DlcDataframe {
+    index: string[];
+    columns: ColumnTuple[];
+    /** rows[r][c] aligns to columns[c]; `null` means missing/NaN. */
+    rows: Array<Array<number | null>>;
+    isMultianimal: boolean;
+}
+/**
+ * Read a DLC annotation CSV into a flattened-index multi-column table,
+ * emulating pandas `read_csv` with multi-row headers.
+ */
+declare function readDlcDataframe(filename: string): DlcDataframe;
+/** Extract the last numeric run from an image filename stem (for sorting). */
+declare function extractFrameIndex(imgPath: string): number;
+interface LoadDlcOptions {
+    videoSearchPaths?: string[];
+    /**
+     * `null`/`undefined` = auto-discover `config.yaml` walking up from the CSV;
+     * `false` = disable config entirely (legacy output, no edges/links/crops);
+     * string = force this config path.
+     */
+    config?: string | false | null;
+    /** Accepted-and-ignored (PR #488 parity): openVideos, lazy, etc. */
+    [key: string]: unknown;
+}
+/**
+ * Load DeepLabCut annotations from a single CSV file.
+ *
+ * @param filename Path to a DLC CSV file.
+ * @param options Loader options ({@link LoadDlcOptions}).
+ * @returns A {@link Labels} object with the loaded data.
+ */
+declare function loadDlc(filename: string, options?: LoadDlcOptions): Labels;
+interface LoadDlcProjectOptions {
+    videoSearchPaths?: string[];
+    /** Accepted-and-ignored (PR #488 parity). */
+    [key: string]: unknown;
+}
+/**
+ * Load an entire DeepLabCut project from its `config.yaml`.
+ *
+ * @param config Path to a `config.yaml`, or to a project directory with one.
+ * @param options Loader options ({@link LoadDlcProjectOptions}).
+ * @returns A {@link Labels} object with frames from every labeled video.
+ */
+declare function loadDlcProject(config: string, options?: LoadDlcProjectOptions): Labels;
+/**
+ * Read train/test positional indices from a DLC Documentation pickle.
+ *
+ * The pickle is a 4-element list `[data, trainIndices, testIndices,
+ * trainFraction]`. `trainIndices` (`meta[1]`) and `testIndices` (`meta[2]`) are
+ * the only elements consumed. Real DeepLabCut writes these as numpy integer
+ * ndarrays (decoded by {@link readPickle} into {@link NumpyArray}); a
+ * hand-rolled writer may instead emit plain Python `list[int]`. Both are
+ * supported here; the `-1` padding sentinel (from `enforce_train_fraction`) is
+ * filtered out, mirroring Python `_read_dlc_split`.
+ */
+declare function readDlcSplit(picklePath: string): [number[], number[]];
+/** Read the scorer name from the first row of a DLC CSV. */
+declare function readCsvScorer(csv: string): string | null;
+/** Reconstruct DLC's globally merged frame order as `(folder, filename)`. */
+declare function dlcMergedOrder(projectDir: string, cfg: Config): Array<[string, string]>;
+/** Warn if numeric filename order differs from DLC's lexicographic order. */
+declare function warnIfNonlexicographic(merged: Array<[string, string]>): void;
+interface LoadDlcSplitsOptions {
+    shuffle?: number;
+    trainFraction?: number;
+    iteration?: number;
+    videoSearchPaths?: string[];
+    /** Accepted-and-ignored (PR #488/#492 parity). */
+    [key: string]: unknown;
+}
+/**
+ * Load DeepLabCut train/test splits from a project's Documentation pickle.
+ *
+ * @param config Path to a DLC project `config.yaml` (or its project directory).
+ * @param options Selector + loader options ({@link LoadDlcSplitsOptions}).
+ * @returns A {@link LabelsSet} with `"train"` and `"test"` keys.
+ */
+declare function loadDlcSplits(config: string, options?: LoadDlcSplitsOptions): LabelsSet;
+/**
+ * Decode a Python pickle into JS values, supporting the subset of opcodes
+ * needed for DLC's `Documentation_data-*.pickle`: a shallow
+ * `[data, trainIndices, testIndices, trainFraction]` list. `trainIndices` /
+ * `testIndices` may be plain Python `list[int]` (as a hand-rolled writer emits)
+ * **or** numpy integer ndarrays — which is what real DeepLabCut writes, since
+ * `SplitTrials` slices `np.random.permutation(...)` and `save_metadata` pickles
+ * the resulting `np.ndarray`s without a `list()` conversion.
+ *
+ * Numpy arrays are decoded via two reductions:
+ *   - modern numpy (1.17+/2.x): `numpy[._]core.numeric._frombuffer(rawbytes,
+ *     dtype, shape, order)` — a single `REDUCE`, with `rawbytes` carried by a
+ *     `BYTEARRAY8` opcode;
+ *   - older numpy: `numpy.core.multiarray._reconstruct(...)` + `BUILD` with
+ *     state `(version, shape, dtype, fortran_order, rawdata)`, where `rawdata`
+ *     is often a `_codecs.encode(latin1str, 'latin1')` bytes reduction.
+ * The `numpy.dtype(name, ...)` reduction is decoded to a {@link NumpyDtype} so
+ * the raw bytes can be interpreted (int8/16/32/64, signed/unsigned, byteorder).
+ *
+ * The DLC split reader only consumes `meta[1]` / `meta[2]`; the lossy `data`
+ * payload need not be perfectly reconstructed, so any unrecognized reduction is
+ * returned as an opaque marker object.
+ */
+declare function readPickle(buffer: Buffer): unknown;
+
+/**
  * Render poses on a single frame.
  *
  * @param source - Labels, LabeledFrame, or array of Instances to render
@@ -478,4 +723,4 @@ declare function checkFfmpeg(): Promise<boolean>;
  */
 declare function renderVideo(source: Labels | LabeledFrame[], outputPath: string, options?: VideoOptions): Promise<void>;
 
-export { BoundingBox, type CreateDataYamlOptions, type ImageShape, Instance, JABS_DEFAULT_EDGE_INDICES, JABS_DEFAULT_KEYPOINT_NAMES, JABS_DEFAULT_SKELETON, JABS_DEFAULT_SYMMETRY_INDICES, LabeledFrame, Labels, LabelsSet, type LineFormat, type LoadJabsOptions, type ParseLabelFileOptions, type ParsedLabelFile, PredictedInstance, ROI, ReadCocoOptions, type ReadLabelsOptions, type ReadLabelsSetOptions, RenderOptions, Skeleton, Track, type TrackMateOptions, UserROI, Video, VideoOptions, type WriteLabelsOptions, buildClassNamesFromBboxes, buildClassNamesFromRois, checkFfmpeg, classNamesFromConfig, createDataYaml, createSkeletonFromConfig, createSplitsFromLabels, denormalizeCoordinates, detectLineFormat, encodePng, isTrackMateFile, loadCoco, loadCocoSet, loadJabs, loadTrackMate, loadUltralytics, makeJabsDefaultSkeleton, makeSimpleSkeleton, normalizeCoordinates, parseDataYaml, parseLabelFile, predictionToInstance, probeImageSize, readLabels, readLabelsSet, readTrackMateCsv, renderImage, renderVideo, saveImage, saveUltralytics, staticObjectToRoi, toDataURL, toJPEG, toPNG, writeBboxLabelFile, writeLabelFile, writeLabels, writeRoiLabelFile };
+export { BoundingBox, type CreateDataYamlOptions, type ImageShape, Instance, JABS_DEFAULT_EDGE_INDICES, JABS_DEFAULT_KEYPOINT_NAMES, JABS_DEFAULT_SKELETON, JABS_DEFAULT_SYMMETRY_INDICES, LabeledFrame, Labels, LabelsSet, type LineFormat, type LoadDlcOptions, type LoadDlcProjectOptions, type LoadDlcSplitsOptions, type LoadJabsOptions, type ParseLabelFileOptions, type ParsedLabelFile, PredictedInstance, ROI, ReadCocoOptions, type ReadLabelsOptions, type ReadLabelsSetOptions, RenderOptions, Skeleton, Track, type TrackMateOptions, UserROI, Video, VideoOptions, type WriteLabelsOptions, attachConfigSkeleton, buildClassNamesFromBboxes, buildClassNamesFromRois, checkFfmpeg, classNamesFromConfig, createDataYaml, createSkeletonFromConfig, createSplitsFromLabels, denormalizeCoordinates, detectLineFormat, discoverConfig, dlcMergedOrder, encodePng, extractFrameIndex, isDlcFile, isDlcProjectPath, isTrackMateFile, loadCoco, loadCocoSet, loadDlc, loadDlcProject, loadDlcSplits, loadJabs, loadTrackMate, loadUltralytics, looksLikeDlcConfig, makeJabsDefaultSkeleton, makeSimpleSkeleton, normalizeCoordinates, parseDataYaml, parseDlcCrop, parseLabelFile, predictionToInstance, probeImageSize, readCsvScorer, readDlcConfig, readDlcDataframe, readDlcSplit, readLabels, readLabelsSet, readPickle, readTrackMateCsv, renderImage, renderVideo, resolveConfig, saveImage, saveUltralytics, setSourceVideo, staticObjectToRoi, toDataURL, toJPEG, toPNG, videoSetsStemMap, warnIfNonlexicographic, writeBboxLabelFile, writeLabelFile, writeLabels, writeRoiLabelFile };
