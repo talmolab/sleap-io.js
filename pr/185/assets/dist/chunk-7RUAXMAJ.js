@@ -25,15 +25,16 @@ import {
 } from "./chunk-5RPVZ6CR.js";
 import {
   RemoteIOError,
+  fetchRetrying,
   headOrRangeProbe,
+  identityHeaders,
   isUrl,
   openGdrive,
-  raiseRemote,
   redactUrl,
   redactedCauseSummary,
   resolveUrl,
   statusToMessage
-} from "./chunk-GJRHNTD6.js";
+} from "./chunk-YS7Q6CO6.js";
 
 // src/model/centroid.ts
 var _centroidSkeleton = null;
@@ -4180,10 +4181,6 @@ var Video = class _Video {
   _fps = null;
   /** Auth headers persisted from a remote `.slp` load (mirror Python `_url_headers`). */
   _urlHeaders;
-  /** Stream mode persisted from a remote `.slp` load. */
-  _urlStreamMode;
-  /** Drive bytes reused for embedded reopen (avoids re-hitting per-file quota). */
-  _urlBytes;
   /** Per-instance TTL cache for {@link exists}. */
   _existsCache;
   constructor(options) {
@@ -4242,15 +4239,13 @@ var Video = class _Video {
     this.backend?.close();
   }
   /**
-   * Persist the remote auth context from a remote `.slp` load so later reopens
-   * and {@link exists} probes stay authenticated. Mirrors Python's
-   * `HDF5Video._url_headers`. Internal — set by the SLP reader.
+   * Persist the remote auth headers from a remote `.slp` load so later
+   * {@link exists} probes (and any URL-backed backend) stay authenticated.
+   * Mirrors Python's `HDF5Video._url_headers`. Internal — set by the SLP reader.
    * @internal
    */
   _setUrlPersistence(persistence) {
     if (persistence.headers) this._urlHeaders = persistence.headers;
-    if (persistence.streamMode) this._urlStreamMode = persistence.streamMode;
-    if (persistence.bytes) this._urlBytes = persistence.bytes;
   }
   /**
    * The auth headers to use for remote requests on this video, preferring the
@@ -4259,7 +4254,11 @@ var Video = class _Video {
    * @internal
    */
   _backendUrlHeaders() {
-    return this._urlHeaders ?? this.backend?._urlHeaders;
+    return this._urlHeaders ?? // Python-parity placeholder: no JS backend currently sets `_urlHeaders`,
+    // so this fallback is inert today. Kept so a future URL-backed backend
+    // that carries its own headers (as Python's HDF5Video does) is honored
+    // without changing this accessor.
+    this.backend?._urlHeaders;
   }
   /**
    * Non-throwing check that this video's source is reachable.
@@ -8424,14 +8423,9 @@ var Mp4BoxVideoBackend = class {
     this.shape = [frameCount, height, width, 3];
   }
   async openSource() {
-    let response;
-    try {
-      response = await fetch(this.filename, {
-        headers: { ...this.headers, Range: "bytes=0-0" }
-      });
-    } catch (e) {
-      raiseRemote(this.filename, e);
-    }
+    const response = await fetchRetrying(this.filename, {
+      headers: { ...identityHeaders(this.headers), Range: "bytes=0-0" }
+    });
     if (response.status === 206) {
       const contentRange = response.headers.get("Content-Range");
       const match = contentRange?.match(/\/(\d+)$/);
@@ -8448,12 +8442,9 @@ var Mp4BoxVideoBackend = class {
         status: response.status
       });
     }
-    let full;
-    try {
-      full = await fetch(this.filename, { headers: { ...this.headers } });
-    } catch (e) {
-      raiseRemote(this.filename, e);
-    }
+    const full = await fetchRetrying(this.filename, {
+      headers: { ...this.headers }
+    });
     if (!full.ok) {
       throw new RemoteIOError({
         message: statusToMessage(full.status),
@@ -8469,14 +8460,12 @@ var Mp4BoxVideoBackend = class {
   async readChunk(offset, size) {
     const end = Math.min(offset + size, this.fileSize);
     if (this.supportsRangeRequests) {
-      let response;
-      try {
-        response = await fetch(this.filename, {
-          headers: { ...this.headers, Range: `bytes=${offset}-${end - 1}` }
-        });
-      } catch (e) {
-        raiseRemote(this.filename, e);
-      }
+      const response = await fetchRetrying(this.filename, {
+        headers: {
+          ...identityHeaders(this.headers),
+          Range: `bytes=${offset}-${end - 1}`
+        }
+      });
       return await response.arrayBuffer();
     }
     if (this.fileBlob) {
@@ -9744,6 +9733,70 @@ let h5wasmModule = null;
 let FS = null;
 let currentFile = null;
 let mountPath = null;
+
+// Inlined subset of ../../io/remote.ts (the worker runs in an isolated context
+// via importScripts and cannot import the module). Keep in lockstep with
+// RETRYABLE_STATUSES / withRetries / identityHeaders there.
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+// Force Accept-Encoding: identity (drop any user-supplied value, any case) so a
+// gzip transfer-encoding cannot corrupt ranged reads. Applied to remote fetches
+// here for parity with the main-thread ranged paths.
+function identityHeadersWorker(headers) {
+  const out = {};
+  for (const k of Object.keys(headers || {})) {
+    if (k.toLowerCase() === 'accept-encoding') continue;
+    out[k] = headers[k];
+  }
+  out['Accept-Encoding'] = 'identity';
+  return out;
+}
+
+function parseRetryAfterMsWorker(value) {
+  if (!value) return undefined;
+  const secs = parseInt(value, 10);
+  if (!isFinite(secs) || String(secs) !== String(value).trim()) return undefined;
+  return Math.min(secs * 1000, 30000);
+}
+
+// fetch wrapped in retry/backoff: retries transient network errors and
+// retryable statuses (429/5xx), honoring Retry-After. Returns the Response for
+// any non-retryable status so the caller handles it. Mirrors fetchRetrying in
+// ../../io/remote.ts. Errors are NOT redacted here because the worker only ever
+// sees URLs the main thread already resolved; the main thread re-wraps worker
+// failures, and no token-bearing URL reaches this transport in the streaming
+// path (Drive/headers route through the buffer download, not createLazyFile).
+async function fetchRetryingWorker(url, init, retries) {
+  const max = retries == null ? 3 : retries;
+  let attempt = 0;
+  while (true) {
+    let response;
+    let networkError = false;
+    try {
+      response = await fetch(url, init);
+    } catch (e) {
+      networkError = true;
+    }
+    if (!networkError && !RETRYABLE_STATUSES.has(response.status)) {
+      return response;
+    }
+    if (attempt >= max) {
+      if (networkError) throw new Error('Failed to fetch remote HDF5 file');
+      return response;
+    }
+    let delayMs = Math.min(200 * Math.pow(2, attempt), 30000);
+    if (!networkError) {
+      const ra = parseRetryAfterMsWorker(
+        response.headers && response.headers.get
+          ? response.headers.get('Retry-After')
+          : null,
+      );
+      if (ra != null) delayMs = Math.min(ra, 30000);
+    }
+    attempt += 1;
+    await new Promise(function(r) { setTimeout(r, delayMs); });
+  }
+}
 // Track how the current file was mounted so closeFile can clean up correctly:
 // 'remote' = MEMFS dir + createLazyFile, 'local' = WORKERFS mount,
 // 'buffer' = MEMFS dir + FS.writeFile. Required because FS.rmdir fails on
@@ -9862,7 +9915,9 @@ async function openRemoteFile(url, filename = 'data.h5', headers) {
   // requests keep the efficient createLazyFile range streaming path.
   const hasHeaders = headers && typeof headers === 'object' && Object.keys(headers).length > 0;
   if (hasHeaders) {
-    const response = await fetch(url, { headers });
+    // Retried with backoff on transient failures / 429/5xx; identity encoding
+    // forced so a gzip transfer-encoding can't corrupt the bytes.
+    const response = await fetchRetryingWorker(url, { headers: identityHeadersWorker(headers) });
     if (!response.ok) {
       throw new Error('Failed to fetch remote HDF5 file: ' + response.status);
     }
@@ -10252,14 +10307,35 @@ var StreamingH5File = class {
   /**
    * Open a remote HDF5 file for streaming access via URL.
    *
+   * The scheme is resolved on the MAIN thread (the worker cannot import the
+   * scheme gate): `gs://`/`gcs://` are mapped to `storage.googleapis.com`, and
+   * `s3://`/`az://`/`abfs://` fail fast with a redacted {@link RemoteIOError}.
+   * Google Drive is NOT supported on the streaming worker path (Drive requires a
+   * buffered, interstitial-following download, not range streaming); a Drive URL
+   * throws a redacted {@link RemoteIOError} directing the caller to the
+   * non-streaming reader. The worker only ever fetches an already-resolved
+   * http(s) URL.
+   *
    * @param url - URL to the HDF5 file (must support HTTP range requests)
    * @param options - Optional settings
    */
   async open(url, options) {
     await this.init(options);
-    const filename = options?.filenameHint || url.split("/").pop()?.split("?")[0] || "data.h5";
+    let resolvedUrl = url;
+    if (isUrl(url)) {
+      const { url: resolved, gdrive } = resolveUrl(url);
+      if (gdrive) {
+        throw new RemoteIOError({
+          message: 'Google Drive URLs are not supported on the streaming worker path (Drive needs a buffered download); use the non-streaming reader (stream:"download" / loadSlp)',
+          url,
+          status: null
+        });
+      }
+      resolvedUrl = resolved;
+    }
+    const filename = options?.filenameHint || resolvedUrl.split("/").pop()?.split("?")[0] || "data.h5";
     const result = await this.send("openUrl", {
-      url,
+      url: resolvedUrl,
       filename,
       headers: options?.headers
     });
@@ -10490,7 +10566,7 @@ async function openFromUrl(module, fs, url, options) {
     const localPath2 = "/tmp-slp.slp";
     fs.writeFile(localPath2, bytes);
     const file2 = new module.File(localPath2, "r");
-    return { file: file2, close: () => file2.close(), urlBytes: bytes };
+    return { file: file2, close: () => file2.close() };
   }
   if (!hasHeaders && fs.createLazyFile && (streamMode === "auto" || streamMode === "range")) {
     const mountPath = `/slp-remote-${Date.now()}`;
@@ -10511,12 +10587,7 @@ async function openFromUrl(module, fs, url, options) {
     }
   }
   const init = { headers: options?.headers ?? {} };
-  let response;
-  try {
-    response = await fetch(resolved, init);
-  } catch (e) {
-    raiseRemote(resolved, e);
-  }
+  const response = await fetchRetrying(resolved, init);
   if (!response.ok) {
     throw new RemoteIOError({
       message: statusToMessage(response.status),
@@ -10528,7 +10599,7 @@ async function openFromUrl(module, fs, url, options) {
   const localPath = "/tmp-slp.slp";
   fs.writeFile(localPath, buffer);
   const file = new module.File(localPath, "r");
-  return { file, close: () => file.close(), urlBytes: buffer };
+  return { file, close: () => file.close() };
 }
 async function openFromFile(module, fs, file, options) {
   const mountPath = `/slp-local-${Date.now()}`;
@@ -10559,12 +10630,7 @@ async function fetchRemoteSlpBytes(url, options) {
     return openGdrive(url, { headers: options?.headers });
   }
   const init = { headers: options?.headers ?? {} };
-  let response;
-  try {
-    response = await fetch(resolved, init);
-  } catch (e) {
-    raiseRemote(resolved, e);
-  }
+  const response = await fetchRetrying(resolved, init);
   if (!response.ok) {
     throw new RemoteIOError({
       message: statusToMessage(response.status),
@@ -14289,11 +14355,9 @@ async function readSlp(source, options) {
   const total = EAGER_STAGES.length;
   const onProgress = options?.onProgress;
   const report = (i) => onProgress?.(i, total, EAGER_STAGES[i]);
-  const { file, close, urlBytes } = await openH5File(source, options?.h5);
+  const { file, close } = await openH5File(source, options?.h5);
   const remote = {
-    urlHeaders: options?.h5?.headers,
-    urlStreamMode: options?.h5?.stream,
-    urlBytes
+    urlHeaders: options?.h5?.headers
   };
   try {
     report(0);
@@ -14470,11 +14534,9 @@ async function readSlpLazy(source, options) {
   const total = LAZY_STAGES.length;
   const onProgress = options?.onProgress;
   const report = (i) => onProgress?.(i, total, LAZY_STAGES[i]);
-  const { file, close, urlBytes } = await openH5File(source, options?.h5);
+  const { file, close } = await openH5File(source, options?.h5);
   const remote = {
-    urlHeaders: options?.h5?.headers,
-    urlStreamMode: options?.h5?.stream,
-    urlBytes
+    urlHeaders: options?.h5?.headers
   };
   try {
     report(0);
@@ -14820,12 +14882,8 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
       openBackend: openVideos,
       embedded
     });
-    if (urlHeaders || remote?.urlStreamMode || remote?.urlBytes) {
-      video._setUrlPersistence({
-        headers: urlHeaders,
-        streamMode: remote?.urlStreamMode,
-        bytes: remote?.urlBytes
-      });
+    if (urlHeaders) {
+      video._setUrlPersistence({ headers: urlHeaders });
     }
     videos.push(video);
   }

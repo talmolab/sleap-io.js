@@ -155,7 +155,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-NT7FTONP.js";
+} from "./chunk-7RUAXMAJ.js";
 import {
   Edge,
   Instance,
@@ -184,6 +184,7 @@ import {
   SENSITIVE_QUERY_PARAMS,
   URL_SCHEMES,
   checkDownloadHost,
+  fetchRetrying,
   headOrRangeProbe,
   identityHeaders,
   isGdriveUrl,
@@ -199,7 +200,7 @@ import {
   stripCrossOriginHeaders,
   urlFromConfirmation,
   withRetries
-} from "./chunk-GJRHNTD6.js";
+} from "./chunk-YS7Q6CO6.js";
 
 // src/codecs/slp/h5-node.ts
 var modulePromise = null;
@@ -245,8 +246,7 @@ async function openBytesNode(module, data) {
     close: () => {
       file.close();
       unlinkSync(tempPath);
-    },
-    urlBytes: data
+    }
   };
 }
 _registerNodeH5(getH5ModuleNode, openH5FileNode);
@@ -2963,6 +2963,7 @@ export {
   encodeRle,
   encodeWkb,
   encodeYamlSkeleton,
+  fetchRetrying,
   fromDict,
   fromNumpy,
   getCentroidSkeleton,

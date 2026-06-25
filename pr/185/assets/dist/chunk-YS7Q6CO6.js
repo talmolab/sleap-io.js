@@ -195,6 +195,28 @@ function parseRetryAfterMs(value) {
   if (!Number.isFinite(secs) || String(secs) !== value.trim()) return void 0;
   return Math.min(secs * 1e3, 3e4);
 }
+async function fetchRetrying(url, init, options) {
+  return withRetries(async () => {
+    let response;
+    try {
+      response = await fetch(url, init);
+    } catch (e) {
+      raiseRemote(url, e);
+    }
+    if (RETRYABLE_STATUSES.has(response.status)) {
+      const err = new RemoteIOError({
+        message: statusToMessage(response.status),
+        url,
+        status: response.status
+      });
+      err.retryAfterMs = parseRetryAfterMs(
+        response.headers?.get?.("Retry-After") ?? null
+      );
+      throw err;
+    }
+    return response;
+  }, options);
+}
 async function headOrRangeProbe(url, options) {
   let resolved;
   try {
@@ -204,7 +226,7 @@ async function headOrRangeProbe(url, options) {
   }
   if (resolved.gdrive) {
     try {
-      const { parseGdrive: parseGdrive2 } = await import("./gdrive-N2XAOFEB.js");
+      const { parseGdrive: parseGdrive2 } = await import("./gdrive-6DDSPUUK.js");
       parseGdrive2(url);
       return true;
     } catch {
@@ -437,15 +459,10 @@ async function openGdrive(url, options) {
     checkDownloadHost(current);
     const headers = { ...baseHeaders };
     if (node && cookie) headers["Cookie"] = cookie;
-    let response;
-    try {
-      response = await fetch(
-        current,
-        node ? { headers, redirect: "manual" } : { headers }
-      );
-    } catch (e) {
-      raiseRemote(current, e);
-    }
+    let response = await fetchRetrying(
+      current,
+      node ? { headers, redirect: "manual" } : { headers }
+    );
     if (node) {
       let redirects = 0;
       while (response.status >= 300 && response.status < 400 && redirects < MAX_HOPS) {
@@ -458,14 +475,10 @@ async function openGdrive(url, options) {
         const hopHeaders = { ...baseHeaders };
         if (cookie) hopHeaders["Cookie"] = cookie;
         current = next;
-        try {
-          response = await fetch(current, {
-            headers: hopHeaders,
-            redirect: "manual"
-          });
-        } catch (e) {
-          raiseRemote(current, e);
-        }
+        response = await fetchRetrying(current, {
+          headers: hopHeaders,
+          redirect: "manual"
+        });
         redirects++;
       }
       const setCookie = extractCookie(response);
@@ -513,5 +526,6 @@ export {
   stripCrossOriginHeaders,
   withRetries,
   parseRetryAfterMs,
+  fetchRetrying,
   headOrRangeProbe
 };

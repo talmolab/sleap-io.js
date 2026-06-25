@@ -146,7 +146,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-NT7FTONP.js";
+} from "./chunk-7RUAXMAJ.js";
 import {
   Edge,
   Instance,
@@ -175,6 +175,7 @@ import {
   SENSITIVE_QUERY_PARAMS,
   URL_SCHEMES,
   checkDownloadHost,
+  fetchRetrying,
   headOrRangeProbe,
   identityHeaders,
   isGdriveUrl,
@@ -190,7 +191,7 @@ import {
   stripCrossOriginHeaders,
   urlFromConfirmation,
   withRetries
-} from "./chunk-GJRHNTD6.js";
+} from "./chunk-YS7Q6CO6.js";
 export {
   AUTO_VIDEO_MATCHER,
   AnnotationType,
@@ -312,6 +313,7 @@ export {
   encodeRle,
   encodeWkb,
   encodeYamlSkeleton,
+  fetchRetrying,
   fromDict,
   fromNumpy,
   getCentroidSkeleton,

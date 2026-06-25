@@ -126,187 +126,6 @@ declare function cropFrame(frame: ImageData, crop: CropRect, fill?: Fill): Image
 declare function cropFrame(frame: RawFrame, crop: CropRect, fill?: Fill): RawFrame;
 
 /**
- * Streaming HDF5 file access via Web Worker.
- *
- * This module provides a high-level API for accessing remote HDF5 files
- * using HTTP range requests for efficient streaming. The actual HDF5
- * operations run in a Web Worker where synchronous XHR is allowed.
- *
- * @module
- */
-/**
- * Options for opening a streaming HDF5 file.
- */
-interface StreamingH5Options {
-    /** URL to h5wasm IIFE bundle. Defaults to CDN. */
-    h5wasmUrl?: string;
-    /** Filename hint for the HDF5 file. */
-    filenameHint?: string;
-    /**
-     * Extra HTTP request headers forwarded to the worker's `openUrl`. When
-     * non-empty, the worker buffer-downloads the file (authenticated) instead of
-     * using header-free `createLazyFile` range streaming.
-     */
-    headers?: Record<string, string>;
-}
-/**
- * Source types supported by the streaming HDF5 file.
- */
-type StreamingH5Source = string | ArrayBuffer | Uint8Array | File;
-/**
- * A streaming HDF5 file handle that uses a Web Worker for range request access.
- *
- * This class provides an API similar to h5wasm.File but operates via message
- * passing to a worker where createLazyFile enables HTTP range requests.
- */
-declare class StreamingH5File {
-    private worker;
-    private messageId;
-    private pendingMessages;
-    private _keys;
-    private _isOpen;
-    constructor();
-    private handleMessage;
-    private handleError;
-    private send;
-    /**
-     * Initialize the h5wasm module in the worker.
-     */
-    init(options?: StreamingH5Options): Promise<void>;
-    /**
-     * Open a remote HDF5 file for streaming access via URL.
-     *
-     * @param url - URL to the HDF5 file (must support HTTP range requests)
-     * @param options - Optional settings
-     */
-    open(url: string, options?: StreamingH5Options): Promise<void>;
-    /**
-     * Open a local File object using WORKERFS (zero-copy).
-     *
-     * @param file - File object from file input or drag-and-drop
-     * @param options - Optional settings
-     */
-    openLocal(file: File, options?: StreamingH5Options): Promise<void>;
-    /**
-     * Open an HDF5 file from an ArrayBuffer or Uint8Array.
-     *
-     * @param buffer - ArrayBuffer or Uint8Array containing the HDF5 file data
-     * @param options - Optional settings
-     */
-    openBuffer(buffer: ArrayBuffer | Uint8Array, options?: StreamingH5Options): Promise<void>;
-    /**
-     * Open an HDF5 file from any supported source.
-     *
-     * @param source - URL string, File, ArrayBuffer, or Uint8Array
-     * @param options - Optional settings
-     */
-    openAny(source: StreamingH5Source, options?: StreamingH5Options): Promise<void>;
-    /**
-     * Whether a file is currently open.
-     */
-    get isOpen(): boolean;
-    /**
-     * Get the root-level keys in the file.
-     */
-    keys(): string[];
-    /**
-     * Get the keys (children) at a given path.
-     */
-    getKeys(path: string): Promise<string[]>;
-    /**
-     * Get an attribute value.
-     */
-    getAttr(path: string, name: string): Promise<unknown>;
-    /**
-     * Get all attributes at a path.
-     */
-    getAttrs(path: string): Promise<Record<string, unknown>>;
-    /**
-     * Get dataset metadata (shape, dtype) without reading values.
-     */
-    getDatasetMeta(path: string): Promise<{
-        shape: number[];
-        dtype: string;
-    }>;
-    /**
-     * Read a dataset's value.
-     *
-     * @param path - Path to the dataset
-     * @param slice - Optional slice specification (array of [start, end] pairs)
-     */
-    getDatasetValue(path: string, slice?: Array<[number, number] | []>): Promise<{
-        value: unknown;
-        shape: number[];
-        dtype: string;
-    }>;
-    /**
-     * Close the file and terminate the worker.
-     */
-    close(): Promise<void>;
-}
-/**
- * Check if streaming via Web Worker is supported in the current environment.
- */
-declare function isStreamingSupported(): boolean;
-/**
- * Open a remote HDF5 file with streaming support.
- *
- * @param url - URL to the HDF5 file
- * @param options - Optional settings
- * @returns A StreamingH5File instance
- */
-declare function openStreamingH5(url: string, options?: StreamingH5Options): Promise<StreamingH5File>;
-/**
- * Open an HDF5 file from any supported source using a Web Worker.
- *
- * This is the recommended way to open HDF5 files in the browser as it
- * offloads all h5wasm operations to a Web Worker, avoiding main thread blocking.
- *
- * @param source - URL string, File object, ArrayBuffer, or Uint8Array
- * @param options - Optional settings
- * @returns A StreamingH5File instance
- *
- * @example
- * ```typescript
- * // From URL
- * const file = await openH5Worker("https://example.com/data.h5");
- *
- * // From File (file input)
- * const file = await openH5Worker(inputElement.files[0]);
- *
- * // From ArrayBuffer
- * const file = await openH5Worker(arrayBuffer);
- * ```
- */
-declare function openH5Worker(source: StreamingH5Source, options?: StreamingH5Options): Promise<StreamingH5File>;
-
-type SlpSource = string | ArrayBuffer | Uint8Array | File | FileSystemFileHandle;
-type StreamMode = "auto" | "range" | "download";
-type OpenH5Options = {
-    /**
-     * Streaming mode for remote files:
-     * - "auto": Try range requests, fall back to download
-     * - "range": Use HTTP range requests (requires Worker support in browser)
-     * - "download": Always download the entire file
-     */
-    stream?: StreamMode;
-    /** Filename hint for the HDF5 file */
-    filenameHint?: string;
-    /**
-     * Extra HTTP request headers (e.g. `{ Authorization: "Bearer …" }`) applied to
-     * every remote byte fetch for this file AND persisted onto embedded-video
-     * backends so later reopens/probes stay authenticated. Header NAMES are
-     * case-insensitive; `"Accept-Encoding"` is always overridden to `"identity"`
-     * on range requests. Ignored for Google Drive URLs (credentials are stripped).
-     *
-     * Limitation: `createLazyFile` (Emscripten synchronous XHR) cannot carry
-     * custom headers, so authenticated remote `.slp` is downloaded in full;
-     * range streaming with custom headers is not yet supported on the main thread.
-     */
-    headers?: Record<string, string>;
-};
-
-/**
  * Default TTL (ms) for the per-instance {@link Video.exists} URL probe cache.
  * Analogous to Python's `SLEAP_IO_EXISTS_TTL`.
  */
@@ -387,10 +206,6 @@ declare class Video {
     private _fps;
     /** Auth headers persisted from a remote `.slp` load (mirror Python `_url_headers`). */
     private _urlHeaders?;
-    /** Stream mode persisted from a remote `.slp` load. */
-    private _urlStreamMode?;
-    /** Drive bytes reused for embedded reopen (avoids re-hitting per-file quota). */
-    private _urlBytes?;
     /** Per-instance TTL cache for {@link exists}. */
     private _existsCache?;
     constructor(options: {
@@ -420,15 +235,13 @@ declare class Video {
     getFrameTimes(): Promise<number[] | null>;
     close(): void;
     /**
-     * Persist the remote auth context from a remote `.slp` load so later reopens
-     * and {@link exists} probes stay authenticated. Mirrors Python's
-     * `HDF5Video._url_headers`. Internal — set by the SLP reader.
+     * Persist the remote auth headers from a remote `.slp` load so later
+     * {@link exists} probes (and any URL-backed backend) stay authenticated.
+     * Mirrors Python's `HDF5Video._url_headers`. Internal — set by the SLP reader.
      * @internal
      */
     _setUrlPersistence(persistence: {
         headers?: Record<string, string>;
-        streamMode?: StreamMode;
-        bytes?: Uint8Array;
     }): void;
     /**
      * The auth headers to use for remote requests on this video, preferring the
@@ -2715,6 +2528,170 @@ declare class MediaBunnyVideoBackend implements VideoBackend {
 }
 
 /**
+ * Streaming HDF5 file access via Web Worker.
+ *
+ * This module provides a high-level API for accessing remote HDF5 files
+ * using HTTP range requests for efficient streaming. The actual HDF5
+ * operations run in a Web Worker where synchronous XHR is allowed.
+ *
+ * @module
+ */
+/**
+ * Options for opening a streaming HDF5 file.
+ */
+interface StreamingH5Options {
+    /** URL to h5wasm IIFE bundle. Defaults to CDN. */
+    h5wasmUrl?: string;
+    /** Filename hint for the HDF5 file. */
+    filenameHint?: string;
+    /**
+     * Extra HTTP request headers forwarded to the worker's `openUrl`. When
+     * non-empty, the worker buffer-downloads the file (authenticated) instead of
+     * using header-free `createLazyFile` range streaming.
+     */
+    headers?: Record<string, string>;
+}
+/**
+ * Source types supported by the streaming HDF5 file.
+ */
+type StreamingH5Source = string | ArrayBuffer | Uint8Array | File;
+/**
+ * A streaming HDF5 file handle that uses a Web Worker for range request access.
+ *
+ * This class provides an API similar to h5wasm.File but operates via message
+ * passing to a worker where createLazyFile enables HTTP range requests.
+ */
+declare class StreamingH5File {
+    private worker;
+    private messageId;
+    private pendingMessages;
+    private _keys;
+    private _isOpen;
+    constructor();
+    private handleMessage;
+    private handleError;
+    private send;
+    /**
+     * Initialize the h5wasm module in the worker.
+     */
+    init(options?: StreamingH5Options): Promise<void>;
+    /**
+     * Open a remote HDF5 file for streaming access via URL.
+     *
+     * The scheme is resolved on the MAIN thread (the worker cannot import the
+     * scheme gate): `gs://`/`gcs://` are mapped to `storage.googleapis.com`, and
+     * `s3://`/`az://`/`abfs://` fail fast with a redacted {@link RemoteIOError}.
+     * Google Drive is NOT supported on the streaming worker path (Drive requires a
+     * buffered, interstitial-following download, not range streaming); a Drive URL
+     * throws a redacted {@link RemoteIOError} directing the caller to the
+     * non-streaming reader. The worker only ever fetches an already-resolved
+     * http(s) URL.
+     *
+     * @param url - URL to the HDF5 file (must support HTTP range requests)
+     * @param options - Optional settings
+     */
+    open(url: string, options?: StreamingH5Options): Promise<void>;
+    /**
+     * Open a local File object using WORKERFS (zero-copy).
+     *
+     * @param file - File object from file input or drag-and-drop
+     * @param options - Optional settings
+     */
+    openLocal(file: File, options?: StreamingH5Options): Promise<void>;
+    /**
+     * Open an HDF5 file from an ArrayBuffer or Uint8Array.
+     *
+     * @param buffer - ArrayBuffer or Uint8Array containing the HDF5 file data
+     * @param options - Optional settings
+     */
+    openBuffer(buffer: ArrayBuffer | Uint8Array, options?: StreamingH5Options): Promise<void>;
+    /**
+     * Open an HDF5 file from any supported source.
+     *
+     * @param source - URL string, File, ArrayBuffer, or Uint8Array
+     * @param options - Optional settings
+     */
+    openAny(source: StreamingH5Source, options?: StreamingH5Options): Promise<void>;
+    /**
+     * Whether a file is currently open.
+     */
+    get isOpen(): boolean;
+    /**
+     * Get the root-level keys in the file.
+     */
+    keys(): string[];
+    /**
+     * Get the keys (children) at a given path.
+     */
+    getKeys(path: string): Promise<string[]>;
+    /**
+     * Get an attribute value.
+     */
+    getAttr(path: string, name: string): Promise<unknown>;
+    /**
+     * Get all attributes at a path.
+     */
+    getAttrs(path: string): Promise<Record<string, unknown>>;
+    /**
+     * Get dataset metadata (shape, dtype) without reading values.
+     */
+    getDatasetMeta(path: string): Promise<{
+        shape: number[];
+        dtype: string;
+    }>;
+    /**
+     * Read a dataset's value.
+     *
+     * @param path - Path to the dataset
+     * @param slice - Optional slice specification (array of [start, end] pairs)
+     */
+    getDatasetValue(path: string, slice?: Array<[number, number] | []>): Promise<{
+        value: unknown;
+        shape: number[];
+        dtype: string;
+    }>;
+    /**
+     * Close the file and terminate the worker.
+     */
+    close(): Promise<void>;
+}
+/**
+ * Check if streaming via Web Worker is supported in the current environment.
+ */
+declare function isStreamingSupported(): boolean;
+/**
+ * Open a remote HDF5 file with streaming support.
+ *
+ * @param url - URL to the HDF5 file
+ * @param options - Optional settings
+ * @returns A StreamingH5File instance
+ */
+declare function openStreamingH5(url: string, options?: StreamingH5Options): Promise<StreamingH5File>;
+/**
+ * Open an HDF5 file from any supported source using a Web Worker.
+ *
+ * This is the recommended way to open HDF5 files in the browser as it
+ * offloads all h5wasm operations to a Web Worker, avoiding main thread blocking.
+ *
+ * @param source - URL string, File object, ArrayBuffer, or Uint8Array
+ * @param options - Optional settings
+ * @returns A StreamingH5File instance
+ *
+ * @example
+ * ```typescript
+ * // From URL
+ * const file = await openH5Worker("https://example.com/data.h5");
+ *
+ * // From File (file input)
+ * const file = await openH5Worker(inputElement.files[0]);
+ *
+ * // From ArrayBuffer
+ * const file = await openH5Worker(arrayBuffer);
+ * ```
+ */
+declare function openH5Worker(source: StreamingH5Source, options?: StreamingH5Options): Promise<StreamingH5File>;
+
+/**
  * Video backend for embedded images in HDF5 files accessed via streaming.
  *
  * This backend uses StreamingH5File (Web Worker + range requests) instead of
@@ -3115,6 +3092,32 @@ declare class CropVideoBackend implements VideoBackend {
     close(): void;
 }
 
+type SlpSource = string | ArrayBuffer | Uint8Array | File | FileSystemFileHandle;
+type StreamMode = "auto" | "range" | "download";
+type OpenH5Options = {
+    /**
+     * Streaming mode for remote files:
+     * - "auto": Try range requests, fall back to download
+     * - "range": Use HTTP range requests (requires Worker support in browser)
+     * - "download": Always download the entire file
+     */
+    stream?: StreamMode;
+    /** Filename hint for the HDF5 file */
+    filenameHint?: string;
+    /**
+     * Extra HTTP request headers (e.g. `{ Authorization: "Bearer …" }`) applied to
+     * every remote byte fetch for this file AND persisted onto embedded-video
+     * backends so later reopens/probes stay authenticated. Header NAMES are
+     * case-insensitive; `"Accept-Encoding"` is always overridden to `"identity"`
+     * on range requests. Ignored for Google Drive URLs (credentials are stripped).
+     *
+     * Limitation: `createLazyFile` (Emscripten synchronous XHR) cannot carry
+     * custom headers, so authenticated remote `.slp` is downloaded in full;
+     * range streaming with custom headers is not yet supported on the main thread.
+     */
+    headers?: Record<string, string>;
+};
+
 /** How TIFF pages map onto LabelImage frames. Mirrors Python `pages_as`. */
 type PagesAs = "auto" | "time" | "classes";
 interface LoadLabelImagesOptions {
@@ -3506,6 +3509,29 @@ declare function withRetries<T>(fn: () => Promise<T>, options?: {
  * backoff). Used by fetch wrappers to attach `retryAfterMs` to a thrown error.
  */
 declare function parseRetryAfterMs(value: string | null): number | undefined;
+/**
+ * `fetch` wrapped in {@link withRetries}: every remote byte fetch goes through
+ * here so transient failures are retried with backoff (mirrors Python's
+ * `_open_with_retries`, which wraps every remote open).
+ *
+ * Retries on:
+ * - transient network errors (`raiseRemote` classifies a `TypeError` →
+ *   "connection error" / an `AbortError` → "timeout" as a retryable
+ *   {@link RemoteIOError} with `status === null`), and
+ * - retryable HTTP statuses ({@link RETRYABLE_STATUSES}: 429/500/502/503/504),
+ *   honoring a `Retry-After` header via {@link parseRetryAfterMs}.
+ *
+ * For a NON-retryable status (e.g. 206/404/redirect) the `Response` is returned
+ * unchanged so the caller applies its own handling. Every thrown error is the
+ * redacted typed {@link RemoteIOError}; the raw transport error never escapes.
+ *
+ * @param url Resolved fetch URL (raw; redacted by the error constructor).
+ * @param init `RequestInit` (headers, method, Range, etc.).
+ * @param options `retries` forwarded to {@link withRetries}.
+ */
+declare function fetchRetrying(url: string, init?: RequestInit, options?: {
+    retries?: number;
+}): Promise<Response>;
 /**
  * Non-throwing existence probe for a URL. Tries HEAD, falling back to a
  * `Range: bytes=0-0` GET when HEAD is unavailable. ALWAYS returns a boolean
@@ -4288,4 +4314,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { IOU_MATCHER as $, VideoMatchMethod as A, BoundingBox as B, CropVideoBackend as C, DEFAULT_MAX_BYTES as D, ErrorMode as E, FrameStrategy as F, SkeletonMatcher as G, InstanceMatcher as H, type ImageBytesReader as I, TrackMatcher as J, VideoMatcher as K, Labels as L, ConflictResolution as M, MergeError as N, SkeletonMismatchError as O, MergeResult as P, MatchResult as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, MergeProgressBar as W, STRUCTURE_SKELETON_MATCHER as X, SUBSET_SKELETON_MATCHER as Y, OVERLAP_SKELETON_MATCHER as Z, DUPLICATE_MATCHER as _, LabeledFrame as a, PredictedLabelImage as a$, IDENTITY_INSTANCE_MATCHER as a0, NAME_TRACK_MATCHER as a1, IDENTITY_TRACK_MATCHER as a2, AUTO_VIDEO_MATCHER as a3, PATH_VIDEO_MATCHER as a4, BASENAME_VIDEO_MATCHER as a5, IMAGE_DEDUP_VIDEO_MATCHER as a6, SHAPE_VIDEO_MATCHER as a7, setFsResolver as a8, type FsResolver as a9, type Geometry as aA, type ROIOptions as aB, rasterizeGeometry as aC, encodeWkb as aD, decodeWkb as aE, PredictedROI as aF, encodeRle as aG, decodeRle as aH, resizeNearest as aI, type SegmentationMaskOptions as aJ, SegmentationMask as aK, type UserSegmentationMaskOptions as aL, UserSegmentationMask as aM, PredictedSegmentationMask as aN, type BoundingBoxOptions as aO, UserBoundingBox as aP, PredictedBoundingBox as aQ, getCentroidSkeleton as aR, CENTROID_SKELETON as aS, type CentroidOptions as aT, Centroid as aU, UserCentroid as aV, PredictedCentroid as aW, type LabelImageObjectInfo as aX, type LabelImageOptions as aY, LabelImage as aZ, UserLabelImage as a_, type MergeStrategy as aa, _relinkFromPredicted as ab, _annotationCentroidXy as ac, _findAnnotationMatches as ad, _findAnnotationLinkMatches as ae, _resolveMergedIsNegative as af, EXISTS_TTL_MS as ag, type CropOptions as ah, resolveCropRect as ai, type VideoBackendErrorKind as aj, type VideoBackendError as ak, SuggestionFrame as al, rodriguesTransformation as am, Camera as an, CameraGroup as ao, InstanceGroup as ap, FrameGroup as aq, RecordingSession as ar, makeCameraFromDict as as, Identity as at, Instance3D as au, PredictedInstance3D as av, LazyDataStore as aw, LazyFrameList as ax, _registerMaskFactory as ay, AnnotationType as az, LabelsSet as b, type RGB as b$, normalizeLabelIds as b0, type VideoFrame as b1, type VideoBackend as b2, Mp4BoxVideoBackend as b3, type MediaBunnyOptions as b4, MediaBunnyVideoBackend as b5, StreamingHdf5VideoBackend as b6, type ImageVideoOptions as b7, computePrefetchWindow as b8, ImageVideoBackend as b9, resolveUrl as bA, statusToMessage as bB, raiseRemote as bC, identityHeaders as bD, stripCrossOriginHeaders as bE, withRetries as bF, parseRetryAfterMs as bG, headOrRangeProbe as bH, type GeoJSONFeature as bI, type GeoJSONFeatureCollection as bJ, roisToGeoJSON as bK, roisFromGeoJSON as bL, writeGeoJSON as bM, readGeoJSON as bN, type LabelsDict as bO, toDict as bP, fromDict as bQ, toNumpy as bR, fromNumpy as bS, labelsFromNumpy as bT, decodeYamlSkeleton as bU, encodeYamlSkeleton as bV, readSkeletonJson as bW, writeSkeletonJson as bX, readTrainingConfigSkeletons as bY, readTrainingConfigSkeleton as bZ, isTrainingConfig as b_, loadSlp as ba, saveSlp as bb, loadAnalysisH5 as bc, saveAnalysisH5 as bd, loadSlpSet as be, saveSlpSet as bf, loadVideo as bg, loadLabelImages as bh, setLabelImageFileReader as bi, type PagesAs as bj, type LoadLabelImagesOptions as bk, type LabelImageFileReader as bl, saveSlpToBytes as bm, isAnalysisH5File as bn, URL_SCHEMES as bo, CLOUD_SCHEMES as bp, GDRIVE_HOSTS as bq, SENSITIVE_HEADERS as br, SENSITIVE_QUERY_PARAMS as bs, RETRYABLE_STATUSES as bt, isUrl as bu, isGdriveUrl as bv, redactUrl as bw, redactedCauseSummary as bx, RemoteIOError as by, type ResolvedUrl as bz, type RenderOptions as c, type RGBA as c0, type ColorSpec as c1, type ColorScheme as c2, type PaletteName as c3, type MarkerShape as c4, type Overlay as c5, type VideoOverlay as c6, NAMED_COLORS as c7, PALETTES as c8, getPalette as c9, cropPoints as cA, uncropPoints as cB, type CropRect as cC, type FlatPoints as cD, type PointPairs as cE, cropFrame as cF, type FrameLike as cG, type RawFrame as cH, type Fill as cI, resolveColor as ca, rgbToCSS as cb, determineColorScheme as cc, drawCircle as cd, drawSquare as ce, drawDiamond as cf, drawTriangle as cg, drawCross as ch, drawTrails as ci, getMarkerFunction as cj, MARKER_FUNCTIONS as ck, type DrawTrailsOptions as cl, resolveTrailNode as cm, computeTrails as cn, nTrailPaletteColors as co, collectTracks as cp, type TrailTarget as cq, type Trail as cr, RenderContext as cs, InstanceContext as ct, drawMasks as cu, drawLabelImage as cv, drawBboxes as cw, drawRois as cx, applyOverlay as cy, type RawLabelImage as cz, type VideoOptions as d, SeqHeader as e, SeqIndex as f, getImageBytesReader as g, BlobByteSource as h, type ByteSource as i, createVideoBackend as j, UnsupportedVideoFormatError as k, type VideoBackendType as l, type CropWrapOptions as m, checkDownloadHost as n, openGdrive as o, parseGdrive as p, StreamingH5File as q, openStreamingH5 as r, setImageBytesReader as s, openH5Worker as t, urlFromConfirmation as u, isStreamingSupported as v, type StreamingH5Source as w, readSlpStreaming as x, SkeletonMatchMethod as y, InstanceMatchMethod as z };
+export { IOU_MATCHER as $, VideoMatchMethod as A, BoundingBox as B, CropVideoBackend as C, DEFAULT_MAX_BYTES as D, ErrorMode as E, FrameStrategy as F, SkeletonMatcher as G, InstanceMatcher as H, type ImageBytesReader as I, TrackMatcher as J, VideoMatcher as K, Labels as L, ConflictResolution as M, MergeError as N, SkeletonMismatchError as O, MergeResult as P, MatchResult as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, MergeProgressBar as W, STRUCTURE_SKELETON_MATCHER as X, SUBSET_SKELETON_MATCHER as Y, OVERLAP_SKELETON_MATCHER as Z, DUPLICATE_MATCHER as _, LabeledFrame as a, PredictedLabelImage as a$, IDENTITY_INSTANCE_MATCHER as a0, NAME_TRACK_MATCHER as a1, IDENTITY_TRACK_MATCHER as a2, AUTO_VIDEO_MATCHER as a3, PATH_VIDEO_MATCHER as a4, BASENAME_VIDEO_MATCHER as a5, IMAGE_DEDUP_VIDEO_MATCHER as a6, SHAPE_VIDEO_MATCHER as a7, setFsResolver as a8, type FsResolver as a9, type Geometry as aA, type ROIOptions as aB, rasterizeGeometry as aC, encodeWkb as aD, decodeWkb as aE, PredictedROI as aF, encodeRle as aG, decodeRle as aH, resizeNearest as aI, type SegmentationMaskOptions as aJ, SegmentationMask as aK, type UserSegmentationMaskOptions as aL, UserSegmentationMask as aM, PredictedSegmentationMask as aN, type BoundingBoxOptions as aO, UserBoundingBox as aP, PredictedBoundingBox as aQ, getCentroidSkeleton as aR, CENTROID_SKELETON as aS, type CentroidOptions as aT, Centroid as aU, UserCentroid as aV, PredictedCentroid as aW, type LabelImageObjectInfo as aX, type LabelImageOptions as aY, LabelImage as aZ, UserLabelImage as a_, type MergeStrategy as aa, _relinkFromPredicted as ab, _annotationCentroidXy as ac, _findAnnotationMatches as ad, _findAnnotationLinkMatches as ae, _resolveMergedIsNegative as af, EXISTS_TTL_MS as ag, type CropOptions as ah, resolveCropRect as ai, type VideoBackendErrorKind as aj, type VideoBackendError as ak, SuggestionFrame as al, rodriguesTransformation as am, Camera as an, CameraGroup as ao, InstanceGroup as ap, FrameGroup as aq, RecordingSession as ar, makeCameraFromDict as as, Identity as at, Instance3D as au, PredictedInstance3D as av, LazyDataStore as aw, LazyFrameList as ax, _registerMaskFactory as ay, AnnotationType as az, LabelsSet as b, isTrainingConfig as b$, normalizeLabelIds as b0, type VideoFrame as b1, type VideoBackend as b2, Mp4BoxVideoBackend as b3, type MediaBunnyOptions as b4, MediaBunnyVideoBackend as b5, StreamingHdf5VideoBackend as b6, type ImageVideoOptions as b7, computePrefetchWindow as b8, ImageVideoBackend as b9, resolveUrl as bA, statusToMessage as bB, raiseRemote as bC, identityHeaders as bD, stripCrossOriginHeaders as bE, withRetries as bF, parseRetryAfterMs as bG, fetchRetrying as bH, headOrRangeProbe as bI, type GeoJSONFeature as bJ, type GeoJSONFeatureCollection as bK, roisToGeoJSON as bL, roisFromGeoJSON as bM, writeGeoJSON as bN, readGeoJSON as bO, type LabelsDict as bP, toDict as bQ, fromDict as bR, toNumpy as bS, fromNumpy as bT, labelsFromNumpy as bU, decodeYamlSkeleton as bV, encodeYamlSkeleton as bW, readSkeletonJson as bX, writeSkeletonJson as bY, readTrainingConfigSkeletons as bZ, readTrainingConfigSkeleton as b_, loadSlp as ba, saveSlp as bb, loadAnalysisH5 as bc, saveAnalysisH5 as bd, loadSlpSet as be, saveSlpSet as bf, loadVideo as bg, loadLabelImages as bh, setLabelImageFileReader as bi, type PagesAs as bj, type LoadLabelImagesOptions as bk, type LabelImageFileReader as bl, saveSlpToBytes as bm, isAnalysisH5File as bn, URL_SCHEMES as bo, CLOUD_SCHEMES as bp, GDRIVE_HOSTS as bq, SENSITIVE_HEADERS as br, SENSITIVE_QUERY_PARAMS as bs, RETRYABLE_STATUSES as bt, isUrl as bu, isGdriveUrl as bv, redactUrl as bw, redactedCauseSummary as bx, RemoteIOError as by, type ResolvedUrl as bz, type RenderOptions as c, type RGB as c0, type RGBA as c1, type ColorSpec as c2, type ColorScheme as c3, type PaletteName as c4, type MarkerShape as c5, type Overlay as c6, type VideoOverlay as c7, NAMED_COLORS as c8, PALETTES as c9, type RawLabelImage as cA, cropPoints as cB, uncropPoints as cC, type CropRect as cD, type FlatPoints as cE, type PointPairs as cF, cropFrame as cG, type FrameLike as cH, type RawFrame as cI, type Fill as cJ, getPalette as ca, resolveColor as cb, rgbToCSS as cc, determineColorScheme as cd, drawCircle as ce, drawSquare as cf, drawDiamond as cg, drawTriangle as ch, drawCross as ci, drawTrails as cj, getMarkerFunction as ck, MARKER_FUNCTIONS as cl, type DrawTrailsOptions as cm, resolveTrailNode as cn, computeTrails as co, nTrailPaletteColors as cp, collectTracks as cq, type TrailTarget as cr, type Trail as cs, RenderContext as ct, InstanceContext as cu, drawMasks as cv, drawLabelImage as cw, drawBboxes as cx, drawRois as cy, applyOverlay as cz, type VideoOptions as d, SeqHeader as e, SeqIndex as f, getImageBytesReader as g, BlobByteSource as h, type ByteSource as i, createVideoBackend as j, UnsupportedVideoFormatError as k, type VideoBackendType as l, type CropWrapOptions as m, checkDownloadHost as n, openGdrive as o, parseGdrive as p, StreamingH5File as q, openStreamingH5 as r, setImageBytesReader as s, openH5Worker as t, urlFromConfirmation as u, isStreamingSupported as v, type StreamingH5Source as w, readSlpStreaming as x, SkeletonMatchMethod as y, InstanceMatchMethod as z };
