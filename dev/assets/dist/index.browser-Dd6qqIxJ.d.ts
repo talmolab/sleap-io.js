@@ -3153,12 +3153,18 @@ declare function isAnalysisH5File(source: string | ArrayBuffer | Uint8Array): Pr
  * @param options.openVideos - Whether to open video backends (default: true)
  * @param options.h5 - HDF5 opening options (stream mode, filename hint)
  * @param options.lazy - If true, use lazy loading for on-demand frame materialization (default: false)
+ * @param options.onProgress - Optional callback fired as loading advances through
+ *   its stages: (current, total, message?), where current/total count completed
+ *   stages and message labels the stage about to run. Emitted by all reader
+ *   paths (streaming, eager, and lazy); the final call is (total, total,
+ *   "Finalizing"). Stage counts differ by path (streaming is finer-grained).
  * @returns Loaded Labels object
  */
 declare function loadSlp(source: SlpSource, options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
     lazy?: boolean;
+    onProgress?: (current: number, total: number, message?: string) => void;
 }): Promise<Labels>;
 /**
  * Save labels to a SLEAP labels file (.slp).
@@ -3936,6 +3942,13 @@ interface StreamingSlpOptions {
     filenameHint?: string;
     /** Whether to open video backends for embedded videos (default: false) */
     openVideos?: boolean;
+    /**
+     * Optional progress callback fired as loading advances through its stages.
+     * `current` counts completed stages out of `total`; `message` labels the
+     * stage about to run. Matches the (current, total, message?) convention used
+     * elsewhere in the library (Labels.merge, RenderOptions.onProgress).
+     */
+    onProgress?: (current: number, total: number, message?: string) => void;
 }
 /**
  * Read an SLP file using a Web Worker for efficient, non-blocking HDF5 access.

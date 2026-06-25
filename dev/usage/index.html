@@ -1001,6 +1001,32 @@ JPEG/PNG frames requires an image decoder (a browser, or the optional
 <span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">frame</span><span class="p">]</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">find</span><span class="p">({</span><span class="w"> </span><span class="nx">video</span><span class="p">,</span><span class="w"> </span><span class="nx">frameIdx</span><span class="o">:</span><span class="w"> </span><span class="kt">42</span><span class="w"> </span><span class="p">});</span><span class="w">   </span><span class="c1">// LabeledFrame | undefined</span>
 </code></pre></div>
 </blockquote>
+<h3 id="tracking-load-progress">Tracking load progress<a class="headerlink" href="#tracking-load-progress" title="Permanent link">&para;</a></h3>
+<p>Pass an <code>onProgress</code> callback to <code>loadSlp</code> to surface load progress (for example,
+to drive a progress bar). It fires <code>(current, total, message?)</code> as the loader
+advances through its stages: <code>current</code> counts completed stages out of <code>total</code>,
+and <code>message</code> labels the stage about to run. The final call is always
+<code>(total, total, "Finalizing")</code>. This matches the <code>(current, total, message?)</code>
+convention used elsewhere in the library (<code>Labels.merge</code>,
+<code>RenderOptions.onProgress</code>).</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">&quot;dataset.slp&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">onProgress</span><span class="o">:</span><span class="w"> </span><span class="p">(</span><span class="nx">current</span><span class="p">,</span><span class="w"> </span><span class="nx">total</span><span class="p">,</span><span class="w"> </span><span class="nx">message</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="c1">// Update a progress bar: current / total, with a stage label.</span>
+<span class="w">    </span><span class="kd">const</span><span class="w"> </span><span class="nx">pct</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nb">Math</span><span class="p">.</span><span class="nx">round</span><span class="p">((</span><span class="nx">current</span><span class="w"> </span><span class="o">/</span><span class="w"> </span><span class="nx">total</span><span class="p">)</span><span class="w"> </span><span class="o">*</span><span class="w"> </span><span class="mf">100</span><span class="p">);</span>
+<span class="w">    </span><span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="sb">`[</span><span class="si">${</span><span class="nx">pct</span><span class="si">}</span><span class="sb">%] </span><span class="si">${</span><span class="nx">message</span><span class="w"> </span><span class="o">??</span><span class="w"> </span><span class="s2">&quot;&quot;</span><span class="si">}</span><span class="sb">`</span><span class="p">);</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="p">});</span>
+</code></pre></div>
+<p>All reader paths emit progress — the streaming reader (browser, HTTP range
+requests), the eager reader, and the lazy reader (Node, or the no-Worker browser
+fallback). The stage lists differ per path (the streaming reader reports finer
+stages than the eager/lazy readers), but the <code>(current, total, message?)</code>
+contract is identical, so a single bar works for any path. When <code>openVideos</code> is
+enabled, the videos stage additionally reports <code>"Opening videos (i/n)"</code> as each
+embedded video backend is opened. Reporting is a pure side effect and never
+changes the loaded <code>Labels</code>.</p>
 <h2 id="saving-with-embedded-frames">Saving with Embedded Frames<a class="headerlink" href="#saving-with-embedded-frames" title="Permanent link">&para;</a></h2>
 <p>Embed video frames directly into the SLP file:</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">saveSlp</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
@@ -1284,6 +1310,12 @@ JPEG/PNG frames requires an image decoder (a browser, or the optional
 <td><code>boolean</code></td>
 <td><code>false</code></td>
 <td>Use lazy loading for on-demand frame materialization</td>
+</tr>
+<tr>
+<td><code>onProgress</code></td>
+<td><code>(current, total, message?) =&gt; void</code></td>
+<td><code>undefined</code></td>
+<td>Progress callback fired per load stage; ends with <code>(total, total, "Finalizing")</code>. Emitted by all reader paths (streaming/eager/lazy). See <a href="#tracking-load-progress">Tracking load progress</a>.</td>
 </tr>
 </tbody>
 </table>

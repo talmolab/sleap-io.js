@@ -10668,7 +10668,8 @@ async function readSlpStreaming(source, options) {
       file,
       sourcePath,
       options?.filenameHint,
-      openVideos
+      openVideos,
+      options?.onProgress
     );
   } finally {
     if (!openVideos) {
@@ -10676,7 +10677,32 @@ async function readSlpStreaming(source, options) {
     }
   }
 }
-async function readFromStreamingFile(file, url, filenameHint, openVideos = false) {
+async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress) {
+  const STAGES = [
+    "Reading metadata",
+    // 0
+    "Reading tracks",
+    // 1
+    "Reading video metadata",
+    // 2 (also holds the bar for "Opening videos (i/n)")
+    "Reading suggestions",
+    // 3
+    "Reading frames",
+    // 4
+    "Reading instances",
+    // 5
+    "Reading points",
+    // 6
+    "Building labeled frames",
+    // 7
+    "Reading identities",
+    // 8
+    "Reading sessions"
+    // 9
+  ];
+  const total = STAGES.length;
+  const report = (n, message) => onProgress?.(n, total, message ?? STAGES[n]);
+  report(0);
   const metadataAttrs = await file.getAttrs("metadata");
   const formatId = Number(
     metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
@@ -10684,20 +10710,28 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   const metadataJson = parseJsonAttr(metadataAttrs["json"]);
   const labelsPath = filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
   const skeletons = parseSkeletons(metadataJson);
+  report(1);
   const tracks = await readTracksStreaming(file);
+  report(2);
   const videoCrops = await readVideoCropsStreaming(file);
   const videos = await readVideosStreaming(
     file,
     labelsPath,
     openVideos,
     formatId,
-    videoCrops
+    videoCrops,
+    openVideos ? (i, n) => report(2, `Opening videos (${i}/${n})`) : void 0
   );
+  report(3);
   const suggestions = await readSuggestionsStreaming(file, videos);
+  report(4);
   const framesData = await readStructDatasetStreaming(file, "frames");
+  report(5);
   const instancesData = await readStructDatasetStreaming(file, "instances");
+  report(6);
   const pointsData = await readStructDatasetStreaming(file, "points");
   const predPointsData = await readStructDatasetStreaming(file, "pred_points");
+  report(7);
   const labeledFrames = buildLabeledFrames({
     framesData,
     instancesData,
@@ -10708,7 +10742,9 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     videos,
     formatId
   });
+  report(8);
   const identities = await readIdentitiesStreaming(file);
+  report(9);
   const sessions = await readSessionsStreaming(
     file,
     videos,
@@ -10716,6 +10752,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     labeledFrames,
     identities
   );
+  onProgress?.(total, total, "Finalizing");
   return new Labels({
     labeledFrames,
     videos,
@@ -10778,7 +10815,7 @@ async function readVideoCropsStreaming(file) {
     return out;
   }
 }
-async function readVideosStreaming(file, labelsPath, openVideos = false, formatId = 1, videoCrops) {
+async function readVideosStreaming(file, labelsPath, openVideos = false, formatId = 1, videoCrops, onVideoProgress) {
   try {
     const keys = file.keys();
     if (!keys.includes("videos_json")) return [];
@@ -10787,6 +10824,7 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
     const metadataList = parseVideosMetadata(values, labelsPath);
     const videos = [];
     for (let videoIndex = 0; videoIndex < metadataList.length; videoIndex++) {
+      onVideoProgress?.(videoIndex + 1, metadataList.length);
       const meta = metadataList[videoIndex];
       let datasetPath = meta.dataset;
       if (meta.embedded && !datasetPath) {
@@ -14054,9 +14092,23 @@ function warnAmbiguous(path, nPages, dtype) {
 // src/codecs/slp/read.ts
 import { inflate } from "pako";
 var textDecoder2 = new TextDecoder();
+var EAGER_STAGES = [
+  "Reading metadata",
+  "Reading tracks",
+  "Reading videos",
+  "Reading suggestions",
+  "Building labeled frames",
+  "Reading identities",
+  "Reading sessions",
+  "Reading annotations"
+];
 async function readSlp(source, options) {
+  const total = EAGER_STAGES.length;
+  const onProgress = options?.onProgress;
+  const report = (i) => onProgress?.(i, total, EAGER_STAGES[i]);
   const { file, close } = await openH5File(source, options?.h5);
   try {
+    report(0);
     const metadataGroup = file.get("metadata");
     if (!metadataGroup) {
       throw new Error("Missing /metadata group in SLP file");
@@ -14068,17 +14120,23 @@ async function readSlp(source, options) {
     const metadataJson = parseJsonAttr(metadataAttrs["json"]);
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const skeletons = parseSkeletons(metadataJson);
+    report(1);
     const tracks = readTracks(file.get("tracks_json"));
     const videoCrops = readVideoCrops(file);
+    report(2);
+    const openVideos = options?.openVideos ?? true;
     const videos = await readVideos(
       file.get("videos_json"),
       labelsPath,
-      options?.openVideos ?? true,
+      openVideos,
       file,
       formatId,
-      videoCrops
+      videoCrops,
+      openVideos ? (i, n) => onProgress?.(2, total, `Opening videos (${i}/${n})`) : void 0
     );
+    report(3);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
+    report(4);
     const framesData = normalizeStructDataset(file.get("frames"));
     const instancesData = normalizeStructDataset(file.get("instances"));
     const pointsData = normalizeStructDataset(file.get("points"));
@@ -14109,7 +14167,9 @@ async function readSlp(source, options) {
         }
       }
     }
+    report(5);
     const identities = readIdentities(file.get("identities_json"));
+    report(6);
     const sessions = readSessions(
       file.get("sessions_json"),
       videos,
@@ -14117,6 +14177,7 @@ async function readSlp(source, options) {
       labeledFrames,
       identities
     );
+    report(7);
     const allInstances = labeledFrames.flatMap((f) => f.instances);
     const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
       file,
@@ -14190,6 +14251,7 @@ async function readSlp(source, options) {
         }
       }
     }
+    onProgress?.(total, total, "Finalizing");
     return new Labels({
       labeledFrames,
       videos,
@@ -14205,9 +14267,23 @@ async function readSlp(source, options) {
     close();
   }
 }
+var LAZY_STAGES = [
+  "Reading metadata",
+  "Reading tracks",
+  "Reading videos",
+  "Reading suggestions",
+  "Reading frame data",
+  "Reading identities",
+  "Reading sessions",
+  "Reading annotations"
+];
 async function readSlpLazy(source, options) {
+  const total = LAZY_STAGES.length;
+  const onProgress = options?.onProgress;
+  const report = (i) => onProgress?.(i, total, LAZY_STAGES[i]);
   const { file, close } = await openH5File(source, options?.h5);
   try {
+    report(0);
     const metadataGroup = file.get("metadata");
     if (!metadataGroup) {
       throw new Error("Missing /metadata group in SLP file");
@@ -14219,17 +14295,23 @@ async function readSlpLazy(source, options) {
     const metadataJson = parseJsonAttr(metadataAttrs["json"]);
     const labelsPath = typeof source === "string" ? source : options?.h5?.filenameHint ?? "slp-data.slp";
     const skeletons = parseSkeletons(metadataJson);
+    report(1);
     const tracks = readTracks(file.get("tracks_json"));
     const videoCrops = readVideoCrops(file);
+    report(2);
+    const openVideos = options?.openVideos ?? true;
     const videos = await readVideos(
       file.get("videos_json"),
       labelsPath,
-      options?.openVideos ?? true,
+      openVideos,
       file,
       formatId,
-      videoCrops
+      videoCrops,
+      openVideos ? (i, n) => onProgress?.(2, total, `Opening videos (${i}/${n})`) : void 0
     );
+    report(3);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
+    report(4);
     const framesData = normalizeStructDataset(file.get("frames"));
     const instancesData = normalizeStructDataset(file.get("instances"));
     const pointsData = normalizeStructDataset(file.get("points"));
@@ -14256,7 +14338,9 @@ async function readSlpLazy(source, options) {
       negativeFrames
     });
     const lazyFrames = new LazyFrameList(store);
+    report(5);
     const identities = readIdentities(file.get("identities_json"));
+    report(6);
     const sessions = readSessions(
       file.get("sessions_json"),
       videos,
@@ -14264,6 +14348,7 @@ async function readSlpLazy(source, options) {
       [],
       identities
     );
+    report(7);
     const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
       file,
       videos,
@@ -14348,6 +14433,7 @@ async function readSlpLazy(source, options) {
     });
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;
+    onProgress?.(total, total, "Finalizing");
     return labels;
   } finally {
     close();
@@ -14418,11 +14504,12 @@ function readVideoCrops(file) {
   }
   return out;
 }
-async function readVideos(dataset, labelsPath, openVideos, file, formatId, videoCrops) {
+async function readVideos(dataset, labelsPath, openVideos, file, formatId, videoCrops, onVideoProgress) {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const videos = [];
   for (let videoIndex = 0; videoIndex < values.length; videoIndex++) {
+    onVideoProgress?.(videoIndex + 1, values.length);
     const entry = values[videoIndex];
     if (!entry) continue;
     const parsed = typeof entry === "string" ? JSON.parse(entry) : JSON.parse(textDecoder2.decode(entry));
@@ -15628,7 +15715,8 @@ async function loadSlp(source, options) {
       try {
         return await readSlpStreaming(streamingSource, {
           filenameHint: options?.h5?.filenameHint,
-          openVideos
+          openVideos,
+          onProgress: options?.onProgress
         });
       } catch (e) {
         if (streamMode === "auto") {
@@ -15643,9 +15731,17 @@ async function loadSlp(source, options) {
     }
   }
   if (lazy) {
-    return readSlpLazy(source, { openVideos, h5: options?.h5 });
+    return readSlpLazy(source, {
+      openVideos,
+      h5: options?.h5,
+      onProgress: options?.onProgress
+    });
   }
-  return readSlp(source, { openVideos, h5: options?.h5 });
+  return readSlp(source, {
+    openVideos,
+    h5: options?.h5,
+    onProgress: options?.onProgress
+  });
 }
 async function saveSlp(labels, filename, options) {
   await writeSlp(filename, labels, {
