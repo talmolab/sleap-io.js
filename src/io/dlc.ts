@@ -56,7 +56,12 @@
  * 5. **Pickle decoding.** `loadDlcSplits` requires reading a Python pickle
  *    (the DLC `Documentation_data-*.pickle`); a minimal protocol 2-5 opcode
  *    interpreter is implemented here ({@link readPickle}) since the repo has no
- *    pickle dependency. `loadDlc` / `loadDlcProject` have no pickle dependency.
+ *    pickle dependency. It decodes the train/test index arrays whether they are
+ *    plain Python `list[int]` or **numpy integer ndarrays** — the latter being
+ *    what real DeepLabCut writes (`SplitTrials` slices `np.random.permutation`
+ *    and `save_metadata` pickles the resulting `np.ndarray`s directly). Both
+ *    the modern `_frombuffer`/`BYTEARRAY8` and the older `_reconstruct`+`BUILD`
+ *    numpy encodings are handled. `loadDlc` / `loadDlcProject` need no pickle.
  * 6. **`**kwargs` ignored.** Python's forwarded loader kwargs (PR #488/#492) are
  *    modeled as an index signature on the options objects and ignored.
  */
@@ -292,8 +297,23 @@ export function parseDlcCrop(
 
   if (parts.length !== 4) return null;
 
-  const nums = parts.map((p) => Math.trunc(parseFloat(String(p))));
-  if (nums.some((n) => Number.isNaN(n))) return null;
+  // Mirror Python `int(float(token))`: a token must parse *fully* as a number;
+  // partial tokens like "10abc" must be rejected (Python's `float("10abc")`
+  // raises), unlike JS `parseFloat`, which would accept the leading "10".
+  const nums: number[] = [];
+  for (const p of parts) {
+    if (typeof p === "number") {
+      if (!Number.isFinite(p)) return null;
+      nums.push(Math.trunc(p));
+      continue;
+    }
+    const s = String(p).trim();
+    // Full-string numeric match (int/float, optional sign/exponent).
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return null;
+    const v = Number(s);
+    if (!Number.isFinite(v)) return null;
+    nums.push(Math.trunc(v));
+  }
   const [x1, x2, y1, y2] = nums as [number, number, number, number];
 
   if (x2 <= x1 || y2 <= y1) {
@@ -1035,15 +1055,32 @@ function selectDocumentationPickle(
   return candidates[0].path;
 }
 
-/** Read train/test positional indices from a DLC Documentation pickle. */
+/**
+ * Read train/test positional indices from a DLC Documentation pickle.
+ *
+ * The pickle is a 4-element list `[data, trainIndices, testIndices,
+ * trainFraction]`. `trainIndices` (`meta[1]`) and `testIndices` (`meta[2]`) are
+ * the only elements consumed. Real DeepLabCut writes these as numpy integer
+ * ndarrays (decoded by {@link readPickle} into {@link NumpyArray}); a
+ * hand-rolled writer may instead emit plain Python `list[int]`. Both are
+ * supported here; the `-1` padding sentinel (from `enforce_train_fraction`) is
+ * filtered out, mirroring Python `_read_dlc_split`.
+ */
 export function readDlcSplit(picklePath: string): [number[], number[]] {
   const buf = fs.readFileSync(picklePath);
   const meta = readPickle(buf) as unknown[];
-  const toInts = (arr: unknown): number[] =>
-    (arr as unknown[])
-      .map((i) => Number(i))
-      .filter((i) => i !== -1 && !Number.isNaN(i));
-  return [toInts(meta[1]), toInts(meta[2])];
+  return [extractIndexArray(meta[1]), extractIndexArray(meta[2])];
+}
+
+/**
+ * Coerce a decoded pickle value (a numpy int {@link NumpyArray} or a plain
+ * `number[]`) into a list of positional indices, dropping `-1` sentinels and
+ * any non-finite entries.
+ */
+function extractIndexArray(value: unknown): number[] {
+  const raw = value instanceof NumpyArray ? value.values : value;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((i) => Number(i)).filter((i) => i !== -1 && !Number.isNaN(i));
 }
 
 /** Read the scorer name from the first row of a DLC CSV. */
@@ -1237,7 +1274,7 @@ export function loadDlcSplits(
 }
 
 // -----------------------------------------------------------------------------
-// Minimal Python pickle reader (protocols 2-5)
+// Minimal Python pickle reader (protocols 2-5), with numpy int-array decoding
 // -----------------------------------------------------------------------------
 
 /** Placeholder for callables/classes reached via GLOBAL/STACK_GLOBAL. */
@@ -1249,14 +1286,142 @@ class PickleGlobalRef {
 }
 
 /**
+ * Decoded `numpy.dtype` descriptor (enough to interpret an int ndarray's raw
+ * bytes). Built from the dtype-name string (e.g. `"i8"`, `"<i4"`, `"u2"`) seen
+ * in the dtype reduction; `byteorder` may later be refined by the dtype BUILD
+ * state (`"<"`, `">"`, `"="`, `"|"`).
+ */
+class NumpyDtype {
+  kind: string; // "i" (signed), "u" (unsigned), "f" (float), etc.
+  itemsize: number; // bytes per element
+  littleEndian: boolean;
+
+  constructor(name: string) {
+    // Names look like "i8" / "<i4" / ">u2" / "=f8". A leading byteorder char is
+    // optional; the trailing digits are the itemsize in bytes.
+    let s = name;
+    let little = true;
+    if (
+      s.length > 0 &&
+      (s[0] === "<" || s[0] === ">" || s[0] === "=" || s[0] === "|")
+    ) {
+      little = s[0] !== ">";
+      s = s.slice(1);
+    }
+    this.kind = s.length > 0 ? s[0] : "i";
+    const size = parseInt(s.slice(1), 10);
+    this.itemsize = Number.isNaN(size) ? 8 : size;
+    this.littleEndian = little;
+  }
+}
+
+/**
+ * A decoded numpy integer ndarray, reduced to a flat JS `number[]` of its
+ * values. DLC's `trainIndices`/`testIndices` are 1-D int arrays, so only the
+ * flat values are retained (shape is not needed by the split reader).
+ */
+class NumpyArray {
+  constructor(public values: number[]) {}
+}
+
+/** Coerce a value that may be a `Buffer`/bytes/latin1-string into a `Buffer`. */
+function asByteBuffer(raw: unknown): Buffer | null {
+  if (Buffer.isBuffer(raw)) return raw;
+  if (raw instanceof Uint8Array) return Buffer.from(raw);
+  if (typeof raw === "string") return Buffer.from(raw, "latin1");
+  return null;
+}
+
+/**
+ * Decode a contiguous little/big-endian integer buffer into a `number[]`
+ * according to a numpy dtype. Handles 1/2/4/8-byte signed and unsigned ints
+ * (the dtypes numpy uses for DLC split-index arrays across platforms).
+ */
+function decodeIntBuffer(buf: Buffer, dtype: NumpyDtype): number[] {
+  const { itemsize, kind, littleEndian } = dtype;
+  const signed = kind === "i";
+  const out: number[] = [];
+  const n = Math.floor(buf.length / itemsize);
+  for (let i = 0; i < n; i += 1) {
+    const off = i * itemsize;
+    let v: number;
+    switch (itemsize) {
+      case 1:
+        v = signed ? buf.readInt8(off) : buf.readUInt8(off);
+        break;
+      case 2:
+        v = littleEndian
+          ? signed
+            ? buf.readInt16LE(off)
+            : buf.readUInt16LE(off)
+          : signed
+            ? buf.readInt16BE(off)
+            : buf.readUInt16BE(off);
+        break;
+      case 4:
+        v = littleEndian
+          ? signed
+            ? buf.readInt32LE(off)
+            : buf.readUInt32LE(off)
+          : signed
+            ? buf.readInt32BE(off)
+            : buf.readUInt32BE(off);
+        break;
+      case 8: {
+        const big = littleEndian
+          ? signed
+            ? buf.readBigInt64LE(off)
+            : buf.readBigUInt64LE(off)
+          : signed
+            ? buf.readBigInt64BE(off)
+            : buf.readBigUInt64BE(off);
+        v = Number(big);
+        break;
+      }
+      default:
+        // Unknown width: cannot decode reliably; bail with what we have.
+        return out;
+    }
+    out.push(v);
+  }
+  return out;
+}
+
+/**
+ * Build a {@link NumpyArray} from a numpy `_frombuffer`/`_reconstruct`+state
+ * payload: a raw byte buffer plus its dtype. Returns `null` if the dtype is not
+ * an integer dtype we can decode (the split reader only needs int arrays).
+ */
+function buildNumpyArray(rawdata: unknown, dtype: unknown): NumpyArray | null {
+  if (!(dtype instanceof NumpyDtype)) return null;
+  if (dtype.kind !== "i" && dtype.kind !== "u") return null;
+  const buf = asByteBuffer(rawdata);
+  if (buf === null) return null;
+  return new NumpyArray(decodeIntBuffer(buf, dtype));
+}
+
+/**
  * Decode a Python pickle into JS values, supporting the subset of opcodes
- * needed for DLC's `Documentation_data-*.pickle` (a shallow
- * `[list, list[int], list[int], float]`, where the first `list` may contain
- * dicts whose values are tuples/strings/ints, and optionally numpy arrays).
+ * needed for DLC's `Documentation_data-*.pickle`: a shallow
+ * `[data, trainIndices, testIndices, trainFraction]` list. `trainIndices` /
+ * `testIndices` may be plain Python `list[int]` (as a hand-rolled writer emits)
+ * **or** numpy integer ndarrays — which is what real DeepLabCut writes, since
+ * `SplitTrials` slices `np.random.permutation(...)` and `save_metadata` pickles
+ * the resulting `np.ndarray`s without a `list()` conversion.
  *
- * The DLC split reader only consumes `meta[1]` / `meta[2]` (plain int lists),
- * so the lossy `data` payload need not be perfectly reconstructed; unrecognized
- * reductions are returned as opaque marker objects.
+ * Numpy arrays are decoded via two reductions:
+ *   - modern numpy (1.17+/2.x): `numpy[._]core.numeric._frombuffer(rawbytes,
+ *     dtype, shape, order)` — a single `REDUCE`, with `rawbytes` carried by a
+ *     `BYTEARRAY8` opcode;
+ *   - older numpy: `numpy.core.multiarray._reconstruct(...)` + `BUILD` with
+ *     state `(version, shape, dtype, fortran_order, rawdata)`, where `rawdata`
+ *     is often a `_codecs.encode(latin1str, 'latin1')` bytes reduction.
+ * The `numpy.dtype(name, ...)` reduction is decoded to a {@link NumpyDtype} so
+ * the raw bytes can be interpreted (int8/16/32/64, signed/unsigned, byteorder).
+ *
+ * The DLC split reader only consumes `meta[1]` / `meta[2]`; the lossy `data`
+ * payload need not be perfectly reconstructed, so any unrecognized reduction is
+ * returned as an opaque marker object.
  */
 export function readPickle(buffer: Buffer): unknown {
   const MARK = Symbol("mark");
@@ -1284,11 +1449,29 @@ export function readPickle(buffer: Buffer): unknown {
 
   const reduce = (func: unknown, args: unknown[]): unknown => {
     if (func instanceof PickleGlobalRef) {
+      // numpy.dtype(name, align, copy) -> a decodable dtype descriptor.
+      if (func.module.startsWith("numpy") && func.name === "dtype") {
+        const name = args[0];
+        if (typeof name === "string") return new NumpyDtype(name);
+        return { __reduce__: [func.module, func.name], args };
+      }
+      // Modern numpy: _frombuffer(rawbytes, dtype, shape, order) -> ndarray.
+      if (func.module.startsWith("numpy") && func.name === "_frombuffer") {
+        const arr = buildNumpyArray(args[0], args[1]);
+        if (arr !== null) return arr;
+      }
+      // Older numpy: _reconstruct(cls, shape, prototype) yields a bare ndarray
+      // whose data arrives later via BUILD state; mark it for `build`.
       if (
         func.module.startsWith("numpy") &&
         (func.name === "_reconstruct" || func.name === "ndarray")
       ) {
         return { __numpy__: true } as Record<string, unknown>;
+      }
+      // _codecs.encode(latin1str, "latin1") -> raw bytes Buffer.
+      if (func.module === "_codecs" && func.name === "encode") {
+        const buf = asByteBuffer(args[0]);
+        if (buf !== null) return buf;
       }
       return { __reduce__: [func.module, func.name], args };
     }
@@ -1296,13 +1479,28 @@ export function readPickle(buffer: Buffer): unknown {
   };
 
   const build = (obj: unknown, state: unknown): unknown => {
+    // numpy.dtype BUILD: state is (endian, ...); refine byteorder if present.
+    if (obj instanceof NumpyDtype) {
+      if (Array.isArray(state) && typeof state[1] === "string") {
+        const bo = state[1];
+        if (bo === ">") obj.littleEndian = false;
+        else if (bo === "<" || bo === "=") obj.littleEndian = true;
+      }
+      return obj;
+    }
+    // ndarray BUILD: state is (version, shape, dtype, fortran_order, rawdata).
     if (
       obj &&
       typeof obj === "object" &&
       (obj as Record<string, unknown>).__numpy__
     ) {
       if (Array.isArray(state)) {
-        (obj as Record<string, unknown>).rawdata = state[state.length - 1];
+        const rawdata = state[state.length - 1];
+        const dtype = state.length >= 3 ? state[2] : undefined;
+        const arr = buildNumpyArray(rawdata, dtype);
+        if (arr !== null) return arr;
+        // Couldn't decode (non-int / unknown dtype); keep an opaque marker.
+        (obj as Record<string, unknown>).rawdata = rawdata;
       }
       return obj;
     }
@@ -1449,6 +1647,14 @@ export function readPickle(buffer: Buffer): unknown {
       }
       case 0x8e: {
         // BINBYTES8 (8-byte length)
+        const len = Number(buffer.readBigUInt64LE(pos));
+        pos += 8;
+        stack.push(buffer.subarray(pos, pos + len));
+        pos += len;
+        break;
+      }
+      case 0x96: {
+        // BYTEARRAY8 (8-byte length) — protocol 5; numpy's _frombuffer raw data
         const len = Number(buffer.readBigUInt64LE(pos));
         pos += 8;
         stack.push(buffer.subarray(pos, pos + len));
