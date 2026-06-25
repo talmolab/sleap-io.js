@@ -381,6 +381,56 @@ export function parseRetryAfterMs(value: string | null): number | undefined {
 }
 
 /**
+ * `fetch` wrapped in {@link withRetries}: every remote byte fetch goes through
+ * here so transient failures are retried with backoff (mirrors Python's
+ * `_open_with_retries`, which wraps every remote open).
+ *
+ * Retries on:
+ * - transient network errors (`raiseRemote` classifies a `TypeError` →
+ *   "connection error" / an `AbortError` → "timeout" as a retryable
+ *   {@link RemoteIOError} with `status === null`), and
+ * - retryable HTTP statuses ({@link RETRYABLE_STATUSES}: 429/500/502/503/504),
+ *   honoring a `Retry-After` header via {@link parseRetryAfterMs}.
+ *
+ * For a NON-retryable status (e.g. 206/404/redirect) the `Response` is returned
+ * unchanged so the caller applies its own handling. Every thrown error is the
+ * redacted typed {@link RemoteIOError}; the raw transport error never escapes.
+ *
+ * @param url Resolved fetch URL (raw; redacted by the error constructor).
+ * @param init `RequestInit` (headers, method, Range, etc.).
+ * @param options `retries` forwarded to {@link withRetries}.
+ */
+export async function fetchRetrying(
+  url: string,
+  init?: RequestInit,
+  options?: { retries?: number },
+): Promise<Response> {
+  return withRetries(async () => {
+    let response: Response;
+    try {
+      response = await fetch(url, init);
+    } catch (e) {
+      // Throws a redacted RemoteIOError; network errors (TypeError/AbortError)
+      // are classified with status === null, which withRetries treats as
+      // retryable.
+      raiseRemote(url, e);
+    }
+    if (RETRYABLE_STATUSES.has(response.status)) {
+      const err = new RemoteIOError({
+        message: statusToMessage(response.status),
+        url,
+        status: response.status,
+      });
+      err.retryAfterMs = parseRetryAfterMs(
+        response.headers?.get?.("Retry-After") ?? null,
+      );
+      throw err;
+    }
+    return response;
+  }, options);
+}
+
+/**
  * Non-throwing existence probe for a URL. Tries HEAD, falling back to a
  * `Range: bytes=0-0` GET when HEAD is unavailable. ALWAYS returns a boolean
  * (any thrown error → `false`). Port of Python `_head_or_range_probe`.

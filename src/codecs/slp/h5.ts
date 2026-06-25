@@ -1,7 +1,7 @@
 import {
   RemoteIOError,
+  fetchRetrying,
   isUrl,
-  raiseRemote,
   resolveUrl,
   statusToMessage,
 } from "../../io/remote.js";
@@ -75,7 +75,7 @@ let _nodeOpenFile:
       module: H5Module,
       source: SlpSource,
       options?: OpenH5Options,
-    ) => Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }>)
+    ) => Promise<{ file: H5File; close: () => void }>)
   | null = null;
 
 /**
@@ -89,7 +89,7 @@ export function _registerNodeH5(
     module: H5Module,
     source: SlpSource,
     options?: OpenH5Options,
-  ) => Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }>,
+  ) => Promise<{ file: H5File; close: () => void }>,
 ): void {
   _nodeGetModule = getModule;
   _nodeOpenFile = openFile;
@@ -190,7 +190,7 @@ export async function getH5EmscriptenModule(): Promise<unknown> {
 export async function openH5File(
   source: SlpSource,
   options?: OpenH5Options,
-): Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }> {
+): Promise<{ file: H5File; close: () => void }> {
   const module = await getH5Module();
 
   if (_nodeOpenFile) {
@@ -208,7 +208,7 @@ async function openH5FileBrowser(
   module: H5Module,
   source: SlpSource,
   options?: OpenH5Options,
-): Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }> {
+): Promise<{ file: H5File; close: () => void }> {
   const fs = getH5FileSystem(module);
 
   if (typeof source === "string" && isUrl(source)) {
@@ -244,7 +244,7 @@ async function openFromUrl(
   fs: H5FileSystem,
   url: string,
   options?: OpenH5Options,
-): Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }> {
+): Promise<{ file: H5File; close: () => void }> {
   const filename =
     options?.filenameHint ??
     url.split("/").pop()?.split("?")[0] ??
@@ -259,14 +259,13 @@ async function openFromUrl(
   const { url: resolved, gdrive } = resolveUrl(url);
 
   // Google Drive: resolve ONCE to bytes and feed the in-memory open path. Drive
-  // is always download-mode; streamMode/range are ignored. Surface the bytes so
-  // embedded-pkg.slp reopens reuse them (per-file download quota).
+  // is always download-mode; streamMode/range are ignored.
   if (gdrive) {
     const bytes = await openGdrive(url, { headers: options?.headers });
     const localPath = "/tmp-slp.slp";
     fs.writeFile(localPath, bytes);
     const file = new module.File(localPath, "r");
-    return { file, close: () => file.close(), urlBytes: bytes };
+    return { file, close: () => file.close() };
   }
 
   // createLazyFile (Emscripten synchronous XHR) cannot carry custom headers.
@@ -295,15 +294,11 @@ async function openFromUrl(
     }
   }
 
-  // Header-aware full download. All URL-bearing errors go through RemoteIOError
-  // (redacted); the raw transport error is never re-thrown.
+  // Header-aware full download, retried with backoff on transient failures /
+  // retryable statuses (429/5xx). All URL-bearing errors go through
+  // RemoteIOError (redacted); the raw transport error is never re-thrown.
   const init: RequestInit = { headers: options?.headers ?? {} };
-  let response: Response;
-  try {
-    response = await fetch(resolved, init);
-  } catch (e) {
-    raiseRemote(resolved, e);
-  }
+  const response = await fetchRetrying(resolved, init);
   if (!response.ok) {
     throw new RemoteIOError({
       message: statusToMessage(response.status),
@@ -315,7 +310,7 @@ async function openFromUrl(
   const localPath = "/tmp-slp.slp";
   fs.writeFile(localPath, buffer);
   const file = new module.File(localPath, "r");
-  return { file, close: () => file.close(), urlBytes: buffer };
+  return { file, close: () => file.close() };
 }
 
 async function openFromFile(
@@ -370,12 +365,7 @@ export async function fetchRemoteSlpBytes(
     return openGdrive(url, { headers: options?.headers });
   }
   const init: RequestInit = { headers: options?.headers ?? {} };
-  let response: Response;
-  try {
-    response = await fetch(resolved, init);
-  } catch (e) {
-    raiseRemote(resolved, e);
-  }
+  const response = await fetchRetrying(resolved, init);
   if (!response.ok) {
     throw new RemoteIOError({
       message: statusToMessage(response.status),

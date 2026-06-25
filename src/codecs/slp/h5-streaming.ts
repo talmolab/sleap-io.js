@@ -13,6 +13,7 @@ import {
   type H5WorkerMessage,
   type H5WorkerResponse,
 } from "./h5-worker.js";
+import { RemoteIOError, isUrl, resolveUrl } from "../../io/remote.js";
 
 /**
  * Options for opening a streaming HDF5 file.
@@ -172,6 +173,15 @@ export class StreamingH5File {
   /**
    * Open a remote HDF5 file for streaming access via URL.
    *
+   * The scheme is resolved on the MAIN thread (the worker cannot import the
+   * scheme gate): `gs://`/`gcs://` are mapped to `storage.googleapis.com`, and
+   * `s3://`/`az://`/`abfs://` fail fast with a redacted {@link RemoteIOError}.
+   * Google Drive is NOT supported on the streaming worker path (Drive requires a
+   * buffered, interstitial-following download, not range streaming); a Drive URL
+   * throws a redacted {@link RemoteIOError} directing the caller to the
+   * non-streaming reader. The worker only ever fetches an already-resolved
+   * http(s) URL.
+   *
    * @param url - URL to the HDF5 file (must support HTTP range requests)
    * @param options - Optional settings
    */
@@ -179,10 +189,29 @@ export class StreamingH5File {
     // Initialize if not already done
     await this.init(options);
 
+    // Resolve the scheme up front so gs:// works in explicit stream mode (the
+    // worker can't resolve it) and unsupported schemes / Drive fail fast with a
+    // redacted typed error rather than a confusing worker error.
+    let resolvedUrl = url;
+    if (isUrl(url)) {
+      const { url: resolved, gdrive } = resolveUrl(url);
+      if (gdrive) {
+        throw new RemoteIOError({
+          message:
+            'Google Drive URLs are not supported on the streaming worker path (Drive needs a buffered download); use the non-streaming reader (stream:"download" / loadSlp)',
+          url,
+          status: null,
+        });
+      }
+      resolvedUrl = resolved;
+    }
+
     const filename =
-      options?.filenameHint || url.split("/").pop()?.split("?")[0] || "data.h5";
+      options?.filenameHint ||
+      resolvedUrl.split("/").pop()?.split("?")[0] ||
+      "data.h5";
     const result = await this.send("openUrl", {
-      url,
+      url: resolvedUrl,
       filename,
       headers: options?.headers,
     });

@@ -91,7 +91,76 @@ describe("SLP remote header threading", () => {
     expect(calls[0][0]).toBe("https://storage.googleapis.com/bucket/obj.slp");
   });
 
-  it("loads a Google Drive SLP via the two-hop flow and does not re-resolve on embedded reopen", async () => {
+  it("retries the download on a 503 (honoring Retry-After) then succeeds", async () => {
+    // First call: 503 with Retry-After: 0 (instant backoff). Second: 200 bytes.
+    // Proves withRetries is actually wired into the prod download path.
+    let call = 0;
+    const mock = vi.fn(async () => {
+      call++;
+      if (call === 1) {
+        return {
+          ok: false,
+          status: 503,
+          headers: new Headers({ "Retry-After": "0" }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        } as unknown as Response;
+      }
+      return slpOkResponse();
+    });
+    globalThis.fetch = mock as unknown as typeof fetch;
+
+    const labels = await loadSlp("https://example.com/data.slp?token=SECRET", {
+      openVideos: false,
+      h5: { headers: { Authorization: "Bearer T" }, stream: "download" },
+    });
+    expect(labels).toBeTruthy();
+
+    const calls = (mock as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls;
+    // Retried exactly once (2 fetches total); auth header forwarded on both.
+    expect(calls).toHaveLength(2);
+    for (const c of calls) {
+      const init = c[1] as RequestInit & { headers: Record<string, string> };
+      expect(init.headers.Authorization).toBe("Bearer T");
+    }
+  });
+
+  it("surfaces a redacted RemoteIOError after retries are exhausted on 503", async () => {
+    // Always 503: withRetries exhausts and the FINAL thrown error is still the
+    // redacted typed error (no raw token leak).
+    const mock = vi.fn(
+      async () =>
+        ({
+          ok: false,
+          status: 503,
+          headers: new Headers({ "Retry-After": "0" }),
+          arrayBuffer: async () => new ArrayBuffer(0),
+        }) as unknown as Response,
+    );
+    globalThis.fetch = mock as unknown as typeof fetch;
+
+    let err: unknown;
+    try {
+      await loadSlp("https://h/x.slp?token=SECRET", {
+        openVideos: false,
+        h5: { stream: "download" },
+      });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(RemoteIOError);
+    const e = err as RemoteIOError;
+    expect(e.status).toBe(503);
+    expect(e.url).not.toContain("SECRET");
+    expect(e.message).not.toContain("SECRET");
+    expect(String(e.stack)).not.toContain("SECRET");
+    // Exhausted: initial attempt + 3 retries = 4 fetches.
+    const calls = (mock as unknown as { mock: { calls: unknown[][] } }).mock
+      .calls;
+    expect(calls).toHaveLength(4);
+  });
+
+  it("loads a Google Drive SLP via the two-hop confirmation flow (no extra hops)", async () => {
     const FILE_ID = "ABC123";
     const form = `
       <form id="download-form" action="https://drive.usercontent.google.com/download?confirm=t">

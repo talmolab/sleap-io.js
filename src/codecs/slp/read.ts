@@ -112,14 +112,12 @@ export async function readSlp(
   const onProgress = options?.onProgress;
   const report = (i: number) => onProgress?.(i, total, EAGER_STAGES[i]);
 
-  const { file, close, urlBytes } = await openH5File(source, options?.h5);
-  // Remote auth context to persist onto video backends (so reopens/probes stay
-  // authenticated). Only present when loading a remote `.slp` with headers, or
-  // when Drive bytes were resolved (reused for embedded reopen).
+  const { file, close } = await openH5File(source, options?.h5);
+  // Remote auth headers to persist onto video backends (so existence probes /
+  // URL-backed reopens stay authenticated). Only present when loading a remote
+  // `.slp` with headers.
   const remote = {
     urlHeaders: options?.h5?.headers,
-    urlStreamMode: options?.h5?.stream,
-    urlBytes,
   };
   try {
     report(0); // Reading metadata
@@ -372,11 +370,9 @@ export async function readSlpLazy(
   const onProgress = options?.onProgress;
   const report = (i: number) => onProgress?.(i, total, LAZY_STAGES[i]);
 
-  const { file, close, urlBytes } = await openH5File(source, options?.h5);
+  const { file, close } = await openH5File(source, options?.h5);
   const remote = {
     urlHeaders: options?.h5?.headers,
-    urlStreamMode: options?.h5?.stream,
-    urlBytes,
   };
   try {
     report(0); // Reading metadata
@@ -678,8 +674,6 @@ async function readVideos(
   onVideoProgress?: (current: number, total: number) => void,
   remote?: {
     urlHeaders?: Record<string, string>;
-    urlStreamMode?: import("./h5.js").StreamMode;
-    urlBytes?: Uint8Array;
   },
 ): Promise<Video[]> {
   if (!dataset) return [];
@@ -870,16 +864,12 @@ async function readVideos(
       openBackend: openVideos,
       embedded,
     });
-    // Persist remote auth headers / stream mode (and any Drive bytes) so a later
-    // reopen or Video.exists() probe stays authenticated. Mirrors Python
+    // Persist remote auth headers so a later Video.exists() probe (or a
+    // URL-backed backend reopen) stays authenticated. Mirrors Python
     // HDF5Video._url_headers. Only meaningful for videos backed by a remote
     // `.slp` (urlHeaders is undefined for local loads).
-    if (urlHeaders || remote?.urlStreamMode || remote?.urlBytes) {
-      video._setUrlPersistence({
-        headers: urlHeaders,
-        streamMode: remote?.urlStreamMode,
-        bytes: remote?.urlBytes,
-      });
+    if (urlHeaders) {
+      video._setUrlPersistence({ headers: urlHeaders });
     }
     videos.push(video);
   }

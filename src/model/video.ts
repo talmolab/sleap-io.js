@@ -9,7 +9,6 @@ import {
 } from "../transform/points.js";
 import type { Fill } from "../transform/frame.js";
 import { headOrRangeProbe, isUrl } from "../io/remote.js";
-import type { StreamMode } from "../codecs/slp/h5.js";
 
 /**
  * Default TTL (ms) for the per-instance {@link Video.exists} URL probe cache.
@@ -164,10 +163,6 @@ export class Video {
   private _fps: number | null = null;
   /** Auth headers persisted from a remote `.slp` load (mirror Python `_url_headers`). */
   private _urlHeaders?: Record<string, string>;
-  /** Stream mode persisted from a remote `.slp` load. */
-  private _urlStreamMode?: StreamMode;
-  /** Drive bytes reused for embedded reopen (avoids re-hitting per-file quota). */
-  private _urlBytes?: Uint8Array;
   /** Per-instance TTL cache for {@link exists}. */
   private _existsCache?: { key: string; value: boolean; expiresAt: number };
 
@@ -258,19 +253,13 @@ export class Video {
   }
 
   /**
-   * Persist the remote auth context from a remote `.slp` load so later reopens
-   * and {@link exists} probes stay authenticated. Mirrors Python's
-   * `HDF5Video._url_headers`. Internal — set by the SLP reader.
+   * Persist the remote auth headers from a remote `.slp` load so later
+   * {@link exists} probes (and any URL-backed backend) stay authenticated.
+   * Mirrors Python's `HDF5Video._url_headers`. Internal — set by the SLP reader.
    * @internal
    */
-  _setUrlPersistence(persistence: {
-    headers?: Record<string, string>;
-    streamMode?: StreamMode;
-    bytes?: Uint8Array;
-  }): void {
+  _setUrlPersistence(persistence: { headers?: Record<string, string> }): void {
     if (persistence.headers) this._urlHeaders = persistence.headers;
-    if (persistence.streamMode) this._urlStreamMode = persistence.streamMode;
-    if (persistence.bytes) this._urlBytes = persistence.bytes;
   }
 
   /**
@@ -282,6 +271,10 @@ export class Video {
   _backendUrlHeaders(): Record<string, string> | undefined {
     return (
       this._urlHeaders ??
+      // Python-parity placeholder: no JS backend currently sets `_urlHeaders`,
+      // so this fallback is inert today. Kept so a future URL-backed backend
+      // that carries its own headers (as Python's HDF5Video does) is honored
+      // without changing this accessor.
       (this.backend as { _urlHeaders?: Record<string, string> } | null)
         ?._urlHeaders
     );

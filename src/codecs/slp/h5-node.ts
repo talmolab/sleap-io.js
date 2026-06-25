@@ -38,10 +38,9 @@ async function openH5FileNode(
   module: H5Module,
   source: SlpSource,
   options?: OpenH5Options,
-): Promise<{ file: H5File; close: () => void; urlBytes?: Uint8Array }> {
+): Promise<{ file: H5File; close: () => void }> {
   // Remote URL: h5wasm/node cannot open a URL directly, so download the bytes
   // (header-aware, scheme-resolved, redacted) and stage them to a temp file.
-  // Surface the bytes so embedded-pkg.slp reopens reuse them.
   if (typeof source === "string" && isUrl(source)) {
     const bytes = await fetchRemoteSlpBytes(source, options);
     return openBytesNode(module, bytes);
@@ -66,7 +65,7 @@ async function openH5FileNode(
 async function openBytesNode(
   module: H5Module,
   data: Uint8Array,
-): Promise<{ file: H5File; close: () => void; urlBytes: Uint8Array }> {
+): Promise<{ file: H5File; close: () => void }> {
   const { writeFileSync, unlinkSync } = await import("node:fs");
   const { tmpdir } = await import("node:os");
   const { join } = await import("node:path");
@@ -82,7 +81,6 @@ async function openBytesNode(
       file.close();
       unlinkSync(tempPath);
     },
-    urlBytes: data,
   };
 }
 

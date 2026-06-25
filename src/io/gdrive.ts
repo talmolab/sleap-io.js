@@ -13,6 +13,7 @@
 import {
   RemoteIOError,
   SENSITIVE_HEADERS,
+  fetchRetrying,
   raiseRemote,
   redactUrl,
 } from "./remote.js";
@@ -336,15 +337,13 @@ export async function openGdrive(
     const headers = { ...baseHeaders };
     if (node && cookie) headers["Cookie"] = cookie;
 
-    let response: Response;
-    try {
-      response = await fetch(
-        current,
-        node ? { headers, redirect: "manual" } : { headers },
-      );
-    } catch (e) {
-      raiseRemote(current, e);
-    }
+    // Retried with backoff on transient failures / retryable statuses (429/5xx);
+    // 3xx redirects are returned unchanged (not retryable) so the Node
+    // manual-redirect loop below can follow them within the allowlist.
+    let response: Response = await fetchRetrying(
+      current,
+      node ? { headers, redirect: "manual" } : { headers },
+    );
 
     // Node manual-redirect: follow within the Drive allowlist, carrying cookies.
     if (node) {
@@ -363,14 +362,10 @@ export async function openGdrive(
         const hopHeaders = { ...baseHeaders };
         if (cookie) hopHeaders["Cookie"] = cookie;
         current = next;
-        try {
-          response = await fetch(current, {
-            headers: hopHeaders,
-            redirect: "manual",
-          });
-        } catch (e) {
-          raiseRemote(current, e);
-        }
+        response = await fetchRetrying(current, {
+          headers: hopHeaders,
+          redirect: "manual",
+        });
         redirects++;
       }
       const setCookie = extractCookie(response);
