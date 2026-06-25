@@ -473,7 +473,12 @@ declare function loadJabs(labelsPath: string, options?: LoadJabsOptions): Promis
  * 5. **Pickle decoding.** `loadDlcSplits` requires reading a Python pickle
  *    (the DLC `Documentation_data-*.pickle`); a minimal protocol 2-5 opcode
  *    interpreter is implemented here ({@link readPickle}) since the repo has no
- *    pickle dependency. `loadDlc` / `loadDlcProject` have no pickle dependency.
+ *    pickle dependency. It decodes the train/test index arrays whether they are
+ *    plain Python `list[int]` or **numpy integer ndarrays** — the latter being
+ *    what real DeepLabCut writes (`SplitTrials` slices `np.random.permutation`
+ *    and `save_metadata` pickles the resulting `np.ndarray`s directly). Both
+ *    the modern `_frombuffer`/`BYTEARRAY8` and the older `_reconstruct`+`BUILD`
+ *    numpy encodings are handled. `loadDlc` / `loadDlcProject` need no pickle.
  * 6. **`**kwargs` ignored.** Python's forwarded loader kwargs (PR #488/#492) are
  *    modeled as an index signature on the options objects and ignored.
  */
@@ -596,7 +601,17 @@ interface LoadDlcProjectOptions {
  * @returns A {@link Labels} object with frames from every labeled video.
  */
 declare function loadDlcProject(config: string, options?: LoadDlcProjectOptions): Labels;
-/** Read train/test positional indices from a DLC Documentation pickle. */
+/**
+ * Read train/test positional indices from a DLC Documentation pickle.
+ *
+ * The pickle is a 4-element list `[data, trainIndices, testIndices,
+ * trainFraction]`. `trainIndices` (`meta[1]`) and `testIndices` (`meta[2]`) are
+ * the only elements consumed. Real DeepLabCut writes these as numpy integer
+ * ndarrays (decoded by {@link readPickle} into {@link NumpyArray}); a
+ * hand-rolled writer may instead emit plain Python `list[int]`. Both are
+ * supported here; the `-1` padding sentinel (from `enforce_train_fraction`) is
+ * filtered out, mirroring Python `_read_dlc_split`.
+ */
 declare function readDlcSplit(picklePath: string): [number[], number[]];
 /** Read the scorer name from the first row of a DLC CSV. */
 declare function readCsvScorer(csv: string): string | null;
@@ -622,13 +637,26 @@ interface LoadDlcSplitsOptions {
 declare function loadDlcSplits(config: string, options?: LoadDlcSplitsOptions): LabelsSet;
 /**
  * Decode a Python pickle into JS values, supporting the subset of opcodes
- * needed for DLC's `Documentation_data-*.pickle` (a shallow
- * `[list, list[int], list[int], float]`, where the first `list` may contain
- * dicts whose values are tuples/strings/ints, and optionally numpy arrays).
+ * needed for DLC's `Documentation_data-*.pickle`: a shallow
+ * `[data, trainIndices, testIndices, trainFraction]` list. `trainIndices` /
+ * `testIndices` may be plain Python `list[int]` (as a hand-rolled writer emits)
+ * **or** numpy integer ndarrays — which is what real DeepLabCut writes, since
+ * `SplitTrials` slices `np.random.permutation(...)` and `save_metadata` pickles
+ * the resulting `np.ndarray`s without a `list()` conversion.
  *
- * The DLC split reader only consumes `meta[1]` / `meta[2]` (plain int lists),
- * so the lossy `data` payload need not be perfectly reconstructed; unrecognized
- * reductions are returned as opaque marker objects.
+ * Numpy arrays are decoded via two reductions:
+ *   - modern numpy (1.17+/2.x): `numpy[._]core.numeric._frombuffer(rawbytes,
+ *     dtype, shape, order)` — a single `REDUCE`, with `rawbytes` carried by a
+ *     `BYTEARRAY8` opcode;
+ *   - older numpy: `numpy.core.multiarray._reconstruct(...)` + `BUILD` with
+ *     state `(version, shape, dtype, fortran_order, rawdata)`, where `rawdata`
+ *     is often a `_codecs.encode(latin1str, 'latin1')` bytes reduction.
+ * The `numpy.dtype(name, ...)` reduction is decoded to a {@link NumpyDtype} so
+ * the raw bytes can be interpreted (int8/16/32/64, signed/unsigned, byteorder).
+ *
+ * The DLC split reader only consumes `meta[1]` / `meta[2]`; the lossy `data`
+ * payload need not be perfectly reconstructed, so any unrecognized reduction is
+ * returned as an opaque marker object.
  */
 declare function readPickle(buffer: Buffer): unknown;
 

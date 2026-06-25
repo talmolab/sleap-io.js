@@ -1816,8 +1816,19 @@ function parseDlcCrop(crop) {
     return null;
   }
   if (parts.length !== 4) return null;
-  const nums = parts.map((p) => Math.trunc(parseFloat(String(p))));
-  if (nums.some((n) => Number.isNaN(n))) return null;
+  const nums = [];
+  for (const p of parts) {
+    if (typeof p === "number") {
+      if (!Number.isFinite(p)) return null;
+      nums.push(Math.trunc(p));
+      continue;
+    }
+    const s = String(p).trim();
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return null;
+    const v = Number(s);
+    if (!Number.isFinite(v)) return null;
+    nums.push(Math.trunc(v));
+  }
   const [x1, x2, y1, y2] = nums;
   if (x2 <= x1 || y2 <= y1) {
     warn(
@@ -2311,8 +2322,12 @@ function selectDocumentationPickle(projectDir, cfg, selectors) {
 function readDlcSplit(picklePath) {
   const buf = fs7.readFileSync(picklePath);
   const meta = readPickle(buf);
-  const toInts = (arr) => arr.map((i) => Number(i)).filter((i) => i !== -1 && !Number.isNaN(i));
-  return [toInts(meta[1]), toInts(meta[2])];
+  return [extractIndexArray(meta[1]), extractIndexArray(meta[2])];
+}
+function extractIndexArray(value) {
+  const raw = value instanceof NumpyArray ? value.values : value;
+  if (!Array.isArray(raw)) return [];
+  return raw.map((i) => Number(i)).filter((i) => i !== -1 && !Number.isNaN(i));
 }
 function readCsvScorer(csv) {
   let first;
@@ -2453,6 +2468,73 @@ var PickleGlobalRef = class {
     this.name = name;
   }
 };
+var NumpyDtype = class {
+  kind;
+  // "i" (signed), "u" (unsigned), "f" (float), etc.
+  itemsize;
+  // bytes per element
+  littleEndian;
+  constructor(name) {
+    let s = name;
+    let little = true;
+    if (s.length > 0 && (s[0] === "<" || s[0] === ">" || s[0] === "=" || s[0] === "|")) {
+      little = s[0] !== ">";
+      s = s.slice(1);
+    }
+    this.kind = s.length > 0 ? s[0] : "i";
+    const size = parseInt(s.slice(1), 10);
+    this.itemsize = Number.isNaN(size) ? 8 : size;
+    this.littleEndian = little;
+  }
+};
+var NumpyArray = class {
+  constructor(values) {
+    this.values = values;
+  }
+};
+function asByteBuffer(raw) {
+  if (Buffer.isBuffer(raw)) return raw;
+  if (raw instanceof Uint8Array) return Buffer.from(raw);
+  if (typeof raw === "string") return Buffer.from(raw, "latin1");
+  return null;
+}
+function decodeIntBuffer(buf, dtype) {
+  const { itemsize, kind, littleEndian } = dtype;
+  const signed = kind === "i";
+  const out = [];
+  const n = Math.floor(buf.length / itemsize);
+  for (let i = 0; i < n; i += 1) {
+    const off = i * itemsize;
+    let v;
+    switch (itemsize) {
+      case 1:
+        v = signed ? buf.readInt8(off) : buf.readUInt8(off);
+        break;
+      case 2:
+        v = littleEndian ? signed ? buf.readInt16LE(off) : buf.readUInt16LE(off) : signed ? buf.readInt16BE(off) : buf.readUInt16BE(off);
+        break;
+      case 4:
+        v = littleEndian ? signed ? buf.readInt32LE(off) : buf.readUInt32LE(off) : signed ? buf.readInt32BE(off) : buf.readUInt32BE(off);
+        break;
+      case 8: {
+        const big = littleEndian ? signed ? buf.readBigInt64LE(off) : buf.readBigUInt64LE(off) : signed ? buf.readBigInt64BE(off) : buf.readBigUInt64BE(off);
+        v = Number(big);
+        break;
+      }
+      default:
+        return out;
+    }
+    out.push(v);
+  }
+  return out;
+}
+function buildNumpyArray(rawdata, dtype) {
+  if (!(dtype instanceof NumpyDtype)) return null;
+  if (dtype.kind !== "i" && dtype.kind !== "u") return null;
+  const buf = asByteBuffer(rawdata);
+  if (buf === null) return null;
+  return new NumpyArray(decodeIntBuffer(buf, dtype));
+}
 function readPickle(buffer) {
   const MARK = /* @__PURE__ */ Symbol("mark");
   const stack = [];
@@ -2476,17 +2558,42 @@ function readPickle(buffer) {
   };
   const reduce = (func, args) => {
     if (func instanceof PickleGlobalRef) {
+      if (func.module.startsWith("numpy") && func.name === "dtype") {
+        const name = args[0];
+        if (typeof name === "string") return new NumpyDtype(name);
+        return { __reduce__: [func.module, func.name], args };
+      }
+      if (func.module.startsWith("numpy") && func.name === "_frombuffer") {
+        const arr = buildNumpyArray(args[0], args[1]);
+        if (arr !== null) return arr;
+      }
       if (func.module.startsWith("numpy") && (func.name === "_reconstruct" || func.name === "ndarray")) {
         return { __numpy__: true };
+      }
+      if (func.module === "_codecs" && func.name === "encode") {
+        const buf = asByteBuffer(args[0]);
+        if (buf !== null) return buf;
       }
       return { __reduce__: [func.module, func.name], args };
     }
     return { __reduce__: func, args };
   };
   const build = (obj, state) => {
+    if (obj instanceof NumpyDtype) {
+      if (Array.isArray(state) && typeof state[1] === "string") {
+        const bo = state[1];
+        if (bo === ">") obj.littleEndian = false;
+        else if (bo === "<" || bo === "=") obj.littleEndian = true;
+      }
+      return obj;
+    }
     if (obj && typeof obj === "object" && obj.__numpy__) {
       if (Array.isArray(state)) {
-        obj.rawdata = state[state.length - 1];
+        const rawdata = state[state.length - 1];
+        const dtype = state.length >= 3 ? state[2] : void 0;
+        const arr = buildNumpyArray(rawdata, dtype);
+        if (arr !== null) return arr;
+        obj.rawdata = rawdata;
       }
       return obj;
     }
@@ -2620,6 +2727,13 @@ function readPickle(buffer) {
         break;
       }
       case 142: {
+        const len = Number(buffer.readBigUInt64LE(pos));
+        pos += 8;
+        stack.push(buffer.subarray(pos, pos + len));
+        pos += len;
+        break;
+      }
+      case 150: {
         const len = Number(buffer.readBigUInt64LE(pos));
         pos += 8;
         stack.push(buffer.subarray(pos, pos + len));
