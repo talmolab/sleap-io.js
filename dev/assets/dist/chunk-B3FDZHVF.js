@@ -23,6 +23,18 @@ import {
   resolveIdentity,
   resolveVideoFilename
 } from "./chunk-5RPVZ6CR.js";
+import {
+  RemoteIOError,
+  fetchRetrying,
+  headOrRangeProbe,
+  identityHeaders,
+  isUrl,
+  openGdrive,
+  redactUrl,
+  redactedCauseSummary,
+  resolveUrl,
+  statusToMessage
+} from "./chunk-YS7Q6CO6.js";
 
 // src/model/centroid.ts
 var _centroidSkeleton = null;
@@ -4115,6 +4127,7 @@ var CropVideoBackend = class _CropVideoBackend {
 };
 
 // src/model/video.ts
+var EXISTS_TTL_MS = 6e4;
 function resolveCropRect(crop, opts = {}) {
   const { bbox, roi, center, size, margin = 0 } = opts;
   if (center == null !== (size == null)) {
@@ -4176,6 +4189,10 @@ var Video = class _Video {
   _embedded;
   _shape = null;
   _fps = null;
+  /** Auth headers persisted from a remote `.slp` load (mirror Python `_url_headers`). */
+  _urlHeaders;
+  /** Per-instance TTL cache for {@link exists}. */
+  _existsCache;
   constructor(options) {
     this.filename = options.filename;
     this.backend = options.backend ?? null;
@@ -4230,6 +4247,58 @@ var Video = class _Video {
   }
   close() {
     this.backend?.close();
+  }
+  /**
+   * Persist the remote auth headers from a remote `.slp` load so later
+   * {@link exists} probes (and any URL-backed backend) stay authenticated.
+   * Mirrors Python's `HDF5Video._url_headers`. Internal — set by the SLP reader.
+   * @internal
+   */
+  _setUrlPersistence(persistence) {
+    if (persistence.headers) this._urlHeaders = persistence.headers;
+  }
+  /**
+   * The auth headers to use for remote requests on this video, preferring the
+   * value persisted on this `Video`, then any persisted on the backend. Mirrors
+   * Python `Video._backend_url_headers`.
+   * @internal
+   */
+  _backendUrlHeaders() {
+    return this._urlHeaders ?? // Python-parity placeholder: no JS backend currently sets `_urlHeaders`,
+    // so this fallback is inert today. Kept so a future URL-backed backend
+    // that carries its own headers (as Python's HDF5Video does) is honored
+    // without changing this accessor.
+    this.backend?._urlHeaders;
+  }
+  /**
+   * Non-throwing check that this video's source is reachable.
+   *
+   * For a URL filename, probes with HEAD (falling back to a `Range: bytes=0-0`
+   * GET), forwarding any persisted auth headers, and caches the result
+   * per-instance for {@link EXISTS_TTL_MS}. Never throws (a probe failure → a
+   * cached `false`). For a non-URL (local/embedded) filename, this returns
+   * `true` only when a backend is present (the JS port has no generic
+   * filesystem stat); callers needing real local existence should use a Node
+   * file check.
+   *
+   * Port of Python `Video.exists`.
+   */
+  async exists() {
+    const filename = this.filename;
+    if (Array.isArray(filename) || !isUrl(filename)) {
+      return this.backend != null;
+    }
+    const dataset = this.backendMetadata?.dataset ?? "";
+    const key = `${filename}\0${dataset}`;
+    const now = Date.now();
+    if (this._existsCache && this._existsCache.key === key && this._existsCache.expiresAt > now) {
+      return this._existsCache.value;
+    }
+    const value = await headOrRangeProbe(filename, {
+      headers: this._backendUrlHeaders()
+    });
+    this._existsCache = { key, value, expiresAt: now + EXISTS_TTL_MS };
+    return value;
   }
   /**
    * Return a virtual, on-read cropped view of this video.
@@ -4629,7 +4698,7 @@ function shapeTupleEqual(a, b) {
   return true;
 }
 function hasOwn(obj, key) {
-  return Object.prototype.hasOwnProperty.call(obj, key);
+  return Object.hasOwn(obj, key);
 }
 function hdf5Dataset(video) {
   const fromBackend = video.backend?.dataset;
@@ -4675,8 +4744,9 @@ var MediaBunnyVideoBackend = class _MediaBunnyVideoBackend {
   }
   static async fromUrl(url, options) {
     const backend = new _MediaBunnyVideoBackend(url, options);
+    const requestInit = options?.headers && Object.keys(options.headers).length > 0 ? { headers: options.headers } : void 0;
     backend.input = new Input({
-      source: new UrlSource(url),
+      source: new UrlSource(url, requestInit ? { requestInit } : void 0),
       formats: ALL_FORMATS
     });
     await backend.initialize();
@@ -8242,6 +8312,8 @@ var Mp4BoxVideoBackend = class {
   fileBlob;
   decodeQueue;
   latestRequestedFrame;
+  /** Extra HTTP headers (e.g. Authorization) applied to every byte fetch. */
+  headers;
   constructor(source, options) {
     if (!hasWebCodecs) {
       throw new Error("Mp4BoxVideoBackend requires WebCodecs support.");
@@ -8251,6 +8323,7 @@ var Mp4BoxVideoBackend = class {
     }
     this.filename = source instanceof Blob ? source.name ?? "" : source;
     this.dataset = null;
+    this.headers = options?.headers ?? {};
     this.samples = [];
     this.keyframeIndices = [];
     this.cache = /* @__PURE__ */ new Map();
@@ -8360,8 +8433,8 @@ var Mp4BoxVideoBackend = class {
     this.shape = [frameCount, height, width, 3];
   }
   async openSource() {
-    const response = await fetch(this.filename, {
-      headers: { Range: "bytes=0-0" }
+    const response = await fetchRetrying(this.filename, {
+      headers: { ...identityHeaders(this.headers), Range: "bytes=0-0" }
     });
     if (response.status === 206) {
       const contentRange = response.headers.get("Content-Range");
@@ -8373,10 +8446,22 @@ var Mp4BoxVideoBackend = class {
       }
     }
     if (!response.ok && response.status !== 206) {
-      throw new Error(`Failed to fetch video: ${response.status}`);
+      throw new RemoteIOError({
+        message: statusToMessage(response.status),
+        url: this.filename,
+        status: response.status
+      });
     }
-    const full = await fetch(this.filename);
-    if (!full.ok) throw new Error(`Failed to fetch video: ${full.status}`);
+    const full = await fetchRetrying(this.filename, {
+      headers: { ...this.headers }
+    });
+    if (!full.ok) {
+      throw new RemoteIOError({
+        message: statusToMessage(full.status),
+        url: this.filename,
+        status: full.status
+      });
+    }
     const blob = await full.blob();
     this.fileBlob = blob;
     this.fileSize = blob.size;
@@ -8385,8 +8470,11 @@ var Mp4BoxVideoBackend = class {
   async readChunk(offset, size) {
     const end = Math.min(offset + size, this.fileSize);
     if (this.supportsRangeRequests) {
-      const response = await fetch(this.filename, {
-        headers: { Range: `bytes=${offset}-${end - 1}` }
+      const response = await fetchRetrying(this.filename, {
+        headers: {
+          ...identityHeaders(this.headers),
+          Range: `bytes=${offset}-${end - 1}`
+        }
       });
       return await response.arrayBuffer();
     }
@@ -9655,6 +9743,70 @@ let h5wasmModule = null;
 let FS = null;
 let currentFile = null;
 let mountPath = null;
+
+// Inlined subset of ../../io/remote.ts (the worker runs in an isolated context
+// via importScripts and cannot import the module). Keep in lockstep with
+// RETRYABLE_STATUSES / withRetries / identityHeaders there.
+const RETRYABLE_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+// Force Accept-Encoding: identity (drop any user-supplied value, any case) so a
+// gzip transfer-encoding cannot corrupt ranged reads. Applied to remote fetches
+// here for parity with the main-thread ranged paths.
+function identityHeadersWorker(headers) {
+  const out = {};
+  for (const k of Object.keys(headers || {})) {
+    if (k.toLowerCase() === 'accept-encoding') continue;
+    out[k] = headers[k];
+  }
+  out['Accept-Encoding'] = 'identity';
+  return out;
+}
+
+function parseRetryAfterMsWorker(value) {
+  if (!value) return undefined;
+  const secs = parseInt(value, 10);
+  if (!isFinite(secs) || String(secs) !== String(value).trim()) return undefined;
+  return Math.min(secs * 1000, 30000);
+}
+
+// fetch wrapped in retry/backoff: retries transient network errors and
+// retryable statuses (429/5xx), honoring Retry-After. Returns the Response for
+// any non-retryable status so the caller handles it. Mirrors fetchRetrying in
+// ../../io/remote.ts. Errors are NOT redacted here because the worker only ever
+// sees URLs the main thread already resolved; the main thread re-wraps worker
+// failures, and no token-bearing URL reaches this transport in the streaming
+// path (Drive/headers route through the buffer download, not createLazyFile).
+async function fetchRetryingWorker(url, init, retries) {
+  const max = retries == null ? 3 : retries;
+  let attempt = 0;
+  while (true) {
+    let response;
+    let networkError = false;
+    try {
+      response = await fetch(url, init);
+    } catch (e) {
+      networkError = true;
+    }
+    if (!networkError && !RETRYABLE_STATUSES.has(response.status)) {
+      return response;
+    }
+    if (attempt >= max) {
+      if (networkError) throw new Error('Failed to fetch remote HDF5 file');
+      return response;
+    }
+    let delayMs = Math.min(200 * Math.pow(2, attempt), 30000);
+    if (!networkError) {
+      const ra = parseRetryAfterMsWorker(
+        response.headers && response.headers.get
+          ? response.headers.get('Retry-After')
+          : null,
+      );
+      if (ra != null) delayMs = Math.min(ra, 30000);
+    }
+    attempt += 1;
+    await new Promise(function(r) { setTimeout(r, delayMs); });
+  }
+}
 // Track how the current file was mounted so closeFile can clean up correctly:
 // 'remote' = MEMFS dir + createLazyFile, 'local' = WORKERFS mount,
 // 'buffer' = MEMFS dir + FS.writeFile. Required because FS.rmdir fails on
@@ -9673,7 +9825,7 @@ self.onmessage = async function(e) {
         break;
 
       case 'openUrl':
-        const urlResult = await openRemoteFile(payload.url, payload.filename);
+        const urlResult = await openRemoteFile(payload.url, payload.filename, payload.headers);
         respond(id, urlResult);
         break;
 
@@ -9759,13 +9911,42 @@ async function initH5Wasm(h5wasmUrl) {
   FS = h5wasm.FS;
 }
 
-async function openRemoteFile(url, filename = 'data.h5') {
+async function openRemoteFile(url, filename = 'data.h5', headers) {
   if (!h5wasmModule) {
     throw new Error('h5wasm not initialized');
   }
 
   // Close any existing file
   closeFile();
+
+  // createLazyFile (synchronous XHR) has NO header API. When custom headers are
+  // present we cannot authenticate a range stream, so buffer-download the file
+  // with the headers applied and mount it as a MEMFS buffer instead. Header-free
+  // requests keep the efficient createLazyFile range streaming path.
+  const hasHeaders = headers && typeof headers === 'object' && Object.keys(headers).length > 0;
+  if (hasHeaders) {
+    // Retried with backoff on transient failures / 429/5xx; identity encoding
+    // forced so a gzip transfer-encoding can't corrupt the bytes.
+    const response = await fetchRetryingWorker(url, { headers: identityHeadersWorker(headers) });
+    if (!response.ok) {
+      throw new Error('Failed to fetch remote HDF5 file: ' + response.status);
+    }
+    const data = new Uint8Array(await response.arrayBuffer());
+    const basename = (filename.split('/').pop() || '').split('\\\\').pop() || 'data.h5';
+    mountPath = '/remote-buffer-' + Date.now() + '/' + basename;
+    mountType = 'buffer';
+    currentFilename = basename;
+    const dir = mountPath.substring(0, mountPath.lastIndexOf('/'));
+    FS.mkdir(dir);
+    FS.writeFile(mountPath, data);
+    currentFile = new h5wasm.File(mountPath, 'r');
+    return {
+      success: true,
+      path: currentFile.path,
+      filename: currentFile.filename,
+      keys: currentFile.keys()
+    };
+  }
 
   // Create mount point
   mountPath = '/remote-' + Date.now();
@@ -10136,13 +10317,38 @@ var StreamingH5File = class {
   /**
    * Open a remote HDF5 file for streaming access via URL.
    *
+   * The scheme is resolved on the MAIN thread (the worker cannot import the
+   * scheme gate): `gs://`/`gcs://` are mapped to `storage.googleapis.com`, and
+   * `s3://`/`az://`/`abfs://` fail fast with a redacted {@link RemoteIOError}.
+   * Google Drive is NOT supported on the streaming worker path (Drive requires a
+   * buffered, interstitial-following download, not range streaming); a Drive URL
+   * throws a redacted {@link RemoteIOError} directing the caller to the
+   * non-streaming reader. The worker only ever fetches an already-resolved
+   * http(s) URL.
+   *
    * @param url - URL to the HDF5 file (must support HTTP range requests)
    * @param options - Optional settings
    */
   async open(url, options) {
     await this.init(options);
-    const filename = options?.filenameHint || url.split("/").pop()?.split("?")[0] || "data.h5";
-    const result = await this.send("openUrl", { url, filename });
+    let resolvedUrl = url;
+    if (isUrl(url)) {
+      const { url: resolved, gdrive } = resolveUrl(url);
+      if (gdrive) {
+        throw new RemoteIOError({
+          message: 'Google Drive URLs are not supported on the streaming worker path (Drive needs a buffered download); use the non-streaming reader (stream:"download" / loadSlp)',
+          url,
+          status: null
+        });
+      }
+      resolvedUrl = resolved;
+    }
+    const filename = options?.filenameHint || resolvedUrl.split("/").pop()?.split("?")[0] || "data.h5";
+    const result = await this.send("openUrl", {
+      url: resolvedUrl,
+      filename,
+      headers: options?.headers
+    });
     this._keys = result.keys || [];
     this._isOpen = true;
   }
@@ -10329,19 +10535,16 @@ async function getH5EmscriptenModule() {
 async function openH5File(source, options) {
   const module = await getH5Module();
   if (_nodeOpenFile) {
-    return _nodeOpenFile(module, source);
+    return _nodeOpenFile(module, source, options);
   }
   return openH5FileBrowser(module, source, options);
-}
-function isProbablyUrl(value) {
-  return /^https?:\/\//i.test(value);
 }
 function isFileHandle(value) {
   return typeof value === "object" && value !== null && "getFile" in value;
 }
 async function openH5FileBrowser(module, source, options) {
   const fs = getH5FileSystem(module);
-  if (typeof source === "string" && isProbablyUrl(source)) {
+  if (typeof source === "string" && isUrl(source)) {
     return openFromUrl(module, fs, source, options);
   }
   if (isFileHandle(source)) {
@@ -10366,11 +10569,20 @@ async function openH5FileBrowser(module, source, options) {
 async function openFromUrl(module, fs, url, options) {
   const filename = options?.filenameHint ?? url.split("/").pop()?.split("?")[0] ?? "slp-data.slp";
   const streamMode = options?.stream ?? "auto";
-  if (fs.createLazyFile && (streamMode === "auto" || streamMode === "range")) {
+  const hasHeaders = !!(options?.headers && Object.keys(options.headers).length > 0);
+  const { url: resolved, gdrive } = resolveUrl(url);
+  if (gdrive) {
+    const bytes = await openGdrive(url, { headers: options?.headers });
+    const localPath2 = "/tmp-slp.slp";
+    fs.writeFile(localPath2, bytes);
+    const file2 = new module.File(localPath2, "r");
+    return { file: file2, close: () => file2.close() };
+  }
+  if (!hasHeaders && fs.createLazyFile && (streamMode === "auto" || streamMode === "range")) {
     const mountPath = `/slp-remote-${Date.now()}`;
     fs.mkdir?.(mountPath);
     try {
-      fs.createLazyFile(mountPath, filename, url, true, false);
+      fs.createLazyFile(mountPath, filename, resolved, true, false);
       const file2 = new module.File(`${mountPath}/${filename}`, "r");
       return {
         file: file2,
@@ -10384,11 +10596,14 @@ async function openFromUrl(module, fs, url, options) {
       fs.rmdir?.(mountPath);
     }
   }
-  const response = await fetch(url);
+  const init = { headers: options?.headers ?? {} };
+  const response = await fetchRetrying(resolved, init);
   if (!response.ok) {
-    throw new Error(
-      `Failed to fetch SLP file: ${response.status} ${response.statusText}`
-    );
+    throw new RemoteIOError({
+      message: statusToMessage(response.status),
+      url: resolved,
+      status: response.status
+    });
   }
   const buffer = new Uint8Array(await response.arrayBuffer());
   const localPath = "/tmp-slp.slp";
@@ -10418,6 +10633,22 @@ async function openFromFile(module, fs, file, options) {
   fs.writeFile(localPath, buffer);
   const h5file = new module.File(localPath, "r");
   return { file: h5file, close: () => h5file.close() };
+}
+async function fetchRemoteSlpBytes(url, options) {
+  const { url: resolved, gdrive } = resolveUrl(url);
+  if (gdrive) {
+    return openGdrive(url, { headers: options?.headers });
+  }
+  const init = { headers: options?.headers ?? {} };
+  const response = await fetchRetrying(resolved, init);
+  if (!response.ok) {
+    throw new RemoteIOError({
+      message: statusToMessage(response.status),
+      url: resolved,
+      status: response.status
+    });
+  }
+  return new Uint8Array(await response.arrayBuffer());
 }
 function getH5FileSystem(module) {
   const fs = module.FS;
@@ -10592,8 +10823,11 @@ async function createVideoBackend(source, options) {
   const filename = isBlob ? source.name ?? "" : source;
   const normalized = filename.split("?")[0]?.toLowerCase() ?? "";
   const ext = normalized.split(".").pop() ?? "";
+  const headers = options?.headers;
   if (options?.embedded || ext === "slp" || ext === "h5" || ext === "hdf5") {
-    const { file } = await openH5File(isBlob ? source : filename);
+    const { file } = await openH5File(isBlob ? source : filename, {
+      headers
+    });
     const datasetPath = options?.dataset ?? "";
     return new Hdf5VideoBackend({
       filename,
@@ -10616,33 +10850,47 @@ async function createVideoBackend(source, options) {
       shape: options?.shape
     });
   }
+  const videoUrl = !isBlob && typeof filename === "string" && isUrl(filename) ? resolveVideoUrl(filename) : filename;
   if (options?.backend === "mediabunny") {
     if (isBlob)
       return MediaBunnyVideoBackend.fromBlob(source, filename);
-    return MediaBunnyVideoBackend.fromUrl(filename);
+    return MediaBunnyVideoBackend.fromUrl(videoUrl, { headers });
   }
   if (options?.backend === "mp4box") {
-    return new Mp4BoxVideoBackend(source);
+    if (isBlob) return new Mp4BoxVideoBackend(source);
+    return new Mp4BoxVideoBackend(videoUrl, { headers });
   }
   if (options?.backend === "media") {
     if (isBlob)
       return new MediaVideoBackend(URL.createObjectURL(source));
-    return new MediaVideoBackend(filename);
+    return new MediaVideoBackend(videoUrl);
   }
   if (UNSUPPORTED_EXTENSIONS.includes(ext)) {
     throw new UnsupportedVideoFormatError(ext);
   }
   const supportsWebCodecs = typeof window !== "undefined" && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
   if (supportsWebCodecs && ext === "mp4") {
-    return new Mp4BoxVideoBackend(source);
+    if (isBlob) return new Mp4BoxVideoBackend(source);
+    return new Mp4BoxVideoBackend(videoUrl, { headers });
   }
   if (supportsWebCodecs && MEDIABUNNY_EXTENSIONS.includes(ext)) {
     if (isBlob)
       return MediaBunnyVideoBackend.fromBlob(source, filename);
-    return MediaBunnyVideoBackend.fromUrl(filename);
+    return MediaBunnyVideoBackend.fromUrl(videoUrl, { headers });
   }
   if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source));
-  return new MediaVideoBackend(filename);
+  return new MediaVideoBackend(videoUrl);
+}
+function resolveVideoUrl(url) {
+  const { url: resolved, gdrive } = resolveUrl(url);
+  if (gdrive) {
+    throw new RemoteIOError({
+      message: `Google Drive videos are not supported: ${redactUrl(url)}`,
+      url,
+      status: null
+    });
+  }
+  return resolved;
 }
 
 // src/codecs/slp/frame-count.ts
@@ -10669,7 +10917,8 @@ async function readSlpStreaming(source, options) {
   }
   const file = await openH5Worker(source, {
     h5wasmUrl: options?.h5wasmUrl,
-    filenameHint: options?.filenameHint
+    filenameHint: options?.filenameHint,
+    headers: options?.headers
   });
   const openVideos = options?.openVideos ?? false;
   const sourcePath = typeof source === "string" ? source : typeof File !== "undefined" && source instanceof File ? source.name : options?.filenameHint ?? "slp-data.slp";
@@ -14117,6 +14366,9 @@ async function readSlp(source, options) {
   const onProgress = options?.onProgress;
   const report = (i) => onProgress?.(i, total, EAGER_STAGES[i]);
   const { file, close } = await openH5File(source, options?.h5);
+  const remote = {
+    urlHeaders: options?.h5?.headers
+  };
   try {
     report(0);
     const metadataGroup = file.get("metadata");
@@ -14142,7 +14394,8 @@ async function readSlp(source, options) {
       file,
       formatId,
       videoCrops,
-      openVideos ? (i, n) => onProgress?.(2, total, `Opening videos (${i}/${n})`) : void 0
+      openVideos ? (i, n) => onProgress?.(2, total, `Opening videos (${i}/${n})`) : void 0,
+      remote
     );
     report(3);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
@@ -14292,6 +14545,9 @@ async function readSlpLazy(source, options) {
   const onProgress = options?.onProgress;
   const report = (i) => onProgress?.(i, total, LAZY_STAGES[i]);
   const { file, close } = await openH5File(source, options?.h5);
+  const remote = {
+    urlHeaders: options?.h5?.headers
+  };
   try {
     report(0);
     const metadataGroup = file.get("metadata");
@@ -14317,7 +14573,8 @@ async function readSlpLazy(source, options) {
       file,
       formatId,
       videoCrops,
-      openVideos ? (i, n) => onProgress?.(2, total, `Opening videos (${i}/${n})`) : void 0
+      openVideos ? (i, n) => onProgress?.(2, total, `Opening videos (${i}/${n})`) : void 0,
+      remote
     );
     report(3);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
@@ -14514,8 +14771,9 @@ function readVideoCrops(file) {
   }
   return out;
 }
-async function readVideos(dataset, labelsPath, openVideos, file, formatId, videoCrops, onVideoProgress) {
+async function readVideos(dataset, labelsPath, openVideos, file, formatId, videoCrops, onVideoProgress, remote) {
   if (!dataset) return [];
+  const urlHeaders = remote?.urlHeaders;
   const values = dataset.value ?? [];
   const videos = [];
   for (let videoIndex = 0; videoIndex < values.length; videoIndex++) {
@@ -14584,7 +14842,12 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
           format,
           channelOrder,
           shape,
-          fps: backendMeta.fps
+          fps: backendMeta.fps,
+          // Persist the remote `.slp` auth headers onto remote/embedded video
+          // backends so reopens / existence probes stay authenticated. The
+          // factory only uses them for URL-backed backends; embedded/local
+          // backends ignore them.
+          headers: urlHeaders
         });
       } catch (err) {
         backend = null;
@@ -14620,17 +14883,19 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
       backendMetadata.crop = [...cropEntry.crop];
       backendMetadata.crop_fill = cropEntry.fill;
     }
-    videos.push(
-      new Video({
-        filename,
-        backend,
-        backendError,
-        backendMetadata,
-        sourceVideo,
-        openBackend: openVideos,
-        embedded
-      })
-    );
+    const video = new Video({
+      filename,
+      backend,
+      backendError,
+      backendMetadata,
+      sourceVideo,
+      openBackend: openVideos,
+      embedded
+    });
+    if (urlHeaders) {
+      video._setUrlPersistence({ headers: urlHeaders });
+    }
+    videos.push(video);
   }
   return videos;
 }
@@ -15725,6 +15990,7 @@ async function loadSlp(source, options) {
       try {
         return await readSlpStreaming(streamingSource, {
           filenameHint: options?.h5?.filenameHint,
+          headers: options?.h5?.headers,
           openVideos,
           onProgress: options?.onProgress
         });
@@ -15732,7 +15998,7 @@ async function loadSlp(source, options) {
         if (streamMode === "auto") {
           console.warn(
             "[sleap-io] Worker-based loading failed, falling back to main thread:",
-            e
+            redactedCauseSummary(e)
           );
         } else {
           throw e;
@@ -17149,6 +17415,7 @@ export {
   cropPoints,
   uncropPoints,
   CropVideoBackend,
+  EXISTS_TTL_MS,
   resolveCropRect,
   Video,
   MediaBunnyVideoBackend,
@@ -17189,6 +17456,7 @@ export {
   _registerNodeFileOps,
   nodeFileExists,
   openH5File,
+  fetchRemoteSlpBytes,
   UnsupportedVideoFormatError,
   createVideoBackend,
   readSlpStreaming,

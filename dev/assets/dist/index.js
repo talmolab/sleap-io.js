@@ -11,6 +11,7 @@ import {
   ConflictResolution,
   CropVideoBackend,
   DUPLICATE_MATCHER,
+  EXISTS_TTL_MS,
   ErrorMode,
   FrameGroup,
   FrameStrategy,
@@ -107,6 +108,7 @@ import {
   encodeRle,
   encodeWkb,
   encodeYamlSkeleton,
+  fetchRemoteSlpBytes,
   fromDict,
   fromNumpy,
   getCentroidSkeleton,
@@ -162,7 +164,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-ZZTVVLU3.js";
+} from "./chunk-B3FDZHVF.js";
 import {
   Edge,
   Instance,
@@ -181,6 +183,33 @@ import {
   predictedPointsFromArray,
   predictedPointsFromDict
 } from "./chunk-5RPVZ6CR.js";
+import {
+  CLOUD_SCHEMES,
+  DEFAULT_MAX_BYTES,
+  GDRIVE_HOSTS,
+  RETRYABLE_STATUSES,
+  RemoteIOError,
+  SENSITIVE_HEADERS,
+  SENSITIVE_QUERY_PARAMS,
+  URL_SCHEMES,
+  checkDownloadHost,
+  fetchRetrying,
+  headOrRangeProbe,
+  identityHeaders,
+  isGdriveUrl,
+  isUrl,
+  openGdrive,
+  parseGdrive,
+  parseRetryAfterMs,
+  raiseRemote,
+  redactUrl,
+  redactedCauseSummary,
+  resolveUrl,
+  statusToMessage,
+  stripCrossOriginHeaders,
+  urlFromConfirmation,
+  withRetries
+} from "./chunk-YS7Q6CO6.js";
 
 // src/codecs/slp/h5-node.ts
 var modulePromise = null;
@@ -194,33 +223,40 @@ async function getH5ModuleNode() {
   }
   return modulePromise;
 }
-async function openH5FileNode(module, source) {
+async function openH5FileNode(module, source, options) {
+  if (typeof source === "string" && isUrl(source)) {
+    const bytes = await fetchRemoteSlpBytes(source, options);
+    return openBytesNode(module, bytes);
+  }
   if (typeof source === "string") {
     const file = new module.File(source, "r");
     return { file, close: () => file.close() };
   }
   if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
-    const { writeFileSync: writeFileSync2, unlinkSync } = await import("fs");
-    const { tmpdir } = await import("os");
-    const { join: join6 } = await import("path");
     const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join6(
-      tmpdir(),
-      `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`
-    );
-    writeFileSync2(tempPath, data);
-    const file = new module.File(tempPath, "r");
-    return {
-      file,
-      close: () => {
-        file.close();
-        unlinkSync(tempPath);
-      }
-    };
+    return openBytesNode(module, data);
   }
   throw new Error(
     "Node environments only support string paths or byte buffers for SLP inputs."
   );
+}
+async function openBytesNode(module, data) {
+  const { writeFileSync: writeFileSync2, unlinkSync } = await import("fs");
+  const { tmpdir } = await import("os");
+  const { join: join6 } = await import("path");
+  const tempPath = join6(
+    tmpdir(),
+    `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`
+  );
+  writeFileSync2(tempPath, data);
+  const file = new module.File(tempPath, "r");
+  return {
+    file,
+    close: () => {
+      file.close();
+      unlinkSync(tempPath);
+    }
+  };
 }
 _registerNodeH5(getH5ModuleNode, openH5FileNode);
 _registerFileWriter(async (filename, bytes) => {
@@ -4074,16 +4110,20 @@ export {
   BlobByteSource,
   BoundingBox,
   CENTROID_SKELETON,
+  CLOUD_SCHEMES,
   Camera,
   CameraGroup,
   Centroid,
   ConflictResolution,
   CropVideoBackend,
+  DEFAULT_MAX_BYTES,
   DUPLICATE_MATCHER,
+  EXISTS_TTL_MS,
   Edge,
   ErrorMode,
   FrameGroup,
   FrameStrategy,
+  GDRIVE_HOSTS,
   IDENTITY_INSTANCE_MATCHER,
   IDENTITY_TRACK_MATCHER,
   IMAGE_DEDUP_VIDEO_MATCHER,
@@ -4126,9 +4166,13 @@ export {
   PredictedLabelImage,
   PredictedROI,
   PredictedSegmentationMask,
+  RETRYABLE_STATUSES,
   ROI,
   RecordingSession,
+  RemoteIOError,
   RenderContext,
+  SENSITIVE_HEADERS,
+  SENSITIVE_QUERY_PARAMS,
   SHAPE_VIDEO_MATCHER,
   STRUCTURE_SKELETON_MATCHER,
   SUBSET_SKELETON_MATCHER,
@@ -4147,6 +4191,7 @@ export {
   Track,
   TrackMatchMethod,
   TrackMatcher,
+  URL_SCHEMES,
   UnsupportedVideoFormatError,
   UserBoundingBox,
   UserCentroid,
@@ -4167,6 +4212,7 @@ export {
   attachConfigSkeleton,
   buildClassNamesFromBboxes,
   buildClassNamesFromRois,
+  checkDownloadHost,
   checkFfmpeg,
   classNamesFromConfig,
   collectTracks,
@@ -4206,19 +4252,24 @@ export {
   encodeWkb,
   encodeYamlSkeleton,
   extractFrameIndex,
+  fetchRetrying,
   fromDict,
   fromNumpy,
   getCentroidSkeleton,
   getImageBytesReader,
   getMarkerFunction,
   getPalette,
+  headOrRangeProbe,
+  identityHeaders,
   isAnalysisH5File,
   isCocoData,
   isDlcFile,
   isDlcProjectPath,
+  isGdriveUrl,
   isStreamingSupported,
   isTrackMateFile,
   isTrainingConfig,
+  isUrl,
   labelsFromNumpy,
   loadAnalysisH5,
   loadCoco,
@@ -4240,12 +4291,15 @@ export {
   nTrailPaletteColors,
   normalizeCoordinates,
   normalizeLabelIds,
+  openGdrive,
   openH5Worker,
   openStreamingH5,
   parseCocoJson,
   parseDataYaml,
   parseDlcCrop,
+  parseGdrive,
   parseLabelFile,
+  parseRetryAfterMs,
   pointsEmpty,
   pointsFromArray,
   pointsFromDict,
@@ -4254,6 +4308,7 @@ export {
   predictedPointsFromDict,
   predictionToInstance,
   probeImageSize,
+  raiseRemote,
   rasterizeGeometry,
   readCoco,
   readCocoSet,
@@ -4270,6 +4325,8 @@ export {
   readTrackMateCsv,
   readTrainingConfigSkeleton,
   readTrainingConfigSkeletons,
+  redactUrl,
+  redactedCauseSummary,
   renderImage,
   renderVideo,
   resizeNearest,
@@ -4277,6 +4334,7 @@ export {
   resolveConfig,
   resolveCropRect,
   resolveTrailNode,
+  resolveUrl,
   rgbToCSS,
   rodriguesTransformation,
   roisFromGeoJSON,
@@ -4292,14 +4350,18 @@ export {
   setLabelImageFileReader,
   setSourceVideo,
   staticObjectToRoi,
+  statusToMessage,
+  stripCrossOriginHeaders,
   toDataURL,
   toDict,
   toJPEG,
   toNumpy,
   toPNG,
   uncropPoints,
+  urlFromConfirmation,
   videoSetsStemMap,
   warnIfNonlexicographic,
+  withRetries,
   writeBboxLabelFile,
   writeGeoJSON,
   writeLabelFile,

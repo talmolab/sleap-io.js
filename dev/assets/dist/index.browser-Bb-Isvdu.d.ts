@@ -126,6 +126,11 @@ declare function cropFrame(frame: ImageData, crop: CropRect, fill?: Fill): Image
 declare function cropFrame(frame: RawFrame, crop: CropRect, fill?: Fill): RawFrame;
 
 /**
+ * Default TTL (ms) for the per-instance {@link Video.exists} URL probe cache.
+ * Analogous to Python's `SLEAP_IO_EXISTS_TTL`.
+ */
+declare const EXISTS_TTL_MS = 60000;
+/**
  * Bounding-box / region specs accepted by {@link Video.crop} and
  * {@link Video.fromCrop} (in addition to an explicit `crop` rect).
  *
@@ -199,6 +204,10 @@ declare class Video {
     private _embedded;
     private _shape;
     private _fps;
+    /** Auth headers persisted from a remote `.slp` load (mirror Python `_url_headers`). */
+    private _urlHeaders?;
+    /** Per-instance TTL cache for {@link exists}. */
+    private _existsCache?;
     constructor(options: {
         filename: string | string[];
         backend?: VideoBackend | null;
@@ -225,6 +234,36 @@ declare class Video {
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
     getFrameTimes(): Promise<number[] | null>;
     close(): void;
+    /**
+     * Persist the remote auth headers from a remote `.slp` load so later
+     * {@link exists} probes (and any URL-backed backend) stay authenticated.
+     * Mirrors Python's `HDF5Video._url_headers`. Internal — set by the SLP reader.
+     * @internal
+     */
+    _setUrlPersistence(persistence: {
+        headers?: Record<string, string>;
+    }): void;
+    /**
+     * The auth headers to use for remote requests on this video, preferring the
+     * value persisted on this `Video`, then any persisted on the backend. Mirrors
+     * Python `Video._backend_url_headers`.
+     * @internal
+     */
+    _backendUrlHeaders(): Record<string, string> | undefined;
+    /**
+     * Non-throwing check that this video's source is reachable.
+     *
+     * For a URL filename, probes with HEAD (falling back to a `Range: bytes=0-0`
+     * GET), forwarding any persisted auth headers, and caches the result
+     * per-instance for {@link EXISTS_TTL_MS}. Never throws (a probe failure → a
+     * cached `false`). For a non-URL (local/embedded) filename, this returns
+     * `true` only when a backend is present (the JS port has no generic
+     * filesystem stat); callers needing real local existence should use a Node
+     * file check.
+     *
+     * Port of Python `Video.exists`.
+     */
+    exists(): Promise<boolean>;
     /**
      * Return a virtual, on-read cropped view of this video.
      *
@@ -2427,9 +2466,12 @@ declare class Mp4BoxVideoBackend implements VideoBackend {
     private fileBlob;
     private decodeQueue;
     private latestRequestedFrame;
+    /** Extra HTTP headers (e.g. Authorization) applied to every byte fetch. */
+    private headers;
     constructor(source: string | File | Blob, options?: {
         cacheSize?: number;
         lookahead?: number;
+        headers?: Record<string, string>;
     });
     getFrame(frameIndex: number, signal?: AbortSignal): Promise<VideoFrame | null>;
     getFrameTimes(): Promise<number[] | null>;
@@ -2471,7 +2513,9 @@ declare class MediaBunnyVideoBackend implements VideoBackend {
     private frameCount;
     private decodingPromise;
     constructor(filename: string | string[], options?: MediaBunnyOptions);
-    static fromUrl(url: string, options?: MediaBunnyOptions): Promise<MediaBunnyVideoBackend>;
+    static fromUrl(url: string, options?: MediaBunnyOptions & {
+        headers?: Record<string, string>;
+    }): Promise<MediaBunnyVideoBackend>;
     static fromBlob(blob: Blob, filename: string, options?: MediaBunnyOptions): Promise<MediaBunnyVideoBackend>;
     private initialize;
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
@@ -2502,6 +2546,12 @@ interface StreamingH5Options {
     h5wasmUrl?: string;
     /** Filename hint for the HDF5 file. */
     filenameHint?: string;
+    /**
+     * Extra HTTP request headers forwarded to the worker's `openUrl`. When
+     * non-empty, the worker buffer-downloads the file (authenticated) instead of
+     * using header-free `createLazyFile` range streaming.
+     */
+    headers?: Record<string, string>;
 }
 /**
  * Source types supported by the streaming HDF5 file.
@@ -2529,6 +2579,15 @@ declare class StreamingH5File {
     init(options?: StreamingH5Options): Promise<void>;
     /**
      * Open a remote HDF5 file for streaming access via URL.
+     *
+     * The scheme is resolved on the MAIN thread (the worker cannot import the
+     * scheme gate): `gs://`/`gcs://` are mapped to `storage.googleapis.com`, and
+     * `s3://`/`az://`/`abfs://` fail fast with a redacted {@link RemoteIOError}.
+     * Google Drive is NOT supported on the streaming worker path (Drive requires a
+     * buffered, interstitial-following download, not range streaming); a Drive URL
+     * throws a redacted {@link RemoteIOError} directing the caller to the
+     * non-streaming reader. The worker only ever fetches an already-resolved
+     * http(s) URL.
      *
      * @param url - URL to the HDF5 file (must support HTTP range requests)
      * @param options - Optional settings
@@ -2893,6 +2952,13 @@ declare function createVideoBackend(source: string | string[] | File | Blob, opt
     shape?: [number, number, number, number];
     fps?: number;
     backend?: VideoBackendType;
+    /**
+     * Extra HTTP request headers (e.g. `{ Authorization: "Bearer …" }`) applied
+     * to remote video byte fetches. Forwarded to {@link Mp4BoxVideoBackend} and
+     * {@link MediaBunnyVideoBackend.fromUrl}. URL filenames are run through
+     * {@link resolveUrl} (rejecting `s3://`/`az://`/`abfs://`).
+     */
+    headers?: Record<string, string>;
 }): Promise<VideoBackend>;
 
 /** Options for {@link CropVideoBackend.wrap}. */
@@ -3040,6 +3106,18 @@ type OpenH5Options = {
     stream?: StreamMode;
     /** Filename hint for the HDF5 file */
     filenameHint?: string;
+    /**
+     * Extra HTTP request headers (e.g. `{ Authorization: "Bearer …" }`) applied to
+     * every remote byte fetch for this file AND persisted onto embedded-video
+     * backends so later reopens/probes stay authenticated. Header NAMES are
+     * case-insensitive; `"Accept-Encoding"` is always overridden to `"identity"`
+     * on range requests. Ignored for Google Drive URLs (credentials are stripped).
+     *
+     * Limitation: `createLazyFile` (Emscripten synchronous XHR) cannot carry
+     * custom headers, so authenticated remote `.slp` is downloaded in full;
+     * range streaming with custom headers is not yet supported on the main thread.
+     */
+    headers?: Record<string, string>;
 };
 
 /** How TIFF pages map onto LabelImage frames. Mirrors Python `pages_as`. */
@@ -3276,6 +3354,251 @@ declare function loadVideo(source: string | File, options?: {
     openBackend?: boolean;
     backend?: VideoBackendType;
 }): Promise<Video>;
+
+/**
+ * Remote-loading helpers: URL/scheme resolution, credential redaction, a typed
+ * {@link RemoteIOError}, retry/backoff, header transforms, and a non-throwing
+ * existence probe.
+ *
+ * This is the browser+Node-portable subset of Python sleap-io's `_remote.py`
+ * (PRs #439/#445). It threads auth headers end-to-end and guarantees that no
+ * thrown error or log line leaks credentials (userinfo / sensitive query
+ * params). See {@link redactUrl} and {@link RemoteIOError}.
+ *
+ * @module
+ */
+/** URL schemes recognized as remote (vs. a local path). Port of Python `URL_SCHEMES`. */
+declare const URL_SCHEMES: Set<string>;
+/** Cloud schemes that need a provider SDK (not available in the browser). */
+declare const CLOUD_SCHEMES: Set<string>;
+/** Hosts handled by the Google Drive resolver. */
+declare const GDRIVE_HOSTS: Set<string>;
+/**
+ * Headers dropped on a cross-origin redirect and never sent to Google Drive
+ * hosts. Lowercase for case-insensitive matching.
+ */
+declare const SENSITIVE_HEADERS: Set<string>;
+/**
+ * Query-param names (lowercased) whose VALUE is masked to `***` in
+ * {@link redactUrl}. Other params are left untouched.
+ */
+declare const SENSITIVE_QUERY_PARAMS: Set<string>;
+/** HTTP status codes that {@link withRetries} treats as retryable. */
+declare const RETRYABLE_STATUSES: Set<number>;
+/**
+ * Whether `value` looks like a remote URL (one of {@link URL_SCHEMES}).
+ *
+ * Port of Python `_is_url`. The `scheme.length > 1` guard is mandatory so a
+ * Windows drive letter (`C:\...`) is not misread as a URL.
+ */
+declare function isUrl(value: unknown): boolean;
+/**
+ * Whether `value` is a Google Drive share URL. Port of Python `_is_gdrive_url`.
+ * Never throws on malformed input.
+ */
+declare function isGdriveUrl(value: unknown): boolean;
+/**
+ * Mask credentials in a URL: userinfo becomes `***:***@host`, and the VALUES of
+ * sensitive query params ({@link SENSITIVE_QUERY_PARAMS}) become `***`
+ * (serialized percent-encoded as `%2A%2A%2A`, matching Python). Other params are
+ * left intact. On parse failure the input is returned unchanged.
+ *
+ * Port of Python `_redact_url`.
+ */
+declare function redactUrl(url: string): string;
+/**
+ * A short, credential-scrubbed one-line summary of an arbitrary error, suitable
+ * for logging and for the `cause=` segment of {@link RemoteIOError}. Any URL
+ * tokens embedded in the message are run through {@link redactUrl}.
+ *
+ * Port of Python `_redacted_cause_summary`.
+ */
+declare function redactedCauseSummary(e: unknown): string;
+/**
+ * Typed error for every remote-loading failure. The `url` is ALWAYS stored
+ * redacted (redaction happens in the constructor from the RAW url passed in),
+ * and the raw transport error is NEVER chained as `.cause` — only a redacted
+ * {@link redactedCauseSummary} is kept, so credentials cannot leak through a
+ * re-throw or `.cause` inspection.
+ *
+ * Port of Python `RemoteIOError`.
+ */
+declare class RemoteIOError extends Error {
+    readonly status: number | null;
+    /** ALWAYS redacted. */
+    readonly url: string;
+    readonly causeSummary?: string;
+    /**
+     * Delay (ms) hinted by a `Retry-After` response header, threaded to
+     * {@link withRetries}. Not part of Python; a JS-side channel so the retry
+     * loop can honor server backoff without re-issuing the failed request.
+     */
+    retryAfterMs?: number;
+    constructor(opts: {
+        message: string;
+        url: string;
+        status?: number | null;
+        cause?: unknown;
+    });
+}
+/** Result of {@link resolveUrl}. */
+interface ResolvedUrl {
+    /** Fetchable HTTPS URL (passthrough for http(s); mapped for gs/gcs). */
+    url: string;
+    /** When true, the caller must route through the Google Drive resolver. */
+    gdrive: boolean;
+}
+/**
+ * Turn any user-supplied URL into a fetchable HTTPS URL (or flag it for Google
+ * Drive). The single public scheme gate.
+ *
+ * - `http(s)://` (non-Drive host): passthrough, `gdrive: false`.
+ * - Google Drive host: `gdrive: true` (caller routes to `openGdrive`).
+ * - `gs://<bucket>/<obj>` / `gcs://...`: mapped to
+ *   `https://storage.googleapis.com/<bucket>/<obj>` (object path + query
+ *   preserved verbatim). NOTE: this only resolves PUBLIC objects without auth;
+ *   private buckets still need a presigned HTTPS URL — no signing is attempted.
+ * - `s3://` / `az://` / `abfs://`: throws {@link RemoteIOError} (no in-browser
+ *   SDK) directing the user to a presigned `https://` URL.
+ * - non-URL input: throws {@link RemoteIOError} (`resolveUrl` only acts on URLs).
+ *
+ * Port of Python's scheme handling.
+ */
+declare function resolveUrl(url: string): ResolvedUrl;
+/**
+ * Map an HTTP status to a short human message. Port of Python's `_raise_remote`
+ * table.
+ */
+declare function statusToMessage(status: number): string;
+/**
+ * Build and throw a {@link RemoteIOError} from a transport-level failure (no
+ * `response`). Classifies fetch network errors / aborts. Port of Python's
+ * fetch-level classification in `_raise_remote`.
+ *
+ * @param url Raw URL (redacted by the error constructor).
+ * @param e The thrown transport error.
+ * @param status Optional HTTP status when a response was received.
+ */
+declare function raiseRemote(url: string, e: unknown, status?: number | null): never;
+/**
+ * Copy `headers`, force `Accept-Encoding: identity`, and drop any user-supplied
+ * `Accept-Encoding` (case-insensitive) so it cannot be overridden. Apply to
+ * every ranged request. Port of Python `_identity_headers`.
+ */
+declare function identityHeaders(headers?: Record<string, string>): Record<string, string>;
+/**
+ * Drop sensitive headers ({@link SENSITIVE_HEADERS}) when `toUrl` is a different
+ * origin than `fromUrl`; otherwise return `headers` unchanged. Port of Python
+ * `_strip_cross_origin_headers`. Invoked only where WE follow redirects
+ * manually (Node range reader, Drive); the browser strips `Authorization`
+ * cross-origin natively.
+ */
+declare function stripCrossOriginHeaders(headers: Record<string, string>, fromUrl: string, toUrl: string): Record<string, string>;
+/**
+ * Run `fn`, retrying on retryable {@link RemoteIOError}s (retryable status or a
+ * connection-error classification) with exponential backoff, honoring a
+ * `Retry-After` hint when present.
+ *
+ * Backoff: `min(200 * 2**attempt, 30000)` ms (attempt 0-indexed). Port of
+ * Python `_open_with_retries` / `_retry_sleep_seconds`.
+ */
+declare function withRetries<T>(fn: () => Promise<T>, options?: {
+    retries?: number;
+}): Promise<T>;
+/**
+ * Parse a `Retry-After` header into milliseconds. Only the integer-seconds form
+ * is honored; the HTTP-date form is ignored (returns undefined → computed
+ * backoff). Used by fetch wrappers to attach `retryAfterMs` to a thrown error.
+ */
+declare function parseRetryAfterMs(value: string | null): number | undefined;
+/**
+ * `fetch` wrapped in {@link withRetries}: every remote byte fetch goes through
+ * here so transient failures are retried with backoff (mirrors Python's
+ * `_open_with_retries`, which wraps every remote open).
+ *
+ * Retries on:
+ * - transient network errors (`raiseRemote` classifies a `TypeError` →
+ *   "connection error" / an `AbortError` → "timeout" as a retryable
+ *   {@link RemoteIOError} with `status === null`), and
+ * - retryable HTTP statuses ({@link RETRYABLE_STATUSES}: 429/500/502/503/504),
+ *   honoring a `Retry-After` header via {@link parseRetryAfterMs}.
+ *
+ * For a NON-retryable status (e.g. 206/404/redirect) the `Response` is returned
+ * unchanged so the caller applies its own handling. Every thrown error is the
+ * redacted typed {@link RemoteIOError}; the raw transport error never escapes.
+ *
+ * @param url Resolved fetch URL (raw; redacted by the error constructor).
+ * @param init `RequestInit` (headers, method, Range, etc.).
+ * @param options `retries` forwarded to {@link withRetries}.
+ */
+declare function fetchRetrying(url: string, init?: RequestInit, options?: {
+    retries?: number;
+}): Promise<Response>;
+/**
+ * Non-throwing existence probe for a URL. Tries HEAD, falling back to a
+ * `Range: bytes=0-0` GET when HEAD is unavailable. ALWAYS returns a boolean
+ * (any thrown error → `false`). Port of Python `_head_or_range_probe`.
+ *
+ * For Google Drive, HEAD is rejected by Google, so success is approximated by
+ * whether a file id can be parsed from the URL (no network).
+ */
+declare function headOrRangeProbe(url: string, options?: {
+    headers?: Record<string, string>;
+}): Promise<boolean>;
+
+/**
+ * Google Drive share-link resolver (browser + Node portable).
+ *
+ * Ports the realistic subset of Python sleap-io's `_gdrive.py` (PRs #441/#445):
+ * parse a Drive file id from any share-link shape, scrape the virus-scan
+ * interstitial to a real download URL, enforce a host allowlist (SSRF guard),
+ * and buffer-download the file capped at a maximum in-memory size. Credentials
+ * are stripped before any request and never sent to Google hosts.
+ *
+ * @module
+ */
+/** Default cap for a buffered Drive download: 8 GiB. */
+declare const DEFAULT_MAX_BYTES: number;
+/**
+ * Extract a Google Drive file id from any share-link shape.
+ *
+ * Order matters: folders are rejected first, then an `id=` query param, then the
+ * `/file/d/<ID>/...` path form. Throws (with a redacted url) for folder URLs,
+ * trailing-segment URLs, and anything else unparsable. Port of `_parse_gdrive`.
+ */
+declare function parseGdrive(url: string): string;
+/**
+ * Scrape the next download URL out of a Drive confirmation page. Tries, in EXACT
+ * precedence order: small-file href, large-file `#download-form`, JSON
+ * `downloadUrl`, then an error caption (→ throws). Port of `_url_from_confirmation`.
+ *
+ * @param html The interstitial HTML.
+ * @param url The originating URL (for redacted error context).
+ */
+declare function urlFromConfirmation(html: string, url?: string): string;
+/**
+ * SSRF guard: allow only http(s) URLs whose host is in the Drive allowlist or
+ * ends with `.googleusercontent.com`. Throws a redacted {@link RemoteIOError}
+ * otherwise. Call before EVERY cookie-carrying GET. Port of `_check_download_host`.
+ */
+declare function checkDownloadHost(url: string): void;
+/**
+ * Resolve a Google Drive share link and buffer-download the file.
+ *
+ * Strips sensitive headers, sends a browser User-Agent, follows the virus-scan
+ * interstitial through up to {@link MAX_HOPS} hops (enforcing the host
+ * allowlist on each), and caps the in-memory download at `maxBytes`. Port of
+ * `_resolve_and_fetch`.
+ *
+ * Drive is always download-mode; `streamMode`/range options do not apply. Drive
+ * VIDEO is unsupported (the SLP caller rejects it before reaching here).
+ *
+ * @returns The downloaded file bytes.
+ */
+declare function openGdrive(url: string, options?: {
+    headers?: Record<string, string>;
+    maxBytes?: number;
+}): Promise<Uint8Array>;
 
 /** GeoJSON Feature type */
 interface GeoJSONFeature {
@@ -4097,6 +4420,12 @@ interface StreamingSlpOptions {
     h5wasmUrl?: string;
     /** Filename hint for the HDF5 file */
     filenameHint?: string;
+    /**
+     * Extra HTTP request headers (e.g. `{ Authorization: "Bearer …" }`) forwarded
+     * to the streaming worker. When non-empty, the worker downloads the file in a
+     * buffer (authenticated) rather than using header-free range streaming.
+     */
+    headers?: Record<string, string>;
     /** Whether to open video backends for embedded videos (default: false) */
     openVideos?: boolean;
     /**
@@ -4142,4 +4471,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { AUTO_VIDEO_MATCHER as $, TrackMatcher as A, BoundingBox as B, CropVideoBackend as C, VideoMatcher as D, ErrorMode as E, FrameStrategy as F, ConflictResolution as G, SkeletonMismatchError as H, type ImageBytesReader as I, MergeResult as J, MatchResult as K, Labels as L, MergeError as M, MergeProgressBar as N, STRUCTURE_SKELETON_MATCHER as O, SUBSET_SKELETON_MATCHER as P, OVERLAP_SKELETON_MATCHER as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, DUPLICATE_MATCHER as W, IOU_MATCHER as X, IDENTITY_INSTANCE_MATCHER as Y, NAME_TRACK_MATCHER as Z, IDENTITY_TRACK_MATCHER as _, LabeledFrame as a, type MediaBunnyOptions as a$, PATH_VIDEO_MATCHER as a0, BASENAME_VIDEO_MATCHER as a1, IMAGE_DEDUP_VIDEO_MATCHER as a2, SHAPE_VIDEO_MATCHER as a3, setFsResolver as a4, type FsResolver as a5, type MergeStrategy as a6, _relinkFromPredicted as a7, _annotationCentroidXy as a8, _findAnnotationMatches as a9, PredictedROI as aA, encodeRle as aB, decodeRle as aC, resizeNearest as aD, type SegmentationMaskOptions as aE, SegmentationMask as aF, type UserSegmentationMaskOptions as aG, UserSegmentationMask as aH, PredictedSegmentationMask as aI, type BoundingBoxOptions as aJ, UserBoundingBox as aK, PredictedBoundingBox as aL, getCentroidSkeleton as aM, CENTROID_SKELETON as aN, type CentroidOptions as aO, Centroid as aP, UserCentroid as aQ, PredictedCentroid as aR, type LabelImageObjectInfo as aS, type LabelImageOptions as aT, LabelImage as aU, UserLabelImage as aV, PredictedLabelImage as aW, normalizeLabelIds as aX, type VideoFrame as aY, type VideoBackend as aZ, Mp4BoxVideoBackend as a_, _findAnnotationLinkMatches as aa, _resolveMergedIsNegative as ab, type CropOptions as ac, resolveCropRect as ad, type VideoBackendErrorKind as ae, type VideoBackendError as af, SuggestionFrame as ag, rodriguesTransformation as ah, Camera as ai, CameraGroup as aj, InstanceGroup as ak, FrameGroup as al, RecordingSession as am, makeCameraFromDict as an, Identity as ao, Instance3D as ap, PredictedInstance3D as aq, LazyDataStore as ar, LazyFrameList as as, _registerMaskFactory as at, AnnotationType as au, type Geometry as av, type ROIOptions as aw, rasterizeGeometry as ax, encodeWkb as ay, decodeWkb as az, LabelsSet as b, getPalette as b$, MediaBunnyVideoBackend as b0, StreamingHdf5VideoBackend as b1, type ImageVideoOptions as b2, computePrefetchWindow as b3, ImageVideoBackend as b4, loadSlp as b5, saveSlp as b6, loadAnalysisH5 as b7, saveAnalysisH5 as b8, loadSlpSet as b9, decodeCocoRle as bA, decodeSegmentation as bB, readCoco as bC, readCocoSet as bD, type LabelsDict as bE, toDict as bF, fromDict as bG, toNumpy as bH, fromNumpy as bI, labelsFromNumpy as bJ, decodeYamlSkeleton as bK, encodeYamlSkeleton as bL, readSkeletonJson as bM, writeSkeletonJson as bN, readTrainingConfigSkeletons as bO, readTrainingConfigSkeleton as bP, isTrainingConfig as bQ, type RGB as bR, type RGBA as bS, type ColorSpec as bT, type ColorScheme as bU, type PaletteName as bV, type MarkerShape as bW, type Overlay as bX, type VideoOverlay as bY, NAMED_COLORS as bZ, PALETTES as b_, saveSlpSet as ba, loadVideo as bb, loadLabelImages as bc, setLabelImageFileReader as bd, type PagesAs as be, type LoadLabelImagesOptions as bf, type LabelImageFileReader as bg, saveSlpToBytes as bh, isAnalysisH5File as bi, type GeoJSONFeature as bj, type GeoJSONFeatureCollection as bk, roisToGeoJSON as bl, roisFromGeoJSON as bm, writeGeoJSON as bn, readGeoJSON as bo, type CocoCategory as bp, type CocoImage as bq, type CocoRle as br, type CocoSegmentation as bs, type CocoAnnotation as bt, type CocoJson as bu, isCocoData as bv, parseCocoJson as bw, createSkeletonFromCategory as bx, decodeKeypoints as by, decodeCompressedRleCounts as bz, type ReadCocoOptions as c, resolveColor as c0, rgbToCSS as c1, determineColorScheme as c2, drawCircle as c3, drawSquare as c4, drawDiamond as c5, drawTriangle as c6, drawCross as c7, drawTrails as c8, getMarkerFunction as c9, MARKER_FUNCTIONS as ca, type DrawTrailsOptions as cb, resolveTrailNode as cc, computeTrails as cd, nTrailPaletteColors as ce, collectTracks as cf, type TrailTarget as cg, type Trail as ch, RenderContext as ci, InstanceContext as cj, drawMasks as ck, drawLabelImage as cl, drawBboxes as cm, drawRois as cn, applyOverlay as co, type RawLabelImage as cp, cropPoints as cq, uncropPoints as cr, type CropRect as cs, type FlatPoints as ct, type PointPairs as cu, cropFrame as cv, type FrameLike as cw, type RawFrame as cx, type Fill as cy, type RenderOptions as d, type VideoOptions as e, SeqHeader as f, getImageBytesReader as g, SeqIndex as h, BlobByteSource as i, type ByteSource as j, createVideoBackend as k, UnsupportedVideoFormatError as l, type VideoBackendType as m, type CropWrapOptions as n, StreamingH5File as o, openStreamingH5 as p, openH5Worker as q, isStreamingSupported as r, setImageBytesReader as s, type StreamingH5Source as t, readSlpStreaming as u, SkeletonMatchMethod as v, InstanceMatchMethod as w, VideoMatchMethod as x, SkeletonMatcher as y, InstanceMatcher as z };
+export { DUPLICATE_MATCHER as $, InstanceMatchMethod as A, BoundingBox as B, CropVideoBackend as C, DEFAULT_MAX_BYTES as D, VideoMatchMethod as E, FrameStrategy as F, ErrorMode as G, SkeletonMatcher as H, type ImageBytesReader as I, InstanceMatcher as J, TrackMatcher as K, Labels as L, VideoMatcher as M, ConflictResolution as N, MergeError as O, SkeletonMismatchError as P, MergeResult as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, MatchResult as W, MergeProgressBar as X, STRUCTURE_SKELETON_MATCHER as Y, SUBSET_SKELETON_MATCHER as Z, OVERLAP_SKELETON_MATCHER as _, LabeledFrame as a, UserLabelImage as a$, IOU_MATCHER as a0, IDENTITY_INSTANCE_MATCHER as a1, NAME_TRACK_MATCHER as a2, IDENTITY_TRACK_MATCHER as a3, AUTO_VIDEO_MATCHER as a4, PATH_VIDEO_MATCHER as a5, BASENAME_VIDEO_MATCHER as a6, IMAGE_DEDUP_VIDEO_MATCHER as a7, SHAPE_VIDEO_MATCHER as a8, setFsResolver as a9, AnnotationType as aA, type Geometry as aB, type ROIOptions as aC, rasterizeGeometry as aD, encodeWkb as aE, decodeWkb as aF, PredictedROI as aG, encodeRle as aH, decodeRle as aI, resizeNearest as aJ, type SegmentationMaskOptions as aK, SegmentationMask as aL, type UserSegmentationMaskOptions as aM, UserSegmentationMask as aN, PredictedSegmentationMask as aO, type BoundingBoxOptions as aP, UserBoundingBox as aQ, PredictedBoundingBox as aR, getCentroidSkeleton as aS, CENTROID_SKELETON as aT, type CentroidOptions as aU, Centroid as aV, UserCentroid as aW, PredictedCentroid as aX, type LabelImageObjectInfo as aY, type LabelImageOptions as aZ, LabelImage as a_, type FsResolver as aa, type MergeStrategy as ab, _relinkFromPredicted as ac, _annotationCentroidXy as ad, _findAnnotationMatches as ae, _findAnnotationLinkMatches as af, _resolveMergedIsNegative as ag, EXISTS_TTL_MS as ah, type CropOptions as ai, resolveCropRect as aj, type VideoBackendErrorKind as ak, type VideoBackendError as al, SuggestionFrame as am, rodriguesTransformation as an, Camera as ao, CameraGroup as ap, InstanceGroup as aq, FrameGroup as ar, RecordingSession as as, makeCameraFromDict as at, Identity as au, Instance3D as av, PredictedInstance3D as aw, LazyDataStore as ax, LazyFrameList as ay, _registerMaskFactory as az, LabelsSet as b, decodeCocoRle as b$, PredictedLabelImage as b0, normalizeLabelIds as b1, type VideoFrame as b2, type VideoBackend as b3, Mp4BoxVideoBackend as b4, type MediaBunnyOptions as b5, MediaBunnyVideoBackend as b6, StreamingHdf5VideoBackend as b7, type ImageVideoOptions as b8, computePrefetchWindow as b9, type ResolvedUrl as bA, resolveUrl as bB, statusToMessage as bC, raiseRemote as bD, identityHeaders as bE, stripCrossOriginHeaders as bF, withRetries as bG, parseRetryAfterMs as bH, fetchRetrying as bI, headOrRangeProbe as bJ, type GeoJSONFeature as bK, type GeoJSONFeatureCollection as bL, roisToGeoJSON as bM, roisFromGeoJSON as bN, writeGeoJSON as bO, readGeoJSON as bP, type CocoCategory as bQ, type CocoImage as bR, type CocoRle as bS, type CocoSegmentation as bT, type CocoAnnotation as bU, type CocoJson as bV, isCocoData as bW, parseCocoJson as bX, createSkeletonFromCategory as bY, decodeKeypoints as bZ, decodeCompressedRleCounts as b_, ImageVideoBackend as ba, loadSlp as bb, saveSlp as bc, loadAnalysisH5 as bd, saveAnalysisH5 as be, loadSlpSet as bf, saveSlpSet as bg, loadVideo as bh, loadLabelImages as bi, setLabelImageFileReader as bj, type PagesAs as bk, type LoadLabelImagesOptions as bl, type LabelImageFileReader as bm, saveSlpToBytes as bn, isAnalysisH5File as bo, URL_SCHEMES as bp, CLOUD_SCHEMES as bq, GDRIVE_HOSTS as br, SENSITIVE_HEADERS as bs, SENSITIVE_QUERY_PARAMS as bt, RETRYABLE_STATUSES as bu, isUrl as bv, isGdriveUrl as bw, redactUrl as bx, redactedCauseSummary as by, RemoteIOError as bz, type ReadCocoOptions as c, decodeSegmentation as c0, readCoco as c1, readCocoSet as c2, type LabelsDict as c3, toDict as c4, fromDict as c5, toNumpy as c6, fromNumpy as c7, labelsFromNumpy as c8, decodeYamlSkeleton as c9, getMarkerFunction as cA, MARKER_FUNCTIONS as cB, type DrawTrailsOptions as cC, resolveTrailNode as cD, computeTrails as cE, nTrailPaletteColors as cF, collectTracks as cG, type TrailTarget as cH, type Trail as cI, RenderContext as cJ, InstanceContext as cK, drawMasks as cL, drawLabelImage as cM, drawBboxes as cN, drawRois as cO, applyOverlay as cP, type RawLabelImage as cQ, cropPoints as cR, uncropPoints as cS, type CropRect as cT, type FlatPoints as cU, type PointPairs as cV, cropFrame as cW, type FrameLike as cX, type RawFrame as cY, type Fill as cZ, encodeYamlSkeleton as ca, readSkeletonJson as cb, writeSkeletonJson as cc, readTrainingConfigSkeletons as cd, readTrainingConfigSkeleton as ce, isTrainingConfig as cf, type RGB as cg, type RGBA as ch, type ColorSpec as ci, type ColorScheme as cj, type PaletteName as ck, type MarkerShape as cl, type Overlay as cm, type VideoOverlay as cn, NAMED_COLORS as co, PALETTES as cp, getPalette as cq, resolveColor as cr, rgbToCSS as cs, determineColorScheme as ct, drawCircle as cu, drawSquare as cv, drawDiamond as cw, drawTriangle as cx, drawCross as cy, drawTrails as cz, type RenderOptions as d, type VideoOptions as e, SeqHeader as f, getImageBytesReader as g, SeqIndex as h, BlobByteSource as i, type ByteSource as j, createVideoBackend as k, UnsupportedVideoFormatError as l, type VideoBackendType as m, type CropWrapOptions as n, checkDownloadHost as o, parseGdrive as p, openGdrive as q, StreamingH5File as r, setImageBytesReader as s, openStreamingH5 as t, urlFromConfirmation as u, openH5Worker as v, isStreamingSupported as w, type StreamingH5Source as x, readSlpStreaming as y, SkeletonMatchMethod as z };
