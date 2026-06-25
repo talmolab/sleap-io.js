@@ -2021,7 +2021,29 @@ declare class Labels {
         frameIdx?: number;
     }): LabeledFrame[];
     addVideo(video: Video): void;
+    /**
+     * Append a labeled frame to the labels.
+     *
+     * Registers the frame's video, the skeletons and tracks of its instances, and
+     * the tracks of its nested annotations. Skeletons are registered via
+     * {@link _registerSkeleton}, so an instance referencing a structurally-equal
+     * but distinct `Skeleton` is rebound to the existing canonical one instead of
+     * growing `this.skeletons` (Python #447).
+     *
+     * Mirrors Python `Labels.append` (PR #447).
+     */
     append(frame: LabeledFrame): void;
+    /**
+     * Append multiple labeled frames to the labels.
+     *
+     * Like calling {@link append} on each frame in `frames`: registers each
+     * frame's video, the skeletons and tracks of its instances (deduplicating
+     * structurally-equal skeletons via {@link _registerSkeleton}, Python #447),
+     * and the tracks of its nested annotations.
+     *
+     * Mirrors Python `Labels.extend` (PR #447).
+     */
+    extend(frames: LabeledFrame[]): void;
     /**
      * Add a static ROI (not tied to any specific frame, e.g., an arena boundary).
      *
@@ -2160,11 +2182,44 @@ declare class Labels {
         numFrames?: number;
     }): number[][][][];
     /**
+     * Register an instance's skeleton, deduplicating structurally-equal ones.
+     *
+     * If a skeleton with the same structure *and* the same node order already
+     * exists in `this.skeletons`, the instance is rebound to that canonical object
+     * instead of leaking a duplicate. If no match exists, the instance's skeleton
+     * is appended as a new canonical skeleton.
+     *
+     * A skeleton that is already registered (by object identity) is left
+     * untouched. This deliberately preserves distinct-but-compatible skeletons a
+     * caller added explicitly (e.g. via `new Labels({ skeletons: [...] })`), so
+     * workflows that reason about them separately keep working; only
+     * newly-discovered duplicates are canonicalized.
+     *
+     * Matching uses `Skeleton.matches(..., { requireSameOrder: true })` — the same
+     * strictness as {@link dedupSkeletons} — so a newly-seen skeleton is only
+     * treated as a duplicate when its node names, edges, symmetries, *and* node
+     * order all match an existing skeleton. Because the node order is identical,
+     * the instance's positional points array is already aligned to the canonical
+     * skeleton, so rebinding `inst.skeleton` never moves any point data. Two
+     * structurally-equal skeletons with *different* node order are intentionally
+     * kept distinct, since their positional point semantics genuinely differ.
+     *
+     * Mirrors Python `Labels._register_skeleton` (PR #447).
+     *
+     * @param inst - Instance whose skeleton should be registered. Both `Instance`
+     *   and `PredictedInstance` are supported.
+     */
+    private _registerSkeleton;
+    /**
      * Update data structures based on contents.
      *
      * Repopulates `videos`, `skeletons`, and `tracks` from the labeled frames,
      * their instances and nested annotations, and the suggestions. Existing
      * entries are preserved (in order); only missing ones are appended.
+     *
+     * Skeletons are registered via {@link _registerSkeleton}, so two
+     * structurally-equal but distinct `Skeleton` objects collapse to a single
+     * canonical entry (Python #447) instead of leaking a duplicate.
      *
      * Mirrors Python `Labels.update` (labels.py:435-457).
      */
