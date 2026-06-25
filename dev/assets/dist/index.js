@@ -86,10 +86,15 @@ import {
   collectTracks,
   computePrefetchWindow,
   computeTrails,
+  createSkeletonFromCategory,
   createVideoBackend,
   cropFrame,
   cropPoints,
+  decodeCocoRle,
+  decodeCompressedRleCounts,
+  decodeKeypoints,
   decodeRle,
+  decodeSegmentation,
   decodeWkb,
   decodeYamlSkeleton,
   determineColorScheme,
@@ -109,6 +114,7 @@ import {
   getMarkerFunction,
   getPalette,
   isAnalysisH5File,
+  isCocoData,
   isStreamingSupported,
   isTrainingConfig,
   labelsFromNumpy,
@@ -124,7 +130,10 @@ import {
   openH5File,
   openH5Worker,
   openStreamingH5,
+  parseCocoJson,
   rasterizeGeometry,
+  readCoco,
+  readCocoSet,
   readGeoJSON,
   readSkeletonJson,
   readSlpStreaming,
@@ -153,7 +162,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-WWBDYUK3.js";
+} from "./chunk-ZZTVVLU3.js";
 import {
   Edge,
   Instance,
@@ -193,9 +202,9 @@ async function openH5FileNode(module, source) {
   if (source instanceof Uint8Array || source instanceof ArrayBuffer) {
     const { writeFileSync: writeFileSync2, unlinkSync } = await import("fs");
     const { tmpdir } = await import("os");
-    const { join: join4 } = await import("path");
+    const { join: join5 } = await import("path");
     const data = source instanceof Uint8Array ? source : new Uint8Array(source);
-    const tempPath = join4(
+    const tempPath = join5(
       tmpdir(),
       `sleap-io-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`
     );
@@ -223,19 +232,19 @@ _registerNodeFileOps({
     const { writeFile } = await import("fs/promises");
     await writeFile(filename, bytes);
   },
-  fileExists: async (path3) => {
-    const { existsSync: existsSync3 } = await import("fs");
-    return existsSync3(path3);
+  fileExists: async (path4) => {
+    const { existsSync: existsSync4 } = await import("fs");
+    return existsSync4(path4);
   },
   readPackageVersion: async () => {
     try {
       const { readFile } = await import("fs/promises");
       const { fileURLToPath } = await import("url");
-      const { dirname: dirname3, join: join4 } = await import("path");
-      const here = dirname3(fileURLToPath(import.meta.url));
+      const { dirname: dirname4, join: join5 } = await import("path");
+      const here = dirname4(fileURLToPath(import.meta.url));
       const candidates = [
-        join4(here, "..", "..", "..", "package.json"),
-        join4(here, "..", "..", "..", "..", "package.json")
+        join5(here, "..", "..", "..", "package.json"),
+        join5(here, "..", "..", "..", "..", "package.json")
       ];
       for (const candidate of candidates) {
         try {
@@ -255,9 +264,9 @@ _registerNodeFileOps({
 import * as fs from "fs";
 import * as nodePath from "path";
 var nodeFsResolver = {
-  async exists(path3) {
+  async exists(path4) {
     try {
-      await fs.promises.access(path3);
+      await fs.promises.access(path4);
       return true;
     } catch {
       return false;
@@ -268,11 +277,11 @@ var nodeFsResolver = {
     const s2 = await fs.promises.stat(path22);
     return s1.dev === s2.dev && s1.ino === s2.ino;
   },
-  async realpath(path3) {
+  async realpath(path4) {
     try {
-      return await fs.promises.realpath(path3);
+      return await fs.promises.realpath(path4);
     } catch {
-      return nodePath.resolve(path3);
+      return nodePath.resolve(path4);
     }
   }
 };
@@ -284,8 +293,8 @@ var NodeFileByteSource = class {
   path;
   fd = null;
   fileSize = null;
-  constructor(path3) {
-    this.path = path3;
+  constructor(path4) {
+    this.path = path4;
   }
   ensureOpen() {
     if (this.fd === null) {
@@ -313,28 +322,28 @@ var NodeFileByteSource = class {
     }
   }
 };
-setSeqFileByteSourceFactory((path3) => new NodeFileByteSource(path3));
+setSeqFileByteSourceFactory((path4) => new NodeFileByteSource(path4));
 
 // src/io/label-images-node.ts
 import * as fs3 from "fs";
 import * as nodePath2 from "path";
-async function readTiffPath(path3) {
-  const stat = fs3.statSync(path3);
+async function readTiffPath(path4) {
+  const stat = fs3.statSync(path4);
   if (stat.isDirectory()) {
-    const entries = fs3.readdirSync(path3).filter((name) => /\.tiff?$/i.test(name)).sort();
+    const entries = fs3.readdirSync(path4).filter((name) => /\.tiff?$/i.test(name)).sort();
     const files = entries.map(
-      (name) => new Uint8Array(fs3.readFileSync(nodePath2.join(path3, name)))
+      (name) => new Uint8Array(fs3.readFileSync(nodePath2.join(path4, name)))
     );
     return { files };
   }
-  return new Uint8Array(fs3.readFileSync(path3));
+  return new Uint8Array(fs3.readFileSync(path4));
 }
 setLabelImageFileReader(readTiffPath);
 
 // src/video/node-image-reader.ts
 import * as fs4 from "fs";
-async function nodeImageReader(path3) {
-  return new Uint8Array(await fs4.promises.readFile(path3));
+async function nodeImageReader(path4) {
+  return new Uint8Array(await fs4.promises.readFile(path4));
 }
 setDefaultImageBytesReader(nodeImageReader);
 
@@ -1424,6 +1433,70 @@ function videoKey(video) {
 function invertClassNames(classNames) {
   const result = /* @__PURE__ */ new Map();
   for (const [id, name] of classNames) result.set(name, id);
+  return result;
+}
+
+// src/io/coco-node.ts
+import * as fs7 from "fs";
+import * as path3 from "path";
+function recursiveFindByBasename(root, base) {
+  let entries;
+  try {
+    entries = fs7.readdirSync(root, { withFileTypes: true });
+  } catch {
+    return null;
+  }
+  for (const entry of entries) {
+    const full = path3.join(root, entry.name);
+    if (entry.isFile()) {
+      if (entry.name === base) return full;
+    } else if (entry.isDirectory()) {
+      const hit = recursiveFindByBasename(full, base);
+      if (hit) return hit;
+    }
+  }
+  return null;
+}
+function resolveImagePath(fileName, datasetRoot) {
+  let p = path3.join(datasetRoot, fileName);
+  if (fs7.existsSync(p) && fs7.statSync(p).isFile()) return p;
+  for (const prefix of ["images", "imgs", "data/images"]) {
+    p = path3.join(datasetRoot, prefix, fileName);
+    if (fs7.existsSync(p) && fs7.statSync(p).isFile()) return p;
+  }
+  const base = path3.basename(fileName);
+  const hit = recursiveFindByBasename(datasetRoot, base);
+  if (hit) return hit;
+  return null;
+}
+function loadCoco(jsonPath, options = {}) {
+  if (!fs7.existsSync(jsonPath)) {
+    throw new Error(`COCO annotation file not found: ${jsonPath}`);
+  }
+  const text = fs7.readFileSync(jsonPath, "utf-8");
+  const datasetRoot = options.datasetRoot ?? path3.dirname(jsonPath);
+  const resolveImage = options.resolveImage ?? ((fileName, root) => resolveImagePath(fileName, root ?? datasetRoot));
+  return readCoco(text, { ...options, datasetRoot, resolveImage });
+}
+function loadCocoSet(datasetPath, options = {}) {
+  const { jsonFiles, ...readOptions } = options;
+  let files = jsonFiles;
+  if (files === void 0) {
+    files = fs7.readdirSync(datasetPath).filter((f) => f.endsWith(".json"));
+    if (files.length === 0) {
+      throw new Error(`No JSON annotation files found in ${datasetPath}`);
+    }
+  }
+  const result = {};
+  for (const file of files) {
+    const splitName = path3.basename(file, ".json");
+    const labels = loadCoco(path3.join(datasetPath, file), {
+      ...readOptions,
+      datasetRoot: datasetPath
+    });
+    labels.provenance = { ...labels.provenance, split: splitName };
+    result[splitName] = labels;
+  }
   return result;
 }
 
@@ -2591,12 +2664,12 @@ async function toDataURL(imageData, format = "png") {
   ctx.putImageData(imageData, 0, 0);
   return canvas.toDataURL(`image/${format}`);
 }
-async function saveImage(imageData, path3) {
+async function saveImage(imageData, path4) {
   const { Canvas } = await import("skia-canvas");
   const canvas = new Canvas(imageData.width, imageData.height);
   const ctx = canvas.getContext("2d");
   ctx.putImageData(imageData, 0, 0);
-  await canvas.saveAs(path3);
+  await canvas.saveAs(path4);
 }
 
 // src/rendering/video.ts
@@ -2892,12 +2965,17 @@ export {
   computePrefetchWindow,
   computeTrails,
   createDataYaml,
+  createSkeletonFromCategory,
   createSkeletonFromConfig,
   createSplitsFromLabels,
   createVideoBackend,
   cropFrame,
   cropPoints,
+  decodeCocoRle,
+  decodeCompressedRleCounts,
+  decodeKeypoints,
   decodeRle,
+  decodeSegmentation,
   decodeWkb,
   decodeYamlSkeleton,
   denormalizeCoordinates,
@@ -2924,11 +3002,14 @@ export {
   getMarkerFunction,
   getPalette,
   isAnalysisH5File,
+  isCocoData,
   isStreamingSupported,
   isTrackMateFile,
   isTrainingConfig,
   labelsFromNumpy,
   loadAnalysisH5,
+  loadCoco,
+  loadCocoSet,
   loadJabs,
   loadLabelImages,
   loadSlp,
@@ -2944,6 +3025,7 @@ export {
   normalizeLabelIds,
   openH5Worker,
   openStreamingH5,
+  parseCocoJson,
   parseDataYaml,
   parseLabelFile,
   pointsEmpty,
@@ -2955,6 +3037,8 @@ export {
   predictionToInstance,
   probeImageSize,
   rasterizeGeometry,
+  readCoco,
+  readCocoSet,
   readGeoJSON,
   readLabels,
   readLabelsSet,
