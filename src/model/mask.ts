@@ -487,16 +487,24 @@ _registerMaskFactory(
     mask: Uint8Array,
     height: number,
     width: number,
-    options: Record<string, unknown>,
+    options: Record<string, unknown> & { score?: number },
   ) => {
-    return SegmentationMask.fromArray(
-      mask,
-      height,
-      width,
-      options as Omit<
-        SegmentationMaskOptions,
-        "rleCounts" | "height" | "width"
-      >,
-    );
+    const { score, ...rest } = options as { score?: number } & Omit<
+      SegmentationMaskOptions,
+      "rleCounts" | "height" | "width"
+    >;
+    // Bypass fromArray's multi-class guard: rasterizeGeometry always yields a
+    // binary Uint8Array, so encoding directly is safe.
+    const rleCounts = encodeRle(mask, height, width);
+    if (score !== undefined) {
+      return new PredictedSegmentationMask({
+        rleCounts,
+        height,
+        width,
+        ...rest,
+        score,
+      });
+    }
+    return new UserSegmentationMask({ rleCounts, height, width, ...rest });
   },
 );

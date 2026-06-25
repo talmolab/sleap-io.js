@@ -48,6 +48,7 @@ export {
 } from "./video/crop-backend.js";
 export * from "./io/main.js";
 export * from "./io/geojson.js";
+export * from "./io/coco.js";
 export * from "./codecs/dictionary.js";
 export * from "./codecs/numpy.js";
 export * from "./codecs/skeleton-yaml.js";

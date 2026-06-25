@@ -9,6 +9,10 @@ import {
   decodeWkb,
 } from "../src/model/roi.js";
 import "../src/model/mask.js"; // Ensure mask factory is registered
+import {
+  PredictedSegmentationMask,
+  UserSegmentationMask,
+} from "../src/model/mask.js";
 import { Video } from "../src/model/video.js";
 import type { Geometry } from "../src/model/roi.js";
 
@@ -684,5 +688,58 @@ describe("ROI abstract base and subclasses", () => {
       expect((r as PredictedROI).score).toBe(0.8);
       expect(r.name).toBe("pred_multi");
     }
+  });
+
+  it("UserROI.toMask() yields a UserSegmentationMask (unchanged)", () => {
+    const roi = UserROI.fromPolygon(
+      [
+        [2, 2],
+        [6, 2],
+        [6, 6],
+        [2, 6],
+      ],
+      { name: "u", category: "cat" },
+    );
+    const mask = roi.toMask(10, 10);
+    expect(mask).toBeInstanceOf(UserSegmentationMask);
+    expect(mask.isPredicted).toBe(false);
+    expect(mask.name).toBe("u");
+    expect(mask.category).toBe("cat");
+    expect(mask.area).toBeGreaterThan(0);
+    // The 4x4 square at [2,6) fills [2,6) rows/cols -> 16 px.
+    expect(mask.area).toBe(16);
+    const data = mask.data;
+    expect(data[3 * 10 + 3]).toBe(1);
+    expect(data[0]).toBe(0);
+    const bb = mask.bbox;
+    expect(bb.x).toBeCloseTo(2);
+    expect(bb.y).toBeCloseTo(2);
+    expect(bb.width).toBeCloseTo(4);
+    expect(bb.height).toBeCloseTo(4);
+  });
+
+  it("PredictedROI.toMask() yields a PredictedSegmentationMask carrying score", () => {
+    const roi = new PredictedROI({
+      geometry: {
+        type: "Polygon",
+        coordinates: [
+          [
+            [2, 2],
+            [6, 2],
+            [6, 6],
+            [2, 6],
+            [2, 2],
+          ],
+        ],
+      },
+      score: 0.83,
+      category: "cat",
+    });
+    const mask = roi.toMask(10, 10);
+    expect(mask).toBeInstanceOf(PredictedSegmentationMask);
+    expect(mask.isPredicted).toBe(true);
+    expect((mask as PredictedSegmentationMask).score).toBe(roi.score);
+    expect(mask.category).toBe("cat");
+    expect(mask.area).toBe(16);
   });
 });
