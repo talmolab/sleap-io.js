@@ -14,7 +14,7 @@
 // `OffscreenCanvas` when available (browser) else a lazy dynamic
 // `import("skia-canvas")` (Node), exactly like `seq-video.ts`.
 
-import { VideoBackend, VideoFrame } from "./backend.js";
+import type { VideoBackend, VideoFrame } from "./backend.js";
 import { cropFrame, type Fill, type RawFrame } from "../transform/frame.js";
 import {
   cropPoints,
@@ -245,12 +245,29 @@ export class CropVideoBackend implements VideoBackend {
   /**
    * Read a single cropped frame.
    *
-   * Decodes the inner full frame, normalizes it to readable pixels (rasterizing
-   * an opaque `ImageBitmap`, decoding undecoded encoded bytes, or wrapping raw
-   * pixel bytes), then applies {@link cropFrame} with this wrapper's crop/fill.
-   * Returns `null` when the inner returns `null` (no such frame).
+   * First attempts crop pushdown: if the inner backend implements the optional
+   * {@link VideoBackend.readCrop} hook (Item 1 of JS issue #153, mirroring
+   * Python `_source_frame`, `video_reading.py:2392`) it is given the chance to
+   * read only the crop region directly from storage. A non-null result is
+   * already cropped/padded and is byte-identical to the fallback, so it is
+   * returned as-is. `null` (the default for every shipping backend — encoded
+   * blobs / per-frame rows cannot be spatially hyperslabbed) means fall back.
+   *
+   * Fallback: decode the inner full frame, normalize it to readable pixels
+   * (rasterizing an opaque `ImageBitmap`, decoding undecoded encoded bytes, or
+   * wrapping raw pixel bytes), then apply {@link cropFrame} with this wrapper's
+   * crop/fill. Returns `null` when the inner returns `null` (no such frame).
    */
   async getFrame(frameIndex: number): Promise<VideoFrame | null> {
+    if (typeof this.inner.readCrop === "function") {
+      const pushed = await this.inner.readCrop(
+        frameIndex,
+        this.crop,
+        this.fill,
+      );
+      // Non-null is already cropped/padded (byte-identical to the fallback).
+      if (pushed != null) return pushed as unknown as VideoFrame;
+    }
     const src = await this.inner.getFrame(frameIndex);
     if (src == null) return null;
     const readable = await this.toReadable(src);

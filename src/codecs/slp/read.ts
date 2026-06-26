@@ -847,10 +847,20 @@ async function readVideos(
     if (cropEntry) {
       const [cx1, cy1, cx2, cy2] = cropEntry.crop;
       if (openVideos && backend) {
+        // Each reloaded tile owns its freshly-reconstructed inner (ownsInner
+        // defaults to true). We do NOT share one inner across sibling mosaic
+        // tiles here: on read each video entry rebuilds a private inner, so
+        // sharing would leave the inner unowned (leaked — never closed) for no
+        // decode savings. The Hdf5VideoBackend is a thin per-frame slicer over
+        // the already-shared open h5 `file`, so duplicating it per tile is
+        // cheap. Live mosaic decode-sharing is opt-in and in-memory only, via
+        // Video.crop({ shareDecode: true }). Mirrors Python slp.py make_video
+        // (slp.py:393-401).
         backend = CropVideoBackend.wrap({
           inner: backend,
           crop: cropEntry.crop,
           fill: cropEntry.fill,
+          // ownsInner: true (default) — see comment above.
         });
       }
       // Copy before overwriting so a shared metadata dict is never mutated.
