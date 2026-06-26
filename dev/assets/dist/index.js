@@ -164,7 +164,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-JLIQ4IJV.js";
+} from "./chunk-FJTN5ENO.js";
 import {
   Edge,
   Instance,
