@@ -135,4 +135,22 @@ describe("ImageVideoBackend.prefetch (mechanism)", () => {
     expect(t.reads).toContain("img11.jpg");
     expect(t.reads).toContain("img12.jpg");
   });
+
+  it("getFrame({ prefetch: false }) suppresses read-ahead for that call", async () => {
+    const t = trackingReader();
+    const be = await make(t, { prefetchAhead: 4, prefetchBehind: 1 });
+    await be.getFrame(9, { prefetch: false });
+    await Promise.resolve(); // let any (erroneously) scheduled prefetch run
+    expect(t.reads).toEqual(["img9.jpg"]); // only the requested frame, no window
+    expect(t.reads).not.toContain("img10.jpg");
+  });
+
+  it("getFrame prefetches by default (enabled unless opted out)", async () => {
+    const t = trackingReader();
+    const be = await make(t, { prefetchAhead: 4, prefetchBehind: 1 });
+    await be.getFrame(9);
+    await be.getFrame(10); // forward step -> read-ahead 11,12,...
+    await be.lastPrefetch;
+    expect(t.reads).toContain("img11.jpg");
+  });
 });

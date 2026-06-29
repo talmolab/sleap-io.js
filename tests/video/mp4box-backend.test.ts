@@ -312,7 +312,7 @@ describe("Mp4BoxVideoBackend", () => {
     const backend = new Mp4BoxVideoBackend(blob);
     const controller = new AbortController();
     controller.abort();
-    const result = await backend.getFrame(0, controller.signal);
+    const result = await backend.getFrame(0, { signal: controller.signal });
     expect(result).toBeNull();
     backend.close();
   });

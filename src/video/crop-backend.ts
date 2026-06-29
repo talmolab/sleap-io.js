@@ -14,7 +14,7 @@
 // `OffscreenCanvas` when available (browser) else a lazy dynamic
 // `import("skia-canvas")` (Node), exactly like `seq-video.ts`.
 
-import type { VideoBackend, VideoFrame } from "./backend.js";
+import type { VideoBackend, VideoFrame, GetFrameOptions } from "./backend.js";
 import { cropFrame, type Fill, type RawFrame } from "../transform/frame.js";
 import {
   cropPoints,
@@ -258,7 +258,10 @@ export class CropVideoBackend implements VideoBackend {
    * wrapping raw pixel bytes), then apply {@link cropFrame} with this wrapper's
    * crop/fill. Returns `null` when the inner returns `null` (no such frame).
    */
-  async getFrame(frameIndex: number): Promise<VideoFrame | null> {
+  async getFrame(
+    frameIndex: number,
+    opts?: GetFrameOptions,
+  ): Promise<VideoFrame | null> {
     if (typeof this.inner.readCrop === "function") {
       const pushed = await this.inner.readCrop(
         frameIndex,
@@ -268,7 +271,7 @@ export class CropVideoBackend implements VideoBackend {
       // Non-null is already cropped/padded (byte-identical to the fallback).
       if (pushed != null) return pushed as unknown as VideoFrame;
     }
-    const src = await this.inner.getFrame(frameIndex);
+    const src = await this.inner.getFrame(frameIndex, opts);
     if (src == null) return null;
     const readable = await this.toReadable(src);
     return cropFrame(readable as ImageData, this.crop, this.fill);

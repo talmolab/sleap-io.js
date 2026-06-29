@@ -1,4 +1,8 @@
-import type { VideoBackend, VideoFrame } from "../video/backend.js";
+import type {
+  VideoBackend,
+  VideoFrame,
+  GetFrameOptions,
+} from "../video/backend.js";
 import { CropVideoBackend } from "../video/crop-backend.js";
 import {
   cropPoints,
@@ -238,9 +242,12 @@ export class Video {
     this._fps = value;
   }
 
-  async getFrame(frameIndex: number): Promise<VideoFrame | null> {
+  async getFrame(
+    frameIndex: number,
+    opts?: GetFrameOptions,
+  ): Promise<VideoFrame | null> {
     if (!this.backend) return null;
-    return this.backend.getFrame(frameIndex);
+    return this.backend.getFrame(frameIndex, opts);
   }
 
   async getFrameTimes(): Promise<number[] | null> {
