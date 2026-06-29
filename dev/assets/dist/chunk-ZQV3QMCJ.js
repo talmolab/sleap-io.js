@@ -4067,7 +4067,7 @@ var CropVideoBackend = class _CropVideoBackend {
    * wrapping raw pixel bytes), then apply {@link cropFrame} with this wrapper's
    * crop/fill. Returns `null` when the inner returns `null` (no such frame).
    */
-  async getFrame(frameIndex) {
+  async getFrame(frameIndex, opts) {
     if (typeof this.inner.readCrop === "function") {
       const pushed = await this.inner.readCrop(
         frameIndex,
@@ -4076,7 +4076,7 @@ var CropVideoBackend = class _CropVideoBackend {
       );
       if (pushed != null) return pushed;
     }
-    const src = await this.inner.getFrame(frameIndex);
+    const src = await this.inner.getFrame(frameIndex, opts);
     if (src == null) return null;
     const readable = await this.toReadable(src);
     return cropFrame(readable, this.crop, this.fill);
@@ -4254,9 +4254,9 @@ var Video = class _Video {
   set fps(value) {
     this._fps = value;
   }
-  async getFrame(frameIndex) {
+  async getFrame(frameIndex, opts) {
     if (!this.backend) return null;
-    return this.backend.getFrame(frameIndex);
+    return this.backend.getFrame(frameIndex, opts);
   }
   async getFrameTimes() {
     if (!this.backend?.getFrameTimes) return null;
@@ -8439,7 +8439,7 @@ var Mp4BoxVideoBackend = class {
     }
     this.ready = this.init();
   }
-  async getFrame(frameIndex, signal) {
+  async getFrame(frameIndex, opts) {
     await this.ready;
     if (frameIndex < 0 || frameIndex >= this.samples.length) return null;
     if (this.cache.has(frameIndex)) {
@@ -8453,7 +8453,7 @@ var Mp4BoxVideoBackend = class {
     this.latestRequestedFrame = frameIndex;
     this.decodeQueue = this.decodeQueue.then(async () => {
       if (this.latestRequestedFrame !== frameIndex) return;
-      if (signal?.aborted) return;
+      if (opts?.signal?.aborted) return;
       const keyframe = this.findKeyframeBefore(frameIndex);
       const end = Math.min(
         frameIndex + this.lookahead,
@@ -9301,9 +9301,9 @@ var ImageVideoBackend = class _ImageVideoBackend {
     if (seedFrame) be.decodedCache.set(0, seedFrame);
     return be;
   }
-  async getFrame(frameIndex) {
+  async getFrame(frameIndex, opts) {
     if (frameIndex < 0 || frameIndex >= this.filename.length) return null;
-    this.triggerPrefetch(frameIndex);
+    if (opts?.prefetch !== false) this.triggerPrefetch(frameIndex);
     const decoded = this.decodedCache.get(frameIndex);
     if (decoded) return decoded;
     const bytes = await this.startRead(frameIndex);
