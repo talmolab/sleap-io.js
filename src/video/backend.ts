@@ -3,6 +3,22 @@ import type { Fill, RawFrame } from "../transform/frame.js";
 
 export type VideoFrame = ImageData | ImageBitmap | Uint8Array | ArrayBuffer;
 
+/** Per-call options for {@link VideoBackend.getFrame}. */
+export interface GetFrameOptions {
+  /**
+   * When `false`, suppress this backend's read-ahead prefetch for this call.
+   * Read-ahead helps sequential playback but is wasted (and saturates I/O) while
+   * scrubbing, where the caller jumps past the prefetched frames. Backends with
+   * no prefetch ignore it. Defaults to `true` (prefetch enabled).
+   */
+  prefetch?: boolean;
+  /**
+   * Optional cancellation signal. Backends that decode asynchronously (e.g. the
+   * MP4 backend) bail early when it aborts; backends that don't ignore it.
+   */
+  signal?: AbortSignal;
+}
+
 export interface VideoBackend {
   filename: string | string[];
   shape?: [number, number, number, number];
@@ -14,7 +30,10 @@ export interface VideoBackend {
    * backends (mp4 / seq / image-sequence), where every frame is decodable.
    */
   frameNumbers?: number[];
-  getFrame(frameIndex: number): Promise<VideoFrame | null>;
+  getFrame(
+    frameIndex: number,
+    opts?: GetFrameOptions,
+  ): Promise<VideoFrame | null>;
   getFrameTimes?(): Promise<number[] | null>;
   /**
    * Optional crop pushdown hook (Item 1 of JS issue #153, mirroring Python

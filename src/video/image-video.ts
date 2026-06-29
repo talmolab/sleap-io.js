@@ -11,7 +11,7 @@
 // both a browser (`createImageBitmap`) and Node (`skia-canvas`). PNG/JPEG/BMP/…
 // are supported; TIFF is NOT (no web decoder) — a TIFF source throws at decode.
 
-import { VideoBackend, VideoFrame } from "./backend.js";
+import { VideoBackend, VideoFrame, GetFrameOptions } from "./backend.js";
 import { decodeEncoded } from "./image-decode.js";
 import { getImageBytesReader, type ImageBytesReader } from "./image-source.js";
 import { LruCache } from "./lru-cache.js";
@@ -171,10 +171,15 @@ export class ImageVideoBackend implements VideoBackend {
     return be;
   }
 
-  async getFrame(frameIndex: number): Promise<VideoFrame | null> {
+  async getFrame(
+    frameIndex: number,
+    opts?: GetFrameOptions,
+  ): Promise<VideoFrame | null> {
     if (frameIndex < 0 || frameIndex >= this.filename.length) return null;
-    // Kick off read-ahead before serving (so cache hits still prefetch ahead).
-    this.triggerPrefetch(frameIndex);
+    // Kick off read-ahead before serving (so cache hits still prefetch ahead),
+    // unless the caller opted out (e.g. while scrubbing, where read-ahead frames
+    // are scrubbed past and just saturate I/O — slowing the requested frame).
+    if (opts?.prefetch !== false) this.triggerPrefetch(frameIndex);
     const decoded = this.decodedCache.get(frameIndex);
     if (decoded) return decoded;
     const bytes = await this.startRead(frameIndex);

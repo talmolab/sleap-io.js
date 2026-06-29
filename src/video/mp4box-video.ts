@@ -1,4 +1,4 @@
-import { VideoBackend, VideoFrame } from "./backend.js";
+import { VideoBackend, VideoFrame, GetFrameOptions } from "./backend.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -120,7 +120,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
 
   async getFrame(
     frameIndex: number,
-    signal?: AbortSignal,
+    opts?: GetFrameOptions,
   ): Promise<VideoFrame | null> {
     await this.ready;
     if (frameIndex < 0 || frameIndex >= this.samples.length) return null;
@@ -138,7 +138,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
 
     this.decodeQueue = this.decodeQueue.then(async () => {
       if (this.latestRequestedFrame !== frameIndex) return;
-      if (signal?.aborted) return;
+      if (opts?.signal?.aborted) return;
 
       const keyframe = this.findKeyframeBefore(frameIndex);
       const end = Math.min(
