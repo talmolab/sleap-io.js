@@ -367,6 +367,9 @@ export function applyOverlay(
   overlay:
     | LabelImage
     | RawLabelImage
+    | SegmentationMask
+    | ROI
+    | BoundingBox
     | SegmentationMask[]
     | ROI[]
     | BoundingBox[],
@@ -386,7 +389,10 @@ export function applyOverlay(
   const outlineColor = opts?.outlineColor ?? null;
   const explicitColors = opts?.colors ?? null;
 
-  // Single LabelImage (or raw Int32Array-backed) overlay.
+  // A single overlay object: a LabelImage takes its own raster path; a bare
+  // SegmentationMask / ROI / BoundingBox is wrapped into a one-element list and
+  // falls through to the list dispatch below (sleap-io PR #505). Anything else
+  // is a no-op.
   if (!Array.isArray(overlay)) {
     if (isLabelImageLike(overlay)) {
       drawLabelImage(image, overlay, {
@@ -396,8 +402,12 @@ export function applyOverlay(
         outlineWidth,
         outlineColor,
       });
+      return image;
     }
-    return image;
+    if (isSegmentationMask(overlay)) overlay = [overlay];
+    else if (isROI(overlay)) overlay = [overlay];
+    else if (isBoundingBox(overlay)) overlay = [overlay];
+    else return image;
   }
 
   // Empty list is a no-op.

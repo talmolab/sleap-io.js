@@ -21,6 +21,9 @@ import type { RawLabelImage } from "./overlays-raster.js";
 export type Overlay =
   | LabelImage
   | RawLabelImage
+  | SegmentationMask
+  | ROI
+  | BoundingBox
   | SegmentationMask[]
   | ROI[]
   | BoundingBox[];

@@ -176,13 +176,16 @@ export class BoundingBox {
     const c = this.corners;
     // Close the ring
     const ring = [...c, c[0]];
-    return ROI.fromPolygon(ring, {
+    const roi = ROI.fromPolygon(ring, {
       name: this.name,
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance,
     });
+    roi._instanceIdx = this._instanceIdx;
+    return roi;
   }
 
   /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
