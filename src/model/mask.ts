@@ -488,11 +488,13 @@ export class SegmentationMask {
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance,
       scale: [1, 1],
       offset: [0, 0],
     };
 
+    let resampled: SegmentationMask;
     if (this instanceof PredictedSegmentationMask) {
       const pm = this as PredictedSegmentationMask;
       let resampledScoreMap: Float32Array | null = null;
@@ -505,18 +507,20 @@ export class SegmentationMask {
           targetWidth,
         );
       }
-      return new PredictedSegmentationMask({
+      resampled = new PredictedSegmentationMask({
         ...baseOpts,
         score: pm.score,
         scoreMap: resampledScoreMap,
       });
+    } else {
+      resampled = new UserSegmentationMask({
+        ...baseOpts,
+        fromPredicted:
+          this instanceof UserSegmentationMask ? this.fromPredicted : null,
+      });
     }
-
-    return new UserSegmentationMask({
-      ...baseOpts,
-      fromPredicted:
-        this instanceof UserSegmentationMask ? this.fromPredicted : null,
-    });
+    resampled._instanceIdx = this._instanceIdx;
+    return resampled;
   }
 
   get bbox(): { x: number; y: number; width: number; height: number } {
@@ -563,18 +567,18 @@ export class SegmentationMask {
       x2: x + width,
       y2: y + height,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance,
       category: this.category,
       name: this.name,
       source: this.source,
     };
-    if (this instanceof PredictedSegmentationMask) {
-      return new PredictedBoundingBox({
-        ...opts,
-        score: this.score,
-      });
-    }
-    return new UserBoundingBox(opts);
+    const bb =
+      this instanceof PredictedSegmentationMask
+        ? new PredictedBoundingBox({ ...opts, score: this.score })
+        : new UserBoundingBox(opts);
+    bb._instanceIdx = this._instanceIdx;
+    return bb;
   }
 
   /**
@@ -630,12 +634,15 @@ export class SegmentationMask {
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance,
     };
-    if (this instanceof PredictedSegmentationMask) {
-      return new PredictedROI({ ...options, score: this.score });
-    }
-    return new UserROI(options);
+    const roi =
+      this instanceof PredictedSegmentationMask
+        ? new PredictedROI({ ...options, score: this.score })
+        : new UserROI(options);
+    roi._instanceIdx = this._instanceIdx;
+    return roi;
   }
 }
 
