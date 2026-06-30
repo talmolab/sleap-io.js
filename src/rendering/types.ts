@@ -8,7 +8,7 @@ import type { SegmentationMask } from "../model/mask.js";
 import type { LabelImage } from "../model/label-image.js";
 import type { BoundingBox } from "../model/bbox.js";
 import type { ROI } from "../model/roi.js";
-import type { RawLabelImage } from "./overlays.js";
+import type { RawLabelImage } from "./overlays-raster.js";
 
 /**
  * A single-frame annotation overlay applied before poses are drawn.

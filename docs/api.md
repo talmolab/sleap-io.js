@@ -443,12 +443,27 @@ mask.imageExtent;         // { height, width } in image coordinates
 // Resample to target size (removes spatial transform)
 const fullRes = mask.resampled(480, 640);
 
-// Convert to polygon ROI
+// Trace the actual mask boundary as closed polygon rings in image space
+// (honors scale/offset). Disjoint blobs and holes each get their own ring;
+// an empty mask returns []. Pure data — works in the browser.
+const rings = mask.contours();   // number[][][]
+
+// Convert to a polygon ROI tracing the real outline: a Polygon (one blob,
+// holes nested as interior rings) or MultiPolygon (disjoint blobs). A
+// predicted mask yields a PredictedROI carrying its score.
 const roi = mask.toPolygon();
 
 // Convert to BoundingBox object (with metadata)
 const bb = mask.toBbox();
 ```
+
+> **`toPolygon()` traces the boundary** (as of v0.5.0) rather than returning the
+> bounding-box rectangle. For the axis-aligned box use `mask.bbox` or
+> `mask.toBbox()`. The traced outline is exact and axis-aligned ("staircase");
+> consumers wanting smooth curves can post-process the rings (e.g. Chaikin
+> subdivision — the demo does this). `get data()` memoizes the decoded raster, so
+> repeated `data`/`area`/`bbox`/`contours()` reads decode the RLE once (treat the
+> returned buffer as read-only).
 
 **Adopting predictions (human-in-the-loop).** `PredictedSegmentationMask.toUser()`
 mirrors `Instance.fromPredicted`: it returns a new `UserSegmentationMask` that
@@ -477,6 +492,42 @@ A prediction is adopted when a user mask in the same frame links to it via
 `fromPredicted` (checked first, by identity) or, lacking a link, spatially
 overlaps it (bbox-centroid within 5 px). The remaining unclaimed predictions are
 returned, e.g. for surfacing unreviewed detections in a proofreading UI.
+
+#### Rendering masks in the browser
+
+`drawMasks` and `drawLabelImage` are **browser-safe** raster compositors (pure
+`ImageData` blending — no `skia-canvas`, no Node built-ins). They are exported
+from the browser entry, so a UI can composite masks onto a `<canvas>`
+client-side without the Node `renderImage` path:
+
+```ts
+import { drawMasks } from "@talmolab/sleap-io.js"; // browser build
+
+const ctx = canvas.getContext("2d");
+ctx.drawImage(videoFrame, 0, 0);
+const img = ctx.getImageData(0, 0, canvas.width, canvas.height);
+drawMasks(img, frame.masks, {
+  colors: frame.masks.map(maskColorRgb),  // e.g. by track identity
+  alpha: 0.45,
+});
+ctx.putImageData(img, 0, 0);
+
+// Crisp vector outlines on top, from the data model:
+for (const mask of frame.masks) {
+  for (const ring of mask.contours()) {
+    ctx.beginPath();
+    ctx.moveTo(ring[0][0], ring[0][1]);
+    for (const [x, y] of ring) ctx.lineTo(x, y);
+    ctx.closePath();
+    ctx.stroke();
+  }
+}
+```
+
+The vector overlays (`drawBboxes`, `drawRois`, `applyOverlay`) and the full
+`renderImage`/`renderVideo` pipeline draw through `skia-canvas` and remain
+Node-only (main entry). See `demo/` for a complete browser example that fills
+masks with `drawMasks` and outlines them with smoothed `contours()`.
 
 ### `BoundingBox`
 Axis-aligned or rotated bounding box for detection/tracking workflows. `BoundingBox` is abstract; use `UserBoundingBox` or `PredictedBoundingBox` for direct construction.

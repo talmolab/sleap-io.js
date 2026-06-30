@@ -1,4 +1,7 @@
-import { loadSlp, loadVideo } from "../dist/index.js";
+// The demo runs in the browser, so it imports the browser-safe build
+// (`index.browser.js`). `drawMasks` is the browser-safe raster compositor; mask
+// contour outlines come from `SegmentationMask.contours()` (a pure method).
+import { loadSlp, loadVideo, drawMasks } from "../dist/index.browser.js";
 
 const slpInput = document.querySelector("#slp-url");
 const videoInput = document.querySelector("#video-url");
@@ -13,6 +16,8 @@ const seek = document.querySelector("#seek");
 const playBtn = document.querySelector("#play-btn");
 const frameLabel = document.querySelector("#frame-label");
 const coordsEl = document.querySelector("#coords");
+const showMasksEl = document.querySelector("#show-masks");
+const maskAlphaEl = document.querySelector("#mask-alpha");
 
 const ctx = canvas.getContext("2d");
 const colors = ["#f3c56c", "#7dd3fc", "#a7f3d0", "#fda4af", "#c4b5fd"];
@@ -32,6 +37,78 @@ const getInstanceColor = (instance, fallbackIndex) => {
   }
   const stableIndex = instance.id ?? instance.instanceId ?? fallbackIndex;
   return colors[stableIndex % colors.length];
+};
+
+const hexToRgb = (hex) => {
+  const h = hex.replace("#", "");
+  const full = h.length === 3 ? h.split("").map((c) => c + c).join("") : h;
+  const n = Number.parseInt(full, 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+};
+
+// Track-keyed color for a mask (mirrors getInstanceColor), so a fly's mask, its
+// pose, and its outline all share one color stable across frames.
+const getMaskColor = (mask, fallbackIndex) => {
+  const trackKey = getTrackKey(mask.track);
+  if (trackKey != null) {
+    if (!trackColors.has(trackKey)) {
+      trackColors.set(trackKey, colors[trackColors.size % colors.length]);
+    }
+    return trackColors.get(trackKey);
+  }
+  return colors[fallbackIndex % colors.length];
+};
+
+// Chaikin corner-cutting smooths the exact (staircase) mask contour into a
+// rounded outline. Operates on an open ring (closing vertex dropped).
+const smoothRing = (ring, iterations = 2) => {
+  let pts = ring.slice(0, -1);
+  if (pts.length < 3) return pts;
+  for (let it = 0; it < iterations; it++) {
+    const out = [];
+    const n = pts.length;
+    for (let i = 0; i < n; i++) {
+      const a = pts[i];
+      const b = pts[(i + 1) % n];
+      out.push([a[0] * 0.75 + b[0] * 0.25, a[1] * 0.75 + b[1] * 0.25]);
+      out.push([a[0] * 0.25 + b[0] * 0.75, a[1] * 0.25 + b[1] * 0.75]);
+    }
+    pts = out;
+  }
+  return pts;
+};
+
+// Composite a frame's segmentation masks: translucent fill (library raster
+// compositor) + a crisp smoothed contour outline, colored per track.
+const drawFrameMasks = (frame) => {
+  if (!showMasks || !frame?.masks?.length) return;
+  const maskColors = frame.masks.map((m, i) => getMaskColor(m, i));
+
+  // Filled overlay via the browser-safe raster compositor.
+  const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  drawMasks(imgData, frame.masks, {
+    colors: maskColors.map(hexToRgb),
+    alpha: maskAlpha,
+  });
+  ctx.putImageData(imgData, 0, 0);
+
+  // Smoothed contour outline (vector, from the data model).
+  ctx.lineWidth = 2;
+  ctx.lineJoin = "round";
+  frame.masks.forEach((mask, i) => {
+    ctx.strokeStyle = maskColors[i];
+    for (const ring of mask.contours()) {
+      const smooth = smoothRing(ring, 2);
+      if (smooth.length < 2) continue;
+      ctx.beginPath();
+      ctx.moveTo(smooth[0][0], smooth[0][1]);
+      for (let k = 1; k < smooth.length; k++) {
+        ctx.lineTo(smooth[k][0], smooth[k][1]);
+      }
+      ctx.closePath();
+      ctx.stroke();
+    }
+  });
 };
 
 const formatPoint = (point) => {
@@ -61,7 +138,7 @@ const formatFrameCoords = (frame, skeleton) => {
 };
 
 const baseUrl = new URL("./", import.meta.url);
-const defaultSlp = new URL("assets/demo-flies13-preds.slp", baseUrl).toString();
+const defaultSlp = new URL("assets/demo-flies13-seg.slp", baseUrl).toString();
 const defaultVideo = new URL("assets/demo-flies13-preds.mp4", baseUrl).toString();
 
 slpInput.value = defaultSlp;
@@ -82,6 +159,10 @@ let playbackStartTime = 0;
 let playbackStartFrame = 0;
 let renderToken = 0;
 
+// Segmentation overlay state.
+let showMasks = true;
+let maskAlpha = 0.45;
+
 // Embedded video mode state
 let embeddedMode = false;
 let labeledFramesList = [];
@@ -97,6 +178,9 @@ const setMeta = (data) => {
     return;
   }
   let text = `Frames: ${data.frames} | Instances: ${data.instances} | Nodes: ${data.nodes}`;
+  if (data.masks) {
+    text += ` | Masks: ${data.masks}`;
+  }
   if (data.videos > 1) {
     text += ` | Videos: ${data.videos}`;
   }
@@ -191,6 +275,7 @@ const renderExternalFrame = async (frameIdx) => {
     ctx.putImageData(videoFrame, 0, 0);
   }
 
+  drawFrameMasks(frame);
   drawSkeleton(frame, skeleton);
   formatFrameCoords(frame, skeleton);
 };
@@ -244,6 +329,7 @@ const renderEmbeddedFrame = async (labeledFrameIndex) => {
     ctx.fillText(`(No embedded image data)`, canvas.width / 2, canvas.height / 2 + 24);
   }
 
+  drawFrameMasks(frame);
   drawSkeleton(frame, skeleton);
   formatFrameCoords(frame, skeleton);
 };
@@ -362,6 +448,10 @@ const handleLoad = async () => {
     skeleton = labels.skeletons[0];
     const instanceCount = buildFrameIndex();
     labeledFramesList = labels.labeledFrames;
+    const maskTotal = labels.labeledFrames.reduce(
+      (sum, f) => sum + (f.masks?.length ?? 0),
+      0,
+    );
 
     // Determine mode: external video or embedded images
     embeddedMode = useEmbedded && (hasEmbeddedImages() || labels.videos.length > 1);
@@ -372,6 +462,7 @@ const handleLoad = async () => {
         frames: labeledFramesList.length,
         instances: instanceCount,
         nodes: skeleton?.nodes.length ?? 0,
+        masks: maskTotal,
         videos: labels.videos.length,
         mode: "embedded",
       });
@@ -395,6 +486,7 @@ const handleLoad = async () => {
         frames: frameCount,
         instances: instanceCount,
         nodes: skeleton?.nodes.length ?? 0,
+        masks: maskTotal,
         videos: 1,
         mode: "external",
       });
@@ -442,6 +534,24 @@ seek.addEventListener("input", () => {
     frameLabel.textContent = `Frame ${frameIdx}`;
     renderExternalFrame(frameIdx);
   }
+});
+
+// Re-render the current frame in whichever mode is active (used by the mask
+// toggle / opacity controls so changes show without stepping frames).
+const rerenderCurrent = () => {
+  if (!labels) return;
+  if (embeddedMode) renderEmbeddedFrame(currentLabeledFrameIndex);
+  else renderExternalFrame(currentFrame);
+};
+
+showMasksEl?.addEventListener("change", () => {
+  showMasks = showMasksEl.checked;
+  rerenderCurrent();
+});
+
+maskAlphaEl?.addEventListener("input", () => {
+  maskAlpha = Number(maskAlphaEl.value);
+  rerenderCurrent();
 });
 
 playBtn?.addEventListener("click", () => {
