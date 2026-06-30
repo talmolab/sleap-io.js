@@ -47,3 +47,16 @@ export type { TrailTarget, Trail } from "./trails.js";
 
 // Context classes
 export { RenderContext, InstanceContext } from "./context.js";
+
+// Browser-safe RASTER overlay drawing (segmentation masks + integer label
+// images). These mutate an `ImageData` in place with no Node dependency, so a
+// consuming UI can composite masks onto a canvas client-side. The vector
+// overlays (bounding boxes, ROIs) and the `applyOverlay` dispatcher remain
+// Node-only (skia-canvas) and are exported only from the main entry.
+export {
+  drawMasks,
+  drawLabelImage,
+  clampAlpha,
+  pickColor,
+} from "./overlays-raster.js";
+export type { RawLabelImage } from "./overlays-raster.js";
