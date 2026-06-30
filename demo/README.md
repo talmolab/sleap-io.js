@@ -1,5 +1,10 @@
 # Demo
 
+The demo loads `assets/demo-flies13-seg.slp` and overlays **segmentation masks**
+(translucent fill via the browser-safe `drawMasks`, plus smoothed contour
+outlines from `SegmentationMask.contours()`) colored by track, under the pose
+skeleton. Toggle masks and their opacity with the controls under the player.
+
 ## Local development
 
 1. Build the package:
@@ -8,17 +13,37 @@
 bun run build
 ```
 
-2. Serve the repo root (needs static server for module imports):
+2. Build the self-contained demo bundle (`demo/demo.bundle.js`, gitignored). It
+   inlines the browser build + JS deps (mediabunny, pako, yaml); the HDF5
+   streaming worker fetches `h5wasm` from a CDN at runtime, so no importmap is
+   needed:
+
+```bash
+bun run demo:build
+```
+
+3. Serve the repo root (needs a static server with HTTP range support):
 
 ```bash
 bunx serve -p 8080 --cors --no-clipboard
 ```
 
-3. Open the demo page:
+4. Open the demo page:
 
 ```
 http://localhost:8080/demo/index.html
 ```
+
+> **Regenerating the segmentation demo data.** `assets/demo-flies13-seg.slp` is
+> committed, but you can rebuild it from the pose-only `demo-flies13-preds.slp`
+> with the one-off helper (it dilates each instance's skeleton into a mask):
+> `bun scripts/burn-skeleton-masks.mjs`. This is throwaway tooling — a proper
+> pose→mask utility is tracked upstream in sleap-io.
+
+## Segmentation controls
+
+- **Show masks**: toggle the mask fill + outline overlay.
+- **Opacity**: blend strength of the mask fill (outlines stay crisp).
 
 ## Demo Modes
 
