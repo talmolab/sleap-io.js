@@ -37,6 +37,23 @@ describe("resolveSourceFrameCount", () => {
     );
   });
 
+  it("clamps up to max(frame_numbers)+1 when a declared count is impossibly small (bogus `frames` attr)", () => {
+    // Real case: /video0/video has frames=424 but frame_numbers reach 173997 —
+    // a 424-frame source cannot contain frame 173997, so the seekbar extent must
+    // span at least 173998 or every label beyond 424 falls off the axis.
+    expect(
+      resolveSourceFrameCount({
+        framesAttr: 424,
+        jsonFrameCount: 336,
+        frameNumbers: [76978, 100000, 173997],
+      }),
+    ).toBe(173998);
+    // Same guard when only videos_json shape[0] is the (too-small) declared count.
+    expect(
+      resolveSourceFrameCount({ jsonFrameCount: 336, frameNumbers: [173997] }),
+    ).toBe(173998);
+  });
+
   it("returns undefined when nothing is available", () => {
     expect(resolveSourceFrameCount({})).toBeUndefined();
     expect(resolveSourceFrameCount({ frameNumbers: [] })).toBeUndefined();
