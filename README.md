@@ -23,6 +23,7 @@ JavaScript/TypeScript utilities for reading and writing SLEAP `.slp` files with 
 - Video backends accept `string`, `File`, or `Blob` sources.
 - Browser-safe: Node.js-only dependencies (`skia-canvas`, `child_process`) are dynamically imported, so bundlers can tree-shake them.
 - Dictionary and numpy codecs for interchange.
+- SLEAP Analysis CSV export (`labelsToCsv` / `saveLabelsCsv`), with optional full-video-span padding.
 - Demo app for quick inspection.
 
 ## Quickstart
