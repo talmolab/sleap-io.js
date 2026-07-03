@@ -11201,16 +11201,20 @@ function resolveVideoUrl(url) {
 // src/codecs/slp/frame-count.ts
 function resolveSourceFrameCount(opts) {
   const { framesAttr, jsonFrameCount, frameNumbers } = opts;
-  if (framesAttr !== void 0 && framesAttr > 0) return framesAttr;
-  if (jsonFrameCount !== void 0 && jsonFrameCount > 0) return jsonFrameCount;
+  let declared = 0;
+  if (framesAttr !== void 0 && framesAttr > 0) declared = framesAttr;
+  else if (jsonFrameCount !== void 0 && jsonFrameCount > 0)
+    declared = jsonFrameCount;
+  let fromFrameNumbers = 0;
   if (frameNumbers && frameNumbers.length > 0) {
     let max = 0;
     for (const n of frameNumbers) {
       if (n > max) max = n;
     }
-    return max + 1;
+    fromFrameNumbers = max + 1;
   }
-  return void 0;
+  const count = Math.max(declared, fromFrameNumbers);
+  return count > 0 ? count : void 0;
 }
 
 // src/codecs/slp/read-streaming.ts
