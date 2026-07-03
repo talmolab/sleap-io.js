@@ -1,5 +1,5 @@
 import { Instance, PredictedInstance } from "./instance.js";
-import { Video } from "./video.js";
+import type { Video } from "./video.js";
 import { Centroid } from "./centroid.js";
 import { BoundingBox } from "./bbox.js";
 import { SegmentationMask, PredictedSegmentationMask } from "./mask.js";
@@ -433,6 +433,28 @@ export class LabeledFrame {
 
   get hasPredictedInstances(): boolean {
     return this.predictedInstances.length > 0;
+  }
+
+  /**
+   * Whether this frame carries any user-supplied labeling.
+   *
+   * True if it has at least one user instance, is asserted as a negative
+   * (background) frame, or holds any non-predicted frame-level annotation —
+   * a user centroid, bounding box, ROI, segmentation mask, or label image.
+   * Mirrors Python `LabeledFrame.is_user_labeled` (the ROI clause is the
+   * specific contribution of sleap-io PR #509). Predicted annotations alone do
+   * not make a frame user-labeled.
+   */
+  get isUserLabeled(): boolean {
+    return (
+      this.hasUserInstances ||
+      this.isNegative ||
+      this.centroids.some((c) => !c.isPredicted) ||
+      this.bboxes.some((b) => !b.isPredicted) ||
+      this.rois.some((r) => !r.isPredicted) ||
+      this.masks.some((m) => !m.isPredicted) ||
+      this.labelImages.some((li) => !li.isPredicted)
+    );
   }
 
   numpy(): number[][][] {

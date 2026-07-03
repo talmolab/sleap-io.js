@@ -299,12 +299,15 @@ export class ROI {
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance,
     };
     if (this instanceof PredictedROI) {
       options.score = this.score;
     }
-    return _maskFactory(mask, height, width, options);
+    const result = _maskFactory(mask, height, width, options);
+    result._instanceIdx = this._instanceIdx;
+    return result;
   }
 
   private _allPoints(): number[][] {
