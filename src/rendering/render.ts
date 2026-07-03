@@ -3,6 +3,7 @@
 import type { Labels } from "../model/labels.js";
 import type { LabeledFrame } from "../model/labeled-frame.js";
 import type { Instance, PredictedInstance, Track } from "../model/instance.js";
+import type { Centroid } from "../model/centroid.js";
 import type { Skeleton } from "../model/skeleton.js";
 import type {
   RenderOptions,
@@ -27,7 +28,7 @@ import {
   collectTracks,
 } from "./trails.js";
 import { RenderContext, InstanceContext } from "./context.js";
-import { applyOverlay } from "./overlays.js";
+import { applyOverlay, drawCentroids } from "./overlays.js";
 
 // Default options
 const DEFAULT_OPTIONS: Required<
@@ -213,7 +214,31 @@ export async function renderImage(
   // replicate that equivalent: read the canvas at source resolution, blend the
   // overlay in source space, then scale-composite back onto the (possibly
   // scaled) canvas. When `scale === 1` this is an in-place read/blend/write.
-  if (effectiveOverlay !== undefined && effectiveOverlay !== null) {
+  // Centroids for the rendered frame (video-scoped by construction: a Labels
+  // source renders its first labeled frame; a LabeledFrame renders itself), so
+  // centroids never bleed across videos. Colored by track via the pose palette
+  // (untracked -> palette[0]) to match poses/trails. Mirrors Python
+  // render_image centroid scoping + coloring (core.py, PR #468).
+  const frameCentroids: Centroid[] = Array.isArray(source)
+    ? []
+    : (renderedLabeledFrame(source)?.centroids ?? []);
+  let centroidColors: RGB[] = [];
+  if (frameCentroids.length > 0) {
+    const cPal = getPalette(
+      opts.palette as PaletteName,
+      Math.max(globalTracks.length, 1),
+    );
+    centroidColors = frameCentroids.map((c) => {
+      const tidx = c.track ? globalTrackIndexMap.get(c.track) : undefined;
+      return tidx !== undefined
+        ? cPal[tidx % cPal.length]
+        : (cPal[0] ?? DEFAULT_COLOR);
+    });
+  }
+
+  const hasOverlay =
+    effectiveOverlay !== undefined && effectiveOverlay !== null;
+  if (hasOverlay || frameCentroids.length > 0) {
     // Color overlay elements (masks/ROIs/bboxes) by track identity when
     // color_by resolves to "track", matching poses/centroids/trails (same
     // `palette`). Otherwise fall through to positional `overlayPalette`
@@ -230,6 +255,7 @@ export async function renderImage(
       (!Array.isArray(source) && "labeledFrames" in source);
     let overlayColors: RGB[] | null = null;
     if (
+      hasOverlay &&
       colorScheme === "track" &&
       trackColorable &&
       globalTrackIndexMap.size > 0 &&
@@ -255,31 +281,40 @@ export async function renderImage(
       outlineColor: opts.overlayOutlineColor,
       colors: overlayColors,
     };
+    // Blend the overlay AND draw centroids in SOURCE space, then upscale once,
+    // so a centroid's final radius is `markerSize * scale` — matching pose
+    // nodes and avoiding the double-scaling of Python PR #494. Order (overlay
+    // then centroids, both below the poses drawn later) mirrors render_image.
+    const applySourceSpace = (imageData: ImageData): void => {
+      if (hasOverlay) {
+        applyOverlay(imageData, effectiveOverlay as Overlay, overlayOpts);
+      }
+      if (frameCentroids.length > 0) {
+        drawCentroids(imageData, frameCentroids, {
+          colors: centroidColors,
+          markerSize: opts.markerSize,
+          alpha: opts.alpha,
+        });
+      }
+    };
     if (opts.scale === 1) {
       // Fast path: blend directly on the scaled canvas (== source resolution).
       const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
-      applyOverlay(
-        imageData as unknown as ImageData,
-        effectiveOverlay,
-        overlayOpts,
-      );
+      applySourceSpace(imageData as unknown as ImageData);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       ctx.putImageData(imageData as any, 0, 0);
     } else {
       // Scaled path: render the current background at source resolution onto a
-      // temporary canvas, blend the overlay there (source-pixel coords), then
-      // draw it scaled onto the main canvas so it lines up with the poses.
+      // temporary canvas, blend the overlay + centroids there (source-pixel
+      // coords), then draw it scaled onto the main canvas so it lines up with
+      // the poses.
       const srcCanvas = new Canvas(width, height);
       const srcCtx = srcCanvas.getContext("2d");
       // Downscale the already-drawn (scaled) background into source space.
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       srcCtx.drawImage(canvas as any, 0, 0, width, height);
       const imageData = srcCtx.getImageData(0, 0, width, height);
-      applyOverlay(
-        imageData as unknown as ImageData,
-        effectiveOverlay,
-        overlayOpts,
-      );
+      applySourceSpace(imageData as unknown as ImageData);
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       srcCtx.putImageData(imageData as any, 0, 0);
       ctx.clearRect(0, 0, scaledWidth, scaledHeight);
@@ -514,9 +549,9 @@ function renderedLabeledFrame(
  * when there are no instances. For Labels, checks the first labeled frame.
  *
  * Mirrors Python sleap-io PR #420: renderImage(source=lf) must work on
- * segmentation-only LabeledFrames. The actual overlay rendering of these
- * annotations is tracked in issue #96 — this hook is the single place to
- * extend when that lands.
+ * segmentation- or centroid-only LabeledFrames. Masks (auto-resolved as the
+ * overlay) and centroids are drawn by renderImage; bboxes/ROIs/label images
+ * still render only when passed explicitly via `overlay`.
  */
 function hasNonInstanceAnnotations(
   source: Labels | LabeledFrame | (Instance | PredictedInstance)[],
