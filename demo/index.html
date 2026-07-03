@@ -4,14 +4,12 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>sleap-io.js demo</title>
-    <script type="importmap">
-      {
-        "imports": {
-          "h5wasm": "https://unpkg.com/h5wasm@0.10.2/dist/esm/hdf5_hl.js",
-          "yaml": "https://esm.sh/yaml@2.6.1"
-        }
-      }
-    </script>
+    <!--
+      The demo loads a self-contained bundle built from demo.js + the browser
+      build (see `bun run demo:build`). All JS deps (mediabunny, pako, yaml) are
+      inlined; the HDF5 streaming worker fetches h5wasm from a CDN at runtime, so
+      no importmap is needed.
+    -->
     <style>
       :root {
         color-scheme: dark;
@@ -44,6 +42,9 @@
       canvas { position: absolute; left: 0; top: 0; width: 100%; height: 100%; pointer-events: none; }
       .controls { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
       .controls input[type="range"] { flex: 1; }
+      .inline-control { display: flex; align-items: center; gap: 6px; margin: 0; font-size: 13px; text-transform: none; letter-spacing: 0; color: var(--ink); }
+      .inline-control--muted { color: var(--muted); }
+      .mask-alpha { flex: 0 0 140px !important; }
       .meta { font-size: 12px; color: var(--muted); margin-top: 8px; line-height: 1.4; }
       .pill { display: inline-block; padding: 2px 8px; border-radius: 999px; border: 1px solid var(--line); margin-right: 6px; }
       .coords { margin-top: 12px; padding: 12px; }
@@ -95,6 +96,13 @@
           <input id="seek" type="range" min="0" max="0" value="0" step="1" />
           <span id="frame-label" class="pill">Frame 0</span>
         </div>
+        <div class="controls">
+          <label class="inline-control">
+            <input id="show-masks" type="checkbox" checked /> Show masks
+          </label>
+          <label for="mask-alpha" class="inline-control inline-control--muted">Opacity</label>
+          <input id="mask-alpha" class="mask-alpha" type="range" min="0" max="1" step="0.05" value="0.45" />
+        </div>
         <div class="panel coords">
           <div class="coords__label">Coordinates</div>
           <pre id="coords" class="coords__body">—</pre>
@@ -102,6 +110,6 @@
       </div>
     </div>
 
-    <script type="module" src="/demo/demo.js"></script>
+    <script type="module" src="/demo/demo.bundle.js"></script>
   </body>
 </html>
