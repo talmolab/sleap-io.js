@@ -3061,6 +3061,26 @@ function drawRois(image, rois, opts) {
     }
   });
 }
+function drawCentroids(image, centroids, opts) {
+  if (centroids.length === 0) return image;
+  const color = opts?.color ?? [0, 255, 0];
+  const colors = opts?.colors ?? null;
+  const markerSize = opts?.markerSize ?? 5;
+  const alpha = clampAlpha(opts?.alpha ?? 1);
+  const [ox, oy] = opts?.offset ?? [0, 0];
+  return withVectorCanvas(image, (ctx) => {
+    for (let i = 0; i < centroids.length; i++) {
+      const cx = centroids[i].x - ox;
+      const cy = centroids[i].y - oy;
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+      const c = pickColor(colors, i, color);
+      ctx.beginPath();
+      ctx.arc(cx, cy, markerSize, 0, Math.PI * 2);
+      ctx.fillStyle = rgbToCSS(c, alpha);
+      ctx.fill();
+    }
+  });
+}
 function drawGeometry(ctx, geometry, rgb, lineWidth, fillAlpha) {
   switch (geometry.type) {
     case "Polygon": {
@@ -3288,10 +3308,23 @@ async function renderImage(source, options = {}) {
   const colorScheme = determineColorScheme(opts.colorBy, hasTracks, true);
   const globalTrackIndexMap = opts.overlayTrackIndexMap ? opts.overlayTrackIndexMap : trackIndexMap;
   const globalTracks = opts.overlayTrackIndexMap ? Array.from(opts.overlayTrackIndexMap.keys()) : tracks;
-  if (effectiveOverlay !== void 0 && effectiveOverlay !== null) {
+  const frameCentroids = Array.isArray(source) ? [] : renderedLabeledFrame(source)?.centroids ?? [];
+  let centroidColors = [];
+  if (frameCentroids.length > 0) {
+    const cPal = getPalette(
+      opts.palette,
+      Math.max(globalTracks.length, 1)
+    );
+    centroidColors = frameCentroids.map((c) => {
+      const tidx = c.track ? globalTrackIndexMap.get(c.track) : void 0;
+      return tidx !== void 0 ? cPal[tidx % cPal.length] : cPal[0] ?? DEFAULT_COLOR;
+    });
+  }
+  const hasOverlay = effectiveOverlay !== void 0 && effectiveOverlay !== null;
+  if (hasOverlay || frameCentroids.length > 0) {
     const trackColorable = opts.overlayTrackIndexMap != null || !Array.isArray(source) && "labeledFrames" in source;
     let overlayColors = null;
-    if (colorScheme === "track" && trackColorable && globalTrackIndexMap.size > 0 && Array.isArray(effectiveOverlay) && effectiveOverlay.length > 0) {
+    if (hasOverlay && colorScheme === "track" && trackColorable && globalTrackIndexMap.size > 0 && Array.isArray(effectiveOverlay) && effectiveOverlay.length > 0) {
       const ovPal = getPalette(
         opts.palette,
         Math.max(globalTrackIndexMap.size, 1)
@@ -3311,24 +3344,28 @@ async function renderImage(source, options = {}) {
       outlineColor: opts.overlayOutlineColor,
       colors: overlayColors
     };
+    const applySourceSpace = (imageData) => {
+      if (hasOverlay) {
+        applyOverlay(imageData, effectiveOverlay, overlayOpts);
+      }
+      if (frameCentroids.length > 0) {
+        drawCentroids(imageData, frameCentroids, {
+          colors: centroidColors,
+          markerSize: opts.markerSize,
+          alpha: opts.alpha
+        });
+      }
+    };
     if (opts.scale === 1) {
       const imageData = ctx.getImageData(0, 0, scaledWidth, scaledHeight);
-      applyOverlay(
-        imageData,
-        effectiveOverlay,
-        overlayOpts
-      );
+      applySourceSpace(imageData);
       ctx.putImageData(imageData, 0, 0);
     } else {
       const srcCanvas = new Canvas(width, height);
       const srcCtx = srcCanvas.getContext("2d");
       srcCtx.drawImage(canvas, 0, 0, width, height);
       const imageData = srcCtx.getImageData(0, 0, width, height);
-      applyOverlay(
-        imageData,
-        effectiveOverlay,
-        overlayOpts
-      );
+      applySourceSpace(imageData);
       srcCtx.putImageData(imageData, 0, 0);
       ctx.clearRect(0, 0, scaledWidth, scaledHeight);
       ctx.drawImage(srcCanvas, 0, 0, scaledWidth, scaledHeight);
@@ -4005,6 +4042,7 @@ export {
   discoverConfig,
   dlcMergedOrder,
   drawBboxes,
+  drawCentroids,
   drawCircle,
   drawCross,
   drawDiamond,

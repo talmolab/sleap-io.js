@@ -1232,10 +1232,22 @@ client-side without the Node <code>renderImage</code> path:</p>
 <span class="w">  </span><span class="p">}</span>
 <span class="p">}</span>
 </code></pre></div>
-<p>The vector overlays (<code>drawBboxes</code>, <code>drawRois</code>, <code>applyOverlay</code>) and the full
-<code>renderImage</code>/<code>renderVideo</code> pipeline draw through <code>skia-canvas</code> and remain
-Node-only (main entry). See <code>demo/</code> for a complete browser example that fills
-masks with <code>drawMasks</code> and outlines them with smoothed <code>contours()</code>.</p>
+<p>The vector overlays (<code>drawBboxes</code>, <code>drawRois</code>, <code>drawCentroids</code>, <code>applyOverlay</code>)
+and the full <code>renderImage</code>/<code>renderVideo</code> pipeline draw through <code>skia-canvas</code> and
+remain Node-only (main entry). See <code>demo/</code> for a complete browser example that
+fills masks with <code>drawMasks</code> and outlines them with smoothed <code>contours()</code>.</p>
+<p><code>renderImage</code>/<code>renderVideo</code> auto-draw a frame's <code>centroids</code> (filled circle
+markers, colored by track via the pose palette, scoped to the rendered video),
+so a centroid-only frame renders without an explicit overlay. <code>drawCentroids</code>
+is also exported for standalone use:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">drawCentroids</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span><span class="w"> </span><span class="c1">// Node (skia-canvas)</span>
+
+<span class="nx">drawCentroids</span><span class="p">(</span><span class="nx">imageData</span><span class="p">,</span><span class="w"> </span><span class="nx">frame</span><span class="p">.</span><span class="nx">centroids</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">colors</span><span class="o">:</span><span class="w"> </span><span class="kt">frame.centroids.map</span><span class="p">(</span><span class="nx">centroidColorRgb</span><span class="p">),</span><span class="w"> </span><span class="c1">// e.g. by track identity</span>
+<span class="w">  </span><span class="nx">markerSize</span><span class="o">:</span><span class="w"> </span><span class="kt">5</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">alpha</span><span class="o">:</span><span class="w"> </span><span class="kt">1</span><span class="p">,</span>
+<span class="p">});</span>
+</code></pre></div>
 <h3 id="boundingbox"><code>BoundingBox</code><a class="headerlink" href="#boundingbox" title="Permanent link">&para;</a></h3>
 <p>Axis-aligned or rotated bounding box for detection/tracking workflows. <code>BoundingBox</code> is abstract; use <code>UserBoundingBox</code> or <code>PredictedBoundingBox</code> for direct construction.</p>
 <p>Bounding boxes use corner coordinates (<code>x1</code>, <code>y1</code>, <code>x2</code>, <code>y2</code>) as their primary storage. Center-based properties (<code>xCenter</code>, <code>yCenter</code>, <code>width</code>, <code>height</code>) are available as computed getters.</p>

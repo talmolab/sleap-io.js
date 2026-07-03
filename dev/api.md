@@ -524,10 +524,25 @@ for (const mask of frame.masks) {
 }
 ```
 
-The vector overlays (`drawBboxes`, `drawRois`, `applyOverlay`) and the full
-`renderImage`/`renderVideo` pipeline draw through `skia-canvas` and remain
-Node-only (main entry). See `demo/` for a complete browser example that fills
-masks with `drawMasks` and outlines them with smoothed `contours()`.
+The vector overlays (`drawBboxes`, `drawRois`, `drawCentroids`, `applyOverlay`)
+and the full `renderImage`/`renderVideo` pipeline draw through `skia-canvas` and
+remain Node-only (main entry). See `demo/` for a complete browser example that
+fills masks with `drawMasks` and outlines them with smoothed `contours()`.
+
+`renderImage`/`renderVideo` auto-draw a frame's `centroids` (filled circle
+markers, colored by track via the pose palette, scoped to the rendered video),
+so a centroid-only frame renders without an explicit overlay. `drawCentroids`
+is also exported for standalone use:
+
+```ts
+import { drawCentroids } from "@talmolab/sleap-io.js"; // Node (skia-canvas)
+
+drawCentroids(imageData, frame.centroids, {
+  colors: frame.centroids.map(centroidColorRgb), // e.g. by track identity
+  markerSize: 5,
+  alpha: 1,
+});
+```
 
 ### `BoundingBox`
 Axis-aligned or rotated bounding box for detection/tracking workflows. `BoundingBox` is abstract; use `UserBoundingBox` or `PredictedBoundingBox` for direct construction.
