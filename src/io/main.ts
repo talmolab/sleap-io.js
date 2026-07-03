@@ -89,6 +89,7 @@ export async function loadSlp(
         return await readSlpStreaming(streamingSource, {
           filenameHint: options?.h5?.filenameHint,
           headers: options?.h5?.headers,
+          h5wasmUrl: options?.h5?.h5wasmUrl,
           openVideos,
           onProgress: options?.onProgress,
         });

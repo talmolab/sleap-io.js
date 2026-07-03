@@ -40,6 +40,14 @@ export type OpenH5Options = {
    * range streaming with custom headers is not yet supported on the main thread.
    */
   headers?: Record<string, string>;
+  /**
+   * URL to the h5wasm IIFE bundle loaded by the streaming Worker (via
+   * `importScripts`). Defaults to a CDN. Set this to a **same-origin** URL when
+   * the page is cross-origin-isolated (COOP/COEP), since COEP blocks the
+   * cross-origin CDN `importScripts` — e.g. a desktop app that serves its own
+   * bundled `h5wasm.js`.
+   */
+  h5wasmUrl?: string;
 };
 
 // Re-export streaming utilities for advanced use cases
