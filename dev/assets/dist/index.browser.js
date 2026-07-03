@@ -120,6 +120,7 @@ import {
   isStreamingSupported,
   isTrainingConfig,
   labelsFromNumpy,
+  labelsToCsv,
   loadAnalysisH5,
   loadLabelImages,
   loadSlp,
@@ -149,6 +150,7 @@ import {
   roisFromGeoJSON,
   roisToGeoJSON,
   saveAnalysisH5,
+  saveLabelsCsv,
   saveSlp,
   saveSlpSet,
   saveSlpToBytes,
@@ -161,7 +163,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-37QAVNGF.js";
+} from "./chunk-7FKOXB26.js";
 import {
   Edge,
   Instance,
@@ -353,6 +355,7 @@ export {
   isTrainingConfig,
   isUrl,
   labelsFromNumpy,
+  labelsToCsv,
   loadAnalysisH5,
   loadLabelImages,
   loadSlp,
@@ -395,6 +398,7 @@ export {
   roisFromGeoJSON,
   roisToGeoJSON,
   saveAnalysisH5,
+  saveLabelsCsv,
   saveSlp,
   saveSlpSet,
   saveSlpToBytes,

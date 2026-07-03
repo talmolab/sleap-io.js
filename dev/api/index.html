@@ -428,6 +428,15 @@
 </li>
       
         <li class="md-nav__item">
+  <a href="#sleap-analysis-csv-export" class="md-nav__link">
+    <span class="md-ellipsis">
+      SLEAP Analysis CSV export
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
   <a href="#geojson-io" class="md-nav__link">
     <span class="md-ellipsis">
       GeoJSON I/O
@@ -651,6 +660,15 @@
   <a href="#identity-3d-data-structures" class="md-nav__link">
     <span class="md-ellipsis">
       Identity &amp; 3D Data Structures
+    </span>
+  </a>
+  
+</li>
+      
+        <li class="md-nav__item">
+  <a href="#sleap-analysis-csv-export" class="md-nav__link">
+    <span class="md-ellipsis">
+      SLEAP Analysis CSV export
     </span>
   </a>
   
@@ -1626,6 +1644,24 @@ byte-identical to earlier versions (no <code>/video_crops</code> dataset, no ver
 <span class="nx">group</span><span class="p">.</span><span class="nx">identity</span><span class="p">;</span><span class="w">    </span><span class="c1">// Identity | undefined</span>
 <span class="nx">group</span><span class="p">.</span><span class="nx">instance3d</span><span class="p">;</span><span class="w">  </span><span class="c1">// Instance3D | undefined</span>
 <span class="nx">group</span><span class="p">.</span><span class="nx">points</span><span class="p">;</span><span class="w">      </span><span class="c1">// delegates to instance3d.points if available</span>
+</code></pre></div>
+<h2 id="sleap-analysis-csv-export">SLEAP Analysis CSV export<a class="headerlink" href="#sleap-analysis-csv-export" title="Permanent link">&para;</a></h2>
+<p>Export <code>Labels</code> to the SLEAP Analysis CSV — one row per instance per frame with
+columns <code>track, frame_idx, instance.score, {node}.score, {node}.x, {node}.y, …</code>
+(node columns sorted alphabetically; missing/invisible points and user-instance
+scores are empty cells). <code>labelsToCsv</code> is browser-safe (returns the string);
+<code>saveLabelsCsv</code> writes to disk (Node).</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">labelsToCsv</span><span class="p">,</span><span class="w"> </span><span class="nx">saveLabelsCsv</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">csv</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labelsToCsv</span><span class="p">(</span><span class="nx">labels</span><span class="p">);</span><span class="w">               </span><span class="c1">// string (browser + Node)</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveLabelsCsv</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;out.csv&quot;</span><span class="p">);</span><span class="w">        </span><span class="c1">// Node file write</span>
+
+<span class="c1">// Span the whole video: emit NaN rows for unlabeled frames, padded to the video</span>
+<span class="c1">// length when known (mirrors the Analysis-HDF5 export; sleap-io PR #480).</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveLabelsCsv</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">&quot;out.csv&quot;</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">includeEmpty</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Other options: video (Video | index filter), includeScore (default true),</span>
+<span class="c1">// startFrame / endFrame (inclusive / exclusive).</span>
 </code></pre></div>
 <h2 id="geojson-io">GeoJSON I/O<a class="headerlink" href="#geojson-io" title="Permanent link">&para;</a></h2>
 <p>Convert ROIs to/from GeoJSON format.</p>

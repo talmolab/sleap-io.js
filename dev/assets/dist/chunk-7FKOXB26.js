@@ -14687,6 +14687,141 @@ function warnAmbiguous(path, nPages, dtype) {
   console.warn(msg);
 }
 
+// src/io/csv.ts
+function videoFrameCount2(video) {
+  const shape = video.shape;
+  if (shape && shape.length > 0 && typeof shape[0] === "number") {
+    return shape[0];
+  }
+  return 0;
+}
+function csvCell(value) {
+  if (value == null) return "";
+  if (typeof value === "number")
+    return Number.isNaN(value) ? "" : String(value);
+  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+  return value;
+}
+function labelsToCsv(labels, options = {}) {
+  const includeScore = options.includeScore ?? true;
+  const includeEmpty = options.includeEmpty ?? false;
+  const startFrame = options.startFrame ?? null;
+  const endFrame = options.endFrame ?? null;
+  let selectedVideos;
+  if (options.video == null) {
+    selectedVideos = labels.videos;
+  } else if (typeof options.video === "number") {
+    const v = labels.videos[options.video];
+    if (!v) throw new Error(`Video index ${options.video} out of range.`);
+    selectedVideos = [v];
+  } else {
+    selectedVideos = [options.video];
+  }
+  const videoSet = new Set(selectedVideos);
+  const videoIndex = new Map(labels.videos.map((v, i) => [v, i]));
+  const frames = labels.labeledFrames.filter((lf) => videoSet.has(lf.video));
+  const rows = [];
+  const nodeColSet = /* @__PURE__ */ new Set();
+  const seen = /* @__PURE__ */ new Set();
+  const seenByVideo = /* @__PURE__ */ new Map();
+  const seenKey = (v, f) => `${videoIndex.get(v)}:${f}`;
+  for (const lf of frames) {
+    if (startFrame != null && lf.frameIdx < startFrame) continue;
+    if (endFrame != null && lf.frameIdx >= endFrame) continue;
+    seen.add(seenKey(lf.video, lf.frameIdx));
+    const byVid = seenByVideo.get(lf.video);
+    if (byVid) byVid.push(lf.frameIdx);
+    else seenByVideo.set(lf.video, [lf.frameIdx]);
+    const instances = [...lf.userInstances, ...lf.predictedInstances];
+    for (const inst of instances) {
+      const predicted = inst instanceof PredictedInstance;
+      const cols = /* @__PURE__ */ new Map();
+      cols.set("frame_idx", lf.frameIdx);
+      cols.set("track", inst.track ? inst.track.name : null);
+      cols.set(
+        "instance.score",
+        predicted ? inst.score ?? null : null
+      );
+      const nodes = inst.skeleton.nodes;
+      for (let i = 0; i < nodes.length; i++) {
+        const name = nodes[i].name;
+        const pt = inst.points[i];
+        const xKey = `${name}.x`;
+        const yKey = `${name}.y`;
+        cols.set(xKey, pt ? pt.xy[0] : Number.NaN);
+        cols.set(yKey, pt ? pt.xy[1] : Number.NaN);
+        nodeColSet.add(xKey);
+        nodeColSet.add(yKey);
+        if (includeScore && predicted) {
+          const sKey = `${name}.score`;
+          cols.set(sKey, pt?.score ?? Number.NaN);
+          nodeColSet.add(sKey);
+        }
+      }
+      rows.push({ video: lf.video, cols });
+    }
+  }
+  if (includeEmpty && frames.length) {
+    const skeleton = labels.skeletons[0];
+    for (const vid of selectedVideos) {
+      const emitted = seenByVideo.get(vid);
+      if (!emitted || !emitted.length) continue;
+      const first = startFrame != null ? startFrame : 0;
+      let last;
+      if (endFrame != null) {
+        last = endFrame;
+      } else {
+        let maxIdx = emitted[0];
+        for (const f of emitted) if (f > maxIdx) maxIdx = f;
+        last = maxIdx + 1;
+        const len = videoFrameCount2(vid);
+        if (len > 0) last = Math.max(last, len);
+      }
+      for (let f = first; f < last; f++) {
+        if (seen.has(seenKey(vid, f))) continue;
+        const cols = /* @__PURE__ */ new Map();
+        cols.set("frame_idx", f);
+        cols.set("track", null);
+        cols.set("instance.score", null);
+        if (skeleton) {
+          for (const node of skeleton.nodes) {
+            cols.set(`${node.name}.x`, Number.NaN);
+            cols.set(`${node.name}.y`, Number.NaN);
+            nodeColSet.add(`${node.name}.x`);
+            nodeColSet.add(`${node.name}.y`);
+            if (includeScore) {
+              cols.set(`${node.name}.score`, Number.NaN);
+              nodeColSet.add(`${node.name}.score`);
+            }
+          }
+        }
+        rows.push({ video: vid, cols });
+      }
+    }
+    rows.sort((a, b) => {
+      const va = videoIndex.get(a.video) ?? 0;
+      const vb = videoIndex.get(b.video) ?? 0;
+      if (va !== vb) return va - vb;
+      return a.cols.get("frame_idx") - b.cols.get("frame_idx");
+    });
+  }
+  const nodeCols = [...nodeColSet].sort();
+  const header = ["track", "frame_idx", "instance.score", ...nodeCols];
+  const lines = [header.join(",")];
+  for (const row of rows) {
+    lines.push(
+      header.map((col) => csvCell(row.cols.get(col) ?? null)).join(",")
+    );
+  }
+  return `${lines.join("\n")}
+`;
+}
+async function saveLabelsCsv(labels, filename, options = {}) {
+  const text = labelsToCsv(labels, options);
+  const bytes = new TextEncoder().encode(text);
+  await nodeWriteFile(filename, bytes);
+}
+
 // src/codecs/slp/read.ts
 import { inflate } from "pako";
 var textDecoder2 = new TextDecoder();
@@ -18058,6 +18193,8 @@ export {
   isAnalysisH5File,
   setLabelImageFileReader,
   loadLabelImages,
+  labelsToCsv,
+  saveLabelsCsv,
   loadSlp,
   saveSlp,
   loadAnalysisH5,
