@@ -951,6 +951,28 @@ group.instance3d;  // Instance3D | undefined
 group.points;      // delegates to instance3d.points if available
 ```
 
+## SLEAP Analysis CSV export
+
+Export `Labels` to the SLEAP Analysis CSV — one row per instance per frame with
+columns `track, frame_idx, instance.score, {node}.score, {node}.x, {node}.y, …`
+(node columns sorted alphabetically; missing/invisible points and user-instance
+scores are empty cells). `labelsToCsv` is browser-safe (returns the string);
+`saveLabelsCsv` writes to disk (Node).
+
+```ts
+import { labelsToCsv, saveLabelsCsv } from "@talmolab/sleap-io.js";
+
+const csv = labelsToCsv(labels);               // string (browser + Node)
+await saveLabelsCsv(labels, "out.csv");        // Node file write
+
+// Span the whole video: emit NaN rows for unlabeled frames, padded to the video
+// length when known (mirrors the Analysis-HDF5 export; sleap-io PR #480).
+await saveLabelsCsv(labels, "out.csv", { includeEmpty: true });
+
+// Other options: video (Video | index filter), includeScore (default true),
+// startFrame / endFrame (inclusive / exclusive).
+```
+
 ## GeoJSON I/O
 
 Convert ROIs to/from GeoJSON format.
