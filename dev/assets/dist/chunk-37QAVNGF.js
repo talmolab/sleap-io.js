@@ -439,12 +439,15 @@ var ROI = class _ROI {
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance
     };
     if (this instanceof PredictedROI) {
       options.score = this.score;
     }
-    return _maskFactory(mask, height, width, options);
+    const result = _maskFactory(mask, height, width, options);
+    result._instanceIdx = this._instanceIdx;
+    return result;
   }
   _allPoints() {
     if (this.geometry.type === "Point") {
@@ -912,13 +915,16 @@ var BoundingBox = class _BoundingBox {
   toRoi() {
     const c = this.corners;
     const ring = [...c, c[0]];
-    return ROI.fromPolygon(ring, {
+    const roi = ROI.fromPolygon(ring, {
       name: this.name,
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance
     });
+    roi._instanceIdx = this._instanceIdx;
+    return roi;
   }
   /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
   toMask(height, width) {
@@ -1274,10 +1280,12 @@ var SegmentationMask = class _SegmentationMask {
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance,
       scale: [1, 1],
       offset: [0, 0]
     };
+    let resampled;
     if (this instanceof PredictedSegmentationMask) {
       const pm = this;
       let resampledScoreMap = null;
@@ -1290,16 +1298,19 @@ var SegmentationMask = class _SegmentationMask {
           targetWidth
         );
       }
-      return new PredictedSegmentationMask({
+      resampled = new PredictedSegmentationMask({
         ...baseOpts,
         score: pm.score,
         scoreMap: resampledScoreMap
       });
+    } else {
+      resampled = new UserSegmentationMask({
+        ...baseOpts,
+        fromPredicted: this instanceof UserSegmentationMask ? this.fromPredicted : null
+      });
     }
-    return new UserSegmentationMask({
-      ...baseOpts,
-      fromPredicted: this instanceof UserSegmentationMask ? this.fromPredicted : null
-    });
+    resampled._instanceIdx = this._instanceIdx;
+    return resampled;
   }
   get bbox() {
     const flat = this.data;
@@ -1338,18 +1349,15 @@ var SegmentationMask = class _SegmentationMask {
       x2: x + width,
       y2: y + height,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance,
       category: this.category,
       name: this.name,
       source: this.source
     };
-    if (this instanceof PredictedSegmentationMask) {
-      return new PredictedBoundingBox({
-        ...opts,
-        score: this.score
-      });
-    }
-    return new UserBoundingBox(opts);
+    const bb = this instanceof PredictedSegmentationMask ? new PredictedBoundingBox({ ...opts, score: this.score }) : new UserBoundingBox(opts);
+    bb._instanceIdx = this._instanceIdx;
+    return bb;
   }
   /**
    * Trace the mask's boundary as closed polygon rings in image space.
@@ -1399,12 +1407,12 @@ var SegmentationMask = class _SegmentationMask {
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance
     };
-    if (this instanceof PredictedSegmentationMask) {
-      return new PredictedROI({ ...options, score: this.score });
-    }
-    return new UserROI(options);
+    const roi = this instanceof PredictedSegmentationMask ? new PredictedROI({ ...options, score: this.score }) : new UserROI(options);
+    roi._instanceIdx = this._instanceIdx;
+    return roi;
   }
 };
 var UserSegmentationMask = class extends SegmentationMask {
@@ -3585,6 +3593,19 @@ var LabeledFrame = class {
   }
   get hasPredictedInstances() {
     return this.predictedInstances.length > 0;
+  }
+  /**
+   * Whether this frame carries any user-supplied labeling.
+   *
+   * True if it has at least one user instance, is asserted as a negative
+   * (background) frame, or holds any non-predicted frame-level annotation —
+   * a user centroid, bounding box, ROI, segmentation mask, or label image.
+   * Mirrors Python `LabeledFrame.is_user_labeled` (the ROI clause is the
+   * specific contribution of sleap-io PR #509). Predicted annotations alone do
+   * not make a frame user-labeled.
+   */
+  get isUserLabeled() {
+    return this.hasUserInstances || this.isNegative || this.centroids.some((c) => !c.isPredicted) || this.bboxes.some((b) => !b.isPredicted) || this.rois.some((r) => !r.isPredicted) || this.masks.some((m) => !m.isPredicted) || this.labelImages.some((li) => !li.isPredicted);
   }
   numpy() {
     return this.instances.map((inst) => inst.numpy());

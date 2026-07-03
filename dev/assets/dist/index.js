@@ -170,7 +170,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-5DRBLQOK.js";
+} from "./chunk-37QAVNGF.js";
 import {
   Edge,
   Instance,
@@ -3186,8 +3186,12 @@ function applyOverlay(image, overlay, opts) {
         outlineWidth,
         outlineColor
       });
+      return image;
     }
-    return image;
+    if (isSegmentationMask(overlay)) overlay = [overlay];
+    else if (isROI(overlay)) overlay = [overlay];
+    else if (isBoundingBox(overlay)) overlay = [overlay];
+    else return image;
   }
   if (overlay.length === 0) return image;
   const first = overlay[0];

@@ -1661,6 +1661,17 @@ declare class LabeledFrame {
     get predictedInstances(): PredictedInstance[];
     get hasUserInstances(): boolean;
     get hasPredictedInstances(): boolean;
+    /**
+     * Whether this frame carries any user-supplied labeling.
+     *
+     * True if it has at least one user instance, is asserted as a negative
+     * (background) frame, or holds any non-predicted frame-level annotation —
+     * a user centroid, bounding box, ROI, segmentation mask, or label image.
+     * Mirrors Python `LabeledFrame.is_user_labeled` (the ROI clause is the
+     * specific contribution of sleap-io PR #509). Predicted annotations alone do
+     * not make a frame user-labeled.
+     */
+    get isUserLabeled(): boolean;
     numpy(): number[][][];
     get image(): Promise<ImageData | ImageBitmap | ArrayBuffer | Uint8Array | null>;
     get unusedPredictions(): PredictedInstance[];
@@ -4225,7 +4236,7 @@ declare function drawLabelImage(image: ImageData, labels: LabelImage | RawLabelI
  * a list of `SegmentationMask` / `ROI` / `BoundingBox` routes to the
  * corresponding draw function with per-item palette colors.
  */
-type Overlay = LabelImage | RawLabelImage | SegmentationMask[] | ROI[] | BoundingBox[];
+type Overlay = LabelImage | RawLabelImage | SegmentationMask | ROI | BoundingBox | SegmentationMask[] | ROI[] | BoundingBox[];
 /** RGB color as [r, g, b] with values 0-255 */
 type RGB = [number, number, number];
 /** RGBA color as [r, g, b, a] with values 0-255 */
