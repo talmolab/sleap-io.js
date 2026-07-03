@@ -19,6 +19,7 @@
 import type { SegmentationMask } from "../model/mask.js";
 import type { LabelImage } from "../model/label-image.js";
 import type { BoundingBox } from "../model/bbox.js";
+import type { Centroid } from "../model/centroid.js";
 import type { ROI, Geometry } from "../model/roi.js";
 import type { RGB, PaletteName } from "./types.js";
 import { getPalette, rgbToCSS } from "./colors.js";
@@ -159,6 +160,56 @@ export function drawRois(
     for (let i = 0; i < rois.length; i++) {
       const c = pickColor(colors, i, color);
       drawGeometry(ctx, rois[i].geometry, c, lineWidth, fillAlpha);
+    }
+  });
+}
+
+/**
+ * Draw centroids as filled circle markers on an image.
+ *
+ * Each centroid is drawn as a filled circle of radius `markerSize` at
+ * `(centroid.x - offsetX, centroid.y - offsetY)`, in a single `color` or a
+ * per-centroid `colors` list (cycled when shorter than the centroid list).
+ * Rendered through an internal skia-canvas `Canvas`. Port of `draw_centroids`
+ * (overlays.py, sleap-io PR #506).
+ *
+ * @param image - RGBA ImageData, mutated in place.
+ * @param centroids - Centroids to draw.
+ * @param opts - `color` (default [0,255,0]), per-centroid `colors`, `markerSize`
+ *   (5), `alpha` (1), `offset` ([0,0]).
+ * @returns The same ImageData.
+ */
+export function drawCentroids(
+  image: ImageData,
+  centroids: Centroid[],
+  opts?: {
+    color?: RGB;
+    colors?: RGB[];
+    markerSize?: number;
+    alpha?: number;
+    offset?: [number, number];
+  },
+): ImageData {
+  if (centroids.length === 0) return image;
+
+  const color = opts?.color ?? [0, 255, 0];
+  const colors = opts?.colors ?? null;
+  const markerSize = opts?.markerSize ?? 5;
+  const alpha = clampAlpha(opts?.alpha ?? 1);
+  const [ox, oy] = opts?.offset ?? [0, 0];
+
+  return withVectorCanvas(image, (ctx) => {
+    for (let i = 0; i < centroids.length; i++) {
+      const cx = centroids[i].x - ox;
+      const cy = centroids[i].y - oy;
+      // Skip non-finite coordinates (matches the pose-node draw loop), rather
+      // than relying on skia-canvas's handling of a NaN arc center.
+      if (!Number.isFinite(cx) || !Number.isFinite(cy)) continue;
+      const c = pickColor(colors, i, color);
+      ctx.beginPath();
+      ctx.arc(cx, cy, markerSize, 0, Math.PI * 2);
+      ctx.fillStyle = rgbToCSS(c, alpha);
+      ctx.fill();
     }
   });
 }
