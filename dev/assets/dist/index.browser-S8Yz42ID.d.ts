@@ -662,6 +662,33 @@ declare function decodeRle(rleCounts: Uint32Array, height: number, width: number
  * The input is a flat (H*W) array and the output is a flat (dstH*dstW) array.
  */
 declare function resizeNearest<T extends Uint8Array | Int32Array | Float32Array>(data: T, srcH: number, srcW: number, dstH: number, dstW: number): T;
+/**
+ * Trace the boundary contours of a binary raster as closed polygon rings.
+ *
+ * Uses pixel-edge boundary tracing: every foreground pixel contributes its four
+ * cell-border edges with a fixed winding, and edges shared by two foreground
+ * pixels cancel (they are emitted in opposite directions). What remains is the
+ * exact region boundary, which chains into closed loops — one ring per outer
+ * boundary or hole, for any number of disjoint components. Collinear runs are
+ * collapsed, so an axis-aligned block yields four corners.
+ *
+ * Coordinates are pixel-corner integers in mask space: a foreground block
+ * spanning columns `[c0, c1)` and rows `[r0, r1)` traces to the rectangle
+ * `(c0, r0) → (c1, r0) → (c1, r1) → (c0, r1) → (c0, r0)`. Each ring is closed
+ * (last point equals first). Returns `[]` for an all-background raster.
+ *
+ * Outer boundaries and holes get opposite winding (via the shoelace sign), so
+ * {@link groupRingsIntoPolygons} can nest holes inside their containing outer.
+ */
+declare function traceMaskContours(raster: Uint8Array, height: number, width: number): number[][][];
+/**
+ * Group traced contour rings into GeoJSON-style polygons (`[outer, ...holes]`).
+ *
+ * Outer boundaries share the winding of the largest ring; the opposite winding
+ * marks holes, each assigned to the smallest containing outer. The result feeds
+ * a `Polygon` (one outer) or `MultiPolygon` (several).
+ */
+declare function groupRingsIntoPolygons(rings: number[][][]): number[][][][];
 interface SegmentationMaskOptions {
     rleCounts: Uint32Array;
     height: number;
@@ -691,6 +718,14 @@ declare class SegmentationMask {
     offset: [number, number];
     /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx: number | null;
+    /**
+     * @internal Memoized decoded raster and the `rleCounts` it was decoded from.
+     * `get data()` returns the cached buffer when `rleCounts` is unchanged, so
+     * repeated reads (rendering, contour tracing, bbox) decode the RLE once. The
+     * returned buffer is shared — treat it as read-only.
+     */
+    private _dataCache;
+    private _dataCacheKey;
     constructor(options: SegmentationMaskOptions);
     static fromArray(mask: Uint8Array | boolean[][], height: number, width: number, options?: Omit<SegmentationMaskOptions, "rleCounts" | "height" | "width"> & {
         stride?: number;
@@ -723,7 +758,31 @@ declare class SegmentationMask {
      * scale/offset).
      */
     toBbox(): BoundingBox;
-    /** Convert the mask to a bounding-box polygon ROI. */
+    /**
+     * Trace the mask's boundary as closed polygon rings in image space.
+     *
+     * Returns an array of rings (`[x, y]` vertices, each closed so the last point
+     * equals the first), honoring the mask's `scale`/`offset`. Disjoint blobs and
+     * holes each produce their own ring; an empty mask returns `[]`. The outlines
+     * are exact, axis-aligned ("staircase") boundaries — consumers wanting smooth
+     * curves can post-process (e.g. Chaikin subdivision). For a GeoJSON polygon
+     * with holes nested as interior rings, use {@link toPolygon}.
+     *
+     * Browser-safe (pure data, no canvas), enabling interactive UIs to draw real
+     * mask outlines instead of just the bounding box.
+     */
+    contours(): number[][][];
+    /**
+     * Convert the mask to a polygon ROI tracing its actual boundary.
+     *
+     * Builds a `Polygon` (single blob, holes nested as interior rings) or a
+     * `MultiPolygon` (disjoint blobs) from {@link contours}. An empty mask yields
+     * an empty `Polygon`. Returns a `PredictedROI` (carrying `score`) for a
+     * predicted mask, else a `UserROI`. Metadata (`name`, `category`, `source`,
+     * `track`, `instance`) is carried over.
+     *
+     * Use {@link toBbox} or the `bbox` getter for the axis-aligned bounding box.
+     */
     toPolygon(): ROI;
 }
 interface UserSegmentationMaskOptions extends SegmentationMaskOptions {
@@ -4106,6 +4165,14 @@ interface RawLabelImage {
     scale?: [number, number];
     offset?: [number, number];
 }
+/** Clamp a blend opacity to [0, 1]; non-finite inputs fall back to 0. */
+declare function clampAlpha(alpha: number): number;
+/**
+ * Pick the per-item color for index `i`. When an explicit `colors` array is
+ * shorter than the item list it cycles (`colors[i % colors.length]`) rather
+ * than indexing out of bounds; an empty array falls back to `fallback`.
+ */
+declare function pickColor(colors: RGB[] | null, i: number, fallback: RGB): RGB;
 /**
  * Draw segmentation masks as colored overlays on an image.
  *
@@ -4148,73 +4215,6 @@ declare function drawLabelImage(image: ImageData, labels: LabelImage | RawLabelI
     outlineColor?: RGB | null;
     scale?: [number, number];
     offset?: [number, number];
-}): ImageData;
-/**
- * Draw bounding boxes on an image.
- *
- * Each box is drawn as a closed path through its (rotation-aware) corners, with
- * an optional translucent fill, and—for `PredictedBoundingBox`—a "score" label
- * near the top-left corner. Rendered through an internal skia-canvas `Canvas`.
- * Port of `draw_bboxes` (overlays.py L363-510).
- *
- * @param image - RGBA ImageData, mutated in place.
- * @param bboxes - Bounding boxes to draw.
- * @param opts - `color` (default [0,255,0]), per-bbox `colors`, `lineWidth`
- *   (2), `fillAlpha` (0).
- * @returns The same ImageData.
- */
-declare function drawBboxes(image: ImageData, bboxes: BoundingBox[], opts?: {
-    color?: RGB;
-    colors?: RGB[];
-    lineWidth?: number;
-    fillAlpha?: number;
-}): ImageData;
-/**
- * Draw ROI geometries on an image.
- *
- * Renders each ROI's GeoJSON geometry: polygons (with even-odd holes), points
- * and multipoints (filled circles, radius = max(lineWidth, 2)), and line
- * strings. Rendered through an internal skia-canvas `Canvas`. Port of
- * `draw_rois` + `_draw_geometry` (overlays.py L22-112, L513-640).
- *
- * @param image - RGBA ImageData, mutated in place.
- * @param rois - ROIs to draw.
- * @param opts - `color` (default [0,255,0]), per-ROI `colors`, `lineWidth` (2),
- *   `fillAlpha` (0).
- * @returns The same ImageData.
- */
-declare function drawRois(image: ImageData, rois: ROI[], opts?: {
-    color?: RGB;
-    colors?: RGB[];
-    lineWidth?: number;
-    fillAlpha?: number;
-}): ImageData;
-/**
- * Apply an annotation overlay to an image, dispatching by type.
- *
- * Mirrors Python `_apply_overlay` (core.py L473-566): a `LabelImage` (or raw
- * Int32Array-backed object) routes to {@link drawLabelImage}; a non-empty list
- * routes to {@link drawMasks} / {@link drawRois} / {@link drawBboxes} with
- * per-item palette colors. A `list[LabelImage]` raises (per-frame dispatch must
- * happen at the renderVideo level), and unknown element types raise.
- *
- * @param image - RGBA ImageData, mutated in place.
- * @param overlay - A LabelImage, or a list of SegmentationMask / ROI / BoundingBox.
- * @param opts - `alpha` (0.3), `palette` ("distinct"), `outline` (false),
- *   `outlineWidth` (1), `outlineColor` (null), plus optional per-element
- *   `colors` for a list overlay. When `colors` is provided it overrides the
- *   positional `palette` coloring (used by callers to color overlays by track
- *   identity); it must match the overlay length and is ignored for label
- *   images. Mirrors Python `_apply_overlay` (core.py L473-566, PR #470).
- * @returns The same ImageData.
- */
-declare function applyOverlay(image: ImageData, overlay: LabelImage | RawLabelImage | SegmentationMask[] | ROI[] | BoundingBox[], opts?: {
-    alpha?: number;
-    palette?: PaletteName | string;
-    outline?: boolean;
-    outlineWidth?: number;
-    outlineColor?: RGB | null;
-    colors?: RGB[] | null;
 }): ImageData;
 
 /**
@@ -4579,4 +4579,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { DUPLICATE_MATCHER as $, InstanceMatchMethod as A, BoundingBox as B, CropVideoBackend as C, DEFAULT_MAX_BYTES as D, VideoMatchMethod as E, FrameStrategy as F, ErrorMode as G, SkeletonMatcher as H, type ImageBytesReader as I, InstanceMatcher as J, TrackMatcher as K, Labels as L, VideoMatcher as M, ConflictResolution as N, MergeError as O, SkeletonMismatchError as P, MergeResult as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, MatchResult as W, MergeProgressBar as X, STRUCTURE_SKELETON_MATCHER as Y, SUBSET_SKELETON_MATCHER as Z, OVERLAP_SKELETON_MATCHER as _, LabeledFrame as a, UserLabelImage as a$, IOU_MATCHER as a0, IDENTITY_INSTANCE_MATCHER as a1, NAME_TRACK_MATCHER as a2, IDENTITY_TRACK_MATCHER as a3, AUTO_VIDEO_MATCHER as a4, PATH_VIDEO_MATCHER as a5, BASENAME_VIDEO_MATCHER as a6, IMAGE_DEDUP_VIDEO_MATCHER as a7, SHAPE_VIDEO_MATCHER as a8, setFsResolver as a9, AnnotationType as aA, type Geometry as aB, type ROIOptions as aC, rasterizeGeometry as aD, encodeWkb as aE, decodeWkb as aF, PredictedROI as aG, encodeRle as aH, decodeRle as aI, resizeNearest as aJ, type SegmentationMaskOptions as aK, SegmentationMask as aL, type UserSegmentationMaskOptions as aM, UserSegmentationMask as aN, PredictedSegmentationMask as aO, type BoundingBoxOptions as aP, UserBoundingBox as aQ, PredictedBoundingBox as aR, getCentroidSkeleton as aS, CENTROID_SKELETON as aT, type CentroidOptions as aU, Centroid as aV, UserCentroid as aW, PredictedCentroid as aX, type LabelImageObjectInfo as aY, type LabelImageOptions as aZ, LabelImage as a_, type FsResolver as aa, type MergeStrategy as ab, _relinkFromPredicted as ac, _annotationCentroidXy as ad, _findAnnotationMatches as ae, _findAnnotationLinkMatches as af, _resolveMergedIsNegative as ag, EXISTS_TTL_MS as ah, type CropOptions as ai, resolveCropRect as aj, type VideoBackendErrorKind as ak, type VideoBackendError as al, SuggestionFrame as am, rodriguesTransformation as an, Camera as ao, CameraGroup as ap, InstanceGroup as aq, FrameGroup as ar, RecordingSession as as, makeCameraFromDict as at, Identity as au, Instance3D as av, PredictedInstance3D as aw, LazyDataStore as ax, LazyFrameList as ay, _registerMaskFactory as az, LabelsSet as b, decodeCompressedRleCounts as b$, PredictedLabelImage as b0, normalizeLabelIds as b1, type VideoFrame as b2, type GetFrameOptions as b3, type VideoBackend as b4, Mp4BoxVideoBackend as b5, type MediaBunnyOptions as b6, MediaBunnyVideoBackend as b7, StreamingHdf5VideoBackend as b8, type ImageVideoOptions as b9, RemoteIOError as bA, type ResolvedUrl as bB, resolveUrl as bC, statusToMessage as bD, raiseRemote as bE, identityHeaders as bF, stripCrossOriginHeaders as bG, withRetries as bH, parseRetryAfterMs as bI, fetchRetrying as bJ, headOrRangeProbe as bK, type GeoJSONFeature as bL, type GeoJSONFeatureCollection as bM, roisToGeoJSON as bN, roisFromGeoJSON as bO, writeGeoJSON as bP, readGeoJSON as bQ, type CocoCategory as bR, type CocoImage as bS, type CocoRle as bT, type CocoSegmentation as bU, type CocoAnnotation as bV, type CocoJson as bW, isCocoData as bX, parseCocoJson as bY, createSkeletonFromCategory as bZ, decodeKeypoints as b_, computePrefetchWindow as ba, ImageVideoBackend as bb, loadSlp as bc, saveSlp as bd, loadAnalysisH5 as be, saveAnalysisH5 as bf, loadSlpSet as bg, saveSlpSet as bh, loadVideo as bi, loadLabelImages as bj, setLabelImageFileReader as bk, type PagesAs as bl, type LoadLabelImagesOptions as bm, type LabelImageFileReader as bn, saveSlpToBytes as bo, isAnalysisH5File as bp, URL_SCHEMES as bq, CLOUD_SCHEMES as br, GDRIVE_HOSTS as bs, SENSITIVE_HEADERS as bt, SENSITIVE_QUERY_PARAMS as bu, RETRYABLE_STATUSES as bv, isUrl as bw, isGdriveUrl as bx, redactUrl as by, redactedCauseSummary as bz, type ReadCocoOptions as c, decodeCocoRle as c0, decodeSegmentation as c1, readCoco as c2, readCocoSet as c3, type LabelsDict as c4, toDict as c5, fromDict as c6, toNumpy as c7, fromNumpy as c8, labelsFromNumpy as c9, drawTrails as cA, getMarkerFunction as cB, MARKER_FUNCTIONS as cC, type DrawTrailsOptions as cD, resolveTrailNode as cE, computeTrails as cF, nTrailPaletteColors as cG, collectTracks as cH, type TrailTarget as cI, type Trail as cJ, RenderContext as cK, InstanceContext as cL, drawMasks as cM, drawLabelImage as cN, drawBboxes as cO, drawRois as cP, applyOverlay as cQ, type RawLabelImage as cR, cropPoints as cS, uncropPoints as cT, type CropRect as cU, type FlatPoints as cV, type PointPairs as cW, cropFrame as cX, type FrameLike as cY, type RawFrame as cZ, type Fill as c_, decodeYamlSkeleton as ca, encodeYamlSkeleton as cb, readSkeletonJson as cc, writeSkeletonJson as cd, readTrainingConfigSkeletons as ce, readTrainingConfigSkeleton as cf, isTrainingConfig as cg, type RGB as ch, type RGBA as ci, type ColorSpec as cj, type ColorScheme as ck, type PaletteName as cl, type MarkerShape as cm, type Overlay as cn, type VideoOverlay as co, NAMED_COLORS as cp, PALETTES as cq, getPalette as cr, resolveColor as cs, rgbToCSS as ct, determineColorScheme as cu, drawCircle as cv, drawSquare as cw, drawDiamond as cx, drawTriangle as cy, drawCross as cz, type RenderOptions as d, type VideoOptions as e, SeqHeader as f, getImageBytesReader as g, SeqIndex as h, BlobByteSource as i, type ByteSource as j, createVideoBackend as k, UnsupportedVideoFormatError as l, type VideoBackendType as m, type CropWrapOptions as n, checkDownloadHost as o, parseGdrive as p, openGdrive as q, StreamingH5File as r, setImageBytesReader as s, openStreamingH5 as t, urlFromConfirmation as u, openH5Worker as v, isStreamingSupported as w, type StreamingH5Source as x, readSlpStreaming as y, SkeletonMatchMethod as z };
+export { MatchResult as $, isStreamingSupported as A, BoundingBox as B, CropVideoBackend as C, DEFAULT_MAX_BYTES as D, type StreamingH5Source as E, readSlpStreaming as F, SkeletonMatchMethod as G, InstanceMatchMethod as H, type ImageBytesReader as I, VideoMatchMethod as J, FrameStrategy as K, Labels as L, ErrorMode as M, SkeletonMatcher as N, InstanceMatcher as O, type PaletteName as P, TrackMatcher as Q, ROI as R, SegmentationMask as S, TrackMatchMethod as T, UserROI as U, Video as V, VideoMatcher as W, ConflictResolution as X, MergeError as Y, SkeletonMismatchError as Z, MergeResult as _, LabeledFrame as a, Centroid as a$, MergeProgressBar as a0, STRUCTURE_SKELETON_MATCHER as a1, SUBSET_SKELETON_MATCHER as a2, OVERLAP_SKELETON_MATCHER as a3, DUPLICATE_MATCHER as a4, IOU_MATCHER as a5, IDENTITY_INSTANCE_MATCHER as a6, NAME_TRACK_MATCHER as a7, IDENTITY_TRACK_MATCHER as a8, AUTO_VIDEO_MATCHER as a9, Instance3D as aA, PredictedInstance3D as aB, LazyDataStore as aC, LazyFrameList as aD, _registerMaskFactory as aE, AnnotationType as aF, type Geometry as aG, type ROIOptions as aH, rasterizeGeometry as aI, encodeWkb as aJ, decodeWkb as aK, PredictedROI as aL, encodeRle as aM, decodeRle as aN, resizeNearest as aO, traceMaskContours as aP, groupRingsIntoPolygons as aQ, type SegmentationMaskOptions as aR, type UserSegmentationMaskOptions as aS, UserSegmentationMask as aT, PredictedSegmentationMask as aU, type BoundingBoxOptions as aV, UserBoundingBox as aW, PredictedBoundingBox as aX, getCentroidSkeleton as aY, CENTROID_SKELETON as aZ, type CentroidOptions as a_, PATH_VIDEO_MATCHER as aa, BASENAME_VIDEO_MATCHER as ab, IMAGE_DEDUP_VIDEO_MATCHER as ac, SHAPE_VIDEO_MATCHER as ad, setFsResolver as ae, type FsResolver as af, type MergeStrategy as ag, _relinkFromPredicted as ah, _annotationCentroidXy as ai, _findAnnotationMatches as aj, _findAnnotationLinkMatches as ak, _resolveMergedIsNegative as al, EXISTS_TTL_MS as am, type CropOptions as an, resolveCropRect as ao, type VideoBackendErrorKind as ap, type VideoBackendError as aq, SuggestionFrame as ar, rodriguesTransformation as as, Camera as at, CameraGroup as au, InstanceGroup as av, FrameGroup as aw, RecordingSession as ax, makeCameraFromDict as ay, Identity as az, LabelsSet as b, type CocoJson as b$, UserCentroid as b0, PredictedCentroid as b1, type LabelImageObjectInfo as b2, type LabelImageOptions as b3, UserLabelImage as b4, PredictedLabelImage as b5, normalizeLabelIds as b6, type VideoFrame as b7, type GetFrameOptions as b8, type VideoBackend as b9, RETRYABLE_STATUSES as bA, isUrl as bB, isGdriveUrl as bC, redactUrl as bD, redactedCauseSummary as bE, RemoteIOError as bF, type ResolvedUrl as bG, resolveUrl as bH, statusToMessage as bI, raiseRemote as bJ, identityHeaders as bK, stripCrossOriginHeaders as bL, withRetries as bM, parseRetryAfterMs as bN, fetchRetrying as bO, headOrRangeProbe as bP, type GeoJSONFeature as bQ, type GeoJSONFeatureCollection as bR, roisToGeoJSON as bS, roisFromGeoJSON as bT, writeGeoJSON as bU, readGeoJSON as bV, type CocoCategory as bW, type CocoImage as bX, type CocoRle as bY, type CocoSegmentation as bZ, type CocoAnnotation as b_, Mp4BoxVideoBackend as ba, type MediaBunnyOptions as bb, MediaBunnyVideoBackend as bc, StreamingHdf5VideoBackend as bd, type ImageVideoOptions as be, computePrefetchWindow as bf, ImageVideoBackend as bg, loadSlp as bh, saveSlp as bi, loadAnalysisH5 as bj, saveAnalysisH5 as bk, loadSlpSet as bl, saveSlpSet as bm, loadVideo as bn, loadLabelImages as bo, setLabelImageFileReader as bp, type PagesAs as bq, type LoadLabelImagesOptions as br, type LabelImageFileReader as bs, saveSlpToBytes as bt, isAnalysisH5File as bu, URL_SCHEMES as bv, CLOUD_SCHEMES as bw, GDRIVE_HOSTS as bx, SENSITIVE_HEADERS as by, SENSITIVE_QUERY_PARAMS as bz, type ReadCocoOptions as c, pickColor as c$, isCocoData as c0, parseCocoJson as c1, createSkeletonFromCategory as c2, decodeKeypoints as c3, decodeCompressedRleCounts as c4, decodeCocoRle as c5, decodeSegmentation as c6, readCoco as c7, readCocoSet as c8, type LabelsDict as c9, drawDiamond as cA, drawTriangle as cB, drawCross as cC, drawTrails as cD, getMarkerFunction as cE, MARKER_FUNCTIONS as cF, type DrawTrailsOptions as cG, resolveTrailNode as cH, computeTrails as cI, nTrailPaletteColors as cJ, collectTracks as cK, type TrailTarget as cL, type Trail as cM, RenderContext as cN, InstanceContext as cO, drawMasks as cP, drawLabelImage as cQ, cropPoints as cR, uncropPoints as cS, type CropRect as cT, type FlatPoints as cU, type PointPairs as cV, cropFrame as cW, type FrameLike as cX, type RawFrame as cY, type Fill as cZ, clampAlpha as c_, toDict as ca, fromDict as cb, toNumpy as cc, fromNumpy as cd, labelsFromNumpy as ce, decodeYamlSkeleton as cf, encodeYamlSkeleton as cg, readSkeletonJson as ch, writeSkeletonJson as ci, readTrainingConfigSkeletons as cj, readTrainingConfigSkeleton as ck, isTrainingConfig as cl, type RGBA as cm, type ColorSpec as cn, type ColorScheme as co, type MarkerShape as cp, type Overlay as cq, type VideoOverlay as cr, NAMED_COLORS as cs, PALETTES as ct, getPalette as cu, resolveColor as cv, rgbToCSS as cw, determineColorScheme as cx, drawCircle as cy, drawSquare as cz, type RenderOptions as d, type VideoOptions as e, type RGB as f, LabelImage as g, type RawLabelImage as h, getImageBytesReader as i, SeqVideoBackend as j, SeqHeader as k, SeqIndex as l, BlobByteSource as m, type ByteSource as n, createVideoBackend as o, UnsupportedVideoFormatError as p, type VideoBackendType as q, type CropWrapOptions as r, setImageBytesReader as s, parseGdrive as t, urlFromConfirmation as u, checkDownloadHost as v, openGdrive as w, StreamingH5File as x, openStreamingH5 as y, openH5Worker as z };

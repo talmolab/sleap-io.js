@@ -1158,12 +1158,28 @@ re-encoded). See <a href="../cropping/">Virtual Cropping</a> for the full guide.
 <span class="c1">// Resample to target size (removes spatial transform)</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">fullRes</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">resampled</span><span class="p">(</span><span class="mf">480</span><span class="p">,</span><span class="w"> </span><span class="mf">640</span><span class="p">);</span>
 
-<span class="c1">// Convert to polygon ROI</span>
+<span class="c1">// Trace the actual mask boundary as closed polygon rings in image space</span>
+<span class="c1">// (honors scale/offset). Disjoint blobs and holes each get their own ring;</span>
+<span class="c1">// an empty mask returns []. Pure data — works in the browser.</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">rings</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">contours</span><span class="p">();</span><span class="w">   </span><span class="c1">// number[][][]</span>
+
+<span class="c1">// Convert to a polygon ROI tracing the real outline: a Polygon (one blob,</span>
+<span class="c1">// holes nested as interior rings) or MultiPolygon (disjoint blobs). A</span>
+<span class="c1">// predicted mask yields a PredictedROI carrying its score.</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">roi</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">toPolygon</span><span class="p">();</span>
 
 <span class="c1">// Convert to BoundingBox object (with metadata)</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">bb</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">toBbox</span><span class="p">();</span>
 </code></pre></div>
+<blockquote>
+<p><strong><code>toPolygon()</code> traces the boundary</strong> (as of v0.5.0) rather than returning the
+bounding-box rectangle. For the axis-aligned box use <code>mask.bbox</code> or
+<code>mask.toBbox()</code>. The traced outline is exact and axis-aligned ("staircase");
+consumers wanting smooth curves can post-process the rings (e.g. Chaikin
+subdivision — the demo does this). <code>get data()</code> memoizes the decoded raster, so
+repeated <code>data</code>/<code>area</code>/<code>bbox</code>/<code>contours()</code> reads decode the RLE once (treat the
+returned buffer as read-only).</p>
+</blockquote>
 <p><strong>Adopting predictions (human-in-the-loop).</strong> <code>PredictedSegmentationMask.toUser()</code>
 mirrors <code>Instance.fromPredicted</code>: it returns a new <code>UserSegmentationMask</code> that
 copies the RLE raster and carries over metadata (<code>name</code>, <code>category</code>, <code>source</code>,
@@ -1189,6 +1205,37 @@ A prediction is adopted when a user mask in the same frame links to it via
 <code>fromPredicted</code> (checked first, by identity) or, lacking a link, spatially
 overlaps it (bbox-centroid within 5 px). The remaining unclaimed predictions are
 returned, e.g. for surfacing unreviewed detections in a proofreading UI.</p>
+<h4 id="rendering-masks-in-the-browser">Rendering masks in the browser<a class="headerlink" href="#rendering-masks-in-the-browser" title="Permanent link">&para;</a></h4>
+<p><code>drawMasks</code> and <code>drawLabelImage</code> are <strong>browser-safe</strong> raster compositors (pure
+<code>ImageData</code> blending — no <code>skia-canvas</code>, no Node built-ins). They are exported
+from the browser entry, so a UI can composite masks onto a <code>&lt;canvas&gt;</code>
+client-side without the Node <code>renderImage</code> path:</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">drawMasks</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js&quot;</span><span class="p">;</span><span class="w"> </span><span class="c1">// browser build</span>
+
+<span class="kd">const</span><span class="w"> </span><span class="nx">ctx</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">canvas</span><span class="p">.</span><span class="nx">getContext</span><span class="p">(</span><span class="s2">&quot;2d&quot;</span><span class="p">);</span>
+<span class="nx">ctx</span><span class="p">.</span><span class="nx">drawImage</span><span class="p">(</span><span class="nx">videoFrame</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">);</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">img</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">getImageData</span><span class="p">(</span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="nx">canvas</span><span class="p">.</span><span class="nx">width</span><span class="p">,</span><span class="w"> </span><span class="nx">canvas</span><span class="p">.</span><span class="nx">height</span><span class="p">);</span>
+<span class="nx">drawMasks</span><span class="p">(</span><span class="nx">img</span><span class="p">,</span><span class="w"> </span><span class="nx">frame</span><span class="p">.</span><span class="nx">masks</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">colors</span><span class="o">:</span><span class="w"> </span><span class="kt">frame.masks.map</span><span class="p">(</span><span class="nx">maskColorRgb</span><span class="p">),</span><span class="w">  </span><span class="c1">// e.g. by track identity</span>
+<span class="w">  </span><span class="nx">alpha</span><span class="o">:</span><span class="w"> </span><span class="kt">0.45</span><span class="p">,</span>
+<span class="p">});</span>
+<span class="nx">ctx</span><span class="p">.</span><span class="nx">putImageData</span><span class="p">(</span><span class="nx">img</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">,</span><span class="w"> </span><span class="mf">0</span><span class="p">);</span>
+
+<span class="c1">// Crisp vector outlines on top, from the data model:</span>
+<span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">const</span><span class="w"> </span><span class="nx">mask</span><span class="w"> </span><span class="k">of</span><span class="w"> </span><span class="nx">frame</span><span class="p">.</span><span class="nx">masks</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">const</span><span class="w"> </span><span class="nx">ring</span><span class="w"> </span><span class="k">of</span><span class="w"> </span><span class="nx">mask</span><span class="p">.</span><span class="nx">contours</span><span class="p">())</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">beginPath</span><span class="p">();</span>
+<span class="w">    </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">moveTo</span><span class="p">(</span><span class="nx">ring</span><span class="p">[</span><span class="mf">0</span><span class="p">][</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="nx">ring</span><span class="p">[</span><span class="mf">0</span><span class="p">][</span><span class="mf">1</span><span class="p">]);</span>
+<span class="w">    </span><span class="k">for</span><span class="w"> </span><span class="p">(</span><span class="kd">const</span><span class="w"> </span><span class="p">[</span><span class="nx">x</span><span class="p">,</span><span class="w"> </span><span class="nx">y</span><span class="p">]</span><span class="w"> </span><span class="k">of</span><span class="w"> </span><span class="nx">ring</span><span class="p">)</span><span class="w"> </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">lineTo</span><span class="p">(</span><span class="nx">x</span><span class="p">,</span><span class="w"> </span><span class="nx">y</span><span class="p">);</span>
+<span class="w">    </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">closePath</span><span class="p">();</span>
+<span class="w">    </span><span class="nx">ctx</span><span class="p">.</span><span class="nx">stroke</span><span class="p">();</span>
+<span class="w">  </span><span class="p">}</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>The vector overlays (<code>drawBboxes</code>, <code>drawRois</code>, <code>applyOverlay</code>) and the full
+<code>renderImage</code>/<code>renderVideo</code> pipeline draw through <code>skia-canvas</code> and remain
+Node-only (main entry). See <code>demo/</code> for a complete browser example that fills
+masks with <code>drawMasks</code> and outlines them with smoothed <code>contours()</code>.</p>
 <h3 id="boundingbox"><code>BoundingBox</code><a class="headerlink" href="#boundingbox" title="Permanent link">&para;</a></h3>
 <p>Axis-aligned or rotated bounding box for detection/tracking workflows. <code>BoundingBox</code> is abstract; use <code>UserBoundingBox</code> or <code>PredictedBoundingBox</code> for direct construction.</p>
 <p>Bounding boxes use corner coordinates (<code>x1</code>, <code>y1</code>, <code>x2</code>, <code>y2</code>) as their primary storage. Center-based properties (<code>xCenter</code>, <code>yCenter</code>, <code>width</code>, <code>height</code>) are available as computed getters.</p>

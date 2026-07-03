@@ -84,6 +84,7 @@ import {
   _registerNodeH5,
   _relinkFromPredicted,
   _resolveMergedIsNegative,
+  clampAlpha,
   collectTracks,
   computePrefetchWindow,
   computeTrails,
@@ -102,6 +103,8 @@ import {
   drawCircle,
   drawCross,
   drawDiamond,
+  drawLabelImage,
+  drawMasks,
   drawSquare,
   drawTrails,
   drawTriangle,
@@ -115,6 +118,7 @@ import {
   getImageBytesReader,
   getMarkerFunction,
   getPalette,
+  groupRingsIntoPolygons,
   isAnalysisH5File,
   isCocoData,
   isStreamingSupported,
@@ -133,6 +137,7 @@ import {
   openH5Worker,
   openStreamingH5,
   parseCocoJson,
+  pickColor,
   rasterizeGeometry,
   readCoco,
   readCocoSet,
@@ -161,10 +166,11 @@ import {
   setSeqFileByteSourceFactory,
   toDict,
   toNumpy,
+  traceMaskContours,
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-ARID4FDC.js";
+} from "./chunk-5DRBLQOK.js";
 import {
   Edge,
   Instance,
@@ -3004,249 +3010,6 @@ function getSkiaCanvas() {
   }
   return _skiaCanvas;
 }
-function blendChannel(dst, src, alpha) {
-  return Math.trunc(dst * (1 - alpha) + src * alpha);
-}
-function clampAlpha(alpha) {
-  if (!Number.isFinite(alpha)) return 0;
-  return alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
-}
-function pickColor(colors, i, fallback) {
-  if (colors === null || colors.length === 0) return fallback;
-  return colors[i % colors.length];
-}
-function drawMasks(image, masks, opts) {
-  const color = opts?.color ?? [255, 0, 0];
-  const colors = opts?.colors ?? null;
-  const alpha = clampAlpha(opts?.alpha ?? 0.3);
-  const imgW = image.width;
-  const imgH = image.height;
-  const pixels = image.data;
-  for (let i = 0; i < masks.length; i++) {
-    const mask = masks[i];
-    const maskColor = pickColor(colors, i, color);
-    const maskData = mask.data;
-    let region;
-    let x0;
-    let y0;
-    let drawW;
-    let drawH;
-    if (mask.hasSpatialTransform) {
-      const ext = mask.imageExtent;
-      const targetH = ext.height;
-      const targetW = ext.width;
-      const resized = resizeNearest(
-        maskData,
-        mask.height,
-        mask.width,
-        targetH,
-        targetW
-      );
-      const ox = Math.trunc(mask.offset[0]);
-      const oy = Math.trunc(mask.offset[1]);
-      y0 = Math.max(0, oy);
-      x0 = Math.max(0, ox);
-      const y1 = Math.min(imgH, oy + targetH);
-      const x1 = Math.min(imgW, ox + targetW);
-      if (y1 <= y0 || x1 <= x0) continue;
-      drawH = y1 - y0;
-      drawW = x1 - x0;
-      const my0 = y0 - oy;
-      const mx0 = x0 - ox;
-      region = new Uint8Array(drawH * drawW);
-      for (let r = 0; r < drawH; r++) {
-        const srcRow = (my0 + r) * targetW + mx0;
-        region.set(resized.subarray(srcRow, srcRow + drawW), r * drawW);
-      }
-    } else {
-      drawH = Math.min(mask.height, imgH);
-      drawW = Math.min(mask.width, imgW);
-      x0 = 0;
-      y0 = 0;
-      region = new Uint8Array(drawH * drawW);
-      for (let r = 0; r < drawH; r++) {
-        const srcRow = r * mask.width;
-        region.set(maskData.subarray(srcRow, srcRow + drawW), r * drawW);
-      }
-    }
-    const [cr, cg, cb] = maskColor;
-    for (let r = 0; r < drawH; r++) {
-      for (let c = 0; c < drawW; c++) {
-        if (region[r * drawW + c] === 0) continue;
-        const px = ((y0 + r) * imgW + (x0 + c)) * 4;
-        pixels[px] = blendChannel(pixels[px], cr, alpha);
-        pixels[px + 1] = blendChannel(pixels[px + 1], cg, alpha);
-        pixels[px + 2] = blendChannel(pixels[px + 2], cb, alpha);
-      }
-    }
-  }
-  return image;
-}
-function drawLabelImage(image, labels, opts) {
-  const alpha = clampAlpha(opts?.alpha ?? 0.3);
-  const palette = opts?.palette ?? "distinct";
-  const outline = opts?.outline ?? false;
-  const outlineWidth = opts?.outlineWidth ?? 1;
-  const outlineColor = opts?.outlineColor ?? null;
-  const labData = labels.data;
-  const labH = labels.height;
-  const labW = labels.width;
-  const scale = opts?.scale ?? labels.scale ?? [1, 1];
-  const offset = opts?.offset ?? labels.offset ?? [0, 0];
-  let maxId = 0;
-  let hasFg = false;
-  for (let i = 0; i < labData.length; i++) {
-    const v = labData[i];
-    if (v > 0) {
-      hasFg = true;
-      if (v > maxId) maxId = v;
-    }
-  }
-  if (!hasFg) return image;
-  const paletteColors = getPalette(palette, maxId + 1);
-  const lut = new Float32Array((maxId + 1) * 3);
-  for (let id = 1; id <= maxId; id++) {
-    const col = paletteColors[id % paletteColors.length];
-    lut[id * 3] = col[0];
-    lut[id * 3 + 1] = col[1];
-    lut[id * 3 + 2] = col[2];
-  }
-  const imgW = image.width;
-  const imgH = image.height;
-  const pixels = image.data;
-  const hasTransform = scale[0] !== 1 || scale[1] !== 1 || offset[0] !== 0 || offset[1] !== 0;
-  let region;
-  let x0;
-  let y0;
-  let drawW;
-  let drawH;
-  if (hasTransform) {
-    const sx = scale[0];
-    const sy = scale[1];
-    const targetH = Math.trunc(labH / sy);
-    const targetW = Math.trunc(labW / sx);
-    const resized = resizeNearest(labData, labH, labW, targetH, targetW);
-    const ox = Math.trunc(offset[0]);
-    const oy = Math.trunc(offset[1]);
-    y0 = Math.max(0, oy);
-    x0 = Math.max(0, ox);
-    const y1 = Math.min(imgH, oy + targetH);
-    const x1 = Math.min(imgW, ox + targetW);
-    if (y1 <= y0 || x1 <= x0) return image;
-    drawH = y1 - y0;
-    drawW = x1 - x0;
-    const my0 = y0 - oy;
-    const mx0 = x0 - ox;
-    region = new Int32Array(drawH * drawW);
-    for (let r = 0; r < drawH; r++) {
-      const srcRow = (my0 + r) * targetW + mx0;
-      region.set(resized.subarray(srcRow, srcRow + drawW), r * drawW);
-    }
-  } else {
-    drawH = Math.min(labH, imgH);
-    drawW = Math.min(labW, imgW);
-    x0 = 0;
-    y0 = 0;
-    region = new Int32Array(drawH * drawW);
-    for (let r = 0; r < drawH; r++) {
-      const srcRow = r * labW;
-      region.set(labData.subarray(srcRow, srcRow + drawW), r * drawW);
-    }
-  }
-  for (let r = 0; r < drawH; r++) {
-    for (let c = 0; c < drawW; c++) {
-      const lab = region[r * drawW + c];
-      if (lab <= 0) continue;
-      const safe = lab > maxId ? maxId : lab;
-      const li = safe * 3;
-      const px = ((y0 + r) * imgW + (x0 + c)) * 4;
-      pixels[px] = Math.trunc(pixels[px] * (1 - alpha) + lut[li] * alpha);
-      pixels[px + 1] = Math.trunc(
-        pixels[px + 1] * (1 - alpha) + lut[li + 1] * alpha
-      );
-      pixels[px + 2] = Math.trunc(
-        pixels[px + 2] * (1 - alpha) + lut[li + 2] * alpha
-      );
-    }
-  }
-  if (outline) {
-    drawLabelOutlines(
-      image,
-      region,
-      x0,
-      y0,
-      drawH,
-      drawW,
-      outlineWidth,
-      outlineColor,
-      lut,
-      maxId
-    );
-  }
-  return image;
-}
-function drawLabelOutlines(image, region, x0, y0, drawH, drawW, outlineWidth, outlineColor, lut, maxId) {
-  const imgW = image.width;
-  const pixels = image.data;
-  const edges = new Uint8Array(drawH * drawW);
-  const at = (r, c) => region[r * drawW + c];
-  for (let r = 0; r < drawH; r++) {
-    for (let c = 0; c < drawW; c++) {
-      const v = at(r, c);
-      let edge = false;
-      if (c + 1 < drawW && v !== at(r, c + 1)) edge = true;
-      if (!edge && c - 1 >= 0 && v !== at(r, c - 1)) edge = true;
-      if (!edge && r + 1 < drawH && v !== at(r + 1, c)) edge = true;
-      if (!edge && r - 1 >= 0 && v !== at(r - 1, c)) edge = true;
-      if (edge && v > 0) edges[r * drawW + c] = 1;
-    }
-  }
-  let finalEdges = edges;
-  if (outlineWidth > 1) {
-    const pad = Math.trunc(outlineWidth / 2);
-    const dilated = new Uint8Array(drawH * drawW);
-    for (let dy = -pad; dy <= pad; dy++) {
-      for (let dx = -pad; dx <= pad; dx++) {
-        const sy = Math.max(0, dy);
-        const ey = drawH + Math.min(0, dy);
-        const sx = Math.max(0, dx);
-        const ex = drawW + Math.min(0, dx);
-        const oy = Math.max(0, -dy);
-        const ox = Math.max(0, -dx);
-        for (let r = sy; r < ey; r++) {
-          for (let c = sx; c < ex; c++) {
-            if (edges[(oy + (r - sy)) * drawW + (ox + (c - sx))]) {
-              dilated[r * drawW + c] = 1;
-            }
-          }
-        }
-      }
-    }
-    for (let i = 0; i < dilated.length; i++) {
-      if (dilated[i] && region[i] > 0) dilated[i] = 1;
-      else dilated[i] = 0;
-    }
-    finalEdges = dilated;
-  }
-  for (let r = 0; r < drawH; r++) {
-    for (let c = 0; c < drawW; c++) {
-      if (!finalEdges[r * drawW + c]) continue;
-      const px = ((y0 + r) * imgW + (x0 + c)) * 4;
-      if (outlineColor !== null) {
-        pixels[px] = outlineColor[0];
-        pixels[px + 1] = outlineColor[1];
-        pixels[px + 2] = outlineColor[2];
-      } else {
-        const lab = region[r * drawW + c];
-        const safe = lab > maxId ? maxId : lab;
-        const li = safe * 3;
-        pixels[px] = Math.trunc(lut[li] * 0.6);
-        pixels[px + 1] = Math.trunc(lut[li + 1] * 0.6);
-        pixels[px + 2] = Math.trunc(lut[li + 2] * 0.6);
-      }
-    }
-  }
-}
 function configureStroke(ctx, rgb, lineWidth) {
   ctx.strokeStyle = rgbToCSS(rgb);
   ctx.lineWidth = lineWidth;
@@ -4259,6 +4022,7 @@ export {
   getImageBytesReader,
   getMarkerFunction,
   getPalette,
+  groupRingsIntoPolygons,
   headOrRangeProbe,
   identityHeaders,
   isAnalysisH5File,
@@ -4357,6 +4121,7 @@ export {
   toJPEG,
   toNumpy,
   toPNG,
+  traceMaskContours,
   uncropPoints,
   urlFromConfirmation,
   videoSetsStemMap,

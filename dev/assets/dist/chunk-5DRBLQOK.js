@@ -987,6 +987,152 @@ function resizeNearest(data, srcH, srcW, dstH, dstW) {
   }
   return result;
 }
+function traceMaskContours(raster, height, width) {
+  const edges = /* @__PURE__ */ new Map();
+  const addEdge = (ax, ay, bx, by) => {
+    const rev = `${bx},${by}>${ax},${ay}`;
+    if (edges.has(rev)) {
+      edges.delete(rev);
+    } else {
+      edges.set(`${ax},${ay}>${bx},${by}`, [ax, ay, bx, by]);
+    }
+  };
+  for (let r = 0; r < height; r++) {
+    const rowBase = r * width;
+    for (let c = 0; c < width; c++) {
+      if (!raster[rowBase + c]) continue;
+      const x0 = c;
+      const y0 = r;
+      const x1 = c + 1;
+      const y1 = r + 1;
+      addEdge(x0, y0, x1, y0);
+      addEdge(x1, y0, x1, y1);
+      addEdge(x1, y1, x0, y1);
+      addEdge(x0, y1, x0, y0);
+    }
+  }
+  if (edges.size === 0) return [];
+  const outAdj = /* @__PURE__ */ new Map();
+  for (const [, [ax, ay, bx, by]] of edges) {
+    const from = `${ax},${ay}`;
+    const to = `${bx},${by}`;
+    const list = outAdj.get(from);
+    if (list) list.push(to);
+    else outAdj.set(from, [to]);
+  }
+  const parseKey = (k) => {
+    const i = k.indexOf(",");
+    return [Number(k.slice(0, i)), Number(k.slice(i + 1))];
+  };
+  const rings = [];
+  for (const startKey of outAdj.keys()) {
+    let avail = outAdj.get(startKey);
+    while (avail?.length) {
+      const ring = [];
+      let curKey = startKey;
+      let curXY = parseKey(curKey);
+      let prevXY = null;
+      while (true) {
+        const outs = outAdj.get(curKey);
+        if (!outs || outs.length === 0) break;
+        let pick = outs.length - 1;
+        if (outs.length > 1 && prevXY) {
+          const dinX = curXY[0] - prevXY[0];
+          const dinY = curXY[1] - prevXY[1];
+          let best = Number.NEGATIVE_INFINITY;
+          for (let i = 0; i < outs.length; i++) {
+            const nXY = parseKey(outs[i]);
+            const cross = dinX * (nXY[1] - curXY[1]) - dinY * (nXY[0] - curXY[0]);
+            if (cross > best) {
+              best = cross;
+              pick = i;
+            }
+          }
+        }
+        const nextKey = outs.splice(pick, 1)[0];
+        ring.push([curXY[0], curXY[1]]);
+        if (nextKey === startKey) break;
+        prevXY = curXY;
+        curKey = nextKey;
+        curXY = parseKey(nextKey);
+      }
+      if (ring.length >= 3) {
+        ring.push([ring[0][0], ring[0][1]]);
+        rings.push(simplifyCollinear(ring));
+      }
+      avail = outAdj.get(startKey);
+    }
+  }
+  return rings;
+}
+function simplifyCollinear(ring) {
+  const pts = ring.slice(0, -1);
+  const n = pts.length;
+  if (n <= 2) return ring;
+  const keep = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[(i - 1 + n) % n];
+    const b = pts[i];
+    const c = pts[(i + 1) % n];
+    const cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    if (cross !== 0) keep.push(b);
+  }
+  if (keep.length < 3) return ring;
+  keep.push([keep[0][0], keep[0][1]]);
+  return keep;
+}
+function ringSignedArea(ring) {
+  let a = 0;
+  for (let i = 0; i < ring.length - 1; i++) {
+    a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  }
+  return a / 2;
+}
+function pointInRing(point, ring) {
+  const [x, y] = point;
+  let inside = false;
+  for (let i = 0, j = ring.length - 2; i < ring.length - 1; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersects = yi > y !== yj > y && x < (xj - xi) * (y - yi) / (yj - yi || Number.EPSILON) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+function groupRingsIntoPolygons(rings) {
+  if (rings.length === 0) return [];
+  if (rings.length === 1) return [[rings[0]]];
+  const areas = rings.map(ringSignedArea);
+  let maxI = 0;
+  for (let i = 1; i < areas.length; i++) {
+    if (Math.abs(areas[i]) > Math.abs(areas[maxI])) maxI = i;
+  }
+  const outerSign = Math.sign(areas[maxI]) || 1;
+  const polys = [];
+  const holes = [];
+  rings.forEach((ring, i) => {
+    const absArea = Math.abs(areas[i]);
+    if (Math.sign(areas[i]) === outerSign) {
+      polys.push({ rings: [ring], area: absArea });
+    } else {
+      holes.push({ ring, area: absArea });
+    }
+  });
+  for (const hole of holes) {
+    let best = -1;
+    let bestArea = Infinity;
+    for (let i = 0; i < polys.length; i++) {
+      if (polys[i].area < bestArea && pointInRing(hole.ring[0], polys[i].rings[0])) {
+        best = i;
+        bestArea = polys[i].area;
+      }
+    }
+    if (best >= 0) polys[best].rings.push(hole.ring);
+  }
+  return polys.map((p) => p.rings);
+}
 var SegmentationMask = class _SegmentationMask {
   rleCounts;
   height;
@@ -1003,6 +1149,14 @@ var SegmentationMask = class _SegmentationMask {
   offset;
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx = null;
+  /**
+   * @internal Memoized decoded raster and the `rleCounts` it was decoded from.
+   * `get data()` returns the cached buffer when `rleCounts` is unchanged, so
+   * repeated reads (rendering, contour tracing, bbox) decode the RLE once. The
+   * returned buffer is shared — treat it as read-only.
+   */
+  _dataCache = null;
+  _dataCacheKey = null;
   constructor(options) {
     if (new.target === _SegmentationMask) {
       throw new TypeError(
@@ -1069,7 +1223,13 @@ var SegmentationMask = class _SegmentationMask {
     });
   }
   get data() {
-    return decodeRle(this.rleCounts, this.height, this.width);
+    if (this._dataCache !== null && this._dataCacheKey === this.rleCounts) {
+      return this._dataCache;
+    }
+    const decoded = decodeRle(this.rleCounts, this.height, this.width);
+    this._dataCache = decoded;
+    this._dataCacheKey = this.rleCounts;
+    return decoded;
   }
   get area() {
     let total = 0;
@@ -1191,37 +1351,60 @@ var SegmentationMask = class _SegmentationMask {
     }
     return new UserBoundingBox(opts);
   }
-  /** Convert the mask to a bounding-box polygon ROI. */
+  /**
+   * Trace the mask's boundary as closed polygon rings in image space.
+   *
+   * Returns an array of rings (`[x, y]` vertices, each closed so the last point
+   * equals the first), honoring the mask's `scale`/`offset`. Disjoint blobs and
+   * holes each produce their own ring; an empty mask returns `[]`. The outlines
+   * are exact, axis-aligned ("staircase") boundaries — consumers wanting smooth
+   * curves can post-process (e.g. Chaikin subdivision). For a GeoJSON polygon
+   * with holes nested as interior rings, use {@link toPolygon}.
+   *
+   * Browser-safe (pure data, no canvas), enabling interactive UIs to draw real
+   * mask outlines instead of just the bounding box.
+   */
+  contours() {
+    const rings = traceMaskContours(this.data, this.height, this.width);
+    const [sx, sy] = this.scale;
+    const [ox, oy] = this.offset;
+    if (sx === 1 && sy === 1 && ox === 0 && oy === 0) return rings;
+    return rings.map(
+      (ring) => ring.map(([x, y]) => [x / sx + ox, y / sy + oy])
+    );
+  }
+  /**
+   * Convert the mask to a polygon ROI tracing its actual boundary.
+   *
+   * Builds a `Polygon` (single blob, holes nested as interior rings) or a
+   * `MultiPolygon` (disjoint blobs) from {@link contours}. An empty mask yields
+   * an empty `Polygon`. Returns a `PredictedROI` (carrying `score`) for a
+   * predicted mask, else a `UserROI`. Metadata (`name`, `category`, `source`,
+   * `track`, `instance`) is carried over.
+   *
+   * Use {@link toBbox} or the `bbox` getter for the axis-aligned bounding box.
+   */
   toPolygon() {
-    const bb = this.bbox;
+    const rings = this.contours();
     let geometry;
-    if (bb.width === 0 || bb.height === 0) {
+    if (rings.length === 0) {
       geometry = { type: "Polygon", coordinates: [[]] };
     } else {
-      const { x, y, width, height } = bb;
-      geometry = {
-        type: "Polygon",
-        coordinates: [
-          [
-            [x, y],
-            [x + width, y],
-            [x + width, y + height],
-            [x, y + height],
-            [x, y]
-          ]
-        ]
-      };
+      const polys = groupRingsIntoPolygons(rings);
+      geometry = polys.length === 1 ? { type: "Polygon", coordinates: polys[0] } : { type: "MultiPolygon", coordinates: polys };
     }
-    return ROI.fromPolygon(
-      geometry.coordinates[0],
-      {
-        name: this.name,
-        category: this.category,
-        source: this.source,
-        track: this.track,
-        instance: this.instance
-      }
-    );
+    const options = {
+      geometry,
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      track: this.track,
+      instance: this.instance
+    };
+    if (this instanceof PredictedSegmentationMask) {
+      return new PredictedROI({ ...options, score: this.score });
+    }
+    return new UserROI(options);
   }
 };
 var UserSegmentationMask = class extends SegmentationMask {
@@ -17488,6 +17671,251 @@ var InstanceContext = class {
   }
 };
 
+// src/rendering/overlays-raster.ts
+function blendChannel(dst, src, alpha) {
+  return Math.trunc(dst * (1 - alpha) + src * alpha);
+}
+function clampAlpha(alpha) {
+  if (!Number.isFinite(alpha)) return 0;
+  return alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+}
+function pickColor(colors, i, fallback) {
+  if (colors === null || colors.length === 0) return fallback;
+  return colors[i % colors.length];
+}
+function drawMasks(image, masks, opts) {
+  const color = opts?.color ?? [255, 0, 0];
+  const colors = opts?.colors ?? null;
+  const alpha = clampAlpha(opts?.alpha ?? 0.3);
+  const imgW = image.width;
+  const imgH = image.height;
+  const pixels = image.data;
+  for (let i = 0; i < masks.length; i++) {
+    const mask = masks[i];
+    const maskColor = pickColor(colors, i, color);
+    const maskData = mask.data;
+    let region;
+    let x0;
+    let y0;
+    let drawW;
+    let drawH;
+    if (mask.hasSpatialTransform) {
+      const ext = mask.imageExtent;
+      const targetH = ext.height;
+      const targetW = ext.width;
+      const resized = resizeNearest(
+        maskData,
+        mask.height,
+        mask.width,
+        targetH,
+        targetW
+      );
+      const ox = Math.trunc(mask.offset[0]);
+      const oy = Math.trunc(mask.offset[1]);
+      y0 = Math.max(0, oy);
+      x0 = Math.max(0, ox);
+      const y1 = Math.min(imgH, oy + targetH);
+      const x1 = Math.min(imgW, ox + targetW);
+      if (y1 <= y0 || x1 <= x0) continue;
+      drawH = y1 - y0;
+      drawW = x1 - x0;
+      const my0 = y0 - oy;
+      const mx0 = x0 - ox;
+      region = new Uint8Array(drawH * drawW);
+      for (let r = 0; r < drawH; r++) {
+        const srcRow = (my0 + r) * targetW + mx0;
+        region.set(resized.subarray(srcRow, srcRow + drawW), r * drawW);
+      }
+    } else {
+      drawH = Math.min(mask.height, imgH);
+      drawW = Math.min(mask.width, imgW);
+      x0 = 0;
+      y0 = 0;
+      region = new Uint8Array(drawH * drawW);
+      for (let r = 0; r < drawH; r++) {
+        const srcRow = r * mask.width;
+        region.set(maskData.subarray(srcRow, srcRow + drawW), r * drawW);
+      }
+    }
+    const [cr, cg, cb] = maskColor;
+    for (let r = 0; r < drawH; r++) {
+      for (let c = 0; c < drawW; c++) {
+        if (region[r * drawW + c] === 0) continue;
+        const px = ((y0 + r) * imgW + (x0 + c)) * 4;
+        pixels[px] = blendChannel(pixels[px], cr, alpha);
+        pixels[px + 1] = blendChannel(pixels[px + 1], cg, alpha);
+        pixels[px + 2] = blendChannel(pixels[px + 2], cb, alpha);
+      }
+    }
+  }
+  return image;
+}
+function drawLabelImage(image, labels, opts) {
+  const alpha = clampAlpha(opts?.alpha ?? 0.3);
+  const palette = opts?.palette ?? "distinct";
+  const outline = opts?.outline ?? false;
+  const outlineWidth = opts?.outlineWidth ?? 1;
+  const outlineColor = opts?.outlineColor ?? null;
+  const labData = labels.data;
+  const labH = labels.height;
+  const labW = labels.width;
+  const scale = opts?.scale ?? labels.scale ?? [1, 1];
+  const offset = opts?.offset ?? labels.offset ?? [0, 0];
+  let maxId = 0;
+  let hasFg = false;
+  for (let i = 0; i < labData.length; i++) {
+    const v = labData[i];
+    if (v > 0) {
+      hasFg = true;
+      if (v > maxId) maxId = v;
+    }
+  }
+  if (!hasFg) return image;
+  const paletteColors = getPalette(palette, maxId + 1);
+  const lut = new Float32Array((maxId + 1) * 3);
+  for (let id = 1; id <= maxId; id++) {
+    const col = paletteColors[id % paletteColors.length];
+    lut[id * 3] = col[0];
+    lut[id * 3 + 1] = col[1];
+    lut[id * 3 + 2] = col[2];
+  }
+  const imgW = image.width;
+  const imgH = image.height;
+  const pixels = image.data;
+  const hasTransform = scale[0] !== 1 || scale[1] !== 1 || offset[0] !== 0 || offset[1] !== 0;
+  let region;
+  let x0;
+  let y0;
+  let drawW;
+  let drawH;
+  if (hasTransform) {
+    const sx = scale[0];
+    const sy = scale[1];
+    const targetH = Math.trunc(labH / sy);
+    const targetW = Math.trunc(labW / sx);
+    const resized = resizeNearest(labData, labH, labW, targetH, targetW);
+    const ox = Math.trunc(offset[0]);
+    const oy = Math.trunc(offset[1]);
+    y0 = Math.max(0, oy);
+    x0 = Math.max(0, ox);
+    const y1 = Math.min(imgH, oy + targetH);
+    const x1 = Math.min(imgW, ox + targetW);
+    if (y1 <= y0 || x1 <= x0) return image;
+    drawH = y1 - y0;
+    drawW = x1 - x0;
+    const my0 = y0 - oy;
+    const mx0 = x0 - ox;
+    region = new Int32Array(drawH * drawW);
+    for (let r = 0; r < drawH; r++) {
+      const srcRow = (my0 + r) * targetW + mx0;
+      region.set(resized.subarray(srcRow, srcRow + drawW), r * drawW);
+    }
+  } else {
+    drawH = Math.min(labH, imgH);
+    drawW = Math.min(labW, imgW);
+    x0 = 0;
+    y0 = 0;
+    region = new Int32Array(drawH * drawW);
+    for (let r = 0; r < drawH; r++) {
+      const srcRow = r * labW;
+      region.set(labData.subarray(srcRow, srcRow + drawW), r * drawW);
+    }
+  }
+  for (let r = 0; r < drawH; r++) {
+    for (let c = 0; c < drawW; c++) {
+      const lab = region[r * drawW + c];
+      if (lab <= 0) continue;
+      const safe = lab > maxId ? maxId : lab;
+      const li = safe * 3;
+      const px = ((y0 + r) * imgW + (x0 + c)) * 4;
+      pixels[px] = Math.trunc(pixels[px] * (1 - alpha) + lut[li] * alpha);
+      pixels[px + 1] = Math.trunc(
+        pixels[px + 1] * (1 - alpha) + lut[li + 1] * alpha
+      );
+      pixels[px + 2] = Math.trunc(
+        pixels[px + 2] * (1 - alpha) + lut[li + 2] * alpha
+      );
+    }
+  }
+  if (outline) {
+    drawLabelOutlines(
+      image,
+      region,
+      x0,
+      y0,
+      drawH,
+      drawW,
+      outlineWidth,
+      outlineColor,
+      lut,
+      maxId
+    );
+  }
+  return image;
+}
+function drawLabelOutlines(image, region, x0, y0, drawH, drawW, outlineWidth, outlineColor, lut, maxId) {
+  const imgW = image.width;
+  const pixels = image.data;
+  const edges = new Uint8Array(drawH * drawW);
+  const at = (r, c) => region[r * drawW + c];
+  for (let r = 0; r < drawH; r++) {
+    for (let c = 0; c < drawW; c++) {
+      const v = at(r, c);
+      let edge = false;
+      if (c + 1 < drawW && v !== at(r, c + 1)) edge = true;
+      if (!edge && c - 1 >= 0 && v !== at(r, c - 1)) edge = true;
+      if (!edge && r + 1 < drawH && v !== at(r + 1, c)) edge = true;
+      if (!edge && r - 1 >= 0 && v !== at(r - 1, c)) edge = true;
+      if (edge && v > 0) edges[r * drawW + c] = 1;
+    }
+  }
+  let finalEdges = edges;
+  if (outlineWidth > 1) {
+    const pad = Math.trunc(outlineWidth / 2);
+    const dilated = new Uint8Array(drawH * drawW);
+    for (let dy = -pad; dy <= pad; dy++) {
+      for (let dx = -pad; dx <= pad; dx++) {
+        const sy = Math.max(0, dy);
+        const ey = drawH + Math.min(0, dy);
+        const sx = Math.max(0, dx);
+        const ex = drawW + Math.min(0, dx);
+        const oy = Math.max(0, -dy);
+        const ox = Math.max(0, -dx);
+        for (let r = sy; r < ey; r++) {
+          for (let c = sx; c < ex; c++) {
+            if (edges[(oy + (r - sy)) * drawW + (ox + (c - sx))]) {
+              dilated[r * drawW + c] = 1;
+            }
+          }
+        }
+      }
+    }
+    for (let i = 0; i < dilated.length; i++) {
+      if (dilated[i] && region[i] > 0) dilated[i] = 1;
+      else dilated[i] = 0;
+    }
+    finalEdges = dilated;
+  }
+  for (let r = 0; r < drawH; r++) {
+    for (let c = 0; c < drawW; c++) {
+      if (!finalEdges[r * drawW + c]) continue;
+      const px = ((y0 + r) * imgW + (x0 + c)) * 4;
+      if (outlineColor !== null) {
+        pixels[px] = outlineColor[0];
+        pixels[px + 1] = outlineColor[1];
+        pixels[px + 2] = outlineColor[2];
+      } else {
+        const lab = region[r * drawW + c];
+        const safe = lab > maxId ? maxId : lab;
+        const li = safe * 3;
+        pixels[px] = Math.trunc(lut[li] * 0.6);
+        pixels[px + 1] = Math.trunc(lut[li + 1] * 0.6);
+        pixels[px + 2] = Math.trunc(lut[li + 2] * 0.6);
+      }
+    }
+  }
+}
+
 export {
   getCentroidSkeleton,
   CENTROID_SKELETON,
@@ -17508,6 +17936,8 @@ export {
   encodeRle,
   decodeRle,
   resizeNearest,
+  traceMaskContours,
+  groupRingsIntoPolygons,
   SegmentationMask,
   UserSegmentationMask,
   PredictedSegmentationMask,
@@ -17653,5 +18083,9 @@ export {
   collectTracks2 as collectTracks,
   computeTrails,
   RenderContext,
-  InstanceContext
+  InstanceContext,
+  clampAlpha,
+  pickColor,
+  drawMasks,
+  drawLabelImage
 };
