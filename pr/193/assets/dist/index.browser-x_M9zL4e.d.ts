@@ -1,4 +1,4 @@
-import { T as Track, I as Instance, S as Skeleton, P as PredictedInstance } from './instance-Dtvrjx8R.js';
+import { T as Track, I as Instance, S as Skeleton, P as PredictedInstance } from './instance-D8nEmSif.js';
 
 /**
  * Point coordinate transformation functions for virtual cropping.
@@ -662,6 +662,33 @@ declare function decodeRle(rleCounts: Uint32Array, height: number, width: number
  * The input is a flat (H*W) array and the output is a flat (dstH*dstW) array.
  */
 declare function resizeNearest<T extends Uint8Array | Int32Array | Float32Array>(data: T, srcH: number, srcW: number, dstH: number, dstW: number): T;
+/**
+ * Trace the boundary contours of a binary raster as closed polygon rings.
+ *
+ * Uses pixel-edge boundary tracing: every foreground pixel contributes its four
+ * cell-border edges with a fixed winding, and edges shared by two foreground
+ * pixels cancel (they are emitted in opposite directions). What remains is the
+ * exact region boundary, which chains into closed loops — one ring per outer
+ * boundary or hole, for any number of disjoint components. Collinear runs are
+ * collapsed, so an axis-aligned block yields four corners.
+ *
+ * Coordinates are pixel-corner integers in mask space: a foreground block
+ * spanning columns `[c0, c1)` and rows `[r0, r1)` traces to the rectangle
+ * `(c0, r0) → (c1, r0) → (c1, r1) → (c0, r1) → (c0, r0)`. Each ring is closed
+ * (last point equals first). Returns `[]` for an all-background raster.
+ *
+ * Outer boundaries and holes get opposite winding (via the shoelace sign), so
+ * {@link groupRingsIntoPolygons} can nest holes inside their containing outer.
+ */
+declare function traceMaskContours(raster: Uint8Array, height: number, width: number): number[][][];
+/**
+ * Group traced contour rings into GeoJSON-style polygons (`[outer, ...holes]`).
+ *
+ * Outer boundaries share the winding of the largest ring; the opposite winding
+ * marks holes, each assigned to the smallest containing outer. The result feeds
+ * a `Polygon` (one outer) or `MultiPolygon` (several).
+ */
+declare function groupRingsIntoPolygons(rings: number[][][]): number[][][][];
 interface SegmentationMaskOptions {
     rleCounts: Uint32Array;
     height: number;
@@ -691,6 +718,14 @@ declare class SegmentationMask {
     offset: [number, number];
     /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx: number | null;
+    /**
+     * @internal Memoized decoded raster and the `rleCounts` it was decoded from.
+     * `get data()` returns the cached buffer when `rleCounts` is unchanged, so
+     * repeated reads (rendering, contour tracing, bbox) decode the RLE once. The
+     * returned buffer is shared — treat it as read-only.
+     */
+    private _dataCache;
+    private _dataCacheKey;
     constructor(options: SegmentationMaskOptions);
     static fromArray(mask: Uint8Array | boolean[][], height: number, width: number, options?: Omit<SegmentationMaskOptions, "rleCounts" | "height" | "width"> & {
         stride?: number;
@@ -723,7 +758,31 @@ declare class SegmentationMask {
      * scale/offset).
      */
     toBbox(): BoundingBox;
-    /** Convert the mask to a bounding-box polygon ROI. */
+    /**
+     * Trace the mask's boundary as closed polygon rings in image space.
+     *
+     * Returns an array of rings (`[x, y]` vertices, each closed so the last point
+     * equals the first), honoring the mask's `scale`/`offset`. Disjoint blobs and
+     * holes each produce their own ring; an empty mask returns `[]`. The outlines
+     * are exact, axis-aligned ("staircase") boundaries — consumers wanting smooth
+     * curves can post-process (e.g. Chaikin subdivision). For a GeoJSON polygon
+     * with holes nested as interior rings, use {@link toPolygon}.
+     *
+     * Browser-safe (pure data, no canvas), enabling interactive UIs to draw real
+     * mask outlines instead of just the bounding box.
+     */
+    contours(): number[][][];
+    /**
+     * Convert the mask to a polygon ROI tracing its actual boundary.
+     *
+     * Builds a `Polygon` (single blob, holes nested as interior rings) or a
+     * `MultiPolygon` (disjoint blobs) from {@link contours}. An empty mask yields
+     * an empty `Polygon`. Returns a `PredictedROI` (carrying `score`) for a
+     * predicted mask, else a `UserROI`. Metadata (`name`, `category`, `source`,
+     * `track`, `instance`) is carried over.
+     *
+     * Use {@link toBbox} or the `bbox` getter for the axis-aligned bounding box.
+     */
     toPolygon(): ROI;
 }
 interface UserSegmentationMaskOptions extends SegmentationMaskOptions {
@@ -1602,6 +1661,17 @@ declare class LabeledFrame {
     get predictedInstances(): PredictedInstance[];
     get hasUserInstances(): boolean;
     get hasPredictedInstances(): boolean;
+    /**
+     * Whether this frame carries any user-supplied labeling.
+     *
+     * True if it has at least one user instance, is asserted as a negative
+     * (background) frame, or holds any non-predicted frame-level annotation —
+     * a user centroid, bounding box, ROI, segmentation mask, or label image.
+     * Mirrors Python `LabeledFrame.is_user_labeled` (the ROI clause is the
+     * specific contribution of sleap-io PR #509). Predicted annotations alone do
+     * not make a frame user-labeled.
+     */
+    get isUserLabeled(): boolean;
     numpy(): number[][][];
     get image(): Promise<ImageData | ImageBitmap | ArrayBuffer | Uint8Array | null>;
     get unusedPredictions(): PredictedInstance[];
@@ -1758,14 +1828,39 @@ declare class CameraGroup {
     });
 }
 declare class InstanceGroup {
-    instanceByCamera: Map<Camera, Instance>;
     score?: number;
     identity?: Identity;
     instance3d?: Instance3D;
     metadata: Record<string, unknown>;
     private _points?;
+    /**
+     * The CONCRETE camera→instance map. Set for in-memory construction and for the
+     * JS-inline read path (point-dict instances). `undefined` for a pure-ref group
+     * read from a camcorder-format file until first access resolves the refs. Read
+     * directly (not via the caching getter) by the write path.
+     * @internal
+     */
+    _instanceByCamera?: Map<Camera, Instance>;
+    /**
+     * Verbatim as-read index refs from `camcorder_to_lf_and_inst_idx_map`:
+     * camera → [globalLabeledFrameIdx, instanceIdx]. Captured on read WITHOUT
+     * materializing any frames, so an untouched group can be written back
+     * losslessly (see hybrid write-back). `undefined` for in-memory groups.
+     * @internal
+     */
+    _instanceRefsByCamera?: Map<Camera, [number, number]>;
+    /**
+     * Injected lazy frame resolver (`(globalLfIdx) => LabeledFrame | undefined`).
+     * Declared (no runtime slot) so it is NEVER an own-enumerable property — it is
+     * installed non-enumerably via `injectSessionFrameResolver` after Labels is
+     * built. Enumerability matters: `structuredClone(labels.sessions)` in
+     * `Labels.copy()` throws `DataCloneError` on an enumerable function property.
+     * @internal
+     */
+    _frameResolver?: (globalLfIdx: number) => LabeledFrame | undefined;
     constructor(options: {
-        instanceByCamera: Map<Camera, Instance> | Record<string, Instance>;
+        instanceByCamera?: Map<Camera, Instance> | Record<string, Instance>;
+        instanceRefsByCamera?: Map<Camera, [number, number]>;
         score?: number;
         points?: number[][];
         identity?: Identity;
@@ -1774,19 +1869,57 @@ declare class InstanceGroup {
     });
     get points(): number[][] | undefined;
     set points(value: number[][] | undefined);
+    /**
+     * Camera→Instance map. Concrete when the group was built in memory (or via the
+     * JS-inline read path); otherwise resolved lazily from `_instanceRefsByCamera`
+     * on first access via the injected `_frameResolver` and cached. In-place
+     * `.set()`/`.delete()` mutations therefore act on the resolved concrete map.
+     */
+    get instanceByCamera(): Map<Camera, Instance>;
+    set instanceByCamera(value: Map<Camera, Instance>);
     get instances(): Instance[];
 }
 declare class FrameGroup {
     frameIdx: number;
     instanceGroups: InstanceGroup[];
-    labeledFrameByCamera: Map<Camera, LabeledFrame>;
     metadata: Record<string, unknown>;
+    /**
+     * The CONCRETE camera→labeledFrame map. Set for in-memory construction;
+     * `undefined` for a pure-ref group read from a camcorder-format file until
+     * first access resolves the refs. Read directly (not via the caching getter)
+     * by the write path.
+     * @internal
+     */
+    _labeledFrameByCamera?: Map<Camera, LabeledFrame>;
+    /**
+     * Verbatim as-read index refs from `labeled_frame_by_camera` (or reconstructed
+     * from `camcorder_to_lf_and_inst_idx_map`): camera → globalLabeledFrameIdx.
+     * Captured on read WITHOUT materializing any frames. `undefined` for in-memory
+     * groups.
+     * @internal
+     */
+    _labeledFrameRefsByCamera?: Map<Camera, number>;
+    /** @see InstanceGroup._frameResolver @internal */
+    _frameResolver?: (globalLfIdx: number) => LabeledFrame | undefined;
     constructor(options: {
         frameIdx: number;
         instanceGroups: InstanceGroup[];
-        labeledFrameByCamera: Map<Camera, LabeledFrame> | Record<string, LabeledFrame>;
+        labeledFrameByCamera?: Map<Camera, LabeledFrame> | Record<string, LabeledFrame>;
+        labeledFrameRefsByCamera?: Map<Camera, number>;
         metadata?: Record<string, unknown>;
     });
+    /**
+     * Camera→LabeledFrame map. Concrete when the group was built in memory;
+     * otherwise resolved lazily from `_labeledFrameRefsByCamera` on first access
+     * via the injected `_frameResolver` and cached.
+     */
+    get labeledFrameByCamera(): Map<Camera, LabeledFrame>;
+    set labeledFrameByCamera(value: Map<Camera, LabeledFrame>);
+    /**
+     * Cameras participating in this frame group. Reads keys from whichever backing
+     * map exists WITHOUT resolving refs, so listing cameras never materializes a
+     * frame (crucial for the lazy/zero-materialization write path).
+     */
     get cameras(): Camera[];
     get labeledFrames(): LabeledFrame[];
     getFrame(camera: Camera): LabeledFrame | undefined;
@@ -1797,12 +1930,43 @@ declare class RecordingSession {
     videoByCamera: Map<Camera, Video>;
     cameraByVideo: Map<Video, Camera>;
     metadata: Record<string, unknown>;
+    /**
+     * @deprecated Transitional bridge, OPT-IN only. Pass `{ rawSessions: true }`
+     * to a read entrypoint (`readSlp`/`readSlpLazy`/`readSlpStreaming`) to capture
+     * it; it is `undefined` by default. The object model is now a faithful, lossless
+     * projection of `sessions_json` (typed grouping via `InstanceGroup`/`FrameGroup`
+     * refs), so consumers should read typed objects rather than this raw dict. It
+     * will be removed once LUCID migrates off it. Capturing it deep-clones the whole
+     * session payload, so leaving it off avoids doubling session memory in
+     * `Labels.copy()`.
+     *
+     * The verbatim, as-read `sessions_json` dict for this session (when captured).
+     *
+     * This is a deep-cloned copy of the `JSON.parse` result of the session's
+     * `sessions_json` entry, populated on read (eager, lazy, and streaming) ONLY
+     * when `rawSessions` is requested. It lets 3D consumers (e.g. luc3d/LUCID) read
+     * app-specific state — `calibration`, `camcorder_to_video_idx_map`,
+     * `camcorder_to_lf_and_inst_idx_map`, `frame_group_dicts`, and any nested
+     * `metadata.lucid` blob — without re-opening the HDF5, including keys
+     * sleap-io.js does not itself model.
+     *
+     * Caveats:
+     * - It is a READ-TIME SNAPSHOT: it is deep-cloned from the parsed dict and
+     *   holds NO shared references with the object model, so mutating `rawJson`
+     *   never affects the model (or what is written to disk) and mutating the
+     *   model never affects `rawJson`.
+     * - It is NEVER itself re-written to disk. The object model is the single
+     *   source of truth on write; `rawJson` is a pure in-memory read surface.
+     * - `undefined` for sessions constructed in-memory (never read from disk).
+     */
+    rawJson?: Record<string, unknown>;
     constructor(options?: {
         cameraGroup?: CameraGroup;
         frameGroupByFrameIdx?: Map<number, FrameGroup>;
         videoByCamera?: Map<Camera, Video>;
         cameraByVideo?: Map<Video, Camera>;
         metadata?: Record<string, unknown>;
+        rawJson?: Record<string, unknown>;
     });
     get frameGroups(): Map<number, FrameGroup>;
     get videos(): Video[];
@@ -1811,6 +1975,42 @@ declare class RecordingSession {
     getCamera(video: Video): Camera | undefined;
     getVideo(camera: Camera): Video | undefined;
 }
+/**
+ * Install a lazy frame resolver onto every FrameGroup and InstanceGroup reachable
+ * from `labels.sessions`. Session grouping is read BEFORE the frame store exists
+ * in all readers, so this is called AFTER the `Labels` is constructed (and, for
+ * the lazy reader, after `_lazyFrameList` is attached). The resolver routes
+ * through `labels.frameAt(i)`, which materializes only frame `i` under the lazy
+ * reader — so ref-backed groups resolve their instances/frames on first access
+ * without forcing a full-table materialization.
+ *
+ * The resolver is installed NON-ENUMERABLE via `Object.defineProperty`: an
+ * enumerable function property would make `structuredClone(labels.sessions)` in
+ * `Labels.copy()` throw `DataCloneError`.
+ */
+declare function injectSessionFrameResolver(labels: Labels): void;
+/**
+ * Deep-clone a {@link RecordingSession} preserving class prototypes (so the lazy
+ * grouping getters survive — unlike `structuredClone`, which strips prototypes
+ * and the non-enumerable frame resolver) and the as-read index refs.
+ *
+ * Camera keys are remapped to freshly-cloned cameras; `Video` references are
+ * remapped via `videoMap`. Ref-backed (disk-read) grouping is carried as refs
+ * and re-resolves against the COPY once {@link injectSessionFrameResolver} runs
+ * on it — the copied `labeledFrames` preserve the original's global ordering, so
+ * the same indices resolve correctly. Concrete in-memory maps are carried with
+ * Camera keys remapped and Instance/LabeledFrame values remapped via
+ * `frameMap`/`instanceMap` when supplied (eager copy).
+ *
+ * NOTE: `identity` and `instance3d` are carried by reference — deep-copying those
+ * across a `Labels.copy()` (and relinking to the copy's identities/skeletons) is
+ * a separate, pre-existing concern outside the session-grouping model.
+ */
+declare function cloneRecordingSession(session: RecordingSession, opts?: {
+    videoMap?: Map<Video, Video>;
+    frameMap?: Map<LabeledFrame, LabeledFrame>;
+    instanceMap?: Map<Instance, Instance>;
+}): RecordingSession;
 declare function makeCameraFromDict(data: Record<string, unknown>): Camera;
 
 /**
@@ -1950,7 +2150,40 @@ declare class Labels {
         rois?: ROI[];
         identities?: Identity[];
     });
-    /** Collect tracks from annotations on a frame into this.tracks. */
+    /**
+     * @deprecated Transitional. Only populated when a read entrypoint is called
+     * with `{ rawSessions: true }`; `undefined` per entry otherwise. Prefer the
+     * faithful typed session model. See `RecordingSession.rawJson`.
+     *
+     * The verbatim, as-read `sessions_json` dicts, index-aligned with `sessions`.
+     *
+     * Derived (no stored field) so it cannot desync in length from `sessions`.
+     * `rawSessionsJson[i]` corresponds to `sessions[i]`, and is `undefined` for
+     * sessions constructed in-memory (or read without `rawSessions`). Each entry
+     * is the untouched `JSON.parse` result of that session's `sessions_json`
+     * entry — a read-time snapshot, never itself re-written to disk. See
+     * `RecordingSession.rawJson`.
+     */
+    get rawSessionsJson(): Array<Record<string, unknown> | undefined>;
+    /**
+     * Get the labeled frame at global index `i`, materializing only that frame
+     * under the lazy reader. Backs the session grouping's lazy frame resolver
+     * (`injectSessionFrameResolver`): resolving one cross-camera ref materializes
+     * a single frame via `LazyFrameList.at(i)` rather than the whole table, so an
+     * untouched session round-trips with zero frame materialization.
+     */
+    frameAt(i: number): LabeledFrame | undefined;
+    /**
+     * Collect tracks from annotations on a frame into this.tracks.
+     *
+     * `seen` lets a caller iterating many frames share one membership set instead
+     * of rebuilding `new Set(this.tracks)` per frame — the difference between
+     * O(frames) and O(frames × tracks) on files with many tracks (e.g. a 21.8k-
+     * frame / 7k-track project spent seconds here rebuilding the set). When
+     * omitted (single-frame `append`), the set is built from the current tracks.
+     * The set must stay in sync with `this.tracks`: every push here also adds to
+     * it, so a later frame sees tracks an earlier one contributed.
+     */
     private _collectAnnotationTracks;
     /** Raise if Labels is lazy-loaded. */
     private _checkNotLazy;
@@ -3370,6 +3603,60 @@ declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Prom
 declare function isAnalysisH5File(source: string | ArrayBuffer | Uint8Array): Promise<boolean>;
 
 /**
+ * SLEAP Analysis CSV export.
+ *
+ * Writes `Labels` to the "SLEAP Analysis" CSV format — one row per instance per
+ * frame with columns `track, frame_idx, instance.score, {node}.score,
+ * {node}.x, {node}.y, ...` (node columns sorted alphabetically). A faithful
+ * port of the `format="sleap"` path of Python `sleap_io.io.csv.write_labels`
+ * (`_write_sleap` + `_transform_to_sleap_format`) over the instances-DataFrame
+ * builder in `sleap_io.codecs.dataframe` (`_to_instances_df`).
+ *
+ * With `includeEmpty`, frames without instances are emitted as NaN rows and each
+ * video's range is padded up to its full length — the fix from sleap-io PR #480
+ * (matching the numpy / Analysis-HDF5 export, which already spans the whole
+ * video).
+ *
+ * {@link labelsToCsv} is pure (browser-safe) and returns the CSV text;
+ * {@link saveLabelsCsv} writes it to disk via the Node fs writer registered by
+ * `h5-node.ts`, so this module stays free of Node-only imports.
+ */
+
+interface CsvExportOptions {
+    /** Restrict output to one video (a `Video` or its index). Default: all videos. */
+    video?: Video | number | null;
+    /** Include per-node and instance confidence scores. Default `true`. */
+    includeScore?: boolean;
+    /**
+     * Emit NaN-filled rows for frames with no instances, padding each video's
+     * range up to its full length (falling back to last labeled frame + 1 when
+     * the length is unknown). Default `false`. Mirrors sleap-io PR #480.
+     */
+    includeEmpty?: boolean;
+    /**
+     * First frame index (inclusive). Default: `0` when `includeEmpty`, else the
+     * first labeled frame.
+     */
+    startFrame?: number | null;
+    /**
+     * End frame index (exclusive). Default: the full video length when known,
+     * else last labeled frame + 1.
+     */
+    endFrame?: number | null;
+}
+/**
+ * Build the SLEAP Analysis CSV text for `labels`.
+ *
+ * Pure and browser-safe. See {@link saveLabelsCsv} to write it to disk.
+ */
+declare function labelsToCsv(labels: Labels, options?: CsvExportOptions): string;
+/**
+ * Write `labels` to a SLEAP Analysis CSV file. Node-only (disk I/O); use
+ * {@link labelsToCsv} for the browser-safe string.
+ */
+declare function saveLabelsCsv(labels: Labels, filename: string, options?: CsvExportOptions): Promise<void>;
+
+/**
  * Load a SLEAP labels file (.slp).
  *
  * Automatically selects the best loading strategy:
@@ -4146,6 +4433,14 @@ interface RawLabelImage {
     scale?: [number, number];
     offset?: [number, number];
 }
+/** Clamp a blend opacity to [0, 1]; non-finite inputs fall back to 0. */
+declare function clampAlpha(alpha: number): number;
+/**
+ * Pick the per-item color for index `i`. When an explicit `colors` array is
+ * shorter than the item list it cycles (`colors[i % colors.length]`) rather
+ * than indexing out of bounds; an empty array falls back to `fallback`.
+ */
+declare function pickColor(colors: RGB[] | null, i: number, fallback: RGB): RGB;
 /**
  * Draw segmentation masks as colored overlays on an image.
  *
@@ -4189,73 +4484,6 @@ declare function drawLabelImage(image: ImageData, labels: LabelImage | RawLabelI
     scale?: [number, number];
     offset?: [number, number];
 }): ImageData;
-/**
- * Draw bounding boxes on an image.
- *
- * Each box is drawn as a closed path through its (rotation-aware) corners, with
- * an optional translucent fill, and—for `PredictedBoundingBox`—a "score" label
- * near the top-left corner. Rendered through an internal skia-canvas `Canvas`.
- * Port of `draw_bboxes` (overlays.py L363-510).
- *
- * @param image - RGBA ImageData, mutated in place.
- * @param bboxes - Bounding boxes to draw.
- * @param opts - `color` (default [0,255,0]), per-bbox `colors`, `lineWidth`
- *   (2), `fillAlpha` (0).
- * @returns The same ImageData.
- */
-declare function drawBboxes(image: ImageData, bboxes: BoundingBox[], opts?: {
-    color?: RGB;
-    colors?: RGB[];
-    lineWidth?: number;
-    fillAlpha?: number;
-}): ImageData;
-/**
- * Draw ROI geometries on an image.
- *
- * Renders each ROI's GeoJSON geometry: polygons (with even-odd holes), points
- * and multipoints (filled circles, radius = max(lineWidth, 2)), and line
- * strings. Rendered through an internal skia-canvas `Canvas`. Port of
- * `draw_rois` + `_draw_geometry` (overlays.py L22-112, L513-640).
- *
- * @param image - RGBA ImageData, mutated in place.
- * @param rois - ROIs to draw.
- * @param opts - `color` (default [0,255,0]), per-ROI `colors`, `lineWidth` (2),
- *   `fillAlpha` (0).
- * @returns The same ImageData.
- */
-declare function drawRois(image: ImageData, rois: ROI[], opts?: {
-    color?: RGB;
-    colors?: RGB[];
-    lineWidth?: number;
-    fillAlpha?: number;
-}): ImageData;
-/**
- * Apply an annotation overlay to an image, dispatching by type.
- *
- * Mirrors Python `_apply_overlay` (core.py L473-566): a `LabelImage` (or raw
- * Int32Array-backed object) routes to {@link drawLabelImage}; a non-empty list
- * routes to {@link drawMasks} / {@link drawRois} / {@link drawBboxes} with
- * per-item palette colors. A `list[LabelImage]` raises (per-frame dispatch must
- * happen at the renderVideo level), and unknown element types raise.
- *
- * @param image - RGBA ImageData, mutated in place.
- * @param overlay - A LabelImage, or a list of SegmentationMask / ROI / BoundingBox.
- * @param opts - `alpha` (0.3), `palette` ("distinct"), `outline` (false),
- *   `outlineWidth` (1), `outlineColor` (null), plus optional per-element
- *   `colors` for a list overlay. When `colors` is provided it overrides the
- *   positional `palette` coloring (used by callers to color overlays by track
- *   identity); it must match the overlay length and is ignored for label
- *   images. Mirrors Python `_apply_overlay` (core.py L473-566, PR #470).
- * @returns The same ImageData.
- */
-declare function applyOverlay(image: ImageData, overlay: LabelImage | RawLabelImage | SegmentationMask[] | ROI[] | BoundingBox[], opts?: {
-    alpha?: number;
-    palette?: PaletteName | string;
-    outline?: boolean;
-    outlineWidth?: number;
-    outlineColor?: RGB | null;
-    colors?: RGB[] | null;
-}): ImageData;
 
 /**
  * A single-frame annotation overlay applied before poses are drawn.
@@ -4265,7 +4493,7 @@ declare function applyOverlay(image: ImageData, overlay: LabelImage | RawLabelIm
  * a list of `SegmentationMask` / `ROI` / `BoundingBox` routes to the
  * corresponding draw function with per-item palette colors.
  */
-type Overlay = LabelImage | RawLabelImage | SegmentationMask[] | ROI[] | BoundingBox[];
+type Overlay = LabelImage | RawLabelImage | SegmentationMask | ROI | BoundingBox | SegmentationMask[] | ROI[] | BoundingBox[];
 /** RGB color as [r, g, b] with values 0-255 */
 type RGB = [number, number, number];
 /** RGBA color as [r, g, b, a] with values 0-255 */
@@ -4577,6 +4805,12 @@ interface StreamingSlpOptions {
     /** Whether to open video backends for embedded videos (default: false) */
     openVideos?: boolean;
     /**
+     * Capture the verbatim, deep-cloned `sessions_json` dict onto each
+     * `RecordingSession.rawJson` (deprecated, transitional). Default `false`. See
+     * `RecordingSession.rawJson`.
+     */
+    rawSessions?: boolean;
+    /**
      * Optional progress callback fired as loading advances through its stages.
      * `current` counts completed stages out of `total`; `message` labels the
      * stage about to run. Matches the (current, total, message?) convention used
@@ -4619,4 +4853,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { DUPLICATE_MATCHER as $, InstanceMatchMethod as A, BoundingBox as B, CropVideoBackend as C, DEFAULT_MAX_BYTES as D, VideoMatchMethod as E, FrameStrategy as F, ErrorMode as G, SkeletonMatcher as H, type ImageBytesReader as I, InstanceMatcher as J, TrackMatcher as K, Labels as L, VideoMatcher as M, ConflictResolution as N, MergeError as O, SkeletonMismatchError as P, MergeResult as Q, ROI as R, SeqVideoBackend as S, TrackMatchMethod as T, UserROI as U, Video as V, MatchResult as W, MergeProgressBar as X, STRUCTURE_SKELETON_MATCHER as Y, SUBSET_SKELETON_MATCHER as Z, OVERLAP_SKELETON_MATCHER as _, LabeledFrame as a, UserLabelImage as a$, IOU_MATCHER as a0, IDENTITY_INSTANCE_MATCHER as a1, NAME_TRACK_MATCHER as a2, IDENTITY_TRACK_MATCHER as a3, AUTO_VIDEO_MATCHER as a4, PATH_VIDEO_MATCHER as a5, BASENAME_VIDEO_MATCHER as a6, IMAGE_DEDUP_VIDEO_MATCHER as a7, SHAPE_VIDEO_MATCHER as a8, setFsResolver as a9, AnnotationType as aA, type Geometry as aB, type ROIOptions as aC, rasterizeGeometry as aD, encodeWkb as aE, decodeWkb as aF, PredictedROI as aG, encodeRle as aH, decodeRle as aI, resizeNearest as aJ, type SegmentationMaskOptions as aK, SegmentationMask as aL, type UserSegmentationMaskOptions as aM, UserSegmentationMask as aN, PredictedSegmentationMask as aO, type BoundingBoxOptions as aP, UserBoundingBox as aQ, PredictedBoundingBox as aR, getCentroidSkeleton as aS, CENTROID_SKELETON as aT, type CentroidOptions as aU, Centroid as aV, UserCentroid as aW, PredictedCentroid as aX, type LabelImageObjectInfo as aY, type LabelImageOptions as aZ, LabelImage as a_, type FsResolver as aa, type MergeStrategy as ab, _relinkFromPredicted as ac, _annotationCentroidXy as ad, _findAnnotationMatches as ae, _findAnnotationLinkMatches as af, _resolveMergedIsNegative as ag, EXISTS_TTL_MS as ah, type CropOptions as ai, resolveCropRect as aj, type VideoBackendErrorKind as ak, type VideoBackendError as al, SuggestionFrame as am, rodriguesTransformation as an, Camera as ao, CameraGroup as ap, InstanceGroup as aq, FrameGroup as ar, RecordingSession as as, makeCameraFromDict as at, Identity as au, Instance3D as av, PredictedInstance3D as aw, LazyDataStore as ax, LazyFrameList as ay, _registerMaskFactory as az, LabelsSet as b, decodeCompressedRleCounts as b$, PredictedLabelImage as b0, normalizeLabelIds as b1, type VideoFrame as b2, type GetFrameOptions as b3, type VideoBackend as b4, Mp4BoxVideoBackend as b5, type MediaBunnyOptions as b6, MediaBunnyVideoBackend as b7, StreamingHdf5VideoBackend as b8, type ImageVideoOptions as b9, RemoteIOError as bA, type ResolvedUrl as bB, resolveUrl as bC, statusToMessage as bD, raiseRemote as bE, identityHeaders as bF, stripCrossOriginHeaders as bG, withRetries as bH, parseRetryAfterMs as bI, fetchRetrying as bJ, headOrRangeProbe as bK, type GeoJSONFeature as bL, type GeoJSONFeatureCollection as bM, roisToGeoJSON as bN, roisFromGeoJSON as bO, writeGeoJSON as bP, readGeoJSON as bQ, type CocoCategory as bR, type CocoImage as bS, type CocoRle as bT, type CocoSegmentation as bU, type CocoAnnotation as bV, type CocoJson as bW, isCocoData as bX, parseCocoJson as bY, createSkeletonFromCategory as bZ, decodeKeypoints as b_, computePrefetchWindow as ba, ImageVideoBackend as bb, loadSlp as bc, saveSlp as bd, loadAnalysisH5 as be, saveAnalysisH5 as bf, loadSlpSet as bg, saveSlpSet as bh, loadVideo as bi, loadLabelImages as bj, setLabelImageFileReader as bk, type PagesAs as bl, type LoadLabelImagesOptions as bm, type LabelImageFileReader as bn, saveSlpToBytes as bo, isAnalysisH5File as bp, URL_SCHEMES as bq, CLOUD_SCHEMES as br, GDRIVE_HOSTS as bs, SENSITIVE_HEADERS as bt, SENSITIVE_QUERY_PARAMS as bu, RETRYABLE_STATUSES as bv, isUrl as bw, isGdriveUrl as bx, redactUrl as by, redactedCauseSummary as bz, type ReadCocoOptions as c, decodeCocoRle as c0, decodeSegmentation as c1, readCoco as c2, readCocoSet as c3, type LabelsDict as c4, toDict as c5, fromDict as c6, toNumpy as c7, fromNumpy as c8, labelsFromNumpy as c9, drawTrails as cA, getMarkerFunction as cB, MARKER_FUNCTIONS as cC, type DrawTrailsOptions as cD, resolveTrailNode as cE, computeTrails as cF, nTrailPaletteColors as cG, collectTracks as cH, type TrailTarget as cI, type Trail as cJ, RenderContext as cK, InstanceContext as cL, drawMasks as cM, drawLabelImage as cN, drawBboxes as cO, drawRois as cP, applyOverlay as cQ, type RawLabelImage as cR, cropPoints as cS, uncropPoints as cT, type CropRect as cU, type FlatPoints as cV, type PointPairs as cW, cropFrame as cX, type FrameLike as cY, type RawFrame as cZ, type Fill as c_, decodeYamlSkeleton as ca, encodeYamlSkeleton as cb, readSkeletonJson as cc, writeSkeletonJson as cd, readTrainingConfigSkeletons as ce, readTrainingConfigSkeleton as cf, isTrainingConfig as cg, type RGB as ch, type RGBA as ci, type ColorSpec as cj, type ColorScheme as ck, type PaletteName as cl, type MarkerShape as cm, type Overlay as cn, type VideoOverlay as co, NAMED_COLORS as cp, PALETTES as cq, getPalette as cr, resolveColor as cs, rgbToCSS as ct, determineColorScheme as cu, drawCircle as cv, drawSquare as cw, drawDiamond as cx, drawTriangle as cy, drawCross as cz, type RenderOptions as d, type VideoOptions as e, SeqHeader as f, getImageBytesReader as g, SeqIndex as h, BlobByteSource as i, type ByteSource as j, createVideoBackend as k, UnsupportedVideoFormatError as l, type VideoBackendType as m, type CropWrapOptions as n, checkDownloadHost as o, parseGdrive as p, openGdrive as q, StreamingH5File as r, setImageBytesReader as s, openStreamingH5 as t, urlFromConfirmation as u, openH5Worker as v, isStreamingSupported as w, type StreamingH5Source as x, readSlpStreaming as y, SkeletonMatchMethod as z };
+export { MergeResult as $, openH5Worker as A, BoundingBox as B, Centroid as C, DEFAULT_MAX_BYTES as D, isStreamingSupported as E, type StreamingH5Source as F, readSlpStreaming as G, SkeletonMatchMethod as H, type ImageBytesReader as I, InstanceMatchMethod as J, VideoMatchMethod as K, Labels as L, FrameStrategy as M, ErrorMode as N, SkeletonMatcher as O, type PaletteName as P, InstanceMatcher as Q, ROI as R, SegmentationMask as S, TrackMatchMethod as T, UserROI as U, Video as V, TrackMatcher as W, VideoMatcher as X, ConflictResolution as Y, MergeError as Z, SkeletonMismatchError as _, LabeledFrame as a, getCentroidSkeleton as a$, MatchResult as a0, MergeProgressBar as a1, STRUCTURE_SKELETON_MATCHER as a2, SUBSET_SKELETON_MATCHER as a3, OVERLAP_SKELETON_MATCHER as a4, DUPLICATE_MATCHER as a5, IOU_MATCHER as a6, IDENTITY_INSTANCE_MATCHER as a7, NAME_TRACK_MATCHER as a8, IDENTITY_TRACK_MATCHER as a9, cloneRecordingSession as aA, makeCameraFromDict as aB, Identity as aC, Instance3D as aD, PredictedInstance3D as aE, LazyDataStore as aF, LazyFrameList as aG, _registerMaskFactory as aH, AnnotationType as aI, type Geometry as aJ, type ROIOptions as aK, rasterizeGeometry as aL, encodeWkb as aM, decodeWkb as aN, PredictedROI as aO, encodeRle as aP, decodeRle as aQ, resizeNearest as aR, traceMaskContours as aS, groupRingsIntoPolygons as aT, type SegmentationMaskOptions as aU, type UserSegmentationMaskOptions as aV, UserSegmentationMask as aW, PredictedSegmentationMask as aX, type BoundingBoxOptions as aY, UserBoundingBox as aZ, PredictedBoundingBox as a_, AUTO_VIDEO_MATCHER as aa, PATH_VIDEO_MATCHER as ab, BASENAME_VIDEO_MATCHER as ac, IMAGE_DEDUP_VIDEO_MATCHER as ad, SHAPE_VIDEO_MATCHER as ae, setFsResolver as af, type FsResolver as ag, type MergeStrategy as ah, _relinkFromPredicted as ai, _annotationCentroidXy as aj, _findAnnotationMatches as ak, _findAnnotationLinkMatches as al, _resolveMergedIsNegative as am, EXISTS_TTL_MS as an, type CropOptions as ao, resolveCropRect as ap, type VideoBackendErrorKind as aq, type VideoBackendError as ar, SuggestionFrame as as, rodriguesTransformation as at, Camera as au, CameraGroup as av, InstanceGroup as aw, FrameGroup as ax, RecordingSession as ay, injectSessionFrameResolver as az, LabelsSet as b, type CocoCategory as b$, CENTROID_SKELETON as b0, type CentroidOptions as b1, UserCentroid as b2, PredictedCentroid as b3, type LabelImageObjectInfo as b4, type LabelImageOptions as b5, UserLabelImage as b6, PredictedLabelImage as b7, normalizeLabelIds as b8, type VideoFrame as b9, URL_SCHEMES as bA, CLOUD_SCHEMES as bB, GDRIVE_HOSTS as bC, SENSITIVE_HEADERS as bD, SENSITIVE_QUERY_PARAMS as bE, RETRYABLE_STATUSES as bF, isUrl as bG, isGdriveUrl as bH, redactUrl as bI, redactedCauseSummary as bJ, RemoteIOError as bK, type ResolvedUrl as bL, resolveUrl as bM, statusToMessage as bN, raiseRemote as bO, identityHeaders as bP, stripCrossOriginHeaders as bQ, withRetries as bR, parseRetryAfterMs as bS, fetchRetrying as bT, headOrRangeProbe as bU, type GeoJSONFeature as bV, type GeoJSONFeatureCollection as bW, roisToGeoJSON as bX, roisFromGeoJSON as bY, writeGeoJSON as bZ, readGeoJSON as b_, type GetFrameOptions as ba, type VideoBackend as bb, Mp4BoxVideoBackend as bc, type MediaBunnyOptions as bd, MediaBunnyVideoBackend as be, StreamingHdf5VideoBackend as bf, type ImageVideoOptions as bg, computePrefetchWindow as bh, ImageVideoBackend as bi, loadSlp as bj, saveSlp as bk, loadAnalysisH5 as bl, saveAnalysisH5 as bm, loadSlpSet as bn, saveSlpSet as bo, loadVideo as bp, loadLabelImages as bq, setLabelImageFileReader as br, type PagesAs as bs, type LoadLabelImagesOptions as bt, type LabelImageFileReader as bu, saveSlpToBytes as bv, isAnalysisH5File as bw, labelsToCsv as bx, saveLabelsCsv as by, type CsvExportOptions as bz, type ReadCocoOptions as c, cropFrame as c$, type CocoImage as c0, type CocoRle as c1, type CocoSegmentation as c2, type CocoAnnotation as c3, type CocoJson as c4, isCocoData as c5, parseCocoJson as c6, createSkeletonFromCategory as c7, decodeKeypoints as c8, decodeCompressedRleCounts as c9, resolveColor as cA, rgbToCSS as cB, determineColorScheme as cC, drawCircle as cD, drawSquare as cE, drawDiamond as cF, drawTriangle as cG, drawCross as cH, drawTrails as cI, getMarkerFunction as cJ, MARKER_FUNCTIONS as cK, type DrawTrailsOptions as cL, resolveTrailNode as cM, computeTrails as cN, nTrailPaletteColors as cO, collectTracks as cP, type TrailTarget as cQ, type Trail as cR, RenderContext as cS, InstanceContext as cT, drawMasks as cU, drawLabelImage as cV, cropPoints as cW, uncropPoints as cX, type CropRect as cY, type FlatPoints as cZ, type PointPairs as c_, decodeCocoRle as ca, decodeSegmentation as cb, readCoco as cc, readCocoSet as cd, type LabelsDict as ce, toDict as cf, fromDict as cg, toNumpy as ch, fromNumpy as ci, labelsFromNumpy as cj, decodeYamlSkeleton as ck, encodeYamlSkeleton as cl, readSkeletonJson as cm, writeSkeletonJson as cn, readTrainingConfigSkeletons as co, readTrainingConfigSkeleton as cp, isTrainingConfig as cq, type RGBA as cr, type ColorSpec as cs, type ColorScheme as ct, type MarkerShape as cu, type Overlay as cv, type VideoOverlay as cw, NAMED_COLORS as cx, PALETTES as cy, getPalette as cz, type RenderOptions as d, type FrameLike as d0, type RawFrame as d1, type Fill as d2, clampAlpha as d3, pickColor as d4, type VideoOptions as e, type RGB as f, LabelImage as g, type RawLabelImage as h, getImageBytesReader as i, SeqVideoBackend as j, SeqHeader as k, SeqIndex as l, BlobByteSource as m, type ByteSource as n, createVideoBackend as o, UnsupportedVideoFormatError as p, type VideoBackendType as q, CropVideoBackend as r, setImageBytesReader as s, type CropWrapOptions as t, parseGdrive as u, urlFromConfirmation as v, checkDownloadHost as w, openGdrive as x, StreamingH5File as y, openStreamingH5 as z };

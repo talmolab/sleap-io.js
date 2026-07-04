@@ -10,6 +10,7 @@ import {
   _registerCentroidFactory,
   attrToNumber,
   attrToString,
+  clonePoint,
   missingMetadataJsonError,
   parseJsonEntry,
   parseMetadataJson,
@@ -23,7 +24,7 @@ import {
   resolveCameraKey,
   resolveIdentity,
   resolveVideoFilename
-} from "./chunk-Q5V2SXKT.js";
+} from "./chunk-NIFGJKOL.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -439,12 +440,15 @@ var ROI = class _ROI {
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance
     };
     if (this instanceof PredictedROI) {
       options.score = this.score;
     }
-    return _maskFactory(mask, height, width, options);
+    const result = _maskFactory(mask, height, width, options);
+    result._instanceIdx = this._instanceIdx;
+    return result;
   }
   _allPoints() {
     if (this.geometry.type === "Point") {
@@ -912,13 +916,16 @@ var BoundingBox = class _BoundingBox {
   toRoi() {
     const c = this.corners;
     const ring = [...c, c[0]];
-    return ROI.fromPolygon(ring, {
+    const roi = ROI.fromPolygon(ring, {
       name: this.name,
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance
     });
+    roi._instanceIdx = this._instanceIdx;
+    return roi;
   }
   /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
   toMask(height, width) {
@@ -987,6 +994,152 @@ function resizeNearest(data, srcH, srcW, dstH, dstW) {
   }
   return result;
 }
+function traceMaskContours(raster, height, width) {
+  const edges = /* @__PURE__ */ new Map();
+  const addEdge = (ax, ay, bx, by) => {
+    const rev = `${bx},${by}>${ax},${ay}`;
+    if (edges.has(rev)) {
+      edges.delete(rev);
+    } else {
+      edges.set(`${ax},${ay}>${bx},${by}`, [ax, ay, bx, by]);
+    }
+  };
+  for (let r = 0; r < height; r++) {
+    const rowBase = r * width;
+    for (let c = 0; c < width; c++) {
+      if (!raster[rowBase + c]) continue;
+      const x0 = c;
+      const y0 = r;
+      const x1 = c + 1;
+      const y1 = r + 1;
+      addEdge(x0, y0, x1, y0);
+      addEdge(x1, y0, x1, y1);
+      addEdge(x1, y1, x0, y1);
+      addEdge(x0, y1, x0, y0);
+    }
+  }
+  if (edges.size === 0) return [];
+  const outAdj = /* @__PURE__ */ new Map();
+  for (const [, [ax, ay, bx, by]] of edges) {
+    const from = `${ax},${ay}`;
+    const to = `${bx},${by}`;
+    const list = outAdj.get(from);
+    if (list) list.push(to);
+    else outAdj.set(from, [to]);
+  }
+  const parseKey = (k) => {
+    const i = k.indexOf(",");
+    return [Number(k.slice(0, i)), Number(k.slice(i + 1))];
+  };
+  const rings = [];
+  for (const startKey of outAdj.keys()) {
+    let avail = outAdj.get(startKey);
+    while (avail?.length) {
+      const ring = [];
+      let curKey = startKey;
+      let curXY = parseKey(curKey);
+      let prevXY = null;
+      while (true) {
+        const outs = outAdj.get(curKey);
+        if (!outs || outs.length === 0) break;
+        let pick = outs.length - 1;
+        if (outs.length > 1 && prevXY) {
+          const dinX = curXY[0] - prevXY[0];
+          const dinY = curXY[1] - prevXY[1];
+          let best = Number.NEGATIVE_INFINITY;
+          for (let i = 0; i < outs.length; i++) {
+            const nXY = parseKey(outs[i]);
+            const cross = dinX * (nXY[1] - curXY[1]) - dinY * (nXY[0] - curXY[0]);
+            if (cross > best) {
+              best = cross;
+              pick = i;
+            }
+          }
+        }
+        const nextKey = outs.splice(pick, 1)[0];
+        ring.push([curXY[0], curXY[1]]);
+        if (nextKey === startKey) break;
+        prevXY = curXY;
+        curKey = nextKey;
+        curXY = parseKey(nextKey);
+      }
+      if (ring.length >= 3) {
+        ring.push([ring[0][0], ring[0][1]]);
+        rings.push(simplifyCollinear(ring));
+      }
+      avail = outAdj.get(startKey);
+    }
+  }
+  return rings;
+}
+function simplifyCollinear(ring) {
+  const pts = ring.slice(0, -1);
+  const n = pts.length;
+  if (n <= 2) return ring;
+  const keep = [];
+  for (let i = 0; i < n; i++) {
+    const a = pts[(i - 1 + n) % n];
+    const b = pts[i];
+    const c = pts[(i + 1) % n];
+    const cross = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+    if (cross !== 0) keep.push(b);
+  }
+  if (keep.length < 3) return ring;
+  keep.push([keep[0][0], keep[0][1]]);
+  return keep;
+}
+function ringSignedArea(ring) {
+  let a = 0;
+  for (let i = 0; i < ring.length - 1; i++) {
+    a += ring[i][0] * ring[i + 1][1] - ring[i + 1][0] * ring[i][1];
+  }
+  return a / 2;
+}
+function pointInRing(point, ring) {
+  const [x, y] = point;
+  let inside = false;
+  for (let i = 0, j = ring.length - 2; i < ring.length - 1; j = i++) {
+    const xi = ring[i][0];
+    const yi = ring[i][1];
+    const xj = ring[j][0];
+    const yj = ring[j][1];
+    const intersects = yi > y !== yj > y && x < (xj - xi) * (y - yi) / (yj - yi || Number.EPSILON) + xi;
+    if (intersects) inside = !inside;
+  }
+  return inside;
+}
+function groupRingsIntoPolygons(rings) {
+  if (rings.length === 0) return [];
+  if (rings.length === 1) return [[rings[0]]];
+  const areas = rings.map(ringSignedArea);
+  let maxI = 0;
+  for (let i = 1; i < areas.length; i++) {
+    if (Math.abs(areas[i]) > Math.abs(areas[maxI])) maxI = i;
+  }
+  const outerSign = Math.sign(areas[maxI]) || 1;
+  const polys = [];
+  const holes = [];
+  rings.forEach((ring, i) => {
+    const absArea = Math.abs(areas[i]);
+    if (Math.sign(areas[i]) === outerSign) {
+      polys.push({ rings: [ring], area: absArea });
+    } else {
+      holes.push({ ring, area: absArea });
+    }
+  });
+  for (const hole of holes) {
+    let best = -1;
+    let bestArea = Infinity;
+    for (let i = 0; i < polys.length; i++) {
+      if (polys[i].area < bestArea && pointInRing(hole.ring[0], polys[i].rings[0])) {
+        best = i;
+        bestArea = polys[i].area;
+      }
+    }
+    if (best >= 0) polys[best].rings.push(hole.ring);
+  }
+  return polys.map((p) => p.rings);
+}
 var SegmentationMask = class _SegmentationMask {
   rleCounts;
   height;
@@ -1003,6 +1156,14 @@ var SegmentationMask = class _SegmentationMask {
   offset;
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx = null;
+  /**
+   * @internal Memoized decoded raster and the `rleCounts` it was decoded from.
+   * `get data()` returns the cached buffer when `rleCounts` is unchanged, so
+   * repeated reads (rendering, contour tracing, bbox) decode the RLE once. The
+   * returned buffer is shared — treat it as read-only.
+   */
+  _dataCache = null;
+  _dataCacheKey = null;
   constructor(options) {
     if (new.target === _SegmentationMask) {
       throw new TypeError(
@@ -1069,7 +1230,13 @@ var SegmentationMask = class _SegmentationMask {
     });
   }
   get data() {
-    return decodeRle(this.rleCounts, this.height, this.width);
+    if (this._dataCache !== null && this._dataCacheKey === this.rleCounts) {
+      return this._dataCache;
+    }
+    const decoded = decodeRle(this.rleCounts, this.height, this.width);
+    this._dataCache = decoded;
+    this._dataCacheKey = this.rleCounts;
+    return decoded;
   }
   get area() {
     let total = 0;
@@ -1114,10 +1281,12 @@ var SegmentationMask = class _SegmentationMask {
       category: this.category,
       source: this.source,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance,
       scale: [1, 1],
       offset: [0, 0]
     };
+    let resampled;
     if (this instanceof PredictedSegmentationMask) {
       const pm = this;
       let resampledScoreMap = null;
@@ -1130,16 +1299,19 @@ var SegmentationMask = class _SegmentationMask {
           targetWidth
         );
       }
-      return new PredictedSegmentationMask({
+      resampled = new PredictedSegmentationMask({
         ...baseOpts,
         score: pm.score,
         scoreMap: resampledScoreMap
       });
+    } else {
+      resampled = new UserSegmentationMask({
+        ...baseOpts,
+        fromPredicted: this instanceof UserSegmentationMask ? this.fromPredicted : null
+      });
     }
-    return new UserSegmentationMask({
-      ...baseOpts,
-      fromPredicted: this instanceof UserSegmentationMask ? this.fromPredicted : null
-    });
+    resampled._instanceIdx = this._instanceIdx;
+    return resampled;
   }
   get bbox() {
     const flat = this.data;
@@ -1178,50 +1350,70 @@ var SegmentationMask = class _SegmentationMask {
       x2: x + width,
       y2: y + height,
       track: this.track,
+      trackingScore: this.trackingScore,
       instance: this.instance,
       category: this.category,
       name: this.name,
       source: this.source
     };
-    if (this instanceof PredictedSegmentationMask) {
-      return new PredictedBoundingBox({
-        ...opts,
-        score: this.score
-      });
-    }
-    return new UserBoundingBox(opts);
+    const bb = this instanceof PredictedSegmentationMask ? new PredictedBoundingBox({ ...opts, score: this.score }) : new UserBoundingBox(opts);
+    bb._instanceIdx = this._instanceIdx;
+    return bb;
   }
-  /** Convert the mask to a bounding-box polygon ROI. */
+  /**
+   * Trace the mask's boundary as closed polygon rings in image space.
+   *
+   * Returns an array of rings (`[x, y]` vertices, each closed so the last point
+   * equals the first), honoring the mask's `scale`/`offset`. Disjoint blobs and
+   * holes each produce their own ring; an empty mask returns `[]`. The outlines
+   * are exact, axis-aligned ("staircase") boundaries — consumers wanting smooth
+   * curves can post-process (e.g. Chaikin subdivision). For a GeoJSON polygon
+   * with holes nested as interior rings, use {@link toPolygon}.
+   *
+   * Browser-safe (pure data, no canvas), enabling interactive UIs to draw real
+   * mask outlines instead of just the bounding box.
+   */
+  contours() {
+    const rings = traceMaskContours(this.data, this.height, this.width);
+    const [sx, sy] = this.scale;
+    const [ox, oy] = this.offset;
+    if (sx === 1 && sy === 1 && ox === 0 && oy === 0) return rings;
+    return rings.map(
+      (ring) => ring.map(([x, y]) => [x / sx + ox, y / sy + oy])
+    );
+  }
+  /**
+   * Convert the mask to a polygon ROI tracing its actual boundary.
+   *
+   * Builds a `Polygon` (single blob, holes nested as interior rings) or a
+   * `MultiPolygon` (disjoint blobs) from {@link contours}. An empty mask yields
+   * an empty `Polygon`. Returns a `PredictedROI` (carrying `score`) for a
+   * predicted mask, else a `UserROI`. Metadata (`name`, `category`, `source`,
+   * `track`, `instance`) is carried over.
+   *
+   * Use {@link toBbox} or the `bbox` getter for the axis-aligned bounding box.
+   */
   toPolygon() {
-    const bb = this.bbox;
+    const rings = this.contours();
     let geometry;
-    if (bb.width === 0 || bb.height === 0) {
+    if (rings.length === 0) {
       geometry = { type: "Polygon", coordinates: [[]] };
     } else {
-      const { x, y, width, height } = bb;
-      geometry = {
-        type: "Polygon",
-        coordinates: [
-          [
-            [x, y],
-            [x + width, y],
-            [x + width, y + height],
-            [x, y + height],
-            [x, y]
-          ]
-        ]
-      };
+      const polys = groupRingsIntoPolygons(rings);
+      geometry = polys.length === 1 ? { type: "Polygon", coordinates: polys[0] } : { type: "MultiPolygon", coordinates: polys };
     }
-    return ROI.fromPolygon(
-      geometry.coordinates[0],
-      {
-        name: this.name,
-        category: this.category,
-        source: this.source,
-        track: this.track,
-        instance: this.instance
-      }
-    );
+    const options = {
+      geometry,
+      name: this.name,
+      category: this.category,
+      source: this.source,
+      track: this.track,
+      trackingScore: this.trackingScore,
+      instance: this.instance
+    };
+    const roi = this instanceof PredictedSegmentationMask ? new PredictedROI({ ...options, score: this.score }) : new UserROI(options);
+    roi._instanceIdx = this._instanceIdx;
+    return roi;
   }
 };
 var UserSegmentationMask = class extends SegmentationMask {
@@ -3403,6 +3595,19 @@ var LabeledFrame = class {
   get hasPredictedInstances() {
     return this.predictedInstances.length > 0;
   }
+  /**
+   * Whether this frame carries any user-supplied labeling.
+   *
+   * True if it has at least one user instance, is asserted as a negative
+   * (background) frame, or holds any non-predicted frame-level annotation —
+   * a user centroid, bounding box, ROI, segmentation mask, or label image.
+   * Mirrors Python `LabeledFrame.is_user_labeled` (the ROI clause is the
+   * specific contribution of sleap-io PR #509). Predicted annotations alone do
+   * not make a frame user-labeled.
+   */
+  get isUserLabeled() {
+    return this.hasUserInstances || this.isNegative || this.centroids.some((c) => !c.isPredicted) || this.bboxes.some((b) => !b.isPredicted) || this.rois.some((r) => !r.isPredicted) || this.masks.some((m) => !m.isPredicted) || this.labelImages.some((li) => !li.isPredicted);
+  }
   numpy() {
     return this.instances.map((inst) => inst.numpy());
   }
@@ -4734,6 +4939,435 @@ function backendTypeName(video) {
   return video.backend?.constructor?.name ?? "";
 }
 
+// src/model/camera.ts
+function rodriguesTransformation(input) {
+  if (input.length === 3 && Array.isArray(input[0]) === false) {
+    const rvec = input;
+    const theta2 = Math.hypot(rvec[0], rvec[1], rvec[2]);
+    if (theta2 === 0) {
+      return {
+        matrix: [
+          [1, 0, 0],
+          [0, 1, 0],
+          [0, 0, 1]
+        ],
+        vector: rvec
+      };
+    }
+    const axis = rvec.map((v) => v / theta2);
+    const [x, y, z] = axis;
+    const cos = Math.cos(theta2);
+    const sin = Math.sin(theta2);
+    const K = [
+      [0, -z, y],
+      [z, 0, -x],
+      [-y, x, 0]
+    ];
+    const I = [
+      [1, 0, 0],
+      [0, 1, 0],
+      [0, 0, 1]
+    ];
+    const KK = multiply3x3(K, K);
+    const matrix2 = add3x3(add3x3(I, scale3x3(K, sin)), scale3x3(KK, 1 - cos));
+    return { matrix: matrix2, vector: rvec };
+  }
+  const matrix = input;
+  const trace = matrix[0][0] + matrix[1][1] + matrix[2][2];
+  const cosTheta = Math.min(1, Math.max(-1, (trace - 1) / 2));
+  const theta = Math.acos(cosTheta);
+  if (theta === 0) {
+    return { matrix, vector: [0, 0, 0] };
+  }
+  const rx = (matrix[2][1] - matrix[1][2]) / (2 * Math.sin(theta));
+  const ry = (matrix[0][2] - matrix[2][0]) / (2 * Math.sin(theta));
+  const rz = (matrix[1][0] - matrix[0][1]) / (2 * Math.sin(theta));
+  return { matrix, vector: [rx * theta, ry * theta, rz * theta] };
+}
+function multiply3x3(a, b) {
+  const result = Array.from({ length: 3 }, () => [0, 0, 0]);
+  for (let i = 0; i < 3; i += 1) {
+    for (let j = 0; j < 3; j += 1) {
+      result[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+    }
+  }
+  return result;
+}
+function add3x3(a, b) {
+  return a.map((row, i) => row.map((val, j) => val + b[i][j]));
+}
+function scale3x3(a, scale) {
+  return a.map((row) => row.map((val) => val * scale));
+}
+var Camera = class {
+  name;
+  rvec;
+  tvec;
+  matrix;
+  distortions;
+  size;
+  constructor(options) {
+    this.name = options.name;
+    this.rvec = options.rvec;
+    this.tvec = options.tvec;
+    this.matrix = options.matrix;
+    this.distortions = options.distortions;
+    this.size = options.size;
+  }
+};
+var CameraGroup = class {
+  cameras;
+  metadata;
+  constructor(options) {
+    this.cameras = options?.cameras ?? [];
+    this.metadata = options?.metadata ?? {};
+  }
+};
+var InstanceGroup = class {
+  score;
+  identity;
+  instance3d;
+  metadata;
+  _points;
+  /**
+   * The CONCRETE camera→instance map. Set for in-memory construction and for the
+   * JS-inline read path (point-dict instances). `undefined` for a pure-ref group
+   * read from a camcorder-format file until first access resolves the refs. Read
+   * directly (not via the caching getter) by the write path.
+   * @internal
+   */
+  _instanceByCamera;
+  /**
+   * Verbatim as-read index refs from `camcorder_to_lf_and_inst_idx_map`:
+   * camera → [globalLabeledFrameIdx, instanceIdx]. Captured on read WITHOUT
+   * materializing any frames, so an untouched group can be written back
+   * losslessly (see hybrid write-back). `undefined` for in-memory groups.
+   * @internal
+   */
+  _instanceRefsByCamera;
+  constructor(options) {
+    if (options.instanceByCamera !== void 0) {
+      if (options.instanceByCamera instanceof Map) {
+        this._instanceByCamera = options.instanceByCamera;
+      } else {
+        const map = /* @__PURE__ */ new Map();
+        for (const [key, value] of Object.entries(options.instanceByCamera)) {
+          map.set(key, value);
+        }
+        this._instanceByCamera = map;
+      }
+    }
+    this._instanceRefsByCamera = options.instanceRefsByCamera;
+    this.score = options.score;
+    this.identity = options.identity;
+    this.instance3d = options.instance3d;
+    this._points = options.points;
+    this.metadata = options.metadata ?? {};
+  }
+  get points() {
+    if (this.instance3d?.points) return this.instance3d.points;
+    return this._points;
+  }
+  set points(value) {
+    if (this.instance3d?.points && value != null) {
+      console.warn(
+        "Setting points on an InstanceGroup that has an Instance3D \u2014 the getter will return instance3d.points, not this value. Set instance3d.points directly instead."
+      );
+    }
+    this._points = value;
+  }
+  /**
+   * Camera→Instance map. Concrete when the group was built in memory (or via the
+   * JS-inline read path); otherwise resolved lazily from `_instanceRefsByCamera`
+   * on first access via the injected `_frameResolver` and cached. In-place
+   * `.set()`/`.delete()` mutations therefore act on the resolved concrete map.
+   */
+  get instanceByCamera() {
+    if (this._instanceByCamera) return this._instanceByCamera;
+    const refs = this._instanceRefsByCamera;
+    const resolver = this._frameResolver;
+    if (refs && resolver) {
+      const map = /* @__PURE__ */ new Map();
+      for (const [camera, [lfIdx, instIdx]] of refs) {
+        const lf = resolver(lfIdx);
+        const inst = lf?.instances[instIdx];
+        if (inst) map.set(camera, inst);
+      }
+      this._instanceByCamera = map;
+      return map;
+    }
+    return /* @__PURE__ */ new Map();
+  }
+  set instanceByCamera(value) {
+    this._instanceByCamera = value;
+  }
+  get instances() {
+    return Array.from(this.instanceByCamera.values());
+  }
+};
+var FrameGroup = class {
+  frameIdx;
+  instanceGroups;
+  metadata;
+  /**
+   * The CONCRETE camera→labeledFrame map. Set for in-memory construction;
+   * `undefined` for a pure-ref group read from a camcorder-format file until
+   * first access resolves the refs. Read directly (not via the caching getter)
+   * by the write path.
+   * @internal
+   */
+  _labeledFrameByCamera;
+  /**
+   * Verbatim as-read index refs from `labeled_frame_by_camera` (or reconstructed
+   * from `camcorder_to_lf_and_inst_idx_map`): camera → globalLabeledFrameIdx.
+   * Captured on read WITHOUT materializing any frames. `undefined` for in-memory
+   * groups.
+   * @internal
+   */
+  _labeledFrameRefsByCamera;
+  constructor(options) {
+    this.frameIdx = options.frameIdx;
+    this.instanceGroups = options.instanceGroups;
+    if (options.labeledFrameByCamera !== void 0) {
+      if (options.labeledFrameByCamera instanceof Map) {
+        this._labeledFrameByCamera = options.labeledFrameByCamera;
+      } else {
+        const map = /* @__PURE__ */ new Map();
+        for (const [key, value] of Object.entries(
+          options.labeledFrameByCamera
+        )) {
+          map.set(key, value);
+        }
+        this._labeledFrameByCamera = map;
+      }
+    }
+    this._labeledFrameRefsByCamera = options.labeledFrameRefsByCamera;
+    this.metadata = options.metadata ?? {};
+  }
+  /**
+   * Camera→LabeledFrame map. Concrete when the group was built in memory;
+   * otherwise resolved lazily from `_labeledFrameRefsByCamera` on first access
+   * via the injected `_frameResolver` and cached.
+   */
+  get labeledFrameByCamera() {
+    if (this._labeledFrameByCamera) return this._labeledFrameByCamera;
+    const refs = this._labeledFrameRefsByCamera;
+    const resolver = this._frameResolver;
+    if (refs && resolver) {
+      const map = /* @__PURE__ */ new Map();
+      for (const [camera, lfIdx] of refs) {
+        const lf = resolver(lfIdx);
+        if (lf) map.set(camera, lf);
+      }
+      this._labeledFrameByCamera = map;
+      return map;
+    }
+    return /* @__PURE__ */ new Map();
+  }
+  set labeledFrameByCamera(value) {
+    this._labeledFrameByCamera = value;
+  }
+  /**
+   * Cameras participating in this frame group. Reads keys from whichever backing
+   * map exists WITHOUT resolving refs, so listing cameras never materializes a
+   * frame (crucial for the lazy/zero-materialization write path).
+   */
+  get cameras() {
+    return Array.from(
+      (this._labeledFrameByCamera ?? this._labeledFrameRefsByCamera ?? /* @__PURE__ */ new Map()).keys()
+    );
+  }
+  get labeledFrames() {
+    return Array.from(this.labeledFrameByCamera.values());
+  }
+  getFrame(camera) {
+    return this.labeledFrameByCamera.get(camera);
+  }
+};
+var RecordingSession = class {
+  cameraGroup;
+  frameGroupByFrameIdx;
+  videoByCamera;
+  cameraByVideo;
+  metadata;
+  /**
+   * @deprecated Transitional bridge, OPT-IN only. Pass `{ rawSessions: true }`
+   * to a read entrypoint (`readSlp`/`readSlpLazy`/`readSlpStreaming`) to capture
+   * it; it is `undefined` by default. The object model is now a faithful, lossless
+   * projection of `sessions_json` (typed grouping via `InstanceGroup`/`FrameGroup`
+   * refs), so consumers should read typed objects rather than this raw dict. It
+   * will be removed once LUCID migrates off it. Capturing it deep-clones the whole
+   * session payload, so leaving it off avoids doubling session memory in
+   * `Labels.copy()`.
+   *
+   * The verbatim, as-read `sessions_json` dict for this session (when captured).
+   *
+   * This is a deep-cloned copy of the `JSON.parse` result of the session's
+   * `sessions_json` entry, populated on read (eager, lazy, and streaming) ONLY
+   * when `rawSessions` is requested. It lets 3D consumers (e.g. luc3d/LUCID) read
+   * app-specific state — `calibration`, `camcorder_to_video_idx_map`,
+   * `camcorder_to_lf_and_inst_idx_map`, `frame_group_dicts`, and any nested
+   * `metadata.lucid` blob — without re-opening the HDF5, including keys
+   * sleap-io.js does not itself model.
+   *
+   * Caveats:
+   * - It is a READ-TIME SNAPSHOT: it is deep-cloned from the parsed dict and
+   *   holds NO shared references with the object model, so mutating `rawJson`
+   *   never affects the model (or what is written to disk) and mutating the
+   *   model never affects `rawJson`.
+   * - It is NEVER itself re-written to disk. The object model is the single
+   *   source of truth on write; `rawJson` is a pure in-memory read surface.
+   * - `undefined` for sessions constructed in-memory (never read from disk).
+   */
+  rawJson;
+  constructor(options) {
+    this.cameraGroup = options?.cameraGroup ?? new CameraGroup();
+    this.frameGroupByFrameIdx = options?.frameGroupByFrameIdx ?? /* @__PURE__ */ new Map();
+    this.videoByCamera = options?.videoByCamera ?? /* @__PURE__ */ new Map();
+    this.cameraByVideo = options?.cameraByVideo ?? /* @__PURE__ */ new Map();
+    this.metadata = options?.metadata ?? {};
+    this.rawJson = options?.rawJson;
+  }
+  get frameGroups() {
+    return this.frameGroupByFrameIdx;
+  }
+  get videos() {
+    return Array.from(this.videoByCamera.values());
+  }
+  get cameras() {
+    return Array.from(this.videoByCamera.keys());
+  }
+  addVideo(video, camera) {
+    if (!this.cameraGroup.cameras.includes(camera)) {
+      this.cameraGroup.cameras.push(camera);
+    }
+    this.videoByCamera.set(camera, video);
+    this.cameraByVideo.set(video, camera);
+  }
+  getCamera(video) {
+    return this.cameraByVideo.get(video);
+  }
+  getVideo(camera) {
+    return this.videoByCamera.get(camera);
+  }
+};
+function injectSessionFrameResolver(labels) {
+  const resolver = (i) => labels.frameAt(i);
+  const install = (target) => {
+    Object.defineProperty(target, "_frameResolver", {
+      value: resolver,
+      writable: true,
+      enumerable: false,
+      configurable: true
+    });
+  };
+  for (const session of labels.sessions) {
+    for (const frameGroup of session.frameGroupByFrameIdx.values()) {
+      install(frameGroup);
+      for (const instanceGroup of frameGroup.instanceGroups) {
+        install(instanceGroup);
+      }
+    }
+  }
+}
+function cloneInstanceGroup(ig, remapCam, instanceMap) {
+  let instanceByCamera;
+  let instanceRefsByCamera;
+  if (ig._instanceRefsByCamera) {
+    instanceRefsByCamera = /* @__PURE__ */ new Map();
+    for (const [c, pair] of ig._instanceRefsByCamera)
+      instanceRefsByCamera.set(remapCam(c), [pair[0], pair[1]]);
+  } else if (ig._instanceByCamera) {
+    instanceByCamera = /* @__PURE__ */ new Map();
+    for (const [c, inst] of ig._instanceByCamera)
+      instanceByCamera.set(remapCam(c), instanceMap?.get(inst) ?? inst);
+  }
+  const points = ig.instance3d || !ig.points ? void 0 : ig.points.map((p) => [...p]);
+  return new InstanceGroup({
+    instanceByCamera,
+    instanceRefsByCamera,
+    score: ig.score,
+    points,
+    identity: ig.identity,
+    instance3d: ig.instance3d,
+    metadata: structuredClone(ig.metadata)
+  });
+}
+function cloneRecordingSession(session, opts = {}) {
+  const { videoMap, frameMap, instanceMap } = opts;
+  const cameraMap = /* @__PURE__ */ new Map();
+  const newCameras = session.cameraGroup.cameras.map((cam) => {
+    const nc = new Camera({
+      name: cam.name,
+      rvec: [...cam.rvec],
+      tvec: [...cam.tvec],
+      matrix: cam.matrix?.map((r) => [...r]),
+      distortions: cam.distortions ? [...cam.distortions] : void 0,
+      size: cam.size ? [cam.size[0], cam.size[1]] : void 0
+    });
+    cameraMap.set(cam, nc);
+    return nc;
+  });
+  const remapCam = (c) => cameraMap.get(c) ?? c;
+  const cameraGroup = new CameraGroup({
+    cameras: newCameras,
+    metadata: structuredClone(session.cameraGroup.metadata)
+  });
+  const videoByCamera = /* @__PURE__ */ new Map();
+  const cameraByVideo = /* @__PURE__ */ new Map();
+  for (const [cam, vid] of session.videoByCamera) {
+    const nc = remapCam(cam);
+    const nv = videoMap?.get(vid) ?? vid;
+    videoByCamera.set(nc, nv);
+    cameraByVideo.set(nv, nc);
+  }
+  const frameGroupByFrameIdx = /* @__PURE__ */ new Map();
+  for (const [fidx, fg] of session.frameGroupByFrameIdx) {
+    const instanceGroups = fg.instanceGroups.map(
+      (ig) => cloneInstanceGroup(ig, remapCam, instanceMap)
+    );
+    let labeledFrameByCamera;
+    let labeledFrameRefsByCamera;
+    if (fg._labeledFrameRefsByCamera) {
+      labeledFrameRefsByCamera = /* @__PURE__ */ new Map();
+      for (const [c, i] of fg._labeledFrameRefsByCamera)
+        labeledFrameRefsByCamera.set(remapCam(c), i);
+    } else if (fg._labeledFrameByCamera) {
+      labeledFrameByCamera = /* @__PURE__ */ new Map();
+      for (const [c, lf] of fg._labeledFrameByCamera)
+        labeledFrameByCamera.set(remapCam(c), frameMap?.get(lf) ?? lf);
+    }
+    frameGroupByFrameIdx.set(
+      fidx,
+      new FrameGroup({
+        frameIdx: fg.frameIdx,
+        instanceGroups,
+        labeledFrameByCamera,
+        labeledFrameRefsByCamera,
+        metadata: structuredClone(fg.metadata)
+      })
+    );
+  }
+  return new RecordingSession({
+    cameraGroup,
+    frameGroupByFrameIdx,
+    videoByCamera,
+    cameraByVideo,
+    metadata: structuredClone(session.metadata),
+    rawJson: session.rawJson ? structuredClone(session.rawJson) : void 0
+  });
+}
+function makeCameraFromDict(data) {
+  return new Camera({
+    name: data.name,
+    rvec: data.rotation ?? [0, 0, 0],
+    tvec: data.translation ?? [0, 0, 0],
+    matrix: data.matrix,
+    distortions: data.distortions,
+    size: data.size
+  });
+}
+
 // src/video/mediabunny-video.ts
 import {
   Input,
@@ -5553,8 +6187,8 @@ var Labels = class _Labels {
       }
       this.videos = Array.from(uniqueVideos.values());
     }
+    const existingTracks = new Set(this.tracks);
     if (!this._lazyFrameList) {
-      const existingTracks = new Set(this.tracks);
       for (const frame of this.labeledFrames) {
         for (const instance of frame.instances) {
           this._registerSkeleton(instance);
@@ -5564,21 +6198,57 @@ var Labels = class _Labels {
           }
         }
       }
-    }
-    if (!this._lazyFrameList) {
       for (const lf of this.labeledFrames) {
-        this._collectAnnotationTracks(lf);
+        this._collectAnnotationTracks(lf, existingTracks);
       }
     }
     for (const roi of this._staticRois) {
-      if (roi.track && !this.tracks.includes(roi.track)) {
+      if (roi.track && !existingTracks.has(roi.track)) {
+        existingTracks.add(roi.track);
         this.tracks.push(roi.track);
       }
     }
   }
-  /** Collect tracks from annotations on a frame into this.tracks. */
-  _collectAnnotationTracks(lf) {
-    const existing = new Set(this.tracks);
+  /**
+   * @deprecated Transitional. Only populated when a read entrypoint is called
+   * with `{ rawSessions: true }`; `undefined` per entry otherwise. Prefer the
+   * faithful typed session model. See `RecordingSession.rawJson`.
+   *
+   * The verbatim, as-read `sessions_json` dicts, index-aligned with `sessions`.
+   *
+   * Derived (no stored field) so it cannot desync in length from `sessions`.
+   * `rawSessionsJson[i]` corresponds to `sessions[i]`, and is `undefined` for
+   * sessions constructed in-memory (or read without `rawSessions`). Each entry
+   * is the untouched `JSON.parse` result of that session's `sessions_json`
+   * entry — a read-time snapshot, never itself re-written to disk. See
+   * `RecordingSession.rawJson`.
+   */
+  get rawSessionsJson() {
+    return this.sessions.map((s) => s.rawJson);
+  }
+  /**
+   * Get the labeled frame at global index `i`, materializing only that frame
+   * under the lazy reader. Backs the session grouping's lazy frame resolver
+   * (`injectSessionFrameResolver`): resolving one cross-camera ref materializes
+   * a single frame via `LazyFrameList.at(i)` rather than the whole table, so an
+   * untouched session round-trips with zero frame materialization.
+   */
+  frameAt(i) {
+    return this._lazyFrameList ? this._lazyFrameList.at(i) : this.labeledFrames[i];
+  }
+  /**
+   * Collect tracks from annotations on a frame into this.tracks.
+   *
+   * `seen` lets a caller iterating many frames share one membership set instead
+   * of rebuilding `new Set(this.tracks)` per frame — the difference between
+   * O(frames) and O(frames × tracks) on files with many tracks (e.g. a 21.8k-
+   * frame / 7k-track project spent seconds here rebuilding the set). When
+   * omitted (single-frame `append`), the set is built from the current tracks.
+   * The set must stay in sync with `this.tracks`: every push here also adds to
+   * it, so a later frame sees tracks an earlier one contributed.
+   */
+  _collectAnnotationTracks(lf, seen) {
+    const existing = seen ?? new Set(this.tracks);
     const add = (track) => {
       if (track && !existing.has(track)) {
         existing.add(track);
@@ -5991,16 +6661,18 @@ To use, first materialize:
    */
   extend(frames) {
     if (this._lazyFrameList) this.materialize();
+    const seenTracks = new Set(this.tracks);
     for (const frame of frames) {
       this.labeledFrames.push(frame);
       this.addVideo(frame.video);
       for (const inst of frame.instances) {
         this._registerSkeleton(inst);
-        if (inst.track != null && !this.tracks.includes(inst.track)) {
+        if (inst.track != null && !seenTracks.has(inst.track)) {
+          seenTracks.add(inst.track);
           this.tracks.push(inst.track);
         }
       }
-      this._collectAnnotationTracks(frame);
+      this._collectAnnotationTracks(frame, seenTracks);
     }
     this._invalidateIndices();
   }
@@ -6338,10 +7010,7 @@ To use, first materialize:
       return nt;
     });
     const cloneInstance = (inst) => {
-      const newPoints = inst.points.map((p) => ({
-        ...p,
-        xy: [...p.xy]
-      }));
+      const newPoints = inst.points.map((p) => clonePoint(p));
       const newSkeleton = skeletonMap.get(inst.skeleton) ?? inst.skeleton;
       const newTrack = inst.track ? trackMap.get(inst.track) ?? inst.track : null;
       if (inst instanceof PredictedInstance) {
@@ -6446,16 +7115,30 @@ To use, first materialize:
             metadata: { ...s.metadata }
           });
         }),
-        sessions: structuredClone(this.sessions),
+        // Rebuild sessions via constructors (NOT structuredClone, which strips
+        // class prototypes/getters and the non-enumerable frame resolver). In
+        // lazy mode frames are not materialized here, so ref-backed grouping is
+        // carried as refs and re-resolves against the copy's lazy frame list
+        // once injectSessionFrameResolver runs below.
+        sessions: this.sessions.map(
+          (s) => cloneRecordingSession(s, { videoMap })
+        ),
         provenance: { ...this.provenance },
         identities: structuredClone(this.identities)
       });
       labelsCopy._lazyDataStore = newStore;
       labelsCopy._lazyFrameList = newLazyFrames;
+      injectSessionFrameResolver(labelsCopy);
     } else {
+      const frameMap = /* @__PURE__ */ new Map();
+      const instanceMap = /* @__PURE__ */ new Map();
       const newFrames = this.labeledFrames.map((f) => {
-        const newInstances = f.instances.map(cloneInstance);
-        return new LabeledFrame({
+        const newInstances = f.instances.map((inst) => {
+          const ni = cloneInstance(inst);
+          instanceMap.set(inst, ni);
+          return ni;
+        });
+        const nf = new LabeledFrame({
           video: videoMap.get(f.video) ?? f.video,
           frameIdx: f.frameIdx,
           instances: newInstances,
@@ -6466,6 +7149,8 @@ To use, first materialize:
           labelImages: cloneAncillary(f.labelImages),
           rois: cloneAncillary(f.rois)
         });
+        frameMap.set(f, nf);
+        return nf;
       });
       labelsCopy = new _Labels({
         labeledFrames: newFrames,
@@ -6481,11 +7166,17 @@ To use, first materialize:
             metadata: { ...s.metadata }
           });
         }),
-        sessions: structuredClone(this.sessions),
+        // Rebuild sessions via constructors, remapping Camera keys and
+        // Instance/LabeledFrame references onto the copied objects; ref-backed
+        // grouping re-resolves via the resolver injected below.
+        sessions: this.sessions.map(
+          (s) => cloneRecordingSession(s, { videoMap, frameMap, instanceMap })
+        ),
         provenance: { ...this.provenance },
         rois: cloneAncillary(this._staticRois),
         identities: structuredClone(this.identities)
       });
+      injectSessionFrameResolver(labelsCopy);
     }
     if (options?.openVideos !== void 0) {
       for (const video of labelsCopy.videos) {
@@ -6636,20 +7327,25 @@ To use, first materialize:
    */
   update() {
     if (this._lazyFrameList) this.materialize();
+    const seenVideos = new Set(this.videos);
+    const seenTracks = new Set(this.tracks);
     for (const lf of this.labeledFrames) {
-      if (!this.videos.includes(lf.video)) {
+      if (!seenVideos.has(lf.video)) {
+        seenVideos.add(lf.video);
         this.videos.push(lf.video);
       }
       for (const inst of lf.instances) {
         this._registerSkeleton(inst);
-        if (inst.track != null && !this.tracks.includes(inst.track)) {
+        if (inst.track != null && !seenTracks.has(inst.track)) {
+          seenTracks.add(inst.track);
           this.tracks.push(inst.track);
         }
       }
-      this._collectAnnotationTracks(lf);
+      this._collectAnnotationTracks(lf, seenTracks);
     }
     for (const sf of this.suggestions) {
-      if (!this.videos.includes(sf.video)) {
+      if (!seenVideos.has(sf.video)) {
+        seenVideos.add(sf.video);
         this.videos.push(sf.video);
       }
     }
@@ -6729,10 +7425,7 @@ To use, first materialize:
     let mappedPoints;
     const sameOrder = sourcePoints.length === mappedNames.length && sourcePoints.every((p, i) => p.name === mappedNames[i]);
     if (sameOrder) {
-      mappedPoints = sourcePoints.map((p) => ({
-        ...p,
-        xy: [...p.xy]
-      }));
+      mappedPoints = sourcePoints.map((p) => clonePoint(p));
     } else {
       const sourceByName = /* @__PURE__ */ new Map();
       for (const p of sourcePoints) {
@@ -6741,7 +7434,7 @@ To use, first materialize:
       mappedPoints = mappedNames.map((name) => {
         const src = sourceByName.get(name);
         if (src !== void 0) {
-          return { ...src, xy: [...src.xy], name };
+          return clonePoint(src, name);
         }
         return isPredicted ? {
           xy: [Number.NaN, Number.NaN],
@@ -7705,10 +8398,7 @@ To use, first materialize:
       return nt;
     };
     const cloneInstance = (inst) => {
-      const newPoints = inst.points.map((p) => ({
-        ...p,
-        xy: [...p.xy]
-      }));
+      const newPoints = inst.points.map((p) => clonePoint(p));
       const newSkeleton = mapSkeleton(inst.skeleton);
       const newTrack = mapTrack(inst.track);
       if (inst.constructor === PredictedInstance) {
@@ -8148,201 +8838,6 @@ function validateDict(data) {
       throw new Error(`Missing required key: ${key}`);
     }
   }
-}
-
-// src/model/camera.ts
-function rodriguesTransformation(input) {
-  if (input.length === 3 && Array.isArray(input[0]) === false) {
-    const rvec = input;
-    const theta2 = Math.hypot(rvec[0], rvec[1], rvec[2]);
-    if (theta2 === 0) {
-      return {
-        matrix: [
-          [1, 0, 0],
-          [0, 1, 0],
-          [0, 0, 1]
-        ],
-        vector: rvec
-      };
-    }
-    const axis = rvec.map((v) => v / theta2);
-    const [x, y, z] = axis;
-    const cos = Math.cos(theta2);
-    const sin = Math.sin(theta2);
-    const K = [
-      [0, -z, y],
-      [z, 0, -x],
-      [-y, x, 0]
-    ];
-    const I = [
-      [1, 0, 0],
-      [0, 1, 0],
-      [0, 0, 1]
-    ];
-    const KK = multiply3x3(K, K);
-    const matrix2 = add3x3(add3x3(I, scale3x3(K, sin)), scale3x3(KK, 1 - cos));
-    return { matrix: matrix2, vector: rvec };
-  }
-  const matrix = input;
-  const trace = matrix[0][0] + matrix[1][1] + matrix[2][2];
-  const cosTheta = Math.min(1, Math.max(-1, (trace - 1) / 2));
-  const theta = Math.acos(cosTheta);
-  if (theta === 0) {
-    return { matrix, vector: [0, 0, 0] };
-  }
-  const rx = (matrix[2][1] - matrix[1][2]) / (2 * Math.sin(theta));
-  const ry = (matrix[0][2] - matrix[2][0]) / (2 * Math.sin(theta));
-  const rz = (matrix[1][0] - matrix[0][1]) / (2 * Math.sin(theta));
-  return { matrix, vector: [rx * theta, ry * theta, rz * theta] };
-}
-function multiply3x3(a, b) {
-  const result = Array.from({ length: 3 }, () => [0, 0, 0]);
-  for (let i = 0; i < 3; i += 1) {
-    for (let j = 0; j < 3; j += 1) {
-      result[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
-    }
-  }
-  return result;
-}
-function add3x3(a, b) {
-  return a.map((row, i) => row.map((val, j) => val + b[i][j]));
-}
-function scale3x3(a, scale) {
-  return a.map((row) => row.map((val) => val * scale));
-}
-var Camera = class {
-  name;
-  rvec;
-  tvec;
-  matrix;
-  distortions;
-  size;
-  constructor(options) {
-    this.name = options.name;
-    this.rvec = options.rvec;
-    this.tvec = options.tvec;
-    this.matrix = options.matrix;
-    this.distortions = options.distortions;
-    this.size = options.size;
-  }
-};
-var CameraGroup = class {
-  cameras;
-  metadata;
-  constructor(options) {
-    this.cameras = options?.cameras ?? [];
-    this.metadata = options?.metadata ?? {};
-  }
-};
-var InstanceGroup = class {
-  instanceByCamera;
-  score;
-  identity;
-  instance3d;
-  metadata;
-  _points;
-  constructor(options) {
-    this.instanceByCamera = options.instanceByCamera instanceof Map ? options.instanceByCamera : /* @__PURE__ */ new Map();
-    if (!(options.instanceByCamera instanceof Map)) {
-      for (const [key, value] of Object.entries(options.instanceByCamera)) {
-        const camera = key;
-        this.instanceByCamera.set(camera, value);
-      }
-    }
-    this.score = options.score;
-    this.identity = options.identity;
-    this.instance3d = options.instance3d;
-    this._points = options.points;
-    this.metadata = options.metadata ?? {};
-  }
-  get points() {
-    if (this.instance3d?.points) return this.instance3d.points;
-    return this._points;
-  }
-  set points(value) {
-    if (this.instance3d?.points && value != null) {
-      console.warn(
-        "Setting points on an InstanceGroup that has an Instance3D \u2014 the getter will return instance3d.points, not this value. Set instance3d.points directly instead."
-      );
-    }
-    this._points = value;
-  }
-  get instances() {
-    return Array.from(this.instanceByCamera.values());
-  }
-};
-var FrameGroup = class {
-  frameIdx;
-  instanceGroups;
-  labeledFrameByCamera;
-  metadata;
-  constructor(options) {
-    this.frameIdx = options.frameIdx;
-    this.instanceGroups = options.instanceGroups;
-    this.labeledFrameByCamera = options.labeledFrameByCamera instanceof Map ? options.labeledFrameByCamera : /* @__PURE__ */ new Map();
-    if (!(options.labeledFrameByCamera instanceof Map)) {
-      for (const [key, value] of Object.entries(options.labeledFrameByCamera)) {
-        const camera = key;
-        this.labeledFrameByCamera.set(camera, value);
-      }
-    }
-    this.metadata = options.metadata ?? {};
-  }
-  get cameras() {
-    return Array.from(this.labeledFrameByCamera.keys());
-  }
-  get labeledFrames() {
-    return Array.from(this.labeledFrameByCamera.values());
-  }
-  getFrame(camera) {
-    return this.labeledFrameByCamera.get(camera);
-  }
-};
-var RecordingSession = class {
-  cameraGroup;
-  frameGroupByFrameIdx;
-  videoByCamera;
-  cameraByVideo;
-  metadata;
-  constructor(options) {
-    this.cameraGroup = options?.cameraGroup ?? new CameraGroup();
-    this.frameGroupByFrameIdx = options?.frameGroupByFrameIdx ?? /* @__PURE__ */ new Map();
-    this.videoByCamera = options?.videoByCamera ?? /* @__PURE__ */ new Map();
-    this.cameraByVideo = options?.cameraByVideo ?? /* @__PURE__ */ new Map();
-    this.metadata = options?.metadata ?? {};
-  }
-  get frameGroups() {
-    return this.frameGroupByFrameIdx;
-  }
-  get videos() {
-    return Array.from(this.videoByCamera.values());
-  }
-  get cameras() {
-    return Array.from(this.videoByCamera.keys());
-  }
-  addVideo(video, camera) {
-    if (!this.cameraGroup.cameras.includes(camera)) {
-      this.cameraGroup.cameras.push(camera);
-    }
-    this.videoByCamera.set(camera, video);
-    this.cameraByVideo.set(video, camera);
-  }
-  getCamera(video) {
-    return this.cameraByVideo.get(video);
-  }
-  getVideo(camera) {
-    return this.videoByCamera.get(camera);
-  }
-};
-function makeCameraFromDict(data) {
-  return new Camera({
-    name: data.name,
-    rvec: data.rotation ?? [0, 0, 0],
-    tvec: data.translation ?? [0, 0, 0],
-    matrix: data.matrix,
-    distortions: data.distortions,
-    size: data.size
-  });
 }
 
 // src/model/identity.ts
@@ -10282,6 +10777,77 @@ function getDatasetMeta(path) {
   };
 }
 
+// Read a fixed-size 1-D compound dataset column-wise straight from the record
+// blob, skipping h5wasm's Dataset.value (which allocates ~8 Uint8Array.slice per
+// record \u2014 the dominant cost of opening a large project). Mirrors
+// readCompoundColumnsManual in ./h5-compound.ts (keep them in lockstep). Returns
+// { columns: { memberName: Float64Array }, buffers: ArrayBuffer[] } \u2014 the buffers
+// are the postMessage transfer list so the columns move to the main thread
+// instead of being structured-cloned. Returns null (caller falls back to .value)
+// for anything not a plain-numeric compound. Values match .value except int64
+// comes back as number (every consumer routes these through Number()).
+function readCompoundColumnsWorker(dataset, M) {
+  const md = dataset.metadata;
+  const members = md && md.compound_type && md.compound_type.members;
+  if (!members || !members.length || (md && md.vlen)) return null;
+  const shape = dataset.shape;
+  if (!shape || shape.length !== 1) return null;
+  const recSize = md.size;
+  if (!recSize || recSize <= 0) return null;
+  for (let k = 0; k < members.length; k++) {
+    const mt = members[k];
+    if (mt.type !== 0 && mt.type !== 1 && mt.type !== 8) return null;
+    if (mt.type === 1 && mt.size !== 8 && mt.size !== 4) return null;
+    if (mt.size !== 1 && mt.size !== 2 && mt.size !== 4 && mt.size !== 8) return null;
+  }
+  if (!(M && M._malloc && M.get_dataset_data && M.HEAPU8 && M._free)) return null;
+  const n = shape[0];
+  // Columns are Float64Array (every SLEAP field \u2014 coords, scores, and integer
+  // id/index columns up to 2^53 \u2014 is exact in f64) so their backing buffers can
+  // be TRANSFERRED to the main thread instead of structured-cloned. \`buffers\`
+  // is the postMessage transfer list.
+  const columns = {};
+  const buffers = [];
+  if (n === 0) {
+    for (let z = 0; z < members.length; z++) {
+      const c = new Float64Array(0);
+      columns[members[z].name] = c;
+      buffers.push(c.buffer);
+    }
+    return { columns: columns, buffers: buffers };
+  }
+  const nbytes = recSize * n;
+  const dptr = M._malloc(nbytes);
+  if (!dptr) return null;
+  let buf;
+  try {
+    M.get_dataset_data(dataset.file_id, dataset.path, [BigInt(n)], [0n], [1n], BigInt(dptr));
+    buf = M.HEAPU8.slice(dptr, dptr + nbytes);
+  } finally {
+    M._free(dptr);
+  }
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  for (let j = 0; j < members.length; j++) {
+    const m = members[j];
+    const col = new Float64Array(n);
+    const off = m.offset, sz = m.size, isFloat = (m.type === 1);
+    const signed = (m.signed !== false), le = (m.littleEndian !== false);
+    for (let i = 0; i < n; i++) {
+      const p = i * recSize + off;
+      let v;
+      if (isFloat) v = sz === 8 ? dv.getFloat64(p, le) : dv.getFloat32(p, le);
+      else if (sz === 1) v = signed ? dv.getInt8(p) : dv.getUint8(p);
+      else if (sz === 2) v = signed ? dv.getInt16(p, le) : dv.getUint16(p, le);
+      else if (sz === 4) v = signed ? dv.getInt32(p, le) : dv.getUint32(p, le);
+      else v = Number(signed ? dv.getBigInt64(p, le) : dv.getBigUint64(p, le));
+      col[i] = v;
+    }
+    columns[m.name] = col;
+    buffers.push(col.buffer);
+  }
+  return { columns: columns, buffers: buffers };
+}
+
 function getDatasetValue(path, slice) {
   if (!currentFile) throw new Error('No file open');
   const dataset = currentFile.get(path);
@@ -10332,6 +10898,22 @@ function getDatasetValue(path, slice) {
       dtype: dataset.dtype,
       transferables: []
     };
+  }
+
+  // Fixed-size compound full read (frames/instances/points/pred_points): return
+  // per-member columns read directly from the record blob, skipping h5wasm's slow
+  // Dataset.value. normalizeStructData accepts a { field: array } record as-is, so
+  // no caller change is needed; falls through to .value when not applicable.
+  if (!slice) {
+    const res = readCompoundColumnsWorker(dataset, M);
+    if (res) {
+      return {
+        value: { type: 'columns', columns: res.columns },
+        shape: dataset.shape,
+        dtype: dataset.dtype,
+        transferables: res.buffers
+      };
+    }
   }
 
   // Non-vlen: hyperslab slice or whole read as requested.
@@ -10428,9 +11010,27 @@ function createH5Worker() {
 function isRangeSource(source) {
   return typeof source === "object" && source !== null && typeof source.size === "number" && typeof source.readRange === "function";
 }
+async function serviceRangeBridge(control, dataArea, reader, offset, length) {
+  try {
+    const bytes = await reader(offset, length);
+    const n = Math.min(bytes.length, dataArea.length, length);
+    dataArea.set(bytes.subarray(0, n), 0);
+    Atomics.store(control, 1, n);
+    Atomics.store(control, 0, 2);
+    Atomics.notify(control, 0);
+  } catch (err) {
+    Atomics.store(control, 1, 0);
+    Atomics.store(control, 0, 2);
+    Atomics.notify(control, 0);
+    console.error("[StreamingH5File] readRange failed:", err);
+  }
+}
 function reconstructValue(data) {
   if (data && typeof data === "object" && "type" in data) {
     const typed = data;
+    if (typed.type === "columns" && typed.columns) {
+      return typed.columns;
+    }
     if (typed.type === "typedarray" && typed.buffer) {
       const TypedArrayConstructor = getTypedArrayConstructor(
         typed.dtype || "Uint8Array"
@@ -10629,18 +11229,7 @@ var StreamingH5File = class {
     const dataArea = this.rangeData;
     const reader = this.rangeReader;
     if (!control || !dataArea || !reader) return;
-    reader(offset, length).then((bytes) => {
-      const n = Math.min(bytes.length, dataArea.length, length);
-      dataArea.set(bytes.subarray(0, n), 0);
-      Atomics.store(control, 1, n);
-      Atomics.store(control, 0, 2);
-      Atomics.notify(control, 0);
-    }).catch((err) => {
-      Atomics.store(control, 1, 0);
-      Atomics.store(control, 0, 2);
-      Atomics.notify(control, 0);
-      console.error("[StreamingH5File] readRange failed:", err);
-    });
+    void serviceRangeBridge(control, dataArea, reader, offset, length);
   }
   /**
    * Open an HDF5 file from any supported source.
@@ -11211,7 +11800,8 @@ async function readSlpStreaming(source, options) {
       sourcePath,
       options?.filenameHint,
       openVideos,
-      options?.onProgress
+      options?.onProgress,
+      options?.rawSessions ?? false
     );
   } finally {
     if (!openVideos) {
@@ -11219,7 +11809,7 @@ async function readSlpStreaming(source, options) {
     }
   }
 }
-async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress) {
+async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false) {
   const STAGES = [
     "Reading metadata",
     // 0
@@ -11299,11 +11889,11 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     file,
     videos,
     skeletons,
-    labeledFrames,
-    identities
+    identities,
+    rawSessions
   );
   onProgress?.(total, total, "Finalizing");
-  return new Labels({
+  const labels = new Labels({
     labeledFrames,
     videos,
     skeletons,
@@ -11313,6 +11903,8 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     identities,
     provenance: metadataJson?.provenance ?? {}
   });
+  injectSessionFrameResolver(labels);
+  return labels;
 }
 async function readTracksStreaming(file) {
   try {
@@ -11600,7 +12192,7 @@ async function readIdentitiesStreaming(file) {
     return [];
   }
 }
-async function readSessionsStreaming(file, videos, skeletons, labeledFrames, identities) {
+async function readSessionsStreaming(file, videos, skeletons, identities, captureRaw = false) {
   try {
     const keys = file.keys();
     if (!keys.includes("sessions_json")) return [];
@@ -11626,10 +12218,12 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
         cameraGroup.cameras.push(camera);
         cameraMap.set(String(key), camera);
       }
+      cameraGroup.metadata = calibration.metadata ?? {};
       const session = new RecordingSession({
         cameraGroup,
         metadata: parsed.metadata ?? {}
       });
+      if (captureRaw) session.rawJson = structuredClone(parsed);
       const map = parsed.camcorder_to_video_idx_map ?? {};
       for (const [cameraKey, videoIdx] of Object.entries(map)) {
         const camera = resolveCameraKey(
@@ -11650,7 +12244,7 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
         const instanceGroupList = Array.isArray(groupRecord.instance_groups) ? groupRecord.instance_groups : [];
         for (const instanceGroup of instanceGroupList) {
           const instanceGroupRecord = instanceGroup;
-          const instanceByCamera = /* @__PURE__ */ new Map();
+          let instanceByCamera;
           const instancesRecord = instanceGroupRecord.instances ?? {};
           for (const [cameraKey, points] of Object.entries(instancesRecord)) {
             const camera = resolveCameraKey(
@@ -11665,6 +12259,8 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
               continue;
             }
             const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+            if (!instanceByCamera)
+              instanceByCamera = /* @__PURE__ */ new Map();
             instanceByCamera.set(
               camera,
               new Instance({
@@ -11673,22 +12269,22 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
               })
             );
           }
-          if (instanceByCamera.size === 0) {
-            const lfInstMap = instanceGroupRecord.camcorder_to_lf_and_inst_idx_map ?? {};
-            for (const [camIdx, value] of Object.entries(lfInstMap)) {
-              const camera = resolveCameraKey(
-                camIdx,
-                cameraMap,
-                cameraGroup.cameras
-              );
-              if (!camera) continue;
-              const pair = value;
-              const lf = labeledFrames[Number(pair[0])];
-              if (lf) {
-                const inst = lf.instances[Number(pair[1])];
-                if (inst) instanceByCamera.set(camera, inst);
-              }
-            }
+          let instanceRefsByCamera;
+          const lfInstMap = instanceGroupRecord.camcorder_to_lf_and_inst_idx_map ?? {};
+          for (const [camIdx, value] of Object.entries(lfInstMap)) {
+            const camera = resolveCameraKey(
+              camIdx,
+              cameraMap,
+              cameraGroup.cameras
+            );
+            if (!camera) continue;
+            const pair = value;
+            if (!instanceRefsByCamera)
+              instanceRefsByCamera = /* @__PURE__ */ new Map();
+            instanceRefsByCamera.set(camera, [
+              Number(pair[0]),
+              Number(pair[1])
+            ]);
           }
           const instance3d = reconstructInstance3D(
             instanceGroupRecord,
@@ -11698,6 +12294,7 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
           instanceGroups.push(
             new InstanceGroup({
               instanceByCamera,
+              instanceRefsByCamera,
               score: instanceGroupRecord.score,
               instance3d,
               identity,
@@ -11705,7 +12302,7 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
             })
           );
         }
-        const labeledFrameByCamera = /* @__PURE__ */ new Map();
+        let labeledFrameRefsByCamera;
         const labeledFrameMap = groupRecord.labeled_frame_by_camera ?? {};
         for (const [cameraKey, labeledFrameIdx] of Object.entries(
           labeledFrameMap
@@ -11721,12 +12318,11 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
             );
             continue;
           }
-          const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
-          if (labeledFrame) {
-            labeledFrameByCamera.set(camera, labeledFrame);
-          }
+          if (!labeledFrameRefsByCamera)
+            labeledFrameRefsByCamera = /* @__PURE__ */ new Map();
+          labeledFrameRefsByCamera.set(camera, Number(labeledFrameIdx));
         }
-        if (labeledFrameByCamera.size === 0) {
+        if (!labeledFrameRefsByCamera) {
           for (const instanceGroup of instanceGroupList) {
             const igRecord = instanceGroup;
             const lfInstMap = igRecord.camcorder_to_lf_and_inst_idx_map ?? {};
@@ -11738,8 +12334,9 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
               );
               if (!camera) continue;
               const pair = value;
-              const lf = labeledFrames[Number(pair[0])];
-              if (lf) labeledFrameByCamera.set(camera, lf);
+              if (!labeledFrameRefsByCamera)
+                labeledFrameRefsByCamera = /* @__PURE__ */ new Map();
+              labeledFrameRefsByCamera.set(camera, Number(pair[0]));
             }
           }
         }
@@ -11748,7 +12345,7 @@ async function readSessionsStreaming(file, videos, skeletons, labeledFrames, ide
           new FrameGroup({
             frameIdx: Number(frameIdx),
             instanceGroups,
-            labeledFrameByCamera,
+            labeledFrameRefsByCamera,
             metadata: groupRecord.metadata ?? {}
           })
         );
@@ -11828,7 +12425,8 @@ function normalizeStructData(value, shape, fieldNames) {
   if (value && typeof value === "object" && !Array.isArray(value) && !ArrayBuffer.isView(value)) {
     const obj = value;
     const firstKey = Object.keys(obj)[0];
-    if (firstKey && Array.isArray(obj[firstKey])) {
+    const firstCol = firstKey ? obj[firstKey] : void 0;
+    if (firstKey && (Array.isArray(firstCol) || ArrayBuffer.isView(firstCol))) {
       return obj;
     }
   }
@@ -11923,9 +12521,10 @@ function buildLabeledFrames(options) {
       const track = trackId >= 0 ? tracks[trackId] : null;
       let instance;
       if (instanceType === 0) {
-        const points = slicePoints(pointsData, pointStart, pointEnd);
-        instance = new Instance({
-          points: pointsFromArray(points, skeleton.nodeNames),
+        instance = Instance._fromColumns({
+          columns: pointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           trackingScore
@@ -11939,9 +12538,10 @@ function buildLabeledFrames(options) {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = slicePoints(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({
-          points: predictedPointsFromArray(points, skeleton.nodeNames),
+        instance = PredictedInstance._fromColumns({
+          columns: predPointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           score,
@@ -11998,22 +12598,6 @@ function parseVideoIdFromDataset(dataset) {
   if (!group.startsWith("video")) return null;
   const id = Number(group.slice(5));
   return Number.isNaN(id) ? null : id;
-}
-function slicePoints(data, start, end, predicted = false) {
-  const xs = data.x ?? [];
-  const ys = data.y ?? [];
-  const visible = data.visible ?? [];
-  const complete = data.complete ?? [];
-  const scores = data.score ?? [];
-  const points = [];
-  for (let i = start; i < end; i += 1) {
-    if (predicted) {
-      points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
-    } else {
-      points.push([xs[i], ys[i], visible[i], complete[i]]);
-    }
-  }
-  return points;
 }
 
 // src/codecs/slp/write.ts
@@ -12646,7 +13230,7 @@ function serializeSession(session, videos, labeledFrameIndex, identities) {
     metadata: session.cameraGroup.metadata ?? {}
   };
   session.cameraGroup.cameras.forEach((camera, idx) => {
-    const key = camera.name ?? String(idx);
+    const key = `cam_${idx}`;
     const camData = {
       name: camera.name ?? key,
       rotation: camera.rvec,
@@ -12689,13 +13273,18 @@ function serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities)
       labeledFrameIndex
     )
   );
+  const concreteLfByCamera = frameGroup._labeledFrameByCamera;
+  const lfRefsByCamera = frameGroup._labeledFrameRefsByCamera;
   const labeled_frame_by_camera = {};
-  for (const [
-    camera,
-    labeledFrame
-  ] of frameGroup.labeledFrameByCamera.entries()) {
+  const frameCameras = /* @__PURE__ */ new Set([
+    ...concreteLfByCamera?.keys() ?? [],
+    ...lfRefsByCamera?.keys() ?? []
+  ]);
+  for (const camera of frameCameras) {
     const cameraKey = cameraKeyForSession(camera, session);
-    const index = labeledFrameIndex.get(labeledFrame);
+    const labeledFrame = concreteLfByCamera?.get(camera);
+    let index = labeledFrame !== void 0 ? labeledFrameIndex.get(labeledFrame) : void 0;
+    if (index === void 0) index = lfRefsByCamera?.get(camera);
     if (index !== void 0) {
       labeled_frame_by_camera[cameraKey] = index;
     }
@@ -12708,28 +13297,35 @@ function serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities)
   };
 }
 function serializeInstanceGroup(group, session, identities, frameGroup, labeledFrameIndex) {
+  const concreteInst = group._instanceByCamera;
+  const instRefs = group._instanceRefsByCamera;
+  const lfByCamera = concreteInst && frameGroup ? frameGroup.labeledFrameByCamera : void 0;
   const instances = {};
-  for (const [camera, instance] of group.instanceByCamera.entries()) {
-    const cameraKey = cameraKeyForSession(camera, session);
-    instances[cameraKey] = pointsToDict(instance);
-  }
   const camcorder_to_lf_and_inst_idx_map = {};
-  if (frameGroup && labeledFrameIndex) {
-    for (const [camera, instance] of group.instanceByCamera.entries()) {
-      const cameraKey = cameraKeyForSession(camera, session);
-      const labeledFrame = frameGroup.labeledFrameByCamera.get(camera);
-      if (labeledFrame) {
-        const lfIdx = labeledFrameIndex.get(labeledFrame);
-        const instIdx = labeledFrame.instances.indexOf(instance);
-        if (lfIdx !== void 0 && instIdx >= 0) {
-          camcorder_to_lf_and_inst_idx_map[cameraKey] = [lfIdx, instIdx];
-        }
+  const instCameras = /* @__PURE__ */ new Set([
+    ...concreteInst?.keys() ?? [],
+    ...instRefs?.keys() ?? []
+  ]);
+  for (const camera of instCameras) {
+    const cameraKey = cameraKeyForSession(camera, session);
+    const instance = concreteInst?.get(camera);
+    let pair;
+    if (instance) {
+      if (labeledFrameIndex) {
+        const labeledFrame = lfByCamera?.get(camera);
+        const lfIdx = labeledFrame !== void 0 ? labeledFrameIndex.get(labeledFrame) : void 0;
+        const instIdx = labeledFrame ? labeledFrame.instances.indexOf(instance) : -1;
+        if (lfIdx !== void 0 && instIdx >= 0) pair = [lfIdx, instIdx];
       }
+      instances[cameraKey] = pointsToDict(instance);
     }
+    if (!pair && instRefs?.has(camera)) pair = instRefs.get(camera);
+    if (pair) camcorder_to_lf_and_inst_idx_map[cameraKey] = pair;
   }
-  const payload = {
-    instances
-  };
+  const payload = {};
+  if (Object.keys(instances).length > 0) {
+    payload.instances = instances;
+  }
   if (Object.keys(camcorder_to_lf_and_inst_idx_map).length > 0) {
     payload.camcorder_to_lf_and_inst_idx_map = camcorder_to_lf_and_inst_idx_map;
   }
@@ -12802,7 +13398,7 @@ function writeLabeledFrames(file, labels) {
       );
       const trackId = instance.track ? labels.tracks.indexOf(instance.track) : -1;
       const trackingScore = instance.trackingScore ?? 0;
-      let fromPredicted = -1;
+      const fromPredicted = -1;
       let score = 0;
       let pointStart = 0;
       let pointEnd = 0;
@@ -14640,6 +15236,220 @@ function warnAmbiguous(path, nPages, dtype) {
   console.warn(msg);
 }
 
+// src/io/csv.ts
+function videoFrameCount2(video) {
+  const shape = video.shape;
+  if (shape && shape.length > 0 && typeof shape[0] === "number") {
+    return shape[0];
+  }
+  return 0;
+}
+function csvCell(value) {
+  if (value == null) return "";
+  if (typeof value === "number")
+    return Number.isNaN(value) ? "" : String(value);
+  if (/[",\n\r]/.test(value)) return `"${value.replace(/"/g, '""')}"`;
+  return value;
+}
+function labelsToCsv(labels, options = {}) {
+  const includeScore = options.includeScore ?? true;
+  const includeEmpty = options.includeEmpty ?? false;
+  const startFrame = options.startFrame ?? null;
+  const endFrame = options.endFrame ?? null;
+  let selectedVideos;
+  if (options.video == null) {
+    selectedVideos = labels.videos;
+  } else if (typeof options.video === "number") {
+    const v = labels.videos[options.video];
+    if (!v) throw new Error(`Video index ${options.video} out of range.`);
+    selectedVideos = [v];
+  } else {
+    selectedVideos = [options.video];
+  }
+  const videoSet = new Set(selectedVideos);
+  const videoIndex = new Map(labels.videos.map((v, i) => [v, i]));
+  const frames = labels.labeledFrames.filter((lf) => videoSet.has(lf.video));
+  const rows = [];
+  const nodeColSet = /* @__PURE__ */ new Set();
+  const seen = /* @__PURE__ */ new Set();
+  const seenByVideo = /* @__PURE__ */ new Map();
+  const seenKey = (v, f) => `${videoIndex.get(v)}:${f}`;
+  for (const lf of frames) {
+    if (startFrame != null && lf.frameIdx < startFrame) continue;
+    if (endFrame != null && lf.frameIdx >= endFrame) continue;
+    seen.add(seenKey(lf.video, lf.frameIdx));
+    const byVid = seenByVideo.get(lf.video);
+    if (byVid) byVid.push(lf.frameIdx);
+    else seenByVideo.set(lf.video, [lf.frameIdx]);
+    const instances = [...lf.userInstances, ...lf.predictedInstances];
+    for (const inst of instances) {
+      const predicted = inst instanceof PredictedInstance;
+      const cols = /* @__PURE__ */ new Map();
+      cols.set("frame_idx", lf.frameIdx);
+      cols.set("track", inst.track ? inst.track.name : null);
+      cols.set(
+        "instance.score",
+        predicted ? inst.score ?? null : null
+      );
+      const nodes = inst.skeleton.nodes;
+      for (let i = 0; i < nodes.length; i++) {
+        const name = nodes[i].name;
+        const pt = inst.points[i];
+        const xKey = `${name}.x`;
+        const yKey = `${name}.y`;
+        cols.set(xKey, pt ? pt.xy[0] : Number.NaN);
+        cols.set(yKey, pt ? pt.xy[1] : Number.NaN);
+        nodeColSet.add(xKey);
+        nodeColSet.add(yKey);
+        if (includeScore && predicted) {
+          const sKey = `${name}.score`;
+          cols.set(sKey, pt?.score ?? Number.NaN);
+          nodeColSet.add(sKey);
+        }
+      }
+      rows.push({ video: lf.video, cols });
+    }
+  }
+  if (includeEmpty && frames.length) {
+    const skeleton = labels.skeletons[0];
+    for (const vid of selectedVideos) {
+      const emitted = seenByVideo.get(vid);
+      if (!emitted || !emitted.length) continue;
+      const first = startFrame != null ? startFrame : 0;
+      let last;
+      if (endFrame != null) {
+        last = endFrame;
+      } else {
+        let maxIdx = emitted[0];
+        for (const f of emitted) if (f > maxIdx) maxIdx = f;
+        last = maxIdx + 1;
+        const len = videoFrameCount2(vid);
+        if (len > 0) last = Math.max(last, len);
+      }
+      for (let f = first; f < last; f++) {
+        if (seen.has(seenKey(vid, f))) continue;
+        const cols = /* @__PURE__ */ new Map();
+        cols.set("frame_idx", f);
+        cols.set("track", null);
+        cols.set("instance.score", null);
+        if (skeleton) {
+          for (const node of skeleton.nodes) {
+            cols.set(`${node.name}.x`, Number.NaN);
+            cols.set(`${node.name}.y`, Number.NaN);
+            nodeColSet.add(`${node.name}.x`);
+            nodeColSet.add(`${node.name}.y`);
+            if (includeScore) {
+              cols.set(`${node.name}.score`, Number.NaN);
+              nodeColSet.add(`${node.name}.score`);
+            }
+          }
+        }
+        rows.push({ video: vid, cols });
+      }
+    }
+    rows.sort((a, b) => {
+      const va = videoIndex.get(a.video) ?? 0;
+      const vb = videoIndex.get(b.video) ?? 0;
+      if (va !== vb) return va - vb;
+      return a.cols.get("frame_idx") - b.cols.get("frame_idx");
+    });
+  }
+  const nodeCols = [...nodeColSet].sort();
+  const header = ["track", "frame_idx", "instance.score", ...nodeCols];
+  const lines = [header.join(",")];
+  for (const row of rows) {
+    lines.push(
+      header.map((col) => csvCell(row.cols.get(col) ?? null)).join(",")
+    );
+  }
+  return `${lines.join("\n")}
+`;
+}
+async function saveLabelsCsv(labels, filename, options = {}) {
+  const text = labelsToCsv(labels, options);
+  const bytes = new TextEncoder().encode(text);
+  await nodeWriteFile(filename, bytes);
+}
+
+// src/codecs/slp/h5-compound.ts
+var H5T_INTEGER = 0;
+var H5T_FLOAT = 1;
+var H5T_ENUM = 8;
+function moduleUsable(m) {
+  const mm = m;
+  return !!mm && typeof mm._malloc === "function" && typeof mm._free === "function" && typeof mm.get_dataset_data === "function" && mm.HEAPU8 instanceof Uint8Array;
+}
+function readCompoundColumnsManual(module, dataset) {
+  if (!moduleUsable(module)) return null;
+  const md = dataset.metadata;
+  const members = md?.compound_type?.members;
+  if (!members || members.length === 0) return null;
+  if (md?.vlen) return null;
+  const shape = md?.shape;
+  if (!Array.isArray(shape) || shape.length !== 1) return null;
+  const recSize = md?.size ?? 0;
+  if (recSize <= 0) return null;
+  for (const m of members) {
+    if (m.type !== H5T_INTEGER && m.type !== H5T_FLOAT && m.type !== H5T_ENUM) {
+      return null;
+    }
+    if (m.type === H5T_FLOAT && m.size !== 8 && m.size !== 4) return null;
+    if (m.size !== 1 && m.size !== 2 && m.size !== 4 && m.size !== 8)
+      return null;
+  }
+  const nrows = shape[0];
+  if (nrows === 0) {
+    const empty = {};
+    for (const m of members) empty[m.name] = [];
+    return empty;
+  }
+  const nbytes = recSize * nrows;
+  const dataPtr = module._malloc(nbytes);
+  if (!dataPtr) return null;
+  let buf;
+  try {
+    module.get_dataset_data(
+      dataset.file_id,
+      dataset.path,
+      [BigInt(nrows)],
+      [0n],
+      [1n],
+      BigInt(dataPtr)
+    );
+    buf = module.HEAPU8.slice(dataPtr, dataPtr + nbytes);
+  } finally {
+    module._free(dataPtr);
+  }
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const cols = {};
+  for (const m of members) {
+    const col = new Array(nrows);
+    const off = m.offset;
+    const sz = m.size;
+    const isFloat = m.type === H5T_FLOAT;
+    const signed = m.signed !== false;
+    const le = m.littleEndian !== false;
+    for (let i = 0; i < nrows; i += 1) {
+      const p = i * recSize + off;
+      let v;
+      if (isFloat) {
+        v = sz === 8 ? dv.getFloat64(p, le) : dv.getFloat32(p, le);
+      } else if (sz === 1) {
+        v = signed ? dv.getInt8(p) : dv.getUint8(p);
+      } else if (sz === 2) {
+        v = signed ? dv.getInt16(p, le) : dv.getUint16(p, le);
+      } else if (sz === 4) {
+        v = signed ? dv.getInt32(p, le) : dv.getUint32(p, le);
+      } else {
+        v = Number(signed ? dv.getBigInt64(p, le) : dv.getBigUint64(p, le));
+      }
+      col[i] = v;
+    }
+    cols[m.name] = col;
+  }
+  return cols;
+}
+
 // src/codecs/slp/read.ts
 import { inflate } from "pako";
 var textDecoder2 = new TextDecoder();
@@ -14695,10 +15505,17 @@ async function readSlp(source, options) {
     report(3);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
     report(4);
-    const framesData = normalizeStructDataset(file.get("frames"));
-    const instancesData = normalizeStructDataset(file.get("instances"));
-    const pointsData = normalizeStructDataset(file.get("points"));
-    const predPointsData = normalizeStructDataset(file.get("pred_points"));
+    const emscripten = await getH5EmscriptenModule();
+    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
+    const instancesData = normalizeStructDataset(
+      file.get("instances"),
+      emscripten
+    );
+    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
+    const predPointsData = normalizeStructDataset(
+      file.get("pred_points"),
+      emscripten
+    );
     const labeledFrames = buildLabeledFrames2({
       framesData,
       instancesData,
@@ -14732,8 +15549,8 @@ async function readSlp(source, options) {
       file.get("sessions_json"),
       videos,
       skeletons,
-      labeledFrames,
-      identities
+      identities,
+      options?.rawSessions ?? false
     );
     report(7);
     const allInstances = labeledFrames.flatMap((f) => f.instances);
@@ -14810,7 +15627,7 @@ async function readSlp(source, options) {
       }
     }
     onProgress?.(total, total, "Finalizing");
-    return new Labels({
+    const labels = new Labels({
       labeledFrames,
       videos,
       skeletons,
@@ -14821,6 +15638,8 @@ async function readSlp(source, options) {
       provenance: metadataJson?.provenance ?? {},
       rois: staticRois
     });
+    injectSessionFrameResolver(labels);
+    return labels;
   } finally {
     close();
   }
@@ -14877,10 +15696,17 @@ async function readSlpLazy(source, options) {
     report(3);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
     report(4);
-    const framesData = normalizeStructDataset(file.get("frames"));
-    const instancesData = normalizeStructDataset(file.get("instances"));
-    const pointsData = normalizeStructDataset(file.get("points"));
-    const predPointsData = normalizeStructDataset(file.get("pred_points"));
+    const emscripten = await getH5EmscriptenModule();
+    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
+    const instancesData = normalizeStructDataset(
+      file.get("instances"),
+      emscripten
+    );
+    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
+    const predPointsData = normalizeStructDataset(
+      file.get("pred_points"),
+      emscripten
+    );
     const negativeFrames = /* @__PURE__ */ new Set();
     const negativeFramesDs = file.get("negative_frames");
     if (negativeFramesDs) {
@@ -14910,8 +15736,8 @@ async function readSlpLazy(source, options) {
       file.get("sessions_json"),
       videos,
       skeletons,
-      [],
-      identities
+      identities,
+      options?.rawSessions ?? false
     );
     report(7);
     const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
@@ -14998,6 +15824,7 @@ async function readSlpLazy(source, options) {
     });
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;
+    injectSessionFrameResolver(labels);
     onProgress?.(total, total, "Finalizing");
     return labels;
   } finally {
@@ -15273,7 +16100,7 @@ function readIdentities(dataset) {
   }
   return identities;
 }
-function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
+function readSessions(dataset, videos, skeletons, identities, captureRaw = false) {
   if (!dataset) return [];
   const values = dataset.value ?? [];
   const sessions = [];
@@ -15296,10 +16123,12 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
       cameraGroup.cameras.push(camera);
       cameraMap.set(String(key), camera);
     }
+    cameraGroup.metadata = calibration.metadata ?? {};
     const session = new RecordingSession({
       cameraGroup,
       metadata: parsed.metadata ?? {}
     });
+    if (captureRaw) session.rawJson = structuredClone(parsed);
     const map = asRecord(parsed.camcorder_to_video_idx_map);
     for (const [cameraKey, videoIdx] of Object.entries(map)) {
       const camera = resolveCameraKey(
@@ -15320,7 +16149,7 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
       const instanceGroupList = Array.isArray(groupRecord.instance_groups) ? groupRecord.instance_groups : [];
       for (const instanceGroup of instanceGroupList) {
         const instanceGroupRecord = asRecord(instanceGroup);
-        const instanceByCamera = /* @__PURE__ */ new Map();
+        let instanceByCamera;
         const instancesRecord = asRecord(instanceGroupRecord.instances);
         for (const [cameraKey, points] of Object.entries(instancesRecord)) {
           const camera = resolveCameraKey(
@@ -15335,6 +16164,7 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
             continue;
           }
           const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+          if (!instanceByCamera) instanceByCamera = /* @__PURE__ */ new Map();
           instanceByCamera.set(
             camera,
             new Instance({
@@ -15343,24 +16173,21 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
             })
           );
         }
-        if (instanceByCamera.size === 0) {
-          const lfInstMap = asRecord(
-            instanceGroupRecord.camcorder_to_lf_and_inst_idx_map
+        let instanceRefsByCamera;
+        const lfInstMap = asRecord(
+          instanceGroupRecord.camcorder_to_lf_and_inst_idx_map
+        );
+        for (const [camIdx, value] of Object.entries(lfInstMap)) {
+          const camera = resolveCameraKey(
+            camIdx,
+            cameraMap,
+            cameraGroup.cameras
           );
-          for (const [camIdx, value] of Object.entries(lfInstMap)) {
-            const camera = resolveCameraKey(
-              camIdx,
-              cameraMap,
-              cameraGroup.cameras
-            );
-            if (!camera) continue;
-            const pair = value;
-            const lf = labeledFrames[Number(pair[0])];
-            if (lf) {
-              const inst = lf.instances[Number(pair[1])];
-              if (inst) instanceByCamera.set(camera, inst);
-            }
-          }
+          if (!camera) continue;
+          const pair = value;
+          if (!instanceRefsByCamera)
+            instanceRefsByCamera = /* @__PURE__ */ new Map();
+          instanceRefsByCamera.set(camera, [Number(pair[0]), Number(pair[1])]);
         }
         const instance3d = reconstructInstance3D(
           instanceGroupRecord,
@@ -15370,6 +16197,7 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
         instanceGroups.push(
           new InstanceGroup({
             instanceByCamera,
+            instanceRefsByCamera,
             score: instanceGroupRecord.score,
             instance3d,
             identity,
@@ -15377,7 +16205,7 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
           })
         );
       }
-      const labeledFrameByCamera = /* @__PURE__ */ new Map();
+      let labeledFrameRefsByCamera;
       const labeledFrameMap = asRecord(groupRecord.labeled_frame_by_camera);
       for (const [cameraKey, labeledFrameIdx] of Object.entries(
         labeledFrameMap
@@ -15393,12 +16221,11 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
           );
           continue;
         }
-        const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
-        if (labeledFrame) {
-          labeledFrameByCamera.set(camera, labeledFrame);
-        }
+        if (!labeledFrameRefsByCamera)
+          labeledFrameRefsByCamera = /* @__PURE__ */ new Map();
+        labeledFrameRefsByCamera.set(camera, Number(labeledFrameIdx));
       }
-      if (labeledFrameByCamera.size === 0) {
+      if (!labeledFrameRefsByCamera) {
         for (const instanceGroup of instanceGroupList) {
           const igRecord = asRecord(instanceGroup);
           const lfInstMap = asRecord(igRecord.camcorder_to_lf_and_inst_idx_map);
@@ -15410,8 +16237,9 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
             );
             if (!camera) continue;
             const pair = value;
-            const lf = labeledFrames[Number(pair[0])];
-            if (lf) labeledFrameByCamera.set(camera, lf);
+            if (!labeledFrameRefsByCamera)
+              labeledFrameRefsByCamera = /* @__PURE__ */ new Map();
+            labeledFrameRefsByCamera.set(camera, Number(pair[0]));
           }
         }
       }
@@ -15420,7 +16248,7 @@ function readSessions(dataset, videos, skeletons, labeledFrames, identities) {
         new FrameGroup({
           frameIdx: Number(frameIdx),
           instanceGroups,
-          labeledFrameByCamera,
+          labeledFrameRefsByCamera,
           metadata: groupRecord.metadata ?? {}
         })
       );
@@ -15987,8 +16815,12 @@ function readLabelImages(file, _videos, tracks, instances) {
   }
   return labelImages;
 }
-function normalizeStructDataset(dataset) {
+function normalizeStructDataset(dataset, module) {
   if (!dataset) return {};
+  if (module) {
+    const fast = readCompoundColumnsManual(module, dataset);
+    if (fast) return fast;
+  }
   const raw = dataset.value;
   if (!raw) return {};
   const fieldNames = getFieldNames(dataset);
@@ -15997,12 +16829,26 @@ function normalizeStructDataset(dataset) {
   }
   if (raw && ArrayBuffer.isView(raw) && Array.isArray(dataset.shape) && dataset.shape.length === 2) {
     const [rowCount, colCount] = dataset.shape;
+    const flat = raw;
+    if (fieldNames.length) {
+      const cols = fieldNames.map(() => new Array(rowCount));
+      const fillCols = Math.min(fieldNames.length, colCount);
+      for (let i = 0; i < rowCount; i += 1) {
+        const base = i * colCount;
+        for (let j = 0; j < fillCols; j += 1) {
+          cols[j][i] = flat[base + j];
+        }
+      }
+      const data = {};
+      for (let j = 0; j < fieldNames.length; j += 1) {
+        data[fieldNames[j]] = cols[j];
+      }
+      return data;
+    }
     const rows = [];
     for (let i = 0; i < rowCount; i += 1) {
       const start = i * colCount;
-      const end = start + colCount;
-      const slice = Array.from(raw.slice(start, end));
-      rows.push(slice);
+      rows.push(Array.from(raw.slice(start, start + colCount)));
     }
     return mapStructuredRows(rows, fieldNames);
   }
@@ -16095,9 +16941,10 @@ function buildLabeledFrames2(options) {
       const track = trackId >= 0 ? tracks[trackId] : null;
       let instance;
       if (instanceType === 0) {
-        const points = slicePoints2(pointsData, pointStart, pointEnd);
-        instance = new Instance({
-          points: pointsFromArray(points, skeleton.nodeNames),
+        instance = Instance._fromColumns({
+          columns: pointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           trackingScore
@@ -16111,9 +16958,10 @@ function buildLabeledFrames2(options) {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = slicePoints2(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({
-          points: predictedPointsFromArray(points, skeleton.nodeNames),
+        instance = PredictedInstance._fromColumns({
+          columns: predPointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           score,
@@ -16243,22 +17091,6 @@ function readCentroids(file, _videos, tracks) {
     centroids.push([centroid, videoIdx, frameIdxVal]);
   }
   return centroids;
-}
-function slicePoints2(data, start, end, predicted = false) {
-  const xs = data.x ?? [];
-  const ys = data.y ?? [];
-  const visible = data.visible ?? [];
-  const complete = data.complete ?? [];
-  const scores = data.score ?? [];
-  const points = [];
-  for (let i = start; i < end; i += 1) {
-    if (predicted) {
-      points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
-    } else {
-      points.push([xs[i], ys[i], visible[i], complete[i]]);
-    }
-  }
-  return points;
 }
 
 // src/io/main.ts
@@ -17646,6 +18478,251 @@ var InstanceContext = class {
   }
 };
 
+// src/rendering/overlays-raster.ts
+function blendChannel(dst, src, alpha) {
+  return Math.trunc(dst * (1 - alpha) + src * alpha);
+}
+function clampAlpha(alpha) {
+  if (!Number.isFinite(alpha)) return 0;
+  return alpha < 0 ? 0 : alpha > 1 ? 1 : alpha;
+}
+function pickColor(colors, i, fallback) {
+  if (colors === null || colors.length === 0) return fallback;
+  return colors[i % colors.length];
+}
+function drawMasks(image, masks, opts) {
+  const color = opts?.color ?? [255, 0, 0];
+  const colors = opts?.colors ?? null;
+  const alpha = clampAlpha(opts?.alpha ?? 0.3);
+  const imgW = image.width;
+  const imgH = image.height;
+  const pixels = image.data;
+  for (let i = 0; i < masks.length; i++) {
+    const mask = masks[i];
+    const maskColor = pickColor(colors, i, color);
+    const maskData = mask.data;
+    let region;
+    let x0;
+    let y0;
+    let drawW;
+    let drawH;
+    if (mask.hasSpatialTransform) {
+      const ext = mask.imageExtent;
+      const targetH = ext.height;
+      const targetW = ext.width;
+      const resized = resizeNearest(
+        maskData,
+        mask.height,
+        mask.width,
+        targetH,
+        targetW
+      );
+      const ox = Math.trunc(mask.offset[0]);
+      const oy = Math.trunc(mask.offset[1]);
+      y0 = Math.max(0, oy);
+      x0 = Math.max(0, ox);
+      const y1 = Math.min(imgH, oy + targetH);
+      const x1 = Math.min(imgW, ox + targetW);
+      if (y1 <= y0 || x1 <= x0) continue;
+      drawH = y1 - y0;
+      drawW = x1 - x0;
+      const my0 = y0 - oy;
+      const mx0 = x0 - ox;
+      region = new Uint8Array(drawH * drawW);
+      for (let r = 0; r < drawH; r++) {
+        const srcRow = (my0 + r) * targetW + mx0;
+        region.set(resized.subarray(srcRow, srcRow + drawW), r * drawW);
+      }
+    } else {
+      drawH = Math.min(mask.height, imgH);
+      drawW = Math.min(mask.width, imgW);
+      x0 = 0;
+      y0 = 0;
+      region = new Uint8Array(drawH * drawW);
+      for (let r = 0; r < drawH; r++) {
+        const srcRow = r * mask.width;
+        region.set(maskData.subarray(srcRow, srcRow + drawW), r * drawW);
+      }
+    }
+    const [cr, cg, cb] = maskColor;
+    for (let r = 0; r < drawH; r++) {
+      for (let c = 0; c < drawW; c++) {
+        if (region[r * drawW + c] === 0) continue;
+        const px = ((y0 + r) * imgW + (x0 + c)) * 4;
+        pixels[px] = blendChannel(pixels[px], cr, alpha);
+        pixels[px + 1] = blendChannel(pixels[px + 1], cg, alpha);
+        pixels[px + 2] = blendChannel(pixels[px + 2], cb, alpha);
+      }
+    }
+  }
+  return image;
+}
+function drawLabelImage(image, labels, opts) {
+  const alpha = clampAlpha(opts?.alpha ?? 0.3);
+  const palette = opts?.palette ?? "distinct";
+  const outline = opts?.outline ?? false;
+  const outlineWidth = opts?.outlineWidth ?? 1;
+  const outlineColor = opts?.outlineColor ?? null;
+  const labData = labels.data;
+  const labH = labels.height;
+  const labW = labels.width;
+  const scale = opts?.scale ?? labels.scale ?? [1, 1];
+  const offset = opts?.offset ?? labels.offset ?? [0, 0];
+  let maxId = 0;
+  let hasFg = false;
+  for (let i = 0; i < labData.length; i++) {
+    const v = labData[i];
+    if (v > 0) {
+      hasFg = true;
+      if (v > maxId) maxId = v;
+    }
+  }
+  if (!hasFg) return image;
+  const paletteColors = getPalette(palette, maxId + 1);
+  const lut = new Float32Array((maxId + 1) * 3);
+  for (let id = 1; id <= maxId; id++) {
+    const col = paletteColors[id % paletteColors.length];
+    lut[id * 3] = col[0];
+    lut[id * 3 + 1] = col[1];
+    lut[id * 3 + 2] = col[2];
+  }
+  const imgW = image.width;
+  const imgH = image.height;
+  const pixels = image.data;
+  const hasTransform = scale[0] !== 1 || scale[1] !== 1 || offset[0] !== 0 || offset[1] !== 0;
+  let region;
+  let x0;
+  let y0;
+  let drawW;
+  let drawH;
+  if (hasTransform) {
+    const sx = scale[0];
+    const sy = scale[1];
+    const targetH = Math.trunc(labH / sy);
+    const targetW = Math.trunc(labW / sx);
+    const resized = resizeNearest(labData, labH, labW, targetH, targetW);
+    const ox = Math.trunc(offset[0]);
+    const oy = Math.trunc(offset[1]);
+    y0 = Math.max(0, oy);
+    x0 = Math.max(0, ox);
+    const y1 = Math.min(imgH, oy + targetH);
+    const x1 = Math.min(imgW, ox + targetW);
+    if (y1 <= y0 || x1 <= x0) return image;
+    drawH = y1 - y0;
+    drawW = x1 - x0;
+    const my0 = y0 - oy;
+    const mx0 = x0 - ox;
+    region = new Int32Array(drawH * drawW);
+    for (let r = 0; r < drawH; r++) {
+      const srcRow = (my0 + r) * targetW + mx0;
+      region.set(resized.subarray(srcRow, srcRow + drawW), r * drawW);
+    }
+  } else {
+    drawH = Math.min(labH, imgH);
+    drawW = Math.min(labW, imgW);
+    x0 = 0;
+    y0 = 0;
+    region = new Int32Array(drawH * drawW);
+    for (let r = 0; r < drawH; r++) {
+      const srcRow = r * labW;
+      region.set(labData.subarray(srcRow, srcRow + drawW), r * drawW);
+    }
+  }
+  for (let r = 0; r < drawH; r++) {
+    for (let c = 0; c < drawW; c++) {
+      const lab = region[r * drawW + c];
+      if (lab <= 0) continue;
+      const safe = lab > maxId ? maxId : lab;
+      const li = safe * 3;
+      const px = ((y0 + r) * imgW + (x0 + c)) * 4;
+      pixels[px] = Math.trunc(pixels[px] * (1 - alpha) + lut[li] * alpha);
+      pixels[px + 1] = Math.trunc(
+        pixels[px + 1] * (1 - alpha) + lut[li + 1] * alpha
+      );
+      pixels[px + 2] = Math.trunc(
+        pixels[px + 2] * (1 - alpha) + lut[li + 2] * alpha
+      );
+    }
+  }
+  if (outline) {
+    drawLabelOutlines(
+      image,
+      region,
+      x0,
+      y0,
+      drawH,
+      drawW,
+      outlineWidth,
+      outlineColor,
+      lut,
+      maxId
+    );
+  }
+  return image;
+}
+function drawLabelOutlines(image, region, x0, y0, drawH, drawW, outlineWidth, outlineColor, lut, maxId) {
+  const imgW = image.width;
+  const pixels = image.data;
+  const edges = new Uint8Array(drawH * drawW);
+  const at = (r, c) => region[r * drawW + c];
+  for (let r = 0; r < drawH; r++) {
+    for (let c = 0; c < drawW; c++) {
+      const v = at(r, c);
+      let edge = false;
+      if (c + 1 < drawW && v !== at(r, c + 1)) edge = true;
+      if (!edge && c - 1 >= 0 && v !== at(r, c - 1)) edge = true;
+      if (!edge && r + 1 < drawH && v !== at(r + 1, c)) edge = true;
+      if (!edge && r - 1 >= 0 && v !== at(r - 1, c)) edge = true;
+      if (edge && v > 0) edges[r * drawW + c] = 1;
+    }
+  }
+  let finalEdges = edges;
+  if (outlineWidth > 1) {
+    const pad = Math.trunc(outlineWidth / 2);
+    const dilated = new Uint8Array(drawH * drawW);
+    for (let dy = -pad; dy <= pad; dy++) {
+      for (let dx = -pad; dx <= pad; dx++) {
+        const sy = Math.max(0, dy);
+        const ey = drawH + Math.min(0, dy);
+        const sx = Math.max(0, dx);
+        const ex = drawW + Math.min(0, dx);
+        const oy = Math.max(0, -dy);
+        const ox = Math.max(0, -dx);
+        for (let r = sy; r < ey; r++) {
+          for (let c = sx; c < ex; c++) {
+            if (edges[(oy + (r - sy)) * drawW + (ox + (c - sx))]) {
+              dilated[r * drawW + c] = 1;
+            }
+          }
+        }
+      }
+    }
+    for (let i = 0; i < dilated.length; i++) {
+      if (dilated[i] && region[i] > 0) dilated[i] = 1;
+      else dilated[i] = 0;
+    }
+    finalEdges = dilated;
+  }
+  for (let r = 0; r < drawH; r++) {
+    for (let c = 0; c < drawW; c++) {
+      if (!finalEdges[r * drawW + c]) continue;
+      const px = ((y0 + r) * imgW + (x0 + c)) * 4;
+      if (outlineColor !== null) {
+        pixels[px] = outlineColor[0];
+        pixels[px + 1] = outlineColor[1];
+        pixels[px + 2] = outlineColor[2];
+      } else {
+        const lab = region[r * drawW + c];
+        const safe = lab > maxId ? maxId : lab;
+        const li = safe * 3;
+        pixels[px] = Math.trunc(lut[li] * 0.6);
+        pixels[px + 1] = Math.trunc(lut[li + 1] * 0.6);
+        pixels[px + 2] = Math.trunc(lut[li + 2] * 0.6);
+      }
+    }
+  }
+}
+
 export {
   getCentroidSkeleton,
   CENTROID_SKELETON,
@@ -17666,6 +18743,8 @@ export {
   encodeRle,
   decodeRle,
   resizeNearest,
+  traceMaskContours,
+  groupRingsIntoPolygons,
   SegmentationMask,
   UserSegmentationMask,
   PredictedSegmentationMask,
@@ -17718,6 +18797,15 @@ export {
   EXISTS_TTL_MS,
   resolveCropRect,
   Video,
+  rodriguesTransformation,
+  Camera,
+  CameraGroup,
+  InstanceGroup,
+  FrameGroup,
+  RecordingSession,
+  injectSessionFrameResolver,
+  cloneRecordingSession,
+  makeCameraFromDict,
   MediaBunnyVideoBackend,
   toDict,
   fromDict,
@@ -17728,13 +18816,6 @@ export {
   LazyFrameList,
   LabelsSet,
   Labels,
-  rodriguesTransformation,
-  Camera,
-  CameraGroup,
-  InstanceGroup,
-  FrameGroup,
-  RecordingSession,
-  makeCameraFromDict,
   Identity,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
@@ -17765,6 +18846,8 @@ export {
   isAnalysisH5File,
   setLabelImageFileReader,
   loadLabelImages,
+  labelsToCsv,
+  saveLabelsCsv,
   loadSlp,
   saveSlp,
   loadAnalysisH5,
@@ -17811,5 +18894,9 @@ export {
   collectTracks2 as collectTracks,
   computeTrails,
   RenderContext,
-  InstanceContext
+  InstanceContext,
+  clampAlpha,
+  pickColor,
+  drawMasks,
+  drawLabelImage
 };

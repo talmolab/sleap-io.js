@@ -1,7 +1,7 @@
-import { V as Video, L as Labels, R as ROI, B as BoundingBox, a as LabeledFrame, b as LabelsSet, c as ReadCocoOptions, U as UserROI, d as RenderOptions, e as VideoOptions } from './index.browser-BTbimr3i.js';
-export { a4 as AUTO_VIDEO_MATCHER, aA as AnnotationType, a6 as BASENAME_VIDEO_MATCHER, i as BlobByteSource, aP as BoundingBoxOptions, j as ByteSource, aT as CENTROID_SKELETON, br as CLOUD_SCHEMES, ao as Camera, ap as CameraGroup, aV as Centroid, aU as CentroidOptions, bV as CocoAnnotation, bR as CocoCategory, bS as CocoImage, bW as CocoJson, bT as CocoRle, bU as CocoSegmentation, ck as ColorScheme, cj as ColorSpec, N as ConflictResolution, ai as CropOptions, cU as CropRect, C as CropVideoBackend, n as CropWrapOptions, D as DEFAULT_MAX_BYTES, $ as DUPLICATE_MATCHER, cD as DrawTrailsOptions, ah as EXISTS_TTL_MS, G as ErrorMode, c_ as Fill, cV as FlatPoints, ar as FrameGroup, cY as FrameLike, F as FrameStrategy, aa as FsResolver, bs as GDRIVE_HOSTS, bL as GeoJSONFeature, bM as GeoJSONFeatureCollection, aB as Geometry, b3 as GetFrameOptions, a1 as IDENTITY_INSTANCE_MATCHER, a3 as IDENTITY_TRACK_MATCHER, a7 as IMAGE_DEDUP_VIDEO_MATCHER, a0 as IOU_MATCHER, au as Identity, I as ImageBytesReader, bb as ImageVideoBackend, b9 as ImageVideoOptions, av as Instance3D, cL as InstanceContext, aq as InstanceGroup, A as InstanceMatchMethod, J as InstanceMatcher, a_ as LabelImage, bn as LabelImageFileReader, aY as LabelImageObjectInfo, aZ as LabelImageOptions, c4 as LabelsDict, ax as LazyDataStore, ay as LazyFrameList, bm as LoadLabelImagesOptions, cC as MARKER_FUNCTIONS, cm as MarkerShape, W as MatchResult, b6 as MediaBunnyOptions, b7 as MediaBunnyVideoBackend, O as MergeError, X as MergeProgressBar, Q as MergeResult, ab as MergeStrategy, b5 as Mp4BoxVideoBackend, cp as NAMED_COLORS, a2 as NAME_TRACK_MATCHER, _ as OVERLAP_SKELETON_MATCHER, cn as Overlay, cq as PALETTES, a5 as PATH_VIDEO_MATCHER, bl as PagesAs, cl as PaletteName, cW as PointPairs, aR as PredictedBoundingBox, aX as PredictedCentroid, aw as PredictedInstance3D, b0 as PredictedLabelImage, aG as PredictedROI, aO as PredictedSegmentationMask, bv as RETRYABLE_STATUSES, ch as RGB, ci as RGBA, aC as ROIOptions, cZ as RawFrame, cR as RawLabelImage, as as RecordingSession, bA as RemoteIOError, cK as RenderContext, bB as ResolvedUrl, bt as SENSITIVE_HEADERS, bu as SENSITIVE_QUERY_PARAMS, a8 as SHAPE_VIDEO_MATCHER, Y as STRUCTURE_SKELETON_MATCHER, Z as SUBSET_SKELETON_MATCHER, aL as SegmentationMask, aK as SegmentationMaskOptions, f as SeqHeader, h as SeqIndex, S as SeqVideoBackend, z as SkeletonMatchMethod, H as SkeletonMatcher, P as SkeletonMismatchError, r as StreamingH5File, x as StreamingH5Source, b8 as StreamingHdf5VideoBackend, am as SuggestionFrame, T as TrackMatchMethod, K as TrackMatcher, cJ as Trail, cI as TrailTarget, bq as URL_SCHEMES, l as UnsupportedVideoFormatError, aQ as UserBoundingBox, aW as UserCentroid, a$ as UserLabelImage, aN as UserSegmentationMask, aM as UserSegmentationMaskOptions, b4 as VideoBackend, al as VideoBackendError, ak as VideoBackendErrorKind, m as VideoBackendType, b2 as VideoFrame, E as VideoMatchMethod, M as VideoMatcher, co as VideoOverlay, ad as _annotationCentroidXy, af as _findAnnotationLinkMatches, ae as _findAnnotationMatches, az as _registerMaskFactory, ac as _relinkFromPredicted, ag as _resolveMergedIsNegative, cQ as applyOverlay, o as checkDownloadHost, cH as collectTracks, ba as computePrefetchWindow, cF as computeTrails, bZ as createSkeletonFromCategory, k as createVideoBackend, cX as cropFrame, cS as cropPoints, c0 as decodeCocoRle, b$ as decodeCompressedRleCounts, b_ as decodeKeypoints, aI as decodeRle, c1 as decodeSegmentation, aF as decodeWkb, ca as decodeYamlSkeleton, cu as determineColorScheme, cO as drawBboxes, cv as drawCircle, cz as drawCross, cx as drawDiamond, cN as drawLabelImage, cM as drawMasks, cP as drawRois, cw as drawSquare, cA as drawTrails, cy as drawTriangle, aH as encodeRle, aE as encodeWkb, cb as encodeYamlSkeleton, bJ as fetchRetrying, c6 as fromDict, c8 as fromNumpy, aS as getCentroidSkeleton, g as getImageBytesReader, cB as getMarkerFunction, cr as getPalette, bK as headOrRangeProbe, bF as identityHeaders, bp as isAnalysisH5File, bX as isCocoData, bx as isGdriveUrl, w as isStreamingSupported, cg as isTrainingConfig, bw as isUrl, c9 as labelsFromNumpy, be as loadAnalysisH5, bj as loadLabelImages, bc as loadSlp, bg as loadSlpSet, bi as loadVideo, at as makeCameraFromDict, cG as nTrailPaletteColors, b1 as normalizeLabelIds, q as openGdrive, v as openH5Worker, t as openStreamingH5, bY as parseCocoJson, p as parseGdrive, bI as parseRetryAfterMs, bE as raiseRemote, aD as rasterizeGeometry, c2 as readCoco, c3 as readCocoSet, bQ as readGeoJSON, cc as readSkeletonJson, y as readSlpStreaming, cf as readTrainingConfigSkeleton, ce as readTrainingConfigSkeletons, by as redactUrl, bz as redactedCauseSummary, aJ as resizeNearest, cs as resolveColor, aj as resolveCropRect, cE as resolveTrailNode, bC as resolveUrl, ct as rgbToCSS, an as rodriguesTransformation, bO as roisFromGeoJSON, bN as roisToGeoJSON, bf as saveAnalysisH5, bd as saveSlp, bh as saveSlpSet, bo as saveSlpToBytes, a9 as setFsResolver, s as setImageBytesReader, bk as setLabelImageFileReader, bD as statusToMessage, bG as stripCrossOriginHeaders, c5 as toDict, c7 as toNumpy, cT as uncropPoints, u as urlFromConfirmation, bH as withRetries, bP as writeGeoJSON, cd as writeSkeletonJson } from './index.browser-BTbimr3i.js';
-import { I as Instance, S as Skeleton, T as Track, P as PredictedInstance } from './instance-Dtvrjx8R.js';
-export { E as Edge, N as Node, k as NodeOrIndex, b as Point, d as PointsArray, c as PredictedPoint, e as PredictedPointsArray, a as Symmetry, _ as _registerCentroidFactory, p as pointsEmpty, g as pointsFromArray, i as pointsFromDict, f as predictedPointsEmpty, h as predictedPointsFromArray, j as predictedPointsFromDict } from './instance-Dtvrjx8R.js';
+import { V as Video, L as Labels, R as ROI, B as BoundingBox, a as LabeledFrame, b as LabelsSet, c as ReadCocoOptions, U as UserROI, d as RenderOptions, e as VideoOptions, f as RGB, C as Centroid, g as LabelImage, h as RawLabelImage, S as SegmentationMask, P as PaletteName } from './index.browser-x_M9zL4e.js';
+export { aa as AUTO_VIDEO_MATCHER, aI as AnnotationType, ac as BASENAME_VIDEO_MATCHER, m as BlobByteSource, aY as BoundingBoxOptions, n as ByteSource, b0 as CENTROID_SKELETON, bB as CLOUD_SCHEMES, au as Camera, av as CameraGroup, b1 as CentroidOptions, c3 as CocoAnnotation, b$ as CocoCategory, c0 as CocoImage, c4 as CocoJson, c1 as CocoRle, c2 as CocoSegmentation, ct as ColorScheme, cs as ColorSpec, Y as ConflictResolution, ao as CropOptions, cY as CropRect, r as CropVideoBackend, t as CropWrapOptions, bz as CsvExportOptions, D as DEFAULT_MAX_BYTES, a5 as DUPLICATE_MATCHER, cL as DrawTrailsOptions, an as EXISTS_TTL_MS, N as ErrorMode, d2 as Fill, cZ as FlatPoints, ax as FrameGroup, d0 as FrameLike, M as FrameStrategy, ag as FsResolver, bC as GDRIVE_HOSTS, bV as GeoJSONFeature, bW as GeoJSONFeatureCollection, aJ as Geometry, ba as GetFrameOptions, a7 as IDENTITY_INSTANCE_MATCHER, a9 as IDENTITY_TRACK_MATCHER, ad as IMAGE_DEDUP_VIDEO_MATCHER, a6 as IOU_MATCHER, aC as Identity, I as ImageBytesReader, bi as ImageVideoBackend, bg as ImageVideoOptions, aD as Instance3D, cT as InstanceContext, aw as InstanceGroup, J as InstanceMatchMethod, Q as InstanceMatcher, bu as LabelImageFileReader, b4 as LabelImageObjectInfo, b5 as LabelImageOptions, ce as LabelsDict, aF as LazyDataStore, aG as LazyFrameList, bt as LoadLabelImagesOptions, cK as MARKER_FUNCTIONS, cu as MarkerShape, a0 as MatchResult, bd as MediaBunnyOptions, be as MediaBunnyVideoBackend, Z as MergeError, a1 as MergeProgressBar, $ as MergeResult, ah as MergeStrategy, bc as Mp4BoxVideoBackend, cx as NAMED_COLORS, a8 as NAME_TRACK_MATCHER, a4 as OVERLAP_SKELETON_MATCHER, cv as Overlay, cy as PALETTES, ab as PATH_VIDEO_MATCHER, bs as PagesAs, c_ as PointPairs, a_ as PredictedBoundingBox, b3 as PredictedCentroid, aE as PredictedInstance3D, b7 as PredictedLabelImage, aO as PredictedROI, aX as PredictedSegmentationMask, bF as RETRYABLE_STATUSES, cr as RGBA, aK as ROIOptions, d1 as RawFrame, ay as RecordingSession, bK as RemoteIOError, cS as RenderContext, bL as ResolvedUrl, bD as SENSITIVE_HEADERS, bE as SENSITIVE_QUERY_PARAMS, ae as SHAPE_VIDEO_MATCHER, a2 as STRUCTURE_SKELETON_MATCHER, a3 as SUBSET_SKELETON_MATCHER, aU as SegmentationMaskOptions, k as SeqHeader, l as SeqIndex, j as SeqVideoBackend, H as SkeletonMatchMethod, O as SkeletonMatcher, _ as SkeletonMismatchError, y as StreamingH5File, F as StreamingH5Source, bf as StreamingHdf5VideoBackend, as as SuggestionFrame, T as TrackMatchMethod, W as TrackMatcher, cR as Trail, cQ as TrailTarget, bA as URL_SCHEMES, p as UnsupportedVideoFormatError, aZ as UserBoundingBox, b2 as UserCentroid, b6 as UserLabelImage, aW as UserSegmentationMask, aV as UserSegmentationMaskOptions, bb as VideoBackend, ar as VideoBackendError, aq as VideoBackendErrorKind, q as VideoBackendType, b9 as VideoFrame, K as VideoMatchMethod, X as VideoMatcher, cw as VideoOverlay, aj as _annotationCentroidXy, al as _findAnnotationLinkMatches, ak as _findAnnotationMatches, aH as _registerMaskFactory, ai as _relinkFromPredicted, am as _resolveMergedIsNegative, w as checkDownloadHost, aA as cloneRecordingSession, cP as collectTracks, bh as computePrefetchWindow, cN as computeTrails, c7 as createSkeletonFromCategory, o as createVideoBackend, c$ as cropFrame, cW as cropPoints, ca as decodeCocoRle, c9 as decodeCompressedRleCounts, c8 as decodeKeypoints, aQ as decodeRle, cb as decodeSegmentation, aN as decodeWkb, ck as decodeYamlSkeleton, cC as determineColorScheme, cD as drawCircle, cH as drawCross, cF as drawDiamond, cV as drawLabelImage, cU as drawMasks, cE as drawSquare, cI as drawTrails, cG as drawTriangle, aP as encodeRle, aM as encodeWkb, cl as encodeYamlSkeleton, bT as fetchRetrying, cg as fromDict, ci as fromNumpy, a$ as getCentroidSkeleton, i as getImageBytesReader, cJ as getMarkerFunction, cz as getPalette, aT as groupRingsIntoPolygons, bU as headOrRangeProbe, bP as identityHeaders, az as injectSessionFrameResolver, bw as isAnalysisH5File, c5 as isCocoData, bH as isGdriveUrl, E as isStreamingSupported, cq as isTrainingConfig, bG as isUrl, cj as labelsFromNumpy, bx as labelsToCsv, bl as loadAnalysisH5, bq as loadLabelImages, bj as loadSlp, bn as loadSlpSet, bp as loadVideo, aB as makeCameraFromDict, cO as nTrailPaletteColors, b8 as normalizeLabelIds, x as openGdrive, A as openH5Worker, z as openStreamingH5, c6 as parseCocoJson, u as parseGdrive, bS as parseRetryAfterMs, bO as raiseRemote, aL as rasterizeGeometry, cc as readCoco, cd as readCocoSet, b_ as readGeoJSON, cm as readSkeletonJson, G as readSlpStreaming, cp as readTrainingConfigSkeleton, co as readTrainingConfigSkeletons, bI as redactUrl, bJ as redactedCauseSummary, aR as resizeNearest, cA as resolveColor, ap as resolveCropRect, cM as resolveTrailNode, bM as resolveUrl, cB as rgbToCSS, at as rodriguesTransformation, bY as roisFromGeoJSON, bX as roisToGeoJSON, bm as saveAnalysisH5, by as saveLabelsCsv, bk as saveSlp, bo as saveSlpSet, bv as saveSlpToBytes, af as setFsResolver, s as setImageBytesReader, br as setLabelImageFileReader, bN as statusToMessage, bQ as stripCrossOriginHeaders, cf as toDict, ch as toNumpy, aS as traceMaskContours, cX as uncropPoints, v as urlFromConfirmation, bR as withRetries, bZ as writeGeoJSON, cn as writeSkeletonJson } from './index.browser-x_M9zL4e.js';
+import { I as Instance, S as Skeleton, T as Track, P as PredictedInstance } from './instance-D8nEmSif.js';
+export { E as Edge, N as Node, n as NodeOrIndex, b as Point, f as PointColumns, k as PointView, d as PointsArray, c as PredictedPoint, e as PredictedPointsArray, a as Symmetry, _ as _registerCentroidFactory, h as clonePoint, p as pointsEmpty, i as pointsFromArray, l as pointsFromDict, g as predictedPointsEmpty, j as predictedPointsFromArray, m as predictedPointsFromDict } from './instance-D8nEmSif.js';
 
 /**
  * Read TrackMate CSV exports into sleap-io data structures.
@@ -723,4 +723,94 @@ declare function checkFfmpeg(): Promise<boolean>;
  */
 declare function renderVideo(source: Labels | LabeledFrame[], outputPath: string, options?: VideoOptions): Promise<void>;
 
-export { BoundingBox, type CreateDataYamlOptions, type ImageShape, Instance, JABS_DEFAULT_EDGE_INDICES, JABS_DEFAULT_KEYPOINT_NAMES, JABS_DEFAULT_SKELETON, JABS_DEFAULT_SYMMETRY_INDICES, LabeledFrame, Labels, LabelsSet, type LineFormat, type LoadDlcOptions, type LoadDlcProjectOptions, type LoadDlcSplitsOptions, type LoadJabsOptions, type ParseLabelFileOptions, type ParsedLabelFile, PredictedInstance, ROI, ReadCocoOptions, type ReadLabelsOptions, type ReadLabelsSetOptions, RenderOptions, Skeleton, Track, type TrackMateOptions, UserROI, Video, VideoOptions, type WriteLabelsOptions, attachConfigSkeleton, buildClassNamesFromBboxes, buildClassNamesFromRois, checkFfmpeg, classNamesFromConfig, createDataYaml, createSkeletonFromConfig, createSplitsFromLabels, denormalizeCoordinates, detectLineFormat, discoverConfig, dlcMergedOrder, encodePng, extractFrameIndex, isDlcFile, isDlcProjectPath, isTrackMateFile, loadCoco, loadCocoSet, loadDlc, loadDlcProject, loadDlcSplits, loadJabs, loadTrackMate, loadUltralytics, looksLikeDlcConfig, makeJabsDefaultSkeleton, makeSimpleSkeleton, normalizeCoordinates, parseDataYaml, parseDlcCrop, parseLabelFile, predictionToInstance, probeImageSize, readCsvScorer, readDlcConfig, readDlcDataframe, readDlcSplit, readLabels, readLabelsSet, readPickle, readTrackMateCsv, renderImage, renderVideo, resolveConfig, saveImage, saveUltralytics, setSourceVideo, staticObjectToRoi, toDataURL, toJPEG, toPNG, videoSetsStemMap, warnIfNonlexicographic, writeBboxLabelFile, writeLabelFile, writeLabels, writeRoiLabelFile };
+/**
+ * Draw bounding boxes on an image.
+ *
+ * Each box is drawn as a closed path through its (rotation-aware) corners, with
+ * an optional translucent fill, and—for `PredictedBoundingBox`—a "score" label
+ * near the top-left corner. Rendered through an internal skia-canvas `Canvas`.
+ * Port of `draw_bboxes` (overlays.py L363-510).
+ *
+ * @param image - RGBA ImageData, mutated in place.
+ * @param bboxes - Bounding boxes to draw.
+ * @param opts - `color` (default [0,255,0]), per-bbox `colors`, `lineWidth`
+ *   (2), `fillAlpha` (0).
+ * @returns The same ImageData.
+ */
+declare function drawBboxes(image: ImageData, bboxes: BoundingBox[], opts?: {
+    color?: RGB;
+    colors?: RGB[];
+    lineWidth?: number;
+    fillAlpha?: number;
+}): ImageData;
+/**
+ * Draw ROI geometries on an image.
+ *
+ * Renders each ROI's GeoJSON geometry: polygons (with even-odd holes), points
+ * and multipoints (filled circles, radius = max(lineWidth, 2)), and line
+ * strings. Rendered through an internal skia-canvas `Canvas`. Port of
+ * `draw_rois` + `_draw_geometry` (overlays.py L22-112, L513-640).
+ *
+ * @param image - RGBA ImageData, mutated in place.
+ * @param rois - ROIs to draw.
+ * @param opts - `color` (default [0,255,0]), per-ROI `colors`, `lineWidth` (2),
+ *   `fillAlpha` (0).
+ * @returns The same ImageData.
+ */
+declare function drawRois(image: ImageData, rois: ROI[], opts?: {
+    color?: RGB;
+    colors?: RGB[];
+    lineWidth?: number;
+    fillAlpha?: number;
+}): ImageData;
+/**
+ * Draw centroids as filled circle markers on an image.
+ *
+ * Each centroid is drawn as a filled circle of radius `markerSize` at
+ * `(centroid.x - offsetX, centroid.y - offsetY)`, in a single `color` or a
+ * per-centroid `colors` list (cycled when shorter than the centroid list).
+ * Rendered through an internal skia-canvas `Canvas`. Port of `draw_centroids`
+ * (overlays.py, sleap-io PR #506).
+ *
+ * @param image - RGBA ImageData, mutated in place.
+ * @param centroids - Centroids to draw.
+ * @param opts - `color` (default [0,255,0]), per-centroid `colors`, `markerSize`
+ *   (5), `alpha` (1), `offset` ([0,0]).
+ * @returns The same ImageData.
+ */
+declare function drawCentroids(image: ImageData, centroids: Centroid[], opts?: {
+    color?: RGB;
+    colors?: RGB[];
+    markerSize?: number;
+    alpha?: number;
+    offset?: [number, number];
+}): ImageData;
+/**
+ * Apply an annotation overlay to an image, dispatching by type.
+ *
+ * Mirrors Python `_apply_overlay` (core.py L473-566): a `LabelImage` (or raw
+ * Int32Array-backed object) routes to {@link drawLabelImage}; a non-empty list
+ * routes to {@link drawMasks} / {@link drawRois} / {@link drawBboxes} with
+ * per-item palette colors. A `list[LabelImage]` raises (per-frame dispatch must
+ * happen at the renderVideo level), and unknown element types raise.
+ *
+ * @param image - RGBA ImageData, mutated in place.
+ * @param overlay - A LabelImage, or a list of SegmentationMask / ROI / BoundingBox.
+ * @param opts - `alpha` (0.3), `palette` ("distinct"), `outline` (false),
+ *   `outlineWidth` (1), `outlineColor` (null), plus optional per-element
+ *   `colors` for a list overlay. When `colors` is provided it overrides the
+ *   positional `palette` coloring (used by callers to color overlays by track
+ *   identity); it must match the overlay length and is ignored for label
+ *   images. Mirrors Python `_apply_overlay` (core.py L473-566, PR #470).
+ * @returns The same ImageData.
+ */
+declare function applyOverlay(image: ImageData, overlay: LabelImage | RawLabelImage | SegmentationMask | ROI | BoundingBox | SegmentationMask[] | ROI[] | BoundingBox[], opts?: {
+    alpha?: number;
+    palette?: PaletteName | string;
+    outline?: boolean;
+    outlineWidth?: number;
+    outlineColor?: RGB | null;
+    colors?: RGB[] | null;
+}): ImageData;
+
+export { BoundingBox, Centroid, type CreateDataYamlOptions, type ImageShape, Instance, JABS_DEFAULT_EDGE_INDICES, JABS_DEFAULT_KEYPOINT_NAMES, JABS_DEFAULT_SKELETON, JABS_DEFAULT_SYMMETRY_INDICES, LabelImage, LabeledFrame, Labels, LabelsSet, type LineFormat, type LoadDlcOptions, type LoadDlcProjectOptions, type LoadDlcSplitsOptions, type LoadJabsOptions, PaletteName, type ParseLabelFileOptions, type ParsedLabelFile, PredictedInstance, RGB, ROI, RawLabelImage, ReadCocoOptions, type ReadLabelsOptions, type ReadLabelsSetOptions, RenderOptions, SegmentationMask, Skeleton, Track, type TrackMateOptions, UserROI, Video, VideoOptions, type WriteLabelsOptions, applyOverlay, attachConfigSkeleton, buildClassNamesFromBboxes, buildClassNamesFromRois, checkFfmpeg, classNamesFromConfig, createDataYaml, createSkeletonFromConfig, createSplitsFromLabels, denormalizeCoordinates, detectLineFormat, discoverConfig, dlcMergedOrder, drawBboxes, drawCentroids, drawRois, encodePng, extractFrameIndex, isDlcFile, isDlcProjectPath, isTrackMateFile, loadCoco, loadCocoSet, loadDlc, loadDlcProject, loadDlcSplits, loadJabs, loadTrackMate, loadUltralytics, looksLikeDlcConfig, makeJabsDefaultSkeleton, makeSimpleSkeleton, normalizeCoordinates, parseDataYaml, parseDlcCrop, parseLabelFile, predictionToInstance, probeImageSize, readCsvScorer, readDlcConfig, readDlcDataframe, readDlcSplit, readLabels, readLabelsSet, readPickle, readTrackMateCsv, renderImage, renderVideo, resolveConfig, saveImage, saveUltralytics, setSourceVideo, staticObjectToRoi, toDataURL, toJPEG, toPNG, videoSetsStemMap, warnIfNonlexicographic, writeBboxLabelFile, writeLabelFile, writeLabels, writeRoiLabelFile };
