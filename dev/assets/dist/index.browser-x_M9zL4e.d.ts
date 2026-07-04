@@ -2876,9 +2876,22 @@ interface StreamingH5Options {
     headers?: Record<string, string>;
 }
 /**
+ * A lazy random-access byte source backed by native reads (e.g. a Tauri
+ * `read_range` command). The streaming Worker pulls slices on demand through a
+ * SharedArrayBuffer + `Atomics` bridge (the "B-seam" range reader), so large
+ * files are never fully materialized in WASM memory. `readRange` runs on the
+ * MAIN thread (the Worker cannot do the native IPC itself).
+ */
+interface RangeSource {
+    /** Total file size in bytes. */
+    size: number;
+    /** Read `[offset, offset + length)`; may return fewer bytes at EOF. */
+    readRange: (offset: number, length: number) => Promise<Uint8Array>;
+}
+/**
  * Source types supported by the streaming HDF5 file.
  */
-type StreamingH5Source = string | ArrayBuffer | Uint8Array | File;
+type StreamingH5Source = string | ArrayBuffer | Uint8Array | File | RangeSource;
 /**
  * A streaming HDF5 file handle that uses a Web Worker for range request access.
  *
@@ -2891,6 +2904,9 @@ declare class StreamingH5File {
     private pendingMessages;
     private _keys;
     private _isOpen;
+    private rangeReader?;
+    private rangeControl?;
+    private rangeData?;
     constructor();
     private handleMessage;
     private handleError;
@@ -2930,9 +2946,25 @@ declare class StreamingH5File {
      */
     openBuffer(buffer: ArrayBuffer | Uint8Array, options?: StreamingH5Options): Promise<void>;
     /**
+     * Open an HDF5 file from a lazy {@link RangeSource} via the B-seam bridge.
+     *
+     * The Worker registers a custom Emscripten device whose synchronous `read`
+     * blocks on `Atomics.wait` over a SharedArrayBuffer; this main thread services
+     * each request by calling `readRange` and waking the Worker. Requires
+     * cross-origin isolation (SharedArrayBuffer / COOP+COEP).
+     */
+    openRange(source: RangeSource, options?: StreamingH5Options): Promise<void>;
+    /**
+     * Service a Worker byte-request: read via the app's `readRange`, copy the
+     * bytes into the shared data area, then wake the (blocked) Worker. STATE is
+     * stored last (release) so the Worker's `Atomics.wait` return (acquire) sees
+     * the data + returned length.
+     */
+    private serviceRangeRequest;
+    /**
      * Open an HDF5 file from any supported source.
      *
-     * @param source - URL string, File, ArrayBuffer, or Uint8Array
+     * @param source - URL string, File, ArrayBuffer, Uint8Array, or RangeSource
      * @param options - Optional settings
      */
     openAny(source: StreamingH5Source, options?: StreamingH5Options): Promise<void>;
@@ -3459,6 +3491,14 @@ type OpenH5Options = {
      * range streaming with custom headers is not yet supported on the main thread.
      */
     headers?: Record<string, string>;
+    /**
+     * URL to the h5wasm IIFE bundle loaded by the streaming Worker (via
+     * `importScripts`). Defaults to a CDN. Set this to a **same-origin** URL when
+     * the page is cross-origin-isolated (COOP/COEP), since COEP blocks the
+     * cross-origin CDN `importScripts` — e.g. a desktop app that serves its own
+     * bundled `h5wasm.js`.
+     */
+    h5wasmUrl?: string;
 };
 
 /** How TIFF pages map onto LabelImage frames. Mirrors Python `pages_as`. */
