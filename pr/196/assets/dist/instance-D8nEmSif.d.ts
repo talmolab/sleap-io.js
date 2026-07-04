@@ -99,6 +99,18 @@ type PredictedPoint = Point & {
 };
 type PointsArray = Point[];
 type PredictedPointsArray = PredictedPoint[];
+/**
+ * The SLP readers' parsed point columns (`x`/`y`/`visible`/`complete`[/`score`]),
+ * as plain `number[]` (eager reader) or `Float64Array` (streaming worker). Fed to
+ * {@link Instance._fromColumns} to build an instance without a `Point[]`.
+ */
+interface PointColumns {
+    x?: ArrayLike<number>;
+    y?: ArrayLike<number>;
+    visible?: ArrayLike<number>;
+    complete?: ArrayLike<number>;
+    score?: ArrayLike<number>;
+}
 declare function pointsEmpty(length: number, names?: string[]): PointsArray;
 declare function predictedPointsEmpty(length: number, names?: string[]): PredictedPointsArray;
 /**
@@ -157,6 +169,29 @@ declare class Instance {
     });
     /** Pack a transient `Point[]` into the columnar typed-array storage. */
     _ingest(pts: PointsArray): void;
+    /**
+     * Fill the columnar storage directly from the SLP readers' parsed point
+     * columns over `[start, end)`, skipping the intermediate `Point[]` literals
+     * (the slicePoints → pointsFromArray → `_ingest` path allocates ~3 throwaway
+     * objects per point). Values match that path exactly: `x ?? NaN`, `y ?? NaN`,
+     * `Boolean(visible)`, `Boolean(complete)`, and (predicted) `score ?? NaN`;
+     * names derive from the skeleton. Used by {@link Instance._fromColumns}.
+     */
+    _fillFromColumns(columns: PointColumns, start: number, end: number, predicted: boolean): void;
+    /**
+     * Build an Instance directly from reader point columns over `[start, end)`,
+     * without materializing a `Point[]`. Internal fast path for buildLabeledFrames;
+     * equivalent to `new Instance({ points: pointsFromArray(slicePoints(...)) })`.
+     */
+    static _fromColumns(opts: {
+        columns: PointColumns;
+        start: number;
+        end: number;
+        skeleton: Skeleton;
+        track?: Track | null;
+        fromPredicted?: PredictedInstance | null;
+        trackingScore?: number;
+    }): Instance;
     /** Lazily allocate the score column (for a user instance gaining scores). */
     _scoreColumn(): Float64Array;
     /** Node name for point `i` — derived from the skeleton unless overridden. */
@@ -261,6 +296,22 @@ declare class PredictedInstance extends Instance {
     static empty(options: {
         skeleton: Skeleton;
     }): PredictedInstance;
+    /**
+     * Build a PredictedInstance directly from reader point columns over
+     * `[start, end)`, without materializing a `Point[]`. Internal fast path for
+     * buildLabeledFrames; equivalent to `new PredictedInstance({ points:
+     * predictedPointsFromArray(slicePoints(...)) })`.
+     */
+    static _fromColumns(opts: {
+        columns: PointColumns;
+        start: number;
+        end: number;
+        skeleton: Skeleton;
+        track?: Track | null;
+        score?: number;
+        trackingScore?: number;
+        fromPredicted?: PredictedInstance | null;
+    }): PredictedInstance;
     numpy(options?: {
         scores?: boolean;
         invisibleAsNaN?: boolean;
@@ -270,4 +321,4 @@ declare class PredictedInstance extends Instance {
 declare function pointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PointsArray;
 declare function predictedPointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PredictedPointsArray;
 
-export { Edge as E, Instance as I, Node as N, PredictedInstance as P, Skeleton as S, Track as T, _registerCentroidFactory as _, Symmetry as a, type Point as b, type PredictedPoint as c, type PointsArray as d, type PredictedPointsArray as e, predictedPointsEmpty as f, clonePoint as g, pointsFromArray as h, predictedPointsFromArray as i, PointView as j, pointsFromDict as k, predictedPointsFromDict as l, type NodeOrIndex as m, pointsEmpty as p };
+export { Edge as E, Instance as I, Node as N, PredictedInstance as P, Skeleton as S, Track as T, _registerCentroidFactory as _, Symmetry as a, type Point as b, type PredictedPoint as c, type PointsArray as d, type PredictedPointsArray as e, type PointColumns as f, predictedPointsEmpty as g, clonePoint as h, pointsFromArray as i, predictedPointsFromArray as j, PointView as k, pointsFromDict as l, predictedPointsFromDict as m, type NodeOrIndex as n, pointsEmpty as p };

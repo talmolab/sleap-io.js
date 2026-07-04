@@ -202,6 +202,56 @@ var Instance = class _Instance {
     this._names = names;
     this._n = n;
   }
+  /**
+   * Fill the columnar storage directly from the SLP readers' parsed point
+   * columns over `[start, end)`, skipping the intermediate `Point[]` literals
+   * (the slicePoints → pointsFromArray → `_ingest` path allocates ~3 throwaway
+   * objects per point). Values match that path exactly: `x ?? NaN`, `y ?? NaN`,
+   * `Boolean(visible)`, `Boolean(complete)`, and (predicted) `score ?? NaN`;
+   * names derive from the skeleton. Used by {@link Instance._fromColumns}.
+   */
+  _fillFromColumns(columns, start, end, predicted) {
+    const n = Math.max(0, end - start);
+    const xy = new Float64Array(2 * n);
+    const visible = new Uint8Array(n);
+    const complete = new Uint8Array(n);
+    const score = predicted ? new Float64Array(n) : null;
+    const cx = columns.x;
+    const cy = columns.y;
+    const cv = columns.visible;
+    const cc = columns.complete;
+    const cs = columns.score;
+    for (let i = 0; i < n; i += 1) {
+      const src = start + i;
+      const j = i << 1;
+      xy[j] = cx && cx[src] != null ? cx[src] : Number.NaN;
+      xy[j + 1] = cy && cy[src] != null ? cy[src] : Number.NaN;
+      visible[i] = cv && cv[src] ? 1 : 0;
+      complete[i] = cc && cc[src] ? 1 : 0;
+      if (score)
+        score[i] = cs && cs[src] != null ? cs[src] : Number.NaN;
+    }
+    this._xy = xy;
+    this._visible = visible;
+    this._complete = complete;
+    this._score = score;
+    this._names = null;
+    this._n = n;
+  }
+  /**
+   * Build an Instance directly from reader point columns over `[start, end)`,
+   * without materializing a `Point[]`. Internal fast path for buildLabeledFrames;
+   * equivalent to `new Instance({ points: pointsFromArray(slicePoints(...)) })`.
+   */
+  static _fromColumns(opts) {
+    const inst = Object.create(_Instance.prototype);
+    inst.skeleton = opts.skeleton;
+    inst.track = opts.track ?? null;
+    inst.fromPredicted = opts.fromPredicted ?? null;
+    inst.trackingScore = opts.trackingScore ?? 0;
+    inst._fillFromColumns(opts.columns, opts.start, opts.end, false);
+    return inst;
+  }
   /** Lazily allocate the score column (for a user instance gaining scores). */
   _scoreColumn() {
     if (!this._score) this._score = new Float64Array(this._n).fill(Number.NaN);
@@ -499,6 +549,24 @@ var PredictedInstance = class _PredictedInstance extends Instance {
       ),
       skeleton: options.skeleton
     });
+  }
+  /**
+   * Build a PredictedInstance directly from reader point columns over
+   * `[start, end)`, without materializing a `Point[]`. Internal fast path for
+   * buildLabeledFrames; equivalent to `new PredictedInstance({ points:
+   * predictedPointsFromArray(slicePoints(...)) })`.
+   */
+  static _fromColumns(opts) {
+    const inst = Object.create(
+      _PredictedInstance.prototype
+    );
+    inst.skeleton = opts.skeleton;
+    inst.track = opts.track ?? null;
+    inst.fromPredicted = opts.fromPredicted ?? null;
+    inst.trackingScore = opts.trackingScore ?? 0;
+    inst.score = opts.score ?? 0;
+    inst._fillFromColumns(opts.columns, opts.start, opts.end, true);
+    return inst;
   }
   numpy(options) {
     const invisibleAsNaN = options?.invisibleAsNaN ?? true;

@@ -24,7 +24,7 @@ import {
   resolveCameraKey,
   resolveIdentity,
   resolveVideoFilename
-} from "./chunk-25BN3FTN.js";
+} from "./chunk-NIFGJKOL.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -12069,9 +12069,10 @@ function buildLabeledFrames(options) {
       const track = trackId >= 0 ? tracks[trackId] : null;
       let instance;
       if (instanceType === 0) {
-        const points = slicePoints(pointsData, pointStart, pointEnd);
-        instance = new Instance({
-          points: pointsFromArray(points, skeleton.nodeNames),
+        instance = Instance._fromColumns({
+          columns: pointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           trackingScore
@@ -12085,9 +12086,10 @@ function buildLabeledFrames(options) {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = slicePoints(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({
-          points: predictedPointsFromArray(points, skeleton.nodeNames),
+        instance = PredictedInstance._fromColumns({
+          columns: predPointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           score,
@@ -12144,22 +12146,6 @@ function parseVideoIdFromDataset(dataset) {
   if (!group.startsWith("video")) return null;
   const id = Number(group.slice(5));
   return Number.isNaN(id) ? null : id;
-}
-function slicePoints(data, start, end, predicted = false) {
-  const xs = data.x ?? [];
-  const ys = data.y ?? [];
-  const visible = data.visible ?? [];
-  const complete = data.complete ?? [];
-  const scores = data.score ?? [];
-  const points = [];
-  for (let i = start; i < end; i += 1) {
-    if (predicted) {
-      points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
-    } else {
-      points.push([xs[i], ys[i], visible[i], complete[i]]);
-    }
-  }
-  return points;
 }
 
 // src/codecs/slp/write.ts
@@ -16487,9 +16473,10 @@ function buildLabeledFrames2(options) {
       const track = trackId >= 0 ? tracks[trackId] : null;
       let instance;
       if (instanceType === 0) {
-        const points = slicePoints2(pointsData, pointStart, pointEnd);
-        instance = new Instance({
-          points: pointsFromArray(points, skeleton.nodeNames),
+        instance = Instance._fromColumns({
+          columns: pointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           trackingScore
@@ -16503,9 +16490,10 @@ function buildLabeledFrames2(options) {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = slicePoints2(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({
-          points: predictedPointsFromArray(points, skeleton.nodeNames),
+        instance = PredictedInstance._fromColumns({
+          columns: predPointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           score,
@@ -16635,22 +16623,6 @@ function readCentroids(file, _videos, tracks) {
     centroids.push([centroid, videoIdx, frameIdxVal]);
   }
   return centroids;
-}
-function slicePoints2(data, start, end, predicted = false) {
-  const xs = data.x ?? [];
-  const ys = data.y ?? [];
-  const visible = data.visible ?? [];
-  const complete = data.complete ?? [];
-  const scores = data.score ?? [];
-  const points = [];
-  for (let i = start; i < end; i += 1) {
-    if (predicted) {
-      points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
-    } else {
-      points.push([xs[i], ys[i], visible[i], complete[i]]);
-    }
-  }
-  return points;
 }
 
 // src/io/main.ts
