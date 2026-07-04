@@ -370,9 +370,11 @@ function getDatasetMeta(path) {
 // blob, skipping h5wasm's Dataset.value (which allocates ~8 Uint8Array.slice per
 // record — the dominant cost of opening a large project). Mirrors
 // readCompoundColumnsManual in ./h5-compound.ts (keep them in lockstep). Returns
-// a { memberName: number[] } record, or null (caller falls back to .value) for
-// anything not a plain-numeric compound. Values match .value except int64 comes
-// back as number (every consumer routes these through Number()).
+// { columns: { memberName: Float64Array }, buffers: ArrayBuffer[] } — the buffers
+// are the postMessage transfer list so the columns move to the main thread
+// instead of being structured-cloned. Returns null (caller falls back to .value)
+// for anything not a plain-numeric compound. Values match .value except int64
+// comes back as number (every consumer routes these through Number()).
 function readCompoundColumnsWorker(dataset, M) {
   const md = dataset.metadata;
   const members = md && md.compound_type && md.compound_type.members;
@@ -389,10 +391,19 @@ function readCompoundColumnsWorker(dataset, M) {
   }
   if (!(M && M._malloc && M.get_dataset_data && M.HEAPU8 && M._free)) return null;
   const n = shape[0];
+  // Columns are Float64Array (every SLEAP field — coords, scores, and integer
+  // id/index columns up to 2^53 — is exact in f64) so their backing buffers can
+  // be TRANSFERRED to the main thread instead of structured-cloned. \`buffers\`
+  // is the postMessage transfer list.
   const columns = {};
+  const buffers = [];
   if (n === 0) {
-    for (let z = 0; z < members.length; z++) columns[members[z].name] = [];
-    return columns;
+    for (let z = 0; z < members.length; z++) {
+      const c = new Float64Array(0);
+      columns[members[z].name] = c;
+      buffers.push(c.buffer);
+    }
+    return { columns: columns, buffers: buffers };
   }
   const nbytes = recSize * n;
   const dptr = M._malloc(nbytes);
@@ -407,7 +418,7 @@ function readCompoundColumnsWorker(dataset, M) {
   const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
   for (let j = 0; j < members.length; j++) {
     const m = members[j];
-    const col = new Array(n);
+    const col = new Float64Array(n);
     const off = m.offset, sz = m.size, isFloat = (m.type === 1);
     const signed = (m.signed !== false), le = (m.littleEndian !== false);
     for (let i = 0; i < n; i++) {
@@ -421,8 +432,9 @@ function readCompoundColumnsWorker(dataset, M) {
       col[i] = v;
     }
     columns[m.name] = col;
+    buffers.push(col.buffer);
   }
-  return columns;
+  return { columns: columns, buffers: buffers };
 }
 
 function getDatasetValue(path, slice) {
@@ -482,13 +494,13 @@ function getDatasetValue(path, slice) {
   // Dataset.value. normalizeStructData accepts a { field: array } record as-is, so
   // no caller change is needed; falls through to .value when not applicable.
   if (!slice) {
-    const cols = readCompoundColumnsWorker(dataset, M);
-    if (cols) {
+    const res = readCompoundColumnsWorker(dataset, M);
+    if (res) {
       return {
-        value: { type: 'columns', columns: cols },
+        value: { type: 'columns', columns: res.columns },
         shape: dataset.shape,
         dtype: dataset.dtype,
-        transferables: []
+        transferables: res.buffers
       };
     }
   }

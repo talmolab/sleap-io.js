@@ -3,12 +3,7 @@ import {
   _relinkFromPredicted,
   _resolveMergedIsNegative,
 } from "./labeled-frame.js";
-import {
-  Instance,
-  PredictedInstance,
-  Track,
-  clonePoint,
-} from "./instance.js";
+import { Instance, PredictedInstance, Track, clonePoint } from "./instance.js";
 import type {
   Point,
   PointsArray,
@@ -18,11 +13,11 @@ import type {
 import { Skeleton, Node, Edge, Symmetry } from "./skeleton.js";
 import { SuggestionFrame } from "./suggestions.js";
 import { Video } from "./video.js";
-import { RecordingSession } from "./camera.js";
-import { Identity } from "./identity.js";
+import type { RecordingSession } from "./camera.js";
+import type { Identity } from "./identity.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
-import { LazyDataStore, LazyFrameList } from "./lazy.js";
+import { type LazyDataStore, LazyFrameList } from "./lazy.js";
 import { LabelsSet } from "./labels-set.js";
 import {
   SkeletonMatcher,
@@ -268,10 +263,7 @@ export class Labels {
    * The set must stay in sync with `this.tracks`: every push here also adds to
    * it, so a later frame sees tracks an earlier one contributed.
    */
-  private _collectAnnotationTracks(
-    lf: LabeledFrame,
-    seen?: Set<Track>,
-  ): void {
+  private _collectAnnotationTracks(lf: LabeledFrame, seen?: Set<Track>): void {
     const existing = seen ?? new Set(this.tracks);
     const add = (track: Track | null | undefined) => {
       if (track && !existing.has(track)) {

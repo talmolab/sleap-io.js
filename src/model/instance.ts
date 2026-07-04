@@ -1,4 +1,4 @@
-import { Skeleton, Node } from "./skeleton.js";
+import type { Skeleton, Node } from "./skeleton.js";
 
 // Late-binding factory to avoid circular imports with centroid.ts.
 // Set by centroid.ts when it is imported.

@@ -101,7 +101,8 @@ export function readCompoundColumnsManual(
       return null;
     }
     if (m.type === H5T_FLOAT && m.size !== 8 && m.size !== 4) return null;
-    if (m.size !== 1 && m.size !== 2 && m.size !== 4 && m.size !== 8) return null;
+    if (m.size !== 1 && m.size !== 2 && m.size !== 4 && m.size !== 8)
+      return null;
   }
 
   const nrows = shape[0];

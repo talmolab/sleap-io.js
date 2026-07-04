@@ -10,7 +10,7 @@
 
 import {
   openH5Worker,
-  StreamingH5File,
+  type StreamingH5File,
   isStreamingSupported,
   type StreamingH5Source,
 } from "./h5-streaming.js";
@@ -33,7 +33,7 @@ import { LabeledFrame } from "../../model/labeled-frame.js";
 import {
   Instance,
   PredictedInstance,
-  Track,
+  type Track,
   pointsFromArray,
   predictedPointsFromArray,
 } from "../../model/instance.js";
@@ -1088,9 +1088,13 @@ function normalizeStructData(
     !ArrayBuffer.isView(value)
   ) {
     const obj = value as Record<string, unknown>;
-    // Check if it looks like column data
+    // Check if it looks like column data: a `{ field: array }` record. Columns
+    // may be plain arrays or TypedArrays — the streaming worker now returns
+    // Float64Array columns (transferred, not cloned), which the downstream
+    // builder consumes by index just like plain arrays.
     const firstKey = Object.keys(obj)[0];
-    if (firstKey && Array.isArray(obj[firstKey])) {
+    const firstCol = firstKey ? obj[firstKey] : undefined;
+    if (firstKey && (Array.isArray(firstCol) || ArrayBuffer.isView(firstCol))) {
       return obj as Record<string, unknown[]>;
     }
   }

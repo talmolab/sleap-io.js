@@ -1,7 +1,7 @@
 import {
   openH5File,
-  OpenH5Options,
-  SlpSource,
+  type OpenH5Options,
+  type SlpSource,
   getH5EmscriptenModule,
 } from "./h5.js";
 import { readCompoundColumnsManual } from "./h5-compound.js";
@@ -47,29 +47,29 @@ import {
 import { Identity } from "../../model/identity.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import {
-  ROI,
+  type ROI,
   UserROI,
   PredictedROI,
   AnnotationType,
   decodeWkb,
 } from "../../model/roi.js";
 import {
-  SegmentationMask,
+  type SegmentationMask,
   UserSegmentationMask,
   PredictedSegmentationMask,
 } from "../../model/mask.js";
 import {
-  BoundingBox,
+  type BoundingBox,
   UserBoundingBox,
   PredictedBoundingBox,
 } from "../../model/bbox.js";
 import {
-  Centroid,
+  type Centroid,
   UserCentroid,
   PredictedCentroid,
 } from "../../model/centroid.js";
 import {
-  LabelImage,
+  type LabelImage,
   UserLabelImage,
   PredictedLabelImage,
 } from "../../model/label-image.js";
