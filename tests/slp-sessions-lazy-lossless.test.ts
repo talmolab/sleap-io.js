@@ -30,6 +30,13 @@ async function inspect(bytes: Uint8Array): Promise<{
   formatId: number;
 }> {
   const module = await ready;
+  // Ensure /tmp exists (see inspectSessions in slp-raw-sessions.test.ts): the
+  // shared h5wasm MEMFS can transiently lack it under `bun test --parallel`.
+  try {
+    module.FS.mkdir("/tmp");
+  } catch {
+    // already exists
+  }
   const p = `/tmp/lossless_${Date.now()}_${Math.random()
     .toString(16)
     .slice(2)}.slp`;
@@ -59,6 +66,11 @@ async function inspect(bytes: Uint8Array): Promise<{
 /** The verbatim on-disk sessions_json string of the multiview fixture. */
 async function fixtureSessionsJson(): Promise<string> {
   const module = await ready;
+  try {
+    module.FS.mkdir("/tmp");
+  } catch {
+    // already exists
+  }
   const p = `/tmp/mvsrc_${Date.now()}.slp`;
   module.FS.writeFile(p, readFileSync(MULTIVIEW));
   const file = new H5File(p, "r");
