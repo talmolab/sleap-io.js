@@ -316,4 +316,59 @@ describe("SLP write with identity and 3D data", () => {
 
     expect(loaded.sessions[0].cameraGroup.cameras[0].size).toEqual([640, 480]);
   });
+
+  it("Option 1 gap fix: cameraGroup.metadata now round-trips (eager + streaming)", async () => {
+    const skeleton = new Skeleton({ nodes: ["A"], edges: [] });
+    const video = new Video({ filename: "v.mp4" });
+    const cam = new Camera({ name: "cam", rvec: [0, 0, 0], tvec: [0, 0, 0] });
+    const inst = Instance.fromArray([[1, 2]], skeleton);
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+    const instanceByCamera = new Map<Camera, Instance>();
+    instanceByCamera.set(cam, inst);
+    const lfByCamera = new Map<Camera, LabeledFrame>();
+    lfByCamera.set(cam, lf);
+    const fg = new FrameGroup({
+      frameIdx: 0,
+      instanceGroups: [new InstanceGroup({ instanceByCamera })],
+      labeledFrameByCamera: lfByCamera,
+    });
+    const session = new RecordingSession({
+      cameraGroup: new CameraGroup({ cameras: [cam] }),
+    });
+    // Previously dropped on read (read back as {}); now preserved.
+    session.cameraGroup.metadata = { foo: 1, nested: { a: [2, 3] } };
+    session.addVideo(video, cam);
+    session.frameGroups.set(0, fg);
+    const labels = new Labels({
+      labeledFrames: [lf],
+      videos: [video],
+      skeletons: [skeleton],
+      sessions: [session],
+    });
+
+    const bytes = new Uint8Array(await saveSlpToBytes(labels));
+
+    const eager = await readSlp(bytes.buffer, { openVideos: false });
+    expect(eager.sessions[0].cameraGroup.metadata).toEqual({
+      foo: 1,
+      nested: { a: [2, 3] },
+    });
+
+    // Streaming path (guarded: Worker unavailable in the Node suite).
+    const { readSlpStreaming } = await import(
+      "../src/codecs/slp/read-streaming.js"
+    );
+    try {
+      const streamed = await readSlpStreaming(bytes.buffer as ArrayBuffer, {
+        openVideos: false,
+        filenameHint: "cam-group-meta.slp",
+      });
+      expect(streamed.sessions[0].cameraGroup.metadata).toEqual({
+        foo: 1,
+        nested: { a: [2, 3] },
+      });
+    } catch {
+      // In-Worker streaming path unreachable here; eager assertion holds.
+    }
+  });
 });

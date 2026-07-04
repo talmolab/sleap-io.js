@@ -253,6 +253,20 @@ export class Labels {
   }
 
   /**
+   * The verbatim, as-read `sessions_json` dicts, index-aligned with `sessions`.
+   *
+   * Derived (no stored field) so it cannot desync in length from `sessions`.
+   * `rawSessionsJson[i]` corresponds to `sessions[i]`, and is `undefined` for
+   * sessions constructed in-memory (never read from disk). Each entry is the
+   * untouched `JSON.parse` result of that session's `sessions_json` entry — a
+   * read-time snapshot, never itself re-written to disk. See
+   * `RecordingSession.rawJson`.
+   */
+  get rawSessionsJson(): Array<Record<string, unknown> | undefined> {
+    return this.sessions.map((s) => s.rawJson);
+  }
+
+  /**
    * Collect tracks from annotations on a frame into this.tracks.
    *
    * `seen` lets a caller iterating many frames share one membership set instead

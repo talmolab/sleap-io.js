@@ -766,7 +766,11 @@ async function readIdentitiesStreaming(
 /**
  * Read recording sessions from sessions_json dataset.
  */
-async function readSessionsStreaming(
+// Exported for a Worker-free unit test of the streaming session-read wiring:
+// the full streaming reader (`readSlpStreaming`) is browser/Worker-gated and
+// unreachable in the Node test runner, so tests drive this directly with a fake
+// `StreamingH5File`. Not re-exported from the package barrel (see src/index.ts).
+export async function readSessionsStreaming(
   file: StreamingH5File,
   videos: Video[],
   skeletons: Skeleton[],
@@ -802,12 +806,19 @@ async function readSessionsStreaming(
         cameraGroup.cameras.push(camera);
         cameraMap.set(String(key), camera);
       }
+      cameraGroup.metadata =
+        (calibration.metadata as Record<string, unknown> | undefined) ?? {};
 
       const session = new RecordingSession({
         cameraGroup,
         metadata:
           (parsed.metadata as Record<string, unknown> | undefined) ?? {},
       });
+      // Retain the verbatim parsed sessions_json dict (Option 2). Deep-cloned
+      // so it is an INDEPENDENT snapshot (the object model reuses `parsed`'s
+      // nested metadata/calibration objects by reference). Never re-written to
+      // disk; see RecordingSession.rawJson. Mirrors readSessions in read.ts.
+      session.rawJson = structuredClone(parsed);
 
       const map = (parsed.camcorder_to_video_idx_map ?? {}) as Record<
         string,

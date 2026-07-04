@@ -951,6 +951,73 @@ group.instance3d;  // Instance3D | undefined
 group.points;      // delegates to instance3d.points if available
 ```
 
+### Raw `sessions_json` access (`rawJson` / `rawSessionsJson`)
+
+When reading a `.slp`, the verbatim parsed `sessions_json` dict for each session
+is surfaced so 3D consumers (e.g. luc3d/LUCID) can read app-specific state
+without re-opening the HDF5. This is populated on **eager, lazy, and streaming**
+reads.
+
+```ts
+// Per-session: the untouched JSON.parse of that session's sessions_json entry
+labels.sessions[0].rawJson;
+//   -> { calibration, camcorder_to_video_idx_map,
+//        camcorder_to_lf_and_inst_idx_map, frame_group_dicts, metadata, ... }
+
+// Index-aligned convenience getter (derived from sessions, no stored field)
+labels.rawSessionsJson;         // Array<Record<string, unknown> | undefined>
+labels.rawSessionsJson[0];      // === labels.sessions[0].rawJson
+```
+
+`rawJson` exposes every key, including ones sleap-io.js does not itself model
+(`camcorder_to_lf_and_inst_idx_map`, LUCID's per-session `metadata.lucid` blob,
+`frame_group_dicts` with inline `points3d`, etc.).
+
+Caveats:
+
+- **Read-time snapshot.** `rawJson` is captured at read time and is NOT updated
+  when you mutate the object model afterwards.
+- **Never re-written to disk.** Writes are rebuilt from the object model (the
+  single source of truth); `rawJson` is a pure in-memory read surface over the
+  already-existing `sessions_json` dataset. It is not stored in `provenance` or
+  the `/metadata` blob, so saving does not bloat those.
+- **Index-aligned.** `rawSessionsJson[i]` corresponds to `sessions[i]`; entries
+  are `undefined` for sessions constructed in-memory (never read from disk).
+
+#### Metadata round-trip (Option 1)
+
+Opaque `metadata` dicts round-trip losslessly through read → object model →
+write at every level — `RecordingSession.metadata` (including nested
+`metadata.lucid`), `FrameGroup.metadata`, `InstanceGroup.metadata`, and
+`CameraGroup.metadata`. Arbitrary unknown keys survive by JSON-equality.
+
+> Note: `CameraGroup.metadata` previously read back as `{}` (silently dropped on
+> read); it is now populated from `calibration.metadata`.
+
+#### Object-model write limitations (Option 3)
+
+The write path (`serializeSession`) rebuilds `sessions_json` from a fixed field
+set, so it is lossless for everything sleap-io.js structurally models —
+per-camera intrinsics/extrinsics (`name`, `rotation`, `translation`, `matrix`,
+`distortions`, `size`), stringified-integer calibration keys (`"0"`, `"1"`, …)
+when cameras have no distinct name, `camcorder_to_video_idx_map` keys (always
+normalized to decimal index strings), `frame_group_dicts` structural fields, and
+all `metadata` dicts. The following are recoverable **only via `rawJson`**, not
+via an object-model write round-trip:
+
+1. `camcorder_to_lf_and_inst_idx_map` is re-derived from live frame/instance
+   indices on write (not echoed); it can differ from the source ordering and is
+   empty in lazy mode (empty `labeledFrames`).
+2. A camera carrying both a numeric key and a differing explicit `name` is
+   re-keyed by `name` on write. This is exactly the Python `make_session` shape
+   (`calibration = {"0": {name: "camA"}, "1": {name: "camB"}, …}`): on write the
+   `calibration` keys become `"camA"`/`"camB"` while `camcorder_to_video_idx_map`
+   stays integer-keyed (`"0"`/`"1"`), so the two key spaces diverge. Read `rawJson`
+   for the original integer-keyed calibration.
+3. Any unmodeled top-level key NOT under a `metadata` sub-dict (at session /
+   per-camera / frame-group / instance-group level) is dropped.
+4. Frame groups with zero instance groups are skipped entirely on write.
+
 ## SLEAP Analysis CSV export
 
 Export `Labels` to the SLEAP Analysis CSV — one row per instance per frame with

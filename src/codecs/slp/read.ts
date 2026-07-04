@@ -1054,11 +1054,20 @@ function readSessions(
       cameraGroup.cameras.push(camera);
       cameraMap.set(String(key), camera);
     }
+    cameraGroup.metadata =
+      (calibration.metadata as Record<string, unknown> | undefined) ?? {};
 
     const session = new RecordingSession({
       cameraGroup,
       metadata: (parsed.metadata as Record<string, unknown> | undefined) ?? {},
     });
+    // Retain the verbatim parsed sessions_json dict for lossless read-side
+    // access (Option 2). Deep-cloned so it is an INDEPENDENT snapshot: the
+    // object model reuses `parsed`'s nested metadata/calibration objects by
+    // reference, so without the clone a consumer mutating `rawJson` would
+    // silently alter what `serializeSession` writes to disk (and vice versa).
+    // Never re-written to disk; see RecordingSession.rawJson.
+    session.rawJson = structuredClone(parsed);
     const map = asRecord(parsed.camcorder_to_video_idx_map);
     for (const [cameraKey, videoIdx] of Object.entries(map)) {
       const camera = resolveCameraKey(

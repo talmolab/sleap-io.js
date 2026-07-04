@@ -1,8 +1,8 @@
-import { Instance } from "./instance.js";
-import { LabeledFrame } from "./labeled-frame.js";
-import { Video } from "./video.js";
-import { Identity } from "./identity.js";
-import { Instance3D } from "./instance3d.js";
+import type { Instance } from "./instance.js";
+import type { LabeledFrame } from "./labeled-frame.js";
+import type { Video } from "./video.js";
+import type { Identity } from "./identity.js";
+import type { Instance3D } from "./instance3d.js";
 
 export function rodriguesTransformation(input: number[][] | number[]): {
   matrix: number[][];
@@ -210,18 +210,42 @@ export class RecordingSession {
   cameraByVideo: Map<Video, Camera>;
   metadata: Record<string, unknown>;
 
+  /**
+   * The verbatim, as-read `sessions_json` dict for this session.
+   *
+   * This is a deep-cloned copy of the `JSON.parse` result of the session's
+   * `sessions_json` entry, populated on read (eager, lazy, and streaming). It
+   * lets 3D consumers (e.g. luc3d/LUCID) read app-specific state —
+   * `calibration`, `camcorder_to_video_idx_map`,
+   * `camcorder_to_lf_and_inst_idx_map`, `frame_group_dicts`, and any nested
+   * `metadata.lucid` blob — without re-opening the HDF5, including keys
+   * sleap-io.js does not itself model.
+   *
+   * Caveats:
+   * - It is a READ-TIME SNAPSHOT: it is deep-cloned from the parsed dict and
+   *   holds NO shared references with the object model, so mutating `rawJson`
+   *   never affects the model (or what is written to disk) and mutating the
+   *   model never affects `rawJson`.
+   * - It is NEVER itself re-written to disk. The object model is the single
+   *   source of truth on write; `rawJson` is a pure in-memory read surface.
+   * - `undefined` for sessions constructed in-memory (never read from disk).
+   */
+  rawJson?: Record<string, unknown>;
+
   constructor(options?: {
     cameraGroup?: CameraGroup;
     frameGroupByFrameIdx?: Map<number, FrameGroup>;
     videoByCamera?: Map<Camera, Video>;
     cameraByVideo?: Map<Video, Camera>;
     metadata?: Record<string, unknown>;
+    rawJson?: Record<string, unknown>;
   }) {
     this.cameraGroup = options?.cameraGroup ?? new CameraGroup();
     this.frameGroupByFrameIdx = options?.frameGroupByFrameIdx ?? new Map();
     this.videoByCamera = options?.videoByCamera ?? new Map();
     this.cameraByVideo = options?.cameraByVideo ?? new Map();
     this.metadata = options?.metadata ?? {};
+    this.rawJson = options?.rawJson;
   }
 
   get frameGroups(): Map<number, FrameGroup> {
