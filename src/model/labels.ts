@@ -13,7 +13,11 @@ import type {
 import { Skeleton, Node, Edge, Symmetry } from "./skeleton.js";
 import { SuggestionFrame } from "./suggestions.js";
 import { Video } from "./video.js";
-import type { RecordingSession } from "./camera.js";
+import {
+  type RecordingSession,
+  cloneRecordingSession,
+  injectSessionFrameResolver,
+} from "./camera.js";
 import type { Identity } from "./identity.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
@@ -250,6 +254,37 @@ export class Labels {
         this.tracks.push(roi.track);
       }
     }
+  }
+
+  /**
+   * @deprecated Transitional. Only populated when a read entrypoint is called
+   * with `{ rawSessions: true }`; `undefined` per entry otherwise. Prefer the
+   * faithful typed session model. See `RecordingSession.rawJson`.
+   *
+   * The verbatim, as-read `sessions_json` dicts, index-aligned with `sessions`.
+   *
+   * Derived (no stored field) so it cannot desync in length from `sessions`.
+   * `rawSessionsJson[i]` corresponds to `sessions[i]`, and is `undefined` for
+   * sessions constructed in-memory (or read without `rawSessions`). Each entry
+   * is the untouched `JSON.parse` result of that session's `sessions_json`
+   * entry — a read-time snapshot, never itself re-written to disk. See
+   * `RecordingSession.rawJson`.
+   */
+  get rawSessionsJson(): Array<Record<string, unknown> | undefined> {
+    return this.sessions.map((s) => s.rawJson);
+  }
+
+  /**
+   * Get the labeled frame at global index `i`, materializing only that frame
+   * under the lazy reader. Backs the session grouping's lazy frame resolver
+   * (`injectSessionFrameResolver`): resolving one cross-camera ref materializes
+   * a single frame via `LazyFrameList.at(i)` rather than the whole table, so an
+   * untouched session round-trips with zero frame materialization.
+   */
+  frameAt(i: number): LabeledFrame | undefined {
+    return this._lazyFrameList
+      ? this._lazyFrameList.at(i)
+      : this.labeledFrames[i];
   }
 
   /**
@@ -1333,18 +1368,32 @@ export class Labels {
             metadata: { ...s.metadata },
           });
         }),
-        sessions: structuredClone(this.sessions),
+        // Rebuild sessions via constructors (NOT structuredClone, which strips
+        // class prototypes/getters and the non-enumerable frame resolver). In
+        // lazy mode frames are not materialized here, so ref-backed grouping is
+        // carried as refs and re-resolves against the copy's lazy frame list
+        // once injectSessionFrameResolver runs below.
+        sessions: this.sessions.map((s) =>
+          cloneRecordingSession(s, { videoMap }),
+        ),
         provenance: { ...this.provenance },
         identities: structuredClone(this.identities),
       });
 
       labelsCopy._lazyDataStore = newStore;
       labelsCopy._lazyFrameList = newLazyFrames;
+      injectSessionFrameResolver(labelsCopy);
     } else {
       // Eager deep copy: rebuild from constructors, including per-frame annotations
+      const frameMap = new Map<LabeledFrame, LabeledFrame>();
+      const instanceMap = new Map<Instance, Instance>();
       const newFrames = this.labeledFrames.map((f) => {
-        const newInstances = f.instances.map(cloneInstance);
-        return new LabeledFrame({
+        const newInstances = f.instances.map((inst) => {
+          const ni = cloneInstance(inst);
+          instanceMap.set(inst, ni);
+          return ni;
+        });
+        const nf = new LabeledFrame({
           video: videoMap.get(f.video) ?? f.video,
           frameIdx: f.frameIdx,
           instances: newInstances,
@@ -1355,6 +1404,8 @@ export class Labels {
           labelImages: cloneAncillary(f.labelImages) as LabelImage[],
           rois: cloneAncillary(f.rois) as ROI[],
         });
+        frameMap.set(f, nf);
+        return nf;
       });
 
       labelsCopy = new Labels({
@@ -1371,11 +1422,17 @@ export class Labels {
             metadata: { ...s.metadata },
           });
         }),
-        sessions: structuredClone(this.sessions),
+        // Rebuild sessions via constructors, remapping Camera keys and
+        // Instance/LabeledFrame references onto the copied objects; ref-backed
+        // grouping re-resolves via the resolver injected below.
+        sessions: this.sessions.map((s) =>
+          cloneRecordingSession(s, { videoMap, frameMap, instanceMap }),
+        ),
         provenance: { ...this.provenance },
         rois: cloneAncillary(this._staticRois),
         identities: structuredClone(this.identities),
       });
+      injectSessionFrameResolver(labelsCopy);
     }
 
     if (options?.openVideos !== undefined) {

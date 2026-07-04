@@ -1,29 +1,32 @@
 import { Labels } from "../../model/labels.js";
-import { Instance, PredictedInstance } from "../../model/instance.js";
+import { type Instance, PredictedInstance } from "../../model/instance.js";
 import type { Track } from "../../model/instance.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
-import {
+import type {
   RecordingSession,
   Camera,
   InstanceGroup,
   FrameGroup,
 } from "../../model/camera.js";
-import { Skeleton } from "../../model/skeleton.js";
+import type { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
-import { Video } from "../../model/video.js";
+import type { Video } from "../../model/video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
 import { getH5Module, getH5FileSystem, ensureH5StagingDir } from "./h5.js";
-import { ROI, PredictedROI, encodeWkb } from "../../model/roi.js";
-import {
+import { type ROI, type PredictedROI, encodeWkb } from "../../model/roi.js";
+import type {
   SegmentationMask,
   UserSegmentationMask,
   PredictedSegmentationMask,
 } from "../../model/mask.js";
-import { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
-import { Centroid, PredictedCentroid } from "../../model/centroid.js";
-import { LabelImage, PredictedLabelImage } from "../../model/label-image.js";
+import type { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
+import type { Centroid, PredictedCentroid } from "../../model/centroid.js";
+import type {
+  LabelImage,
+  PredictedLabelImage,
+} from "../../model/label-image.js";
 import { deflate } from "pako";
-import { Identity } from "../../model/identity.js";
+import type { Identity } from "../../model/identity.js";
 import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
 import type { LazyDataStore } from "../../model/lazy.js";
 
@@ -709,6 +712,16 @@ function writeMetadata(file: any, labels: Labels): void {
     formatId = Math.max(formatId, 2.4);
   }
 
+  // NOTE (sessions): the canonical `sessions_json` shape written here
+  // (calibration keyed `cam_<i>`, camcorder/labeled_frame maps keyed by integer
+  // index) is a CONVERGENCE to Python `sleap-io`'s existing format — not a new
+  // on-disk feature — so it deliberately does NOT bump format_id. `format_id` is
+  // a namespace shared with Python, which already defines 2.5 (/identity_links),
+  // 2.6 (/embeddings) and 2.7 (categories); minting a value here would collide
+  // and mislabel the file. Reading stays tolerant of the legacy name-keyed shape,
+  // so re-saving a legacy file upgrades its sessions to the canonical shape with
+  // no version change required.
+
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
@@ -964,8 +977,15 @@ function serializeSession(
   const calibration: Record<string, unknown> = {
     metadata: session.cameraGroup.metadata ?? {},
   };
+  // Key calibration by `cam_<index>` to match Python `sleap-io`'s
+  // `camera_group_to_dict` byte-for-byte (keeps our on-disk shape a clean subset
+  // of the Python format, per the "upstreamable" goal). The calibration key is
+  // cosmetic on read — both readers resolve cameras by dict ORDER / positional
+  // index, and the camcorder maps below key by bare integer index
+  // (cameraKeyForSession = String(index)), exactly as Python does. `name` is
+  // kept as a field inside each camera dict.
   session.cameraGroup.cameras.forEach((camera, idx) => {
-    const key = camera.name ?? String(idx);
+    const key = `cam_${idx}`;
     const camData: Record<string, unknown> = {
       name: camera.name ?? key,
       rotation: camera.rvec,
@@ -1017,13 +1037,27 @@ function serializeFrameGroup(
       labeledFrameIndex,
     ),
   );
+  // Derive-then-ref-fallback (hybrid write-back), reading RAW backing fields so
+  // an untouched (lazy) group serializes from its stored refs with ZERO frame
+  // materialization, while a mutated/in-memory group re-derives indices from the
+  // concrete map (reflecting any reorder/edit). Never touches the caching getter
+  // (that would materialize + cache between the two saves of the round-trip
+  // equality test).
+  const concreteLfByCamera = frameGroup._labeledFrameByCamera;
+  const lfRefsByCamera = frameGroup._labeledFrameRefsByCamera;
   const labeled_frame_by_camera: Record<string, number> = {};
-  for (const [
-    camera,
-    labeledFrame,
-  ] of frameGroup.labeledFrameByCamera.entries()) {
+  const frameCameras = new Set<Camera>([
+    ...(concreteLfByCamera?.keys() ?? []),
+    ...(lfRefsByCamera?.keys() ?? []),
+  ]);
+  for (const camera of frameCameras) {
     const cameraKey = cameraKeyForSession(camera, session);
-    const index = labeledFrameIndex.get(labeledFrame);
+    const labeledFrame = concreteLfByCamera?.get(camera);
+    let index =
+      labeledFrame !== undefined
+        ? labeledFrameIndex.get(labeledFrame)
+        : undefined;
+    if (index === undefined) index = lfRefsByCamera?.get(camera);
     if (index !== undefined) {
       labeled_frame_by_camera[cameraKey] = index;
     }
@@ -1044,31 +1078,59 @@ function serializeInstanceGroup(
   frameGroup?: FrameGroup,
   labeledFrameIndex?: Map<LabeledFrame, number>,
 ): Record<string, unknown> {
+  // Hybrid write-back: read RAW backing fields (never the caching getter, which
+  // would materialize + cache concrete maps between the two saves of the
+  // round-trip equality test). Per camera: try OBJECT DERIVATION first
+  // (labeledFrameIndex.get(lf) + lf.instances.indexOf(inst)) so any
+  // mutation/reorder is reflected; FALL BACK to the stored index refs when the
+  // group was never materialized (lazy pure-ref group). `instances` points are
+  // emitted ONLY for concrete groups (pure-ref groups omit `instances`, matching
+  // Python-canonical shape) — zero frame materialization for untouched groups.
+  const concreteInst = group._instanceByCamera;
+  const instRefs = group._instanceRefsByCamera;
+  // Resolve the frame group's labeled-frame map ONLY when this instance group is
+  // concrete (materialized/in-memory) — via the GETTER, not the raw field, so
+  // derivation works even when the consumer reached the mutation through
+  // `instanceByCamera` alone (which does NOT populate the frame group's raw map).
+  // For a concrete instance group the frames are already materialized, so the
+  // getter resolves from cache with no NEW materialization; for an untouched
+  // pure-ref group `concreteInst` is undefined, so we never touch the getter and
+  // the zero-materialization guarantee holds.
+  const lfByCamera =
+    concreteInst && frameGroup ? frameGroup.labeledFrameByCamera : undefined;
+
   const instances: Record<string, Record<string, number[]>> = {};
-  for (const [camera, instance] of group.instanceByCamera.entries()) {
-    const cameraKey = cameraKeyForSession(camera, session);
-    instances[cameraKey] = pointsToDict(instance);
-  }
-
-  // Build Python-compatible camcorder_to_lf_and_inst_idx_map
   const camcorder_to_lf_and_inst_idx_map: Record<string, [number, number]> = {};
-  if (frameGroup && labeledFrameIndex) {
-    for (const [camera, instance] of group.instanceByCamera.entries()) {
-      const cameraKey = cameraKeyForSession(camera, session);
-      const labeledFrame = frameGroup.labeledFrameByCamera.get(camera);
-      if (labeledFrame) {
-        const lfIdx = labeledFrameIndex.get(labeledFrame);
-        const instIdx = labeledFrame.instances.indexOf(instance as Instance);
-        if (lfIdx !== undefined && instIdx >= 0) {
-          camcorder_to_lf_and_inst_idx_map[cameraKey] = [lfIdx, instIdx];
-        }
+  const instCameras = new Set<Camera>([
+    ...(concreteInst?.keys() ?? []),
+    ...(instRefs?.keys() ?? []),
+  ]);
+  for (const camera of instCameras) {
+    const cameraKey = cameraKeyForSession(camera, session);
+    const instance = concreteInst?.get(camera);
+    let pair: [number, number] | undefined;
+    if (instance) {
+      if (labeledFrameIndex) {
+        const labeledFrame = lfByCamera?.get(camera);
+        const lfIdx =
+          labeledFrame !== undefined
+            ? labeledFrameIndex.get(labeledFrame)
+            : undefined;
+        const instIdx = labeledFrame
+          ? labeledFrame.instances.indexOf(instance as Instance)
+          : -1;
+        if (lfIdx !== undefined && instIdx >= 0) pair = [lfIdx, instIdx];
       }
+      instances[cameraKey] = pointsToDict(instance);
     }
+    if (!pair && instRefs?.has(camera)) pair = instRefs.get(camera);
+    if (pair) camcorder_to_lf_and_inst_idx_map[cameraKey] = pair;
   }
 
-  const payload: Record<string, unknown> = {
-    instances,
-  };
+  const payload: Record<string, unknown> = {};
+  if (Object.keys(instances).length > 0) {
+    payload.instances = instances;
+  }
   if (Object.keys(camcorder_to_lf_and_inst_idx_map).length > 0) {
     payload.camcorder_to_lf_and_inst_idx_map = camcorder_to_lf_and_inst_idx_map;
   }
@@ -1160,7 +1222,7 @@ function writeLabeledFrames(file: any, labels: Labels): void {
         ? labels.tracks.indexOf(instance.track)
         : -1;
       const trackingScore = instance.trackingScore ?? 0;
-      let fromPredicted = -1;
+      const fromPredicted = -1;
       let score = 0;
       let pointStart = 0;
       let pointEnd = 0;

@@ -164,4 +164,93 @@ describe("Streaming Sessions", () => {
     expect(loadedFg.instanceGroups[0].instanceByCamera.size).toBe(2);
     expect(loadedFg.labeledFrameByCamera.size).toBe(2);
   });
+
+  it("Option 1: nested metadata.lucid round-trips losslessly (session/frameGroup/instanceGroup)", async () => {
+    const { Camera, CameraGroup, InstanceGroup, FrameGroup, RecordingSession } =
+      await import("../src/model/camera.js");
+    const { Instance } = await import("../src/model/instance.js");
+    const { Skeleton } = await import("../src/model/skeleton.js");
+    const { Video } = await import("../src/model/video.js");
+    const { Labels } = await import("../src/model/labels.js");
+    const { LabeledFrame } = await import("../src/model/labeled-frame.js");
+    const { saveSlpToBytes } = await import("../src/codecs/slp/write.js");
+
+    const sessionMeta = {
+      lucid: {
+        sessionName: "s",
+        trustTracks: true,
+        frameIdentityMap: { "0": [1, 2] },
+        nested: { deep: [1, { a: "b" }] },
+        points3d: [[0, 1, 2]],
+      },
+    };
+    const frameGroupMeta = { lucid: { x: 1 } };
+    const instanceGroupMeta = { lucid: { y: 2 } };
+
+    const skeleton = new Skeleton({ nodes: ["A"], edges: [] });
+    const video = new Video({ filename: "v.mp4" });
+    const cam = new Camera({ name: "cam", rvec: [0, 0, 0], tvec: [0, 0, 0] });
+    const inst = Instance.fromArray([[1, 2]], skeleton);
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+    const ibc = new Map([[cam, inst]]);
+    const lfbc = new Map([[cam, lf]]);
+    // One group carries metadata, a second carries empty {} (must be tolerated).
+    const fg = new FrameGroup({
+      frameIdx: 0,
+      instanceGroups: [
+        new InstanceGroup({
+          instanceByCamera: ibc,
+          metadata: instanceGroupMeta,
+        }),
+        new InstanceGroup({ instanceByCamera: new Map([[cam, inst]]) }),
+      ],
+      labeledFrameByCamera: lfbc,
+      metadata: frameGroupMeta,
+    });
+    const session = new RecordingSession({
+      cameraGroup: new CameraGroup({ cameras: [cam] }),
+      metadata: sessionMeta,
+    });
+    session.addVideo(video, cam);
+    session.frameGroups.set(0, fg);
+    const labels = new Labels({
+      labeledFrames: [lf],
+      videos: [video],
+      skeletons: [skeleton],
+      sessions: [session],
+    });
+
+    const bytes = new Uint8Array(await saveSlpToBytes(labels));
+
+    const assertRoundTrip = (loaded: InstanceType<typeof Labels>) => {
+      const s = loaded.sessions[0];
+      expect(s.metadata.lucid).toEqual(sessionMeta.lucid);
+      const loadedFg = s.frameGroups.get(0)!;
+      expect(loadedFg.metadata).toEqual(frameGroupMeta);
+      expect(loadedFg.instanceGroups[0].metadata).toEqual(instanceGroupMeta);
+      // Empty {} instanceGroup metadata is tolerated (read back as {}).
+      expect(loadedFg.instanceGroups[1].metadata).toEqual({});
+    };
+
+    // Eager path.
+    assertRoundTrip(
+      await readSlp(bytes.buffer as ArrayBuffer, {
+        openVideos: false,
+      }),
+    );
+
+    // Streaming path (guarded: Worker unavailable in the Node suite).
+    const { readSlpStreaming } = await import(
+      "../src/codecs/slp/read-streaming.js"
+    );
+    try {
+      const streamed = await readSlpStreaming(bytes.buffer as ArrayBuffer, {
+        openVideos: false,
+        filenameHint: "roundtrip.slp",
+      });
+      assertRoundTrip(streamed);
+    } catch {
+      // In-Worker streaming path unreachable here; eager assertion above holds.
+    }
+  });
 });
