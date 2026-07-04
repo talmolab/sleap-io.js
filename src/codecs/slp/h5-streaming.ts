@@ -56,6 +56,44 @@ export function isRangeSource(source: unknown): source is RangeSource {
 }
 
 /**
+ * Service one B-seam byte-request against the shared control/data buffers: read
+ * `[offset, offset + length)` via `reader`, copy the bytes into `dataArea`
+ * (clamped to BOTH the requested length and the data-area size), publish the
+ * returned length in `control[1]` (RETLEN), then set `control[0]` = READY (`2`)
+ * and `notify` — RETLEN is stored BEFORE the READY release so a Worker's
+ * `Atomics.wait`/load (acquire) sees a consistent (length, data) pair. On a read
+ * failure, publishes 0 bytes + READY so the Worker gets a clean short read / EOF
+ * instead of hanging.
+ *
+ * Extracted from {@link StreamingH5File}'s Worker message handler so the
+ * (otherwise Worker-gated) main-thread half of the protocol is unit-testable.
+ * @internal
+ */
+export async function serviceRangeBridge(
+  control: Int32Array,
+  dataArea: Uint8Array,
+  reader: (offset: number, length: number) => Promise<Uint8Array>,
+  offset: number,
+  length: number,
+): Promise<void> {
+  try {
+    const bytes = await reader(offset, length);
+    const n = Math.min(bytes.length, dataArea.length, length);
+    dataArea.set(bytes.subarray(0, n), 0);
+    Atomics.store(control, 1, n); // RETLEN
+    Atomics.store(control, 0, 2); // STATE = READY
+    Atomics.notify(control, 0);
+  } catch (err) {
+    // Signal 0 bytes: the Worker treats it as a short read / EOF and h5wasm
+    // surfaces a clean read error rather than hanging.
+    Atomics.store(control, 1, 0);
+    Atomics.store(control, 0, 2);
+    Atomics.notify(control, 0);
+    console.error("[StreamingH5File] readRange failed:", err);
+  }
+}
+
+/**
  * Source types supported by the streaming HDF5 file.
  */
 export type StreamingH5Source =
@@ -353,22 +391,9 @@ export class StreamingH5File {
     const dataArea = this.rangeData;
     const reader = this.rangeReader;
     if (!control || !dataArea || !reader) return;
-    reader(offset, length)
-      .then((bytes) => {
-        const n = Math.min(bytes.length, dataArea.length, length);
-        dataArea.set(bytes.subarray(0, n), 0);
-        Atomics.store(control, 1, n); // RETLEN
-        Atomics.store(control, 0, 2); // STATE = READY
-        Atomics.notify(control, 0);
-      })
-      .catch((err) => {
-        // Signal 0 bytes: the Worker treats it as a short read / EOF and h5wasm
-        // surfaces a clean read error rather than hanging.
-        Atomics.store(control, 1, 0);
-        Atomics.store(control, 0, 2);
-        Atomics.notify(control, 0);
-        console.error("[StreamingH5File] readRange failed:", err);
-      });
+    // Fire-and-forget: the Worker is blocked on Atomics.wait and is woken by the
+    // notify inside serviceRangeBridge; the message handler must not await.
+    void serviceRangeBridge(control, dataArea, reader, offset, length);
   }
 
   /**
