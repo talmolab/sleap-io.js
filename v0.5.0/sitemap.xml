@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+    <url>
+         <loc>https://iojs.sleap.ai/v0.5.0/</loc>
+         <lastmod>2026-07-04</lastmod>
+    </url>
+    <url>
+         <loc>https://iojs.sleap.ai/v0.5.0/api/</loc>
+         <lastmod>2026-07-04</lastmod>
+    </url>
+    <url>
+         <loc>https://iojs.sleap.ai/v0.5.0/cropping/</loc>
+         <lastmod>2026-07-04</lastmod>
+    </url>
+    <url>
+         <loc>https://iojs.sleap.ai/v0.5.0/demo/</loc>
+         <lastmod>2026-07-04</lastmod>
+    </url>
+    <url>
+         <loc>https://iojs.sleap.ai/v0.5.0/lite/</loc>
+         <lastmod>2026-07-04</lastmod>
+    </url>
+    <url>
+         <loc>https://iojs.sleap.ai/v0.5.0/rendering/</loc>
+         <lastmod>2026-07-04</lastmod>
+    </url>
+    <url>
+         <loc>https://iojs.sleap.ai/v0.5.0/usage/</loc>
+         <lastmod>2026-07-04</lastmod>
+    </url>
+</urlset>
