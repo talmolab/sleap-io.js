@@ -1645,6 +1645,106 @@ byte-identical to earlier versions (no <code>/video_crops</code> dataset, no ver
 <span class="nx">group</span><span class="p">.</span><span class="nx">instance3d</span><span class="p">;</span><span class="w">  </span><span class="c1">// Instance3D | undefined</span>
 <span class="nx">group</span><span class="p">.</span><span class="nx">points</span><span class="p">;</span><span class="w">      </span><span class="c1">// delegates to instance3d.points if available</span>
 </code></pre></div>
+<h3 id="lossless-lazy-native-session-grouping">Lossless, lazy-native session grouping<a class="headerlink" href="#lossless-lazy-native-session-grouping" title="Permanent link">&para;</a></h3>
+<p>Cross-camera grouping (<code>FrameGroup</code> / <code>InstanceGroup</code>) round-trips losslessly
+through read → object model → write <strong>without</strong> materializing frames, on all
+three read paths (eager, lazy, streaming). Instead of resolving the grouping
+against a materialized frame table at read time, the model stores the as-read
+index refs (<code>camcorder_to_lf_and_inst_idx_map</code> and <code>labeled_frame_by_camera</code>)
+and resolves them lazily:</p>
+<div class="highlight"><pre><span></span><code><span class="c1">// Typed access — same public API as before, now lazy under the hood.</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">fg</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labels</span><span class="p">.</span><span class="nx">sessions</span><span class="p">[</span><span class="mf">0</span><span class="p">].</span><span class="nx">frameGroups</span><span class="p">.</span><span class="nx">get</span><span class="p">(</span><span class="mf">0</span><span class="p">)</span><span class="o">!</span><span class="p">;</span>
+<span class="nx">fg</span><span class="p">.</span><span class="nx">instanceGroups</span><span class="p">[</span><span class="mf">0</span><span class="p">].</span><span class="nx">instanceByCamera</span><span class="p">;</span><span class="w"> </span><span class="c1">// Map&lt;Camera, Instance&gt; (resolved on demand)</span>
+<span class="nx">fg</span><span class="p">.</span><span class="nx">labeledFrameByCamera</span><span class="p">;</span><span class="w">               </span><span class="c1">// Map&lt;Camera, LabeledFrame&gt; (resolved on demand)</span>
+</code></pre></div>
+<p>Under the lazy reader, resolving one cross-camera ref materializes only that one
+frame (via <code>Labels.frameAt(i)</code>); an untouched session serializes straight from
+the stored refs with <strong>zero</strong> frame materialization. Mutating a group (accessing
+its map, then editing/reordering instances) re-derives indices from the live
+objects on write, so edits are reflected correctly.</p>
+<p>On write, the <code>sessions_json</code> shape matches Python <code>sleap-io</code>'s <code>session_to_dict</code>
+byte-for-byte: <code>calibration</code> is keyed <code>cam_0</code>, <code>cam_1</code>, … (with each camera's
+<code>name</code> kept as a field inside its dict), while <code>camcorder_to_video_idx_map</code>,
+<code>camcorder_to_lf_and_inst_idx_map</code>, and <code>labeled_frame_by_camera</code> are keyed by the
+bare integer camera index (<code>"0"</code>, <code>"1"</code>, …). These are two different key spaces on
+purpose — both Python and sleap-io.js resolve cameras by their <strong>order</strong> in
+<code>calibration</code> / positional index, so the calibration key string is cosmetic. This
+is a convergence to Python's existing format, <strong>not</strong> a new on-disk feature, so it
+does <strong>not</strong> bump <code>format_id</code> (that namespace is shared with Python, which already
+defines 2.5+). Reading stays tolerant of legacy name-keyed calibration, so loading
+an older file and re-saving upgrades the sessions to the canonical shape in place.</p>
+<h3 id="raw-sessions_json-access-rawjson-rawsessionsjson-deprecated">Raw <code>sessions_json</code> access (<code>rawJson</code> / <code>rawSessionsJson</code>) — deprecated<a class="headerlink" href="#raw-sessions_json-access-rawjson-rawsessionsjson-deprecated" title="Permanent link">&para;</a></h3>
+<blockquote>
+<p><strong>Deprecated / transitional, opt-in only.</strong> The typed session model above is
+now a faithful projection of <code>sessions_json</code>, so consumers should read typed
+objects rather than this raw dict. <code>rawJson</code> is a temporary bridge that will be
+removed once LUCID migrates. It is <strong><code>undefined</code> by default</strong> — pass
+<code>{ rawSessions: true }</code> to a read entrypoint to capture it. Capturing it
+deep-clones the whole session payload (doubling session memory in
+<code>Labels.copy()</code>), which is why it is off by default.</p>
+</blockquote>
+<div class="highlight"><pre><span></span><code><span class="c1">// OPT-IN: capture the verbatim parsed sessions_json dict per session.</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">readSlp</span><span class="p">(</span><span class="nx">path</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">rawSessions</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">sessions</span><span class="p">[</span><span class="mf">0</span><span class="p">].</span><span class="nx">rawJson</span><span class="p">;</span>
+<span class="c1">//   -&gt; { calibration, camcorder_to_video_idx_map,</span>
+<span class="c1">//        camcorder_to_lf_and_inst_idx_map, frame_group_dicts, metadata, ... }</span>
+
+<span class="c1">// Index-aligned convenience getter (derived from sessions, no stored field)</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">rawSessionsJson</span><span class="p">;</span><span class="w">         </span><span class="c1">// Array&lt;Record&lt;string, unknown&gt; | undefined&gt;</span>
+<span class="nx">labels</span><span class="p">.</span><span class="nx">rawSessionsJson</span><span class="p">[</span><span class="mf">0</span><span class="p">];</span><span class="w">      </span><span class="c1">// === labels.sessions[0].rawJson</span>
+
+<span class="c1">// Default (no option): rawJson is undefined, no clone, no copy() bloat.</span>
+<span class="kd">const</span><span class="w"> </span><span class="nx">lean</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">readSlp</span><span class="p">(</span><span class="nx">path</span><span class="p">);</span>
+<span class="nx">lean</span><span class="p">.</span><span class="nx">sessions</span><span class="p">[</span><span class="mf">0</span><span class="p">].</span><span class="nx">rawJson</span><span class="p">;</span><span class="w">       </span><span class="c1">// undefined</span>
+</code></pre></div>
+<p><code>rawSessions</code> is accepted by <code>readSlp</code>, <code>readSlpLazy</code>, and <code>readSlpStreaming</code>.
+When captured, <code>rawJson</code> exposes every key, including ones sleap-io.js does not
+itself model.</p>
+<p>Caveats (when captured):</p>
+<ul>
+<li><strong>Read-time snapshot.</strong> <code>rawJson</code> is captured at read time and is NOT updated
+  when you mutate the object model afterwards.</li>
+<li><strong>Never re-written to disk.</strong> Writes are rebuilt from the object model (the
+  single source of truth); <code>rawJson</code> is a pure in-memory read surface over the
+  already-existing <code>sessions_json</code> dataset. It is not stored in <code>provenance</code> or
+  the <code>/metadata</code> blob, so saving does not bloat those.</li>
+<li><strong>Index-aligned.</strong> <code>rawSessionsJson[i]</code> corresponds to <code>sessions[i]</code>; entries
+  are <code>undefined</code> for sessions constructed in-memory or read without
+  <code>rawSessions</code>.</li>
+</ul>
+<h4 id="metadata-round-trip-option-1">Metadata round-trip (Option 1)<a class="headerlink" href="#metadata-round-trip-option-1" title="Permanent link">&para;</a></h4>
+<p>Opaque <code>metadata</code> dicts round-trip losslessly through read → object model →
+write at every level — <code>RecordingSession.metadata</code> (including nested
+<code>metadata.lucid</code>), <code>FrameGroup.metadata</code>, <code>InstanceGroup.metadata</code>, and
+<code>CameraGroup.metadata</code>. Arbitrary unknown keys survive by JSON-equality.</p>
+<blockquote>
+<p>Note: <code>CameraGroup.metadata</code> previously read back as <code>{}</code> (silently dropped on
+read); it is now populated from <code>calibration.metadata</code>.</p>
+</blockquote>
+<h4 id="object-model-write-limitations-option-3">Object-model write limitations (Option 3)<a class="headerlink" href="#object-model-write-limitations-option-3" title="Permanent link">&para;</a></h4>
+<p>The write path (<code>serializeSession</code>) rebuilds <code>sessions_json</code> from a fixed field
+set, so it is lossless for everything sleap-io.js structurally models —
+per-camera intrinsics/extrinsics (<code>name</code>, <code>rotation</code>, <code>translation</code>, <code>matrix</code>,
+<code>distortions</code>, <code>size</code>), <code>cam_N</code>-keyed <code>calibration</code> with <code>name</code> kept as a field,
+integer-index-keyed <code>camcorder_to_video_idx_map</code> /
+<code>camcorder_to_lf_and_inst_idx_map</code> / <code>labeled_frame_by_camera</code>, and all <code>metadata</code>
+dicts. <code>camcorder_to_lf_and_inst_idx_map</code>
+now survives losslessly — it is derived from live objects when the group was
+mutated, and otherwise falls back to the as-read index refs (so it is preserved
+even in lazy mode). The following remain recoverable only via <code>rawSessions</code>:</p>
+<ol>
+<li>Any unmodeled top-level key NOT under a <code>metadata</code> sub-dict (at session /
+   per-camera / frame-group / instance-group level) is dropped.</li>
+<li>Frame groups with zero instance groups are skipped entirely on write.</li>
+<li>Frame groups are keyed by <code>frame_idx</code>; groups sharing (or missing) a
+   <code>frame_idx</code> collapse to one entry on read (a pre-existing fidelity gap).</li>
+</ol>
+<blockquote>
+<p>Legacy note: older sleap-io.js builds keyed <code>calibration</code> by camera <code>name</code>
+when a camera had a distinct name, diverging from Python's <code>cam_N</code> convention.
+Reading tolerates both (cameras resolve by order); re-saving canonicalizes to
+<code>cam_N</code>.</p>
+</blockquote>
 <h2 id="sleap-analysis-csv-export">SLEAP Analysis CSV export<a class="headerlink" href="#sleap-analysis-csv-export" title="Permanent link">&para;</a></h2>
 <p>Export <code>Labels</code> to the SLEAP Analysis CSV — one row per instance per frame with
 columns <code>track, frame_idx, instance.score, {node}.score, {node}.x, {node}.y, …</code>

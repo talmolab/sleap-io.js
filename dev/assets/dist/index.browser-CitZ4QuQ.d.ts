@@ -1828,14 +1828,39 @@ declare class CameraGroup {
     });
 }
 declare class InstanceGroup {
-    instanceByCamera: Map<Camera, Instance>;
     score?: number;
     identity?: Identity;
     instance3d?: Instance3D;
     metadata: Record<string, unknown>;
     private _points?;
+    /**
+     * The CONCRETE camera→instance map. Set for in-memory construction and for the
+     * JS-inline read path (point-dict instances). `undefined` for a pure-ref group
+     * read from a camcorder-format file until first access resolves the refs. Read
+     * directly (not via the caching getter) by the write path.
+     * @internal
+     */
+    _instanceByCamera?: Map<Camera, Instance>;
+    /**
+     * Verbatim as-read index refs from `camcorder_to_lf_and_inst_idx_map`:
+     * camera → [globalLabeledFrameIdx, instanceIdx]. Captured on read WITHOUT
+     * materializing any frames, so an untouched group can be written back
+     * losslessly (see hybrid write-back). `undefined` for in-memory groups.
+     * @internal
+     */
+    _instanceRefsByCamera?: Map<Camera, [number, number]>;
+    /**
+     * Injected lazy frame resolver (`(globalLfIdx) => LabeledFrame | undefined`).
+     * Declared (no runtime slot) so it is NEVER an own-enumerable property — it is
+     * installed non-enumerably via `injectSessionFrameResolver` after Labels is
+     * built. Enumerability matters: `structuredClone(labels.sessions)` in
+     * `Labels.copy()` throws `DataCloneError` on an enumerable function property.
+     * @internal
+     */
+    _frameResolver?: (globalLfIdx: number) => LabeledFrame | undefined;
     constructor(options: {
-        instanceByCamera: Map<Camera, Instance> | Record<string, Instance>;
+        instanceByCamera?: Map<Camera, Instance> | Record<string, Instance>;
+        instanceRefsByCamera?: Map<Camera, [number, number]>;
         score?: number;
         points?: number[][];
         identity?: Identity;
@@ -1844,19 +1869,57 @@ declare class InstanceGroup {
     });
     get points(): number[][] | undefined;
     set points(value: number[][] | undefined);
+    /**
+     * Camera→Instance map. Concrete when the group was built in memory (or via the
+     * JS-inline read path); otherwise resolved lazily from `_instanceRefsByCamera`
+     * on first access via the injected `_frameResolver` and cached. In-place
+     * `.set()`/`.delete()` mutations therefore act on the resolved concrete map.
+     */
+    get instanceByCamera(): Map<Camera, Instance>;
+    set instanceByCamera(value: Map<Camera, Instance>);
     get instances(): Instance[];
 }
 declare class FrameGroup {
     frameIdx: number;
     instanceGroups: InstanceGroup[];
-    labeledFrameByCamera: Map<Camera, LabeledFrame>;
     metadata: Record<string, unknown>;
+    /**
+     * The CONCRETE camera→labeledFrame map. Set for in-memory construction;
+     * `undefined` for a pure-ref group read from a camcorder-format file until
+     * first access resolves the refs. Read directly (not via the caching getter)
+     * by the write path.
+     * @internal
+     */
+    _labeledFrameByCamera?: Map<Camera, LabeledFrame>;
+    /**
+     * Verbatim as-read index refs from `labeled_frame_by_camera` (or reconstructed
+     * from `camcorder_to_lf_and_inst_idx_map`): camera → globalLabeledFrameIdx.
+     * Captured on read WITHOUT materializing any frames. `undefined` for in-memory
+     * groups.
+     * @internal
+     */
+    _labeledFrameRefsByCamera?: Map<Camera, number>;
+    /** @see InstanceGroup._frameResolver @internal */
+    _frameResolver?: (globalLfIdx: number) => LabeledFrame | undefined;
     constructor(options: {
         frameIdx: number;
         instanceGroups: InstanceGroup[];
-        labeledFrameByCamera: Map<Camera, LabeledFrame> | Record<string, LabeledFrame>;
+        labeledFrameByCamera?: Map<Camera, LabeledFrame> | Record<string, LabeledFrame>;
+        labeledFrameRefsByCamera?: Map<Camera, number>;
         metadata?: Record<string, unknown>;
     });
+    /**
+     * Camera→LabeledFrame map. Concrete when the group was built in memory;
+     * otherwise resolved lazily from `_labeledFrameRefsByCamera` on first access
+     * via the injected `_frameResolver` and cached.
+     */
+    get labeledFrameByCamera(): Map<Camera, LabeledFrame>;
+    set labeledFrameByCamera(value: Map<Camera, LabeledFrame>);
+    /**
+     * Cameras participating in this frame group. Reads keys from whichever backing
+     * map exists WITHOUT resolving refs, so listing cameras never materializes a
+     * frame (crucial for the lazy/zero-materialization write path).
+     */
     get cameras(): Camera[];
     get labeledFrames(): LabeledFrame[];
     getFrame(camera: Camera): LabeledFrame | undefined;
@@ -1867,12 +1930,43 @@ declare class RecordingSession {
     videoByCamera: Map<Camera, Video>;
     cameraByVideo: Map<Video, Camera>;
     metadata: Record<string, unknown>;
+    /**
+     * @deprecated Transitional bridge, OPT-IN only. Pass `{ rawSessions: true }`
+     * to a read entrypoint (`readSlp`/`readSlpLazy`/`readSlpStreaming`) to capture
+     * it; it is `undefined` by default. The object model is now a faithful, lossless
+     * projection of `sessions_json` (typed grouping via `InstanceGroup`/`FrameGroup`
+     * refs), so consumers should read typed objects rather than this raw dict. It
+     * will be removed once LUCID migrates off it. Capturing it deep-clones the whole
+     * session payload, so leaving it off avoids doubling session memory in
+     * `Labels.copy()`.
+     *
+     * The verbatim, as-read `sessions_json` dict for this session (when captured).
+     *
+     * This is a deep-cloned copy of the `JSON.parse` result of the session's
+     * `sessions_json` entry, populated on read (eager, lazy, and streaming) ONLY
+     * when `rawSessions` is requested. It lets 3D consumers (e.g. luc3d/LUCID) read
+     * app-specific state — `calibration`, `camcorder_to_video_idx_map`,
+     * `camcorder_to_lf_and_inst_idx_map`, `frame_group_dicts`, and any nested
+     * `metadata.lucid` blob — without re-opening the HDF5, including keys
+     * sleap-io.js does not itself model.
+     *
+     * Caveats:
+     * - It is a READ-TIME SNAPSHOT: it is deep-cloned from the parsed dict and
+     *   holds NO shared references with the object model, so mutating `rawJson`
+     *   never affects the model (or what is written to disk) and mutating the
+     *   model never affects `rawJson`.
+     * - It is NEVER itself re-written to disk. The object model is the single
+     *   source of truth on write; `rawJson` is a pure in-memory read surface.
+     * - `undefined` for sessions constructed in-memory (never read from disk).
+     */
+    rawJson?: Record<string, unknown>;
     constructor(options?: {
         cameraGroup?: CameraGroup;
         frameGroupByFrameIdx?: Map<number, FrameGroup>;
         videoByCamera?: Map<Camera, Video>;
         cameraByVideo?: Map<Video, Camera>;
         metadata?: Record<string, unknown>;
+        rawJson?: Record<string, unknown>;
     });
     get frameGroups(): Map<number, FrameGroup>;
     get videos(): Video[];
@@ -1881,6 +1975,42 @@ declare class RecordingSession {
     getCamera(video: Video): Camera | undefined;
     getVideo(camera: Camera): Video | undefined;
 }
+/**
+ * Install a lazy frame resolver onto every FrameGroup and InstanceGroup reachable
+ * from `labels.sessions`. Session grouping is read BEFORE the frame store exists
+ * in all readers, so this is called AFTER the `Labels` is constructed (and, for
+ * the lazy reader, after `_lazyFrameList` is attached). The resolver routes
+ * through `labels.frameAt(i)`, which materializes only frame `i` under the lazy
+ * reader — so ref-backed groups resolve their instances/frames on first access
+ * without forcing a full-table materialization.
+ *
+ * The resolver is installed NON-ENUMERABLE via `Object.defineProperty`: an
+ * enumerable function property would make `structuredClone(labels.sessions)` in
+ * `Labels.copy()` throw `DataCloneError`.
+ */
+declare function injectSessionFrameResolver(labels: Labels): void;
+/**
+ * Deep-clone a {@link RecordingSession} preserving class prototypes (so the lazy
+ * grouping getters survive — unlike `structuredClone`, which strips prototypes
+ * and the non-enumerable frame resolver) and the as-read index refs.
+ *
+ * Camera keys are remapped to freshly-cloned cameras; `Video` references are
+ * remapped via `videoMap`. Ref-backed (disk-read) grouping is carried as refs
+ * and re-resolves against the COPY once {@link injectSessionFrameResolver} runs
+ * on it — the copied `labeledFrames` preserve the original's global ordering, so
+ * the same indices resolve correctly. Concrete in-memory maps are carried with
+ * Camera keys remapped and Instance/LabeledFrame values remapped via
+ * `frameMap`/`instanceMap` when supplied (eager copy).
+ *
+ * NOTE: `identity` and `instance3d` are carried by reference — deep-copying those
+ * across a `Labels.copy()` (and relinking to the copy's identities/skeletons) is
+ * a separate, pre-existing concern outside the session-grouping model.
+ */
+declare function cloneRecordingSession(session: RecordingSession, opts?: {
+    videoMap?: Map<Video, Video>;
+    frameMap?: Map<LabeledFrame, LabeledFrame>;
+    instanceMap?: Map<Instance, Instance>;
+}): RecordingSession;
 declare function makeCameraFromDict(data: Record<string, unknown>): Camera;
 
 /**
@@ -2020,6 +2150,29 @@ declare class Labels {
         rois?: ROI[];
         identities?: Identity[];
     });
+    /**
+     * @deprecated Transitional. Only populated when a read entrypoint is called
+     * with `{ rawSessions: true }`; `undefined` per entry otherwise. Prefer the
+     * faithful typed session model. See `RecordingSession.rawJson`.
+     *
+     * The verbatim, as-read `sessions_json` dicts, index-aligned with `sessions`.
+     *
+     * Derived (no stored field) so it cannot desync in length from `sessions`.
+     * `rawSessionsJson[i]` corresponds to `sessions[i]`, and is `undefined` for
+     * sessions constructed in-memory (or read without `rawSessions`). Each entry
+     * is the untouched `JSON.parse` result of that session's `sessions_json`
+     * entry — a read-time snapshot, never itself re-written to disk. See
+     * `RecordingSession.rawJson`.
+     */
+    get rawSessionsJson(): Array<Record<string, unknown> | undefined>;
+    /**
+     * Get the labeled frame at global index `i`, materializing only that frame
+     * under the lazy reader. Backs the session grouping's lazy frame resolver
+     * (`injectSessionFrameResolver`): resolving one cross-camera ref materializes
+     * a single frame via `LazyFrameList.at(i)` rather than the whole table, so an
+     * untouched session round-trips with zero frame materialization.
+     */
+    frameAt(i: number): LabeledFrame | undefined;
     /**
      * Collect tracks from annotations on a frame into this.tracks.
      *
@@ -4612,6 +4765,12 @@ interface StreamingSlpOptions {
     /** Whether to open video backends for embedded videos (default: false) */
     openVideos?: boolean;
     /**
+     * Capture the verbatim, deep-cloned `sessions_json` dict onto each
+     * `RecordingSession.rawJson` (deprecated, transitional). Default `false`. See
+     * `RecordingSession.rawJson`.
+     */
+    rawSessions?: boolean;
+    /**
      * Optional progress callback fired as loading advances through its stages.
      * `current` counts completed stages out of `total`; `message` labels the
      * stage about to run. Matches the (current, total, message?) convention used
@@ -4654,4 +4813,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { MergeResult as $, openH5Worker as A, BoundingBox as B, Centroid as C, DEFAULT_MAX_BYTES as D, isStreamingSupported as E, type StreamingH5Source as F, readSlpStreaming as G, SkeletonMatchMethod as H, type ImageBytesReader as I, InstanceMatchMethod as J, VideoMatchMethod as K, Labels as L, FrameStrategy as M, ErrorMode as N, SkeletonMatcher as O, type PaletteName as P, InstanceMatcher as Q, ROI as R, SegmentationMask as S, TrackMatchMethod as T, UserROI as U, Video as V, TrackMatcher as W, VideoMatcher as X, ConflictResolution as Y, MergeError as Z, SkeletonMismatchError as _, LabeledFrame as a, type CentroidOptions as a$, MatchResult as a0, MergeProgressBar as a1, STRUCTURE_SKELETON_MATCHER as a2, SUBSET_SKELETON_MATCHER as a3, OVERLAP_SKELETON_MATCHER as a4, DUPLICATE_MATCHER as a5, IOU_MATCHER as a6, IDENTITY_INSTANCE_MATCHER as a7, NAME_TRACK_MATCHER as a8, IDENTITY_TRACK_MATCHER as a9, Identity as aA, Instance3D as aB, PredictedInstance3D as aC, LazyDataStore as aD, LazyFrameList as aE, _registerMaskFactory as aF, AnnotationType as aG, type Geometry as aH, type ROIOptions as aI, rasterizeGeometry as aJ, encodeWkb as aK, decodeWkb as aL, PredictedROI as aM, encodeRle as aN, decodeRle as aO, resizeNearest as aP, traceMaskContours as aQ, groupRingsIntoPolygons as aR, type SegmentationMaskOptions as aS, type UserSegmentationMaskOptions as aT, UserSegmentationMask as aU, PredictedSegmentationMask as aV, type BoundingBoxOptions as aW, UserBoundingBox as aX, PredictedBoundingBox as aY, getCentroidSkeleton as aZ, CENTROID_SKELETON as a_, AUTO_VIDEO_MATCHER as aa, PATH_VIDEO_MATCHER as ab, BASENAME_VIDEO_MATCHER as ac, IMAGE_DEDUP_VIDEO_MATCHER as ad, SHAPE_VIDEO_MATCHER as ae, setFsResolver as af, type FsResolver as ag, type MergeStrategy as ah, _relinkFromPredicted as ai, _annotationCentroidXy as aj, _findAnnotationMatches as ak, _findAnnotationLinkMatches as al, _resolveMergedIsNegative as am, EXISTS_TTL_MS as an, type CropOptions as ao, resolveCropRect as ap, type VideoBackendErrorKind as aq, type VideoBackendError as ar, SuggestionFrame as as, rodriguesTransformation as at, Camera as au, CameraGroup as av, InstanceGroup as aw, FrameGroup as ax, RecordingSession as ay, makeCameraFromDict as az, LabelsSet as b, type CocoRle as b$, UserCentroid as b0, PredictedCentroid as b1, type LabelImageObjectInfo as b2, type LabelImageOptions as b3, UserLabelImage as b4, PredictedLabelImage as b5, normalizeLabelIds as b6, type VideoFrame as b7, type GetFrameOptions as b8, type VideoBackend as b9, GDRIVE_HOSTS as bA, SENSITIVE_HEADERS as bB, SENSITIVE_QUERY_PARAMS as bC, RETRYABLE_STATUSES as bD, isUrl as bE, isGdriveUrl as bF, redactUrl as bG, redactedCauseSummary as bH, RemoteIOError as bI, type ResolvedUrl as bJ, resolveUrl as bK, statusToMessage as bL, raiseRemote as bM, identityHeaders as bN, stripCrossOriginHeaders as bO, withRetries as bP, parseRetryAfterMs as bQ, fetchRetrying as bR, headOrRangeProbe as bS, type GeoJSONFeature as bT, type GeoJSONFeatureCollection as bU, roisToGeoJSON as bV, roisFromGeoJSON as bW, writeGeoJSON as bX, readGeoJSON as bY, type CocoCategory as bZ, type CocoImage as b_, Mp4BoxVideoBackend as ba, type MediaBunnyOptions as bb, MediaBunnyVideoBackend as bc, StreamingHdf5VideoBackend as bd, type ImageVideoOptions as be, computePrefetchWindow as bf, ImageVideoBackend as bg, loadSlp as bh, saveSlp as bi, loadAnalysisH5 as bj, saveAnalysisH5 as bk, loadSlpSet as bl, saveSlpSet as bm, loadVideo as bn, loadLabelImages as bo, setLabelImageFileReader as bp, type PagesAs as bq, type LoadLabelImagesOptions as br, type LabelImageFileReader as bs, saveSlpToBytes as bt, isAnalysisH5File as bu, labelsToCsv as bv, saveLabelsCsv as bw, type CsvExportOptions as bx, URL_SCHEMES as by, CLOUD_SCHEMES as bz, type ReadCocoOptions as c, type RawFrame as c$, type CocoSegmentation as c0, type CocoAnnotation as c1, type CocoJson as c2, isCocoData as c3, parseCocoJson as c4, createSkeletonFromCategory as c5, decodeKeypoints as c6, decodeCompressedRleCounts as c7, decodeCocoRle as c8, decodeSegmentation as c9, determineColorScheme as cA, drawCircle as cB, drawSquare as cC, drawDiamond as cD, drawTriangle as cE, drawCross as cF, drawTrails as cG, getMarkerFunction as cH, MARKER_FUNCTIONS as cI, type DrawTrailsOptions as cJ, resolveTrailNode as cK, computeTrails as cL, nTrailPaletteColors as cM, collectTracks as cN, type TrailTarget as cO, type Trail as cP, RenderContext as cQ, InstanceContext as cR, drawMasks as cS, drawLabelImage as cT, cropPoints as cU, uncropPoints as cV, type CropRect as cW, type FlatPoints as cX, type PointPairs as cY, cropFrame as cZ, type FrameLike as c_, readCoco as ca, readCocoSet as cb, type LabelsDict as cc, toDict as cd, fromDict as ce, toNumpy as cf, fromNumpy as cg, labelsFromNumpy as ch, decodeYamlSkeleton as ci, encodeYamlSkeleton as cj, readSkeletonJson as ck, writeSkeletonJson as cl, readTrainingConfigSkeletons as cm, readTrainingConfigSkeleton as cn, isTrainingConfig as co, type RGBA as cp, type ColorSpec as cq, type ColorScheme as cr, type MarkerShape as cs, type Overlay as ct, type VideoOverlay as cu, NAMED_COLORS as cv, PALETTES as cw, getPalette as cx, resolveColor as cy, rgbToCSS as cz, type RenderOptions as d, type Fill as d0, clampAlpha as d1, pickColor as d2, type VideoOptions as e, type RGB as f, LabelImage as g, type RawLabelImage as h, getImageBytesReader as i, SeqVideoBackend as j, SeqHeader as k, SeqIndex as l, BlobByteSource as m, type ByteSource as n, createVideoBackend as o, UnsupportedVideoFormatError as p, type VideoBackendType as q, CropVideoBackend as r, setImageBytesReader as s, type CropWrapOptions as t, parseGdrive as u, urlFromConfirmation as v, checkDownloadHost as w, openGdrive as x, StreamingH5File as y, openStreamingH5 as z };
+export { MergeResult as $, openH5Worker as A, BoundingBox as B, Centroid as C, DEFAULT_MAX_BYTES as D, isStreamingSupported as E, type StreamingH5Source as F, readSlpStreaming as G, SkeletonMatchMethod as H, type ImageBytesReader as I, InstanceMatchMethod as J, VideoMatchMethod as K, Labels as L, FrameStrategy as M, ErrorMode as N, SkeletonMatcher as O, type PaletteName as P, InstanceMatcher as Q, ROI as R, SegmentationMask as S, TrackMatchMethod as T, UserROI as U, Video as V, TrackMatcher as W, VideoMatcher as X, ConflictResolution as Y, MergeError as Z, SkeletonMismatchError as _, LabeledFrame as a, getCentroidSkeleton as a$, MatchResult as a0, MergeProgressBar as a1, STRUCTURE_SKELETON_MATCHER as a2, SUBSET_SKELETON_MATCHER as a3, OVERLAP_SKELETON_MATCHER as a4, DUPLICATE_MATCHER as a5, IOU_MATCHER as a6, IDENTITY_INSTANCE_MATCHER as a7, NAME_TRACK_MATCHER as a8, IDENTITY_TRACK_MATCHER as a9, cloneRecordingSession as aA, makeCameraFromDict as aB, Identity as aC, Instance3D as aD, PredictedInstance3D as aE, LazyDataStore as aF, LazyFrameList as aG, _registerMaskFactory as aH, AnnotationType as aI, type Geometry as aJ, type ROIOptions as aK, rasterizeGeometry as aL, encodeWkb as aM, decodeWkb as aN, PredictedROI as aO, encodeRle as aP, decodeRle as aQ, resizeNearest as aR, traceMaskContours as aS, groupRingsIntoPolygons as aT, type SegmentationMaskOptions as aU, type UserSegmentationMaskOptions as aV, UserSegmentationMask as aW, PredictedSegmentationMask as aX, type BoundingBoxOptions as aY, UserBoundingBox as aZ, PredictedBoundingBox as a_, AUTO_VIDEO_MATCHER as aa, PATH_VIDEO_MATCHER as ab, BASENAME_VIDEO_MATCHER as ac, IMAGE_DEDUP_VIDEO_MATCHER as ad, SHAPE_VIDEO_MATCHER as ae, setFsResolver as af, type FsResolver as ag, type MergeStrategy as ah, _relinkFromPredicted as ai, _annotationCentroidXy as aj, _findAnnotationMatches as ak, _findAnnotationLinkMatches as al, _resolveMergedIsNegative as am, EXISTS_TTL_MS as an, type CropOptions as ao, resolveCropRect as ap, type VideoBackendErrorKind as aq, type VideoBackendError as ar, SuggestionFrame as as, rodriguesTransformation as at, Camera as au, CameraGroup as av, InstanceGroup as aw, FrameGroup as ax, RecordingSession as ay, injectSessionFrameResolver as az, LabelsSet as b, type CocoCategory as b$, CENTROID_SKELETON as b0, type CentroidOptions as b1, UserCentroid as b2, PredictedCentroid as b3, type LabelImageObjectInfo as b4, type LabelImageOptions as b5, UserLabelImage as b6, PredictedLabelImage as b7, normalizeLabelIds as b8, type VideoFrame as b9, URL_SCHEMES as bA, CLOUD_SCHEMES as bB, GDRIVE_HOSTS as bC, SENSITIVE_HEADERS as bD, SENSITIVE_QUERY_PARAMS as bE, RETRYABLE_STATUSES as bF, isUrl as bG, isGdriveUrl as bH, redactUrl as bI, redactedCauseSummary as bJ, RemoteIOError as bK, type ResolvedUrl as bL, resolveUrl as bM, statusToMessage as bN, raiseRemote as bO, identityHeaders as bP, stripCrossOriginHeaders as bQ, withRetries as bR, parseRetryAfterMs as bS, fetchRetrying as bT, headOrRangeProbe as bU, type GeoJSONFeature as bV, type GeoJSONFeatureCollection as bW, roisToGeoJSON as bX, roisFromGeoJSON as bY, writeGeoJSON as bZ, readGeoJSON as b_, type GetFrameOptions as ba, type VideoBackend as bb, Mp4BoxVideoBackend as bc, type MediaBunnyOptions as bd, MediaBunnyVideoBackend as be, StreamingHdf5VideoBackend as bf, type ImageVideoOptions as bg, computePrefetchWindow as bh, ImageVideoBackend as bi, loadSlp as bj, saveSlp as bk, loadAnalysisH5 as bl, saveAnalysisH5 as bm, loadSlpSet as bn, saveSlpSet as bo, loadVideo as bp, loadLabelImages as bq, setLabelImageFileReader as br, type PagesAs as bs, type LoadLabelImagesOptions as bt, type LabelImageFileReader as bu, saveSlpToBytes as bv, isAnalysisH5File as bw, labelsToCsv as bx, saveLabelsCsv as by, type CsvExportOptions as bz, type ReadCocoOptions as c, cropFrame as c$, type CocoImage as c0, type CocoRle as c1, type CocoSegmentation as c2, type CocoAnnotation as c3, type CocoJson as c4, isCocoData as c5, parseCocoJson as c6, createSkeletonFromCategory as c7, decodeKeypoints as c8, decodeCompressedRleCounts as c9, resolveColor as cA, rgbToCSS as cB, determineColorScheme as cC, drawCircle as cD, drawSquare as cE, drawDiamond as cF, drawTriangle as cG, drawCross as cH, drawTrails as cI, getMarkerFunction as cJ, MARKER_FUNCTIONS as cK, type DrawTrailsOptions as cL, resolveTrailNode as cM, computeTrails as cN, nTrailPaletteColors as cO, collectTracks as cP, type TrailTarget as cQ, type Trail as cR, RenderContext as cS, InstanceContext as cT, drawMasks as cU, drawLabelImage as cV, cropPoints as cW, uncropPoints as cX, type CropRect as cY, type FlatPoints as cZ, type PointPairs as c_, decodeCocoRle as ca, decodeSegmentation as cb, readCoco as cc, readCocoSet as cd, type LabelsDict as ce, toDict as cf, fromDict as cg, toNumpy as ch, fromNumpy as ci, labelsFromNumpy as cj, decodeYamlSkeleton as ck, encodeYamlSkeleton as cl, readSkeletonJson as cm, writeSkeletonJson as cn, readTrainingConfigSkeletons as co, readTrainingConfigSkeleton as cp, isTrainingConfig as cq, type RGBA as cr, type ColorSpec as cs, type ColorScheme as ct, type MarkerShape as cu, type Overlay as cv, type VideoOverlay as cw, NAMED_COLORS as cx, PALETTES as cy, getPalette as cz, type RenderOptions as d, type FrameLike as d0, type RawFrame as d1, type Fill as d2, clampAlpha as d3, pickColor as d4, type VideoOptions as e, type RGB as f, LabelImage as g, type RawLabelImage as h, getImageBytesReader as i, SeqVideoBackend as j, SeqHeader as k, SeqIndex as l, BlobByteSource as m, type ByteSource as n, createVideoBackend as o, UnsupportedVideoFormatError as p, type VideoBackendType as q, CropVideoBackend as r, setImageBytesReader as s, type CropWrapOptions as t, parseGdrive as u, urlFromConfirmation as v, checkDownloadHost as w, openGdrive as x, StreamingH5File as y, openStreamingH5 as z };

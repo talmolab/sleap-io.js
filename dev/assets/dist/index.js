@@ -85,6 +85,7 @@ import {
   _relinkFromPredicted,
   _resolveMergedIsNegative,
   clampAlpha,
+  cloneRecordingSession,
   collectTracks,
   computePrefetchWindow,
   computeTrails,
@@ -119,6 +120,7 @@ import {
   getMarkerFunction,
   getPalette,
   groupRingsIntoPolygons,
+  injectSessionFrameResolver,
   isAnalysisH5File,
   isCocoData,
   isStreamingSupported,
@@ -172,7 +174,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-3KS4N23B.js";
+} from "./chunk-5FPGN6ZH.js";
 import {
   Edge,
   Instance,
@@ -4025,6 +4027,7 @@ export {
   checkFfmpeg,
   classNamesFromConfig,
   clonePoint,
+  cloneRecordingSession,
   collectTracks,
   computePrefetchWindow,
   computeTrails,
@@ -4073,6 +4076,7 @@ export {
   groupRingsIntoPolygons,
   headOrRangeProbe,
   identityHeaders,
+  injectSessionFrameResolver,
   isAnalysisH5File,
   isCocoData,
   isDlcFile,
