@@ -1,4 +1,10 @@
-import { openH5File, OpenH5Options, SlpSource } from "./h5.js";
+import {
+  openH5File,
+  type OpenH5Options,
+  type SlpSource,
+  getH5EmscriptenModule,
+} from "./h5.js";
+import { readCompoundColumnsManual } from "./h5-compound.js";
 import {
   attrToNumber,
   attrToString,
@@ -12,13 +18,7 @@ import {
 } from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
-import {
-  Instance,
-  PredictedInstance,
-  Track,
-  pointsFromArray,
-  predictedPointsFromArray,
-} from "../../model/instance.js";
+import { Instance, PredictedInstance, Track } from "../../model/instance.js";
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video, type VideoBackendError } from "../../model/video.js";
@@ -36,34 +36,35 @@ import {
   CameraGroup,
   FrameGroup,
   InstanceGroup,
+  injectSessionFrameResolver,
   RecordingSession,
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import {
-  ROI,
+  type ROI,
   UserROI,
   PredictedROI,
   AnnotationType,
   decodeWkb,
 } from "../../model/roi.js";
 import {
-  SegmentationMask,
+  type SegmentationMask,
   UserSegmentationMask,
   PredictedSegmentationMask,
 } from "../../model/mask.js";
 import {
-  BoundingBox,
+  type BoundingBox,
   UserBoundingBox,
   PredictedBoundingBox,
 } from "../../model/bbox.js";
 import {
-  Centroid,
+  type Centroid,
   UserCentroid,
   PredictedCentroid,
 } from "../../model/centroid.js";
 import {
-  LabelImage,
+  type LabelImage,
   UserLabelImage,
   PredictedLabelImage,
 } from "../../model/label-image.js";
@@ -96,6 +97,14 @@ export async function readSlp(
   options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
+    /**
+     * Capture the verbatim, deep-cloned `sessions_json` dict onto each
+     * `RecordingSession.rawJson` (deprecated, transitional). Default `false`:
+     * the faithful typed session model is the source of truth, and skipping the
+     * clone avoids doubling session memory in `Labels.copy()`. See
+     * `RecordingSession.rawJson`.
+     */
+    rawSessions?: boolean;
     /**
      * Optional progress callback fired as loading advances through its stages.
      * `current` counts completed stages out of `total`; `message` labels the
@@ -173,10 +182,20 @@ export async function readSlp(
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
     report(4); // Building labeled frames
-    const framesData = normalizeStructDataset(file.get("frames"));
-    const instancesData = normalizeStructDataset(file.get("instances"));
-    const pointsData = normalizeStructDataset(file.get("points"));
-    const predPointsData = normalizeStructDataset(file.get("pred_points"));
+    // Low-level Module for the fast columnar compound read (falls back to
+    // `.value` when unavailable). Fetched once; null on browsers without the
+    // raw surface, which is fine — normalizeStructDataset then uses `.value`.
+    const emscripten = await getH5EmscriptenModule();
+    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
+    const instancesData = normalizeStructDataset(
+      file.get("instances"),
+      emscripten,
+    );
+    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
+    const predPointsData = normalizeStructDataset(
+      file.get("pred_points"),
+      emscripten,
+    );
 
     const labeledFrames = buildLabeledFrames({
       framesData,
@@ -214,8 +233,8 @@ export async function readSlp(
       file.get("sessions_json"),
       videos,
       skeletons,
-      labeledFrames,
       identities,
+      options?.rawSessions ?? false,
     );
     report(7); // Reading annotations
     const allInstances = labeledFrames.flatMap((f) => f.instances);
@@ -317,7 +336,7 @@ export async function readSlp(
     }
 
     onProgress?.(total, total, "Finalizing");
-    return new Labels({
+    const labels = new Labels({
       labeledFrames,
       videos,
       skeletons,
@@ -328,6 +347,10 @@ export async function readSlp(
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
       rois: staticRois,
     });
+    // Sessions are read before the frame store exists; wire the lazy frame
+    // resolver now so ref-backed grouping resolves against labels.labeledFrames.
+    injectSessionFrameResolver(labels);
+    return labels;
   } finally {
     close();
   }
@@ -361,6 +384,12 @@ export async function readSlpLazy(
   options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
+    /**
+     * Capture the verbatim, deep-cloned `sessions_json` dict onto each
+     * `RecordingSession.rawJson` (deprecated, transitional). Default `false`.
+     * See `readSlp` and `RecordingSession.rawJson`.
+     */
+    rawSessions?: boolean;
     /**
      * Optional progress callback fired as loading advances through its stages.
      * `current` counts completed stages out of `total`; `message` labels the
@@ -434,11 +463,19 @@ export async function readSlpLazy(
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
     report(4); // Reading frame data
-    // Read raw data but don't build frames yet
-    const framesData = normalizeStructDataset(file.get("frames"));
-    const instancesData = normalizeStructDataset(file.get("instances"));
-    const pointsData = normalizeStructDataset(file.get("points"));
-    const predPointsData = normalizeStructDataset(file.get("pred_points"));
+    // Read raw data but don't build frames yet. Use the fast columnar compound
+    // read (falls back to `.value`); see normalizeStructDataset / h5-compound.ts.
+    const emscripten = await getH5EmscriptenModule();
+    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
+    const instancesData = normalizeStructDataset(
+      file.get("instances"),
+      emscripten,
+    );
+    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
+    const predPointsData = normalizeStructDataset(
+      file.get("pred_points"),
+      emscripten,
+    );
 
     // Read negative frames
     const negativeFrames = new Set<string>();
@@ -466,8 +503,8 @@ export async function readSlpLazy(
 
     const lazyFrames = new LazyFrameList(store);
 
-    // Read sessions eagerly - they don't depend on frame data.
-    // Pass empty labeledFrames since frames aren't materialized yet.
+    // Read sessions — grouping is captured as index refs only (no frame
+    // materialization); refs resolve lazily via the injected frame resolver.
     report(5); // Reading identities
     const identities = readIdentities(file.get("identities_json"));
     report(6); // Reading sessions
@@ -475,8 +512,8 @@ export async function readSlpLazy(
       file.get("sessions_json"),
       videos,
       skeletons,
-      [],
       identities,
+      options?.rawSessions ?? false,
     );
     report(7); // Reading annotations
     const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
@@ -579,6 +616,10 @@ export async function readSlpLazy(
     // Replace the eager labeledFrames with lazy proxy
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;
+
+    // Wire the lazy frame resolver AFTER _lazyFrameList is attached so ref-backed
+    // grouping resolves a single frame on demand (never the full table).
+    injectSessionFrameResolver(labels);
 
     onProgress?.(total, total, "Finalizing");
     return labels;
@@ -1008,8 +1049,8 @@ function readSessions(
   dataset: any,
   videos: Video[],
   skeletons: Skeleton[],
-  labeledFrames: LabeledFrame[],
   identities?: Identity[],
+  captureRaw: boolean = false,
 ): RecordingSession[] {
   if (!dataset) return [];
   const values = dataset.value ?? [];
@@ -1036,11 +1077,20 @@ function readSessions(
       cameraGroup.cameras.push(camera);
       cameraMap.set(String(key), camera);
     }
+    cameraGroup.metadata =
+      (calibration.metadata as Record<string, unknown> | undefined) ?? {};
 
     const session = new RecordingSession({
       cameraGroup,
       metadata: (parsed.metadata as Record<string, unknown> | undefined) ?? {},
     });
+    // Optionally retain the verbatim parsed sessions_json dict (deprecated,
+    // opt-in via `rawSessions`). Deep-cloned so it is an INDEPENDENT snapshot:
+    // the object model reuses `parsed`'s nested metadata/calibration objects by
+    // reference, so without the clone a consumer mutating `rawJson` would
+    // silently alter what `serializeSession` writes to disk (and vice versa).
+    // Never re-written to disk; see RecordingSession.rawJson.
+    if (captureRaw) session.rawJson = structuredClone(parsed);
     const map = asRecord(parsed.camcorder_to_video_idx_map);
     for (const [cameraKey, videoIdx] of Object.entries(map)) {
       const camera = resolveCameraKey(
@@ -1069,9 +1119,11 @@ function readSessions(
         : [];
       for (const instanceGroup of instanceGroupList) {
         const instanceGroupRecord = asRecord(instanceGroup);
-        const instanceByCamera = new Map<Camera, Instance>();
-
-        // Read JS-format instances (camera key -> point data)
+        // Concrete instances are built ONLY for the JS-inline format (camera key
+        // -> point dict). The Python/camcorder format is stored as index refs and
+        // resolved lazily via the injected frame resolver — no frame
+        // materialization at read time.
+        let instanceByCamera: Map<Camera, Instance> | undefined;
         const instancesRecord = asRecord(instanceGroupRecord.instances);
         for (const [cameraKey, points] of Object.entries(instancesRecord)) {
           const camera = resolveCameraKey(
@@ -1086,6 +1138,7 @@ function readSessions(
             continue;
           }
           const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+          if (!instanceByCamera) instanceByCamera = new Map<Camera, Instance>();
           instanceByCamera.set(
             camera,
             new Instance({
@@ -1095,25 +1148,25 @@ function readSessions(
           );
         }
 
-        // Fall back to Python-format camcorder_to_lf_and_inst_idx_map
-        if (instanceByCamera.size === 0) {
-          const lfInstMap = asRecord(
-            instanceGroupRecord.camcorder_to_lf_and_inst_idx_map,
+        // Capture verbatim index refs (camera -> [lfIdx, instIdx]) from the
+        // Python-canonical camcorder map, as NUMBERS (the fixture stores them as
+        // strings). Kept even when concrete instances exist so an untouched
+        // round-trip re-derives / falls back to them losslessly on write.
+        let instanceRefsByCamera: Map<Camera, [number, number]> | undefined;
+        const lfInstMap = asRecord(
+          instanceGroupRecord.camcorder_to_lf_and_inst_idx_map,
+        );
+        for (const [camIdx, value] of Object.entries(lfInstMap)) {
+          const camera = resolveCameraKey(
+            camIdx,
+            cameraMap,
+            cameraGroup.cameras,
           );
-          for (const [camIdx, value] of Object.entries(lfInstMap)) {
-            const camera = resolveCameraKey(
-              camIdx,
-              cameraMap,
-              cameraGroup.cameras,
-            );
-            if (!camera) continue;
-            const pair = value as unknown as [number, number];
-            const lf = labeledFrames[Number(pair[0])];
-            if (lf) {
-              const inst = lf.instances[Number(pair[1])];
-              if (inst) instanceByCamera.set(camera, inst as Instance);
-            }
-          }
+          if (!camera) continue;
+          const pair = value as unknown as [unknown, unknown];
+          if (!instanceRefsByCamera)
+            instanceRefsByCamera = new Map<Camera, [number, number]>();
+          instanceRefsByCamera.set(camera, [Number(pair[0]), Number(pair[1])]);
         }
 
         const instance3d = reconstructInstance3D(
@@ -1125,6 +1178,7 @@ function readSessions(
         instanceGroups.push(
           new InstanceGroup({
             instanceByCamera,
+            instanceRefsByCamera,
             score: instanceGroupRecord.score as number | undefined,
             instance3d,
             identity,
@@ -1136,7 +1190,9 @@ function readSessions(
         );
       }
 
-      const labeledFrameByCamera = new Map<Camera, LabeledFrame>();
+      // Capture labeled-frame index refs (camera -> lfIdx) verbatim; resolved
+      // lazily on access. No frame materialization at read time.
+      let labeledFrameRefsByCamera: Map<Camera, number> | undefined;
       const labeledFrameMap = asRecord(groupRecord.labeled_frame_by_camera);
       for (const [cameraKey, labeledFrameIdx] of Object.entries(
         labeledFrameMap,
@@ -1152,14 +1208,14 @@ function readSessions(
           );
           continue;
         }
-        const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
-        if (labeledFrame) {
-          labeledFrameByCamera.set(camera, labeledFrame);
-        }
+        if (!labeledFrameRefsByCamera)
+          labeledFrameRefsByCamera = new Map<Camera, number>();
+        labeledFrameRefsByCamera.set(camera, Number(labeledFrameIdx));
       }
 
-      // If no labeled_frame_by_camera, reconstruct from camcorder_to_lf_and_inst_idx_map
-      if (labeledFrameByCamera.size === 0) {
+      // If no labeled_frame_by_camera, reconstruct refs from
+      // camcorder_to_lf_and_inst_idx_map.
+      if (!labeledFrameRefsByCamera) {
         for (const instanceGroup of instanceGroupList) {
           const igRecord = asRecord(instanceGroup);
           const lfInstMap = asRecord(igRecord.camcorder_to_lf_and_inst_idx_map);
@@ -1170,9 +1226,10 @@ function readSessions(
               cameraGroup.cameras,
             );
             if (!camera) continue;
-            const pair = value as unknown as [number, number];
-            const lf = labeledFrames[Number(pair[0])];
-            if (lf) labeledFrameByCamera.set(camera, lf);
+            const pair = value as unknown as [unknown, unknown];
+            if (!labeledFrameRefsByCamera)
+              labeledFrameRefsByCamera = new Map<Camera, number>();
+            labeledFrameRefsByCamera.set(camera, Number(pair[0]));
           }
         }
       }
@@ -1182,7 +1239,7 @@ function readSessions(
         new FrameGroup({
           frameIdx: Number(frameIdx),
           instanceGroups,
-          labeledFrameByCamera,
+          labeledFrameRefsByCamera,
           metadata:
             (groupRecord.metadata as Record<string, unknown> | undefined) ?? {},
         }),
@@ -1967,8 +2024,22 @@ function readLabelImages(
   return labelImages;
 }
 
-function normalizeStructDataset(dataset: any): Record<string, any[]> {
+function normalizeStructDataset(
+  dataset: any,
+  module?: unknown,
+): Record<string, any[]> {
   if (!dataset) return {};
+
+  // Fast path: read fixed-size compound tables (frames/instances/points/
+  // pred_points) column-wise straight from the record blob, skipping h5wasm's
+  // per-row/per-member `Dataset.value` materialization (the dominant open cost
+  // on large point tables). Returns null — and we fall through to `.value` —
+  // for anything it can't read exactly. See ./h5-compound.ts.
+  if (module) {
+    const fast = readCompoundColumnsManual(module, dataset);
+    if (fast) return fast as Record<string, any[]>;
+  }
+
   const raw = dataset.value;
   if (!raw) return {};
 
@@ -1985,12 +2056,35 @@ function normalizeStructDataset(dataset: any): Record<string, any[]> {
     dataset.shape.length === 2
   ) {
     const [rowCount, colCount] = dataset.shape as [number, number];
+    const flat = raw as unknown as { readonly [i: number]: number };
+    if (fieldNames.length) {
+      // Fast path: extract each field's column DIRECTLY from the flat typed
+      // array by stride, in a single sequential pass. The previous code built
+      // an intermediate array-of-rows — one boxed `Array.from(slice)` per row
+      // (millions of tiny allocations on a large points table) — then re-mapped
+      // it column-by-column; that transpose-and-back dominated large-file loads
+      // (~2.7s of an 11s open on a 0.9M-point file). Column j gets `undefined`
+      // past colCount and columns past fieldNames are dropped, matching the old
+      // `rows.map(row => row[idx])` semantics exactly.
+      const cols: any[][] = fieldNames.map(() => new Array(rowCount));
+      const fillCols = Math.min(fieldNames.length, colCount);
+      for (let i = 0; i < rowCount; i += 1) {
+        const base = i * colCount;
+        for (let j = 0; j < fillCols; j += 1) {
+          cols[j][i] = flat[base + j];
+        }
+      }
+      const data: Record<string, any[]> = {};
+      for (let j = 0; j < fieldNames.length; j += 1) {
+        data[fieldNames[j]] = cols[j];
+      }
+      return data;
+    }
+    // No field names (malformed/legacy): preserve the row-index-keyed fallback.
     const rows: any[][] = [];
     for (let i = 0; i < rowCount; i += 1) {
       const start = i * colCount;
-      const end = start + colCount;
-      const slice = Array.from((raw as any).slice(start, end));
-      rows.push(slice);
+      rows.push(Array.from((raw as any).slice(start, start + colCount)));
     }
     return mapStructuredRows(rows, fieldNames);
   }
@@ -2113,9 +2207,11 @@ function buildLabeledFrames(options: {
 
       let instance: Instance | PredictedInstance;
       if (instanceType === 0) {
-        const points = slicePoints(pointsData, pointStart, pointEnd);
-        instance = new Instance({
-          points: pointsFromArray(points, skeleton.nodeNames),
+        // Build straight from the point columns — no intermediate Point[].
+        instance = Instance._fromColumns({
+          columns: pointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           trackingScore,
@@ -2129,9 +2225,10 @@ function buildLabeledFrames(options: {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = slicePoints(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({
-          points: predictedPointsFromArray(points, skeleton.nodeNames),
+        instance = PredictedInstance._fromColumns({
+          columns: predPointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           score,
@@ -2300,26 +2397,4 @@ function readCentroids(
     centroids.push([centroid, videoIdx, frameIdxVal]);
   }
   return centroids;
-}
-
-function slicePoints(
-  data: Record<string, any[]>,
-  start: number,
-  end: number,
-  predicted = false,
-): number[][] {
-  const xs = data.x ?? [];
-  const ys = data.y ?? [];
-  const visible = data.visible ?? [];
-  const complete = data.complete ?? [];
-  const scores = data.score ?? [];
-  const points: number[][] = [];
-  for (let i = start; i < end; i += 1) {
-    if (predicted) {
-      points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
-    } else {
-      points.push([xs[i], ys[i], visible[i], complete[i]]);
-    }
-  }
-  return points;
 }

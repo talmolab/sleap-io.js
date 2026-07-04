@@ -220,6 +220,13 @@ export async function saveAnalysisH5(
 /** Re-export the Analysis HDF5 format detector for public use. */
 export { isAnalysisH5File } from "./analysis-h5.js";
 
+/** SLEAP Analysis CSV export (browser-safe string + Node file write). */
+export {
+  labelsToCsv,
+  saveLabelsCsv,
+  type CsvExportOptions,
+} from "./csv.js";
+
 /**
  * Load multiple SLP files in parallel.
  *

@@ -1,0 +1,368 @@
+/**
+ * Lossless, lazy-native recording sessions (issue #197).
+ *
+ * Verifies the model faithfully round-trips cross-camera grouping via as-read
+ * index refs (no rawJson needed), that the lazy reader serializes grouping with
+ * ZERO frame materialization, that the written shape matches Python `sleap-io`
+ * (calibration keyed `cam_N`, camcorder maps keyed by integer index, no
+ * format_id bump), that legacy files re-save to that canonical shape, that a
+ * mutation reached via `instanceByCamera` alone still derives correct indices,
+ * that `Labels.copy()` preserves the typed session model, and that eager / lazy
+ * / (Worker-free) streaming reads all produce the same sessions_json.
+ */
+import { describe, it, expect } from "./bun-test";
+import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
+import { readSessionsStreaming } from "../src/codecs/slp/read-streaming.js";
+import { saveSlpToBytes } from "../src/codecs/slp/write.js";
+import { Labels } from "../src/model/labels.js";
+import { injectSessionFrameResolver } from "../src/model/camera.js";
+import { ready, File as H5File } from "h5wasm/node";
+import { fileURLToPath } from "node:url";
+import { readFileSync } from "node:fs";
+import path from "node:path";
+
+const fixtureRoot = fileURLToPath(new URL("./data", import.meta.url));
+const MULTIVIEW = path.join(fixtureRoot, "slp", "multiview.slp");
+
+/** Read the raw sessions_json entries and format_id via a fresh h5wasm open. */
+async function inspect(bytes: Uint8Array): Promise<{
+  sessionsJson: Array<Record<string, unknown>>;
+  formatId: number;
+}> {
+  const module = await ready;
+  const p = `/tmp/lossless_${Date.now()}_${Math.random()
+    .toString(16)
+    .slice(2)}.slp`;
+  module.FS.writeFile(p, bytes);
+  const file = new H5File(p, "r");
+  try {
+    const keys = file.keys() as string[];
+    const sessionsJson = keys.includes("sessions_json")
+      ? (file.get("sessions_json") as { value: string[] }).value.map((s) =>
+          JSON.parse(s),
+        )
+      : [];
+    const meta = file.get("metadata") as {
+      attrs: Record<string, { value?: unknown }>;
+    };
+    const formatId = Number(
+      (meta.attrs.format_id as { value?: unknown })?.value ??
+        meta.attrs.format_id,
+    );
+    return { sessionsJson, formatId };
+  } finally {
+    file.close();
+    module.FS.unlink(p);
+  }
+}
+
+/** The verbatim on-disk sessions_json string of the multiview fixture. */
+async function fixtureSessionsJson(): Promise<string> {
+  const module = await ready;
+  const p = `/tmp/mvsrc_${Date.now()}.slp`;
+  module.FS.writeFile(p, readFileSync(MULTIVIEW));
+  const file = new H5File(p, "r");
+  try {
+    return (file.get("sessions_json") as { value: string[] }).value[0];
+  } finally {
+    file.close();
+    module.FS.unlink(p);
+  }
+}
+
+describe("Lossless lazy-native sessions (#197)", () => {
+  it("byte-stable canonical grouping round-trip (eager)", async () => {
+    const labels = await readSlp(MULTIVIEW, { openVideos: false });
+    const firstBytes = new Uint8Array(await saveSlpToBytes(labels));
+    const first = await inspect(firstBytes);
+
+    // Re-read the canonical bytes and save again — must be byte-stable.
+    const reloaded = await readSlp(firstBytes.buffer as ArrayBuffer, {
+      openVideos: false,
+    });
+    const second = await inspect(
+      new Uint8Array(await saveSlpToBytes(reloaded)),
+    );
+
+    expect(second.sessionsJson).toEqual(first.sessionsJson);
+    // Grouping survived: a non-empty camcorder map is present.
+    const fg = (first.sessionsJson[0].frame_group_dicts as any[])[0];
+    const ig = fg.instance_groups[0];
+    expect(Object.keys(ig.camcorder_to_lf_and_inst_idx_map).length).toBe(8);
+  });
+
+  it("eager, lazy, and streaming reads produce identical canonical sessions_json", async () => {
+    const eager = await readSlp(MULTIVIEW, { openVideos: false });
+    const eagerJson = (
+      await inspect(new Uint8Array(await saveSlpToBytes(eager)))
+    ).sessionsJson;
+
+    const lazy = await readSlpLazy(MULTIVIEW, { openVideos: false });
+    const lazyJson = (await inspect(new Uint8Array(await saveSlpToBytes(lazy))))
+      .sessionsJson;
+    expect(lazyJson).toEqual(eagerJson);
+
+    // Worker-free streaming: drive readSessionsStreaming with the fixture's raw
+    // sessions_json, wrap the parsed sessions in a Labels with the eager frame
+    // table, inject the resolver, and serialize.
+    const rawSessions = await fixtureSessionsJson();
+    const fakeFile = {
+      keys: () => ["sessions_json"],
+      getDatasetValue: async (name: string) =>
+        name === "sessions_json" ? { value: [rawSessions] } : { value: [] },
+    } as unknown as Parameters<typeof readSessionsStreaming>[0];
+    const streamedSessions = await readSessionsStreaming(
+      fakeFile,
+      eager.videos,
+      eager.skeletons,
+      undefined,
+    );
+    const streamedLabels = new Labels({
+      labeledFrames: eager.labeledFrames,
+      videos: eager.videos,
+      skeletons: eager.skeletons,
+      sessions: streamedSessions,
+    });
+    injectSessionFrameResolver(streamedLabels);
+    const streamedJson = (
+      await inspect(new Uint8Array(await saveSlpToBytes(streamedLabels)))
+    ).sessionsJson;
+    expect(streamedJson).toEqual(eagerJson);
+  });
+
+  it("NO frame materialization when serializing lazy sessions", async () => {
+    const labels = await readSlpLazy(MULTIVIEW, { openVideos: false });
+    expect(labels._lazyFrameList).not.toBeNull();
+    expect(labels._lazyFrameList!.materializedCount).toBe(0);
+
+    const bytes = new Uint8Array(await saveSlpToBytes(labels));
+
+    // Grouping never forced a single frame to materialize.
+    expect(labels._lazyFrameList!.materializedCount).toBe(0);
+
+    // ...yet the full camcorder grouping map survived to disk.
+    const { sessionsJson } = await inspect(bytes);
+    const fg = (sessionsJson[0].frame_group_dicts as any[])[0];
+    const ig = fg.instance_groups[0];
+    expect(Object.keys(ig.camcorder_to_lf_and_inst_idx_map).length).toBe(8);
+    // Pure-ref group: no inline `instances` (Python-canonical shape).
+    expect(Object.hasOwn(ig, "instances")).toBe(false);
+  });
+
+  it("writes Python-canonical cam_N calibration keys + integer camcorder maps", async () => {
+    const labels = await readSlp(MULTIVIEW, { openVideos: false });
+    const { sessionsJson, formatId } = await inspect(
+      new Uint8Array(await saveSlpToBytes(labels)),
+    );
+    // Sessions do NOT bump format_id — the canonical shape is a convergence to
+    // Python's existing format, not a new on-disk feature (Python already owns
+    // 2.5+).
+    expect(formatId).toBeLessThan(2.5);
+
+    const s0 = sessionsJson[0];
+    const calib = s0.calibration as Record<string, Record<string, unknown>>;
+    const calibKeys = Object.keys(calib).filter((k) => k !== "metadata");
+    // Calibration keyed `cam_0`..`cam_7` (Python `camera_group_to_dict` parity),
+    // each camera dict keeping its `name`.
+    expect(
+      calibKeys.sort((a, b) => Number(a.slice(4)) - Number(b.slice(4))),
+    ).toEqual([
+      "cam_0",
+      "cam_1",
+      "cam_2",
+      "cam_3",
+      "cam_4",
+      "cam_5",
+      "cam_6",
+      "cam_7",
+    ]);
+    for (const k of calibKeys) {
+      expect(k).toMatch(/^cam_\d+$/);
+      expect(typeof calib[k].name).toBe("string");
+    }
+    // camcorder_to_video_idx_map keys are bare integer indices (Python parity),
+    // a DIFFERENT key space than calibration — both resolve by camera order.
+    for (const k of Object.keys(
+      s0.camcorder_to_video_idx_map as Record<string, unknown>,
+    )) {
+      expect(k).toMatch(/^\d+$/);
+    }
+    // camcorder pairs are NUMBERS (upgraded from the legacy string pairs).
+    const fg = (s0.frame_group_dicts as any[])[0];
+    const pair = Object.values(
+      fg.instance_groups[0].camcorder_to_lf_and_inst_idx_map,
+    )[0] as unknown[];
+    expect(typeof pair[0]).toBe("number");
+    expect(typeof pair[1]).toBe("number");
+  });
+
+  it("legacy file re-saves to the canonical Python shape (converter)", async () => {
+    // The fixture is format 1.2 with cam_N-keyed calibration and STRING ref
+    // pairs and no labeled_frame_by_camera.
+    const src = await inspect(readFileSync(MULTIVIEW));
+    expect(src.formatId).toBeCloseTo(1.2);
+    const srcCalibKeys = Object.keys(
+      src.sessionsJson[0].calibration as Record<string, unknown>,
+    ).filter((k) => k !== "metadata");
+    expect(srcCalibKeys[0]).toBe("cam_0");
+    // Source stores ref pairs as STRINGS (legacy shape).
+    const srcPair = Object.values(
+      (src.sessionsJson[0].frame_group_dicts as any[])[0].instance_groups[0]
+        .camcorder_to_lf_and_inst_idx_map,
+    )[0] as unknown[];
+    expect(typeof srcPair[0]).toBe("string");
+
+    const labels = await readSlp(MULTIVIEW, { openVideos: false });
+    const bytes = new Uint8Array(await saveSlpToBytes(labels));
+    const out = await inspect(bytes);
+
+    // No format bump (convergence to Python's shape, not a new feature)...
+    expect(out.formatId).toBeLessThan(2.5);
+    // ...calibration stays cam_N (Python parity, unchanged from source)...
+    const calibKeys = Object.keys(
+      out.sessionsJson[0].calibration as Record<string, unknown>,
+    ).filter((k) => k !== "metadata");
+    expect(calibKeys.every((k) => /^cam_\d+$/.test(k))).toBe(true);
+    // ...and the legacy STRING ref pairs are normalized to NUMBERS.
+    const outPair = Object.values(
+      (out.sessionsJson[0].frame_group_dicts as any[])[0].instance_groups[0]
+        .camcorder_to_lf_and_inst_idx_map,
+    )[0] as unknown[];
+    expect(typeof outPair[0]).toBe("number");
+
+    // Reloading the upgraded file yields the same grouping sizes as the source.
+    const reloaded = await readSlp(bytes.buffer as ArrayBuffer, {
+      openVideos: false,
+    });
+    const srcFg = labels.sessions[0].frameGroups.get(0)!;
+    const outFg = reloaded.sessions[0].frameGroups.get(0)!;
+    expect(outFg.instanceGroups.length).toBe(srcFg.instanceGroups.length);
+    expect(outFg.instanceGroups[0].instanceByCamera.size).toBe(
+      srcFg.instanceGroups[0].instanceByCamera.size,
+    );
+    expect(outFg.labeledFrameByCamera.size).toBe(
+      srcFg.labeledFrameByCamera.size,
+    );
+  });
+
+  it("mutation is reflected: accessing + editing a group emits concrete points", async () => {
+    const labels = await readSlp(MULTIVIEW, { openVideos: false });
+    const fg = labels.sessions[0].frameGroups.get(0)!;
+    const ig = fg.instanceGroups[0];
+
+    // Force concrete resolution (caches _instanceByCamera and, via the frame
+    // group, _labeledFrameByCamera) so the write takes the object-derivation path.
+    const [[camera, instance]] = fg.labeledFrameByCamera; // materialize frame map
+    void camera;
+    void instance;
+    const [firstCam, firstInst] = [...ig.instanceByCamera][0];
+    // Mutate a point coordinate to a sentinel value.
+    firstInst.points[0].xy = [12345, 67890];
+
+    const { sessionsJson } = await inspect(
+      new Uint8Array(await saveSlpToBytes(labels)),
+    );
+    const outIg = (sessionsJson[0].frame_group_dicts as any[])[0]
+      .instance_groups[0];
+    // Concrete group now emits inline `instances` points including the mutation.
+    expect(outIg.instances).toBeDefined();
+    const flat = JSON.stringify(outIg.instances);
+    expect(flat).toContain("12345");
+    expect(flat).toContain("67890");
+    // A camcorder pair still exists for the mutated camera (derive-first).
+    expect(
+      Object.keys(outIg.camcorder_to_lf_and_inst_idx_map).length,
+    ).toBeGreaterThan(0);
+    void firstCam;
+  });
+
+  it("mutation via instanceByCamera alone (no frame-map access) derives the correct index", async () => {
+    // Reviewer repro: reach the mutation through ONLY the instance group's map —
+    // never touching fg.labeledFrameByCamera — then shift the instance's index.
+    // The written camcorder pair must reflect the NEW index (derive-first via the
+    // frame-group GETTER), not the stale as-read ref.
+    const { Instance } = await import("../src/model/instance.js");
+    const labels = await readSlp(MULTIVIEW, { openVideos: false });
+    const session = labels.sessions[0];
+    const fg = session.frameGroups.get(0)!;
+    const ig = fg.instanceGroups[0];
+
+    const [camera, instance] = [...ig.instanceByCamera][0];
+    const lf = labels.labeledFrames.find((f) =>
+      f.instances.includes(instance),
+    )!;
+    const nodeCount = instance.skeleton.nodeNames.length;
+    const sentinel = Instance.fromArray(
+      Array.from({ length: nodeCount }, () => [0, 0]),
+      instance.skeleton,
+    );
+    lf.instances.unshift(sentinel); // shifts `instance` one slot later
+    const expectedLfIdx = labels.labeledFrames.indexOf(lf);
+    const expectedInstIdx = lf.instances.indexOf(instance);
+
+    const { sessionsJson } = await inspect(
+      new Uint8Array(await saveSlpToBytes(labels)),
+    );
+    const outIg = (sessionsJson[0].frame_group_dicts as any[])[0]
+      .instance_groups[0];
+    const cameraKey = String(session.cameraGroup.cameras.indexOf(camera));
+    expect(outIg.camcorder_to_lf_and_inst_idx_map[cameraKey]).toEqual([
+      expectedLfIdx,
+      expectedInstIdx,
+    ]);
+  });
+
+  it("Labels.copy() preserves the typed session model and re-saves byte-identically", async () => {
+    const labels = await readSlp(MULTIVIEW, { openVideos: false });
+    const copy = labels.copy();
+
+    // Prototypes survived: the grouping getters work on the copy.
+    const cfg = copy.sessions[0].frameGroups.get(0)!;
+    expect(cfg.instanceGroups.length).toBeGreaterThan(0);
+    const origSize =
+      labels.sessions[0].frameGroups.get(0)!.instanceGroups[0].instanceByCamera
+        .size;
+    expect(cfg.instanceGroups[0].instanceByCamera.size).toBe(origSize);
+    expect(origSize).toBeGreaterThan(0);
+
+    // The copy re-saves to the same sessions_json as the original (ref-backed
+    // grouping re-resolved against the copy's own frames).
+    const origBytes = new Uint8Array(await saveSlpToBytes(labels));
+    const copyBytes = new Uint8Array(await saveSlpToBytes(copy));
+    const orig = await inspect(origBytes);
+    const out = await inspect(copyBytes);
+    expect(out.sessionsJson).toEqual(orig.sessionsJson);
+  });
+
+  it("in-memory construction still exposes concrete maps (no refs needed)", async () => {
+    const { Camera, CameraGroup, InstanceGroup, FrameGroup } = await import(
+      "../src/model/camera.js"
+    );
+    const { Instance } = await import("../src/model/instance.js");
+    const { Skeleton } = await import("../src/model/skeleton.js");
+    const { LabeledFrame } = await import("../src/model/labeled-frame.js");
+    const { Video } = await import("../src/model/video.js");
+
+    const skeleton = new Skeleton({ nodes: ["A"], edges: [] });
+    const video = new Video({ filename: "v.mp4" });
+    const cam = new Camera({ name: "cam", rvec: [0, 0, 0], tvec: [0, 0, 0] });
+    const inst = Instance.fromArray([[1, 2]], skeleton);
+    const lf = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+    void CameraGroup;
+
+    const ig = new InstanceGroup({
+      instanceByCamera: new Map([[cam, inst]]),
+    });
+    expect(ig.instanceByCamera.size).toBe(1);
+    expect(ig.instances).toHaveLength(1);
+
+    const fg = new FrameGroup({
+      frameIdx: 0,
+      instanceGroups: [ig],
+      labeledFrameByCamera: new Map([[cam, lf]]),
+    });
+    expect(fg.labeledFrameByCamera.size).toBe(1);
+    expect(fg.cameras).toHaveLength(1);
+    expect(fg.getFrame(cam)).toBe(lf);
+  });
+});

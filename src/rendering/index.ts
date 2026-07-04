@@ -68,6 +68,7 @@ export {
   drawLabelImage,
   drawBboxes,
   drawRois,
+  drawCentroids,
   applyOverlay,
 } from "./overlays.js";
 export type { RawLabelImage } from "./overlays.js";

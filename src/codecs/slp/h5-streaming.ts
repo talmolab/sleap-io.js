@@ -114,7 +114,15 @@ function reconstructValue(data: unknown): unknown {
       buffer?: ArrayBuffer;
       byteOffset?: number;
       length?: number;
+      columns?: Record<string, unknown[]>;
     };
+
+    // Fast compound read: worker already split the record blob into per-member
+    // columns (see readCompoundColumnsWorker); normalizeStructData consumes this
+    // { field: array } record directly.
+    if (typed.type === "columns" && typed.columns) {
+      return typed.columns;
+    }
 
     if (typed.type === "typedarray" && typed.buffer) {
       const TypedArrayConstructor = getTypedArrayConstructor(
