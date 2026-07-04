@@ -32,9 +32,76 @@ export interface StreamingH5Options {
 }
 
 /**
+ * A lazy random-access byte source backed by native reads (e.g. a Tauri
+ * `read_range` command). The streaming Worker pulls slices on demand through a
+ * SharedArrayBuffer + `Atomics` bridge (the "B-seam" range reader), so large
+ * files are never fully materialized in WASM memory. `readRange` runs on the
+ * MAIN thread (the Worker cannot do the native IPC itself).
+ */
+export interface RangeSource {
+  /** Total file size in bytes. */
+  size: number;
+  /** Read `[offset, offset + length)`; may return fewer bytes at EOF. */
+  readRange: (offset: number, length: number) => Promise<Uint8Array>;
+}
+
+/** Type guard for {@link RangeSource}. */
+export function isRangeSource(source: unknown): source is RangeSource {
+  return (
+    typeof source === "object" &&
+    source !== null &&
+    typeof (source as RangeSource).size === "number" &&
+    typeof (source as RangeSource).readRange === "function"
+  );
+}
+
+/**
+ * Service one B-seam byte-request against the shared control/data buffers: read
+ * `[offset, offset + length)` via `reader`, copy the bytes into `dataArea`
+ * (clamped to BOTH the requested length and the data-area size), publish the
+ * returned length in `control[1]` (RETLEN), then set `control[0]` = READY (`2`)
+ * and `notify` — RETLEN is stored BEFORE the READY release so a Worker's
+ * `Atomics.wait`/load (acquire) sees a consistent (length, data) pair. On a read
+ * failure, publishes 0 bytes + READY so the Worker gets a clean short read / EOF
+ * instead of hanging.
+ *
+ * Extracted from {@link StreamingH5File}'s Worker message handler so the
+ * (otherwise Worker-gated) main-thread half of the protocol is unit-testable.
+ * @internal
+ */
+export async function serviceRangeBridge(
+  control: Int32Array,
+  dataArea: Uint8Array,
+  reader: (offset: number, length: number) => Promise<Uint8Array>,
+  offset: number,
+  length: number,
+): Promise<void> {
+  try {
+    const bytes = await reader(offset, length);
+    const n = Math.min(bytes.length, dataArea.length, length);
+    dataArea.set(bytes.subarray(0, n), 0);
+    Atomics.store(control, 1, n); // RETLEN
+    Atomics.store(control, 0, 2); // STATE = READY
+    Atomics.notify(control, 0);
+  } catch (err) {
+    // Signal 0 bytes: the Worker treats it as a short read / EOF and h5wasm
+    // surfaces a clean read error rather than hanging.
+    Atomics.store(control, 1, 0);
+    Atomics.store(control, 0, 2);
+    Atomics.notify(control, 0);
+    console.error("[StreamingH5File] readRange failed:", err);
+  }
+}
+
+/**
  * Source types supported by the streaming HDF5 file.
  */
-export type StreamingH5Source = string | ArrayBuffer | Uint8Array | File;
+export type StreamingH5Source =
+  | string
+  | ArrayBuffer
+  | Uint8Array
+  | File
+  | RangeSource;
 
 /**
  * Reconstructs a TypedArray from transferred worker data.
@@ -125,6 +192,12 @@ export class StreamingH5File {
   private _keys: string[] = [];
   private _isOpen = false;
 
+  // B-seam range bridge (set by openRange): the app-provided reader plus the
+  // SharedArrayBuffer views the Worker blocks on. See serviceRangeRequest.
+  private rangeReader?: (offset: number, length: number) => Promise<Uint8Array>;
+  private rangeControl?: Int32Array;
+  private rangeData?: Uint8Array;
+
   constructor() {
     this.worker = createH5Worker();
     this.worker.onmessage = this.handleMessage.bind(this);
@@ -132,6 +205,18 @@ export class StreamingH5File {
   }
 
   private handleMessage(e: MessageEvent<H5WorkerResponse>): void {
+    // B-seam: the Worker's custom device asks the main thread for bytes. This is
+    // a Worker->main request (not an id-correlated response), so handle it first.
+    const msg = e.data as unknown as {
+      type?: string;
+      offset?: number;
+      length?: number;
+    };
+    if (msg && msg.type === "rangeRequest") {
+      this.serviceRangeRequest(msg.offset ?? 0, msg.length ?? 0);
+      return;
+    }
+
     const { id, ...data } = e.data;
     const pending = this.pendingMessages.get(id);
     if (pending) {
@@ -265,15 +350,73 @@ export class StreamingH5File {
   }
 
   /**
+   * Open an HDF5 file from a lazy {@link RangeSource} via the B-seam bridge.
+   *
+   * The Worker registers a custom Emscripten device whose synchronous `read`
+   * blocks on `Atomics.wait` over a SharedArrayBuffer; this main thread services
+   * each request by calling `readRange` and waking the Worker. Requires
+   * cross-origin isolation (SharedArrayBuffer / COOP+COEP).
+   */
+  async openRange(
+    source: RangeSource,
+    options?: StreamingH5Options,
+  ): Promise<void> {
+    if (typeof SharedArrayBuffer === "undefined") {
+      throw new Error(
+        "RangeSource streaming requires SharedArrayBuffer (enable cross-origin isolation: COOP 'same-origin' + COEP 'require-corp')",
+      );
+    }
+    await this.init(options);
+    this.rangeReader = source.readRange;
+
+    // SAB layout: [0..CONTROL_BYTES) = Int32 control (idx0=STATE, idx1=RETLEN),
+    // then the data area (max single bridged read). The Worker loops for larger reads.
+    const CONTROL_BYTES = 32;
+    const MAX_CHUNK = 4 * 1024 * 1024;
+    const sab = new SharedArrayBuffer(CONTROL_BYTES + MAX_CHUNK);
+    this.rangeControl = new Int32Array(sab, 0, 8);
+    this.rangeData = new Uint8Array(sab, CONTROL_BYTES);
+
+    const filename = options?.filenameHint || "data.h5";
+    const result = await this.send("openRange", {
+      sab,
+      size: source.size,
+      filename,
+      controlBytes: CONTROL_BYTES,
+    });
+    this._keys = (result.keys as string[]) || [];
+    this._isOpen = true;
+  }
+
+  /**
+   * Service a Worker byte-request: read via the app's `readRange`, copy the
+   * bytes into the shared data area, then wake the (blocked) Worker. STATE is
+   * stored last (release) so the Worker's `Atomics.wait` return (acquire) sees
+   * the data + returned length.
+   */
+  private serviceRangeRequest(offset: number, length: number): void {
+    const control = this.rangeControl;
+    const dataArea = this.rangeData;
+    const reader = this.rangeReader;
+    if (!control || !dataArea || !reader) return;
+    // Fire-and-forget: the Worker is blocked on Atomics.wait and is woken by the
+    // notify inside serviceRangeBridge; the message handler must not await.
+    void serviceRangeBridge(control, dataArea, reader, offset, length);
+  }
+
+  /**
    * Open an HDF5 file from any supported source.
    *
-   * @param source - URL string, File, ArrayBuffer, or Uint8Array
+   * @param source - URL string, File, ArrayBuffer, Uint8Array, or RangeSource
    * @param options - Optional settings
    */
   async openAny(
     source: StreamingH5Source,
     options?: StreamingH5Options,
   ): Promise<void> {
+    if (isRangeSource(source)) {
+      return this.openRange(source, options);
+    }
     if (typeof source === "string") {
       return this.open(source, options);
     }

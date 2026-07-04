@@ -93,6 +93,13 @@ async function fetchRetryingWorker(url, init, retries) {
 let mountType = null;
 let currentFilename = null;
 
+// B-seam range bridge: SharedArrayBuffer views the custom device uses to request
+// bytes from the main thread synchronously (Atomics.wait). Set by openRangeFile.
+// Control layout: Int32[0] = STATE (1=REQUEST pending, 2=READY), Int32[1] = RETLEN.
+let rangeControl = null;
+let rangeData = null;
+let rangeMaxChunk = 0;
+
 self.onmessage = async function(e) {
   const { type, payload, id } = e.data;
 
@@ -116,6 +123,11 @@ self.onmessage = async function(e) {
       case 'openBuffer':
         const bufferResult = await openBufferFile(payload.buffer, payload.filename);
         respond(id, bufferResult);
+        break;
+
+      case 'openRange':
+        const rangeResult = openRangeFile(payload.sab, payload.size, payload.filename, payload.controlBytes);
+        respond(id, rangeResult);
         break;
 
       case 'getKeys':
@@ -306,6 +318,80 @@ async function openBufferFile(buffer, filename = 'data.h5') {
   // Open with h5wasm
   currentFile = new h5wasm.File(mountPath, 'r');
 
+  return {
+    success: true,
+    path: currentFile.path,
+    filename: currentFile.filename,
+    keys: currentFile.keys()
+  };
+}
+
+// B-seam: request [offset, offset+want) from the main thread and BLOCK the worker
+// until it writes the bytes back into the shared data area and wakes us. Returns a
+// view over the shared data area (valid only until the next bridgeRead) — callers
+// copy immediately. \`want\` is capped to the data area size; the device loops.
+function bridgeRead(offset, length) {
+  var want = length < rangeMaxChunk ? length : rangeMaxChunk;
+  Atomics.store(rangeControl, 0, 1);                                  // STATE = REQUEST
+  self.postMessage({ type: 'rangeRequest', offset: offset, length: want });
+  Atomics.wait(rangeControl, 0, 1);                                  // block until STATE != REQUEST
+  var got = Atomics.load(rangeControl, 1);                           // RETLEN (acquire)
+  return rangeData.subarray(0, got);
+}
+
+// Create a read-only Emscripten file node whose synchronous reads pull bytes via
+// the bridge instead of XHR (mirrors FS.createLazyFile's node setup: forceLoadFile
+// no-ops once \`contents\` is set, and usedBytes/fstat reads contents.length).
+function createRangeFile(parent, name, size) {
+  var contents = { length: size };
+  var node = FS.createFile(parent, name, { isDevice: false, contents: contents }, true, false);
+  node.contents = contents;
+  Object.defineProperties(node, { usedBytes: { get: function() { return size; } } });
+  var stream_ops = {};
+  var origOps = node.stream_ops;
+  for (var key in origOps) {
+    (function(k, fn) {
+      stream_ops[k] = function() { FS.forceLoadFile(node); return fn.apply(null, arguments); };
+    })(key, origOps[key]);
+  }
+  stream_ops.read = function(stream, buffer, offset, length, position) {
+    if (position >= size) return 0;
+    var end = position + length;
+    if (end > size) end = size;
+    var got = 0;
+    var pos = position;
+    while (pos < end) {
+      var chunk = bridgeRead(pos, end - pos);
+      if (chunk.length === 0) break;                                  // short read / EOF
+      buffer.set(chunk, offset + got);
+      got += chunk.length;
+      pos += chunk.length;
+    }
+    return got;
+  };
+  node.stream_ops = stream_ops;
+  return node;
+}
+
+function openRangeFile(sab, size, filename, controlBytes) {
+  if (!h5wasmModule) {
+    throw new Error('h5wasm not initialized');
+  }
+  closeFile();
+  rangeControl = new Int32Array(sab, 0, 8);
+  rangeData = new Uint8Array(sab, controlBytes || 32);
+  rangeMaxChunk = rangeData.length;
+  // Strip directory components: filenameHint is often a full path (e.g. a native
+  // .slp path with slashes), and MEMFS would treat it as nested dirs that don't
+  // exist -> ENOENT. Mirror openBufferFile's basename handling.
+  var fname = (((filename || 'data.h5').split('/').pop() || '').split('\\\\').pop()) || 'data.h5';
+  mountPath = '/range-' + Date.now();
+  mountType = 'range';
+  currentFilename = fname;
+  FS.mkdir(mountPath);
+  createRangeFile(mountPath, fname, size);
+  const filePath = mountPath + '/' + fname;
+  currentFile = new h5wasm.File(filePath, 'r');
   return {
     success: true,
     path: currentFile.path,
@@ -562,8 +648,8 @@ function closeFile() {
       var parent = mountPath.substring(0, mountPath.lastIndexOf('/'));
       try { FS.unlink(mountPath); } catch (e) { warn('unlink', mountPath, e); }
       try { FS.rmdir(parent); } catch (e) { warn('rmdir', parent, e); }
-    } else if (mountType === 'remote') {
-      // mountPath is the dir containing the lazy file.
+    } else if (mountType === 'remote' || mountType === 'range') {
+      // mountPath is the dir containing the lazy / range-backed file.
       var lazyPath = mountPath + '/' + currentFilename;
       try { FS.unlink(lazyPath); } catch (e) { warn('unlink', lazyPath, e); }
       try { FS.rmdir(mountPath); } catch (e) { warn('rmdir', mountPath, e); }
@@ -611,6 +697,7 @@ export type H5WorkerMessageType =
   | "openUrl"
   | "openLocal"
   | "openBuffer"
+  | "openRange"
   | "getKeys"
   | "getAttr"
   | "getAttrs"

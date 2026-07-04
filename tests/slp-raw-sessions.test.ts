@@ -28,6 +28,13 @@ async function inspectSessions(bytes: Uint8Array): Promise<{
   metadataJson: string;
 }> {
   const module = await ready;
+  // Ensure /tmp exists: under `bun test --parallel`, the shared h5wasm MEMFS
+  // singleton can transiently lack it, making FS.writeFile throw ENOENT.
+  try {
+    module.FS.mkdir("/tmp");
+  } catch {
+    // already exists
+  }
   const p = `/tmp/raw_sessions_${Date.now()}_${Math.random()
     .toString(16)
     .slice(2)}.slp`;
