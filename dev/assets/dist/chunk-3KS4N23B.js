@@ -10,6 +10,7 @@ import {
   _registerCentroidFactory,
   attrToNumber,
   attrToString,
+  clonePoint,
   missingMetadataJsonError,
   parseJsonEntry,
   parseMetadataJson,
@@ -23,7 +24,7 @@ import {
   resolveCameraKey,
   resolveIdentity,
   resolveVideoFilename
-} from "./chunk-Q5V2SXKT.js";
+} from "./chunk-NIFGJKOL.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -5757,8 +5758,8 @@ var Labels = class _Labels {
       }
       this.videos = Array.from(uniqueVideos.values());
     }
+    const existingTracks = new Set(this.tracks);
     if (!this._lazyFrameList) {
-      const existingTracks = new Set(this.tracks);
       for (const frame of this.labeledFrames) {
         for (const instance of frame.instances) {
           this._registerSkeleton(instance);
@@ -5768,21 +5769,30 @@ var Labels = class _Labels {
           }
         }
       }
-    }
-    if (!this._lazyFrameList) {
       for (const lf of this.labeledFrames) {
-        this._collectAnnotationTracks(lf);
+        this._collectAnnotationTracks(lf, existingTracks);
       }
     }
     for (const roi of this._staticRois) {
-      if (roi.track && !this.tracks.includes(roi.track)) {
+      if (roi.track && !existingTracks.has(roi.track)) {
+        existingTracks.add(roi.track);
         this.tracks.push(roi.track);
       }
     }
   }
-  /** Collect tracks from annotations on a frame into this.tracks. */
-  _collectAnnotationTracks(lf) {
-    const existing = new Set(this.tracks);
+  /**
+   * Collect tracks from annotations on a frame into this.tracks.
+   *
+   * `seen` lets a caller iterating many frames share one membership set instead
+   * of rebuilding `new Set(this.tracks)` per frame — the difference between
+   * O(frames) and O(frames × tracks) on files with many tracks (e.g. a 21.8k-
+   * frame / 7k-track project spent seconds here rebuilding the set). When
+   * omitted (single-frame `append`), the set is built from the current tracks.
+   * The set must stay in sync with `this.tracks`: every push here also adds to
+   * it, so a later frame sees tracks an earlier one contributed.
+   */
+  _collectAnnotationTracks(lf, seen) {
+    const existing = seen ?? new Set(this.tracks);
     const add = (track) => {
       if (track && !existing.has(track)) {
         existing.add(track);
@@ -6195,16 +6205,18 @@ To use, first materialize:
    */
   extend(frames) {
     if (this._lazyFrameList) this.materialize();
+    const seenTracks = new Set(this.tracks);
     for (const frame of frames) {
       this.labeledFrames.push(frame);
       this.addVideo(frame.video);
       for (const inst of frame.instances) {
         this._registerSkeleton(inst);
-        if (inst.track != null && !this.tracks.includes(inst.track)) {
+        if (inst.track != null && !seenTracks.has(inst.track)) {
+          seenTracks.add(inst.track);
           this.tracks.push(inst.track);
         }
       }
-      this._collectAnnotationTracks(frame);
+      this._collectAnnotationTracks(frame, seenTracks);
     }
     this._invalidateIndices();
   }
@@ -6542,10 +6554,7 @@ To use, first materialize:
       return nt;
     });
     const cloneInstance = (inst) => {
-      const newPoints = inst.points.map((p) => ({
-        ...p,
-        xy: [...p.xy]
-      }));
+      const newPoints = inst.points.map((p) => clonePoint(p));
       const newSkeleton = skeletonMap.get(inst.skeleton) ?? inst.skeleton;
       const newTrack = inst.track ? trackMap.get(inst.track) ?? inst.track : null;
       if (inst instanceof PredictedInstance) {
@@ -6840,20 +6849,25 @@ To use, first materialize:
    */
   update() {
     if (this._lazyFrameList) this.materialize();
+    const seenVideos = new Set(this.videos);
+    const seenTracks = new Set(this.tracks);
     for (const lf of this.labeledFrames) {
-      if (!this.videos.includes(lf.video)) {
+      if (!seenVideos.has(lf.video)) {
+        seenVideos.add(lf.video);
         this.videos.push(lf.video);
       }
       for (const inst of lf.instances) {
         this._registerSkeleton(inst);
-        if (inst.track != null && !this.tracks.includes(inst.track)) {
+        if (inst.track != null && !seenTracks.has(inst.track)) {
+          seenTracks.add(inst.track);
           this.tracks.push(inst.track);
         }
       }
-      this._collectAnnotationTracks(lf);
+      this._collectAnnotationTracks(lf, seenTracks);
     }
     for (const sf of this.suggestions) {
-      if (!this.videos.includes(sf.video)) {
+      if (!seenVideos.has(sf.video)) {
+        seenVideos.add(sf.video);
         this.videos.push(sf.video);
       }
     }
@@ -6933,10 +6947,7 @@ To use, first materialize:
     let mappedPoints;
     const sameOrder = sourcePoints.length === mappedNames.length && sourcePoints.every((p, i) => p.name === mappedNames[i]);
     if (sameOrder) {
-      mappedPoints = sourcePoints.map((p) => ({
-        ...p,
-        xy: [...p.xy]
-      }));
+      mappedPoints = sourcePoints.map((p) => clonePoint(p));
     } else {
       const sourceByName = /* @__PURE__ */ new Map();
       for (const p of sourcePoints) {
@@ -6945,7 +6956,7 @@ To use, first materialize:
       mappedPoints = mappedNames.map((name) => {
         const src = sourceByName.get(name);
         if (src !== void 0) {
-          return { ...src, xy: [...src.xy], name };
+          return clonePoint(src, name);
         }
         return isPredicted ? {
           xy: [Number.NaN, Number.NaN],
@@ -7909,10 +7920,7 @@ To use, first materialize:
       return nt;
     };
     const cloneInstance = (inst) => {
-      const newPoints = inst.points.map((p) => ({
-        ...p,
-        xy: [...p.xy]
-      }));
+      const newPoints = inst.points.map((p) => clonePoint(p));
       const newSkeleton = mapSkeleton(inst.skeleton);
       const newTrack = mapTrack(inst.track);
       if (inst.constructor === PredictedInstance) {
@@ -10400,6 +10408,77 @@ function getDatasetMeta(path) {
   };
 }
 
+// Read a fixed-size 1-D compound dataset column-wise straight from the record
+// blob, skipping h5wasm's Dataset.value (which allocates ~8 Uint8Array.slice per
+// record \u2014 the dominant cost of opening a large project). Mirrors
+// readCompoundColumnsManual in ./h5-compound.ts (keep them in lockstep). Returns
+// { columns: { memberName: Float64Array }, buffers: ArrayBuffer[] } \u2014 the buffers
+// are the postMessage transfer list so the columns move to the main thread
+// instead of being structured-cloned. Returns null (caller falls back to .value)
+// for anything not a plain-numeric compound. Values match .value except int64
+// comes back as number (every consumer routes these through Number()).
+function readCompoundColumnsWorker(dataset, M) {
+  const md = dataset.metadata;
+  const members = md && md.compound_type && md.compound_type.members;
+  if (!members || !members.length || (md && md.vlen)) return null;
+  const shape = dataset.shape;
+  if (!shape || shape.length !== 1) return null;
+  const recSize = md.size;
+  if (!recSize || recSize <= 0) return null;
+  for (let k = 0; k < members.length; k++) {
+    const mt = members[k];
+    if (mt.type !== 0 && mt.type !== 1 && mt.type !== 8) return null;
+    if (mt.type === 1 && mt.size !== 8 && mt.size !== 4) return null;
+    if (mt.size !== 1 && mt.size !== 2 && mt.size !== 4 && mt.size !== 8) return null;
+  }
+  if (!(M && M._malloc && M.get_dataset_data && M.HEAPU8 && M._free)) return null;
+  const n = shape[0];
+  // Columns are Float64Array (every SLEAP field \u2014 coords, scores, and integer
+  // id/index columns up to 2^53 \u2014 is exact in f64) so their backing buffers can
+  // be TRANSFERRED to the main thread instead of structured-cloned. \`buffers\`
+  // is the postMessage transfer list.
+  const columns = {};
+  const buffers = [];
+  if (n === 0) {
+    for (let z = 0; z < members.length; z++) {
+      const c = new Float64Array(0);
+      columns[members[z].name] = c;
+      buffers.push(c.buffer);
+    }
+    return { columns: columns, buffers: buffers };
+  }
+  const nbytes = recSize * n;
+  const dptr = M._malloc(nbytes);
+  if (!dptr) return null;
+  let buf;
+  try {
+    M.get_dataset_data(dataset.file_id, dataset.path, [BigInt(n)], [0n], [1n], BigInt(dptr));
+    buf = M.HEAPU8.slice(dptr, dptr + nbytes);
+  } finally {
+    M._free(dptr);
+  }
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  for (let j = 0; j < members.length; j++) {
+    const m = members[j];
+    const col = new Float64Array(n);
+    const off = m.offset, sz = m.size, isFloat = (m.type === 1);
+    const signed = (m.signed !== false), le = (m.littleEndian !== false);
+    for (let i = 0; i < n; i++) {
+      const p = i * recSize + off;
+      let v;
+      if (isFloat) v = sz === 8 ? dv.getFloat64(p, le) : dv.getFloat32(p, le);
+      else if (sz === 1) v = signed ? dv.getInt8(p) : dv.getUint8(p);
+      else if (sz === 2) v = signed ? dv.getInt16(p, le) : dv.getUint16(p, le);
+      else if (sz === 4) v = signed ? dv.getInt32(p, le) : dv.getUint32(p, le);
+      else v = Number(signed ? dv.getBigInt64(p, le) : dv.getBigUint64(p, le));
+      col[i] = v;
+    }
+    columns[m.name] = col;
+    buffers.push(col.buffer);
+  }
+  return { columns: columns, buffers: buffers };
+}
+
 function getDatasetValue(path, slice) {
   if (!currentFile) throw new Error('No file open');
   const dataset = currentFile.get(path);
@@ -10450,6 +10529,22 @@ function getDatasetValue(path, slice) {
       dtype: dataset.dtype,
       transferables: []
     };
+  }
+
+  // Fixed-size compound full read (frames/instances/points/pred_points): return
+  // per-member columns read directly from the record blob, skipping h5wasm's slow
+  // Dataset.value. normalizeStructData accepts a { field: array } record as-is, so
+  // no caller change is needed; falls through to .value when not applicable.
+  if (!slice) {
+    const res = readCompoundColumnsWorker(dataset, M);
+    if (res) {
+      return {
+        value: { type: 'columns', columns: res.columns },
+        shape: dataset.shape,
+        dtype: dataset.dtype,
+        transferables: res.buffers
+      };
+    }
   }
 
   // Non-vlen: hyperslab slice or whole read as requested.
@@ -10546,6 +10641,9 @@ function createH5Worker() {
 function reconstructValue(data) {
   if (data && typeof data === "object" && "type" in data) {
     const typed = data;
+    if (typed.type === "columns" && typed.columns) {
+      return typed.columns;
+    }
     if (typed.type === "typedarray" && typed.buffer) {
       const TypedArrayConstructor = getTypedArrayConstructor(
         typed.dtype || "Uint8Array"
@@ -11875,7 +11973,8 @@ function normalizeStructData(value, shape, fieldNames) {
   if (value && typeof value === "object" && !Array.isArray(value) && !ArrayBuffer.isView(value)) {
     const obj = value;
     const firstKey = Object.keys(obj)[0];
-    if (firstKey && Array.isArray(obj[firstKey])) {
+    const firstCol = firstKey ? obj[firstKey] : void 0;
+    if (firstKey && (Array.isArray(firstCol) || ArrayBuffer.isView(firstCol))) {
       return obj;
     }
   }
@@ -11970,9 +12069,10 @@ function buildLabeledFrames(options) {
       const track = trackId >= 0 ? tracks[trackId] : null;
       let instance;
       if (instanceType === 0) {
-        const points = slicePoints(pointsData, pointStart, pointEnd);
-        instance = new Instance({
-          points: pointsFromArray(points, skeleton.nodeNames),
+        instance = Instance._fromColumns({
+          columns: pointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           trackingScore
@@ -11986,9 +12086,10 @@ function buildLabeledFrames(options) {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = slicePoints(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({
-          points: predictedPointsFromArray(points, skeleton.nodeNames),
+        instance = PredictedInstance._fromColumns({
+          columns: predPointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           score,
@@ -12045,22 +12146,6 @@ function parseVideoIdFromDataset(dataset) {
   if (!group.startsWith("video")) return null;
   const id = Number(group.slice(5));
   return Number.isNaN(id) ? null : id;
-}
-function slicePoints(data, start, end, predicted = false) {
-  const xs = data.x ?? [];
-  const ys = data.y ?? [];
-  const visible = data.visible ?? [];
-  const complete = data.complete ?? [];
-  const scores = data.score ?? [];
-  const points = [];
-  for (let i = start; i < end; i += 1) {
-    if (predicted) {
-      points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
-    } else {
-      points.push([xs[i], ys[i], visible[i], complete[i]]);
-    }
-  }
-  return points;
 }
 
 // src/codecs/slp/write.ts
@@ -14822,6 +14907,85 @@ async function saveLabelsCsv(labels, filename, options = {}) {
   await nodeWriteFile(filename, bytes);
 }
 
+// src/codecs/slp/h5-compound.ts
+var H5T_INTEGER = 0;
+var H5T_FLOAT = 1;
+var H5T_ENUM = 8;
+function moduleUsable(m) {
+  const mm = m;
+  return !!mm && typeof mm._malloc === "function" && typeof mm._free === "function" && typeof mm.get_dataset_data === "function" && mm.HEAPU8 instanceof Uint8Array;
+}
+function readCompoundColumnsManual(module, dataset) {
+  if (!moduleUsable(module)) return null;
+  const md = dataset.metadata;
+  const members = md?.compound_type?.members;
+  if (!members || members.length === 0) return null;
+  if (md?.vlen) return null;
+  const shape = md?.shape;
+  if (!Array.isArray(shape) || shape.length !== 1) return null;
+  const recSize = md?.size ?? 0;
+  if (recSize <= 0) return null;
+  for (const m of members) {
+    if (m.type !== H5T_INTEGER && m.type !== H5T_FLOAT && m.type !== H5T_ENUM) {
+      return null;
+    }
+    if (m.type === H5T_FLOAT && m.size !== 8 && m.size !== 4) return null;
+    if (m.size !== 1 && m.size !== 2 && m.size !== 4 && m.size !== 8)
+      return null;
+  }
+  const nrows = shape[0];
+  if (nrows === 0) {
+    const empty = {};
+    for (const m of members) empty[m.name] = [];
+    return empty;
+  }
+  const nbytes = recSize * nrows;
+  const dataPtr = module._malloc(nbytes);
+  if (!dataPtr) return null;
+  let buf;
+  try {
+    module.get_dataset_data(
+      dataset.file_id,
+      dataset.path,
+      [BigInt(nrows)],
+      [0n],
+      [1n],
+      BigInt(dataPtr)
+    );
+    buf = module.HEAPU8.slice(dataPtr, dataPtr + nbytes);
+  } finally {
+    module._free(dataPtr);
+  }
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  const cols = {};
+  for (const m of members) {
+    const col = new Array(nrows);
+    const off = m.offset;
+    const sz = m.size;
+    const isFloat = m.type === H5T_FLOAT;
+    const signed = m.signed !== false;
+    const le = m.littleEndian !== false;
+    for (let i = 0; i < nrows; i += 1) {
+      const p = i * recSize + off;
+      let v;
+      if (isFloat) {
+        v = sz === 8 ? dv.getFloat64(p, le) : dv.getFloat32(p, le);
+      } else if (sz === 1) {
+        v = signed ? dv.getInt8(p) : dv.getUint8(p);
+      } else if (sz === 2) {
+        v = signed ? dv.getInt16(p, le) : dv.getUint16(p, le);
+      } else if (sz === 4) {
+        v = signed ? dv.getInt32(p, le) : dv.getUint32(p, le);
+      } else {
+        v = Number(signed ? dv.getBigInt64(p, le) : dv.getBigUint64(p, le));
+      }
+      col[i] = v;
+    }
+    cols[m.name] = col;
+  }
+  return cols;
+}
+
 // src/codecs/slp/read.ts
 import { inflate } from "pako";
 var textDecoder2 = new TextDecoder();
@@ -14877,10 +15041,17 @@ async function readSlp(source, options) {
     report(3);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
     report(4);
-    const framesData = normalizeStructDataset(file.get("frames"));
-    const instancesData = normalizeStructDataset(file.get("instances"));
-    const pointsData = normalizeStructDataset(file.get("points"));
-    const predPointsData = normalizeStructDataset(file.get("pred_points"));
+    const emscripten = await getH5EmscriptenModule();
+    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
+    const instancesData = normalizeStructDataset(
+      file.get("instances"),
+      emscripten
+    );
+    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
+    const predPointsData = normalizeStructDataset(
+      file.get("pred_points"),
+      emscripten
+    );
     const labeledFrames = buildLabeledFrames2({
       framesData,
       instancesData,
@@ -15059,10 +15230,17 @@ async function readSlpLazy(source, options) {
     report(3);
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
     report(4);
-    const framesData = normalizeStructDataset(file.get("frames"));
-    const instancesData = normalizeStructDataset(file.get("instances"));
-    const pointsData = normalizeStructDataset(file.get("points"));
-    const predPointsData = normalizeStructDataset(file.get("pred_points"));
+    const emscripten = await getH5EmscriptenModule();
+    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
+    const instancesData = normalizeStructDataset(
+      file.get("instances"),
+      emscripten
+    );
+    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
+    const predPointsData = normalizeStructDataset(
+      file.get("pred_points"),
+      emscripten
+    );
     const negativeFrames = /* @__PURE__ */ new Set();
     const negativeFramesDs = file.get("negative_frames");
     if (negativeFramesDs) {
@@ -16169,8 +16347,12 @@ function readLabelImages(file, _videos, tracks, instances) {
   }
   return labelImages;
 }
-function normalizeStructDataset(dataset) {
+function normalizeStructDataset(dataset, module) {
   if (!dataset) return {};
+  if (module) {
+    const fast = readCompoundColumnsManual(module, dataset);
+    if (fast) return fast;
+  }
   const raw = dataset.value;
   if (!raw) return {};
   const fieldNames = getFieldNames(dataset);
@@ -16179,12 +16361,26 @@ function normalizeStructDataset(dataset) {
   }
   if (raw && ArrayBuffer.isView(raw) && Array.isArray(dataset.shape) && dataset.shape.length === 2) {
     const [rowCount, colCount] = dataset.shape;
+    const flat = raw;
+    if (fieldNames.length) {
+      const cols = fieldNames.map(() => new Array(rowCount));
+      const fillCols = Math.min(fieldNames.length, colCount);
+      for (let i = 0; i < rowCount; i += 1) {
+        const base = i * colCount;
+        for (let j = 0; j < fillCols; j += 1) {
+          cols[j][i] = flat[base + j];
+        }
+      }
+      const data = {};
+      for (let j = 0; j < fieldNames.length; j += 1) {
+        data[fieldNames[j]] = cols[j];
+      }
+      return data;
+    }
     const rows = [];
     for (let i = 0; i < rowCount; i += 1) {
       const start = i * colCount;
-      const end = start + colCount;
-      const slice = Array.from(raw.slice(start, end));
-      rows.push(slice);
+      rows.push(Array.from(raw.slice(start, start + colCount)));
     }
     return mapStructuredRows(rows, fieldNames);
   }
@@ -16277,9 +16473,10 @@ function buildLabeledFrames2(options) {
       const track = trackId >= 0 ? tracks[trackId] : null;
       let instance;
       if (instanceType === 0) {
-        const points = slicePoints2(pointsData, pointStart, pointEnd);
-        instance = new Instance({
-          points: pointsFromArray(points, skeleton.nodeNames),
+        instance = Instance._fromColumns({
+          columns: pointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           trackingScore
@@ -16293,9 +16490,10 @@ function buildLabeledFrames2(options) {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = slicePoints2(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({
-          points: predictedPointsFromArray(points, skeleton.nodeNames),
+        instance = PredictedInstance._fromColumns({
+          columns: predPointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           score,
@@ -16425,22 +16623,6 @@ function readCentroids(file, _videos, tracks) {
     centroids.push([centroid, videoIdx, frameIdxVal]);
   }
   return centroids;
-}
-function slicePoints2(data, start, end, predicted = false) {
-  const xs = data.x ?? [];
-  const ys = data.y ?? [];
-  const visible = data.visible ?? [];
-  const complete = data.complete ?? [];
-  const scores = data.score ?? [];
-  const points = [];
-  for (let i = start; i < end; i += 1) {
-    if (predicted) {
-      points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
-    } else {
-      points.push([xs[i], ys[i], visible[i], complete[i]]);
-    }
-  }
-  return points;
 }
 
 // src/io/main.ts

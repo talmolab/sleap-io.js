@@ -172,25 +172,27 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-7FKOXB26.js";
+} from "./chunk-3KS4N23B.js";
 import {
   Edge,
   Instance,
   Instance3D,
   Node,
+  PointView,
   PredictedInstance,
   PredictedInstance3D,
   Skeleton,
   Symmetry,
   Track,
   _registerCentroidFactory,
+  clonePoint,
   pointsEmpty,
   pointsFromArray,
   pointsFromDict,
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-Q5V2SXKT.js";
+} from "./chunk-NIFGJKOL.js";
 import {
   CLOUD_SCHEMES,
   DEFAULT_MAX_BYTES,
@@ -3965,6 +3967,7 @@ export {
   OVERLAP_SKELETON_MATCHER,
   PALETTES,
   PATH_VIDEO_MATCHER,
+  PointView,
   PredictedBoundingBox,
   PredictedCentroid,
   PredictedInstance,
@@ -4021,6 +4024,7 @@ export {
   checkDownloadHost,
   checkFfmpeg,
   classNamesFromConfig,
+  clonePoint,
   collectTracks,
   computePrefetchWindow,
   computeTrails,

@@ -18,6 +18,8 @@ var Track = class {
     throw new Error("Unknown matching method: " + method);
   }
 };
+var EMPTY_F64 = new Float64Array(0);
+var EMPTY_U8 = new Uint8Array(0);
 function pointsEmpty(length, names) {
   const pts = [];
   for (let i = 0; i < length; i += 1) {
@@ -42,6 +44,18 @@ function predictedPointsEmpty(length, names) {
     });
   }
   return pts;
+}
+function clonePoint(p, name) {
+  const xy = p.xy;
+  const out = {
+    xy: [xy[0], xy[1]],
+    visible: p.visible,
+    complete: p.complete,
+    name: name ?? p.name
+  };
+  const score = p.score;
+  if (typeof score === "number") out.score = score;
+  return out;
 }
 function pointsFromArray(array, names) {
   const pts = [];
@@ -74,22 +88,196 @@ function predictedPointsFromArray(array, names) {
   }
   return pts;
 }
+var PointView = class {
+  // True-private backing (ECMAScript #fields) so a view carries no enumerable
+  // own properties: `{ ...point }` and `JSON.stringify(point)` see nothing but
+  // the getters, and there is no circular `_owner` leak. The `Point` fields are
+  // exposed as accessors below.
+  #owner;
+  #i;
+  constructor(owner, i) {
+    this.#owner = owner;
+    this.#i = i;
+  }
+  get xy() {
+    const xy = this.#owner._xy;
+    const j = this.#i << 1;
+    return [xy[j], xy[j + 1]];
+  }
+  set xy(v) {
+    const xy = this.#owner._xy;
+    const j = this.#i << 1;
+    xy[j] = v[0];
+    xy[j + 1] = v[1];
+  }
+  get visible() {
+    return this.#owner._visible[this.#i] !== 0;
+  }
+  set visible(v) {
+    this.#owner._visible[this.#i] = v ? 1 : 0;
+  }
+  get complete() {
+    return this.#owner._complete[this.#i] !== 0;
+  }
+  set complete(v) {
+    this.#owner._complete[this.#i] = v ? 1 : 0;
+  }
+  get score() {
+    const s = this.#owner._score;
+    return s ? s[this.#i] : void 0;
+  }
+  set score(v) {
+    this.#owner._scoreColumn()[this.#i] = v ?? Number.NaN;
+  }
+  get name() {
+    return this.#owner._pointName(this.#i);
+  }
+  set name(v) {
+    this.#owner._setPointName(this.#i, v);
+  }
+};
 var Instance = class _Instance {
-  points;
   skeleton;
   track;
   fromPredicted;
   trackingScore;
+  // Columnar keypoint storage (retained). Built once at construction from the
+  // transient `Point[]`/dict, which is then discarded. `points` reads/writes go
+  // through lightweight PointView flyweights over these. See {@link PointView}.
+  _xy = EMPTY_F64;
+  // interleaved [x0,y0,x1,y1,...], length 2n
+  _visible = EMPTY_U8;
+  // n
+  _complete = EMPTY_U8;
+  // n
+  _score = null;
+  // n (predicted) or null (user)
+  _names = null;
+  // null ⇒ derive from skeleton
+  _n = 0;
   constructor(options) {
     this.skeleton = options.skeleton;
     this.track = options.track ?? null;
     this.fromPredicted = options.fromPredicted ?? null;
     this.trackingScore = options.trackingScore ?? 0;
+    let pts;
     if (Array.isArray(options.points)) {
-      this.points = options.points;
+      const arr = options.points;
+      pts = arr.length > 0 && Array.isArray(arr[0]) ? pointsFromArray(arr, options.skeleton.nodeNames) : arr;
     } else {
-      this.points = pointsFromDict(options.points, options.skeleton);
+      pts = pointsFromDict(options.points, options.skeleton);
     }
+    this._ingest(pts);
+  }
+  /** Pack a transient `Point[]` into the columnar typed-array storage. */
+  _ingest(pts) {
+    const n = pts.length;
+    const xy = new Float64Array(2 * n);
+    const visible = new Uint8Array(n);
+    const complete = new Uint8Array(n);
+    const hasScore = n > 0 && typeof pts[0].score === "number";
+    const score = hasScore ? new Float64Array(n) : null;
+    const nodeNames = this.skeleton.nodeNames;
+    let names = null;
+    for (let i = 0; i < n; i += 1) {
+      const p = pts[i];
+      const j = i << 1;
+      xy[j] = p.xy[0];
+      xy[j + 1] = p.xy[1];
+      visible[i] = p.visible ? 1 : 0;
+      complete[i] = p.complete ? 1 : 0;
+      if (score) score[i] = p.score ?? Number.NaN;
+      if (p.name !== nodeNames[i]) {
+        if (!names) {
+          names = new Array(n);
+          for (let k = 0; k < n; k += 1) names[k] = nodeNames[k];
+        }
+        names[i] = p.name;
+      }
+    }
+    this._xy = xy;
+    this._visible = visible;
+    this._complete = complete;
+    this._score = score;
+    this._names = names;
+    this._n = n;
+  }
+  /**
+   * Fill the columnar storage directly from the SLP readers' parsed point
+   * columns over `[start, end)`, skipping the intermediate `Point[]` literals
+   * (the slicePoints → pointsFromArray → `_ingest` path allocates ~3 throwaway
+   * objects per point). Values match that path exactly: `x ?? NaN`, `y ?? NaN`,
+   * `Boolean(visible)`, `Boolean(complete)`, and (predicted) `score ?? NaN`;
+   * names derive from the skeleton. Used by {@link Instance._fromColumns}.
+   */
+  _fillFromColumns(columns, start, end, predicted) {
+    const n = Math.max(0, end - start);
+    const xy = new Float64Array(2 * n);
+    const visible = new Uint8Array(n);
+    const complete = new Uint8Array(n);
+    const score = predicted ? new Float64Array(n) : null;
+    const cx = columns.x;
+    const cy = columns.y;
+    const cv = columns.visible;
+    const cc = columns.complete;
+    const cs = columns.score;
+    for (let i = 0; i < n; i += 1) {
+      const src = start + i;
+      const j = i << 1;
+      xy[j] = cx && cx[src] != null ? cx[src] : Number.NaN;
+      xy[j + 1] = cy && cy[src] != null ? cy[src] : Number.NaN;
+      visible[i] = cv && cv[src] ? 1 : 0;
+      complete[i] = cc && cc[src] ? 1 : 0;
+      if (score)
+        score[i] = cs && cs[src] != null ? cs[src] : Number.NaN;
+    }
+    this._xy = xy;
+    this._visible = visible;
+    this._complete = complete;
+    this._score = score;
+    this._names = null;
+    this._n = n;
+  }
+  /**
+   * Build an Instance directly from reader point columns over `[start, end)`,
+   * without materializing a `Point[]`. Internal fast path for buildLabeledFrames;
+   * equivalent to `new Instance({ points: pointsFromArray(slicePoints(...)) })`.
+   */
+  static _fromColumns(opts) {
+    const inst = Object.create(_Instance.prototype);
+    inst.skeleton = opts.skeleton;
+    inst.track = opts.track ?? null;
+    inst.fromPredicted = opts.fromPredicted ?? null;
+    inst.trackingScore = opts.trackingScore ?? 0;
+    inst._fillFromColumns(opts.columns, opts.start, opts.end, false);
+    return inst;
+  }
+  /** Lazily allocate the score column (for a user instance gaining scores). */
+  _scoreColumn() {
+    if (!this._score) this._score = new Float64Array(this._n).fill(Number.NaN);
+    return this._score;
+  }
+  /** Node name for point `i` — derived from the skeleton unless overridden. */
+  _pointName(i) {
+    return this._names ? this._names[i] : this.skeleton.nodeNames[i];
+  }
+  _setPointName(i, v) {
+    if (!this._names) {
+      const nn = this.skeleton.nodeNames;
+      this._names = new Array(this._n);
+      for (let k = 0; k < this._n; k += 1) this._names[k] = nn[k];
+    }
+    this._names[i] = v;
+  }
+  /** The keypoints as an array of live {@link PointView}s (built on demand). */
+  get points() {
+    const n = this._n;
+    const out = new Array(n);
+    for (let i = 0; i < n; i += 1) out[i] = new PointView(this, i);
+    return out;
+  }
+  set points(pts) {
+    this._ingest(pts);
   }
   static fromArray(points, skeleton) {
     return new _Instance({
@@ -116,32 +304,39 @@ var Instance = class _Instance {
     });
   }
   get length() {
-    return this.points.length;
+    return this._n;
   }
   get nVisible() {
-    return this.points.filter((point) => point.visible).length;
+    let count = 0;
+    for (let i = 0; i < this._n; i += 1) if (this._visible[i]) count += 1;
+    return count;
   }
   getPoint(target) {
+    let index;
     if (typeof target === "number") {
-      if (target < 0 || target >= this.points.length)
+      if (target < 0 || target >= this._n)
         throw new Error("Point index out of range.");
-      return this.points[target];
+      index = target;
+    } else if (typeof target === "string") {
+      index = this.skeleton.index(target);
+    } else {
+      index = this.skeleton.index(target.name);
     }
-    if (typeof target === "string") {
-      const index2 = this.skeleton.index(target);
-      return this.points[index2];
-    }
-    const index = this.skeleton.index(target.name);
-    return this.points[index];
+    return new PointView(this, index);
   }
   numpy(options) {
     const invisibleAsNaN = options?.invisibleAsNaN ?? true;
-    return this.points.map((point) => {
-      if (invisibleAsNaN && !point.visible) {
-        return [Number.NaN, Number.NaN];
+    const xy = this._xy;
+    const out = new Array(this._n);
+    for (let i = 0; i < this._n; i += 1) {
+      if (invisibleAsNaN && !this._visible[i]) {
+        out[i] = [Number.NaN, Number.NaN];
+      } else {
+        const j = i << 1;
+        out[i] = [xy[j], xy[j + 1]];
       }
-      return [point.xy[0], point.xy[1]];
-    });
+    }
+    return out;
   }
   toString() {
     const trackName = this.track ? `"${this.track.name}"` : "None";
@@ -150,10 +345,14 @@ var Instance = class _Instance {
   /** Mean of visible point coordinates as `[x, y]`, or `null` if no points visible. */
   get centroidXy() {
     let sumX = 0, sumY = 0, count = 0;
-    for (const point of this.points) {
-      if (point.visible && !Number.isNaN(point.xy[0]) && !Number.isNaN(point.xy[1])) {
-        sumX += point.xy[0];
-        sumY += point.xy[1];
+    const xy = this._xy;
+    for (let i = 0; i < this._n; i += 1) {
+      const j = i << 1;
+      const x = xy[j];
+      const y = xy[j + 1];
+      if (this._visible[i] && !Number.isNaN(x) && !Number.isNaN(y)) {
+        sumX += x;
+        sumY += y;
         count++;
       }
     }
@@ -176,9 +375,10 @@ var Instance = class _Instance {
     return _centroidFactory(this, { method, node });
   }
   get isEmpty() {
-    return this.points.every(
-      (point) => !point.visible || Number.isNaN(point.xy[0])
-    );
+    for (let i = 0; i < this._n; i += 1) {
+      if (this._visible[i] && !Number.isNaN(this._xy[i << 1])) return false;
+    }
+    return true;
   }
   /**
    * Check if this instance has the same pose as another instance.
@@ -285,18 +485,20 @@ var Instance = class _Instance {
    *   there are no visible points.
    */
   boundingBox() {
-    const xs = [];
-    const ys = [];
-    for (const point of this.points) {
-      if (!point.visible) continue;
-      xs.push(point.xy[0]);
-      ys.push(point.xy[1]);
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    let any = false;
+    const xy = this._xy;
+    for (let i = 0; i < this._n; i += 1) {
+      if (!this._visible[i]) continue;
+      const x = xy[i << 1];
+      const y = xy[(i << 1) + 1];
+      any = true;
+      minX = Math.min(minX, x);
+      maxX = Math.max(maxX, x);
+      minY = Math.min(minY, y);
+      maxY = Math.max(maxY, y);
     }
-    if (!xs.length) return null;
-    const minX = Math.min(...xs);
-    const maxX = Math.max(...xs);
-    const minY = Math.min(...ys);
-    const maxY = Math.max(...ys);
+    if (!any) return null;
     return [
       [minX, minY],
       [maxX, maxY]
@@ -348,15 +550,37 @@ var PredictedInstance = class _PredictedInstance extends Instance {
       skeleton: options.skeleton
     });
   }
+  /**
+   * Build a PredictedInstance directly from reader point columns over
+   * `[start, end)`, without materializing a `Point[]`. Internal fast path for
+   * buildLabeledFrames; equivalent to `new PredictedInstance({ points:
+   * predictedPointsFromArray(slicePoints(...)) })`.
+   */
+  static _fromColumns(opts) {
+    const inst = Object.create(
+      _PredictedInstance.prototype
+    );
+    inst.skeleton = opts.skeleton;
+    inst.track = opts.track ?? null;
+    inst.fromPredicted = opts.fromPredicted ?? null;
+    inst.trackingScore = opts.trackingScore ?? 0;
+    inst.score = opts.score ?? 0;
+    inst._fillFromColumns(opts.columns, opts.start, opts.end, true);
+    return inst;
+  }
   numpy(options) {
     const invisibleAsNaN = options?.invisibleAsNaN ?? true;
-    return this.points.map((point) => {
-      const xy = invisibleAsNaN && !point.visible ? [Number.NaN, Number.NaN] : [point.xy[0], point.xy[1]];
-      if (options?.scores) {
-        return [xy[0], xy[1], point.score ?? 0];
-      }
-      return xy;
-    });
+    const withScores = options?.scores ?? false;
+    const xy = this._xy;
+    const score = this._score;
+    const out = new Array(this._n);
+    for (let i = 0; i < this._n; i += 1) {
+      const hidden = invisibleAsNaN && !this._visible[i];
+      const x = hidden ? Number.NaN : xy[i << 1];
+      const y = hidden ? Number.NaN : xy[(i << 1) + 1];
+      out[i] = withScores ? [x, y, score ? score[i] : 0] : [x, y];
+    }
+    return out;
   }
   toString() {
     const trackName = this.track ? `"${this.track.name}"` : "None";
@@ -958,8 +1182,10 @@ export {
   Track,
   pointsEmpty,
   predictedPointsEmpty,
+  clonePoint,
   pointsFromArray,
   predictedPointsFromArray,
+  PointView,
   Instance,
   PredictedInstance,
   pointsFromDict,

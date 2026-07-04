@@ -1,5 +1,5 @@
-import { S as Skeleton, T as Track } from './instance-Dtvrjx8R.js';
-export { E as Edge, N as Node, a as Symmetry } from './instance-Dtvrjx8R.js';
+import { S as Skeleton, T as Track } from './instance-D8nEmSif.js';
+export { E as Edge, N as Node, a as Symmetry } from './instance-D8nEmSif.js';
 
 /**
  * jsfive-based HDF5 file interface.

@@ -1,4 +1,4 @@
-import { T as Track, I as Instance, S as Skeleton, P as PredictedInstance } from './instance-Dtvrjx8R.js';
+import { T as Track, I as Instance, S as Skeleton, P as PredictedInstance } from './instance-D8nEmSif.js';
 
 /**
  * Point coordinate transformation functions for virtual cropping.
@@ -2020,7 +2020,17 @@ declare class Labels {
         rois?: ROI[];
         identities?: Identity[];
     });
-    /** Collect tracks from annotations on a frame into this.tracks. */
+    /**
+     * Collect tracks from annotations on a frame into this.tracks.
+     *
+     * `seen` lets a caller iterating many frames share one membership set instead
+     * of rebuilding `new Set(this.tracks)` per frame — the difference between
+     * O(frames) and O(frames × tracks) on files with many tracks (e.g. a 21.8k-
+     * frame / 7k-track project spent seconds here rebuilding the set). When
+     * omitted (single-frame `append`), the set is built from the current tracks.
+     * The set must stay in sync with `this.tracks`: every push here also adds to
+     * it, so a later frame sees tracks an earlier one contributed.
+     */
     private _collectAnnotationTracks;
     /** Raise if Labels is lazy-loaded. */
     private _checkNotLazy;

@@ -99,16 +99,67 @@ type PredictedPoint = Point & {
 };
 type PointsArray = Point[];
 type PredictedPointsArray = PredictedPoint[];
+/**
+ * The SLP readers' parsed point columns (`x`/`y`/`visible`/`complete`[/`score`]),
+ * as plain `number[]` (eager reader) or `Float64Array` (streaming worker). Fed to
+ * {@link Instance._fromColumns} to build an instance without a `Point[]`.
+ */
+interface PointColumns {
+    x?: ArrayLike<number>;
+    y?: ArrayLike<number>;
+    visible?: ArrayLike<number>;
+    complete?: ArrayLike<number>;
+    score?: ArrayLike<number>;
+}
 declare function pointsEmpty(length: number, names?: string[]): PointsArray;
 declare function predictedPointsEmpty(length: number, names?: string[]): PredictedPointsArray;
+/**
+ * Deep-copy a point into a fresh plain literal, optionally under a new node
+ * name. Use this instead of `{ ...point }`: `instance.points[i]` returns a
+ * {@link PointView} flyweight whose fields are accessors (not own enumerable
+ * properties), so a spread would silently drop `visible`/`complete`/`score`.
+ * The `score` field is copied only when present (predicted points).
+ */
+declare function clonePoint(p: Point, name?: string): Point;
 declare function pointsFromArray(array: number[][], names?: string[]): PointsArray;
 declare function predictedPointsFromArray(array: number[][], names?: string[]): PredictedPointsArray;
+/**
+ * A live view of one keypoint over an {@link Instance}'s columnar storage.
+ *
+ * `instance.points[i]` returns one of these instead of a stored `{xy,...}`
+ * object, so a project's keypoints live in a few packed typed arrays per
+ * instance (~a few bytes/point) rather than an object graph (~150 B/point). It
+ * satisfies the structural `Point` type: reads go straight to the columns, and
+ * writes (`point.xy = [...]`, `point.visible = ...`) write back through. `xy`
+ * getter returns a fresh `[x, y]` copy — no code mutates `point.xy[0]` in place
+ * (verified), and returning a copy keeps callers that stash `point.xy` by
+ * reference (e.g. centroid math) reading a stable snapshot.
+ */
+declare class PointView {
+    #private;
+    constructor(owner: Instance, i: number);
+    get xy(): [number, number];
+    set xy(v: ArrayLike<number>);
+    get visible(): boolean;
+    set visible(v: boolean);
+    get complete(): boolean;
+    set complete(v: boolean);
+    get score(): number | undefined;
+    set score(v: number | undefined);
+    get name(): string | undefined;
+    set name(v: string | undefined);
+}
 declare class Instance {
-    points: PointsArray;
     skeleton: Skeleton;
     track?: Track | null;
     fromPredicted?: PredictedInstance | null;
     trackingScore: number;
+    _xy: Float64Array;
+    _visible: Uint8Array;
+    _complete: Uint8Array;
+    _score: Float64Array | null;
+    _names: (string | undefined)[] | null;
+    _n: number;
     constructor(options: {
         points: PointsArray | Record<string, number[]>;
         skeleton: Skeleton;
@@ -116,6 +167,39 @@ declare class Instance {
         fromPredicted?: PredictedInstance | null;
         trackingScore?: number;
     });
+    /** Pack a transient `Point[]` into the columnar typed-array storage. */
+    _ingest(pts: PointsArray): void;
+    /**
+     * Fill the columnar storage directly from the SLP readers' parsed point
+     * columns over `[start, end)`, skipping the intermediate `Point[]` literals
+     * (the slicePoints → pointsFromArray → `_ingest` path allocates ~3 throwaway
+     * objects per point). Values match that path exactly: `x ?? NaN`, `y ?? NaN`,
+     * `Boolean(visible)`, `Boolean(complete)`, and (predicted) `score ?? NaN`;
+     * names derive from the skeleton. Used by {@link Instance._fromColumns}.
+     */
+    _fillFromColumns(columns: PointColumns, start: number, end: number, predicted: boolean): void;
+    /**
+     * Build an Instance directly from reader point columns over `[start, end)`,
+     * without materializing a `Point[]`. Internal fast path for buildLabeledFrames;
+     * equivalent to `new Instance({ points: pointsFromArray(slicePoints(...)) })`.
+     */
+    static _fromColumns(opts: {
+        columns: PointColumns;
+        start: number;
+        end: number;
+        skeleton: Skeleton;
+        track?: Track | null;
+        fromPredicted?: PredictedInstance | null;
+        trackingScore?: number;
+    }): Instance;
+    /** Lazily allocate the score column (for a user instance gaining scores). */
+    _scoreColumn(): Float64Array;
+    /** Node name for point `i` — derived from the skeleton unless overridden. */
+    _pointName(i: number): string | undefined;
+    _setPointName(i: number, v: string | undefined): void;
+    /** The keypoints as an array of live {@link PointView}s (built on demand). */
+    get points(): PointsArray;
+    set points(pts: PointsArray);
     static fromArray(points: number[][], skeleton: Skeleton): Instance;
     static fromNumpy(options: {
         pointsData: number[][];
@@ -212,6 +296,22 @@ declare class PredictedInstance extends Instance {
     static empty(options: {
         skeleton: Skeleton;
     }): PredictedInstance;
+    /**
+     * Build a PredictedInstance directly from reader point columns over
+     * `[start, end)`, without materializing a `Point[]`. Internal fast path for
+     * buildLabeledFrames; equivalent to `new PredictedInstance({ points:
+     * predictedPointsFromArray(slicePoints(...)) })`.
+     */
+    static _fromColumns(opts: {
+        columns: PointColumns;
+        start: number;
+        end: number;
+        skeleton: Skeleton;
+        track?: Track | null;
+        score?: number;
+        trackingScore?: number;
+        fromPredicted?: PredictedInstance | null;
+    }): PredictedInstance;
     numpy(options?: {
         scores?: boolean;
         invisibleAsNaN?: boolean;
@@ -221,4 +321,4 @@ declare class PredictedInstance extends Instance {
 declare function pointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PointsArray;
 declare function predictedPointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PredictedPointsArray;
 
-export { Edge as E, Instance as I, Node as N, PredictedInstance as P, Skeleton as S, Track as T, _registerCentroidFactory as _, Symmetry as a, type Point as b, type PredictedPoint as c, type PointsArray as d, type PredictedPointsArray as e, predictedPointsEmpty as f, pointsFromArray as g, predictedPointsFromArray as h, pointsFromDict as i, predictedPointsFromDict as j, type NodeOrIndex as k, pointsEmpty as p };
+export { Edge as E, Instance as I, Node as N, PredictedInstance as P, Skeleton as S, Track as T, _registerCentroidFactory as _, Symmetry as a, type Point as b, type PredictedPoint as c, type PointsArray as d, type PredictedPointsArray as e, type PointColumns as f, predictedPointsEmpty as g, clonePoint as h, pointsFromArray as i, predictedPointsFromArray as j, PointView as k, pointsFromDict as l, predictedPointsFromDict as m, type NodeOrIndex as n, pointsEmpty as p };
