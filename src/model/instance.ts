@@ -42,6 +42,19 @@ export type PredictedPoint = Point & { score: number };
 export type PointsArray = Point[];
 export type PredictedPointsArray = PredictedPoint[];
 
+/**
+ * The SLP readers' parsed point columns (`x`/`y`/`visible`/`complete`[/`score`]),
+ * as plain `number[]` (eager reader) or `Float64Array` (streaming worker). Fed to
+ * {@link Instance._fromColumns} to build an instance without a `Point[]`.
+ */
+export interface PointColumns {
+  x?: ArrayLike<number>;
+  y?: ArrayLike<number>;
+  visible?: ArrayLike<number>;
+  complete?: ArrayLike<number>;
+  score?: ArrayLike<number>;
+}
+
 // Shared empty backing arrays for a freshly-declared Instance before _ingest.
 const EMPTY_F64 = new Float64Array(0);
 const EMPTY_U8 = new Uint8Array(0);
@@ -280,6 +293,74 @@ export class Instance {
     this._score = score;
     this._names = names;
     this._n = n;
+  }
+
+  /**
+   * Fill the columnar storage directly from the SLP readers' parsed point
+   * columns over `[start, end)`, skipping the intermediate `Point[]` literals
+   * (the slicePoints → pointsFromArray → `_ingest` path allocates ~3 throwaway
+   * objects per point). Values match that path exactly: `x ?? NaN`, `y ?? NaN`,
+   * `Boolean(visible)`, `Boolean(complete)`, and (predicted) `score ?? NaN`;
+   * names derive from the skeleton. Used by {@link Instance._fromColumns}.
+   */
+  _fillFromColumns(
+    columns: PointColumns,
+    start: number,
+    end: number,
+    predicted: boolean,
+  ): void {
+    const n = Math.max(0, end - start);
+    const xy = new Float64Array(2 * n);
+    const visible = new Uint8Array(n);
+    const complete = new Uint8Array(n);
+    const score = predicted ? new Float64Array(n) : null;
+    const cx = columns.x;
+    const cy = columns.y;
+    const cv = columns.visible;
+    const cc = columns.complete;
+    const cs = columns.score;
+    for (let i = 0; i < n; i += 1) {
+      const src = start + i;
+      const j = i << 1;
+      // `!= null` (null OR undefined) → NaN, matching `row[k] ?? NaN`; an
+      // in-range numeric 0 is kept. Float64Array would coerce null to 0, so the
+      // guard is load-bearing for out-of-range/missing columns.
+      xy[j] = cx && cx[src] != null ? (cx[src] as number) : Number.NaN;
+      xy[j + 1] = cy && cy[src] != null ? (cy[src] as number) : Number.NaN;
+      visible[i] = cv && cv[src] ? 1 : 0;
+      complete[i] = cc && cc[src] ? 1 : 0;
+      if (score)
+        score[i] = cs && cs[src] != null ? (cs[src] as number) : Number.NaN;
+    }
+    this._xy = xy;
+    this._visible = visible;
+    this._complete = complete;
+    this._score = score;
+    this._names = null; // derived from the skeleton (readers keep node order)
+    this._n = n;
+  }
+
+  /**
+   * Build an Instance directly from reader point columns over `[start, end)`,
+   * without materializing a `Point[]`. Internal fast path for buildLabeledFrames;
+   * equivalent to `new Instance({ points: pointsFromArray(slicePoints(...)) })`.
+   */
+  static _fromColumns(opts: {
+    columns: PointColumns;
+    start: number;
+    end: number;
+    skeleton: Skeleton;
+    track?: Track | null;
+    fromPredicted?: PredictedInstance | null;
+    trackingScore?: number;
+  }): Instance {
+    const inst = Object.create(Instance.prototype) as Instance;
+    inst.skeleton = opts.skeleton;
+    inst.track = opts.track ?? null;
+    inst.fromPredicted = opts.fromPredicted ?? null;
+    inst.trackingScore = opts.trackingScore ?? 0;
+    inst._fillFromColumns(opts.columns, opts.start, opts.end, false);
+    return inst;
   }
 
   /** Lazily allocate the score column (for a user instance gaining scores). */
@@ -653,6 +734,34 @@ export class PredictedInstance extends Instance {
       ),
       skeleton: options.skeleton,
     });
+  }
+
+  /**
+   * Build a PredictedInstance directly from reader point columns over
+   * `[start, end)`, without materializing a `Point[]`. Internal fast path for
+   * buildLabeledFrames; equivalent to `new PredictedInstance({ points:
+   * predictedPointsFromArray(slicePoints(...)) })`.
+   */
+  static _fromColumns(opts: {
+    columns: PointColumns;
+    start: number;
+    end: number;
+    skeleton: Skeleton;
+    track?: Track | null;
+    score?: number;
+    trackingScore?: number;
+    fromPredicted?: PredictedInstance | null;
+  }): PredictedInstance {
+    const inst = Object.create(
+      PredictedInstance.prototype,
+    ) as PredictedInstance;
+    inst.skeleton = opts.skeleton;
+    inst.track = opts.track ?? null;
+    inst.fromPredicted = opts.fromPredicted ?? null;
+    inst.trackingScore = opts.trackingScore ?? 0;
+    inst.score = opts.score ?? 0;
+    inst._fillFromColumns(opts.columns, opts.start, opts.end, true);
+    return inst;
   }
 
   numpy(options?: { scores?: boolean; invisibleAsNaN?: boolean }): number[][] {

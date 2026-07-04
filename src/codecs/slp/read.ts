@@ -18,13 +18,7 @@ import {
 } from "./parsers.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
-import {
-  Instance,
-  PredictedInstance,
-  Track,
-  pointsFromArray,
-  predictedPointsFromArray,
-} from "../../model/instance.js";
+import { Instance, PredictedInstance, Track } from "../../model/instance.js";
 import { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import { Video, type VideoBackendError } from "../../model/video.js";
@@ -2174,9 +2168,11 @@ function buildLabeledFrames(options: {
 
       let instance: Instance | PredictedInstance;
       if (instanceType === 0) {
-        const points = slicePoints(pointsData, pointStart, pointEnd);
-        instance = new Instance({
-          points: pointsFromArray(points, skeleton.nodeNames),
+        // Build straight from the point columns — no intermediate Point[].
+        instance = Instance._fromColumns({
+          columns: pointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           trackingScore,
@@ -2190,9 +2186,10 @@ function buildLabeledFrames(options: {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = slicePoints(predPointsData, pointStart, pointEnd, true);
-        instance = new PredictedInstance({
-          points: predictedPointsFromArray(points, skeleton.nodeNames),
+        instance = PredictedInstance._fromColumns({
+          columns: predPointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           score,
@@ -2361,26 +2358,4 @@ function readCentroids(
     centroids.push([centroid, videoIdx, frameIdxVal]);
   }
   return centroids;
-}
-
-function slicePoints(
-  data: Record<string, any[]>,
-  start: number,
-  end: number,
-  predicted = false,
-): number[][] {
-  const xs = data.x ?? [];
-  const ys = data.y ?? [];
-  const visible = data.visible ?? [];
-  const complete = data.complete ?? [];
-  const scores = data.score ?? [];
-  const points: number[][] = [];
-  for (let i = start; i < end; i += 1) {
-    if (predicted) {
-      points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
-    } else {
-      points.push([xs[i], ys[i], visible[i], complete[i]]);
-    }
-  }
-  return points;
 }
