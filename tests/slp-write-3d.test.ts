@@ -169,17 +169,23 @@ describe("SLP write with identity and 3D data", () => {
     expect(pred.pointScores).toEqual([0.95, 0.88]);
   });
 
-  it("sets format version to 1.9 when identities are present", async () => {
+  it("does not bump format_id for sessions (converges to the Python shape, no new version)", async () => {
+    // The canonical sessions_json shape is a convergence to Python `sleap-io`'s
+    // existing format, not a new on-disk feature, so writing sessions must NOT
+    // mint a format_id. `format_id` is a namespace shared with Python, which
+    // already defines 2.5 (/identity_links), 2.6 (/embeddings), 2.7 (categories).
     const labels = makeTestLabels({ withIdentity: true });
+    expect(labels.sessions.length).toBeGreaterThan(0);
     const bytes = await saveSlpToBytes(labels);
-    // Read back and check format_id in metadata
     const { openH5File } = await import("../src/codecs/slp/h5.js");
     const { file, close } = await openH5File(new Uint8Array(bytes).buffer);
     try {
       const metadataGroup = file.get("metadata");
       const attrs = (metadataGroup as any).attrs ?? {};
       const formatId = Number(attrs["format_id"]?.value ?? attrs["format_id"]);
+      // Identities present -> 1.9 bump; sessions add nothing on top of that.
       expect(formatId).toBeCloseTo(1.9);
+      expect(formatId).toBeLessThan(2.5);
     } finally {
       close();
     }

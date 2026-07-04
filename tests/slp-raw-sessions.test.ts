@@ -72,7 +72,10 @@ async function streamingWorks(): Promise<boolean> {
 
 describe("Raw sessions_json surface (#197)", () => {
   it("exposes verbatim rawJson on eager read", async () => {
-    const labels = await readSlp(MULTIVIEW, { openVideos: false });
+    const labels = await readSlp(MULTIVIEW, {
+      openVideos: false,
+      rawSessions: true,
+    });
     expect(labels.sessions.length).toBeGreaterThan(0);
 
     // Derived getter is index-aligned with sessions and fully populated.
@@ -95,8 +98,14 @@ describe("Raw sessions_json surface (#197)", () => {
   });
 
   it("lazy read populates identical rawJson (full fidelity even when model is sparse)", async () => {
-    const eager = await readSlp(MULTIVIEW, { openVideos: false });
-    const lazy = await readSlpLazy(MULTIVIEW, { openVideos: false });
+    const eager = await readSlp(MULTIVIEW, {
+      openVideos: false,
+      rawSessions: true,
+    });
+    const lazy = await readSlpLazy(MULTIVIEW, {
+      openVideos: false,
+      rawSessions: true,
+    });
 
     expect(lazy.rawSessionsJson).toEqual(eager.rawSessionsJson);
 
@@ -108,7 +117,10 @@ describe("Raw sessions_json surface (#197)", () => {
   });
 
   it("streaming read populates identical rawJson (or documents Worker gating)", async () => {
-    const eager = await readSlp(MULTIVIEW, { openVideos: false });
+    const eager = await readSlp(MULTIVIEW, {
+      openVideos: false,
+      rawSessions: true,
+    });
     if (!(await streamingWorks())) {
       // Worker path unreachable in this Node runtime (importScripts absent).
       // The eager/lazy assertions above pin the contract the streaming loop
@@ -117,7 +129,7 @@ describe("Raw sessions_json surface (#197)", () => {
     }
     const streamed = await readSlpStreaming(
       new Uint8Array(readFileSync(MULTIVIEW)).buffer as ArrayBuffer,
-      { openVideos: false, filenameHint: "multiview.slp" },
+      { openVideos: false, filenameHint: "multiview.slp", rawSessions: true },
     );
     expect(streamed.sessions.length).toBe(eager.sessions.length);
     for (let i = 0; i < streamed.sessions.length; i++) {
@@ -152,8 +164,8 @@ describe("Raw sessions_json surface (#197)", () => {
       fakeFile,
       [],
       [],
-      [],
       undefined,
+      true, // captureRaw
     );
     expect(sessions).toHaveLength(1);
     const s = sessions[0];
@@ -166,6 +178,44 @@ describe("Raw sessions_json surface (#197)", () => {
     // Deep-cloned snapshot: no shared refs with the object model.
     expect(s.rawJson).not.toBe(source);
     expect(s.metadata).not.toBe(s.rawJson!.metadata);
+  });
+
+  it("rawJson is undefined by DEFAULT (opt-in only) across eager/lazy/streaming", async () => {
+    const eager = await readSlp(MULTIVIEW, { openVideos: false });
+    expect(eager.sessions.length).toBeGreaterThan(0);
+    for (const s of eager.sessions) expect(s.rawJson).toBeUndefined();
+    for (const entry of eager.rawSessionsJson) expect(entry).toBeUndefined();
+
+    const lazy = await readSlpLazy(MULTIVIEW, { openVideos: false });
+    for (const s of lazy.sessions) expect(s.rawJson).toBeUndefined();
+
+    // Worker-free streaming session read: captureRaw defaults to false.
+    const fakeFile = {
+      keys: () => ["sessions_json"],
+      getDatasetValue: async (name: string) =>
+        name === "sessions_json"
+          ? {
+              value: [
+                JSON.stringify({
+                  calibration: { "0": { name: "c0" } },
+                  camcorder_to_video_idx_map: { "0": 0 },
+                }),
+              ],
+            }
+          : { value: [] },
+    } as unknown as Parameters<typeof readSessionsStreaming>[0];
+    const streamed = await readSessionsStreaming(fakeFile, [], [], undefined);
+    expect(streamed[0].rawJson).toBeUndefined();
+  });
+
+  it("Labels.copy() does NOT clone a raw payload by default (no double-clone)", async () => {
+    // Default read: rawJson undefined. copy() must not throw (guards the
+    // non-enumerable _frameResolver against structuredClone DataCloneError) and
+    // must not resurrect a raw payload.
+    const labels = await readSlp(MULTIVIEW, { openVideos: false });
+    const copy = labels.copy();
+    expect(copy.sessions.length).toBe(labels.sessions.length);
+    for (const s of copy.sessions) expect(s.rawJson).toBeUndefined();
   });
 
   it("rawJson is an independent snapshot of the object model (no shared refs)", async () => {
@@ -214,6 +264,7 @@ describe("Raw sessions_json surface (#197)", () => {
     const bytes = new Uint8Array(await saveSlpToBytes(labels));
     const reloaded = await readSlp(bytes.buffer as ArrayBuffer, {
       openVideos: false,
+      rawSessions: true,
     });
     const s = reloaded.sessions[0];
     const raw = s.rawJson as Record<string, unknown>;
@@ -263,7 +314,10 @@ describe("Raw sessions_json surface (#197)", () => {
   });
 
   it("rawJson deep-copies on Labels.copy() and getter stays index-aligned", async () => {
-    const labels = await readSlp(MULTIVIEW, { openVideos: false });
+    const labels = await readSlp(MULTIVIEW, {
+      openVideos: false,
+      rawSessions: true,
+    });
     const copy = labels.copy();
 
     // Mutating the original's rawJson must not affect the copy (structuredClone,
@@ -279,7 +333,7 @@ describe("Raw sessions_json surface (#197)", () => {
     expect(synthetic.rawSessionsJson.length).toBe(synthetic.sessions.length);
   });
 
-  it("Option 3 lossless: stringified-int camera keys survive when cameras are unnamed", async () => {
+  it("writes Python-canonical cam_N calibration + integer camcorder keys when cameras are unnamed", async () => {
     const { Camera, CameraGroup, InstanceGroup, FrameGroup, RecordingSession } =
       await import("../src/model/camera.js");
     const { Instance } = await import("../src/model/instance.js");
@@ -291,7 +345,8 @@ describe("Raw sessions_json surface (#197)", () => {
     const skeleton = new Skeleton({ nodes: ["A"], edges: [] });
     const v0 = new Video({ filename: "v0.mp4" });
     const v1 = new Video({ filename: "v1.mp4" });
-    // Cameras with NO explicit name -> keys should serialize as "0","1".
+    // Cameras with NO explicit name -> calibration keyed cam_0/cam_1 (Python
+    // parity), camcorder_to_video_idx_map keyed by bare integer index.
     const c0 = new Camera({ rvec: [0, 0, 0], tvec: [0, 0, 0] });
     const c1 = new Camera({ rvec: [0, 0, 0], tvec: [1, 0, 0] });
     const i0 = Instance.fromArray([[1, 2]], skeleton);
@@ -330,7 +385,7 @@ describe("Raw sessions_json surface (#197)", () => {
     const calibKeys = Object.keys(
       s0.calibration as Record<string, unknown>,
     ).filter((k) => k !== "metadata");
-    expect(calibKeys.sort()).toEqual(["0", "1"]);
+    expect(calibKeys.sort()).toEqual(["cam_0", "cam_1"]);
     expect(
       Object.keys(
         s0.camcorder_to_video_idx_map as Record<string, unknown>,

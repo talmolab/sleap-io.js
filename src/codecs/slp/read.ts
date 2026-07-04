@@ -36,6 +36,7 @@ import {
   CameraGroup,
   FrameGroup,
   InstanceGroup,
+  injectSessionFrameResolver,
   RecordingSession,
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
@@ -96,6 +97,14 @@ export async function readSlp(
   options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
+    /**
+     * Capture the verbatim, deep-cloned `sessions_json` dict onto each
+     * `RecordingSession.rawJson` (deprecated, transitional). Default `false`:
+     * the faithful typed session model is the source of truth, and skipping the
+     * clone avoids doubling session memory in `Labels.copy()`. See
+     * `RecordingSession.rawJson`.
+     */
+    rawSessions?: boolean;
     /**
      * Optional progress callback fired as loading advances through its stages.
      * `current` counts completed stages out of `total`; `message` labels the
@@ -224,8 +233,8 @@ export async function readSlp(
       file.get("sessions_json"),
       videos,
       skeletons,
-      labeledFrames,
       identities,
+      options?.rawSessions ?? false,
     );
     report(7); // Reading annotations
     const allInstances = labeledFrames.flatMap((f) => f.instances);
@@ -327,7 +336,7 @@ export async function readSlp(
     }
 
     onProgress?.(total, total, "Finalizing");
-    return new Labels({
+    const labels = new Labels({
       labeledFrames,
       videos,
       skeletons,
@@ -338,6 +347,10 @@ export async function readSlp(
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
       rois: staticRois,
     });
+    // Sessions are read before the frame store exists; wire the lazy frame
+    // resolver now so ref-backed grouping resolves against labels.labeledFrames.
+    injectSessionFrameResolver(labels);
+    return labels;
   } finally {
     close();
   }
@@ -371,6 +384,12 @@ export async function readSlpLazy(
   options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
+    /**
+     * Capture the verbatim, deep-cloned `sessions_json` dict onto each
+     * `RecordingSession.rawJson` (deprecated, transitional). Default `false`.
+     * See `readSlp` and `RecordingSession.rawJson`.
+     */
+    rawSessions?: boolean;
     /**
      * Optional progress callback fired as loading advances through its stages.
      * `current` counts completed stages out of `total`; `message` labels the
@@ -484,8 +503,8 @@ export async function readSlpLazy(
 
     const lazyFrames = new LazyFrameList(store);
 
-    // Read sessions eagerly - they don't depend on frame data.
-    // Pass empty labeledFrames since frames aren't materialized yet.
+    // Read sessions — grouping is captured as index refs only (no frame
+    // materialization); refs resolve lazily via the injected frame resolver.
     report(5); // Reading identities
     const identities = readIdentities(file.get("identities_json"));
     report(6); // Reading sessions
@@ -493,8 +512,8 @@ export async function readSlpLazy(
       file.get("sessions_json"),
       videos,
       skeletons,
-      [],
       identities,
+      options?.rawSessions ?? false,
     );
     report(7); // Reading annotations
     const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
@@ -597,6 +616,10 @@ export async function readSlpLazy(
     // Replace the eager labeledFrames with lazy proxy
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;
+
+    // Wire the lazy frame resolver AFTER _lazyFrameList is attached so ref-backed
+    // grouping resolves a single frame on demand (never the full table).
+    injectSessionFrameResolver(labels);
 
     onProgress?.(total, total, "Finalizing");
     return labels;
@@ -1026,8 +1049,8 @@ function readSessions(
   dataset: any,
   videos: Video[],
   skeletons: Skeleton[],
-  labeledFrames: LabeledFrame[],
   identities?: Identity[],
+  captureRaw: boolean = false,
 ): RecordingSession[] {
   if (!dataset) return [];
   const values = dataset.value ?? [];
@@ -1061,13 +1084,13 @@ function readSessions(
       cameraGroup,
       metadata: (parsed.metadata as Record<string, unknown> | undefined) ?? {},
     });
-    // Retain the verbatim parsed sessions_json dict for lossless read-side
-    // access (Option 2). Deep-cloned so it is an INDEPENDENT snapshot: the
-    // object model reuses `parsed`'s nested metadata/calibration objects by
+    // Optionally retain the verbatim parsed sessions_json dict (deprecated,
+    // opt-in via `rawSessions`). Deep-cloned so it is an INDEPENDENT snapshot:
+    // the object model reuses `parsed`'s nested metadata/calibration objects by
     // reference, so without the clone a consumer mutating `rawJson` would
     // silently alter what `serializeSession` writes to disk (and vice versa).
     // Never re-written to disk; see RecordingSession.rawJson.
-    session.rawJson = structuredClone(parsed);
+    if (captureRaw) session.rawJson = structuredClone(parsed);
     const map = asRecord(parsed.camcorder_to_video_idx_map);
     for (const [cameraKey, videoIdx] of Object.entries(map)) {
       const camera = resolveCameraKey(
@@ -1096,9 +1119,11 @@ function readSessions(
         : [];
       for (const instanceGroup of instanceGroupList) {
         const instanceGroupRecord = asRecord(instanceGroup);
-        const instanceByCamera = new Map<Camera, Instance>();
-
-        // Read JS-format instances (camera key -> point data)
+        // Concrete instances are built ONLY for the JS-inline format (camera key
+        // -> point dict). The Python/camcorder format is stored as index refs and
+        // resolved lazily via the injected frame resolver — no frame
+        // materialization at read time.
+        let instanceByCamera: Map<Camera, Instance> | undefined;
         const instancesRecord = asRecord(instanceGroupRecord.instances);
         for (const [cameraKey, points] of Object.entries(instancesRecord)) {
           const camera = resolveCameraKey(
@@ -1113,6 +1138,7 @@ function readSessions(
             continue;
           }
           const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+          if (!instanceByCamera) instanceByCamera = new Map<Camera, Instance>();
           instanceByCamera.set(
             camera,
             new Instance({
@@ -1122,25 +1148,25 @@ function readSessions(
           );
         }
 
-        // Fall back to Python-format camcorder_to_lf_and_inst_idx_map
-        if (instanceByCamera.size === 0) {
-          const lfInstMap = asRecord(
-            instanceGroupRecord.camcorder_to_lf_and_inst_idx_map,
+        // Capture verbatim index refs (camera -> [lfIdx, instIdx]) from the
+        // Python-canonical camcorder map, as NUMBERS (the fixture stores them as
+        // strings). Kept even when concrete instances exist so an untouched
+        // round-trip re-derives / falls back to them losslessly on write.
+        let instanceRefsByCamera: Map<Camera, [number, number]> | undefined;
+        const lfInstMap = asRecord(
+          instanceGroupRecord.camcorder_to_lf_and_inst_idx_map,
+        );
+        for (const [camIdx, value] of Object.entries(lfInstMap)) {
+          const camera = resolveCameraKey(
+            camIdx,
+            cameraMap,
+            cameraGroup.cameras,
           );
-          for (const [camIdx, value] of Object.entries(lfInstMap)) {
-            const camera = resolveCameraKey(
-              camIdx,
-              cameraMap,
-              cameraGroup.cameras,
-            );
-            if (!camera) continue;
-            const pair = value as unknown as [number, number];
-            const lf = labeledFrames[Number(pair[0])];
-            if (lf) {
-              const inst = lf.instances[Number(pair[1])];
-              if (inst) instanceByCamera.set(camera, inst as Instance);
-            }
-          }
+          if (!camera) continue;
+          const pair = value as unknown as [unknown, unknown];
+          if (!instanceRefsByCamera)
+            instanceRefsByCamera = new Map<Camera, [number, number]>();
+          instanceRefsByCamera.set(camera, [Number(pair[0]), Number(pair[1])]);
         }
 
         const instance3d = reconstructInstance3D(
@@ -1152,6 +1178,7 @@ function readSessions(
         instanceGroups.push(
           new InstanceGroup({
             instanceByCamera,
+            instanceRefsByCamera,
             score: instanceGroupRecord.score as number | undefined,
             instance3d,
             identity,
@@ -1163,7 +1190,9 @@ function readSessions(
         );
       }
 
-      const labeledFrameByCamera = new Map<Camera, LabeledFrame>();
+      // Capture labeled-frame index refs (camera -> lfIdx) verbatim; resolved
+      // lazily on access. No frame materialization at read time.
+      let labeledFrameRefsByCamera: Map<Camera, number> | undefined;
       const labeledFrameMap = asRecord(groupRecord.labeled_frame_by_camera);
       for (const [cameraKey, labeledFrameIdx] of Object.entries(
         labeledFrameMap,
@@ -1179,14 +1208,14 @@ function readSessions(
           );
           continue;
         }
-        const labeledFrame = labeledFrames[Number(labeledFrameIdx)];
-        if (labeledFrame) {
-          labeledFrameByCamera.set(camera, labeledFrame);
-        }
+        if (!labeledFrameRefsByCamera)
+          labeledFrameRefsByCamera = new Map<Camera, number>();
+        labeledFrameRefsByCamera.set(camera, Number(labeledFrameIdx));
       }
 
-      // If no labeled_frame_by_camera, reconstruct from camcorder_to_lf_and_inst_idx_map
-      if (labeledFrameByCamera.size === 0) {
+      // If no labeled_frame_by_camera, reconstruct refs from
+      // camcorder_to_lf_and_inst_idx_map.
+      if (!labeledFrameRefsByCamera) {
         for (const instanceGroup of instanceGroupList) {
           const igRecord = asRecord(instanceGroup);
           const lfInstMap = asRecord(igRecord.camcorder_to_lf_and_inst_idx_map);
@@ -1197,9 +1226,10 @@ function readSessions(
               cameraGroup.cameras,
             );
             if (!camera) continue;
-            const pair = value as unknown as [number, number];
-            const lf = labeledFrames[Number(pair[0])];
-            if (lf) labeledFrameByCamera.set(camera, lf);
+            const pair = value as unknown as [unknown, unknown];
+            if (!labeledFrameRefsByCamera)
+              labeledFrameRefsByCamera = new Map<Camera, number>();
+            labeledFrameRefsByCamera.set(camera, Number(pair[0]));
           }
         }
       }
@@ -1209,7 +1239,7 @@ function readSessions(
         new FrameGroup({
           frameIdx: Number(frameIdx),
           instanceGroups,
-          labeledFrameByCamera,
+          labeledFrameRefsByCamera,
           metadata:
             (groupRecord.metadata as Record<string, unknown> | undefined) ?? {},
         }),
