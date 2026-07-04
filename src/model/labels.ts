@@ -3,7 +3,7 @@ import {
   _relinkFromPredicted,
   _resolveMergedIsNegative,
 } from "./labeled-frame.js";
-import { Instance, PredictedInstance, Track } from "./instance.js";
+import { Instance, PredictedInstance, Track, clonePoint } from "./instance.js";
 import type {
   Point,
   PointsArray,
@@ -13,11 +13,11 @@ import type {
 import { Skeleton, Node, Edge, Symmetry } from "./skeleton.js";
 import { SuggestionFrame } from "./suggestions.js";
 import { Video } from "./video.js";
-import { RecordingSession } from "./camera.js";
-import { Identity } from "./identity.js";
+import type { RecordingSession } from "./camera.js";
+import type { Identity } from "./identity.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
-import { LazyDataStore, LazyFrameList } from "./lazy.js";
+import { type LazyDataStore, LazyFrameList } from "./lazy.js";
 import { LabelsSet } from "./labels-set.js";
 import {
   SkeletonMatcher,
@@ -224,8 +224,11 @@ export class Labels {
     // structurally-equal but distinct `Skeleton` objects collapse to a single
     // canonical entry (Python #447). Explicitly-provided `skeletons` are kept
     // (by identity) and instance skeletons dedup against them.
+    // One membership set shared across both passes and every frame — rebuilding
+    // `new Set(this.tracks)` per frame was O(frames × tracks) and dominated load
+    // time on many-track projects (see _collectAnnotationTracks).
+    const existingTracks = new Set(this.tracks);
     if (!this._lazyFrameList) {
-      const existingTracks = new Set(this.tracks);
       for (const frame of this.labeledFrames) {
         for (const instance of frame.instances) {
           this._registerSkeleton(instance);
@@ -235,25 +238,33 @@ export class Labels {
           }
         }
       }
-    }
-
-    // Collect tracks from annotations already on frames
-    if (!this._lazyFrameList) {
+      // Collect tracks from annotations already on frames (reuse the set).
       for (const lf of this.labeledFrames) {
-        this._collectAnnotationTracks(lf);
+        this._collectAnnotationTracks(lf, existingTracks);
       }
     }
     // Collect tracks from static ROIs
     for (const roi of this._staticRois) {
-      if (roi.track && !this.tracks.includes(roi.track)) {
+      if (roi.track && !existingTracks.has(roi.track)) {
+        existingTracks.add(roi.track);
         this.tracks.push(roi.track);
       }
     }
   }
 
-  /** Collect tracks from annotations on a frame into this.tracks. */
-  private _collectAnnotationTracks(lf: LabeledFrame): void {
-    const existing = new Set(this.tracks);
+  /**
+   * Collect tracks from annotations on a frame into this.tracks.
+   *
+   * `seen` lets a caller iterating many frames share one membership set instead
+   * of rebuilding `new Set(this.tracks)` per frame — the difference between
+   * O(frames) and O(frames × tracks) on files with many tracks (e.g. a 21.8k-
+   * frame / 7k-track project spent seconds here rebuilding the set). When
+   * omitted (single-frame `append`), the set is built from the current tracks.
+   * The set must stay in sync with `this.tracks`: every push here also adds to
+   * it, so a later frame sees tracks an earlier one contributed.
+   */
+  private _collectAnnotationTracks(lf: LabeledFrame, seen?: Set<Track>): void {
+    const existing = seen ?? new Set(this.tracks);
     const add = (track: Track | null | undefined) => {
       if (track && !existing.has(track)) {
         existing.add(track);
@@ -744,16 +755,19 @@ export class Labels {
    */
   extend(frames: LabeledFrame[]): void {
     if (this._lazyFrameList) this.materialize();
+    // Shared track set: `this.tracks.includes` per instance was O(n × tracks).
+    const seenTracks = new Set(this.tracks);
     for (const frame of frames) {
       this.labeledFrames.push(frame);
       this.addVideo(frame.video);
       for (const inst of frame.instances) {
         this._registerSkeleton(inst);
-        if (inst.track != null && !this.tracks.includes(inst.track)) {
+        if (inst.track != null && !seenTracks.has(inst.track)) {
+          seenTracks.add(inst.track);
           this.tracks.push(inst.track);
         }
       }
-      this._collectAnnotationTracks(frame);
+      this._collectAnnotationTracks(frame, seenTracks);
     }
     this._invalidateIndices();
   }
@@ -1192,10 +1206,7 @@ export class Labels {
     const cloneInstance = (
       inst: Instance | PredictedInstance,
     ): Instance | PredictedInstance => {
-      const newPoints = inst.points.map((p) => ({
-        ...p,
-        xy: [...p.xy] as [number, number],
-      }));
+      const newPoints = inst.points.map((p) => clonePoint(p));
       const newSkeleton = skeletonMap.get(inst.skeleton) ?? inst.skeleton;
       const newTrack = inst.track
         ? (trackMap.get(inst.track) ?? inst.track)
@@ -1559,21 +1570,28 @@ export class Labels {
    */
   update(): void {
     if (this._lazyFrameList) this.materialize();
+    // Shared membership sets: `includes` per frame/instance was O(n × videos)
+    // and O(n × tracks). Sets keep this O(n) on large many-track projects.
+    const seenVideos = new Set(this.videos);
+    const seenTracks = new Set(this.tracks);
     for (const lf of this.labeledFrames) {
-      if (!this.videos.includes(lf.video)) {
+      if (!seenVideos.has(lf.video)) {
+        seenVideos.add(lf.video);
         this.videos.push(lf.video);
       }
       for (const inst of lf.instances) {
         this._registerSkeleton(inst);
-        if (inst.track != null && !this.tracks.includes(inst.track)) {
+        if (inst.track != null && !seenTracks.has(inst.track)) {
+          seenTracks.add(inst.track);
           this.tracks.push(inst.track);
         }
       }
-      // Collect tracks from nested annotations.
-      this._collectAnnotationTracks(lf);
+      // Collect tracks from nested annotations (reuse the set).
+      this._collectAnnotationTracks(lf, seenTracks);
     }
     for (const sf of this.suggestions) {
-      if (!this.videos.includes(sf.video)) {
+      if (!seenVideos.has(sf.video)) {
+        seenVideos.add(sf.video);
         this.videos.push(sf.video);
       }
     }
@@ -1675,10 +1693,9 @@ export class Labels {
       sourcePoints.length === mappedNames.length &&
       sourcePoints.every((p, i) => p.name === mappedNames[i]);
     if (sameOrder) {
-      mappedPoints = sourcePoints.map((p) => ({
-        ...p,
-        xy: [...p.xy] as [number, number],
-      })) as PointsArray | PredictedPointsArray;
+      mappedPoints = sourcePoints.map((p) => clonePoint(p)) as
+        | PointsArray
+        | PredictedPointsArray;
     } else {
       // Index the source points by node name so each mapped-skeleton node can
       // copy the coordinates/score that belong to its name.
@@ -1689,7 +1706,7 @@ export class Labels {
       mappedPoints = mappedNames.map((name) => {
         const src = sourceByName.get(name);
         if (src !== undefined) {
-          return { ...src, xy: [...src.xy] as [number, number], name };
+          return clonePoint(src, name);
         }
         // Node absent from the source skeleton: fill a missing/invisible point
         // (NaN xy), mirroring how missing nodes are represented elsewhere.
@@ -2956,10 +2973,7 @@ export class Labels {
     const cloneInstance = (
       inst: Instance | PredictedInstance,
     ): Instance | PredictedInstance => {
-      const newPoints = inst.points.map((p) => ({
-        ...p,
-        xy: [...p.xy] as [number, number],
-      }));
+      const newPoints = inst.points.map((p) => clonePoint(p));
       const newSkeleton = mapSkeleton(inst.skeleton);
       const newTrack = mapTrack(inst.track);
       if (inst.constructor === PredictedInstance) {
