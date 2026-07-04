@@ -366,6 +366,65 @@ function getDatasetMeta(path) {
   };
 }
 
+// Read a fixed-size 1-D compound dataset column-wise straight from the record
+// blob, skipping h5wasm's Dataset.value (which allocates ~8 Uint8Array.slice per
+// record — the dominant cost of opening a large project). Mirrors
+// readCompoundColumnsManual in ./h5-compound.ts (keep them in lockstep). Returns
+// a { memberName: number[] } record, or null (caller falls back to .value) for
+// anything not a plain-numeric compound. Values match .value except int64 comes
+// back as number (every consumer routes these through Number()).
+function readCompoundColumnsWorker(dataset, M) {
+  const md = dataset.metadata;
+  const members = md && md.compound_type && md.compound_type.members;
+  if (!members || !members.length || (md && md.vlen)) return null;
+  const shape = dataset.shape;
+  if (!shape || shape.length !== 1) return null;
+  const recSize = md.size;
+  if (!recSize || recSize <= 0) return null;
+  for (let k = 0; k < members.length; k++) {
+    const mt = members[k];
+    if (mt.type !== 0 && mt.type !== 1 && mt.type !== 8) return null;
+    if (mt.type === 1 && mt.size !== 8 && mt.size !== 4) return null;
+    if (mt.size !== 1 && mt.size !== 2 && mt.size !== 4 && mt.size !== 8) return null;
+  }
+  if (!(M && M._malloc && M.get_dataset_data && M.HEAPU8 && M._free)) return null;
+  const n = shape[0];
+  const columns = {};
+  if (n === 0) {
+    for (let z = 0; z < members.length; z++) columns[members[z].name] = [];
+    return columns;
+  }
+  const nbytes = recSize * n;
+  const dptr = M._malloc(nbytes);
+  if (!dptr) return null;
+  let buf;
+  try {
+    M.get_dataset_data(dataset.file_id, dataset.path, [BigInt(n)], [0n], [1n], BigInt(dptr));
+    buf = M.HEAPU8.slice(dptr, dptr + nbytes);
+  } finally {
+    M._free(dptr);
+  }
+  const dv = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+  for (let j = 0; j < members.length; j++) {
+    const m = members[j];
+    const col = new Array(n);
+    const off = m.offset, sz = m.size, isFloat = (m.type === 1);
+    const signed = (m.signed !== false), le = (m.littleEndian !== false);
+    for (let i = 0; i < n; i++) {
+      const p = i * recSize + off;
+      let v;
+      if (isFloat) v = sz === 8 ? dv.getFloat64(p, le) : dv.getFloat32(p, le);
+      else if (sz === 1) v = signed ? dv.getInt8(p) : dv.getUint8(p);
+      else if (sz === 2) v = signed ? dv.getInt16(p, le) : dv.getUint16(p, le);
+      else if (sz === 4) v = signed ? dv.getInt32(p, le) : dv.getUint32(p, le);
+      else v = Number(signed ? dv.getBigInt64(p, le) : dv.getBigUint64(p, le));
+      col[i] = v;
+    }
+    columns[m.name] = col;
+  }
+  return columns;
+}
+
 function getDatasetValue(path, slice) {
   if (!currentFile) throw new Error('No file open');
   const dataset = currentFile.get(path);
@@ -416,6 +475,22 @@ function getDatasetValue(path, slice) {
       dtype: dataset.dtype,
       transferables: []
     };
+  }
+
+  // Fixed-size compound full read (frames/instances/points/pred_points): return
+  // per-member columns read directly from the record blob, skipping h5wasm's slow
+  // Dataset.value. normalizeStructData accepts a { field: array } record as-is, so
+  // no caller change is needed; falls through to .value when not applicable.
+  if (!slice) {
+    const cols = readCompoundColumnsWorker(dataset, M);
+    if (cols) {
+      return {
+        value: { type: 'columns', columns: cols },
+        shape: dataset.shape,
+        dtype: dataset.dtype,
+        transferables: []
+      };
+    }
   }
 
   // Non-vlen: hyperslab slice or whole read as requested.

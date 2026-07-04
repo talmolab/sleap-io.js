@@ -1,4 +1,10 @@
-import { openH5File, OpenH5Options, SlpSource } from "./h5.js";
+import {
+  openH5File,
+  OpenH5Options,
+  SlpSource,
+  getH5EmscriptenModule,
+} from "./h5.js";
+import { readCompoundColumnsManual } from "./h5-compound.js";
 import {
   attrToNumber,
   attrToString,
@@ -173,10 +179,20 @@ export async function readSlp(
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
     report(4); // Building labeled frames
-    const framesData = normalizeStructDataset(file.get("frames"));
-    const instancesData = normalizeStructDataset(file.get("instances"));
-    const pointsData = normalizeStructDataset(file.get("points"));
-    const predPointsData = normalizeStructDataset(file.get("pred_points"));
+    // Low-level Module for the fast columnar compound read (falls back to
+    // `.value` when unavailable). Fetched once; null on browsers without the
+    // raw surface, which is fine — normalizeStructDataset then uses `.value`.
+    const emscripten = await getH5EmscriptenModule();
+    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
+    const instancesData = normalizeStructDataset(
+      file.get("instances"),
+      emscripten,
+    );
+    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
+    const predPointsData = normalizeStructDataset(
+      file.get("pred_points"),
+      emscripten,
+    );
 
     const labeledFrames = buildLabeledFrames({
       framesData,
@@ -434,11 +450,19 @@ export async function readSlpLazy(
     const suggestions = readSuggestions(file.get("suggestions_json"), videos);
 
     report(4); // Reading frame data
-    // Read raw data but don't build frames yet
-    const framesData = normalizeStructDataset(file.get("frames"));
-    const instancesData = normalizeStructDataset(file.get("instances"));
-    const pointsData = normalizeStructDataset(file.get("points"));
-    const predPointsData = normalizeStructDataset(file.get("pred_points"));
+    // Read raw data but don't build frames yet. Use the fast columnar compound
+    // read (falls back to `.value`); see normalizeStructDataset / h5-compound.ts.
+    const emscripten = await getH5EmscriptenModule();
+    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
+    const instancesData = normalizeStructDataset(
+      file.get("instances"),
+      emscripten,
+    );
+    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
+    const predPointsData = normalizeStructDataset(
+      file.get("pred_points"),
+      emscripten,
+    );
 
     // Read negative frames
     const negativeFrames = new Set<string>();
@@ -1967,8 +1991,22 @@ function readLabelImages(
   return labelImages;
 }
 
-function normalizeStructDataset(dataset: any): Record<string, any[]> {
+function normalizeStructDataset(
+  dataset: any,
+  module?: unknown,
+): Record<string, any[]> {
   if (!dataset) return {};
+
+  // Fast path: read fixed-size compound tables (frames/instances/points/
+  // pred_points) column-wise straight from the record blob, skipping h5wasm's
+  // per-row/per-member `Dataset.value` materialization (the dominant open cost
+  // on large point tables). Returns null — and we fall through to `.value` —
+  // for anything it can't read exactly. See ./h5-compound.ts.
+  if (module) {
+    const fast = readCompoundColumnsManual(module, dataset);
+    if (fast) return fast as Record<string, any[]>;
+  }
+
   const raw = dataset.value;
   if (!raw) return {};
 
@@ -1985,12 +2023,35 @@ function normalizeStructDataset(dataset: any): Record<string, any[]> {
     dataset.shape.length === 2
   ) {
     const [rowCount, colCount] = dataset.shape as [number, number];
+    const flat = raw as unknown as { readonly [i: number]: number };
+    if (fieldNames.length) {
+      // Fast path: extract each field's column DIRECTLY from the flat typed
+      // array by stride, in a single sequential pass. The previous code built
+      // an intermediate array-of-rows — one boxed `Array.from(slice)` per row
+      // (millions of tiny allocations on a large points table) — then re-mapped
+      // it column-by-column; that transpose-and-back dominated large-file loads
+      // (~2.7s of an 11s open on a 0.9M-point file). Column j gets `undefined`
+      // past colCount and columns past fieldNames are dropped, matching the old
+      // `rows.map(row => row[idx])` semantics exactly.
+      const cols: any[][] = fieldNames.map(() => new Array(rowCount));
+      const fillCols = Math.min(fieldNames.length, colCount);
+      for (let i = 0; i < rowCount; i += 1) {
+        const base = i * colCount;
+        for (let j = 0; j < fillCols; j += 1) {
+          cols[j][i] = flat[base + j];
+        }
+      }
+      const data: Record<string, any[]> = {};
+      for (let j = 0; j < fieldNames.length; j += 1) {
+        data[fieldNames[j]] = cols[j];
+      }
+      return data;
+    }
+    // No field names (malformed/legacy): preserve the row-index-keyed fallback.
     const rows: any[][] = [];
     for (let i = 0; i < rowCount; i += 1) {
       const start = i * colCount;
-      const end = start + colCount;
-      const slice = Array.from((raw as any).slice(start, end));
-      rows.push(slice);
+      rows.push(Array.from((raw as any).slice(start, start + colCount)));
     }
     return mapStructuredRows(rows, fieldNames);
   }
