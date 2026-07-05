@@ -147,6 +147,17 @@ export async function saveSlp(
 }
 
 export { saveSlpToBytes } from "../codecs/slp/write.js";
+// Streaming / incremental SLP writer + multi-store merge (issue #207): build a
+// large multi-camera `.slp` without holding the whole `Labels` graph in memory.
+export {
+  openSlpWriter,
+  SlpStreamWriter,
+  saveSlpMergedFromStores,
+} from "../codecs/slp/write.js";
+export type {
+  SlpWriteHeader,
+  AppendStoreOptions,
+} from "../codecs/slp/write.js";
 
 /**
  * Load a SLEAP Analysis HDF5 file (.h5).

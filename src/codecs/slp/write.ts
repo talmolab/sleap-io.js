@@ -29,6 +29,7 @@ import { deflate } from "pako";
 import type { Identity } from "../../model/identity.js";
 import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
 import type { LazyDataStore } from "../../model/lazy.js";
+import { buildVideoIdMap } from "../../model/video-id-map.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile:
@@ -506,6 +507,463 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
  * - `"user+suggestions"` - Embed user instance frames and suggestion frames
  * - `"source"` - Restore original video paths (no embedding)
  */
+// ===========================================================================
+// Streaming / incremental SLP writer (issue #207)
+//
+// A write-side companion to `readSlpStreaming({ lazy })`: build an SLP file by
+// appending pose frames/instances/points in bounded windows to *resizable* HDF5
+// datasets (create-empty → `resize` + `write_slice` per window), rather than
+// materializing the whole `Labels` graph or a full row matrix. Also supports
+// MERGING N per-camera `LazyDataStore`s into one combined multi-video `.slp`,
+// remapping video/instance/point/track ids as each store is appended — the
+// downstream LUCID export path (one combined multi-camera file, memory-bounded).
+//
+// Scope (v1): pose tables only (frames/instances/points/pred_points) +
+// negative_frames + all header metadata (videos/tracks/skeletons/suggestions/
+// identities/sessions/provenance). Per-frame annotation overlays (masks/rois/
+// bboxes/centroids/label-images), an edit overlay of corrected frames, and a
+// `FileSystemWritableFileStream` sink are follow-ups.
+// ===========================================================================
+
+/** Frames per append window — bounds the per-window typed-array allocation. */
+const DEFAULT_WRITE_WINDOW_FRAMES = 5000;
+/** HDF5 chunk row count for the appendable pose datasets. */
+const WRITE_CHUNK_ROWS = 8192;
+
+const FRAMES_FIELDS = [
+  "frame_id",
+  "video",
+  "frame_idx",
+  "instance_id_start",
+  "instance_id_end",
+];
+const INSTANCES_FIELDS = [
+  "instance_id",
+  "instance_type",
+  "frame_id",
+  "skeleton",
+  "track",
+  "from_predicted",
+  "score",
+  "point_id_start",
+  "point_id_end",
+  "tracking_score",
+];
+const POINTS_FIELDS = ["x", "y", "visible", "complete"];
+const PRED_POINTS_FIELDS = ["x", "y", "visible", "complete", "score"];
+
+/** Read a numeric column cell with a default (mirrors the lazy reader). */
+function numAt(col: any[] | undefined, i: number, def = 0): number {
+  const v = col?.[i];
+  return v === undefined || v === null ? def : Number(v);
+}
+
+/**
+ * Create an empty, row-resizable 2D dataset (`[0, cols]`, maxshape
+ * `[null, cols]`, chunked) and stamp its `field_names` attribute — the
+ * append-mode analog of {@link createMatrixDataset}.
+ */
+function createAppendableMatrixDataset(
+  file: any,
+  name: string,
+  fieldNames: string[],
+  dtype: string,
+): void {
+  const colCount = fieldNames.length;
+  file.create_dataset({
+    name,
+    data: new Float64Array(0),
+    shape: [0, colCount],
+    maxshape: [null, colCount],
+    chunks: [WRITE_CHUNK_ROWS, colCount],
+    dtype,
+  });
+  setStringAttr(file.get(name), "field_names", JSON.stringify(fieldNames));
+}
+
+/** Resize a matrix dataset by `rowCount` rows and write `flat` into the tail. */
+function appendMatrixRows(
+  file: any,
+  name: string,
+  flat: Float64Array,
+  rowCount: number,
+  colCount: number,
+  currentRows: number,
+): void {
+  if (rowCount === 0) return;
+  const ds = file.get(name);
+  ds.resize([currentRows + rowCount, colCount]);
+  ds.write_slice(
+    [
+      [currentRows, currentRows + rowCount],
+      [0, colCount],
+    ],
+    flat,
+  );
+}
+
+/** Static header (everything except the pose frames) for {@link openSlpWriter}. */
+export interface SlpWriteHeader {
+  skeletons: Skeleton[];
+  videos: Video[];
+  tracks?: Track[];
+  suggestions?: SuggestionFrame[];
+  identities?: Identity[];
+  sessions?: RecordingSession[];
+  provenance?: Record<string, unknown>;
+}
+
+/** Per-store id offsets applied while appending (see {@link SlpStreamWriter.appendStore}). */
+export interface AppendStoreOptions {
+  /** Added to each frame's (remapped) video index. */
+  videoIndexOffset?: number;
+  /** Added to each instance's non-null track index. */
+  trackOffset?: number;
+  /** Added to each instance's skeleton index. */
+  skeletonOffset?: number;
+  /** Frames per append window (defaults to {@link DEFAULT_WRITE_WINDOW_FRAMES}). */
+  windowFrames?: number;
+}
+
+/**
+ * Incremental SLP writer. Open with {@link openSlpWriter} (which writes the
+ * header and creates the resizable pose datasets), append one or more
+ * {@link LazyDataStore}s with {@link appendStore}, then {@link close} to get the
+ * file bytes. Ids are rebased per store so multiple stores concatenate into one
+ * consistent multi-video file.
+ */
+export class SlpStreamWriter {
+  private file: any;
+  private module: any;
+  private memPath: string;
+  private frameRows = 0;
+  private instRows = 0;
+  private pointRows = 0;
+  private predPointRows = 0;
+  private negativeFrames = new Set<string>();
+  private closed = false;
+
+  /** @internal — use {@link openSlpWriter}. */
+  constructor(module: any, file: any, memPath: string) {
+    this.module = module;
+    this.file = file;
+    this.memPath = memPath;
+  }
+
+  /**
+   * Append every frame of `store` (in windows), rebasing its ids onto the
+   * running file so the store's videos/instances/points/tracks land at the
+   * offsets given in `opts`. Point coordinates and all per-instance fields are
+   * copied verbatim from the store's columns — no `Instance`/`LabeledFrame`
+   * object is constructed. The store's frame/instance/point tables are assumed
+   * ordered by frame (the SLP on-disk invariant).
+   */
+  appendStore(store: LazyDataStore, opts?: AppendStoreOptions): void {
+    if (this.closed) throw new Error("SlpStreamWriter is closed");
+    const windowFrames = opts?.windowFrames ?? DEFAULT_WRITE_WINDOW_FRAMES;
+    const vOff = opts?.videoIndexOffset ?? 0;
+    const tOff = opts?.trackOffset ?? 0;
+    const kOff = opts?.skeletonOffset ?? 0;
+
+    const fd = store.framesData;
+    const idn = store.instancesData;
+    const nFrames = (fd.frame_id ?? fd.video ?? []).length;
+    if (nFrames === 0) return;
+
+    // Remap this store's raw `frames.video` ids to its own video indices (#204)
+    // before offsetting into the combined `videos` array.
+    const videoIdMap = buildVideoIdMap(fd, store.videos);
+    const remapVideo = (raw: number) => vOff + (videoIdMap.get(raw) ?? raw);
+
+    // Per-store bases: within the store, tables are 0-based, so a store row `r`
+    // maps to global `base + r`. Appends advance the running counters in lock-step
+    // with these bases, so instance/point ranges stay consistent across windows.
+    const frameBase = this.frameRows;
+    const instBase = this.instRows;
+    const pointBase = this.pointRows;
+    const predBase = this.predPointRows;
+
+    const px = store.pointsData.x,
+      py = store.pointsData.y,
+      pv = store.pointsData.visible,
+      pc = store.pointsData.complete;
+    const qx = store.predPointsData.x,
+      qy = store.predPointsData.y,
+      qv = store.predPointsData.visible,
+      qc = store.predPointsData.complete,
+      qs = store.predPointsData.score;
+
+    for (let wStart = 0; wStart < nFrames; wStart += windowFrames) {
+      const wEnd = Math.min(wStart + windowFrames, nFrames);
+      const wFrames = wEnd - wStart;
+
+      // Pass 1: size the window's instance / user-point / pred-point buffers.
+      let nInst = 0;
+      let nUserPts = 0;
+      let nPredPts = 0;
+      for (let r = wStart; r < wEnd; r++) {
+        const iStart = numAt(fd.instance_id_start, r);
+        const iEnd = numAt(fd.instance_id_end, r);
+        nInst += iEnd - iStart;
+        for (let j = iStart; j < iEnd; j++) {
+          const cnt = numAt(idn.point_id_end, j) - numAt(idn.point_id_start, j);
+          if (numAt(idn.instance_type, j) === 1) nPredPts += cnt;
+          else nUserPts += cnt;
+        }
+      }
+
+      const framesFlat = new Float64Array(wFrames * 5);
+      const instFlat = new Float64Array(nInst * 10);
+      const userPtsFlat = new Float64Array(nUserPts * 4);
+      const predPtsFlat = new Float64Array(nPredPts * 5);
+      let fi = 0;
+      let ii = 0;
+      let upi = 0;
+      let ppi = 0;
+
+      // Pass 2: emit rows, rebasing every cross-reference onto the store bases.
+      for (let r = wStart; r < wEnd; r++) {
+        const newFrameId = frameBase + r;
+        const combinedVideo = remapVideo(numAt(fd.video, r));
+        const frameIdx = numAt(fd.frame_idx, r);
+        const iStart = numAt(fd.instance_id_start, r);
+        const iEnd = numAt(fd.instance_id_end, r);
+
+        framesFlat[fi++] = newFrameId;
+        framesFlat[fi++] = combinedVideo;
+        framesFlat[fi++] = frameIdx;
+        framesFlat[fi++] = instBase + iStart;
+        framesFlat[fi++] = instBase + iEnd;
+
+        if (store.negativeFrames.has(`${numAt(fd.video, r)}:${frameIdx}`)) {
+          this.negativeFrames.add(`${combinedVideo}:${frameIdx}`);
+        }
+
+        for (let j = iStart; j < iEnd; j++) {
+          const type = numAt(idn.instance_type, j);
+          const ptStart = numAt(idn.point_id_start, j);
+          const ptEnd = numAt(idn.point_id_end, j);
+          const trk = numAt(idn.track, j, -1);
+          const fp = numAt(idn.from_predicted, j, -1);
+
+          instFlat[ii++] = instBase + j; // instance_id
+          instFlat[ii++] = type; // instance_type
+          instFlat[ii++] = newFrameId; // frame_id
+          instFlat[ii++] = numAt(idn.skeleton, j) + kOff; // skeleton
+          instFlat[ii++] = trk >= 0 ? trk + tOff : -1; // track
+          instFlat[ii++] = fp >= 0 ? instBase + fp : -1; // from_predicted
+          instFlat[ii++] = numAt(idn.score, j); // score
+          if (type === 1) {
+            instFlat[ii++] = predBase + ptStart; // point_id_start
+            instFlat[ii++] = predBase + ptEnd; // point_id_end
+            for (let p = ptStart; p < ptEnd; p++) {
+              predPtsFlat[ppi++] = numAt(qx, p);
+              predPtsFlat[ppi++] = numAt(qy, p);
+              predPtsFlat[ppi++] = numAt(qv, p);
+              predPtsFlat[ppi++] = numAt(qc, p);
+              predPtsFlat[ppi++] = numAt(qs, p);
+            }
+          } else {
+            instFlat[ii++] = pointBase + ptStart; // point_id_start
+            instFlat[ii++] = pointBase + ptEnd; // point_id_end
+            for (let p = ptStart; p < ptEnd; p++) {
+              userPtsFlat[upi++] = numAt(px, p);
+              userPtsFlat[upi++] = numAt(py, p);
+              userPtsFlat[upi++] = numAt(pv, p);
+              userPtsFlat[upi++] = numAt(pc, p);
+            }
+          }
+          instFlat[ii++] = numAt(idn.tracking_score, j); // tracking_score
+        }
+      }
+
+      appendMatrixRows(
+        this.file,
+        "frames",
+        framesFlat,
+        wFrames,
+        5,
+        this.frameRows,
+      );
+      this.frameRows += wFrames;
+      appendMatrixRows(
+        this.file,
+        "instances",
+        instFlat,
+        nInst,
+        10,
+        this.instRows,
+      );
+      this.instRows += nInst;
+      appendMatrixRows(
+        this.file,
+        "points",
+        userPtsFlat,
+        nUserPts,
+        4,
+        this.pointRows,
+      );
+      this.pointRows += nUserPts;
+      appendMatrixRows(
+        this.file,
+        "pred_points",
+        predPtsFlat,
+        nPredPts,
+        5,
+        this.predPointRows,
+      );
+      this.predPointRows += nPredPts;
+    }
+  }
+
+  /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
+  close(): Uint8Array {
+    if (this.closed) throw new Error("SlpStreamWriter is already closed");
+    this.closed = true;
+
+    if (this.negativeFrames.size > 0) {
+      const rows: number[][] = [];
+      for (const key of this.negativeFrames) {
+        const [v, f] = key.split(":");
+        rows.push([Number(v), Number(f)]);
+      }
+      rows.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      createMatrixDataset(
+        this.file,
+        "negative_frames",
+        rows,
+        ["video_id", "frame_idx"],
+        "<i8",
+      );
+    }
+
+    this.file.close();
+    const fs = getH5FileSystem(this.module);
+    const bytes = fs.readFile!(this.memPath);
+    fs.unlink!(this.memPath);
+    return bytes;
+  }
+}
+
+/**
+ * Open a streaming SLP writer: create the in-memory HDF5 file, write the header
+ * (skeletons/videos/tracks/suggestions/identities/sessions/provenance), and
+ * create the resizable `frames`/`instances`/`points`/`pred_points` datasets.
+ * Frame data is appended later via {@link SlpStreamWriter.appendStore}.
+ */
+export async function openSlpWriter(
+  header: SlpWriteHeader,
+): Promise<SlpStreamWriter> {
+  const module = await getH5Module();
+  ensureH5StagingDir(module);
+  const memPath = `/tmp/sleap_stream_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+  const file = new module.File(memPath, "w");
+
+  // Reuse the eager metadata writers via a frameless header `Labels` (they read
+  // only header fields). Sessions are written with an empty labeled-frame list,
+  // so frame-group refs that resolve by labeled-frame index are dropped — matches
+  // the lazy fast-path (`writeSlpToFileLazy`).
+  const headerLabels = new Labels({
+    labeledFrames: [],
+    videos: header.videos,
+    skeletons: header.skeletons,
+    tracks: header.tracks ?? [],
+    suggestions: header.suggestions ?? [],
+    sessions: header.sessions ?? [],
+    identities: header.identities ?? [],
+    provenance: header.provenance ?? {},
+  });
+
+  writeMetadata(file, headerLabels);
+  writeVideos(file, headerLabels.videos);
+  writeVideoCrops(file, headerLabels.videos);
+  writeTracks(file, headerLabels.tracks);
+  writeSuggestions(file, headerLabels.suggestions, headerLabels.videos);
+  writeIdentities(file, headerLabels.identities);
+  writeSessions(
+    file,
+    headerLabels.sessions,
+    headerLabels.videos,
+    [],
+    headerLabels.identities,
+  );
+
+  createAppendableMatrixDataset(file, "frames", FRAMES_FIELDS, "<i8");
+  createAppendableMatrixDataset(file, "instances", INSTANCES_FIELDS, "<f8");
+  createAppendableMatrixDataset(file, "points", POINTS_FIELDS, "<f8");
+  createAppendableMatrixDataset(file, "pred_points", PRED_POINTS_FIELDS, "<f8");
+
+  return new SlpStreamWriter(module, file, memPath);
+}
+
+/** Structural node-name signature of a skeleton list, for cross-store equality. */
+function skeletonSignature(skeletons: Skeleton[]): string {
+  return JSON.stringify(skeletons.map((s) => s.nodeNames));
+}
+
+/**
+ * Merge N per-camera {@link LazyDataStore}s into one combined multi-video
+ * `.slp`, streaming each store's frames in bounded windows (peak memory ≪ the
+ * whole graph). The combined `videos` and `tracks` are the concatenation of the
+ * stores' (video index and track index remapped accordingly); all stores must
+ * share a structurally-identical skeleton list (the multi-camera case), which
+ * becomes the combined skeleton set. Session graph / identities / suggestions /
+ * provenance for the combined file are supplied via `options`.
+ *
+ * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
+ */
+export async function saveSlpMergedFromStores(
+  stores: LazyDataStore[],
+  options?: {
+    sessions?: RecordingSession[];
+    identities?: Identity[];
+    suggestions?: SuggestionFrame[];
+    provenance?: Record<string, unknown>;
+    windowFrames?: number;
+  },
+): Promise<Uint8Array> {
+  if (stores.length === 0) {
+    throw new Error("saveSlpMergedFromStores requires at least one store");
+  }
+  const sig = skeletonSignature(stores[0].skeletons);
+  for (let i = 1; i < stores.length; i++) {
+    if (skeletonSignature(stores[i].skeletons) !== sig) {
+      throw new Error(
+        `saveSlpMergedFromStores: store ${i} has a different skeleton than store 0; ` +
+          "all stores must share the same skeletons to merge into one file.",
+      );
+    }
+  }
+
+  const videos: Video[] = stores.flatMap((s) => s.videos);
+  const tracks: Track[] = stores.flatMap((s) => s.tracks);
+
+  const writer = await openSlpWriter({
+    skeletons: stores[0].skeletons,
+    videos,
+    tracks,
+    suggestions: options?.suggestions,
+    identities: options?.identities,
+    sessions: options?.sessions,
+    provenance: options?.provenance,
+  });
+
+  let videoOffset = 0;
+  let trackOffset = 0;
+  for (const store of stores) {
+    writer.appendStore(store, {
+      videoIndexOffset: videoOffset,
+      trackOffset,
+      skeletonOffset: 0, // shared skeletons (validated)
+      windowFrames: options?.windowFrames,
+    });
+    videoOffset += store.videos.length;
+    trackOffset += store.tracks.length;
+  }
+
+  return writer.close();
+}
+
 export async function saveSlpToBytes(
   labels: Labels,
   options?: SlpWriteOptions,
