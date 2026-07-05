@@ -11827,7 +11827,8 @@ async function readSlpStreaming(source, options) {
       options?.filenameHint,
       openVideos,
       options?.onProgress,
-      options?.rawSessions ?? false
+      options?.rawSessions ?? false,
+      options?.lazy ?? false
     );
   } finally {
     if (!openVideos) {
@@ -11835,7 +11836,7 @@ async function readSlpStreaming(source, options) {
     }
   }
 }
-async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false) {
+async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false) {
   const STAGES = [
     "Reading metadata",
     // 0
@@ -11898,7 +11899,19 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   const pointsData = await readStructDatasetStreaming(file, "points");
   const predPointsData = await readStructDatasetStreaming(file, "pred_points");
   report(7);
-  const labeledFrames = buildLabeledFrames({
+  const lazyStore = lazy ? new LazyDataStore({
+    framesData,
+    instancesData,
+    pointsData,
+    predPointsData,
+    skeletons,
+    tracks,
+    videos,
+    formatId
+    // The streaming reader reads no negative_frames — leave empty (matches
+    // the eager streaming build, which never sets isNegative either).
+  }) : void 0;
+  const labeledFrames = lazyStore ? void 0 : buildLabeledFrames({
     framesData,
     instancesData,
     pointsData,
@@ -11920,7 +11933,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   );
   onProgress?.(total, total, "Finalizing");
   const labels = new Labels({
-    labeledFrames,
+    ...labeledFrames ? { labeledFrames } : {},
     videos,
     skeletons,
     tracks,
@@ -11929,6 +11942,10 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     identities,
     provenance: metadataJson?.provenance ?? {}
   });
+  if (lazyStore) {
+    labels._lazyFrameList = new LazyFrameList(lazyStore);
+    labels._lazyDataStore = lazyStore;
+  }
   injectSessionFrameResolver(labels);
   return labels;
 }
@@ -17229,7 +17246,8 @@ async function loadSlp(source, options) {
           headers: options?.h5?.headers,
           h5wasmUrl: options?.h5?.h5wasmUrl,
           openVideos,
-          onProgress: options?.onProgress
+          onProgress: options?.onProgress,
+          lazy
         });
       } catch (e) {
         if (streamMode === "auto") {

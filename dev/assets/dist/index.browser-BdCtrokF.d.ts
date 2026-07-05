@@ -4811,6 +4811,14 @@ interface StreamingSlpOptions {
      */
     rawSessions?: boolean;
     /**
+     * Defer frame materialization. When `true`, the pose tables are wrapped in a
+     * `LazyDataStore`/`LazyFrameList` and individual `LabeledFrame`/`Instance`
+     * objects are built only on first access (via `labels.frameAt(i)` /
+     * `labels.materialize()`), instead of eagerly building the full object graph.
+     * Bounds peak memory for very large prediction files. Default `false`.
+     */
+    lazy?: boolean;
+    /**
      * Optional progress callback fired as loading advances through its stages.
      * `current` counts completed stages out of `total`; `message` labels the
      * stage about to run. Matches the (current, total, message?) convention used
