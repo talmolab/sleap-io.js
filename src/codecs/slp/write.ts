@@ -29,6 +29,7 @@ import { deflate } from "pako";
 import type { Identity } from "../../model/identity.js";
 import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
 import type { LazyDataStore } from "../../model/lazy.js";
+import { buildVideoIdMap } from "../../model/video-id-map.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile:
@@ -506,6 +507,1105 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
  * - `"user+suggestions"` - Embed user instance frames and suggestion frames
  * - `"source"` - Restore original video paths (no embedding)
  */
+// ===========================================================================
+// Streaming / incremental SLP writer (issue #207)
+//
+// A write-side companion to `readSlpStreaming({ lazy })`: build an SLP file by
+// appending pose frames/instances/points in bounded windows to *resizable* HDF5
+// datasets (create-empty → `resize` + `write_slice` per window), rather than
+// materializing the whole `Labels` graph or a full row matrix. Also supports
+// MERGING N per-camera `LazyDataStore`s into one combined multi-video `.slp`,
+// remapping video/instance/point/track ids as each store is appended — the
+// downstream LUCID export path (one combined multi-camera file, memory-bounded).
+//
+// Scope (v1): pose tables only (frames/instances/points/pred_points) +
+// negative_frames + all header metadata (videos/tracks/skeletons/suggestions/
+// identities/sessions/provenance). Per-frame annotation overlays (masks/rois/
+// bboxes/centroids/label-images), an edit overlay of corrected frames, and a
+// `FileSystemWritableFileStream` sink are follow-ups.
+// ===========================================================================
+
+/** Frames per append window — bounds the per-window typed-array allocation. */
+const DEFAULT_WRITE_WINDOW_FRAMES = 5000;
+/** HDF5 chunk row count for the appendable pose datasets. */
+const WRITE_CHUNK_ROWS = 8192;
+
+const FRAMES_FIELDS = [
+  "frame_id",
+  "video",
+  "frame_idx",
+  "instance_id_start",
+  "instance_id_end",
+];
+const INSTANCES_FIELDS = [
+  "instance_id",
+  "instance_type",
+  "frame_id",
+  "skeleton",
+  "track",
+  "from_predicted",
+  "score",
+  "point_id_start",
+  "point_id_end",
+  "tracking_score",
+];
+const POINTS_FIELDS = ["x", "y", "visible", "complete"];
+const PRED_POINTS_FIELDS = ["x", "y", "visible", "complete", "score"];
+
+/** Read a numeric column cell with a default (mirrors the lazy reader). */
+function numAt(col: any[] | undefined, i: number, def = 0): number {
+  const v = col?.[i];
+  return v === undefined || v === null ? def : Number(v);
+}
+
+/**
+ * Create an empty, row-resizable 2D dataset (`[0, cols]`, maxshape
+ * `[null, cols]`, chunked) and stamp its `field_names` attribute — the
+ * append-mode analog of {@link createMatrixDataset}.
+ */
+function createAppendableMatrixDataset(
+  file: any,
+  name: string,
+  fieldNames: string[],
+  dtype: string,
+): void {
+  const colCount = fieldNames.length;
+  file.create_dataset({
+    name,
+    data: new Float64Array(0),
+    shape: [0, colCount],
+    maxshape: [null, colCount],
+    chunks: [WRITE_CHUNK_ROWS, colCount],
+    dtype,
+  });
+  setStringAttr(file.get(name), "field_names", JSON.stringify(fieldNames));
+}
+
+/** Resize a matrix dataset by `rowCount` rows and write `flat` into the tail. */
+function appendMatrixRows(
+  file: any,
+  name: string,
+  flat: Float64Array,
+  rowCount: number,
+  colCount: number,
+  currentRows: number,
+): void {
+  if (rowCount === 0) return;
+  const ds = file.get(name);
+  ds.resize([currentRows + rowCount, colCount]);
+  ds.write_slice(
+    [
+      [currentRows, currentRows + rowCount],
+      [0, colCount],
+    ],
+    flat,
+  );
+}
+
+/** Static header (everything except the pose frames) for {@link openSlpWriter}. */
+export interface SlpWriteHeader {
+  skeletons: Skeleton[];
+  videos: Video[];
+  tracks?: Track[];
+  suggestions?: SuggestionFrame[];
+  identities?: Identity[];
+  sessions?: RecordingSession[];
+  provenance?: Record<string, unknown>;
+}
+
+/** Per-store id offsets applied while appending (see {@link SlpStreamWriter.appendStore}). */
+export interface AppendStoreOptions {
+  /** Added to each frame's (remapped) video index. */
+  videoIndexOffset?: number;
+  /** Added to each instance's non-null track index. */
+  trackOffset?: number;
+  /** Added to each instance's skeleton index. */
+  skeletonOffset?: number;
+  /** Frames per append window (defaults to {@link DEFAULT_WRITE_WINDOW_FRAMES}). */
+  windowFrames?: number;
+}
+
+/**
+ * A chunked byte sink for {@link SlpStreamWriter.writeToSink} — the output-side
+ * companion to the append writer. Satisfied by a browser
+ * `FileSystemWritableFileStream` (OPFS / save-file-picker) and by Node's
+ * `fs.WriteStream`, so the finished file need not be resident as one big
+ * `Uint8Array`.
+ */
+export interface SlpWriteSink {
+  write(chunk: Uint8Array): unknown | Promise<unknown>;
+  close?(): unknown | Promise<unknown>;
+}
+
+/** Emscripten-FS methods used for chunked reads (present on h5wasm's `module.FS`). */
+interface ChunkedFs {
+  open?: (path: string, flags: string) => unknown;
+  read?: (
+    stream: unknown,
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ) => number;
+  close?: (stream: unknown) => void;
+  stat?: (path: string) => { size: number };
+}
+
+/** An annotation with the instance link the writers read via fallback. */
+type AnnLinked = { instance: Instance | null; _instanceIdx: number | null };
+/** Accumulated annotations of one type: objects + `[vid,frame]` ctx + global inst idx. */
+interface AnnBucket<T> {
+  anns: T[];
+  ctx: [number, number][];
+  inst: number[];
+}
+function newAnnBucket<T>(): AnnBucket<T> {
+  return { anns: [], ctx: [], inst: [] };
+}
+
+/**
+ * Incremental SLP writer. Open with {@link openSlpWriter} (which writes the
+ * header and creates the resizable pose datasets), append one or more
+ * {@link LazyDataStore}s with {@link appendStore}, then {@link close} to get the
+ * file bytes. Ids are rebased per store so multiple stores concatenate into one
+ * consistent multi-video file.
+ */
+export class SlpStreamWriter {
+  private file: any;
+  private module: any;
+  private memPath: string;
+  private videos: Video[];
+  private skeletons: Skeleton[];
+  private tracks: Track[];
+  private frameRows = 0;
+  private instRows = 0;
+  private pointRows = 0;
+  private predPointRows = 0;
+  private negativeFrames = new Set<string>();
+  private closed = false;
+  // Combined `${videoIndex}:${frameIdx}` keys already written, for dedup across
+  // appendStore/appendFrames. First write wins: a later append that repeats a
+  // key skips that frame entirely. Append overlays (appendFrames) BEFORE bulk
+  // stores so the overlay's frame is the one kept. See #208 follow-up.
+  private writtenFrames = new Set<string>();
+
+  // Per-frame annotations (masks/rois/bboxes/centroids/label-images) accumulated
+  // across appends and written once at finalize — they're far fewer than pose
+  // points, so they are not windowed. `ctx` is `[videoIndex, frameIdx]`; `inst`
+  // is the resolved GLOBAL instance index (or -1) for the annotation's link.
+  private pendingRois = newAnnBucket<ROI>();
+  private pendingMasks = newAnnBucket<SegmentationMask>();
+  private pendingBboxes = newAnnBucket<BoundingBox>();
+  private pendingCentroids = newAnnBucket<Centroid>();
+  // Label images carry instance links PER OBJECT (not on the top-level object),
+  // so only their video/frame context is remapped here; each object's
+  // `_instanceIdx` passes through (correct single-store; may be off in a
+  // multi-store merge — a niche edge, tracked on #207).
+  private pendingLabelImages: {
+    anns: LabelImage[];
+    ctx: [number, number][];
+  } = { anns: [], ctx: [] };
+
+  /** @internal — use {@link openSlpWriter}. */
+  constructor(
+    module: any,
+    file: any,
+    memPath: string,
+    header: { videos: Video[]; skeletons: Skeleton[]; tracks: Track[] },
+  ) {
+    this.module = module;
+    this.file = file;
+    this.memPath = memPath;
+    this.videos = header.videos;
+    this.skeletons = header.skeletons;
+    this.tracks = header.tracks;
+  }
+
+  /**
+   * Append every frame of `store` (in windows), rebasing its ids onto the
+   * running file so the store's videos/instances/points/tracks land at the
+   * offsets given in `opts`. Point coordinates and all per-instance fields are
+   * copied verbatim from the store's columns — no `Instance`/`LabeledFrame`
+   * object is constructed. The store's frame/instance/point tables are assumed
+   * ordered by frame (the SLP on-disk invariant).
+   *
+   * A `(video, frameIdx)` already written (by an earlier append) is SKIPPED — so
+   * append overlays via {@link appendFrames} first for them to win. Frame /
+   * instance / point ids are assigned from running OUTPUT counters (not the
+   * store's positions), so skips leave no gaps; cross-references
+   * (`from_predicted`, annotation instance links) are remapped through the
+   * skipped ranges. `store` must not itself contain duplicate `(video, frameIdx)`.
+   */
+  appendStore(store: LazyDataStore, opts?: AppendStoreOptions): void {
+    if (this.closed) throw new Error("SlpStreamWriter is closed");
+    const windowFrames = opts?.windowFrames ?? DEFAULT_WRITE_WINDOW_FRAMES;
+    const vOff = opts?.videoIndexOffset ?? 0;
+    const tOff = opts?.trackOffset ?? 0;
+    const kOff = opts?.skeletonOffset ?? 0;
+
+    const fd = store.framesData;
+    const idn = store.instancesData;
+    const nFrames = (fd.frame_id ?? fd.video ?? []).length;
+    if (nFrames === 0) return;
+
+    // Remap this store's raw `frames.video` ids to its own video indices (#204)
+    // before offsetting into the combined `videos` array.
+    const videoIdMap = buildVideoIdMap(fd, store.videos);
+    const remapVideo = (raw: number) => vOff + (videoIdMap.get(raw) ?? raw);
+
+    // Per-store OUTPUT bases: the first output row/instance/point this store
+    // contributes. Ids are `base + <running output counter>`, so skipped frames
+    // leave no gaps.
+    const frameBase = this.frameRows;
+    const instBase = this.instRows;
+    const pointBase = this.pointRows;
+    const predBase = this.predPointRows;
+
+    const px = store.pointsData.x,
+      py = store.pointsData.y,
+      pv = store.pointsData.visible,
+      pc = store.pointsData.complete;
+    const qx = store.predPointsData.x,
+      qy = store.predPointsData.y,
+      qv = store.predPointsData.visible,
+      qc = store.predPointsData.complete,
+      qs = store.predPointsData.score;
+
+    // Pre-pass: the instance ranges of frames that will be SKIPPED (their
+    // `(video, frameIdx)` was already written). Sorted by construction (frames
+    // are in order). `outIdxOf` maps a store instance index to its output
+    // position — identity when nothing is skipped, so the no-overlap path is
+    // unchanged — or `null` when that instance falls in a skipped frame.
+    const skippedRanges: Array<[number, number]> = [];
+    const skippedKeys = new Set<string>();
+    for (let r = 0; r < nFrames; r++) {
+      const key = `${remapVideo(numAt(fd.video, r))}:${numAt(fd.frame_idx, r)}`;
+      if (this.writtenFrames.has(key)) {
+        skippedRanges.push([
+          numAt(fd.instance_id_start, r),
+          numAt(fd.instance_id_end, r),
+        ]);
+        skippedKeys.add(key);
+      }
+    }
+    const outIdxOf = (idx: number): number | null => {
+      if (skippedRanges.length === 0) return idx;
+      let shift = 0;
+      for (const [s, e] of skippedRanges) {
+        if (idx < s) break; // ranges sorted; the rest are past idx
+        if (idx < e) return null; // idx is inside a skipped frame → dangling
+        shift += e - s;
+      }
+      return idx - shift;
+    };
+
+    // Running OUTPUT counters for this store (across all its windows): emitted
+    // frames, instances, and re-packed user / predicted points.
+    let outFrames = 0;
+    let outInsts = 0;
+    let userWritten = 0;
+    let predWritten = 0;
+
+    try {
+      for (let wStart = 0; wStart < nFrames; wStart += windowFrames) {
+        const wEnd = Math.min(wStart + windowFrames, nFrames);
+        const wFrames = wEnd - wStart;
+
+        // Pass 1: size the window's buffers at max (skips only shrink usage; the
+        // actually-filled slice is written below).
+        let nInst = 0;
+        let nUserPts = 0;
+        let nPredPts = 0;
+        for (let r = wStart; r < wEnd; r++) {
+          const iStart = numAt(fd.instance_id_start, r);
+          const iEnd = numAt(fd.instance_id_end, r);
+          nInst += iEnd - iStart;
+          for (let j = iStart; j < iEnd; j++) {
+            const cnt =
+              numAt(idn.point_id_end, j) - numAt(idn.point_id_start, j);
+            if (numAt(idn.instance_type, j) === 1) nPredPts += cnt;
+            else nUserPts += cnt;
+          }
+        }
+
+        const framesFlat = new Float64Array(wFrames * 5);
+        const instFlat = new Float64Array(nInst * 10);
+        const userPtsFlat = new Float64Array(nUserPts * 4);
+        const predPtsFlat = new Float64Array(nPredPts * 5);
+        let fi = 0;
+        let ii = 0;
+        let upi = 0;
+        let ppi = 0;
+
+        // Pass 2: emit rows for non-skipped frames, assigning ids from the
+        // running output counters.
+        for (let r = wStart; r < wEnd; r++) {
+          const combinedVideo = remapVideo(numAt(fd.video, r));
+          const frameIdx = numAt(fd.frame_idx, r);
+          const key = `${combinedVideo}:${frameIdx}`;
+          const iStart = numAt(fd.instance_id_start, r);
+          const iEnd = numAt(fd.instance_id_end, r);
+
+          if (this.writtenFrames.has(key)) continue; // dedup: first write wins
+
+          const newFrameId = frameBase + outFrames;
+          outFrames++;
+          framesFlat[fi++] = newFrameId;
+          framesFlat[fi++] = combinedVideo;
+          framesFlat[fi++] = frameIdx;
+          framesFlat[fi++] = instBase + outInsts; // instance range start
+          framesFlat[fi++] = instBase + outInsts + (iEnd - iStart); // end
+
+          if (store.negativeFrames.has(`${numAt(fd.video, r)}:${frameIdx}`)) {
+            this.negativeFrames.add(`${combinedVideo}:${frameIdx}`);
+          }
+
+          for (let j = iStart; j < iEnd; j++) {
+            const type = numAt(idn.instance_type, j);
+            const ptStart = numAt(idn.point_id_start, j);
+            const ptEnd = numAt(idn.point_id_end, j);
+            const trk = numAt(idn.track, j, -1);
+            const fp = numAt(idn.from_predicted, j, -1);
+            const fpOut = fp >= 0 ? outIdxOf(fp) : null;
+
+            instFlat[ii++] = instBase + outInsts; // instance_id
+            instFlat[ii++] = type; // instance_type
+            instFlat[ii++] = newFrameId; // frame_id
+            instFlat[ii++] = numAt(idn.skeleton, j) + kOff; // skeleton
+            instFlat[ii++] = trk >= 0 ? trk + tOff : -1; // track
+            instFlat[ii++] = fpOut != null ? instBase + fpOut : -1; // from_predicted
+            instFlat[ii++] = numAt(idn.score, j); // score
+            if (type === 1) {
+              // point_id range = position in the re-packed pred-point stream.
+              instFlat[ii++] = predBase + predWritten;
+              instFlat[ii++] = predBase + predWritten + (ptEnd - ptStart);
+              for (let p = ptStart; p < ptEnd; p++) {
+                predPtsFlat[ppi++] = numAt(qx, p);
+                predPtsFlat[ppi++] = numAt(qy, p);
+                predPtsFlat[ppi++] = numAt(qv, p);
+                predPtsFlat[ppi++] = numAt(qc, p);
+                predPtsFlat[ppi++] = numAt(qs, p);
+              }
+              predWritten += ptEnd - ptStart;
+            } else {
+              instFlat[ii++] = pointBase + userWritten;
+              instFlat[ii++] = pointBase + userWritten + (ptEnd - ptStart);
+              for (let p = ptStart; p < ptEnd; p++) {
+                userPtsFlat[upi++] = numAt(px, p);
+                userPtsFlat[upi++] = numAt(py, p);
+                userPtsFlat[upi++] = numAt(pv, p);
+                userPtsFlat[upi++] = numAt(pc, p);
+              }
+              userWritten += ptEnd - ptStart;
+            }
+            instFlat[ii++] = numAt(idn.tracking_score, j); // tracking_score
+            outInsts++;
+          }
+          this.writtenFrames.add(key);
+        }
+
+        // Write only the actually-filled slice of each (max-sized) buffer.
+        const emFrames = fi / 5;
+        const emInsts = ii / 10;
+        const emUserPts = upi / 4;
+        const emPredPts = ppi / 5;
+        appendMatrixRows(
+          this.file,
+          "frames",
+          framesFlat.subarray(0, fi),
+          emFrames,
+          5,
+          this.frameRows,
+        );
+        this.frameRows += emFrames;
+        appendMatrixRows(
+          this.file,
+          "instances",
+          instFlat.subarray(0, ii),
+          emInsts,
+          10,
+          this.instRows,
+        );
+        this.instRows += emInsts;
+        appendMatrixRows(
+          this.file,
+          "points",
+          userPtsFlat.subarray(0, upi),
+          emUserPts,
+          4,
+          this.pointRows,
+        );
+        this.pointRows += emUserPts;
+        appendMatrixRows(
+          this.file,
+          "pred_points",
+          predPtsFlat.subarray(0, ppi),
+          emPredPts,
+          5,
+          this.predPointRows,
+        );
+        this.predPointRows += emPredPts;
+      }
+      // Per-frame + undistributed annotations (masks/rois/…), video + instance
+      // remapped, skipping any that belong to a skipped (overlaid) frame.
+      this.collectStoreAnnotations(
+        store,
+        vOff,
+        instBase,
+        outIdxOf,
+        skippedKeys,
+      );
+    } catch (e) {
+      // A mid-write failure leaves a partial file — release it rather than leak.
+      this.dispose();
+      throw e;
+    }
+  }
+
+  /**
+   * Append a batch of already-materialized `LabeledFrame`s — the write-side of
+   * an edit overlay: user-corrected or newly-added frames layered onto a lazy
+   * stream. Each frame's `video`/`skeleton`/`track` is resolved against this
+   * writer's header (by identity); `from_predicted` links are resolved among the
+   * batch. Intended for a bounded batch (the corrected subset), so it is not
+   * windowed. Interleave freely with {@link appendStore}.
+   */
+  appendFrames(frames: LabeledFrame[]): void {
+    if (this.closed) throw new Error("SlpStreamWriter is closed");
+    if (frames.length === 0) return;
+    try {
+      const frameBase = this.frameRows;
+      const instBase = this.instRows;
+      const pointBase = this.pointRows;
+      const predBase = this.predPointRows;
+
+      // Build the batch with LOCAL 0-based ids, then offset onto the file.
+      const framesRows: number[][] = [];
+      const instRows: number[][] = [];
+      const userPts: number[][] = [];
+      const predPts: number[][] = [];
+      const localId = new Map<Instance, number>();
+      const links: Array<[number, PredictedInstance]> = [];
+
+      for (const frame of frames) {
+        const videoIndex = Math.max(0, this.videos.indexOf(frame.video));
+        const key = `${videoIndex}:${frame.frameIdx}`;
+        if (this.writtenFrames.has(key)) continue; // dedup: first write wins
+        this.writtenFrames.add(key);
+        const localFrameId = framesRows.length;
+        const instanceStart = instRows.length;
+        for (const inst of frame.instances) {
+          const localInstId = instRows.length;
+          localId.set(inst as Instance, localInstId);
+          const skeletonId = Math.max(0, this.skeletons.indexOf(inst.skeleton));
+          const trackId = inst.track ? this.tracks.indexOf(inst.track) : -1;
+          const trackingScore = inst.trackingScore ?? 0;
+          let type = 0;
+          let score = 0;
+          let ptStart = 0;
+          let ptEnd = 0;
+          if (inst instanceof PredictedInstance) {
+            type = 1;
+            score = inst.score ?? 0;
+            ptStart = predPts.length;
+            for (const p of inst.points) {
+              predPts.push([
+                p.xy[0],
+                p.xy[1],
+                p.visible ? 1 : 0,
+                p.complete ? 1 : 0,
+                (p as { score?: number }).score ?? 0,
+              ]);
+            }
+            ptEnd = predPts.length;
+          } else {
+            ptStart = userPts.length;
+            for (const p of inst.points) {
+              userPts.push([
+                p.xy[0],
+                p.xy[1],
+                p.visible ? 1 : 0,
+                p.complete ? 1 : 0,
+              ]);
+            }
+            ptEnd = userPts.length;
+            if (inst.fromPredicted)
+              links.push([localInstId, inst.fromPredicted]);
+          }
+          instRows.push([
+            localInstId,
+            type,
+            localFrameId,
+            skeletonId,
+            trackId,
+            -1, // from_predicted (patched below)
+            score,
+            ptStart,
+            ptEnd,
+            trackingScore,
+          ]);
+        }
+        framesRows.push([
+          localFrameId,
+          videoIndex,
+          frame.frameIdx,
+          instanceStart,
+          instRows.length,
+        ]);
+        if (frame.isNegative) {
+          this.negativeFrames.add(`${videoIndex}:${frame.frameIdx}`);
+        }
+        this.collectFrameAnnotations(frame, videoIndex, instBase, localId);
+      }
+
+      // Resolve from_predicted to a GLOBAL instance id (or -1 if the source is
+      // not in this batch — a dangling link, matching the eager writer).
+      for (const [local, src] of links) {
+        const srcLocal = localId.get(src as unknown as Instance);
+        instRows[local][5] = srcLocal != null ? instBase + srcLocal : -1;
+      }
+
+      const nF = framesRows.length;
+      const nI = instRows.length;
+      const nU = userPts.length;
+      const nP = predPts.length;
+
+      const framesFlat = new Float64Array(nF * 5);
+      for (let i = 0; i < nF; i++) {
+        const r = framesRows[i];
+        const o = i * 5;
+        framesFlat[o] = frameBase + r[0];
+        framesFlat[o + 1] = r[1];
+        framesFlat[o + 2] = r[2];
+        framesFlat[o + 3] = instBase + r[3];
+        framesFlat[o + 4] = instBase + r[4];
+      }
+      const instFlat = new Float64Array(nI * 10);
+      for (let i = 0; i < nI; i++) {
+        const r = instRows[i];
+        const o = i * 10;
+        const ptBase = r[1] === 1 ? predBase : pointBase;
+        instFlat[o] = instBase + r[0];
+        instFlat[o + 1] = r[1];
+        instFlat[o + 2] = frameBase + r[2];
+        instFlat[o + 3] = r[3];
+        instFlat[o + 4] = r[4];
+        instFlat[o + 5] = r[5]; // already global (or -1)
+        instFlat[o + 6] = r[6];
+        instFlat[o + 7] = ptBase + r[7];
+        instFlat[o + 8] = ptBase + r[8];
+        instFlat[o + 9] = r[9];
+      }
+      const userFlat = new Float64Array(nU * 4);
+      for (let i = 0; i < nU; i++) {
+        const r = userPts[i];
+        const o = i * 4;
+        userFlat[o] = r[0];
+        userFlat[o + 1] = r[1];
+        userFlat[o + 2] = r[2];
+        userFlat[o + 3] = r[3];
+      }
+      const predFlat = new Float64Array(nP * 5);
+      for (let i = 0; i < nP; i++) {
+        const r = predPts[i];
+        const o = i * 5;
+        predFlat[o] = r[0];
+        predFlat[o + 1] = r[1];
+        predFlat[o + 2] = r[2];
+        predFlat[o + 3] = r[3];
+        predFlat[o + 4] = r[4];
+      }
+
+      appendMatrixRows(this.file, "frames", framesFlat, nF, 5, this.frameRows);
+      this.frameRows += nF;
+      appendMatrixRows(this.file, "instances", instFlat, nI, 10, this.instRows);
+      this.instRows += nI;
+      appendMatrixRows(this.file, "points", userFlat, nU, 4, this.pointRows);
+      this.pointRows += nU;
+      appendMatrixRows(
+        this.file,
+        "pred_points",
+        predFlat,
+        nP,
+        5,
+        this.predPointRows,
+      );
+      this.predPointRows += nP;
+    } catch (e) {
+      this.dispose();
+      throw e;
+    }
+  }
+
+  /**
+   * Collect a store's per-frame + undistributed annotations, remapping the
+   * video index (`+vOff`) and the instance link (through `outIdxOf`, `+instBase`)
+   * onto the combined file. Annotations on a SKIPPED (overlaid) frame — whose
+   * combined `"vid:frameIdx"` key is in `skippedKeys` — are dropped. The store's
+   * map keys are `"videoIndex:frameIdx"` (array-index video).
+   */
+  private collectStoreAnnotations(
+    store: LazyDataStore,
+    vOff: number,
+    instBase: number,
+    outIdxOf: (idx: number) => number | null,
+    skippedKeys: Set<string>,
+  ): void {
+    const resolve = (idx: number | null | undefined): number => {
+      if (idx == null || idx < 0) return -1;
+      const o = outIdxOf(idx);
+      return o != null ? instBase + o : -1;
+    };
+    const fromMap = <T extends AnnLinked>(
+      map: Map<string, T[]>,
+      bucket: AnnBucket<T>,
+    ): void => {
+      for (const [key, list] of map) {
+        const sep = key.indexOf(":");
+        const vid = vOff + Number(key.slice(0, sep));
+        const fidx = Number(key.slice(sep + 1));
+        if (skippedKeys.has(`${vid}:${fidx}`)) continue; // overlaid frame wins
+        for (const ann of list) {
+          bucket.anns.push(ann);
+          bucket.ctx.push([vid, fidx]);
+          bucket.inst.push(resolve(ann._instanceIdx));
+        }
+      }
+    };
+    fromMap(store._roiByFrame, this.pendingRois);
+    fromMap(store._maskByFrame, this.pendingMasks);
+    fromMap(store._bboxByFrame, this.pendingBboxes);
+    fromMap(store._centroidByFrame, this.pendingCentroids);
+    for (const [key, list] of store._labelImageByFrame) {
+      const sep = key.indexOf(":");
+      const vid = vOff + Number(key.slice(0, sep));
+      const fidx = Number(key.slice(sep + 1));
+      if (skippedKeys.has(`${vid}:${fidx}`)) continue;
+      for (const li of list) {
+        this.pendingLabelImages.anns.push(li);
+        this.pendingLabelImages.ctx.push([vid, fidx]);
+      }
+    }
+
+    const undist = <T extends AnnLinked>(
+      list: T[],
+      bucket: AnnBucket<T>,
+      vidFor: (ann: T) => number,
+    ): void => {
+      for (const ann of list) {
+        bucket.anns.push(ann);
+        bucket.ctx.push([vidFor(ann), -1]);
+        bucket.inst.push(resolve(ann._instanceIdx));
+      }
+    };
+    // Static ROIs keep their video association (via the combined videos array).
+    undist(store._undistributedRois, this.pendingRois, (roi) =>
+      (roi as ROI).video ? this.videos.indexOf((roi as ROI).video!) : -1,
+    );
+    undist(store._undistributedMasks, this.pendingMasks, () => -1);
+    undist(store._undistributedBboxes, this.pendingBboxes, () => -1);
+    undist(store._undistributedCentroids, this.pendingCentroids, () => -1);
+    for (const li of store._undistributedLabelImages) {
+      this.pendingLabelImages.anns.push(li);
+      this.pendingLabelImages.ctx.push([-1, -1]);
+    }
+  }
+
+  /**
+   * Collect a materialized frame's annotations, resolving each annotation's live
+   * `instance` to its GLOBAL index via the batch's local map (`+instBase`).
+   * Annotations without a live `instance` in the batch drop their link (-1).
+   */
+  private collectFrameAnnotations(
+    frame: LabeledFrame,
+    vid: number,
+    instBase: number,
+    localId: Map<Instance, number>,
+  ): void {
+    const resolve = (inst: Instance | null | undefined): number => {
+      if (!inst) return -1;
+      const l = localId.get(inst);
+      return l != null ? instBase + l : -1;
+    };
+    const push = <T extends AnnLinked>(
+      list: T[],
+      bucket: AnnBucket<T>,
+    ): void => {
+      for (const ann of list) {
+        bucket.anns.push(ann);
+        bucket.ctx.push([vid, frame.frameIdx]);
+        bucket.inst.push(resolve(ann.instance));
+      }
+    };
+    push(frame.rois, this.pendingRois);
+    push(frame.masks, this.pendingMasks);
+    push(frame.bboxes, this.pendingBboxes);
+    push(frame.centroids, this.pendingCentroids);
+    for (const li of frame.labelImages) {
+      this.pendingLabelImages.anns.push(li);
+      this.pendingLabelImages.ctx.push([vid, frame.frameIdx]);
+    }
+  }
+
+  /**
+   * Write all accumulated annotation datasets. The per-type writers read the
+   * instance link off each object, so the resolved GLOBAL index is applied via a
+   * contained mutate→write→restore (source annotations are left unchanged).
+   */
+  private writePendingAnnotations(): void {
+    const writeBucket = <T extends AnnLinked>(
+      bucket: AnnBucket<T>,
+      fn: (
+        file: any,
+        anns: T[],
+        videos: Video[],
+        tracks: Track[],
+        instances: never[],
+        ctx: [number, number][],
+      ) => void,
+    ): void => {
+      if (bucket.anns.length === 0) return;
+      const saved = bucket.anns.map(
+        (a) => [a.instance, a._instanceIdx] as const,
+      );
+      try {
+        for (let i = 0; i < bucket.anns.length; i++) {
+          bucket.anns[i].instance = null;
+          bucket.anns[i]._instanceIdx =
+            bucket.inst[i] >= 0 ? bucket.inst[i] : null;
+        }
+        fn(this.file, bucket.anns, this.videos, this.tracks, [], bucket.ctx);
+      } finally {
+        for (let i = 0; i < bucket.anns.length; i++) {
+          bucket.anns[i].instance = saved[i][0];
+          bucket.anns[i]._instanceIdx = saved[i][1];
+        }
+      }
+    };
+    writeBucket(this.pendingRois, writeRois);
+    writeBucket(this.pendingMasks, writeMasks);
+    writeBucket(this.pendingBboxes, writeBboxes);
+    writeBucket(this.pendingCentroids, writeCentroids);
+    if (this.pendingLabelImages.anns.length > 0) {
+      writeLabelImages(
+        this.file,
+        this.pendingLabelImages.anns,
+        this.videos,
+        this.tracks,
+        [],
+        this.pendingLabelImages.ctx,
+      );
+    }
+  }
+
+  /** Write pending `negative_frames` and close the HDF5 file (shared finalize). */
+  private finalizeFile(): void {
+    this.writePendingAnnotations();
+    if (this.negativeFrames.size > 0) {
+      const rows: number[][] = [];
+      for (const key of this.negativeFrames) {
+        const [v, f] = key.split(":");
+        rows.push([Number(v), Number(f)]);
+      }
+      rows.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+      createMatrixDataset(
+        this.file,
+        "negative_frames",
+        rows,
+        ["video_id", "frame_idx"],
+        "<i8",
+      );
+    }
+    this.file.close();
+  }
+
+  /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
+  close(): Uint8Array {
+    if (this.closed) throw new Error("SlpStreamWriter is already closed");
+    this.closed = true;
+    this.finalizeFile();
+    const fs = getH5FileSystem(this.module);
+    const bytes = fs.readFile!(this.memPath);
+    fs.unlink!(this.memPath);
+    return bytes;
+  }
+
+  /**
+   * Finalize and stream the file to `sink` in chunks, then unlink it — the
+   * output-side companion to {@link appendStore}, so the finished file never has
+   * to be resident as one big `Uint8Array` on the JS side. Reads the in-memory
+   * HDF5 file with chunked FS reads when available (falling back to a single
+   * read). `sink.close()` is awaited if present.
+   *
+   * @param opts.chunkBytes Chunk size (default 8 MiB).
+   */
+  async writeToSink(
+    sink: SlpWriteSink,
+    opts?: { chunkBytes?: number },
+  ): Promise<void> {
+    if (this.closed) throw new Error("SlpStreamWriter is already closed");
+    this.closed = true;
+    this.finalizeFile();
+
+    const fs = getH5FileSystem(this.module);
+    const cfs = fs as unknown as ChunkedFs;
+    const chunkBytes = Math.max(
+      1,
+      Math.trunc(opts?.chunkBytes ?? 8 * 1024 * 1024),
+    );
+    try {
+      if (cfs.open && cfs.read && cfs.close && cfs.stat) {
+        const size = Number(cfs.stat(this.memPath).size);
+        const stream = cfs.open(this.memPath, "r");
+        try {
+          const buf = new Uint8Array(chunkBytes);
+          let pos = 0;
+          while (pos < size) {
+            const want = Math.min(chunkBytes, size - pos);
+            const n = cfs.read(stream, buf, 0, want, pos);
+            if (n <= 0) break;
+            await sink.write(buf.slice(0, n)); // copy — buf is reused
+            pos += n;
+          }
+        } finally {
+          cfs.close(stream);
+        }
+      } else {
+        // No chunked FS reads: read once, then hand out slices.
+        const bytes = fs.readFile!(this.memPath);
+        for (let pos = 0; pos < bytes.length; pos += chunkBytes) {
+          await sink.write(
+            bytes.slice(pos, Math.min(pos + chunkBytes, bytes.length)),
+          );
+        }
+      }
+      if (sink.close) await sink.close();
+    } finally {
+      fs.unlink!(this.memPath);
+    }
+  }
+
+  /**
+   * Release the underlying HDF5 file WITHOUT producing bytes — call to clean up
+   * a writer that will not be finished (e.g. after an error). Idempotent and
+   * best-effort (never throws); the file/MEMFS path are closed and unlinked.
+   */
+  dispose(): void {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.file.close();
+    } catch {
+      // best-effort
+    }
+    try {
+      getH5FileSystem(this.module).unlink?.(this.memPath);
+    } catch {
+      // best-effort
+    }
+  }
+}
+
+/**
+ * Open a streaming SLP writer: create the in-memory HDF5 file, write the header
+ * (skeletons/videos/tracks/suggestions/identities/sessions/provenance), and
+ * create the resizable `frames`/`instances`/`points`/`pred_points` datasets.
+ * Frame data is appended later via {@link SlpStreamWriter.appendStore}.
+ */
+export async function openSlpWriter(
+  header: SlpWriteHeader,
+): Promise<SlpStreamWriter> {
+  const module = await getH5Module();
+  ensureH5StagingDir(module);
+  const memPath = `/tmp/sleap_stream_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+  const file = new module.File(memPath, "w");
+
+  try {
+    // Reuse the eager metadata writers via a frameless header `Labels` (they read
+    // only header fields). Sessions are written with an empty labeled-frame list,
+    // so frame-group refs that resolve by labeled-frame index are dropped — matches
+    // the lazy fast-path (`writeSlpToFileLazy`).
+    const headerLabels = new Labels({
+      labeledFrames: [],
+      videos: header.videos,
+      skeletons: header.skeletons,
+      tracks: header.tracks ?? [],
+      suggestions: header.suggestions ?? [],
+      sessions: header.sessions ?? [],
+      identities: header.identities ?? [],
+      provenance: header.provenance ?? {},
+    });
+
+    writeMetadata(file, headerLabels);
+    writeVideos(file, headerLabels.videos);
+    writeVideoCrops(file, headerLabels.videos);
+    writeTracks(file, headerLabels.tracks);
+    writeSuggestions(file, headerLabels.suggestions, headerLabels.videos);
+    writeIdentities(file, headerLabels.identities);
+    writeSessions(
+      file,
+      headerLabels.sessions,
+      headerLabels.videos,
+      [],
+      headerLabels.identities,
+    );
+
+    createAppendableMatrixDataset(file, "frames", FRAMES_FIELDS, "<i8");
+    createAppendableMatrixDataset(file, "instances", INSTANCES_FIELDS, "<f8");
+    createAppendableMatrixDataset(file, "points", POINTS_FIELDS, "<f8");
+    createAppendableMatrixDataset(
+      file,
+      "pred_points",
+      PRED_POINTS_FIELDS,
+      "<f8",
+    );
+  } catch (e) {
+    // Don't leak the MEMFS file if header setup fails before a writer exists.
+    try {
+      file.close();
+    } catch {
+      // best-effort
+    }
+    try {
+      getH5FileSystem(module).unlink?.(memPath);
+    } catch {
+      // best-effort
+    }
+    throw e;
+  }
+
+  return new SlpStreamWriter(module, file, memPath, {
+    videos: header.videos,
+    skeletons: header.skeletons,
+    tracks: header.tracks ?? [],
+  });
+}
+
+/**
+ * Structural signature of a skeleton list — node names, edges, and symmetries —
+ * for cross-store equality. Instances from every store are read back against the
+ * combined (store 0's) skeleton, so topology must match, not just node names.
+ */
+function skeletonSignature(skeletons: Skeleton[]): string {
+  return JSON.stringify(
+    skeletons.map((s) => ({
+      nodes: s.nodeNames,
+      edges: s.edges.map((e) => [e.source.name, e.destination.name]),
+      symmetries: s.symmetryNames,
+    })),
+  );
+}
+
+/**
+ * Merge N per-camera {@link LazyDataStore}s into one combined multi-video
+ * `.slp`, streaming each store's frames in bounded windows (peak memory ≪ the
+ * whole graph). The combined `videos` and `tracks` are the concatenation of the
+ * stores' (video index and track index remapped accordingly); all stores must
+ * share a structurally-identical skeleton list (the multi-camera case), which
+ * becomes the combined skeleton set. Session graph / identities / suggestions /
+ * provenance for the combined file are supplied via `options`.
+ *
+ * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
+ */
+export interface MergeStoresOptions {
+  sessions?: RecordingSession[];
+  identities?: Identity[];
+  suggestions?: SuggestionFrame[];
+  provenance?: Record<string, unknown>;
+  windowFrames?: number;
+}
+
+/**
+ * Validate the stores share a skeleton, open a writer over the concatenated
+ * videos/tracks, and append every store (windowed) with cumulative offsets.
+ * Returns the OPEN writer — the caller finalizes via `close()` (bytes) or
+ * `writeToSink()` (streamed output). On error the partial file is disposed.
+ */
+async function buildMergedWriter(
+  stores: LazyDataStore[],
+  options?: MergeStoresOptions,
+): Promise<SlpStreamWriter> {
+  if (stores.length === 0) {
+    throw new Error("merging SLP stores requires at least one store");
+  }
+  const sig = skeletonSignature(stores[0].skeletons);
+  for (let i = 1; i < stores.length; i++) {
+    if (skeletonSignature(stores[i].skeletons) !== sig) {
+      throw new Error(
+        `merging SLP stores: store ${i} has a different skeleton than store 0; ` +
+          "all stores must share the same skeletons to merge into one file.",
+      );
+    }
+  }
+
+  const videos: Video[] = stores.flatMap((s) => s.videos);
+  const tracks: Track[] = stores.flatMap((s) => s.tracks);
+
+  const writer = await openSlpWriter({
+    skeletons: stores[0].skeletons,
+    videos,
+    tracks,
+    suggestions: options?.suggestions,
+    identities: options?.identities,
+    sessions: options?.sessions,
+    provenance: options?.provenance,
+  });
+
+  try {
+    let videoOffset = 0;
+    let trackOffset = 0;
+    for (const store of stores) {
+      writer.appendStore(store, {
+        videoIndexOffset: videoOffset,
+        trackOffset,
+        skeletonOffset: 0, // shared skeletons (validated)
+        windowFrames: options?.windowFrames,
+      });
+      videoOffset += store.videos.length;
+      trackOffset += store.tracks.length;
+    }
+  } catch (e) {
+    writer.dispose();
+    throw e;
+  }
+
+  return writer;
+}
+
+/**
+ * Merge N per-camera {@link LazyDataStore}s into one combined multi-video
+ * `.slp`, streaming each store's frames in bounded windows (peak memory ≪ the
+ * whole graph). The combined `videos` and `tracks` are the concatenation of the
+ * stores' (video index and track index remapped accordingly); all stores must
+ * share a structurally-identical skeleton list (the multi-camera case), which
+ * becomes the combined skeleton set. Session graph / identities / suggestions /
+ * provenance for the combined file are supplied via `options`.
+ *
+ * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
+ */
+export async function saveSlpMergedFromStores(
+  stores: LazyDataStore[],
+  options?: MergeStoresOptions,
+): Promise<Uint8Array> {
+  const writer = await buildMergedWriter(stores, options);
+  return writer.close();
+}
+
+/**
+ * Like {@link saveSlpMergedFromStores}, but streams the combined file to `sink`
+ * in chunks instead of returning bytes — so neither the input `Labels` graph nor
+ * the whole output is ever fully resident. Use with a browser
+ * `FileSystemWritableFileStream` (OPFS / save picker) or Node `fs.WriteStream`.
+ */
+export async function saveSlpMergedToSink(
+  stores: LazyDataStore[],
+  sink: SlpWriteSink,
+  options?: MergeStoresOptions & { chunkBytes?: number },
+): Promise<void> {
+  const writer = await buildMergedWriter(stores, options);
+  await writer.writeToSink(sink, { chunkBytes: options?.chunkBytes });
+}
+
 export async function saveSlpToBytes(
   labels: Labels,
   options?: SlpWriteOptions,
