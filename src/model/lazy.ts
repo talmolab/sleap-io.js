@@ -8,6 +8,7 @@ import {
 } from "./instance.js";
 import { Skeleton } from "./skeleton.js";
 import { Video } from "./video.js";
+import { buildVideoIdMap } from "./video-id-map.js";
 import type { Centroid } from "./centroid.js";
 import type { BoundingBox } from "./bbox.js";
 import type { SegmentationMask } from "./mask.js";
@@ -29,6 +30,13 @@ export class LazyDataStore {
   videos: Video[];
   formatId: number;
   negativeFrames: Set<string>;
+
+  /**
+   * Memoized raw-`frames.video`-id -> `videos` index map (see
+   * {@link buildVideoIdMap}). Lazily built on first frame access; rebuilt from
+   * scratch by a copied store since `copy()` does not carry it over.
+   */
+  private _videoIdToIndex?: Map<number, number>;
 
   // Per-frame annotation lookups: "videoIdx:frameIdx" -> annotation[]
   _centroidByFrame: Map<string, Centroid[]> = new Map();
@@ -123,6 +131,17 @@ export class LazyDataStore {
   }
 
   /**
+   * Resolve a raw `frames.video` id to its `videos` array index, applying the
+   * same remap the eager readers use so sparse / non-contiguous group ids
+   * (e.g. `video0`, `video2`) resolve to the correct video. Falls back to the
+   * raw id when unmapped — identical to `buildLabeledFrames`.
+   */
+  private videoIndexFor(rawVideoId: number): number {
+    this._videoIdToIndex ??= buildVideoIdMap(this.framesData, this.videos);
+    return this._videoIdToIndex.get(rawVideoId) ?? rawVideoId;
+  }
+
+  /**
    * Materialize a single LabeledFrame by index.
    */
   materializeFrame(frameIdx: number): LabeledFrame | null {
@@ -130,7 +149,7 @@ export class LazyDataStore {
     if (frameIdx < 0 || frameIdx >= frameIds.length) return null;
 
     const rawVideoId = Number(this.framesData.video?.[frameIdx] ?? 0);
-    const videoIndex = rawVideoId;
+    const videoIndex = this.videoIndexFor(rawVideoId);
     const frameIndex = Number(this.framesData.frame_idx?.[frameIdx] ?? 0);
     const instStart = Number(
       this.framesData.instance_id_start?.[frameIdx] ?? 0,
@@ -285,7 +304,8 @@ export class LazyDataStore {
       : (() => {
           let maxInst = 1;
           for (let i = 0; i < frameIds.length; i++) {
-            if (Number(frameVideos[i]) !== targetVideoIdx) continue;
+            if (this.videoIndexFor(Number(frameVideos[i])) !== targetVideoIdx)
+              continue;
             const count = Number(instEnds[i]) - Number(instStarts[i]);
             if (count > maxInst) maxInst = count;
           }
@@ -295,7 +315,8 @@ export class LazyDataStore {
     // Collect matching frame indices
     const matchingFrames: number[] = [];
     for (let i = 0; i < frameIds.length; i++) {
-      if (Number(frameVideos[i]) !== targetVideoIdx) continue;
+      if (this.videoIndexFor(Number(frameVideos[i])) !== targetVideoIdx)
+        continue;
       const fi = Number(frameIndices[i]);
       if (fi > maxFrameIdx) maxFrameIdx = fi;
       matchingFrames.push(i);
