@@ -391,6 +391,95 @@ describe("writeToSink / saveSlpMergedToSink — streamed output", () => {
   });
 });
 
+describe("(video, frameIdx) dedup across appendStore / appendFrames", () => {
+  /** Count of distinct (videoIndex, frameIdx) keys in a read-back Labels. */
+  function uniqueFrameKeys(labels: {
+    labeledFrames: LabeledFrame[];
+    videos: unknown[];
+  }): number {
+    return new Set(
+      labels.labeledFrames.map(
+        (f) => `${labels.videos.indexOf(f.video)}:${f.frameIdx}`,
+      ),
+    ).size;
+  }
+
+  it("overlay-first wins: appendFrames then appendStore yields one frame per key", async () => {
+    // A store of predicted frames 0,1,2 on one video.
+    const video = new Video({ filename: "dedup.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const labels = new Labels({
+      labeledFrames: [0, 1, 2].map(
+        (fx) =>
+          new LabeledFrame({
+            video,
+            frameIdx: fx,
+            instances: [
+              PredictedInstance.fromArray([[fx * 10, fx * 10]], skeleton, 0.5),
+            ],
+          }),
+      ),
+    });
+    const lazy = await readSlpLazy(
+      new Uint8Array(await saveSlpToBytes(labels)).buffer,
+      { openVideos: false },
+    );
+    const store = lazy._lazyDataStore!;
+
+    // Overlay a USER instance on frame 1 (same reconstructed video/skeleton).
+    const overlay = new LabeledFrame({
+      video: store.videos[0],
+      frameIdx: 1,
+      instances: [
+        new Instance({
+          points: { A: [999, 999] },
+          skeleton: store.skeletons[0],
+        }),
+      ],
+    });
+
+    const writer = await openSlpWriter({
+      skeletons: store.skeletons,
+      videos: store.videos,
+      tracks: store.tracks,
+    });
+    writer.appendFrames([overlay]); // overlay first...
+    writer.appendStore(store); // ...bulk second (frame 1 is skipped)
+    const rt = await readSlp(new Uint8Array(writer.close()).buffer, {
+      openVideos: false,
+    });
+
+    // Exactly one frame per key, no duplicates.
+    expect(rt.labeledFrames.length).toBe(3);
+    expect(uniqueFrameKeys(rt)).toBe(3);
+
+    const byIdx = new Map(rt.labeledFrames.map((f) => [f.frameIdx, f]));
+    expect([...byIdx.keys()].sort((a, b) => a - b)).toEqual([0, 1, 2]);
+
+    // Frame 1 is the OVERLAY (user instance at (999,999)), not the store's pred.
+    const f1 = byIdx.get(1)!;
+    expect(f1.instances).toHaveLength(1);
+    expect(f1.instances[0].constructor.name).not.toContain("Predicted");
+    expect(f1.instances[0].points[0].xy).toEqual([999, 999]);
+
+    // Frames 0 and 2 come from the store (predicted), intact.
+    expect(byIdx.get(0)!.instances[0].constructor.name).toContain("Predicted");
+    expect(byIdx.get(0)!.instances[0].points[0].xy).toEqual([0, 0]);
+    expect(byIdx.get(2)!.instances[0].points[0].xy).toEqual([20, 20]);
+  });
+
+  it("keeps merge round-trips duplicate-free (frame count == unique keys)", async () => {
+    const bytes = await saveSlpMergedFromStores([
+      await store(FIX),
+      await store(FIX),
+    ]);
+    const merged = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
+    expect(uniqueFrameKeys(merged)).toBe(merged.labeledFrames.length);
+  });
+});
+
 describe("annotation overlays (masks / rois)", () => {
   it("carries a store's per-frame masks + rois through appendStore", async () => {
     // Build a Labels with a frame-bound mask + roi, save eager, read lazy so the

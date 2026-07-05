@@ -683,6 +683,11 @@ export class SlpStreamWriter {
   private predPointRows = 0;
   private negativeFrames = new Set<string>();
   private closed = false;
+  // Combined `${videoIndex}:${frameIdx}` keys already written, for dedup across
+  // appendStore/appendFrames. First write wins: a later append that repeats a
+  // key skips that frame entirely. Append overlays (appendFrames) BEFORE bulk
+  // stores so the overlay's frame is the one kept. See #208 follow-up.
+  private writtenFrames = new Set<string>();
 
   // Per-frame annotations (masks/rois/bboxes/centroids/label-images) accumulated
   // across appends and written once at finalize — they're far fewer than pose
@@ -723,6 +728,13 @@ export class SlpStreamWriter {
    * copied verbatim from the store's columns — no `Instance`/`LabeledFrame`
    * object is constructed. The store's frame/instance/point tables are assumed
    * ordered by frame (the SLP on-disk invariant).
+   *
+   * A `(video, frameIdx)` already written (by an earlier append) is SKIPPED — so
+   * append overlays via {@link appendFrames} first for them to win. Frame /
+   * instance / point ids are assigned from running OUTPUT counters (not the
+   * store's positions), so skips leave no gaps; cross-references
+   * (`from_predicted`, annotation instance links) are remapped through the
+   * skipped ranges. `store` must not itself contain duplicate `(video, frameIdx)`.
    */
   appendStore(store: LazyDataStore, opts?: AppendStoreOptions): void {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
@@ -741,9 +753,9 @@ export class SlpStreamWriter {
     const videoIdMap = buildVideoIdMap(fd, store.videos);
     const remapVideo = (raw: number) => vOff + (videoIdMap.get(raw) ?? raw);
 
-    // Per-store bases: within the store, tables are 0-based, so a store row `r`
-    // maps to global `base + r`. Appends advance the running counters in lock-step
-    // with these bases, so instance/point ranges stay consistent across windows.
+    // Per-store OUTPUT bases: the first output row/instance/point this store
+    // contributes. Ids are `base + <running output counter>`, so skipped frames
+    // leave no gaps.
     const frameBase = this.frameRows;
     const instBase = this.instRows;
     const pointBase = this.pointRows;
@@ -759,11 +771,38 @@ export class SlpStreamWriter {
       qc = store.predPointsData.complete,
       qs = store.predPointsData.score;
 
-    // Running counts of user / predicted points emitted for THIS store, across
-    // all its windows. Points are re-packed into frame-iteration order, so an
-    // instance's new point range is its position in that packed stream — NOT the
-    // store's original `point_id_start` (which need not be monotonic in frame
-    // order for a reader-valid store, and would then misattribute points). #208.
+    // Pre-pass: the instance ranges of frames that will be SKIPPED (their
+    // `(video, frameIdx)` was already written). Sorted by construction (frames
+    // are in order). `outIdxOf` maps a store instance index to its output
+    // position — identity when nothing is skipped, so the no-overlap path is
+    // unchanged — or `null` when that instance falls in a skipped frame.
+    const skippedRanges: Array<[number, number]> = [];
+    const skippedKeys = new Set<string>();
+    for (let r = 0; r < nFrames; r++) {
+      const key = `${remapVideo(numAt(fd.video, r))}:${numAt(fd.frame_idx, r)}`;
+      if (this.writtenFrames.has(key)) {
+        skippedRanges.push([
+          numAt(fd.instance_id_start, r),
+          numAt(fd.instance_id_end, r),
+        ]);
+        skippedKeys.add(key);
+      }
+    }
+    const outIdxOf = (idx: number): number | null => {
+      if (skippedRanges.length === 0) return idx;
+      let shift = 0;
+      for (const [s, e] of skippedRanges) {
+        if (idx < s) break; // ranges sorted; the rest are past idx
+        if (idx < e) return null; // idx is inside a skipped frame → dangling
+        shift += e - s;
+      }
+      return idx - shift;
+    };
+
+    // Running OUTPUT counters for this store (across all its windows): emitted
+    // frames, instances, and re-packed user / predicted points.
+    let outFrames = 0;
+    let outInsts = 0;
     let userWritten = 0;
     let predWritten = 0;
 
@@ -772,7 +811,8 @@ export class SlpStreamWriter {
         const wEnd = Math.min(wStart + windowFrames, nFrames);
         const wFrames = wEnd - wStart;
 
-        // Pass 1: size the window's instance / user-point / pred-point buffers.
+        // Pass 1: size the window's buffers at max (skips only shrink usage; the
+        // actually-filled slice is written below).
         let nInst = 0;
         let nUserPts = 0;
         let nPredPts = 0;
@@ -797,19 +837,24 @@ export class SlpStreamWriter {
         let upi = 0;
         let ppi = 0;
 
-        // Pass 2: emit rows, rebasing every cross-reference onto the store bases.
+        // Pass 2: emit rows for non-skipped frames, assigning ids from the
+        // running output counters.
         for (let r = wStart; r < wEnd; r++) {
-          const newFrameId = frameBase + r;
           const combinedVideo = remapVideo(numAt(fd.video, r));
           const frameIdx = numAt(fd.frame_idx, r);
+          const key = `${combinedVideo}:${frameIdx}`;
           const iStart = numAt(fd.instance_id_start, r);
           const iEnd = numAt(fd.instance_id_end, r);
 
+          if (this.writtenFrames.has(key)) continue; // dedup: first write wins
+
+          const newFrameId = frameBase + outFrames;
+          outFrames++;
           framesFlat[fi++] = newFrameId;
           framesFlat[fi++] = combinedVideo;
           framesFlat[fi++] = frameIdx;
-          framesFlat[fi++] = instBase + iStart;
-          framesFlat[fi++] = instBase + iEnd;
+          framesFlat[fi++] = instBase + outInsts; // instance range start
+          framesFlat[fi++] = instBase + outInsts + (iEnd - iStart); // end
 
           if (store.negativeFrames.has(`${numAt(fd.video, r)}:${frameIdx}`)) {
             this.negativeFrames.add(`${combinedVideo}:${frameIdx}`);
@@ -821,13 +866,14 @@ export class SlpStreamWriter {
             const ptEnd = numAt(idn.point_id_end, j);
             const trk = numAt(idn.track, j, -1);
             const fp = numAt(idn.from_predicted, j, -1);
+            const fpOut = fp >= 0 ? outIdxOf(fp) : null;
 
-            instFlat[ii++] = instBase + j; // instance_id
+            instFlat[ii++] = instBase + outInsts; // instance_id
             instFlat[ii++] = type; // instance_type
             instFlat[ii++] = newFrameId; // frame_id
             instFlat[ii++] = numAt(idn.skeleton, j) + kOff; // skeleton
             instFlat[ii++] = trk >= 0 ? trk + tOff : -1; // track
-            instFlat[ii++] = fp >= 0 ? instBase + fp : -1; // from_predicted
+            instFlat[ii++] = fpOut != null ? instBase + fpOut : -1; // from_predicted
             instFlat[ii++] = numAt(idn.score, j); // score
             if (type === 1) {
               // point_id range = position in the re-packed pred-point stream.
@@ -853,49 +899,62 @@ export class SlpStreamWriter {
               userWritten += ptEnd - ptStart;
             }
             instFlat[ii++] = numAt(idn.tracking_score, j); // tracking_score
+            outInsts++;
           }
+          this.writtenFrames.add(key);
         }
 
+        // Write only the actually-filled slice of each (max-sized) buffer.
+        const emFrames = fi / 5;
+        const emInsts = ii / 10;
+        const emUserPts = upi / 4;
+        const emPredPts = ppi / 5;
         appendMatrixRows(
           this.file,
           "frames",
-          framesFlat,
-          wFrames,
+          framesFlat.subarray(0, fi),
+          emFrames,
           5,
           this.frameRows,
         );
-        this.frameRows += wFrames;
+        this.frameRows += emFrames;
         appendMatrixRows(
           this.file,
           "instances",
-          instFlat,
-          nInst,
+          instFlat.subarray(0, ii),
+          emInsts,
           10,
           this.instRows,
         );
-        this.instRows += nInst;
+        this.instRows += emInsts;
         appendMatrixRows(
           this.file,
           "points",
-          userPtsFlat,
-          nUserPts,
+          userPtsFlat.subarray(0, upi),
+          emUserPts,
           4,
           this.pointRows,
         );
-        this.pointRows += nUserPts;
+        this.pointRows += emUserPts;
         appendMatrixRows(
           this.file,
           "pred_points",
-          predPtsFlat,
-          nPredPts,
+          predPtsFlat.subarray(0, ppi),
+          emPredPts,
           5,
           this.predPointRows,
         );
-        this.predPointRows += nPredPts;
+        this.predPointRows += emPredPts;
       }
       // Per-frame + undistributed annotations (masks/rois/…), video + instance
-      // remapped, written once at finalize.
-      this.collectStoreAnnotations(store, vOff, instBase);
+      // remapped, skipping any that belong to a skipped (overlaid) frame.
+      this.collectStoreAnnotations(
+        store,
+        vOff,
+        instBase,
+        outIdxOf,
+        skippedKeys,
+      );
     } catch (e) {
       // A mid-write failure leaves a partial file — release it rather than leak.
       this.dispose();
@@ -929,9 +988,12 @@ export class SlpStreamWriter {
       const links: Array<[number, PredictedInstance]> = [];
 
       for (const frame of frames) {
+        const videoIndex = Math.max(0, this.videos.indexOf(frame.video));
+        const key = `${videoIndex}:${frame.frameIdx}`;
+        if (this.writtenFrames.has(key)) continue; // dedup: first write wins
+        this.writtenFrames.add(key);
         const localFrameId = framesRows.length;
         const instanceStart = instRows.length;
-        const videoIndex = Math.max(0, this.videos.indexOf(frame.video));
         for (const inst of frame.instances) {
           const localInstId = instRows.length;
           localId.set(inst as Instance, localInstId);
@@ -1077,16 +1139,23 @@ export class SlpStreamWriter {
 
   /**
    * Collect a store's per-frame + undistributed annotations, remapping the
-   * video index (`+vOff`) and the instance link (`+instBase`) onto the combined
-   * file. The store's map keys are `"videoIndex:frameIdx"` (array-index video).
+   * video index (`+vOff`) and the instance link (through `outIdxOf`, `+instBase`)
+   * onto the combined file. Annotations on a SKIPPED (overlaid) frame — whose
+   * combined `"vid:frameIdx"` key is in `skippedKeys` — are dropped. The store's
+   * map keys are `"videoIndex:frameIdx"` (array-index video).
    */
   private collectStoreAnnotations(
     store: LazyDataStore,
     vOff: number,
     instBase: number,
+    outIdxOf: (idx: number) => number | null,
+    skippedKeys: Set<string>,
   ): void {
-    const resolve = (idx: number | null | undefined): number =>
-      idx != null && idx >= 0 ? instBase + idx : -1;
+    const resolve = (idx: number | null | undefined): number => {
+      if (idx == null || idx < 0) return -1;
+      const o = outIdxOf(idx);
+      return o != null ? instBase + o : -1;
+    };
     const fromMap = <T extends AnnLinked>(
       map: Map<string, T[]>,
       bucket: AnnBucket<T>,
@@ -1095,6 +1164,7 @@ export class SlpStreamWriter {
         const sep = key.indexOf(":");
         const vid = vOff + Number(key.slice(0, sep));
         const fidx = Number(key.slice(sep + 1));
+        if (skippedKeys.has(`${vid}:${fidx}`)) continue; // overlaid frame wins
         for (const ann of list) {
           bucket.anns.push(ann);
           bucket.ctx.push([vid, fidx]);
@@ -1110,6 +1180,7 @@ export class SlpStreamWriter {
       const sep = key.indexOf(":");
       const vid = vOff + Number(key.slice(0, sep));
       const fidx = Number(key.slice(sep + 1));
+      if (skippedKeys.has(`${vid}:${fidx}`)) continue;
       for (const li of list) {
         this.pendingLabelImages.anns.push(li);
         this.pendingLabelImages.ctx.push([vid, fidx]);
