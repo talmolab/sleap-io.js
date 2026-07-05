@@ -61,6 +61,7 @@ import {
   SkeletonMatchMethod,
   SkeletonMatcher,
   SkeletonMismatchError,
+  SlpStreamWriter,
   StreamingH5File,
   StreamingHdf5VideoBackend,
   SuggestionFrame,
@@ -138,6 +139,7 @@ import {
   normalizeLabelIds,
   openH5File,
   openH5Worker,
+  openSlpWriter,
   openStreamingH5,
   parseCocoJson,
   pickColor,
@@ -160,6 +162,8 @@ import {
   saveAnalysisH5,
   saveLabelsCsv,
   saveSlp,
+  saveSlpMergedFromStores,
+  saveSlpMergedToSink,
   saveSlpSet,
   saveSlpToBytes,
   setDefaultFsResolver,
@@ -174,7 +178,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-WB6SWNPL.js";
+} from "./chunk-M65RB7KH.js";
 import {
   Edge,
   Instance,
@@ -3995,6 +3999,7 @@ export {
   SkeletonMatchMethod,
   SkeletonMatcher,
   SkeletonMismatchError,
+  SlpStreamWriter,
   StreamingH5File,
   StreamingHdf5VideoBackend,
   SuggestionFrame,
@@ -4110,6 +4115,7 @@ export {
   normalizeLabelIds,
   openGdrive,
   openH5Worker,
+  openSlpWriter,
   openStreamingH5,
   parseCocoJson,
   parseDataYaml,
@@ -4160,6 +4166,8 @@ export {
   saveImage,
   saveLabelsCsv,
   saveSlp,
+  saveSlpMergedFromStores,
+  saveSlpMergedToSink,
   saveSlpSet,
   saveSlpToBytes,
   saveUltralytics,
