@@ -157,6 +157,7 @@ import {
   saveLabelsCsv,
   saveSlp,
   saveSlpMergedFromStores,
+  saveSlpMergedToSink,
   saveSlpSet,
   saveSlpToBytes,
   setFsResolver,
@@ -168,7 +169,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-X3NECUCN.js";
+} from "./chunk-ARNEREHW.js";
 import {
   Edge,
   Instance,
@@ -414,6 +415,7 @@ export {
   saveLabelsCsv,
   saveSlp,
   saveSlpMergedFromStores,
+  saveSlpMergedToSink,
   saveSlpSet,
   saveSlpToBytes,
   setFsResolver,

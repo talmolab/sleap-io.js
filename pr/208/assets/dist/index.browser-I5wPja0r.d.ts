@@ -3612,6 +3612,17 @@ interface AppendStoreOptions {
     windowFrames?: number;
 }
 /**
+ * A chunked byte sink for {@link SlpStreamWriter.writeToSink} — the output-side
+ * companion to the append writer. Satisfied by a browser
+ * `FileSystemWritableFileStream` (OPFS / save-file-picker) and by Node's
+ * `fs.WriteStream`, so the finished file need not be resident as one big
+ * `Uint8Array`.
+ */
+interface SlpWriteSink {
+    write(chunk: Uint8Array): unknown | Promise<unknown>;
+    close?(): unknown | Promise<unknown>;
+}
+/**
  * Incremental SLP writer. Open with {@link openSlpWriter} (which writes the
  * header and creates the resizable pose datasets), append one or more
  * {@link LazyDataStore}s with {@link appendStore}, then {@link close} to get the
@@ -3631,6 +3642,11 @@ declare class SlpStreamWriter {
     private predPointRows;
     private negativeFrames;
     private closed;
+    private pendingRois;
+    private pendingMasks;
+    private pendingBboxes;
+    private pendingCentroids;
+    private pendingLabelImages;
     /** @internal — use {@link openSlpWriter}. */
     constructor(module: any, file: any, memPath: string, header: {
         videos: Video[];
@@ -3655,8 +3671,40 @@ declare class SlpStreamWriter {
      * windowed. Interleave freely with {@link appendStore}.
      */
     appendFrames(frames: LabeledFrame[]): void;
+    /**
+     * Collect a store's per-frame + undistributed annotations, remapping the
+     * video index (`+vOff`) and the instance link (`+instBase`) onto the combined
+     * file. The store's map keys are `"videoIndex:frameIdx"` (array-index video).
+     */
+    private collectStoreAnnotations;
+    /**
+     * Collect a materialized frame's annotations, resolving each annotation's live
+     * `instance` to its GLOBAL index via the batch's local map (`+instBase`).
+     * Annotations without a live `instance` in the batch drop their link (-1).
+     */
+    private collectFrameAnnotations;
+    /**
+     * Write all accumulated annotation datasets. The per-type writers read the
+     * instance link off each object, so the resolved GLOBAL index is applied via a
+     * contained mutate→write→restore (source annotations are left unchanged).
+     */
+    private writePendingAnnotations;
+    /** Write pending `negative_frames` and close the HDF5 file (shared finalize). */
+    private finalizeFile;
     /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
     close(): Uint8Array;
+    /**
+     * Finalize and stream the file to `sink` in chunks, then unlink it — the
+     * output-side companion to {@link appendStore}, so the finished file never has
+     * to be resident as one big `Uint8Array` on the JS side. Reads the in-memory
+     * HDF5 file with chunked FS reads when available (falling back to a single
+     * read). `sink.close()` is awaited if present.
+     *
+     * @param opts.chunkBytes Chunk size (default 8 MiB).
+     */
+    writeToSink(sink: SlpWriteSink, opts?: {
+        chunkBytes?: number;
+    }): Promise<void>;
     /**
      * Release the underlying HDF5 file WITHOUT producing bytes — call to clean up
      * a writer that will not be finished (e.g. after an error). Idempotent and
@@ -3682,13 +3730,34 @@ declare function openSlpWriter(header: SlpWriteHeader): Promise<SlpStreamWriter>
  *
  * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
  */
-declare function saveSlpMergedFromStores(stores: LazyDataStore[], options?: {
+interface MergeStoresOptions {
     sessions?: RecordingSession[];
     identities?: Identity[];
     suggestions?: SuggestionFrame[];
     provenance?: Record<string, unknown>;
     windowFrames?: number;
-}): Promise<Uint8Array>;
+}
+/**
+ * Merge N per-camera {@link LazyDataStore}s into one combined multi-video
+ * `.slp`, streaming each store's frames in bounded windows (peak memory ≪ the
+ * whole graph). The combined `videos` and `tracks` are the concatenation of the
+ * stores' (video index and track index remapped accordingly); all stores must
+ * share a structurally-identical skeleton list (the multi-camera case), which
+ * becomes the combined skeleton set. Session graph / identities / suggestions /
+ * provenance for the combined file are supplied via `options`.
+ *
+ * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
+ */
+declare function saveSlpMergedFromStores(stores: LazyDataStore[], options?: MergeStoresOptions): Promise<Uint8Array>;
+/**
+ * Like {@link saveSlpMergedFromStores}, but streams the combined file to `sink`
+ * in chunks instead of returning bytes — so neither the input `Labels` graph nor
+ * the whole output is ever fully resident. Use with a browser
+ * `FileSystemWritableFileStream` (OPFS / save picker) or Node `fs.WriteStream`.
+ */
+declare function saveSlpMergedToSink(stores: LazyDataStore[], sink: SlpWriteSink, options?: MergeStoresOptions & {
+    chunkBytes?: number;
+}): Promise<void>;
 declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Promise<Uint8Array>;
 
 /**
@@ -4987,4 +5056,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { MergeResult as $, openH5Worker as A, BoundingBox as B, Centroid as C, DEFAULT_MAX_BYTES as D, isStreamingSupported as E, type StreamingH5Source as F, readSlpStreaming as G, SkeletonMatchMethod as H, type ImageBytesReader as I, InstanceMatchMethod as J, VideoMatchMethod as K, Labels as L, FrameStrategy as M, ErrorMode as N, SkeletonMatcher as O, type PaletteName as P, InstanceMatcher as Q, ROI as R, SegmentationMask as S, TrackMatchMethod as T, UserROI as U, Video as V, TrackMatcher as W, VideoMatcher as X, ConflictResolution as Y, MergeError as Z, SkeletonMismatchError as _, LabeledFrame as a, getCentroidSkeleton as a$, MatchResult as a0, MergeProgressBar as a1, STRUCTURE_SKELETON_MATCHER as a2, SUBSET_SKELETON_MATCHER as a3, OVERLAP_SKELETON_MATCHER as a4, DUPLICATE_MATCHER as a5, IOU_MATCHER as a6, IDENTITY_INSTANCE_MATCHER as a7, NAME_TRACK_MATCHER as a8, IDENTITY_TRACK_MATCHER as a9, cloneRecordingSession as aA, makeCameraFromDict as aB, Identity as aC, Instance3D as aD, PredictedInstance3D as aE, LazyDataStore as aF, LazyFrameList as aG, _registerMaskFactory as aH, AnnotationType as aI, type Geometry as aJ, type ROIOptions as aK, rasterizeGeometry as aL, encodeWkb as aM, decodeWkb as aN, PredictedROI as aO, encodeRle as aP, decodeRle as aQ, resizeNearest as aR, traceMaskContours as aS, groupRingsIntoPolygons as aT, type SegmentationMaskOptions as aU, type UserSegmentationMaskOptions as aV, UserSegmentationMask as aW, PredictedSegmentationMask as aX, type BoundingBoxOptions as aY, UserBoundingBox as aZ, PredictedBoundingBox as a_, AUTO_VIDEO_MATCHER as aa, PATH_VIDEO_MATCHER as ab, BASENAME_VIDEO_MATCHER as ac, IMAGE_DEDUP_VIDEO_MATCHER as ad, SHAPE_VIDEO_MATCHER as ae, setFsResolver as af, type FsResolver as ag, type MergeStrategy as ah, _relinkFromPredicted as ai, _annotationCentroidXy as aj, _findAnnotationMatches as ak, _findAnnotationLinkMatches as al, _resolveMergedIsNegative as am, EXISTS_TTL_MS as an, type CropOptions as ao, resolveCropRect as ap, type VideoBackendErrorKind as aq, type VideoBackendError as ar, SuggestionFrame as as, rodriguesTransformation as at, Camera as au, CameraGroup as av, InstanceGroup as aw, FrameGroup as ax, RecordingSession as ay, injectSessionFrameResolver as az, LabelsSet as b, type GeoJSONFeatureCollection as b$, CENTROID_SKELETON as b0, type CentroidOptions as b1, UserCentroid as b2, PredictedCentroid as b3, type LabelImageObjectInfo as b4, type LabelImageOptions as b5, UserLabelImage as b6, PredictedLabelImage as b7, normalizeLabelIds as b8, type VideoFrame as b9, type AppendStoreOptions as bA, isAnalysisH5File as bB, labelsToCsv as bC, saveLabelsCsv as bD, type CsvExportOptions as bE, URL_SCHEMES as bF, CLOUD_SCHEMES as bG, GDRIVE_HOSTS as bH, SENSITIVE_HEADERS as bI, SENSITIVE_QUERY_PARAMS as bJ, RETRYABLE_STATUSES as bK, isUrl as bL, isGdriveUrl as bM, redactUrl as bN, redactedCauseSummary as bO, RemoteIOError as bP, type ResolvedUrl as bQ, resolveUrl as bR, statusToMessage as bS, raiseRemote as bT, identityHeaders as bU, stripCrossOriginHeaders as bV, withRetries as bW, parseRetryAfterMs as bX, fetchRetrying as bY, headOrRangeProbe as bZ, type GeoJSONFeature as b_, type GetFrameOptions as ba, type VideoBackend as bb, Mp4BoxVideoBackend as bc, type MediaBunnyOptions as bd, MediaBunnyVideoBackend as be, StreamingHdf5VideoBackend as bf, type ImageVideoOptions as bg, computePrefetchWindow as bh, ImageVideoBackend as bi, loadSlp as bj, saveSlp as bk, loadAnalysisH5 as bl, saveAnalysisH5 as bm, loadSlpSet as bn, saveSlpSet as bo, loadVideo as bp, loadLabelImages as bq, setLabelImageFileReader as br, type PagesAs as bs, type LoadLabelImagesOptions as bt, type LabelImageFileReader as bu, saveSlpToBytes as bv, openSlpWriter as bw, SlpStreamWriter as bx, saveSlpMergedFromStores as by, type SlpWriteHeader as bz, type ReadCocoOptions as c, cropPoints as c$, roisToGeoJSON as c0, roisFromGeoJSON as c1, writeGeoJSON as c2, readGeoJSON as c3, type CocoCategory as c4, type CocoImage as c5, type CocoRle as c6, type CocoSegmentation as c7, type CocoAnnotation as c8, type CocoJson as c9, type Overlay as cA, type VideoOverlay as cB, NAMED_COLORS as cC, PALETTES as cD, getPalette as cE, resolveColor as cF, rgbToCSS as cG, determineColorScheme as cH, drawCircle as cI, drawSquare as cJ, drawDiamond as cK, drawTriangle as cL, drawCross as cM, drawTrails as cN, getMarkerFunction as cO, MARKER_FUNCTIONS as cP, type DrawTrailsOptions as cQ, resolveTrailNode as cR, computeTrails as cS, nTrailPaletteColors as cT, collectTracks as cU, type TrailTarget as cV, type Trail as cW, RenderContext as cX, InstanceContext as cY, drawMasks as cZ, drawLabelImage as c_, isCocoData as ca, parseCocoJson as cb, createSkeletonFromCategory as cc, decodeKeypoints as cd, decodeCompressedRleCounts as ce, decodeCocoRle as cf, decodeSegmentation as cg, readCoco as ch, readCocoSet as ci, type LabelsDict as cj, toDict as ck, fromDict as cl, toNumpy as cm, fromNumpy as cn, labelsFromNumpy as co, decodeYamlSkeleton as cp, encodeYamlSkeleton as cq, readSkeletonJson as cr, writeSkeletonJson as cs, readTrainingConfigSkeletons as ct, readTrainingConfigSkeleton as cu, isTrainingConfig as cv, type RGBA as cw, type ColorSpec as cx, type ColorScheme as cy, type MarkerShape as cz, type RenderOptions as d, uncropPoints as d0, type CropRect as d1, type FlatPoints as d2, type PointPairs as d3, cropFrame as d4, type FrameLike as d5, type RawFrame as d6, type Fill as d7, clampAlpha as d8, pickColor as d9, type VideoOptions as e, type RGB as f, LabelImage as g, type RawLabelImage as h, getImageBytesReader as i, SeqVideoBackend as j, SeqHeader as k, SeqIndex as l, BlobByteSource as m, type ByteSource as n, createVideoBackend as o, UnsupportedVideoFormatError as p, type VideoBackendType as q, CropVideoBackend as r, setImageBytesReader as s, type CropWrapOptions as t, parseGdrive as u, urlFromConfirmation as v, checkDownloadHost as w, openGdrive as x, StreamingH5File as y, openStreamingH5 as z };
+export { MergeResult as $, openH5Worker as A, BoundingBox as B, Centroid as C, DEFAULT_MAX_BYTES as D, isStreamingSupported as E, type StreamingH5Source as F, readSlpStreaming as G, SkeletonMatchMethod as H, type ImageBytesReader as I, InstanceMatchMethod as J, VideoMatchMethod as K, Labels as L, FrameStrategy as M, ErrorMode as N, SkeletonMatcher as O, type PaletteName as P, InstanceMatcher as Q, ROI as R, SegmentationMask as S, TrackMatchMethod as T, UserROI as U, Video as V, TrackMatcher as W, VideoMatcher as X, ConflictResolution as Y, MergeError as Z, SkeletonMismatchError as _, LabeledFrame as a, getCentroidSkeleton as a$, MatchResult as a0, MergeProgressBar as a1, STRUCTURE_SKELETON_MATCHER as a2, SUBSET_SKELETON_MATCHER as a3, OVERLAP_SKELETON_MATCHER as a4, DUPLICATE_MATCHER as a5, IOU_MATCHER as a6, IDENTITY_INSTANCE_MATCHER as a7, NAME_TRACK_MATCHER as a8, IDENTITY_TRACK_MATCHER as a9, cloneRecordingSession as aA, makeCameraFromDict as aB, Identity as aC, Instance3D as aD, PredictedInstance3D as aE, LazyDataStore as aF, LazyFrameList as aG, _registerMaskFactory as aH, AnnotationType as aI, type Geometry as aJ, type ROIOptions as aK, rasterizeGeometry as aL, encodeWkb as aM, decodeWkb as aN, PredictedROI as aO, encodeRle as aP, decodeRle as aQ, resizeNearest as aR, traceMaskContours as aS, groupRingsIntoPolygons as aT, type SegmentationMaskOptions as aU, type UserSegmentationMaskOptions as aV, UserSegmentationMask as aW, PredictedSegmentationMask as aX, type BoundingBoxOptions as aY, UserBoundingBox as aZ, PredictedBoundingBox as a_, AUTO_VIDEO_MATCHER as aa, PATH_VIDEO_MATCHER as ab, BASENAME_VIDEO_MATCHER as ac, IMAGE_DEDUP_VIDEO_MATCHER as ad, SHAPE_VIDEO_MATCHER as ae, setFsResolver as af, type FsResolver as ag, type MergeStrategy as ah, _relinkFromPredicted as ai, _annotationCentroidXy as aj, _findAnnotationMatches as ak, _findAnnotationLinkMatches as al, _resolveMergedIsNegative as am, EXISTS_TTL_MS as an, type CropOptions as ao, resolveCropRect as ap, type VideoBackendErrorKind as aq, type VideoBackendError as ar, SuggestionFrame as as, rodriguesTransformation as at, Camera as au, CameraGroup as av, InstanceGroup as aw, FrameGroup as ax, RecordingSession as ay, injectSessionFrameResolver as az, LabelsSet as b, fetchRetrying as b$, CENTROID_SKELETON as b0, type CentroidOptions as b1, UserCentroid as b2, PredictedCentroid as b3, type LabelImageObjectInfo as b4, type LabelImageOptions as b5, UserLabelImage as b6, PredictedLabelImage as b7, normalizeLabelIds as b8, type VideoFrame as b9, type SlpWriteHeader as bA, type AppendStoreOptions as bB, type SlpWriteSink as bC, type MergeStoresOptions as bD, isAnalysisH5File as bE, labelsToCsv as bF, saveLabelsCsv as bG, type CsvExportOptions as bH, URL_SCHEMES as bI, CLOUD_SCHEMES as bJ, GDRIVE_HOSTS as bK, SENSITIVE_HEADERS as bL, SENSITIVE_QUERY_PARAMS as bM, RETRYABLE_STATUSES as bN, isUrl as bO, isGdriveUrl as bP, redactUrl as bQ, redactedCauseSummary as bR, RemoteIOError as bS, type ResolvedUrl as bT, resolveUrl as bU, statusToMessage as bV, raiseRemote as bW, identityHeaders as bX, stripCrossOriginHeaders as bY, withRetries as bZ, parseRetryAfterMs as b_, type GetFrameOptions as ba, type VideoBackend as bb, Mp4BoxVideoBackend as bc, type MediaBunnyOptions as bd, MediaBunnyVideoBackend as be, StreamingHdf5VideoBackend as bf, type ImageVideoOptions as bg, computePrefetchWindow as bh, ImageVideoBackend as bi, loadSlp as bj, saveSlp as bk, loadAnalysisH5 as bl, saveAnalysisH5 as bm, loadSlpSet as bn, saveSlpSet as bo, loadVideo as bp, loadLabelImages as bq, setLabelImageFileReader as br, type PagesAs as bs, type LoadLabelImagesOptions as bt, type LabelImageFileReader as bu, saveSlpToBytes as bv, openSlpWriter as bw, SlpStreamWriter as bx, saveSlpMergedFromStores as by, saveSlpMergedToSink as bz, type ReadCocoOptions as c, InstanceContext as c$, headOrRangeProbe as c0, type GeoJSONFeature as c1, type GeoJSONFeatureCollection as c2, roisToGeoJSON as c3, roisFromGeoJSON as c4, writeGeoJSON as c5, readGeoJSON as c6, type CocoCategory as c7, type CocoImage as c8, type CocoRle as c9, type ColorSpec as cA, type ColorScheme as cB, type MarkerShape as cC, type Overlay as cD, type VideoOverlay as cE, NAMED_COLORS as cF, PALETTES as cG, getPalette as cH, resolveColor as cI, rgbToCSS as cJ, determineColorScheme as cK, drawCircle as cL, drawSquare as cM, drawDiamond as cN, drawTriangle as cO, drawCross as cP, drawTrails as cQ, getMarkerFunction as cR, MARKER_FUNCTIONS as cS, type DrawTrailsOptions as cT, resolveTrailNode as cU, computeTrails as cV, nTrailPaletteColors as cW, collectTracks as cX, type TrailTarget as cY, type Trail as cZ, RenderContext as c_, type CocoSegmentation as ca, type CocoAnnotation as cb, type CocoJson as cc, isCocoData as cd, parseCocoJson as ce, createSkeletonFromCategory as cf, decodeKeypoints as cg, decodeCompressedRleCounts as ch, decodeCocoRle as ci, decodeSegmentation as cj, readCoco as ck, readCocoSet as cl, type LabelsDict as cm, toDict as cn, fromDict as co, toNumpy as cp, fromNumpy as cq, labelsFromNumpy as cr, decodeYamlSkeleton as cs, encodeYamlSkeleton as ct, readSkeletonJson as cu, writeSkeletonJson as cv, readTrainingConfigSkeletons as cw, readTrainingConfigSkeleton as cx, isTrainingConfig as cy, type RGBA as cz, type RenderOptions as d, drawMasks as d0, drawLabelImage as d1, cropPoints as d2, uncropPoints as d3, type CropRect as d4, type FlatPoints as d5, type PointPairs as d6, cropFrame as d7, type FrameLike as d8, type RawFrame as d9, type Fill as da, clampAlpha as db, pickColor as dc, type VideoOptions as e, type RGB as f, LabelImage as g, type RawLabelImage as h, getImageBytesReader as i, SeqVideoBackend as j, SeqHeader as k, SeqIndex as l, BlobByteSource as m, type ByteSource as n, createVideoBackend as o, UnsupportedVideoFormatError as p, type VideoBackendType as q, CropVideoBackend as r, setImageBytesReader as s, type CropWrapOptions as t, parseGdrive as u, urlFromConfirmation as v, checkDownloadHost as w, openGdrive as x, StreamingH5File as y, openStreamingH5 as z };
