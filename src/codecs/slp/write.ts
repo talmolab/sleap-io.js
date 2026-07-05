@@ -626,6 +626,44 @@ export interface AppendStoreOptions {
 }
 
 /**
+ * A chunked byte sink for {@link SlpStreamWriter.writeToSink} — the output-side
+ * companion to the append writer. Satisfied by a browser
+ * `FileSystemWritableFileStream` (OPFS / save-file-picker) and by Node's
+ * `fs.WriteStream`, so the finished file need not be resident as one big
+ * `Uint8Array`.
+ */
+export interface SlpWriteSink {
+  write(chunk: Uint8Array): unknown | Promise<unknown>;
+  close?(): unknown | Promise<unknown>;
+}
+
+/** Emscripten-FS methods used for chunked reads (present on h5wasm's `module.FS`). */
+interface ChunkedFs {
+  open?: (path: string, flags: string) => unknown;
+  read?: (
+    stream: unknown,
+    buffer: Uint8Array,
+    offset: number,
+    length: number,
+    position: number,
+  ) => number;
+  close?: (stream: unknown) => void;
+  stat?: (path: string) => { size: number };
+}
+
+/** An annotation with the instance link the writers read via fallback. */
+type AnnLinked = { instance: Instance | null; _instanceIdx: number | null };
+/** Accumulated annotations of one type: objects + `[vid,frame]` ctx + global inst idx. */
+interface AnnBucket<T> {
+  anns: T[];
+  ctx: [number, number][];
+  inst: number[];
+}
+function newAnnBucket<T>(): AnnBucket<T> {
+  return { anns: [], ctx: [], inst: [] };
+}
+
+/**
  * Incremental SLP writer. Open with {@link openSlpWriter} (which writes the
  * header and creates the resizable pose datasets), append one or more
  * {@link LazyDataStore}s with {@link appendStore}, then {@link close} to get the
@@ -645,6 +683,23 @@ export class SlpStreamWriter {
   private predPointRows = 0;
   private negativeFrames = new Set<string>();
   private closed = false;
+
+  // Per-frame annotations (masks/rois/bboxes/centroids/label-images) accumulated
+  // across appends and written once at finalize — they're far fewer than pose
+  // points, so they are not windowed. `ctx` is `[videoIndex, frameIdx]`; `inst`
+  // is the resolved GLOBAL instance index (or -1) for the annotation's link.
+  private pendingRois = newAnnBucket<ROI>();
+  private pendingMasks = newAnnBucket<SegmentationMask>();
+  private pendingBboxes = newAnnBucket<BoundingBox>();
+  private pendingCentroids = newAnnBucket<Centroid>();
+  // Label images carry instance links PER OBJECT (not on the top-level object),
+  // so only their video/frame context is remapped here; each object's
+  // `_instanceIdx` passes through (correct single-store; may be off in a
+  // multi-store merge — a niche edge, tracked on #207).
+  private pendingLabelImages: {
+    anns: LabelImage[];
+    ctx: [number, number][];
+  } = { anns: [], ctx: [] };
 
   /** @internal — use {@link openSlpWriter}. */
   constructor(
@@ -838,6 +893,9 @@ export class SlpStreamWriter {
         );
         this.predPointRows += nPredPts;
       }
+      // Per-frame + undistributed annotations (masks/rois/…), video + instance
+      // remapped, written once at finalize.
+      this.collectStoreAnnotations(store, vOff, instBase);
     } catch (e) {
       // A mid-write failure leaves a partial file — release it rather than leak.
       this.dispose();
@@ -935,6 +993,7 @@ export class SlpStreamWriter {
         if (frame.isNegative) {
           this.negativeFrames.add(`${videoIndex}:${frame.frameIdx}`);
         }
+        this.collectFrameAnnotations(frame, videoIndex, instBase, localId);
       }
 
       // Resolve from_predicted to a GLOBAL instance id (or -1 if the source is
@@ -1016,11 +1075,161 @@ export class SlpStreamWriter {
     }
   }
 
-  /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
-  close(): Uint8Array {
-    if (this.closed) throw new Error("SlpStreamWriter is already closed");
-    this.closed = true;
+  /**
+   * Collect a store's per-frame + undistributed annotations, remapping the
+   * video index (`+vOff`) and the instance link (`+instBase`) onto the combined
+   * file. The store's map keys are `"videoIndex:frameIdx"` (array-index video).
+   */
+  private collectStoreAnnotations(
+    store: LazyDataStore,
+    vOff: number,
+    instBase: number,
+  ): void {
+    const resolve = (idx: number | null | undefined): number =>
+      idx != null && idx >= 0 ? instBase + idx : -1;
+    const fromMap = <T extends AnnLinked>(
+      map: Map<string, T[]>,
+      bucket: AnnBucket<T>,
+    ): void => {
+      for (const [key, list] of map) {
+        const sep = key.indexOf(":");
+        const vid = vOff + Number(key.slice(0, sep));
+        const fidx = Number(key.slice(sep + 1));
+        for (const ann of list) {
+          bucket.anns.push(ann);
+          bucket.ctx.push([vid, fidx]);
+          bucket.inst.push(resolve(ann._instanceIdx));
+        }
+      }
+    };
+    fromMap(store._roiByFrame, this.pendingRois);
+    fromMap(store._maskByFrame, this.pendingMasks);
+    fromMap(store._bboxByFrame, this.pendingBboxes);
+    fromMap(store._centroidByFrame, this.pendingCentroids);
+    for (const [key, list] of store._labelImageByFrame) {
+      const sep = key.indexOf(":");
+      const vid = vOff + Number(key.slice(0, sep));
+      const fidx = Number(key.slice(sep + 1));
+      for (const li of list) {
+        this.pendingLabelImages.anns.push(li);
+        this.pendingLabelImages.ctx.push([vid, fidx]);
+      }
+    }
 
+    const undist = <T extends AnnLinked>(
+      list: T[],
+      bucket: AnnBucket<T>,
+      vidFor: (ann: T) => number,
+    ): void => {
+      for (const ann of list) {
+        bucket.anns.push(ann);
+        bucket.ctx.push([vidFor(ann), -1]);
+        bucket.inst.push(resolve(ann._instanceIdx));
+      }
+    };
+    // Static ROIs keep their video association (via the combined videos array).
+    undist(store._undistributedRois, this.pendingRois, (roi) =>
+      (roi as ROI).video ? this.videos.indexOf((roi as ROI).video!) : -1,
+    );
+    undist(store._undistributedMasks, this.pendingMasks, () => -1);
+    undist(store._undistributedBboxes, this.pendingBboxes, () => -1);
+    undist(store._undistributedCentroids, this.pendingCentroids, () => -1);
+    for (const li of store._undistributedLabelImages) {
+      this.pendingLabelImages.anns.push(li);
+      this.pendingLabelImages.ctx.push([-1, -1]);
+    }
+  }
+
+  /**
+   * Collect a materialized frame's annotations, resolving each annotation's live
+   * `instance` to its GLOBAL index via the batch's local map (`+instBase`).
+   * Annotations without a live `instance` in the batch drop their link (-1).
+   */
+  private collectFrameAnnotations(
+    frame: LabeledFrame,
+    vid: number,
+    instBase: number,
+    localId: Map<Instance, number>,
+  ): void {
+    const resolve = (inst: Instance | null | undefined): number => {
+      if (!inst) return -1;
+      const l = localId.get(inst);
+      return l != null ? instBase + l : -1;
+    };
+    const push = <T extends AnnLinked>(
+      list: T[],
+      bucket: AnnBucket<T>,
+    ): void => {
+      for (const ann of list) {
+        bucket.anns.push(ann);
+        bucket.ctx.push([vid, frame.frameIdx]);
+        bucket.inst.push(resolve(ann.instance));
+      }
+    };
+    push(frame.rois, this.pendingRois);
+    push(frame.masks, this.pendingMasks);
+    push(frame.bboxes, this.pendingBboxes);
+    push(frame.centroids, this.pendingCentroids);
+    for (const li of frame.labelImages) {
+      this.pendingLabelImages.anns.push(li);
+      this.pendingLabelImages.ctx.push([vid, frame.frameIdx]);
+    }
+  }
+
+  /**
+   * Write all accumulated annotation datasets. The per-type writers read the
+   * instance link off each object, so the resolved GLOBAL index is applied via a
+   * contained mutate→write→restore (source annotations are left unchanged).
+   */
+  private writePendingAnnotations(): void {
+    const writeBucket = <T extends AnnLinked>(
+      bucket: AnnBucket<T>,
+      fn: (
+        file: any,
+        anns: T[],
+        videos: Video[],
+        tracks: Track[],
+        instances: never[],
+        ctx: [number, number][],
+      ) => void,
+    ): void => {
+      if (bucket.anns.length === 0) return;
+      const saved = bucket.anns.map(
+        (a) => [a.instance, a._instanceIdx] as const,
+      );
+      try {
+        for (let i = 0; i < bucket.anns.length; i++) {
+          bucket.anns[i].instance = null;
+          bucket.anns[i]._instanceIdx =
+            bucket.inst[i] >= 0 ? bucket.inst[i] : null;
+        }
+        fn(this.file, bucket.anns, this.videos, this.tracks, [], bucket.ctx);
+      } finally {
+        for (let i = 0; i < bucket.anns.length; i++) {
+          bucket.anns[i].instance = saved[i][0];
+          bucket.anns[i]._instanceIdx = saved[i][1];
+        }
+      }
+    };
+    writeBucket(this.pendingRois, writeRois);
+    writeBucket(this.pendingMasks, writeMasks);
+    writeBucket(this.pendingBboxes, writeBboxes);
+    writeBucket(this.pendingCentroids, writeCentroids);
+    if (this.pendingLabelImages.anns.length > 0) {
+      writeLabelImages(
+        this.file,
+        this.pendingLabelImages.anns,
+        this.videos,
+        this.tracks,
+        [],
+        this.pendingLabelImages.ctx,
+      );
+    }
+  }
+
+  /** Write pending `negative_frames` and close the HDF5 file (shared finalize). */
+  private finalizeFile(): void {
+    this.writePendingAnnotations();
     if (this.negativeFrames.size > 0) {
       const rows: number[][] = [];
       for (const key of this.negativeFrames) {
@@ -1036,12 +1245,73 @@ export class SlpStreamWriter {
         "<i8",
       );
     }
-
     this.file.close();
+  }
+
+  /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
+  close(): Uint8Array {
+    if (this.closed) throw new Error("SlpStreamWriter is already closed");
+    this.closed = true;
+    this.finalizeFile();
     const fs = getH5FileSystem(this.module);
     const bytes = fs.readFile!(this.memPath);
     fs.unlink!(this.memPath);
     return bytes;
+  }
+
+  /**
+   * Finalize and stream the file to `sink` in chunks, then unlink it — the
+   * output-side companion to {@link appendStore}, so the finished file never has
+   * to be resident as one big `Uint8Array` on the JS side. Reads the in-memory
+   * HDF5 file with chunked FS reads when available (falling back to a single
+   * read). `sink.close()` is awaited if present.
+   *
+   * @param opts.chunkBytes Chunk size (default 8 MiB).
+   */
+  async writeToSink(
+    sink: SlpWriteSink,
+    opts?: { chunkBytes?: number },
+  ): Promise<void> {
+    if (this.closed) throw new Error("SlpStreamWriter is already closed");
+    this.closed = true;
+    this.finalizeFile();
+
+    const fs = getH5FileSystem(this.module);
+    const cfs = fs as unknown as ChunkedFs;
+    const chunkBytes = Math.max(
+      1,
+      Math.trunc(opts?.chunkBytes ?? 8 * 1024 * 1024),
+    );
+    try {
+      if (cfs.open && cfs.read && cfs.close && cfs.stat) {
+        const size = Number(cfs.stat(this.memPath).size);
+        const stream = cfs.open(this.memPath, "r");
+        try {
+          const buf = new Uint8Array(chunkBytes);
+          let pos = 0;
+          while (pos < size) {
+            const want = Math.min(chunkBytes, size - pos);
+            const n = cfs.read(stream, buf, 0, want, pos);
+            if (n <= 0) break;
+            await sink.write(buf.slice(0, n)); // copy — buf is reused
+            pos += n;
+          }
+        } finally {
+          cfs.close(stream);
+        }
+      } else {
+        // No chunked FS reads: read once, then hand out slices.
+        const bytes = fs.readFile!(this.memPath);
+        for (let pos = 0; pos < bytes.length; pos += chunkBytes) {
+          await sink.write(
+            bytes.slice(pos, Math.min(pos + chunkBytes, bytes.length)),
+          );
+        }
+      }
+      if (sink.close) await sink.close();
+    } finally {
+      fs.unlink!(this.memPath);
+    }
   }
 
   /**
@@ -1166,24 +1436,32 @@ function skeletonSignature(skeletons: Skeleton[]): string {
  *
  * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
  */
-export async function saveSlpMergedFromStores(
+export interface MergeStoresOptions {
+  sessions?: RecordingSession[];
+  identities?: Identity[];
+  suggestions?: SuggestionFrame[];
+  provenance?: Record<string, unknown>;
+  windowFrames?: number;
+}
+
+/**
+ * Validate the stores share a skeleton, open a writer over the concatenated
+ * videos/tracks, and append every store (windowed) with cumulative offsets.
+ * Returns the OPEN writer — the caller finalizes via `close()` (bytes) or
+ * `writeToSink()` (streamed output). On error the partial file is disposed.
+ */
+async function buildMergedWriter(
   stores: LazyDataStore[],
-  options?: {
-    sessions?: RecordingSession[];
-    identities?: Identity[];
-    suggestions?: SuggestionFrame[];
-    provenance?: Record<string, unknown>;
-    windowFrames?: number;
-  },
-): Promise<Uint8Array> {
+  options?: MergeStoresOptions,
+): Promise<SlpStreamWriter> {
   if (stores.length === 0) {
-    throw new Error("saveSlpMergedFromStores requires at least one store");
+    throw new Error("merging SLP stores requires at least one store");
   }
   const sig = skeletonSignature(stores[0].skeletons);
   for (let i = 1; i < stores.length; i++) {
     if (skeletonSignature(stores[i].skeletons) !== sig) {
       throw new Error(
-        `saveSlpMergedFromStores: store ${i} has a different skeleton than store 0; ` +
+        `merging SLP stores: store ${i} has a different skeleton than store 0; ` +
           "all stores must share the same skeletons to merge into one file.",
       );
     }
@@ -1202,20 +1480,59 @@ export async function saveSlpMergedFromStores(
     provenance: options?.provenance,
   });
 
-  let videoOffset = 0;
-  let trackOffset = 0;
-  for (const store of stores) {
-    writer.appendStore(store, {
-      videoIndexOffset: videoOffset,
-      trackOffset,
-      skeletonOffset: 0, // shared skeletons (validated)
-      windowFrames: options?.windowFrames,
-    });
-    videoOffset += store.videos.length;
-    trackOffset += store.tracks.length;
+  try {
+    let videoOffset = 0;
+    let trackOffset = 0;
+    for (const store of stores) {
+      writer.appendStore(store, {
+        videoIndexOffset: videoOffset,
+        trackOffset,
+        skeletonOffset: 0, // shared skeletons (validated)
+        windowFrames: options?.windowFrames,
+      });
+      videoOffset += store.videos.length;
+      trackOffset += store.tracks.length;
+    }
+  } catch (e) {
+    writer.dispose();
+    throw e;
   }
 
+  return writer;
+}
+
+/**
+ * Merge N per-camera {@link LazyDataStore}s into one combined multi-video
+ * `.slp`, streaming each store's frames in bounded windows (peak memory ≪ the
+ * whole graph). The combined `videos` and `tracks` are the concatenation of the
+ * stores' (video index and track index remapped accordingly); all stores must
+ * share a structurally-identical skeleton list (the multi-camera case), which
+ * becomes the combined skeleton set. Session graph / identities / suggestions /
+ * provenance for the combined file are supplied via `options`.
+ *
+ * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
+ */
+export async function saveSlpMergedFromStores(
+  stores: LazyDataStore[],
+  options?: MergeStoresOptions,
+): Promise<Uint8Array> {
+  const writer = await buildMergedWriter(stores, options);
   return writer.close();
+}
+
+/**
+ * Like {@link saveSlpMergedFromStores}, but streams the combined file to `sink`
+ * in chunks instead of returning bytes — so neither the input `Labels` graph nor
+ * the whole output is ever fully resident. Use with a browser
+ * `FileSystemWritableFileStream` (OPFS / save picker) or Node `fs.WriteStream`.
+ */
+export async function saveSlpMergedToSink(
+  stores: LazyDataStore[],
+  sink: SlpWriteSink,
+  options?: MergeStoresOptions & { chunkBytes?: number },
+): Promise<void> {
+  const writer = await buildMergedWriter(stores, options);
+  await writer.writeToSink(sink, { chunkBytes: options?.chunkBytes });
 }
 
 export async function saveSlpToBytes(

@@ -153,10 +153,13 @@ export {
   openSlpWriter,
   SlpStreamWriter,
   saveSlpMergedFromStores,
+  saveSlpMergedToSink,
 } from "../codecs/slp/write.js";
 export type {
   SlpWriteHeader,
   AppendStoreOptions,
+  SlpWriteSink,
+  MergeStoresOptions,
 } from "../codecs/slp/write.js";
 
 /**

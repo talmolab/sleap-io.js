@@ -14,6 +14,7 @@ import { readSlp, readSlpLazy } from "../../src/codecs/slp/read.js";
 import {
   openSlpWriter,
   saveSlpMergedFromStores,
+  saveSlpMergedToSink,
 } from "../../src/codecs/slp/write.js";
 import { LazyDataStore } from "../../src/model/lazy.js";
 import { Video } from "../../src/model/video.js";
@@ -24,6 +25,10 @@ import {
   PredictedInstance,
   Track,
 } from "../../src/model/instance.js";
+import { Labels } from "../../src/model/labels.js";
+import { UserSegmentationMask } from "../../src/model/mask.js";
+import { UserROI } from "../../src/model/roi.js";
+import { saveSlpToBytes } from "../../src/codecs/slp/write.js";
 
 const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 const slp = (name: string) => path.join(fixtureRoot, "slp", name);
@@ -48,6 +53,38 @@ const store = async (p: string) => {
   if (!s) throw new Error("no lazy store");
   return s;
 };
+
+/** A chunk-collecting {@link SlpWriteSink} for tests. */
+function collectingSink() {
+  const chunks: Uint8Array[] = [];
+  let closed = false;
+  return {
+    sink: {
+      write(c: Uint8Array) {
+        chunks.push(c.slice());
+      },
+      close() {
+        closed = true;
+      },
+    },
+    get closed() {
+      return closed;
+    },
+    get chunkCount() {
+      return chunks.length;
+    },
+    bytes(): Uint8Array {
+      const total = chunks.reduce((s, c) => s + c.length, 0);
+      const out = new Uint8Array(total);
+      let o = 0;
+      for (const c of chunks) {
+        out.set(c, o);
+        o += c.length;
+      }
+      return out;
+    },
+  };
+}
 
 describe("openSlpWriter — single-store streaming write", () => {
   it("round-trips frame-for-frame with the eager reader", async () => {
@@ -308,5 +345,124 @@ describe("SlpStreamWriter.appendFrames — materialized-frame overlay", () => {
     expect(overlay.map((f) => f.instances[0].points[0].xy[0]).sort()).toEqual([
       100, 200,
     ]);
+  });
+});
+
+describe("writeToSink / saveSlpMergedToSink — streamed output", () => {
+  it("writeToSink streams a valid file in multiple chunks", async () => {
+    const s = await store(FIX);
+    const eager = await readSlp(FIX, { openVideos: false });
+
+    const writer = await openSlpWriter({
+      skeletons: s.skeletons,
+      videos: s.videos,
+      tracks: s.tracks,
+    });
+    writer.appendStore(s);
+    const collected = collectingSink();
+    await writer.writeToSink(collected.sink, { chunkBytes: 64 * 1024 });
+
+    expect(collected.closed).toBe(true);
+    expect(collected.chunkCount).toBeGreaterThan(1); // actually chunked
+    // The streamed bytes are a valid SLP that round-trips frame-for-frame.
+    const rt = await readSlp(new Uint8Array(collected.bytes()).buffer, {
+      openVideos: false,
+    });
+    expect(rt.labeledFrames.length).toBe(eager.labeledFrames.length);
+    expect(rt.labeledFrames.map(frameSig)).toEqual(
+      eager.labeledFrames.map(frameSig),
+    );
+  });
+
+  it("saveSlpMergedToSink streams a merged multi-video file", async () => {
+    const collected = collectingSink();
+    await saveSlpMergedToSink(
+      [await store(FIX), await store(FIX)],
+      collected.sink,
+      { chunkBytes: 128 * 1024 },
+    );
+    expect(collected.closed).toBe(true);
+    const merged = await readSlp(new Uint8Array(collected.bytes()).buffer, {
+      openVideos: false,
+    });
+    expect(merged.videos.length).toBe(2);
+    const eager = await readSlp(FIX, { openVideos: false });
+    expect(merged.labeledFrames.length).toBe(2 * eager.labeledFrames.length);
+  });
+});
+
+describe("annotation overlays (masks / rois)", () => {
+  it("carries a store's per-frame masks + rois through appendStore", async () => {
+    // Build a Labels with a frame-bound mask + roi, save eager, read lazy so the
+    // store carries the annotation maps.
+    const video = new Video({ filename: "ann.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [0, 0] }, skeleton });
+    const mask = UserSegmentationMask.fromArray(new Uint8Array(16), 4, 4, {
+      name: "m1",
+      category: "cell",
+    });
+    const roi = UserROI.fromBbox(0, 0, 50, 50, { category: "box" });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video,
+          frameIdx: 3,
+          instances: [inst],
+          masks: [mask],
+          rois: [roi],
+        }),
+      ],
+    });
+    const lazy = await readSlpLazy(
+      new Uint8Array(await saveSlpToBytes(labels)).buffer,
+      { openVideos: false },
+    );
+    const s = lazy._lazyDataStore!;
+
+    const writer = await openSlpWriter({
+      skeletons: s.skeletons,
+      videos: s.videos,
+      tracks: s.tracks,
+    });
+    writer.appendStore(s);
+    const rt = await readSlp(new Uint8Array(writer.close()).buffer, {
+      openVideos: false,
+    });
+
+    const f = rt.labeledFrames.find((x) => x.frameIdx === 3)!;
+    expect(f.masks).toHaveLength(1);
+    expect(f.masks[0].name).toBe("m1");
+    expect(f.masks[0].category).toBe("cell");
+    expect(f.rois).toHaveLength(1);
+  });
+
+  it("carries masks from appendFrames (materialized overlay)", async () => {
+    const video = new Video({ filename: "ann.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const inst = new Instance({ points: { A: [0, 0] }, skeleton });
+    const mask = UserSegmentationMask.fromArray(new Uint8Array(16), 4, 4, {
+      name: "mm",
+      category: "cell",
+    });
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 7,
+      instances: [inst],
+      masks: [mask],
+    });
+    const writer = await openSlpWriter({
+      skeletons: [skeleton],
+      videos: [video],
+      tracks: [],
+    });
+    writer.appendFrames([frame]);
+    const rt = await readSlp(new Uint8Array(writer.close()).buffer, {
+      openVideos: false,
+    });
+
+    const f = rt.labeledFrames.find((x) => x.frameIdx === 7)!;
+    expect(f.masks).toHaveLength(1);
+    expect(f.masks[0].name).toBe("mm");
   });
 });
