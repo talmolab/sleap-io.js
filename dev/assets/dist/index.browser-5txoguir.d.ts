@@ -2028,6 +2028,12 @@ declare class LazyDataStore {
     videos: Video[];
     formatId: number;
     negativeFrames: Set<string>;
+    /**
+     * Memoized raw-`frames.video`-id -> `videos` index map (see
+     * {@link buildVideoIdMap}). Lazily built on first frame access; rebuilt from
+     * scratch by a copied store since `copy()` does not carry it over.
+     */
+    private _videoIdToIndex?;
     _centroidByFrame: Map<string, Centroid[]>;
     _bboxByFrame: Map<string, BoundingBox[]>;
     _maskByFrame: Map<string, SegmentationMask[]>;
@@ -2057,6 +2063,13 @@ declare class LazyDataStore {
     copy(): LazyDataStore;
     /** Total number of frames in the store. */
     get frameCount(): number;
+    /**
+     * Resolve a raw `frames.video` id to its `videos` array index, applying the
+     * same remap the eager readers use so sparse / non-contiguous group ids
+     * (e.g. `video0`, `video2`) resolve to the correct video. Falls back to the
+     * raw id when unmapped — identical to `buildLabeledFrames`.
+     */
+    private videoIndexFor;
     /**
      * Materialize a single LabeledFrame by index.
      */
