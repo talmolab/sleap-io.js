@@ -8853,8 +8853,12 @@ var Identity = class {
 };
 
 // src/video/mp4box-video.ts
-var isBrowser2 = typeof window !== "undefined" && typeof document !== "undefined";
-var hasWebCodecs = isBrowser2 && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
+function isBrowser2() {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
+function hasWebCodecs() {
+  return isBrowser2() && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
+}
 var MP4BOX_CDN = "https://unpkg.com/mp4box@0.5.4/dist/mp4box.all.min.js";
 async function loadMp4box() {
   const globalMp4box = globalThis.MP4Box;
@@ -8863,7 +8867,7 @@ async function loadMp4box() {
     const module = await import("mp4box");
     return module.default ?? module;
   } catch {
-    if (!isBrowser2 || typeof document === "undefined") {
+    if (!isBrowser2()) {
       throw new Error("Failed to load mp4box");
     }
     await new Promise((resolve, reject) => {
@@ -8906,10 +8910,10 @@ var Mp4BoxVideoBackend = class {
   /** Extra HTTP headers (e.g. Authorization) applied to every byte fetch. */
   headers;
   constructor(source, options) {
-    if (!hasWebCodecs) {
+    if (!hasWebCodecs()) {
       throw new Error("Mp4BoxVideoBackend requires WebCodecs support.");
     }
-    if (!isBrowser2) {
+    if (!isBrowser2()) {
       throw new Error("Mp4BoxVideoBackend requires a browser environment.");
     }
     this.filename = source instanceof Blob ? source.name ?? "" : source;
