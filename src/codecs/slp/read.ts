@@ -16,6 +16,7 @@ import {
   resolveIdentity,
   resolveVideoFilename,
 } from "./parsers.js";
+import { buildSourceVideoFromDict } from "./source-video.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import { Instance, PredictedInstance, Track } from "../../model/instance.js";
@@ -719,6 +720,40 @@ function readVideoCrops(file: any): Map<number, VideoCropEntry> {
   return out;
 }
 
+/**
+ * Read a video's `source_video` metadata JSON from its `{group}/source_video`
+ * HDF5 group, or `null` when the group is absent. Checks a `json` *dataset*
+ * first (where oversized metadata is stored) then the `json` *attribute* (the
+ * normal case), mirroring Python `_read_source_video_json`. h5wasm sync path.
+ */
+function readSourceVideoGroupJson(
+  file: any,
+  groupPath: string,
+): Record<string, unknown> | null {
+  const grp = file.get(`${groupPath}/source_video`);
+  if (!grp) return null;
+  let raw: string | undefined;
+  const ds = file.get(`${groupPath}/source_video/json`);
+  if (ds) {
+    const v = (ds as { value?: unknown }).value;
+    if (typeof v === "string") raw = v;
+    else if (v instanceof Uint8Array) raw = textDecoder.decode(v);
+    else if (Array.isArray(v) && v.length > 0) raw = String(v[0]);
+  }
+  if (raw === undefined) {
+    raw = attrToString((grp.attrs ?? {}).json);
+  }
+  if (raw === undefined) return null;
+  try {
+    return JSON.parse(raw.trim().replace(/\0+$/, "")) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    return null;
+  }
+}
+
 async function readVideos(
   dataset: any,
   labelsPath: string,
@@ -868,14 +903,28 @@ async function readVideos(
       }
     }
 
-    // NOTE: source_video is reconstructed filename-only, so the source's shape
-    // is dropped on reload. This leaves _getEffectiveShape() with no source
-    // shape for a reloaded embedded subset, keeping the embedded-subset ->
-    // restore-original matching workflow broken across save/load. Tracked in
-    // #160 (a follow-up to the in-memory #476 source-chain fix).
-    const sourceVideo = parsed.source_video
-      ? new Video({ filename: parsed.source_video.filename ?? "" })
-      : null;
+    // Reconstruct the source_video lineage WITH its recorded shape (and any
+    // deeper chain) so a reloaded embedded subset can resolve its source's full
+    // frame extent via _getEffectiveShape — the prerequisite for the
+    // embedded-subset -> restore-original matching workflow (#160). Embedded
+    // videos store their source in the authoritative `{group}/source_video`
+    // HDF5 group (older `.pkg.slp` omit it from videos_json entirely); prefer it
+    // and fall back to a nested videos_json `source_video` (non-embedded videos,
+    // and newer files that carry both).
+    let sourceVideo: Video | null = null;
+    if (embedded && datasetPath) {
+      const groupPath = datasetPath.endsWith("/video")
+        ? datasetPath.slice(0, -6)
+        : datasetPath;
+      const svDict = readSourceVideoGroupJson(file, groupPath);
+      if (svDict) sourceVideo = buildSourceVideoFromDict(svDict, labelsPath);
+    }
+    if (!sourceVideo && parsed.source_video) {
+      sourceVideo = buildSourceVideoFromDict(
+        parsed.source_video as Record<string, unknown>,
+        labelsPath,
+      );
+    }
 
     // Crop reconstruction (SLP 2.3): the backend just built from videos_json is
     // the UNCROPPED inner. If a /video_crops entry exists for this index, wrap it

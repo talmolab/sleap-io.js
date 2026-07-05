@@ -878,11 +878,52 @@ function serializeVideo(video: Video): Record<string, unknown> {
     backend,
   };
 
+  // Serialize the full source_video lineage (filename + backend incl. shape +
+  // any deeper chain), not just its filename, so a reload can recover the
+  // source's frame extent. Mirrors Python `video_to_dict` (recursive). See #160.
   if (video.sourceVideo) {
-    entry.source_video = { filename: video.sourceVideo.filename };
+    entry.source_video = serializeVideo(video.sourceVideo);
   }
 
   return entry;
+}
+
+/**
+ * The full source-video dict to persist for a video that is being embedded, or
+ * `null` when there is nothing to record. Prefers an explicit `sourceVideo`
+ * (its lineage, incl. shape); otherwise, for a not-yet-embedded video, records
+ * the video itself as its own source (mirrors Python `process_and_embed_frames`,
+ * where `source_video = video.source_video or video`). An already-embedded video
+ * with no known source contributes nothing.
+ */
+function sourceVideoDict(video: Video): Record<string, unknown> | null {
+  if (video.sourceVideo) return serializeVideo(video.sourceVideo);
+  if (!video.hasEmbeddedImages) return serializeVideo(video);
+  return null;
+}
+
+/** Python `METADATA_ATTR_SIZE_LIMIT`: the HDF5 64 KB attribute ceiling. */
+const SOURCE_VIDEO_ATTR_LIMIT = 64000;
+
+/**
+ * Write a source video's metadata JSON into its `{group}/source_video` HDF5
+ * group, the authoritative location an embedded video's source is read from
+ * (Python `_write_source_video_json`). Normally a `json` string *attribute*;
+ * if the blob would exceed the 64 KB attribute ceiling it goes to a `json`
+ * *dataset* in the same group instead (readers check the dataset first).
+ */
+function writeSourceVideoJson(
+  file: any,
+  groupPath: string,
+  sourceDict: Record<string, unknown>,
+): void {
+  const blob = JSON.stringify(sourceDict);
+  file.create_group(`${groupPath}/source_video`);
+  if (new TextEncoder().encode(blob).length <= SOURCE_VIDEO_ATTR_LIMIT) {
+    setStringAttr(file.get(`${groupPath}/source_video`), "json", blob);
+    return;
+  }
+  file.create_dataset({ name: `${groupPath}/source_video/json`, data: [blob] });
 }
 
 /**
@@ -1477,17 +1518,11 @@ function writeEmbeddedVideos(
         filename: ".",
         backend,
       };
-      // Preserve source_video reference to original
-      if (video.sourceVideo) {
-        entry.source_video = { filename: video.sourceVideo.filename };
-      } else if (!video.hasEmbeddedImages) {
-        // If this video wasn't already embedded, save original path as source
-        entry.source_video = {
-          filename: Array.isArray(video.filename)
-            ? video.filename[0]
-            : video.filename,
-        };
-      }
+      // Preserve the full source_video lineage (filename + backend incl. shape
+      // + deeper chain), mirroring newer Python which nests it in videos_json as
+      // well as the authoritative HDF5 group written below. See #160.
+      const srcDict = sourceVideoDict(video);
+      if (srcDict) entry.source_video = srcDict;
       return JSON.stringify(entry);
     } else {
       return JSON.stringify(serializeVideo(video));
@@ -1499,6 +1534,13 @@ function writeEmbeddedVideos(
   for (const [videoIndex, embedData] of embeddedVideoData) {
     const groupName = `video${videoIndex}`;
     file.create_group(groupName);
+
+    // Write the source video lineage into the authoritative
+    // `{group}/source_video` HDF5 group — the location Python reads for an
+    // embedded `.pkg.slp` (it ignores videos_json's source_video for embedded
+    // videos). Mirrors Python `write_videos`' lineage pass. See #160.
+    const srcDict = sourceVideoDict(labels.videos[videoIndex]);
+    if (srcDict) writeSourceVideoJson(file, groupName, srcDict);
 
     // Write frame data as vlen array
     const frameBytes: Uint8Array[] = [];
