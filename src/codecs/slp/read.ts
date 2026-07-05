@@ -42,6 +42,7 @@ import {
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
+import { buildVideoIdMap } from "../../model/video-id-map.js";
 import {
   type ROI,
   UserROI,
@@ -2310,48 +2311,6 @@ function buildLabeledFrames(options: {
   }
 
   return frames;
-}
-
-function buildVideoIdMap(
-  framesData: Record<string, any[]>,
-  videos: Video[],
-): Map<number, number> {
-  const videoIds = new Set<number>();
-  for (const value of framesData.video ?? []) {
-    videoIds.add(Number(value));
-  }
-  if (!videoIds.size) return new Map();
-
-  const maxId = Math.max(...Array.from(videoIds));
-  if (videoIds.size === videos.length && maxId === videos.length - 1) {
-    const identity = new Map<number, number>();
-    for (let i = 0; i < videos.length; i += 1) {
-      identity.set(i, i);
-    }
-    return identity;
-  }
-
-  const map = new Map<number, number>();
-  for (let index = 0; index < videos.length; index += 1) {
-    const video = videos[index];
-    const dataset =
-      video.backend?.dataset ??
-      (video.backendMetadata?.dataset as string | undefined) ??
-      "";
-    const parsedId = parseVideoIdFromDataset(dataset);
-    if (parsedId != null) {
-      map.set(parsedId, index);
-    }
-  }
-  return map;
-}
-
-function parseVideoIdFromDataset(dataset: string): number | null {
-  if (!dataset) return null;
-  const group = dataset.split("/")[0];
-  if (!group.startsWith("video")) return null;
-  const id = Number(group.slice(5));
-  return Number.isNaN(id) ? null : id;
 }
 
 function readCentroids(
