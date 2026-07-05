@@ -363,8 +363,14 @@ export interface VideoMetadata {
   channelOrder?: string;
   /** Whether video is embedded in the SLP file */
   embedded: boolean;
-  /** Source video metadata if this is derived */
-  sourceVideo?: { filename: string };
+  /**
+   * Full serialized `source_video` lineage dict (`{ filename?, backend?,
+   * source_video? }`) when present in `videos_json` — reconstructed with its
+   * recorded shape via {@link buildSourceVideoFromDict}. Not the authoritative
+   * source for embedded videos (that lives in the `{group}/source_video` HDF5
+   * group); see the readers.
+   */
+  sourceVideo?: Record<string, unknown>;
 }
 
 /**
@@ -439,7 +445,7 @@ export function parseVideosMetadata(
       fps: backendMeta.fps as number | undefined,
       channelOrder: backendMeta.channel_order as string | undefined,
       embedded,
-      sourceVideo: parsed.source_video as { filename: string } | undefined,
+      sourceVideo: parsed.source_video as Record<string, unknown> | undefined,
     });
   }
 

@@ -28,6 +28,7 @@ import {
   reconstructInstance3D,
   resolveIdentity,
 } from "./parsers.js";
+import { buildSourceVideoFromDict } from "./source-video.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import {
@@ -390,6 +391,45 @@ export async function readVideoCropsStreaming(
 }
 
 /**
+ * Read a video's `source_video` metadata JSON from its `{group}/source_video`
+ * HDF5 group over the streaming worker, or `null` when absent. Checks a `json`
+ * *dataset* first (oversized metadata) then the `json` *attribute* (normal
+ * case), mirroring the sync reader and Python `_read_source_video_json`.
+ */
+export async function readSourceVideoGroupJsonStreaming(
+  file: Pick<StreamingH5File, "getKeys" | "getAttrs" | "getDatasetValue">,
+  groupPath: string,
+): Promise<Record<string, unknown> | null> {
+  const svPath = `${groupPath}/source_video`;
+  let raw: string | undefined;
+  try {
+    const keys = await file.getKeys(svPath);
+    if (keys.includes("json")) {
+      const { value } = await file.getDatasetValue(`${svPath}/json`);
+      if (typeof value === "string") raw = value;
+      else if (value instanceof Uint8Array)
+        raw = new TextDecoder().decode(value);
+      else if (Array.isArray(value) && value.length > 0) raw = String(value[0]);
+    }
+    if (raw === undefined) {
+      const attrs = await file.getAttrs(svPath);
+      raw = attrToString(attrs.json);
+    }
+  } catch {
+    return null;
+  }
+  if (raw === undefined) return null;
+  try {
+    return JSON.parse(raw.trim().replace(/\0+$/, "")) as Record<
+      string,
+      unknown
+    >;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Read video metadata from videos_json dataset.
  * When openVideos is true, creates StreamingHdf5VideoBackend for embedded videos.
  */
@@ -569,14 +609,28 @@ async function readVideosStreaming(
         backendMetadata.crop_fill = cropEntry.fill;
       }
 
+      // Reconstruct the source_video lineage WITH its recorded shape (and any
+      // deeper chain), preferring the authoritative `{group}/source_video` HDF5
+      // group for embedded videos and falling back to the nested videos_json
+      // dict — parity with the eager reader (read.ts) for #160.
+      let sourceVideo: Video | null = null;
+      if (meta.embedded && datasetPath) {
+        const groupPath = datasetPath.endsWith("/video")
+          ? datasetPath.slice(0, -6)
+          : datasetPath;
+        const svDict = await readSourceVideoGroupJsonStreaming(file, groupPath);
+        if (svDict) sourceVideo = buildSourceVideoFromDict(svDict, labelsPath);
+      }
+      if (!sourceVideo && meta.sourceVideo) {
+        sourceVideo = buildSourceVideoFromDict(meta.sourceVideo, labelsPath);
+      }
+
       videos.push(
         new Video({
           filename: meta.filename,
           backend: videoBackend,
           backendMetadata,
-          sourceVideo: meta.sourceVideo
-            ? new Video({ filename: meta.sourceVideo.filename })
-            : null,
+          sourceVideo,
           openBackend: openVideos && meta.embedded,
           embedded: meta.embedded,
         }),
