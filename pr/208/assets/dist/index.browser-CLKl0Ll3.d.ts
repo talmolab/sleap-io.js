@@ -3642,6 +3642,7 @@ declare class SlpStreamWriter {
     private predPointRows;
     private negativeFrames;
     private closed;
+    private writtenFrames;
     private pendingRois;
     private pendingMasks;
     private pendingBboxes;
@@ -3660,6 +3661,13 @@ declare class SlpStreamWriter {
      * copied verbatim from the store's columns — no `Instance`/`LabeledFrame`
      * object is constructed. The store's frame/instance/point tables are assumed
      * ordered by frame (the SLP on-disk invariant).
+     *
+     * A `(video, frameIdx)` already written (by an earlier append) is SKIPPED — so
+     * append overlays via {@link appendFrames} first for them to win. Frame /
+     * instance / point ids are assigned from running OUTPUT counters (not the
+     * store's positions), so skips leave no gaps; cross-references
+     * (`from_predicted`, annotation instance links) are remapped through the
+     * skipped ranges. `store` must not itself contain duplicate `(video, frameIdx)`.
      */
     appendStore(store: LazyDataStore, opts?: AppendStoreOptions): void;
     /**
@@ -3673,8 +3681,10 @@ declare class SlpStreamWriter {
     appendFrames(frames: LabeledFrame[]): void;
     /**
      * Collect a store's per-frame + undistributed annotations, remapping the
-     * video index (`+vOff`) and the instance link (`+instBase`) onto the combined
-     * file. The store's map keys are `"videoIndex:frameIdx"` (array-index video).
+     * video index (`+vOff`) and the instance link (through `outIdxOf`, `+instBase`)
+     * onto the combined file. Annotations on a SKIPPED (overlaid) frame — whose
+     * combined `"vid:frameIdx"` key is in `skippedKeys` — are dropped. The store's
+     * map keys are `"videoIndex:frameIdx"` (array-index video).
      */
     private collectStoreAnnotations;
     /**

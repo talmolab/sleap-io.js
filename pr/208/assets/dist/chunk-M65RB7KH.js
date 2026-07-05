@@ -13133,6 +13133,11 @@ var SlpStreamWriter = class {
   predPointRows = 0;
   negativeFrames = /* @__PURE__ */ new Set();
   closed = false;
+  // Combined `${videoIndex}:${frameIdx}` keys already written, for dedup across
+  // appendStore/appendFrames. First write wins: a later append that repeats a
+  // key skips that frame entirely. Append overlays (appendFrames) BEFORE bulk
+  // stores so the overlay's frame is the one kept. See #208 follow-up.
+  writtenFrames = /* @__PURE__ */ new Set();
   // Per-frame annotations (masks/rois/bboxes/centroids/label-images) accumulated
   // across appends and written once at finalize — they're far fewer than pose
   // points, so they are not windowed. `ctx` is `[videoIndex, frameIdx]`; `inst`
@@ -13162,6 +13167,13 @@ var SlpStreamWriter = class {
    * copied verbatim from the store's columns — no `Instance`/`LabeledFrame`
    * object is constructed. The store's frame/instance/point tables are assumed
    * ordered by frame (the SLP on-disk invariant).
+   *
+   * A `(video, frameIdx)` already written (by an earlier append) is SKIPPED — so
+   * append overlays via {@link appendFrames} first for them to win. Frame /
+   * instance / point ids are assigned from running OUTPUT counters (not the
+   * store's positions), so skips leave no gaps; cross-references
+   * (`from_predicted`, annotation instance links) are remapped through the
+   * skipped ranges. `store` must not itself contain duplicate `(video, frameIdx)`.
    */
   appendStore(store, opts) {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
@@ -13181,6 +13193,30 @@ var SlpStreamWriter = class {
     const predBase = this.predPointRows;
     const px = store.pointsData.x, py = store.pointsData.y, pv = store.pointsData.visible, pc = store.pointsData.complete;
     const qx = store.predPointsData.x, qy = store.predPointsData.y, qv = store.predPointsData.visible, qc = store.predPointsData.complete, qs = store.predPointsData.score;
+    const skippedRanges = [];
+    const skippedKeys = /* @__PURE__ */ new Set();
+    for (let r = 0; r < nFrames; r++) {
+      const key = `${remapVideo(numAt(fd.video, r))}:${numAt(fd.frame_idx, r)}`;
+      if (this.writtenFrames.has(key)) {
+        skippedRanges.push([
+          numAt(fd.instance_id_start, r),
+          numAt(fd.instance_id_end, r)
+        ]);
+        skippedKeys.add(key);
+      }
+    }
+    const outIdxOf = (idx) => {
+      if (skippedRanges.length === 0) return idx;
+      let shift = 0;
+      for (const [s, e] of skippedRanges) {
+        if (idx < s) break;
+        if (idx < e) return null;
+        shift += e - s;
+      }
+      return idx - shift;
+    };
+    let outFrames = 0;
+    let outInsts = 0;
     let userWritten = 0;
     let predWritten = 0;
     try {
@@ -13209,16 +13245,19 @@ var SlpStreamWriter = class {
         let upi = 0;
         let ppi = 0;
         for (let r = wStart; r < wEnd; r++) {
-          const newFrameId = frameBase + r;
           const combinedVideo = remapVideo(numAt(fd.video, r));
           const frameIdx = numAt(fd.frame_idx, r);
+          const key = `${combinedVideo}:${frameIdx}`;
           const iStart = numAt(fd.instance_id_start, r);
           const iEnd = numAt(fd.instance_id_end, r);
+          if (this.writtenFrames.has(key)) continue;
+          const newFrameId = frameBase + outFrames;
+          outFrames++;
           framesFlat[fi++] = newFrameId;
           framesFlat[fi++] = combinedVideo;
           framesFlat[fi++] = frameIdx;
-          framesFlat[fi++] = instBase + iStart;
-          framesFlat[fi++] = instBase + iEnd;
+          framesFlat[fi++] = instBase + outInsts;
+          framesFlat[fi++] = instBase + outInsts + (iEnd - iStart);
           if (store.negativeFrames.has(`${numAt(fd.video, r)}:${frameIdx}`)) {
             this.negativeFrames.add(`${combinedVideo}:${frameIdx}`);
           }
@@ -13228,12 +13267,13 @@ var SlpStreamWriter = class {
             const ptEnd = numAt(idn.point_id_end, j);
             const trk = numAt(idn.track, j, -1);
             const fp = numAt(idn.from_predicted, j, -1);
-            instFlat[ii++] = instBase + j;
+            const fpOut = fp >= 0 ? outIdxOf(fp) : null;
+            instFlat[ii++] = instBase + outInsts;
             instFlat[ii++] = type;
             instFlat[ii++] = newFrameId;
             instFlat[ii++] = numAt(idn.skeleton, j) + kOff;
             instFlat[ii++] = trk >= 0 ? trk + tOff : -1;
-            instFlat[ii++] = fp >= 0 ? instBase + fp : -1;
+            instFlat[ii++] = fpOut != null ? instBase + fpOut : -1;
             instFlat[ii++] = numAt(idn.score, j);
             if (type === 1) {
               instFlat[ii++] = predBase + predWritten;
@@ -13258,46 +13298,58 @@ var SlpStreamWriter = class {
               userWritten += ptEnd - ptStart;
             }
             instFlat[ii++] = numAt(idn.tracking_score, j);
+            outInsts++;
           }
+          this.writtenFrames.add(key);
         }
+        const emFrames = fi / 5;
+        const emInsts = ii / 10;
+        const emUserPts = upi / 4;
+        const emPredPts = ppi / 5;
         appendMatrixRows(
           this.file,
           "frames",
-          framesFlat,
-          wFrames,
+          framesFlat.subarray(0, fi),
+          emFrames,
           5,
           this.frameRows
         );
-        this.frameRows += wFrames;
+        this.frameRows += emFrames;
         appendMatrixRows(
           this.file,
           "instances",
-          instFlat,
-          nInst,
+          instFlat.subarray(0, ii),
+          emInsts,
           10,
           this.instRows
         );
-        this.instRows += nInst;
+        this.instRows += emInsts;
         appendMatrixRows(
           this.file,
           "points",
-          userPtsFlat,
-          nUserPts,
+          userPtsFlat.subarray(0, upi),
+          emUserPts,
           4,
           this.pointRows
         );
-        this.pointRows += nUserPts;
+        this.pointRows += emUserPts;
         appendMatrixRows(
           this.file,
           "pred_points",
-          predPtsFlat,
-          nPredPts,
+          predPtsFlat.subarray(0, ppi),
+          emPredPts,
           5,
           this.predPointRows
         );
-        this.predPointRows += nPredPts;
+        this.predPointRows += emPredPts;
       }
-      this.collectStoreAnnotations(store, vOff, instBase);
+      this.collectStoreAnnotations(
+        store,
+        vOff,
+        instBase,
+        outIdxOf,
+        skippedKeys
+      );
     } catch (e) {
       this.dispose();
       throw e;
@@ -13326,9 +13378,12 @@ var SlpStreamWriter = class {
       const localId = /* @__PURE__ */ new Map();
       const links = [];
       for (const frame of frames) {
+        const videoIndex = Math.max(0, this.videos.indexOf(frame.video));
+        const key = `${videoIndex}:${frame.frameIdx}`;
+        if (this.writtenFrames.has(key)) continue;
+        this.writtenFrames.add(key);
         const localFrameId = framesRows.length;
         const instanceStart = instRows.length;
-        const videoIndex = Math.max(0, this.videos.indexOf(frame.video));
         for (const inst of frame.instances) {
           const localInstId = instRows.length;
           localId.set(inst, localInstId);
@@ -13468,16 +13523,23 @@ var SlpStreamWriter = class {
   }
   /**
    * Collect a store's per-frame + undistributed annotations, remapping the
-   * video index (`+vOff`) and the instance link (`+instBase`) onto the combined
-   * file. The store's map keys are `"videoIndex:frameIdx"` (array-index video).
+   * video index (`+vOff`) and the instance link (through `outIdxOf`, `+instBase`)
+   * onto the combined file. Annotations on a SKIPPED (overlaid) frame — whose
+   * combined `"vid:frameIdx"` key is in `skippedKeys` — are dropped. The store's
+   * map keys are `"videoIndex:frameIdx"` (array-index video).
    */
-  collectStoreAnnotations(store, vOff, instBase) {
-    const resolve = (idx) => idx != null && idx >= 0 ? instBase + idx : -1;
+  collectStoreAnnotations(store, vOff, instBase, outIdxOf, skippedKeys) {
+    const resolve = (idx) => {
+      if (idx == null || idx < 0) return -1;
+      const o = outIdxOf(idx);
+      return o != null ? instBase + o : -1;
+    };
     const fromMap = (map, bucket) => {
       for (const [key, list] of map) {
         const sep = key.indexOf(":");
         const vid = vOff + Number(key.slice(0, sep));
         const fidx = Number(key.slice(sep + 1));
+        if (skippedKeys.has(`${vid}:${fidx}`)) continue;
         for (const ann of list) {
           bucket.anns.push(ann);
           bucket.ctx.push([vid, fidx]);
@@ -13493,6 +13555,7 @@ var SlpStreamWriter = class {
       const sep = key.indexOf(":");
       const vid = vOff + Number(key.slice(0, sep));
       const fidx = Number(key.slice(sep + 1));
+      if (skippedKeys.has(`${vid}:${fidx}`)) continue;
       for (const li of list) {
         this.pendingLabelImages.anns.push(li);
         this.pendingLabelImages.ctx.push([vid, fidx]);
