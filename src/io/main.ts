@@ -92,6 +92,7 @@ export async function loadSlp(
           h5wasmUrl: options?.h5?.h5wasmUrl,
           openVideos,
           onProgress: options?.onProgress,
+          lazy,
         });
       } catch (e) {
         if (streamMode === "auto") {
