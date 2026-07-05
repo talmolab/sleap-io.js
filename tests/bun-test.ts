@@ -21,10 +21,11 @@
  *     does not revert it), so the real-WebM integration test would otherwise
  *     pick up the mocked `mediabunny`.
  *   - It makes `vi.resetModules()` a safe no-op: each file already starts from
- *     a clean registry, and the few tests that re-import a module per case set
- *     their globals in `beforeEach` before the first dynamic `import()`, so
- *     module-level environment captures (e.g. mp4box-video.ts's
- *     `isBrowser`/`hasWebCodecs`) are evaluated correctly.
+ *     a clean registry. Runtime capability probes that a test toggles via
+ *     globals (e.g. mp4box-video.ts's WebCodecs/`isBrowser` check) are evaluated
+ *     lazily at call time rather than captured in a module-level const, so they
+ *     read the current globals regardless of import order — keeping those tests
+ *     correct even under a shared registry (bare `bun test`). See issue #159.
  *   - Per-worker teardown also avoids a cumulative native-module teardown crash
  *     (skia-canvas + many h5wasm instances) seen when the whole suite shares a
  *     single process under plain `--isolate`.

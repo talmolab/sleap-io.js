@@ -6,12 +6,24 @@ import {
   statusToMessage,
 } from "../io/remote.js";
 
-const isBrowser =
-  typeof window !== "undefined" && typeof document !== "undefined";
-const hasWebCodecs =
-  isBrowser &&
-  typeof window.VideoDecoder !== "undefined" &&
-  typeof window.EncodedVideoChunk !== "undefined";
+// Environment/capability probes, evaluated at call time rather than captured in
+// module-level consts. A module-level capture is frozen at first import, which
+// breaks under a shared module registry (e.g. bare `bun test`, where all files
+// share one process): if any earlier file imports this module before a test
+// installs its `window`/WebCodecs globals, the captured value is wrong and can
+// never refresh, because ESM caches the evaluated module body. Probing per call
+// keeps backend selection correct whenever the globals change after load — the
+// browser runtime never mutates them, but the tests do. See issue #159.
+function isBrowser(): boolean {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
+function hasWebCodecs(): boolean {
+  return (
+    isBrowser() &&
+    typeof window.VideoDecoder !== "undefined" &&
+    typeof window.EncodedVideoChunk !== "undefined"
+  );
+}
 const MP4BOX_CDN = "https://unpkg.com/mp4box@0.5.4/dist/mp4box.all.min.js";
 
 async function loadMp4box(): Promise<any> {
@@ -22,7 +34,7 @@ async function loadMp4box(): Promise<any> {
     const module = await import("mp4box");
     return module.default ?? module;
   } catch {
-    if (!isBrowser || typeof document === "undefined") {
+    if (!isBrowser()) {
       throw new Error("Failed to load mp4box");
     }
     await new Promise<void>((resolve, reject) => {
@@ -86,10 +98,10 @@ export class Mp4BoxVideoBackend implements VideoBackend {
       headers?: Record<string, string>;
     },
   ) {
-    if (!hasWebCodecs) {
+    if (!hasWebCodecs()) {
       throw new Error("Mp4BoxVideoBackend requires WebCodecs support.");
     }
-    if (!isBrowser) {
+    if (!isBrowser()) {
       throw new Error("Mp4BoxVideoBackend requires a browser environment.");
     }
     this.filename =
