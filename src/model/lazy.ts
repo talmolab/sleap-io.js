@@ -454,6 +454,14 @@ export class LazyFrameList {
   private store: LazyDataStore;
   private cache: Map<number, LabeledFrame>;
   _supplementary: LabeledFrame[] = [];
+  /**
+   * Max materialized frames to keep cached (0 = unbounded, the default). When
+   * exceeded, the oldest-inserted entries are evicted (FIFO ≈ LRU for a
+   * sequential sweep) so a read→transform→write pass over a huge lazy file stays
+   * memory-bounded without the caller touching internals. Combine with (or use
+   * instead of) explicit {@link release}/{@link releaseWindow}. See #207.
+   */
+  cacheLimit = 0;
 
   constructor(store: LazyDataStore) {
     this.store = store;
@@ -482,8 +490,29 @@ export class LazyFrameList {
     const frame = this.store.materializeFrame(index);
     if (frame) {
       this.cache.set(index, frame);
+      if (this.cacheLimit > 0 && this.cache.size > this.cacheLimit) {
+        for (const k of this.cache.keys()) {
+          if (this.cache.size <= this.cacheLimit) break;
+          if (k !== index) this.cache.delete(k);
+        }
+      }
     }
     return frame ?? undefined;
+  }
+
+  /** Drop the cached (materialized) frame at `index`, if any. */
+  release(index: number): void {
+    this.cache.delete(index);
+  }
+
+  /** Drop cached frames in the half-open range `[start, end)`. */
+  releaseWindow(start: number, end: number): void {
+    for (let i = start; i < end; i++) this.cache.delete(i);
+  }
+
+  /** Drop all cached frames (keeps the underlying store). */
+  clearCache(): void {
+    this.cache.clear();
   }
 
   /** Materialize all frames and return as a regular array. */

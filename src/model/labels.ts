@@ -288,6 +288,33 @@ export class Labels {
   }
 
   /**
+   * Drop the cached (materialized) frame at `i` from a lazy `Labels`, so a
+   * windowed read→transform→write sweep over a huge file stays memory-bounded
+   * without reaching into internals. No-op on an eager `Labels`. See #207.
+   */
+  releaseFrame(i: number): void {
+    this._lazyFrameList?.release(i);
+  }
+
+  /** Drop cached lazy frames in the half-open range `[start, end)`. No-op if eager. */
+  releaseFrameWindow(start: number, end: number): void {
+    this._lazyFrameList?.releaseWindow(start, end);
+  }
+
+  /**
+   * Bound how many materialized frames a lazy `Labels` keeps cached (0 =
+   * unbounded). When exceeded, oldest-first eviction keeps peak memory flat
+   * across a sequential sweep. No-op / returns 0 on an eager `Labels`.
+   */
+  get frameCacheLimit(): number {
+    return this._lazyFrameList?.cacheLimit ?? 0;
+  }
+
+  set frameCacheLimit(n: number) {
+    if (this._lazyFrameList) this._lazyFrameList.cacheLimit = Math.max(0, n);
+  }
+
+  /**
    * Collect tracks from annotations on a frame into this.tracks.
    *
    * `seen` lets a caller iterating many frames share one membership set instead

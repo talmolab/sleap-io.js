@@ -15,7 +15,15 @@ import {
   openSlpWriter,
   saveSlpMergedFromStores,
 } from "../../src/codecs/slp/write.js";
-import type { LabeledFrame } from "../../src/model/labeled-frame.js";
+import { LazyDataStore } from "../../src/model/lazy.js";
+import { Video } from "../../src/model/video.js";
+import { Skeleton } from "../../src/model/skeleton.js";
+import { LabeledFrame } from "../../src/model/labeled-frame.js";
+import {
+  Instance,
+  PredictedInstance,
+  Track,
+} from "../../src/model/instance.js";
 
 const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 const slp = (name: string) => path.join(fixtureRoot, "slp", name);
@@ -148,5 +156,157 @@ describe("saveSlpMergedFromStores — multi-store merge", () => {
     await expect(saveSlpMergedFromStores([])).rejects.toThrow(
       /at least one store/,
     );
+  });
+});
+
+describe("appendStore — non-monotonic point ranges (#208 review)", () => {
+  it("attributes points correctly when store point ranges aren't frame-ordered", async () => {
+    // A reader-valid store whose point table is NOT monotonic in frame order:
+    // frame 0's instance owns store points [3,6); frame 1's owns [0,3). The
+    // writer re-packs points in frame order, so it must stamp the PACKED index,
+    // not the store's original offset — otherwise the two frames' point sets swap.
+    const skeleton = new Skeleton({ nodes: ["A", "B", "C"] });
+    const video = new Video({
+      filename: ".",
+      backendMetadata: { dataset: "video0/video" },
+    });
+    const store = new LazyDataStore({
+      framesData: {
+        frame_id: [0, 1],
+        video: [0, 0],
+        frame_idx: [0, 1],
+        instance_id_start: [0, 1],
+        instance_id_end: [1, 2],
+      },
+      instancesData: {
+        instance_type: [0, 0],
+        skeleton: [0, 0],
+        track: [-1, -1],
+        from_predicted: [-1, -1],
+        score: [0, 0],
+        point_id_start: [3, 0], // frame 0 -> points 3..6, frame 1 -> points 0..3
+        point_id_end: [6, 3],
+        tracking_score: [0, 0],
+      },
+      pointsData: {
+        x: [10, 11, 12, 30, 31, 32],
+        y: [10, 11, 12, 30, 31, 32],
+        visible: [1, 1, 1, 1, 1, 1],
+        complete: [1, 1, 1, 1, 1, 1],
+        score: [0, 0, 0, 0, 0, 0],
+      },
+      predPointsData: { x: [], y: [], visible: [], complete: [], score: [] },
+      skeletons: [skeleton],
+      tracks: [],
+      videos: [video],
+      formatId: 1.2,
+    });
+
+    const writer = await openSlpWriter({
+      skeletons: [skeleton],
+      videos: [video],
+      tracks: [],
+    });
+    writer.appendStore(store);
+    const bytes = writer.close();
+    const rt = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
+
+    const f0 = rt.labeledFrames.find((f) => f.frameIdx === 0)!;
+    const f1 = rt.labeledFrames.find((f) => f.frameIdx === 1)!;
+    // frame 0 owns the (30,31,32) block; frame 1 owns the (10,11,12) block.
+    expect(f0.instances[0].points.map((p) => p.xy[0])).toEqual([30, 31, 32]);
+    expect(f1.instances[0].points.map((p) => p.xy[0])).toEqual([10, 11, 12]);
+  });
+});
+
+describe("SlpStreamWriter.appendFrames — materialized-frame overlay", () => {
+  const skeleton = new Skeleton(["A", "B"]);
+  const video = new Video({ filename: "overlay.mp4" });
+  const track = new Track("t0");
+  const mkUser = (frameIdx: number, x: number) =>
+    new LabeledFrame({
+      video,
+      frameIdx,
+      instances: [
+        new Instance({
+          points: [
+            { xy: [x, x + 1], visible: true, complete: true },
+            { xy: [x + 2, x + 3], visible: true, complete: true },
+          ],
+          skeleton,
+          track,
+        }),
+      ],
+    });
+
+  it("writes a batch of user + predicted frames that round-trip", async () => {
+    const pred = new LabeledFrame({
+      video,
+      frameIdx: 1,
+      instances: [
+        new PredictedInstance({
+          points: [
+            { xy: [5, 6], visible: true, complete: true, score: 0.9 },
+            { xy: [7, 8], visible: true, complete: true, score: 0.8 },
+          ],
+          skeleton,
+          score: 0.7,
+        }),
+      ],
+    });
+
+    const writer = await openSlpWriter({
+      skeletons: [skeleton],
+      videos: [video],
+      tracks: [track],
+    });
+    writer.appendFrames([mkUser(0, 1), pred]);
+    const rt = await readSlp(new Uint8Array(writer.close()).buffer, {
+      openVideos: false,
+    });
+
+    expect(rt.labeledFrames.length).toBe(2);
+    const f0 = rt.labeledFrames.find((f) => f.frameIdx === 0)!;
+    const f1 = rt.labeledFrames.find((f) => f.frameIdx === 1)!;
+    expect(f0.instances[0].points.map((p) => p.xy)).toEqual([
+      [1, 2],
+      [3, 4],
+    ]);
+    expect(f0.instances[0].track?.name).toBe("t0");
+    expect(f1.instances[0].constructor.name).toContain("Predicted");
+    expect(f1.instances[0].points.map((p) => p.xy)).toEqual([
+      [5, 6],
+      [7, 8],
+    ]);
+  });
+
+  it("interleaves appendStore (bulk) with appendFrames (overlay edits)", async () => {
+    const eager = await readSlp(FIX, { openVideos: false });
+    const s = await store(FIX);
+
+    const writer = await openSlpWriter({
+      skeletons: s.skeletons,
+      videos: [...s.videos, video], // store's video(s) + the overlay video
+      tracks: [...s.tracks, track],
+    });
+    writer.appendStore(s); // bulk lazy frames onto video 0
+    writer.appendFrames([mkUser(0, 100), mkUser(1, 200)]); // 2 extra frames on the overlay video
+    const rt = await readSlp(new Uint8Array(writer.close()).buffer, {
+      openVideos: false,
+    });
+
+    expect(rt.videos.length).toBe(s.videos.length + 1);
+    expect(rt.labeledFrames.length).toBe(eager.labeledFrames.length + 2);
+    // The two overlay frames landed on the last video with the right points.
+    const overlayIdx = rt.videos.length - 1;
+    const overlay = rt.labeledFrames.filter(
+      (f) => rt.videos.indexOf(f.video) === overlayIdx,
+    );
+    expect(overlay.length).toBe(2);
+    expect(overlay.map((f) => f.instances[0].points[0].xy[0]).sort()).toEqual([
+      100, 200,
+    ]);
   });
 });
