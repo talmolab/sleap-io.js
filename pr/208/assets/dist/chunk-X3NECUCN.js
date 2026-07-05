@@ -6047,6 +6047,14 @@ var LazyFrameList = class {
   store;
   cache;
   _supplementary = [];
+  /**
+   * Max materialized frames to keep cached (0 = unbounded, the default). When
+   * exceeded, the oldest-inserted entries are evicted (FIFO ≈ LRU for a
+   * sequential sweep) so a read→transform→write pass over a huge lazy file stays
+   * memory-bounded without the caller touching internals. Combine with (or use
+   * instead of) explicit {@link release}/{@link releaseWindow}. See #207.
+   */
+  cacheLimit = 0;
   constructor(store) {
     this.store = store;
     this.cache = /* @__PURE__ */ new Map();
@@ -6067,8 +6075,26 @@ var LazyFrameList = class {
     const frame = this.store.materializeFrame(index);
     if (frame) {
       this.cache.set(index, frame);
+      if (this.cacheLimit > 0 && this.cache.size > this.cacheLimit) {
+        for (const k of this.cache.keys()) {
+          if (this.cache.size <= this.cacheLimit) break;
+          if (k !== index) this.cache.delete(k);
+        }
+      }
     }
     return frame ?? void 0;
+  }
+  /** Drop the cached (materialized) frame at `index`, if any. */
+  release(index) {
+    this.cache.delete(index);
+  }
+  /** Drop cached frames in the half-open range `[start, end)`. */
+  releaseWindow(start, end) {
+    for (let i = start; i < end; i++) this.cache.delete(i);
+  }
+  /** Drop all cached frames (keeps the underlying store). */
+  clearCache() {
+    this.cache.clear();
   }
   /** Materialize all frames and return as a regular array. */
   toArray() {
@@ -6287,6 +6313,29 @@ var Labels = class _Labels {
    */
   frameAt(i) {
     return this._lazyFrameList ? this._lazyFrameList.at(i) : this.labeledFrames[i];
+  }
+  /**
+   * Drop the cached (materialized) frame at `i` from a lazy `Labels`, so a
+   * windowed read→transform→write sweep over a huge file stays memory-bounded
+   * without reaching into internals. No-op on an eager `Labels`. See #207.
+   */
+  releaseFrame(i) {
+    this._lazyFrameList?.release(i);
+  }
+  /** Drop cached lazy frames in the half-open range `[start, end)`. No-op if eager. */
+  releaseFrameWindow(start, end) {
+    this._lazyFrameList?.releaseWindow(start, end);
+  }
+  /**
+   * Bound how many materialized frames a lazy `Labels` keeps cached (0 =
+   * unbounded). When exceeded, oldest-first eviction keeps peak memory flat
+   * across a sequential sweep. No-op / returns 0 on an eager `Labels`.
+   */
+  get frameCacheLimit() {
+    return this._lazyFrameList?.cacheLimit ?? 0;
+  }
+  set frameCacheLimit(n) {
+    if (this._lazyFrameList) this._lazyFrameList.cacheLimit = Math.max(0, n);
   }
   /**
    * Collect tracks from annotations on a frame into this.tracks.
@@ -13072,6 +13121,9 @@ var SlpStreamWriter = class {
   file;
   module;
   memPath;
+  videos;
+  skeletons;
+  tracks;
   frameRows = 0;
   instRows = 0;
   pointRows = 0;
@@ -13079,10 +13131,13 @@ var SlpStreamWriter = class {
   negativeFrames = /* @__PURE__ */ new Set();
   closed = false;
   /** @internal — use {@link openSlpWriter}. */
-  constructor(module, file, memPath) {
+  constructor(module, file, memPath, header) {
     this.module = module;
     this.file = file;
     this.memPath = memPath;
+    this.videos = header.videos;
+    this.skeletons = header.skeletons;
+    this.tracks = header.tracks;
   }
   /**
    * Append every frame of `store` (in windows), rebasing its ids onto the
@@ -13110,116 +13165,287 @@ var SlpStreamWriter = class {
     const predBase = this.predPointRows;
     const px = store.pointsData.x, py = store.pointsData.y, pv = store.pointsData.visible, pc = store.pointsData.complete;
     const qx = store.predPointsData.x, qy = store.predPointsData.y, qv = store.predPointsData.visible, qc = store.predPointsData.complete, qs = store.predPointsData.score;
-    for (let wStart = 0; wStart < nFrames; wStart += windowFrames) {
-      const wEnd = Math.min(wStart + windowFrames, nFrames);
-      const wFrames = wEnd - wStart;
-      let nInst = 0;
-      let nUserPts = 0;
-      let nPredPts = 0;
-      for (let r = wStart; r < wEnd; r++) {
-        const iStart = numAt(fd.instance_id_start, r);
-        const iEnd = numAt(fd.instance_id_end, r);
-        nInst += iEnd - iStart;
-        for (let j = iStart; j < iEnd; j++) {
-          const cnt = numAt(idn.point_id_end, j) - numAt(idn.point_id_start, j);
-          if (numAt(idn.instance_type, j) === 1) nPredPts += cnt;
-          else nUserPts += cnt;
-        }
-      }
-      const framesFlat = new Float64Array(wFrames * 5);
-      const instFlat = new Float64Array(nInst * 10);
-      const userPtsFlat = new Float64Array(nUserPts * 4);
-      const predPtsFlat = new Float64Array(nPredPts * 5);
-      let fi = 0;
-      let ii = 0;
-      let upi = 0;
-      let ppi = 0;
-      for (let r = wStart; r < wEnd; r++) {
-        const newFrameId = frameBase + r;
-        const combinedVideo = remapVideo(numAt(fd.video, r));
-        const frameIdx = numAt(fd.frame_idx, r);
-        const iStart = numAt(fd.instance_id_start, r);
-        const iEnd = numAt(fd.instance_id_end, r);
-        framesFlat[fi++] = newFrameId;
-        framesFlat[fi++] = combinedVideo;
-        framesFlat[fi++] = frameIdx;
-        framesFlat[fi++] = instBase + iStart;
-        framesFlat[fi++] = instBase + iEnd;
-        if (store.negativeFrames.has(`${numAt(fd.video, r)}:${frameIdx}`)) {
-          this.negativeFrames.add(`${combinedVideo}:${frameIdx}`);
-        }
-        for (let j = iStart; j < iEnd; j++) {
-          const type = numAt(idn.instance_type, j);
-          const ptStart = numAt(idn.point_id_start, j);
-          const ptEnd = numAt(idn.point_id_end, j);
-          const trk = numAt(idn.track, j, -1);
-          const fp = numAt(idn.from_predicted, j, -1);
-          instFlat[ii++] = instBase + j;
-          instFlat[ii++] = type;
-          instFlat[ii++] = newFrameId;
-          instFlat[ii++] = numAt(idn.skeleton, j) + kOff;
-          instFlat[ii++] = trk >= 0 ? trk + tOff : -1;
-          instFlat[ii++] = fp >= 0 ? instBase + fp : -1;
-          instFlat[ii++] = numAt(idn.score, j);
-          if (type === 1) {
-            instFlat[ii++] = predBase + ptStart;
-            instFlat[ii++] = predBase + ptEnd;
-            for (let p = ptStart; p < ptEnd; p++) {
-              predPtsFlat[ppi++] = numAt(qx, p);
-              predPtsFlat[ppi++] = numAt(qy, p);
-              predPtsFlat[ppi++] = numAt(qv, p);
-              predPtsFlat[ppi++] = numAt(qc, p);
-              predPtsFlat[ppi++] = numAt(qs, p);
-            }
-          } else {
-            instFlat[ii++] = pointBase + ptStart;
-            instFlat[ii++] = pointBase + ptEnd;
-            for (let p = ptStart; p < ptEnd; p++) {
-              userPtsFlat[upi++] = numAt(px, p);
-              userPtsFlat[upi++] = numAt(py, p);
-              userPtsFlat[upi++] = numAt(pv, p);
-              userPtsFlat[upi++] = numAt(pc, p);
-            }
+    let userWritten = 0;
+    let predWritten = 0;
+    try {
+      for (let wStart = 0; wStart < nFrames; wStart += windowFrames) {
+        const wEnd = Math.min(wStart + windowFrames, nFrames);
+        const wFrames = wEnd - wStart;
+        let nInst = 0;
+        let nUserPts = 0;
+        let nPredPts = 0;
+        for (let r = wStart; r < wEnd; r++) {
+          const iStart = numAt(fd.instance_id_start, r);
+          const iEnd = numAt(fd.instance_id_end, r);
+          nInst += iEnd - iStart;
+          for (let j = iStart; j < iEnd; j++) {
+            const cnt = numAt(idn.point_id_end, j) - numAt(idn.point_id_start, j);
+            if (numAt(idn.instance_type, j) === 1) nPredPts += cnt;
+            else nUserPts += cnt;
           }
-          instFlat[ii++] = numAt(idn.tracking_score, j);
+        }
+        const framesFlat = new Float64Array(wFrames * 5);
+        const instFlat = new Float64Array(nInst * 10);
+        const userPtsFlat = new Float64Array(nUserPts * 4);
+        const predPtsFlat = new Float64Array(nPredPts * 5);
+        let fi = 0;
+        let ii = 0;
+        let upi = 0;
+        let ppi = 0;
+        for (let r = wStart; r < wEnd; r++) {
+          const newFrameId = frameBase + r;
+          const combinedVideo = remapVideo(numAt(fd.video, r));
+          const frameIdx = numAt(fd.frame_idx, r);
+          const iStart = numAt(fd.instance_id_start, r);
+          const iEnd = numAt(fd.instance_id_end, r);
+          framesFlat[fi++] = newFrameId;
+          framesFlat[fi++] = combinedVideo;
+          framesFlat[fi++] = frameIdx;
+          framesFlat[fi++] = instBase + iStart;
+          framesFlat[fi++] = instBase + iEnd;
+          if (store.negativeFrames.has(`${numAt(fd.video, r)}:${frameIdx}`)) {
+            this.negativeFrames.add(`${combinedVideo}:${frameIdx}`);
+          }
+          for (let j = iStart; j < iEnd; j++) {
+            const type = numAt(idn.instance_type, j);
+            const ptStart = numAt(idn.point_id_start, j);
+            const ptEnd = numAt(idn.point_id_end, j);
+            const trk = numAt(idn.track, j, -1);
+            const fp = numAt(idn.from_predicted, j, -1);
+            instFlat[ii++] = instBase + j;
+            instFlat[ii++] = type;
+            instFlat[ii++] = newFrameId;
+            instFlat[ii++] = numAt(idn.skeleton, j) + kOff;
+            instFlat[ii++] = trk >= 0 ? trk + tOff : -1;
+            instFlat[ii++] = fp >= 0 ? instBase + fp : -1;
+            instFlat[ii++] = numAt(idn.score, j);
+            if (type === 1) {
+              instFlat[ii++] = predBase + predWritten;
+              instFlat[ii++] = predBase + predWritten + (ptEnd - ptStart);
+              for (let p = ptStart; p < ptEnd; p++) {
+                predPtsFlat[ppi++] = numAt(qx, p);
+                predPtsFlat[ppi++] = numAt(qy, p);
+                predPtsFlat[ppi++] = numAt(qv, p);
+                predPtsFlat[ppi++] = numAt(qc, p);
+                predPtsFlat[ppi++] = numAt(qs, p);
+              }
+              predWritten += ptEnd - ptStart;
+            } else {
+              instFlat[ii++] = pointBase + userWritten;
+              instFlat[ii++] = pointBase + userWritten + (ptEnd - ptStart);
+              for (let p = ptStart; p < ptEnd; p++) {
+                userPtsFlat[upi++] = numAt(px, p);
+                userPtsFlat[upi++] = numAt(py, p);
+                userPtsFlat[upi++] = numAt(pv, p);
+                userPtsFlat[upi++] = numAt(pc, p);
+              }
+              userWritten += ptEnd - ptStart;
+            }
+            instFlat[ii++] = numAt(idn.tracking_score, j);
+          }
+        }
+        appendMatrixRows(
+          this.file,
+          "frames",
+          framesFlat,
+          wFrames,
+          5,
+          this.frameRows
+        );
+        this.frameRows += wFrames;
+        appendMatrixRows(
+          this.file,
+          "instances",
+          instFlat,
+          nInst,
+          10,
+          this.instRows
+        );
+        this.instRows += nInst;
+        appendMatrixRows(
+          this.file,
+          "points",
+          userPtsFlat,
+          nUserPts,
+          4,
+          this.pointRows
+        );
+        this.pointRows += nUserPts;
+        appendMatrixRows(
+          this.file,
+          "pred_points",
+          predPtsFlat,
+          nPredPts,
+          5,
+          this.predPointRows
+        );
+        this.predPointRows += nPredPts;
+      }
+    } catch (e) {
+      this.dispose();
+      throw e;
+    }
+  }
+  /**
+   * Append a batch of already-materialized `LabeledFrame`s — the write-side of
+   * an edit overlay: user-corrected or newly-added frames layered onto a lazy
+   * stream. Each frame's `video`/`skeleton`/`track` is resolved against this
+   * writer's header (by identity); `from_predicted` links are resolved among the
+   * batch. Intended for a bounded batch (the corrected subset), so it is not
+   * windowed. Interleave freely with {@link appendStore}.
+   */
+  appendFrames(frames) {
+    if (this.closed) throw new Error("SlpStreamWriter is closed");
+    if (frames.length === 0) return;
+    try {
+      const frameBase = this.frameRows;
+      const instBase = this.instRows;
+      const pointBase = this.pointRows;
+      const predBase = this.predPointRows;
+      const framesRows = [];
+      const instRows = [];
+      const userPts = [];
+      const predPts = [];
+      const localId = /* @__PURE__ */ new Map();
+      const links = [];
+      for (const frame of frames) {
+        const localFrameId = framesRows.length;
+        const instanceStart = instRows.length;
+        const videoIndex = Math.max(0, this.videos.indexOf(frame.video));
+        for (const inst of frame.instances) {
+          const localInstId = instRows.length;
+          localId.set(inst, localInstId);
+          const skeletonId = Math.max(0, this.skeletons.indexOf(inst.skeleton));
+          const trackId = inst.track ? this.tracks.indexOf(inst.track) : -1;
+          const trackingScore = inst.trackingScore ?? 0;
+          let type = 0;
+          let score = 0;
+          let ptStart = 0;
+          let ptEnd = 0;
+          if (inst instanceof PredictedInstance) {
+            type = 1;
+            score = inst.score ?? 0;
+            ptStart = predPts.length;
+            for (const p of inst.points) {
+              predPts.push([
+                p.xy[0],
+                p.xy[1],
+                p.visible ? 1 : 0,
+                p.complete ? 1 : 0,
+                p.score ?? 0
+              ]);
+            }
+            ptEnd = predPts.length;
+          } else {
+            ptStart = userPts.length;
+            for (const p of inst.points) {
+              userPts.push([
+                p.xy[0],
+                p.xy[1],
+                p.visible ? 1 : 0,
+                p.complete ? 1 : 0
+              ]);
+            }
+            ptEnd = userPts.length;
+            if (inst.fromPredicted)
+              links.push([localInstId, inst.fromPredicted]);
+          }
+          instRows.push([
+            localInstId,
+            type,
+            localFrameId,
+            skeletonId,
+            trackId,
+            -1,
+            // from_predicted (patched below)
+            score,
+            ptStart,
+            ptEnd,
+            trackingScore
+          ]);
+        }
+        framesRows.push([
+          localFrameId,
+          videoIndex,
+          frame.frameIdx,
+          instanceStart,
+          instRows.length
+        ]);
+        if (frame.isNegative) {
+          this.negativeFrames.add(`${videoIndex}:${frame.frameIdx}`);
         }
       }
-      appendMatrixRows(
-        this.file,
-        "frames",
-        framesFlat,
-        wFrames,
-        5,
-        this.frameRows
-      );
-      this.frameRows += wFrames;
-      appendMatrixRows(
-        this.file,
-        "instances",
-        instFlat,
-        nInst,
-        10,
-        this.instRows
-      );
-      this.instRows += nInst;
-      appendMatrixRows(
-        this.file,
-        "points",
-        userPtsFlat,
-        nUserPts,
-        4,
-        this.pointRows
-      );
-      this.pointRows += nUserPts;
+      for (const [local, src] of links) {
+        const srcLocal = localId.get(src);
+        instRows[local][5] = srcLocal != null ? instBase + srcLocal : -1;
+      }
+      const nF = framesRows.length;
+      const nI = instRows.length;
+      const nU = userPts.length;
+      const nP = predPts.length;
+      const framesFlat = new Float64Array(nF * 5);
+      for (let i = 0; i < nF; i++) {
+        const r = framesRows[i];
+        const o = i * 5;
+        framesFlat[o] = frameBase + r[0];
+        framesFlat[o + 1] = r[1];
+        framesFlat[o + 2] = r[2];
+        framesFlat[o + 3] = instBase + r[3];
+        framesFlat[o + 4] = instBase + r[4];
+      }
+      const instFlat = new Float64Array(nI * 10);
+      for (let i = 0; i < nI; i++) {
+        const r = instRows[i];
+        const o = i * 10;
+        const ptBase = r[1] === 1 ? predBase : pointBase;
+        instFlat[o] = instBase + r[0];
+        instFlat[o + 1] = r[1];
+        instFlat[o + 2] = frameBase + r[2];
+        instFlat[o + 3] = r[3];
+        instFlat[o + 4] = r[4];
+        instFlat[o + 5] = r[5];
+        instFlat[o + 6] = r[6];
+        instFlat[o + 7] = ptBase + r[7];
+        instFlat[o + 8] = ptBase + r[8];
+        instFlat[o + 9] = r[9];
+      }
+      const userFlat = new Float64Array(nU * 4);
+      for (let i = 0; i < nU; i++) {
+        const r = userPts[i];
+        const o = i * 4;
+        userFlat[o] = r[0];
+        userFlat[o + 1] = r[1];
+        userFlat[o + 2] = r[2];
+        userFlat[o + 3] = r[3];
+      }
+      const predFlat = new Float64Array(nP * 5);
+      for (let i = 0; i < nP; i++) {
+        const r = predPts[i];
+        const o = i * 5;
+        predFlat[o] = r[0];
+        predFlat[o + 1] = r[1];
+        predFlat[o + 2] = r[2];
+        predFlat[o + 3] = r[3];
+        predFlat[o + 4] = r[4];
+      }
+      appendMatrixRows(this.file, "frames", framesFlat, nF, 5, this.frameRows);
+      this.frameRows += nF;
+      appendMatrixRows(this.file, "instances", instFlat, nI, 10, this.instRows);
+      this.instRows += nI;
+      appendMatrixRows(this.file, "points", userFlat, nU, 4, this.pointRows);
+      this.pointRows += nU;
       appendMatrixRows(
         this.file,
         "pred_points",
-        predPtsFlat,
-        nPredPts,
+        predFlat,
+        nP,
         5,
         this.predPointRows
       );
-      this.predPointRows += nPredPts;
+      this.predPointRows += nP;
+    } catch (e) {
+      this.dispose();
+      throw e;
     }
   }
   /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
@@ -13247,43 +13473,87 @@ var SlpStreamWriter = class {
     fs.unlink(this.memPath);
     return bytes;
   }
+  /**
+   * Release the underlying HDF5 file WITHOUT producing bytes — call to clean up
+   * a writer that will not be finished (e.g. after an error). Idempotent and
+   * best-effort (never throws); the file/MEMFS path are closed and unlinked.
+   */
+  dispose() {
+    if (this.closed) return;
+    this.closed = true;
+    try {
+      this.file.close();
+    } catch {
+    }
+    try {
+      getH5FileSystem(this.module).unlink?.(this.memPath);
+    } catch {
+    }
+  }
 };
 async function openSlpWriter(header) {
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_stream_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
   const file = new module.File(memPath, "w");
-  const headerLabels = new Labels({
-    labeledFrames: [],
+  try {
+    const headerLabels = new Labels({
+      labeledFrames: [],
+      videos: header.videos,
+      skeletons: header.skeletons,
+      tracks: header.tracks ?? [],
+      suggestions: header.suggestions ?? [],
+      sessions: header.sessions ?? [],
+      identities: header.identities ?? [],
+      provenance: header.provenance ?? {}
+    });
+    writeMetadata(file, headerLabels);
+    writeVideos(file, headerLabels.videos);
+    writeVideoCrops(file, headerLabels.videos);
+    writeTracks(file, headerLabels.tracks);
+    writeSuggestions(file, headerLabels.suggestions, headerLabels.videos);
+    writeIdentities(file, headerLabels.identities);
+    writeSessions(
+      file,
+      headerLabels.sessions,
+      headerLabels.videos,
+      [],
+      headerLabels.identities
+    );
+    createAppendableMatrixDataset(file, "frames", FRAMES_FIELDS, "<i8");
+    createAppendableMatrixDataset(file, "instances", INSTANCES_FIELDS, "<f8");
+    createAppendableMatrixDataset(file, "points", POINTS_FIELDS, "<f8");
+    createAppendableMatrixDataset(
+      file,
+      "pred_points",
+      PRED_POINTS_FIELDS,
+      "<f8"
+    );
+  } catch (e) {
+    try {
+      file.close();
+    } catch {
+    }
+    try {
+      getH5FileSystem(module).unlink?.(memPath);
+    } catch {
+    }
+    throw e;
+  }
+  return new SlpStreamWriter(module, file, memPath, {
     videos: header.videos,
     skeletons: header.skeletons,
-    tracks: header.tracks ?? [],
-    suggestions: header.suggestions ?? [],
-    sessions: header.sessions ?? [],
-    identities: header.identities ?? [],
-    provenance: header.provenance ?? {}
+    tracks: header.tracks ?? []
   });
-  writeMetadata(file, headerLabels);
-  writeVideos(file, headerLabels.videos);
-  writeVideoCrops(file, headerLabels.videos);
-  writeTracks(file, headerLabels.tracks);
-  writeSuggestions(file, headerLabels.suggestions, headerLabels.videos);
-  writeIdentities(file, headerLabels.identities);
-  writeSessions(
-    file,
-    headerLabels.sessions,
-    headerLabels.videos,
-    [],
-    headerLabels.identities
-  );
-  createAppendableMatrixDataset(file, "frames", FRAMES_FIELDS, "<i8");
-  createAppendableMatrixDataset(file, "instances", INSTANCES_FIELDS, "<f8");
-  createAppendableMatrixDataset(file, "points", POINTS_FIELDS, "<f8");
-  createAppendableMatrixDataset(file, "pred_points", PRED_POINTS_FIELDS, "<f8");
-  return new SlpStreamWriter(module, file, memPath);
 }
 function skeletonSignature(skeletons) {
-  return JSON.stringify(skeletons.map((s) => s.nodeNames));
+  return JSON.stringify(
+    skeletons.map((s) => ({
+      nodes: s.nodeNames,
+      edges: s.edges.map((e) => [e.source.name, e.destination.name]),
+      symmetries: s.symmetryNames
+    }))
+  );
 }
 async function saveSlpMergedFromStores(stores, options) {
   if (stores.length === 0) {

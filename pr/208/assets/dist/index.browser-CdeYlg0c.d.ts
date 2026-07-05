@@ -2106,10 +2106,24 @@ declare class LazyFrameList {
     private store;
     private cache;
     _supplementary: LabeledFrame[];
+    /**
+     * Max materialized frames to keep cached (0 = unbounded, the default). When
+     * exceeded, the oldest-inserted entries are evicted (FIFO ≈ LRU for a
+     * sequential sweep) so a read→transform→write pass over a huge lazy file stays
+     * memory-bounded without the caller touching internals. Combine with (or use
+     * instead of) explicit {@link release}/{@link releaseWindow}. See #207.
+     */
+    cacheLimit: number;
     constructor(store: LazyDataStore);
     get length(): number;
     /** Get a frame by index, materializing it if needed. */
     at(index: number): LabeledFrame | undefined;
+    /** Drop the cached (materialized) frame at `index`, if any. */
+    release(index: number): void;
+    /** Drop cached frames in the half-open range `[start, end)`. */
+    releaseWindow(start: number, end: number): void;
+    /** Drop all cached frames (keeps the underlying store). */
+    clearCache(): void;
     /** Materialize all frames and return as a regular array. */
     toArray(): LabeledFrame[];
     /** Iterator support. Skips null frames instead of stopping early. */
@@ -2186,6 +2200,21 @@ declare class Labels {
      * untouched session round-trips with zero frame materialization.
      */
     frameAt(i: number): LabeledFrame | undefined;
+    /**
+     * Drop the cached (materialized) frame at `i` from a lazy `Labels`, so a
+     * windowed read→transform→write sweep over a huge file stays memory-bounded
+     * without reaching into internals. No-op on an eager `Labels`. See #207.
+     */
+    releaseFrame(i: number): void;
+    /** Drop cached lazy frames in the half-open range `[start, end)`. No-op if eager. */
+    releaseFrameWindow(start: number, end: number): void;
+    /**
+     * Bound how many materialized frames a lazy `Labels` keeps cached (0 =
+     * unbounded). When exceeded, oldest-first eviction keeps peak memory flat
+     * across a sequential sweep. No-op / returns 0 on an eager `Labels`.
+     */
+    get frameCacheLimit(): number;
+    set frameCacheLimit(n: number);
     /**
      * Collect tracks from annotations on a frame into this.tracks.
      *
@@ -3593,6 +3622,9 @@ declare class SlpStreamWriter {
     private file;
     private module;
     private memPath;
+    private videos;
+    private skeletons;
+    private tracks;
     private frameRows;
     private instRows;
     private pointRows;
@@ -3600,7 +3632,11 @@ declare class SlpStreamWriter {
     private negativeFrames;
     private closed;
     /** @internal — use {@link openSlpWriter}. */
-    constructor(module: any, file: any, memPath: string);
+    constructor(module: any, file: any, memPath: string, header: {
+        videos: Video[];
+        skeletons: Skeleton[];
+        tracks: Track[];
+    });
     /**
      * Append every frame of `store` (in windows), rebasing its ids onto the
      * running file so the store's videos/instances/points/tracks land at the
@@ -3610,8 +3646,23 @@ declare class SlpStreamWriter {
      * ordered by frame (the SLP on-disk invariant).
      */
     appendStore(store: LazyDataStore, opts?: AppendStoreOptions): void;
+    /**
+     * Append a batch of already-materialized `LabeledFrame`s — the write-side of
+     * an edit overlay: user-corrected or newly-added frames layered onto a lazy
+     * stream. Each frame's `video`/`skeleton`/`track` is resolved against this
+     * writer's header (by identity); `from_predicted` links are resolved among the
+     * batch. Intended for a bounded batch (the corrected subset), so it is not
+     * windowed. Interleave freely with {@link appendStore}.
+     */
+    appendFrames(frames: LabeledFrame[]): void;
     /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
     close(): Uint8Array;
+    /**
+     * Release the underlying HDF5 file WITHOUT producing bytes — call to clean up
+     * a writer that will not be finished (e.g. after an error). Idempotent and
+     * best-effort (never throws); the file/MEMFS path are closed and unlinked.
+     */
+    dispose(): void;
 }
 /**
  * Open a streaming SLP writer: create the in-memory HDF5 file, write the header
