@@ -31,6 +31,7 @@ import {
 import { buildSourceVideoFromDict } from "./source-video.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
+import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import {
   Instance,
   PredictedInstance,
@@ -77,6 +78,14 @@ export interface StreamingSlpOptions {
    * `RecordingSession.rawJson`.
    */
   rawSessions?: boolean;
+  /**
+   * Defer frame materialization. When `true`, the pose tables are wrapped in a
+   * `LazyDataStore`/`LazyFrameList` and individual `LabeledFrame`/`Instance`
+   * objects are built only on first access (via `labels.frameAt(i)` /
+   * `labels.materialize()`), instead of eagerly building the full object graph.
+   * Bounds peak memory for very large prediction files. Default `false`.
+   */
+  lazy?: boolean;
   /**
    * Optional progress callback fired as loading advances through its stages.
    * `current` counts completed stages out of `total`; `message` labels the
@@ -153,6 +162,7 @@ export async function readSlpStreaming(
       openVideos,
       options?.onProgress,
       options?.rawSessions ?? false,
+      options?.lazy ?? false,
     );
   } finally {
     // Only close the file if we're NOT opening video backends.
@@ -178,6 +188,7 @@ export async function readFromStreamingFile(
   openVideos: boolean = false,
   onProgress?: (current: number, total: number, message?: string) => void,
   rawSessions: boolean = false,
+  lazy: boolean = false,
 ): Promise<Labels> {
   // Stage-level progress. The orchestration in this function runs on the MAIN
   // thread — only the low-level HDF5 byte reads are delegated to the worker via
@@ -264,18 +275,35 @@ export async function readFromStreamingFile(
   const pointsData = await readStructDatasetStreaming(file, "points");
   const predPointsData = await readStructDatasetStreaming(file, "pred_points");
 
-  // Build labeled frames
+  // Build labeled frames eagerly, or (lazy mode) wrap the columnar tables in a
+  // LazyDataStore and defer LabeledFrame/Instance construction to first access.
   report(7);
-  const labeledFrames = buildLabeledFrames({
-    framesData,
-    instancesData,
-    pointsData,
-    predPointsData,
-    skeletons,
-    tracks,
-    videos,
-    formatId,
-  });
+  const lazyStore = lazy
+    ? new LazyDataStore({
+        framesData,
+        instancesData,
+        pointsData,
+        predPointsData,
+        skeletons,
+        tracks,
+        videos,
+        formatId,
+        // The streaming reader reads no negative_frames — leave empty (matches
+        // the eager streaming build, which never sets isNegative either).
+      })
+    : undefined;
+  const labeledFrames = lazyStore
+    ? undefined
+    : buildLabeledFrames({
+        framesData,
+        instancesData,
+        pointsData,
+        predPointsData,
+        skeletons,
+        tracks,
+        videos,
+        formatId,
+      });
 
   // Read identities
   report(8);
@@ -292,8 +320,11 @@ export async function readFromStreamingFile(
   );
 
   onProgress?.(total, total, "Finalizing");
+  // In lazy mode omit `labeledFrames` entirely (mirrors readSlpLazy): the Labels
+  // ctor's instance-track registration is guarded by `!_lazyFrameList`, and the
+  // proxy is attached below — so tracks come only from the explicit `tracks`.
   const labels = new Labels({
-    labeledFrames,
+    ...(labeledFrames ? { labeledFrames } : {}),
     videos,
     skeletons,
     tracks,
@@ -302,8 +333,18 @@ export async function readFromStreamingFile(
     identities,
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
   });
+  if (lazyStore) {
+    // Attach the lazy proxies BEFORE injectSessionFrameResolver so the resolver's
+    // frameAt() resolves against the lazy list (a single frame on demand, never
+    // the full table). Note: LazyDataStore.materializeFrame indexes videos by the
+    // raw video id (no buildVideoIdMap remap) — this matches readSlpLazy and only
+    // differs from the eager streaming build for rare sparse/non-contiguous ids.
+    labels._lazyFrameList = new LazyFrameList(lazyStore);
+    labels._lazyDataStore = lazyStore;
+  }
   // Sessions are read before the frame store exists; wire the lazy frame
-  // resolver now so ref-backed grouping resolves against labels.labeledFrames.
+  // resolver now so ref-backed grouping resolves against labels.labeledFrames
+  // (or, in lazy mode, the attached _lazyFrameList via frameAt).
   injectSessionFrameResolver(labels);
   return labels;
 }
