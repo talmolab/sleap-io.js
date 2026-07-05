@@ -11765,6 +11765,28 @@ function resolveVideoUrl(url) {
   return resolved;
 }
 
+// src/codecs/slp/source-video.ts
+function buildSourceVideoFromDict(dict, labelsPath) {
+  const backend = dict.backend ?? {};
+  let filename = resolveVideoFilename(backend, dict);
+  let embedded = false;
+  if (filename === ".") {
+    embedded = true;
+    filename = labelsPath ?? ".";
+  }
+  const nested = dict.source_video;
+  const sourceVideo = nested ? buildSourceVideoFromDict(nested, labelsPath) : null;
+  return new Video({
+    filename,
+    backend: null,
+    // Copy so a shared parsed object is never mutated by later crop seeding etc.
+    backendMetadata: { ...backend },
+    sourceVideo,
+    openBackend: false,
+    embedded
+  });
+}
+
 // src/codecs/slp/frame-count.ts
 function resolveSourceFrameCount(opts) {
   const { framesAttr, jsonFrameCount, frameNumbers } = opts;
@@ -11961,6 +11983,32 @@ async function readVideoCropsStreaming(file) {
     return out;
   }
 }
+async function readSourceVideoGroupJsonStreaming(file, groupPath) {
+  const svPath = `${groupPath}/source_video`;
+  let raw;
+  try {
+    const keys = await file.getKeys(svPath);
+    if (keys.includes("json")) {
+      const { value } = await file.getDatasetValue(`${svPath}/json`);
+      if (typeof value === "string") raw = value;
+      else if (value instanceof Uint8Array)
+        raw = new TextDecoder().decode(value);
+      else if (Array.isArray(value) && value.length > 0) raw = String(value[0]);
+    }
+    if (raw === void 0) {
+      const attrs = await file.getAttrs(svPath);
+      raw = attrToString(attrs.json);
+    }
+  } catch {
+    return null;
+  }
+  if (raw === void 0) return null;
+  try {
+    return JSON.parse(raw.trim().replace(/\0+$/, ""));
+  } catch {
+    return null;
+  }
+}
 async function readVideosStreaming(file, labelsPath, openVideos = false, formatId = 1, videoCrops, onVideoProgress) {
   try {
     const keys = file.keys();
@@ -12061,12 +12109,21 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
         backendMetadata.crop = [...cropEntry.crop];
         backendMetadata.crop_fill = cropEntry.fill;
       }
+      let sourceVideo = null;
+      if (meta.embedded && datasetPath) {
+        const groupPath = datasetPath.endsWith("/video") ? datasetPath.slice(0, -6) : datasetPath;
+        const svDict = await readSourceVideoGroupJsonStreaming(file, groupPath);
+        if (svDict) sourceVideo = buildSourceVideoFromDict(svDict, labelsPath);
+      }
+      if (!sourceVideo && meta.sourceVideo) {
+        sourceVideo = buildSourceVideoFromDict(meta.sourceVideo, labelsPath);
+      }
       videos.push(
         new Video({
           filename: meta.filename,
           backend: videoBackend,
           backendMetadata,
-          sourceVideo: meta.sourceVideo ? new Video({ filename: meta.sourceVideo.filename }) : null,
+          sourceVideo,
           openBackend: openVideos && meta.embedded,
           embedded: meta.embedded
         })
@@ -13172,9 +13229,24 @@ function serializeVideo(video) {
     backend
   };
   if (video.sourceVideo) {
-    entry.source_video = { filename: video.sourceVideo.filename };
+    entry.source_video = serializeVideo(video.sourceVideo);
   }
   return entry;
+}
+function sourceVideoDict(video) {
+  if (video.sourceVideo) return serializeVideo(video.sourceVideo);
+  if (!video.hasEmbeddedImages) return serializeVideo(video);
+  return null;
+}
+var SOURCE_VIDEO_ATTR_LIMIT = 64e3;
+function writeSourceVideoJson(file, groupPath, sourceDict) {
+  const blob = JSON.stringify(sourceDict);
+  file.create_group(`${groupPath}/source_video`);
+  if (new TextEncoder().encode(blob).length <= SOURCE_VIDEO_ATTR_LIMIT) {
+    setStringAttr(file.get(`${groupPath}/source_video`), "json", blob);
+    return;
+  }
+  file.create_dataset({ name: `${groupPath}/source_video/json`, data: [blob] });
 }
 function writeVideoCrops(file, videos) {
   const crops = [];
@@ -13607,13 +13679,8 @@ function writeEmbeddedVideos(file, labels, embeddedVideoData) {
         filename: ".",
         backend
       };
-      if (video.sourceVideo) {
-        entry.source_video = { filename: video.sourceVideo.filename };
-      } else if (!video.hasEmbeddedImages) {
-        entry.source_video = {
-          filename: Array.isArray(video.filename) ? video.filename[0] : video.filename
-        };
-      }
+      const srcDict = sourceVideoDict(video);
+      if (srcDict) entry.source_video = srcDict;
       return JSON.stringify(entry);
     } else {
       return JSON.stringify(serializeVideo(video));
@@ -13623,6 +13690,8 @@ function writeEmbeddedVideos(file, labels, embeddedVideoData) {
   for (const [videoIndex, embedData] of embeddedVideoData) {
     const groupName = `video${videoIndex}`;
     file.create_group(groupName);
+    const srcDict = sourceVideoDict(labels.videos[videoIndex]);
+    if (srcDict) writeSourceVideoJson(file, groupName, srcDict);
     const frameBytes = [];
     for (const frameNum of embedData.frameNumbers) {
       const data = embedData.frameData.get(frameNum);
@@ -15900,6 +15969,27 @@ function readVideoCrops(file) {
   }
   return out;
 }
+function readSourceVideoGroupJson(file, groupPath) {
+  const grp = file.get(`${groupPath}/source_video`);
+  if (!grp) return null;
+  let raw;
+  const ds = file.get(`${groupPath}/source_video/json`);
+  if (ds) {
+    const v = ds.value;
+    if (typeof v === "string") raw = v;
+    else if (v instanceof Uint8Array) raw = textDecoder2.decode(v);
+    else if (Array.isArray(v) && v.length > 0) raw = String(v[0]);
+  }
+  if (raw === void 0) {
+    raw = attrToString((grp.attrs ?? {}).json);
+  }
+  if (raw === void 0) return null;
+  try {
+    return JSON.parse(raw.trim().replace(/\0+$/, ""));
+  } catch {
+    return null;
+  }
+}
 async function readVideos(dataset, labelsPath, openVideos, file, formatId, videoCrops, onVideoProgress, remote) {
   if (!dataset) return [];
   const urlHeaders = remote?.urlHeaders;
@@ -15986,7 +16076,18 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
         };
       }
     }
-    const sourceVideo = parsed.source_video ? new Video({ filename: parsed.source_video.filename ?? "" }) : null;
+    let sourceVideo = null;
+    if (embedded && datasetPath) {
+      const groupPath = datasetPath.endsWith("/video") ? datasetPath.slice(0, -6) : datasetPath;
+      const svDict = readSourceVideoGroupJson(file, groupPath);
+      if (svDict) sourceVideo = buildSourceVideoFromDict(svDict, labelsPath);
+    }
+    if (!sourceVideo && parsed.source_video) {
+      sourceVideo = buildSourceVideoFromDict(
+        parsed.source_video,
+        labelsPath
+      );
+    }
     const cropEntry = videoCrops?.get(videoIndex);
     let backendMetadata = shape !== backendMeta.shape ? { ...backendMeta, shape } : backendMeta;
     if (cropEntry) {
