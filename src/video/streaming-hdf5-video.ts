@@ -40,6 +40,15 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
   private frameSizes: number[] | undefined;
   private legacy: LegacyFrameCache;
   private metaCache: { shape: number[]; dtype: string } | null;
+  /**
+   * Deferred (lazyVideoMetadata) backend: constructed WITHOUT per-video HDF5
+   * reads. The first getFrame() reads frame_numbers/frame_sizes/attrs on demand
+   * (ensureLoaded) so a many-video pkg.slp opens fast and pays the per-video
+   * cost only for videos actually viewed.
+   */
+  private deferred: boolean;
+  private loaded: boolean;
+  private loadPromise: Promise<void> | null;
 
   constructor(options: {
     filename: string;
@@ -51,6 +60,8 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     channelOrder?: string;
     shape?: [number, number, number, number];
     fps?: number;
+    /** Build without per-video reads; ensureLoaded() fetches them on first use. */
+    deferred?: boolean;
   }) {
     this.filename = options.filename;
     this.h5file = options.h5file;
@@ -69,9 +80,85 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     this.fps = options.fps;
     this.legacy = { whole: null, offsets: null };
     this.metaCache = null;
+    this.deferred = options.deferred ?? false;
+    // Non-deferred backends already have everything; deferred ones load lazily.
+    this.loaded = !this.deferred;
+    this.loadPromise = null;
+  }
+
+  /** Whether a deferred backend has fetched its per-video metadata yet. */
+  get isLoaded(): boolean {
+    return this.loaded;
+  }
+
+  /**
+   * Read the per-video HDF5 metadata skipped at load (lazyVideoMetadata):
+   * frame_numbers (source→storage map + true source frame count), frame_sizes
+   * (1D concatenated layout), and format/channel_order/dimensions from the
+   * dataset attrs. Idempotent — the first getFrame() triggers it. Afterwards
+   * `shape[0]` reflects the real source frame count, so the seekbar spans the
+   * whole video (not just the embedded/labeled frames). No-op when not deferred.
+   */
+  async ensureLoaded(): Promise<void> {
+    if (this.loaded) return;
+    if (this.loadPromise) return this.loadPromise;
+    this.loadPromise = (async () => {
+      const groupPath = this.datasetPath.endsWith("/video")
+        ? this.datasetPath.slice(0, -6)
+        : this.datasetPath;
+      try {
+        const keys = await this.h5file.getKeys(groupPath);
+        if (keys.includes("frame_numbers")) {
+          const fn = await this.h5file.getDatasetValue(
+            `${groupPath}/frame_numbers`,
+          );
+          const nums = toNumberArray(fn.value);
+          this.frameNumbers = nums;
+          this.frameNumberToIndex = new Map(nums.map((num, idx) => [num, idx]));
+        }
+        if (keys.includes("frame_sizes")) {
+          const fs = await this.h5file.getDatasetValue(
+            `${groupPath}/frame_sizes`,
+          );
+          this.frameSizes = toNumberArray(fs.value);
+        }
+      } catch {
+        /* leave frame maps empty; getFrame falls back to a direct index */
+      }
+      try {
+        const attrs = await this.h5file.getAttrs(this.datasetPath);
+        const fmt = attrToStr(attrs.format);
+        if (fmt) this.format = fmt;
+        const co = attrToStr(attrs.channel_order);
+        if (co) this.channelOrder = co;
+        // True source frame count = max(`frames` attr, max(frame_numbers)+1).
+        // The `frames` attr can badly under-report (bogus small values seen in
+        // the wild: 18/109/424 while frame_numbers span 47k–175k), so never let
+        // it shrink the axis below the highest stored source index. Mirrors the
+        // eager reader's resolveSourceFrameCount.
+        let count = attrToNum(attrs.frames) ?? 0;
+        if (this.frameNumberToIndex.size > 0) {
+          let maxNum = 0;
+          for (const k of this.frameNumberToIndex.keys())
+            if (k > maxNum) maxNum = k;
+          count = Math.max(count, maxNum + 1);
+        }
+        const h = attrToNum(attrs.height) ?? this.shape?.[1] ?? 0;
+        const w = attrToNum(attrs.width) ?? this.shape?.[2] ?? 0;
+        const c = attrToNum(attrs.channels) ?? this.shape?.[3] ?? 0;
+        if (count > 0 && h > 0 && w > 0) {
+          this.shape = [count, h, w, c];
+        }
+      } catch {
+        /* keep the JSON-seeded shape */
+      }
+      this.loaded = true;
+    })();
+    return this.loadPromise;
   }
 
   async getFrame(frameIndex: number): Promise<VideoFrame | null> {
+    if (!this.loaded) await this.ensureLoaded();
     // Use O(1) Map lookup; if no frame numbers provided, use frameIndex directly
     const index =
       this.frameNumberToIndex.size > 0
@@ -187,6 +274,37 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     this.metaCache = null;
     // Note: We don't close the h5file here as it may be shared across multiple backends
   }
+}
+
+/** Coerce an HDF5 dataset value (array or typed-array) into number[]. */
+function toNumberArray(values: unknown): number[] {
+  if (Array.isArray(values)) return values.map((v) => Number(v));
+  if (ArrayBuffer.isView(values))
+    return Array.from(values as unknown as ArrayLike<number>).map(Number);
+  return [];
+}
+
+/** Unwrap an h5wasm attribute ({value} or plain) to a non-empty string. */
+function attrToStr(attr: unknown): string | undefined {
+  if (attr == null) return undefined;
+  const v =
+    typeof attr === "object" && attr !== null && "value" in attr
+      ? (attr as { value: unknown }).value
+      : attr;
+  if (v == null) return undefined;
+  const s = String(Array.isArray(v) ? v[0] : v);
+  return s.length > 0 ? s : undefined;
+}
+
+/** Unwrap an h5wasm attribute to a positive finite number, else undefined. */
+function attrToNum(attr: unknown): number | undefined {
+  if (attr == null) return undefined;
+  const v =
+    typeof attr === "object" && attr !== null && "value" in attr
+      ? (attr as { value: unknown }).value
+      : attr;
+  const n = Number(Array.isArray(v) ? v[0] : v);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
 }
 
 async function decodeImageBytes(
