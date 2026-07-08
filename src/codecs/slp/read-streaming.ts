@@ -88,6 +88,19 @@ export interface StreamingSlpOptions {
    */
   lazy?: boolean;
   /**
+   * Defer per-video metadata reads. When `true`, embedded videos are built from
+   * `videos_json` ALONE — skipping the per-video HDF5 reads (dataset lookup,
+   * `getAttrs`, `frame_numbers`, `frame_sizes`, `source_video`) that dominate
+   * open time on many-video `pkg.slp` files read over high-latency storage
+   * (hundreds of videos × several serial reads each). Shape/channel_order come
+   * from JSON (with the `format_id` default fallback), so the videos panel still
+   * shows dimensions; backends are NOT built — the caller opens them on demand
+   * (e.g. on first view). Default `false`. Independent of `openVideos`; when
+   * set, embedded backends are always deferred. Frames render blank until the
+   * caller builds a backend on demand.
+   */
+  lazyVideoMetadata?: boolean;
+  /**
    * Optional progress callback fired as loading advances through its stages.
    * `current` counts completed stages out of `total`; `message` labels the
    * stage about to run. Matches the (current, total, message?) convention used
@@ -146,6 +159,7 @@ export async function readSlpStreaming(
   });
 
   const openVideos = options?.openVideos ?? false;
+  const lazyVideoMetadata = options?.lazyVideoMetadata ?? false;
 
   // Determine the source path for video resolution
   const sourcePath =
@@ -164,11 +178,13 @@ export async function readSlpStreaming(
       options?.onProgress,
       options?.rawSessions ?? false,
       options?.lazy ?? false,
+      lazyVideoMetadata,
     );
   } finally {
-    // Only close the file if we're NOT opening video backends.
-    // When openVideos is true, the file must remain open for video frame access.
-    if (!openVideos) {
+    // Keep the file open when video backends need it: eager (openVideos) OR
+    // deferred (lazyVideoMetadata), whose per-video backends read frame data on
+    // demand from this same StreamingH5File. Only close for pure metadata reads.
+    if (!openVideos && !lazyVideoMetadata) {
       await file.close();
     }
   }
@@ -190,6 +206,7 @@ export async function readFromStreamingFile(
   onProgress?: (current: number, total: number, message?: string) => void,
   rawSessions: boolean = false,
   lazy: boolean = false,
+  lazyVideoMetadata: boolean = false,
 ): Promise<Labels> {
   // Stage-level progress. The orchestration in this function runs on the MAIN
   // thread — only the low-level HDF5 byte reads are delegated to the worker via
@@ -262,6 +279,7 @@ export async function readFromStreamingFile(
     formatId,
     videoCrops,
     openVideos ? (i, n) => report(2, `Opening videos (${i}/${n})`) : undefined,
+    lazyVideoMetadata,
   );
 
   report(3);
@@ -482,6 +500,7 @@ async function readVideosStreaming(
   formatId: number = 1.0,
   videoCrops?: Map<number, VideoCropEntry>,
   onVideoProgress?: (current: number, total: number) => void,
+  lazyVideoMetadata: boolean = false,
 ): Promise<Video[]> {
   try {
     const keys = file.keys();
@@ -496,6 +515,64 @@ async function readVideosStreaming(
     for (let videoIndex = 0; videoIndex < metadataList.length; videoIndex++) {
       onVideoProgress?.(videoIndex + 1, metadataList.length);
       const meta = metadataList[videoIndex];
+
+      // Fast path: build the embedded Video from videos_json ALONE, skipping
+      // every per-video HDF5 read (dataset lookup, getAttrs, frame_numbers,
+      // frame_sizes, source_video). Those serial reads dominate open time on
+      // many-video pkg.slp over high-latency storage. No backend is built here —
+      // the caller opens one on demand (frames render blank until then). Shape
+      // and channel_order come from JSON (with the format_id default fallback),
+      // so the videos panel still reports dimensions.
+      if (lazyVideoMetadata && meta.embedded) {
+        const datasetPath = meta.dataset ?? `video${videoIndex}/video`;
+        // Seed the source frame count from videos_json (the embedded/labeled
+        // count); the deferred backend corrects it to the true source count from
+        // frame_numbers/`frames` attr on first view.
+        const frameCount = resolveSourceFrameCount({
+          jsonFrameCount: meta.frameCount,
+        });
+        const shape: [number, number, number, number] | undefined =
+          meta.height && meta.width && meta.channels
+            ? [frameCount ?? 0, meta.height, meta.width, meta.channels]
+            : undefined;
+        const channelOrder =
+          meta.channelOrder ?? (formatId < 1.4 ? "BGR" : "RGB");
+        // Deferred backend: no per-video HDF5 reads now; getFrame() lazily reads
+        // frame_numbers/frame_sizes/attrs on first view (ensureLoaded). Holds the
+        // still-open StreamingH5File, so readSlpStreaming must NOT close it.
+        const backend = new StreamingHdf5VideoBackend({
+          filename: Array.isArray(meta.filename)
+            ? (meta.filename[0] ?? "")
+            : meta.filename,
+          h5file: file,
+          datasetPath,
+          format: meta.format ?? "png",
+          channelOrder,
+          shape,
+          fps: meta.fps,
+          deferred: true,
+        });
+        const sourceVideo = meta.sourceVideo
+          ? buildSourceVideoFromDict(meta.sourceVideo, labelsPath)
+          : null;
+        videos.push(
+          new Video({
+            filename: meta.filename,
+            backend,
+            backendMetadata: {
+              dataset: datasetPath,
+              format: meta.format,
+              shape,
+              fps: meta.fps,
+              channel_order: channelOrder,
+            },
+            sourceVideo,
+            openBackend: false,
+            embedded: meta.embedded,
+          }),
+        );
+        continue;
+      }
 
       // Auto-detect dataset path when embedded but not specified in metadata
       let datasetPath: string | undefined = meta.dataset;
