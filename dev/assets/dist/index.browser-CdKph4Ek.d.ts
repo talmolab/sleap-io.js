@@ -3116,6 +3116,15 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
     private frameSizes;
     private legacy;
     private metaCache;
+    /**
+     * Deferred (lazyVideoMetadata) backend: constructed WITHOUT per-video HDF5
+     * reads. The first getFrame() reads frame_numbers/frame_sizes/attrs on demand
+     * (ensureLoaded) so a many-video pkg.slp opens fast and pays the per-video
+     * cost only for videos actually viewed.
+     */
+    private deferred;
+    private loaded;
+    private loadPromise;
     constructor(options: {
         filename: string;
         h5file: StreamingH5File;
@@ -3126,7 +3135,20 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
         channelOrder?: string;
         shape?: [number, number, number, number];
         fps?: number;
+        /** Build without per-video reads; ensureLoaded() fetches them on first use. */
+        deferred?: boolean;
     });
+    /** Whether a deferred backend has fetched its per-video metadata yet. */
+    get isLoaded(): boolean;
+    /**
+     * Read the per-video HDF5 metadata skipped at load (lazyVideoMetadata):
+     * frame_numbers (source→storage map + true source frame count), frame_sizes
+     * (1D concatenated layout), and format/channel_order/dimensions from the
+     * dataset attrs. Idempotent — the first getFrame() triggers it. Afterwards
+     * `shape[0]` reflects the real source frame count, so the seekbar spans the
+     * whole video (not just the embedded/labeled frames). No-op when not deferred.
+     */
+    ensureLoaded(): Promise<void>;
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
     probeShape(sourceFrameCount?: number): Promise<void>;
     /**
@@ -5023,6 +5045,19 @@ interface StreamingSlpOptions {
      * Bounds peak memory for very large prediction files. Default `false`.
      */
     lazy?: boolean;
+    /**
+     * Defer per-video metadata reads. When `true`, embedded videos are built from
+     * `videos_json` ALONE — skipping the per-video HDF5 reads (dataset lookup,
+     * `getAttrs`, `frame_numbers`, `frame_sizes`, `source_video`) that dominate
+     * open time on many-video `pkg.slp` files read over high-latency storage
+     * (hundreds of videos × several serial reads each). Shape/channel_order come
+     * from JSON (with the `format_id` default fallback), so the videos panel still
+     * shows dimensions; backends are NOT built — the caller opens them on demand
+     * (e.g. on first view). Default `false`. Independent of `openVideos`; when
+     * set, embedded backends are always deferred. Frames render blank until the
+     * caller builds a backend on demand.
+     */
+    lazyVideoMetadata?: boolean;
     /**
      * Optional progress callback fired as loading advances through its stages.
      * `current` counts completed stages out of `total`; `message` labels the

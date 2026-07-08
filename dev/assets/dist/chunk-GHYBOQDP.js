@@ -9570,6 +9570,15 @@ var StreamingHdf5VideoBackend = class {
   frameSizes;
   legacy;
   metaCache;
+  /**
+   * Deferred (lazyVideoMetadata) backend: constructed WITHOUT per-video HDF5
+   * reads. The first getFrame() reads frame_numbers/frame_sizes/attrs on demand
+   * (ensureLoaded) so a many-video pkg.slp opens fast and pays the per-video
+   * cost only for videos actually viewed.
+   */
+  deferred;
+  loaded;
+  loadPromise;
   constructor(options) {
     this.filename = options.filename;
     this.h5file = options.h5file;
@@ -9587,8 +9596,72 @@ var StreamingHdf5VideoBackend = class {
     this.fps = options.fps;
     this.legacy = { whole: null, offsets: null };
     this.metaCache = null;
+    this.deferred = options.deferred ?? false;
+    this.loaded = !this.deferred;
+    this.loadPromise = null;
+  }
+  /** Whether a deferred backend has fetched its per-video metadata yet. */
+  get isLoaded() {
+    return this.loaded;
+  }
+  /**
+   * Read the per-video HDF5 metadata skipped at load (lazyVideoMetadata):
+   * frame_numbers (source→storage map + true source frame count), frame_sizes
+   * (1D concatenated layout), and format/channel_order/dimensions from the
+   * dataset attrs. Idempotent — the first getFrame() triggers it. Afterwards
+   * `shape[0]` reflects the real source frame count, so the seekbar spans the
+   * whole video (not just the embedded/labeled frames). No-op when not deferred.
+   */
+  async ensureLoaded() {
+    if (this.loaded) return;
+    if (this.loadPromise) return this.loadPromise;
+    this.loadPromise = (async () => {
+      const groupPath = this.datasetPath.endsWith("/video") ? this.datasetPath.slice(0, -6) : this.datasetPath;
+      try {
+        const keys = await this.h5file.getKeys(groupPath);
+        if (keys.includes("frame_numbers")) {
+          const fn = await this.h5file.getDatasetValue(
+            `${groupPath}/frame_numbers`
+          );
+          const nums = toNumberArray(fn.value);
+          this.frameNumbers = nums;
+          this.frameNumberToIndex = new Map(nums.map((num, idx) => [num, idx]));
+        }
+        if (keys.includes("frame_sizes")) {
+          const fs = await this.h5file.getDatasetValue(
+            `${groupPath}/frame_sizes`
+          );
+          this.frameSizes = toNumberArray(fs.value);
+        }
+      } catch {
+      }
+      try {
+        const attrs = await this.h5file.getAttrs(this.datasetPath);
+        const fmt = attrToStr(attrs.format);
+        if (fmt) this.format = fmt;
+        const co = attrToStr(attrs.channel_order);
+        if (co) this.channelOrder = co;
+        let count = attrToNum(attrs.frames) ?? 0;
+        if (this.frameNumberToIndex.size > 0) {
+          let maxNum = 0;
+          for (const k of this.frameNumberToIndex.keys())
+            if (k > maxNum) maxNum = k;
+          count = Math.max(count, maxNum + 1);
+        }
+        const h = attrToNum(attrs.height) ?? this.shape?.[1] ?? 0;
+        const w = attrToNum(attrs.width) ?? this.shape?.[2] ?? 0;
+        const c = attrToNum(attrs.channels) ?? this.shape?.[3] ?? 0;
+        if (count > 0 && h > 0 && w > 0) {
+          this.shape = [count, h, w, c];
+        }
+      } catch {
+      }
+      this.loaded = true;
+    })();
+    return this.loadPromise;
   }
   async getFrame(frameIndex) {
+    if (!this.loaded) await this.ensureLoaded();
     const index = this.frameNumberToIndex.size > 0 ? this.frameNumberToIndex.get(frameIndex) : frameIndex;
     if (index === void 0) return null;
     let rawBytes;
@@ -9683,6 +9756,25 @@ var StreamingHdf5VideoBackend = class {
     this.metaCache = null;
   }
 };
+function toNumberArray(values) {
+  if (Array.isArray(values)) return values.map((v) => Number(v));
+  if (ArrayBuffer.isView(values))
+    return Array.from(values).map(Number);
+  return [];
+}
+function attrToStr(attr) {
+  if (attr == null) return void 0;
+  const v = typeof attr === "object" && attr !== null && "value" in attr ? attr.value : attr;
+  if (v == null) return void 0;
+  const s = String(Array.isArray(v) ? v[0] : v);
+  return s.length > 0 ? s : void 0;
+}
+function attrToNum(attr) {
+  if (attr == null) return void 0;
+  const v = typeof attr === "object" && attr !== null && "value" in attr ? attr.value : attr;
+  const n = Number(Array.isArray(v) ? v[0] : v);
+  return Number.isFinite(n) && n > 0 ? n : void 0;
+}
 async function decodeImageBytes(bytes, format, channelOrder) {
   if (!isBrowser3 || typeof createImageBitmap === "undefined") return null;
   const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
@@ -11920,6 +12012,7 @@ async function readSlpStreaming(source, options) {
     headers: options?.headers
   });
   const openVideos = options?.openVideos ?? false;
+  const lazyVideoMetadata = options?.lazyVideoMetadata ?? false;
   const sourcePath = typeof source === "string" ? source : typeof File !== "undefined" && source instanceof File ? source.name : options?.filenameHint ?? "slp-data.slp";
   try {
     return await readFromStreamingFile(
@@ -11929,15 +12022,16 @@ async function readSlpStreaming(source, options) {
       openVideos,
       options?.onProgress,
       options?.rawSessions ?? false,
-      options?.lazy ?? false
+      options?.lazy ?? false,
+      lazyVideoMetadata
     );
   } finally {
-    if (!openVideos) {
+    if (!openVideos && !lazyVideoMetadata) {
       await file.close();
     }
   }
 }
-async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false) {
+async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false, lazyVideoMetadata = false) {
   const STAGES = [
     "Reading metadata",
     // 0
@@ -11988,7 +12082,8 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     openVideos,
     formatId,
     videoCrops,
-    openVideos ? (i, n) => report(2, `Opening videos (${i}/${n})`) : void 0
+    openVideos ? (i, n) => report(2, `Opening videos (${i}/${n})`) : void 0,
+    lazyVideoMetadata
   );
   report(3);
   const suggestions = await readSuggestionsStreaming(file, videos);
@@ -12127,7 +12222,7 @@ async function readSourceVideoGroupJsonStreaming(file, groupPath) {
     return null;
   }
 }
-async function readVideosStreaming(file, labelsPath, openVideos = false, formatId = 1, videoCrops, onVideoProgress) {
+async function readVideosStreaming(file, labelsPath, openVideos = false, formatId = 1, videoCrops, onVideoProgress, lazyVideoMetadata = false) {
   try {
     const keys = file.keys();
     if (!keys.includes("videos_json")) return [];
@@ -12138,6 +12233,42 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
     for (let videoIndex = 0; videoIndex < metadataList.length; videoIndex++) {
       onVideoProgress?.(videoIndex + 1, metadataList.length);
       const meta = metadataList[videoIndex];
+      if (lazyVideoMetadata && meta.embedded) {
+        const datasetPath2 = meta.dataset ?? `video${videoIndex}/video`;
+        const frameCount2 = resolveSourceFrameCount({
+          jsonFrameCount: meta.frameCount
+        });
+        const shape2 = meta.height && meta.width && meta.channels ? [frameCount2 ?? 0, meta.height, meta.width, meta.channels] : void 0;
+        const channelOrder2 = meta.channelOrder ?? (formatId < 1.4 ? "BGR" : "RGB");
+        const backend2 = new StreamingHdf5VideoBackend({
+          filename: Array.isArray(meta.filename) ? meta.filename[0] ?? "" : meta.filename,
+          h5file: file,
+          datasetPath: datasetPath2,
+          format: meta.format ?? "png",
+          channelOrder: channelOrder2,
+          shape: shape2,
+          fps: meta.fps,
+          deferred: true
+        });
+        const sourceVideo2 = meta.sourceVideo ? buildSourceVideoFromDict(meta.sourceVideo, labelsPath) : null;
+        videos.push(
+          new Video({
+            filename: meta.filename,
+            backend: backend2,
+            backendMetadata: {
+              dataset: datasetPath2,
+              format: meta.format,
+              shape: shape2,
+              fps: meta.fps,
+              channel_order: channelOrder2
+            },
+            sourceVideo: sourceVideo2,
+            openBackend: false,
+            embedded: meta.embedded
+          })
+        );
+        continue;
+      }
       let datasetPath = meta.dataset;
       if (meta.embedded && !datasetPath) {
         datasetPath = await findVideoDatasetStreaming(file, videoIndex) ?? void 0;
