@@ -21,6 +21,7 @@ import { describe, it, expect } from "../bun-test";
 import {
   loadAnalysisH5,
   saveAnalysisH5,
+  saveAnalysisH5ToBytes,
   isAnalysisH5File,
 } from "../../src/io/main.js";
 import {
@@ -1056,6 +1057,48 @@ describe("Analysis HDF5 main API", () => {
       const out = path.join(tmp, "detect.h5");
       await saveAnalysisH5(simpleLabels(), out);
       expect(await isAnalysisH5File(out)).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// =============================================================================
+// 4b. Browser-safe bytes API (saveAnalysisH5ToBytes)
+// =============================================================================
+
+describe("saveAnalysisH5ToBytes (browser-safe)", () => {
+  it("returns a valid Analysis HDF5 file as bytes", async () => {
+    const bytes = await saveAnalysisH5ToBytes(simpleLabels());
+    expect(bytes).toBeInstanceOf(Uint8Array);
+    expect(bytes.length).toBeGreaterThan(0);
+    expect(await isAnalysisH5File(bytes)).toBe(true);
+  });
+
+  it("produces bytes identical to the on-disk saveAnalysisH5", async () => {
+    const tmp = mkTmp();
+    try {
+      const labels = simpleLabels();
+      const out = path.join(tmp, "ondisk.analysis.h5");
+      await saveAnalysisH5(labels, out, { preset: "standard" });
+      const onDisk = new Uint8Array(fs.readFileSync(out));
+      const inMemory = await saveAnalysisH5ToBytes(labels, {
+        preset: "standard",
+      });
+      expect(inMemory).toEqual(onDisk);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("round-trips through loadAnalysisH5", async () => {
+    const tmp = mkTmp();
+    try {
+      const bytes = await saveAnalysisH5ToBytes(simpleLabels());
+      const out = path.join(tmp, "roundtrip.analysis.h5");
+      fs.writeFileSync(out, bytes);
+      const loaded = await loadAnalysisH5(out);
+      expect(loaded.labeledFrames.length).toBe(3);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

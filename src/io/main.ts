@@ -14,6 +14,7 @@ import { redactedCauseSummary } from "./remote.js";
 import {
   readLabels as readAnalysisH5,
   writeLabels as writeAnalysisH5,
+  writeLabelsToBytes as writeAnalysisH5ToBytes,
 } from "./analysis-h5.js";
 
 // TIFF label-image reader (browser-safe core; Node path reading is registered
@@ -219,6 +220,47 @@ export async function saveAnalysisH5(
   },
 ): Promise<void> {
   await writeAnalysisH5(labels, filename, {
+    video: options?.video,
+    labelsPath: options?.labelsPath,
+    allFrames: options?.allFrames,
+    minOccupancy: options?.minOccupancy,
+    preset: options?.preset,
+    frameDim: options?.frameDim,
+    trackDim: options?.trackDim,
+    nodeDim: options?.nodeDim,
+    xyDim: options?.xyDim,
+    saveMetadata: options?.saveMetadata,
+  });
+}
+
+/**
+ * Build SLEAP Analysis HDF5 (.h5) bytes from labels, in memory.
+ *
+ * Browser-safe counterpart to {@link saveAnalysisH5} (which writes to disk):
+ * assembles the file in an h5wasm in-memory virtual FS and returns the bytes, so
+ * callers in the browser or the Tauri WebView can save them however they like
+ * (native dialog, download, etc.). Mirrors {@link saveSlpToBytes}.
+ *
+ * @param labels - Labels object to export
+ * @param options - Same options as {@link saveAnalysisH5} (minus the filename)
+ * @returns The `.h5` file contents
+ */
+export async function saveAnalysisH5ToBytes(
+  labels: Labels,
+  options?: {
+    video?: Video | number;
+    labelsPath?: string;
+    allFrames?: boolean;
+    minOccupancy?: number;
+    preset?: string;
+    frameDim?: number;
+    trackDim?: number;
+    nodeDim?: number;
+    xyDim?: number;
+    saveMetadata?: boolean;
+  },
+): Promise<Uint8Array> {
+  return writeAnalysisH5ToBytes(labels, {
     video: options?.video,
     labelsPath: options?.labelsPath,
     allFrames: options?.allFrames,
