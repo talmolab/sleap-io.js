@@ -1075,17 +1075,40 @@ describe("saveAnalysisH5ToBytes (browser-safe)", () => {
     expect(await isAnalysisH5File(bytes)).toBe(true);
   });
 
-  it("produces bytes identical to the on-disk saveAnalysisH5", async () => {
+  it("matches the on-disk saveAnalysisH5 when reloaded", async () => {
+    // HDF5 files aren't guaranteed byte-identical for identical data (internal
+    // heap/free-space layout, padding), so compare the reconstructed Labels
+    // rather than raw bytes — this proves the bytes path and the disk path carry
+    // the same content.
     const tmp = mkTmp();
     try {
       const labels = simpleLabels();
-      const out = path.join(tmp, "ondisk.analysis.h5");
-      await saveAnalysisH5(labels, out, { preset: "standard" });
-      const onDisk = new Uint8Array(fs.readFileSync(out));
-      const inMemory = await saveAnalysisH5ToBytes(labels, {
-        preset: "standard",
-      });
-      expect(inMemory).toEqual(onDisk);
+
+      const diskOut = path.join(tmp, "ondisk.analysis.h5");
+      await saveAnalysisH5(labels, diskOut, { preset: "standard" });
+      const fromDisk = await loadAnalysisH5(diskOut);
+
+      const bytes = await saveAnalysisH5ToBytes(labels, { preset: "standard" });
+      const memOut = path.join(tmp, "inmem.analysis.h5");
+      fs.writeFileSync(memOut, bytes);
+      const fromMem = await loadAnalysisH5(memOut);
+
+      expect(fromMem.labeledFrames.length).toBe(fromDisk.labeledFrames.length);
+      expect(fromMem.tracks.map((t) => t.name)).toEqual(
+        fromDisk.tracks.map((t) => t.name),
+      );
+      expect(fromMem.skeletons[0].nodeNames).toEqual(
+        fromDisk.skeletons[0].nodeNames,
+      );
+      for (let i = 0; i < fromDisk.labeledFrames.length; i++) {
+        const mem = fromMem.labeledFrames[i].instances.map((ins) =>
+          ins.numpy(),
+        );
+        const disk = fromDisk.labeledFrames[i].instances.map((ins) =>
+          ins.numpy(),
+        );
+        expect(mem).toEqual(disk);
+      }
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }
