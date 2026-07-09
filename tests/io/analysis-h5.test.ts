@@ -21,6 +21,7 @@ import { describe, it, expect } from "../bun-test";
 import {
   loadAnalysisH5,
   saveAnalysisH5,
+  saveAnalysisH5ToBytes,
   isAnalysisH5File,
 } from "../../src/io/main.js";
 import {
@@ -1056,6 +1057,71 @@ describe("Analysis HDF5 main API", () => {
       const out = path.join(tmp, "detect.h5");
       await saveAnalysisH5(simpleLabels(), out);
       expect(await isAnalysisH5File(out)).toBe(true);
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
+// =============================================================================
+// 4b. Browser-safe bytes API (saveAnalysisH5ToBytes)
+// =============================================================================
+
+describe("saveAnalysisH5ToBytes (browser-safe)", () => {
+  it("returns a valid Analysis HDF5 file as bytes", async () => {
+    const bytes = await saveAnalysisH5ToBytes(simpleLabels());
+    expect(bytes).toBeInstanceOf(Uint8Array);
+    expect(bytes.length).toBeGreaterThan(0);
+    expect(await isAnalysisH5File(bytes)).toBe(true);
+  });
+
+  it("matches the on-disk saveAnalysisH5 when reloaded", async () => {
+    // HDF5 files aren't guaranteed byte-identical for identical data (internal
+    // heap/free-space layout, padding), so compare the reconstructed Labels
+    // rather than raw bytes — this proves the bytes path and the disk path carry
+    // the same content.
+    const tmp = mkTmp();
+    try {
+      const labels = simpleLabels();
+
+      const diskOut = path.join(tmp, "ondisk.analysis.h5");
+      await saveAnalysisH5(labels, diskOut, { preset: "standard" });
+      const fromDisk = await loadAnalysisH5(diskOut);
+
+      const bytes = await saveAnalysisH5ToBytes(labels, { preset: "standard" });
+      const memOut = path.join(tmp, "inmem.analysis.h5");
+      fs.writeFileSync(memOut, bytes);
+      const fromMem = await loadAnalysisH5(memOut);
+
+      expect(fromMem.labeledFrames.length).toBe(fromDisk.labeledFrames.length);
+      expect(fromMem.tracks.map((t) => t.name)).toEqual(
+        fromDisk.tracks.map((t) => t.name),
+      );
+      expect(fromMem.skeletons[0].nodeNames).toEqual(
+        fromDisk.skeletons[0].nodeNames,
+      );
+      for (let i = 0; i < fromDisk.labeledFrames.length; i++) {
+        const mem = fromMem.labeledFrames[i].instances.map((ins) =>
+          ins.numpy(),
+        );
+        const disk = fromDisk.labeledFrames[i].instances.map((ins) =>
+          ins.numpy(),
+        );
+        expect(mem).toEqual(disk);
+      }
+    } finally {
+      fs.rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
+  it("round-trips through loadAnalysisH5", async () => {
+    const tmp = mkTmp();
+    try {
+      const bytes = await saveAnalysisH5ToBytes(simpleLabels());
+      const out = path.join(tmp, "roundtrip.analysis.h5");
+      fs.writeFileSync(out, bytes);
+      const loaded = await loadAnalysisH5(out);
+      expect(loaded.labeledFrames.length).toBe(3);
     } finally {
       fs.rmSync(tmp, { recursive: true, force: true });
     }

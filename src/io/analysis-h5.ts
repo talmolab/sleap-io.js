@@ -21,9 +21,11 @@
  * `instance_scores`/`tracking_scores`/`track_occupancy` `(frame, track)`.
  *
  * Reading works in both Node and the browser (via `openH5File`). Writing is
- * Node-only for disk I/O: bytes are built in an h5wasm in-memory virtual FS and
- * written through the Node filesystem ops registered by `h5-node.ts`, so this
- * module stays free of Node-only imports and the browser bundle stays clean.
+ * browser-safe too: `writeLabelsToBytes` builds the file in an h5wasm in-memory
+ * virtual FS and returns the bytes. `writeLabels` wraps it to write those bytes
+ * to disk through the Node filesystem ops registered by `h5-node.ts` — the only
+ * Node-only step — so this module stays free of Node-only imports and the
+ * browser bundle stays clean.
  */
 
 import { Labels } from "../model/labels.js";
@@ -1103,20 +1105,21 @@ function videoFilenameString(video: Video): string {
 }
 
 /**
- * Save a {@link Labels} object to a SLEAP Analysis HDF5 file.
+ * Build the SLEAP Analysis HDF5 bytes for a {@link Labels} object.
  *
- * Node-only: bytes are produced via an h5wasm in-memory virtual FS and written
- * to disk through the Node filesystem ops registered by `h5-node.ts`.
+ * Browser-safe: the file is assembled entirely in an h5wasm in-memory virtual FS
+ * and returned as bytes — no Node filesystem access — so it works in the browser
+ * (and the Tauri WebView) as well as Node. {@link writeLabels} wraps this to
+ * write the bytes to disk. Mirrors the `saveSlpToBytes` / `writeLabels` split.
  *
  * @param labels - Labels to export.
- * @param filename - Output file path.
  * @param options - Export options (see {@link WriteLabelsOptions}).
+ * @returns The `.h5` file contents.
  */
-export async function writeLabels(
+export async function writeLabelsToBytes(
   labels: Labels,
-  filename: string,
   options?: WriteLabelsOptions,
-): Promise<void> {
+): Promise<Uint8Array> {
   const allFrames = options?.allFrames ?? true;
   const minOccupancy = options?.minOccupancy ?? 0.0;
   const saveMetadata = options?.saveMetadata ?? true;
@@ -1342,7 +1345,26 @@ export async function writeLabels(
   const fsModule = getH5FileSystem(module);
   const bytes = fsModule.readFile!(memPath);
   fsModule.unlink!(memPath);
+  return bytes;
+}
 
+/**
+ * Save a {@link Labels} object to a SLEAP Analysis HDF5 file.
+ *
+ * Node-only: builds the bytes via {@link writeLabelsToBytes} (an h5wasm in-memory
+ * virtual FS) and writes them to disk through the Node filesystem ops registered
+ * by `h5-node.ts`.
+ *
+ * @param labels - Labels to export.
+ * @param filename - Output file path.
+ * @param options - Export options (see {@link WriteLabelsOptions}).
+ */
+export async function writeLabels(
+  labels: Labels,
+  filename: string,
+  options?: WriteLabelsOptions,
+): Promise<void> {
+  const bytes = await writeLabelsToBytes(labels, options);
   // Write to disk via the registered Node file writer (Node-only). Routing
   // through the provider keeps this module free of Node-only imports.
   await nodeWriteFile(filename, bytes);
