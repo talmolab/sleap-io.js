@@ -15912,7 +15912,7 @@ function videoFilenameString(video) {
   if (Array.isArray(fn)) return fn.length ? fn[0] : "";
   return fn ?? "";
 }
-async function writeLabels(labels, filename, options) {
+async function writeLabelsToBytes(labels, options) {
   const allFrames = options?.allFrames ?? true;
   const minOccupancy = options?.minOccupancy ?? 0;
   const saveMetadata = options?.saveMetadata ?? true;
@@ -16080,6 +16080,10 @@ async function writeLabels(labels, filename, options) {
   const fsModule = getH5FileSystem(module);
   const bytes = fsModule.readFile(memPath);
   fsModule.unlink(memPath);
+  return bytes;
+}
+async function writeLabels(labels, filename, options) {
+  const bytes = await writeLabelsToBytes(labels, options);
   await nodeWriteFile(filename, bytes);
 }
 
@@ -18258,6 +18262,20 @@ async function saveAnalysisH5(labels, filename, options) {
     saveMetadata: options?.saveMetadata
   });
 }
+async function saveAnalysisH5ToBytes(labels, options) {
+  return writeLabelsToBytes(labels, {
+    video: options?.video,
+    labelsPath: options?.labelsPath,
+    allFrames: options?.allFrames,
+    minOccupancy: options?.minOccupancy,
+    preset: options?.preset,
+    frameDim: options?.frameDim,
+    trackDim: options?.trackDim,
+    nodeDim: options?.nodeDim,
+    xyDim: options?.xyDim,
+    saveMetadata: options?.saveMetadata
+  });
+}
 async function loadSlpSet(sources, options) {
   const set = new LabelsSet();
   if (Array.isArray(sources)) {
@@ -19940,6 +19958,7 @@ export {
   saveSlp,
   loadAnalysisH5,
   saveAnalysisH5,
+  saveAnalysisH5ToBytes,
   loadSlpSet,
   saveSlpSet,
   loadVideo,

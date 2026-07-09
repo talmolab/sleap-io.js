@@ -160,6 +160,7 @@ import {
   roisFromGeoJSON,
   roisToGeoJSON,
   saveAnalysisH5,
+  saveAnalysisH5ToBytes,
   saveLabelsCsv,
   saveSlp,
   saveSlpMergedFromStores,
@@ -178,7 +179,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-GHYBOQDP.js";
+} from "./chunk-MOJXVGLH.js";
 import {
   Edge,
   Instance,
@@ -4163,6 +4164,7 @@ export {
   roisFromGeoJSON,
   roisToGeoJSON,
   saveAnalysisH5,
+  saveAnalysisH5ToBytes,
   saveImage,
   saveLabelsCsv,
   saveSlp,
