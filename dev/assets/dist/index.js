@@ -124,6 +124,7 @@ import {
   injectSessionFrameResolver,
   isAnalysisH5File,
   isCocoData,
+  isRangeSource,
   isStreamingSupported,
   isTrainingConfig,
   labelsFromNumpy,
@@ -179,7 +180,7 @@ import {
   uncropPoints,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-MOJXVGLH.js";
+} from "./chunk-5SBNR5X6.js";
 import {
   Edge,
   Instance,
@@ -4088,6 +4089,7 @@ export {
   isDlcFile,
   isDlcProjectPath,
   isGdriveUrl,
+  isRangeSource,
   isStreamingSupported,
   isTrackMateFile,
   isTrainingConfig,

@@ -5373,6 +5373,7 @@ import {
   Input,
   UrlSource,
   BlobSource,
+  StreamSource,
   VideoSampleSink,
   EncodedPacketSink,
   ALL_FORMATS
@@ -5407,6 +5408,28 @@ var MediaBunnyVideoBackend = class _MediaBunnyVideoBackend {
     const backend = new _MediaBunnyVideoBackend(filename, options);
     backend.input = new Input({
       source: new BlobSource(blob),
+      formats: ALL_FORMATS
+    });
+    await backend.initialize();
+    return backend;
+  }
+  /**
+   * Build from a lazy {@link RangeSource} — reads only the container index +
+   * decoded frames' byte ranges via `readRange`, never the whole file. The
+   * desktop counterpart of {@link fromBlob}, avoiding a multi-GB in-memory copy.
+   * MediaBunny's {@link StreamSource} drives the reads; `read(start, end)` uses
+   * an EXCLUSIVE end, so length is `end - start`.
+   */
+  static async fromRangeSource(rangeSource, filename, options) {
+    const backend = new _MediaBunnyVideoBackend(filename, options);
+    backend.input = new Input({
+      source: new StreamSource({
+        getSize: () => rangeSource.size,
+        read: (start, end) => rangeSource.readRange(start, end - start),
+        // Local disk over IPC: page-aligned bidirectional prefetch fits better
+        // than the aggressive network profile.
+        prefetchProfile: "fileSystem"
+      }),
       formats: ALL_FORMATS
     });
     await backend.initialize();
@@ -8953,6 +8976,11 @@ var Identity = class {
   }
 };
 
+// src/video/backend.ts
+function isRangeSource(source) {
+  return typeof source === "object" && source !== null && typeof source.size === "number" && typeof source.readRange === "function";
+}
+
 // src/video/mp4box-video.ts
 function isBrowser2() {
   return typeof window !== "undefined" && typeof document !== "undefined";
@@ -9006,6 +9034,12 @@ var Mp4BoxVideoBackend = class {
   fileSize;
   supportsRangeRequests;
   fileBlob;
+  /**
+   * Lazy byte source (desktop): read only the ranges we need via a native
+   * `read_range` instead of materializing the whole file. Mutually exclusive
+   * with `fileBlob` / URL fetching.
+   */
+  rangeSource;
   decodeQueue;
   latestRequestedFrame;
   /** Extra HTTP headers (e.g. Authorization) applied to every byte fetch. */
@@ -9017,7 +9051,8 @@ var Mp4BoxVideoBackend = class {
     if (!isBrowser2()) {
       throw new Error("Mp4BoxVideoBackend requires a browser environment.");
     }
-    this.filename = source instanceof Blob ? source.name ?? "" : source;
+    const asRange = isRangeSource(source);
+    this.filename = asRange ? options?.filename ?? "" : source instanceof Blob ? source.name ?? "" : source;
     this.dataset = null;
     this.headers = options?.headers ?? {};
     this.samples = [];
@@ -9030,9 +9065,13 @@ var Mp4BoxVideoBackend = class {
     this.fileSize = 0;
     this.supportsRangeRequests = false;
     this.fileBlob = null;
+    this.rangeSource = null;
     this.decodeQueue = Promise.resolve();
     this.latestRequestedFrame = null;
-    if (source instanceof Blob) {
+    if (asRange) {
+      this.rangeSource = source;
+      this.fileSize = source.size;
+    } else if (source instanceof Blob) {
       this.fileBlob = source;
       this.fileSize = source.size;
       this.supportsRangeRequests = false;
@@ -9081,9 +9120,10 @@ var Mp4BoxVideoBackend = class {
     });
     this.cache.clear();
     this.fileBlob = null;
+    this.rangeSource = null;
   }
   async init() {
-    if (!this.fileBlob) {
+    if (!this.fileBlob && !this.rangeSource) {
       await this.openSource();
     }
     this.mp4box = await loadMp4box();
@@ -9165,6 +9205,13 @@ var Mp4BoxVideoBackend = class {
   }
   async readChunk(offset, size) {
     const end = Math.min(offset + size, this.fileSize);
+    if (this.rangeSource) {
+      const bytes = await this.rangeSource.readRange(offset, end - offset);
+      return bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength
+      );
+    }
     if (this.supportsRangeRequests) {
       const response = await fetchRetrying(this.filename, {
         headers: {
@@ -11204,7 +11251,7 @@ function createH5Worker() {
 }
 
 // src/codecs/slp/h5-streaming.ts
-function isRangeSource(source) {
+function isRangeSource2(source) {
   return typeof source === "object" && source !== null && typeof source.size === "number" && typeof source.readRange === "function";
 }
 async function serviceRangeBridge(control, dataArea, reader, offset, length) {
@@ -11435,7 +11482,7 @@ var StreamingH5File = class {
    * @param options - Optional settings
    */
   async openAny(source, options) {
-    if (isRangeSource(source)) {
+    if (isRangeSource2(source)) {
       return this.openRange(source, options);
     }
     if (typeof source === "string") {
@@ -19919,6 +19966,7 @@ export {
   LabelsSet,
   Labels,
   Identity,
+  isRangeSource,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
   setImageBytesReader,
