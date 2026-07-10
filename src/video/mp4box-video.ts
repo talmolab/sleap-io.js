@@ -1,4 +1,10 @@
-import { VideoBackend, VideoFrame, GetFrameOptions } from "./backend.js";
+import {
+  type VideoBackend,
+  type VideoFrame,
+  type GetFrameOptions,
+  type RangeSource,
+  isRangeSource,
+} from "./backend.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -85,17 +91,25 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   private fileSize: number;
   private supportsRangeRequests: boolean;
   private fileBlob: Blob | null;
+  /**
+   * Lazy byte source (desktop): read only the ranges we need via a native
+   * `read_range` instead of materializing the whole file. Mutually exclusive
+   * with `fileBlob` / URL fetching.
+   */
+  private rangeSource: RangeSource | null;
   private decodeQueue: Promise<void>;
   private latestRequestedFrame: number | null;
   /** Extra HTTP headers (e.g. Authorization) applied to every byte fetch. */
   private headers: Record<string, string>;
 
   constructor(
-    source: string | File | Blob,
+    source: string | File | Blob | RangeSource,
     options?: {
       cacheSize?: number;
       lookahead?: number;
       headers?: Record<string, string>;
+      /** Display name when the source carries none (e.g. a {@link RangeSource}). */
+      filename?: string;
     },
   ) {
     if (!hasWebCodecs()) {
@@ -104,8 +118,12 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     if (!isBrowser()) {
       throw new Error("Mp4BoxVideoBackend requires a browser environment.");
     }
-    this.filename =
-      source instanceof Blob ? ((source as File).name ?? "") : source;
+    const asRange = isRangeSource(source);
+    this.filename = asRange
+      ? (options?.filename ?? "")
+      : source instanceof Blob
+        ? ((source as File).name ?? "")
+        : source;
     this.dataset = null;
     this.headers = options?.headers ?? {};
     this.samples = [];
@@ -118,10 +136,15 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     this.fileSize = 0;
     this.supportsRangeRequests = false;
     this.fileBlob = null;
+    this.rangeSource = null;
     this.decodeQueue = Promise.resolve();
     this.latestRequestedFrame = null;
 
-    if (source instanceof Blob) {
+    if (asRange) {
+      // Lazy on-disk source: we already know the size; readChunk pulls ranges.
+      this.rangeSource = source;
+      this.fileSize = source.size;
+    } else if (source instanceof Blob) {
       this.fileBlob = source;
       this.fileSize = source.size;
       this.supportsRangeRequests = false;
@@ -183,10 +206,13 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     });
     this.cache.clear();
     this.fileBlob = null;
+    this.rangeSource = null;
   }
 
   private async init(): Promise<void> {
-    if (!this.fileBlob) {
+    // A RangeSource already knows the size and serves bytes via readChunk; only
+    // a URL source needs the ranged probe in openSource().
+    if (!this.fileBlob && !this.rangeSource) {
       await this.openSource();
     }
 
@@ -287,6 +313,16 @@ export class Mp4BoxVideoBackend implements VideoBackend {
 
   private async readChunk(offset: number, size: number): Promise<ArrayBuffer> {
     const end = Math.min(offset + size, this.fileSize);
+    if (this.rangeSource) {
+      // Lazy on-disk read: only the requested bytes cross into memory. Copy to a
+      // standalone ArrayBuffer so mp4box owns a right-sized buffer (the returned
+      // Uint8Array may be a view onto a larger backing buffer).
+      const bytes = await this.rangeSource.readRange(offset, end - offset);
+      return bytes.buffer.slice(
+        bytes.byteOffset,
+        bytes.byteOffset + bytes.byteLength,
+      ) as ArrayBuffer;
+    }
     if (this.supportsRangeRequests) {
       // Ranged read: force Accept-Encoding: identity (gzip would corrupt the
       // byte range) and retry transient failures with backoff.

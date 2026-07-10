@@ -8,11 +8,12 @@
  * built on initialization by iterating all packets.
  */
 
-import { VideoBackend, VideoFrame } from "./backend.js";
+import type { VideoBackend, VideoFrame, RangeSource } from "./backend.js";
 import {
   Input,
   UrlSource,
   BlobSource,
+  StreamSource,
   VideoSampleSink,
   EncodedPacketSink,
   ALL_FORMATS,
@@ -68,6 +69,33 @@ export class MediaBunnyVideoBackend implements VideoBackend {
     const backend = new MediaBunnyVideoBackend(filename, options);
     backend.input = new Input({
       source: new BlobSource(blob),
+      formats: ALL_FORMATS,
+    });
+    await backend.initialize();
+    return backend;
+  }
+
+  /**
+   * Build from a lazy {@link RangeSource} — reads only the container index +
+   * decoded frames' byte ranges via `readRange`, never the whole file. The
+   * desktop counterpart of {@link fromBlob}, avoiding a multi-GB in-memory copy.
+   * MediaBunny's {@link StreamSource} drives the reads; `read(start, end)` uses
+   * an EXCLUSIVE end, so length is `end - start`.
+   */
+  static async fromRangeSource(
+    rangeSource: RangeSource,
+    filename: string,
+    options?: MediaBunnyOptions,
+  ): Promise<MediaBunnyVideoBackend> {
+    const backend = new MediaBunnyVideoBackend(filename, options);
+    backend.input = new Input({
+      source: new StreamSource({
+        getSize: () => rangeSource.size,
+        read: (start, end) => rangeSource.readRange(start, end - start),
+        // Local disk over IPC: page-aligned bidirectional prefetch fits better
+        // than the aggressive network profile.
+        prefetchProfile: "fileSystem",
+      }),
       formats: ALL_FORMATS,
     });
     await backend.initialize();

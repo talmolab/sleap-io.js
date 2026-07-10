@@ -19,6 +19,38 @@ export interface GetFrameOptions {
   signal?: AbortSignal;
 }
 
+/**
+ * A lazy, seekable byte source for a video file — the video counterpart of the
+ * HDF5 streaming reader's range source. Lets a backend read only the byte ranges
+ * it needs (the container index + the samples for the frames being viewed)
+ * instead of materializing the whole file in memory.
+ *
+ * The canonical use is desktop (Tauri), where the WebView has no lazy disk-backed
+ * `File` for a raw path: `readRange` is backed by a native `read_range` command
+ * so a multi-GB video never has to be read whole into RAM. Structurally mirrors
+ * the HDF5 `RangeSource` used by `readSlpStreaming`.
+ */
+export interface RangeSource {
+  /** Total file size in bytes. */
+  size: number;
+  /** Read `[offset, offset + length)`; may return fewer bytes at EOF. */
+  readRange: (offset: number, length: number) => Promise<Uint8Array>;
+}
+
+/**
+ * True for a {@link RangeSource} — distinguishes it from a `string` URL / `File`
+ * / `Blob`. A `Blob` also has a numeric `size`, so the `readRange` function is
+ * the discriminator.
+ */
+export function isRangeSource(source: unknown): source is RangeSource {
+  return (
+    typeof source === "object" &&
+    source !== null &&
+    typeof (source as RangeSource).size === "number" &&
+    typeof (source as RangeSource).readRange === "function"
+  );
+}
+
 export interface VideoBackend {
   filename: string | string[];
   shape?: [number, number, number, number];
