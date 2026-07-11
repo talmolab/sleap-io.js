@@ -926,6 +926,39 @@ function attrToNumber(attr) {
   const num = typeof raw === "bigint" ? Number(raw) : Number(raw);
   return Number.isFinite(num) ? num : void 0;
 }
+function datasetValueToString(value) {
+  const norm = (s) => {
+    const t = trimHdf5String(s);
+    return t.length ? t : void 0;
+  };
+  if (value === void 0 || value === null) return void 0;
+  if (typeof value === "string") return norm(value);
+  if (value instanceof Uint8Array) return norm(textDecoder.decode(value));
+  if (value instanceof ArrayBuffer) {
+    return norm(textDecoder.decode(new Uint8Array(value)));
+  }
+  if (ArrayBuffer.isView(value)) {
+    const view = value;
+    return norm(
+      textDecoder.decode(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength)
+      )
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.length ? datasetValueToString(value[0]) : void 0;
+  }
+  if (typeof value === "object") {
+    const obj = value;
+    if (obj.buffer instanceof ArrayBuffer) {
+      return norm(textDecoder.decode(new Uint8Array(obj.buffer)));
+    }
+    if ("value" in obj && obj.value !== value) {
+      return datasetValueToString(obj.value);
+    }
+  }
+  return void 0;
+}
 function parseJsonEntry(entry) {
   if (typeof entry === "string") return JSON.parse(trimHdf5String(entry));
   if (entry instanceof Uint8Array)
@@ -1201,6 +1234,7 @@ export {
   parseMetadataJson,
   attrToString,
   attrToNumber,
+  datasetValueToString,
   parseJsonEntry,
   parseSkeletons,
   parseTracks,

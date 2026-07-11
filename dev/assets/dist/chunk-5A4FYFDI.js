@@ -11,6 +11,7 @@ import {
   attrToNumber,
   attrToString,
   clonePoint,
+  datasetValueToString,
   missingMetadataJsonError,
   parseJsonEntry,
   parseMetadataJson,
@@ -24,7 +25,7 @@ import {
   resolveCameraKey,
   resolveIdentity,
   resolveVideoFilename
-} from "./chunk-NIFGJKOL.js";
+} from "./chunk-XLXN4VG4.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -12249,11 +12250,12 @@ async function readSourceVideoGroupJsonStreaming(file, groupPath) {
   try {
     const keys = await file.getKeys(svPath);
     if (keys.includes("json")) {
-      const { value } = await file.getDatasetValue(`${svPath}/json`);
-      if (typeof value === "string") raw = value;
-      else if (value instanceof Uint8Array)
-        raw = new TextDecoder().decode(value);
-      else if (Array.isArray(value) && value.length > 0) raw = String(value[0]);
+      try {
+        const { value } = await file.getDatasetValue(`${svPath}/json`);
+        raw = datasetValueToString(value);
+      } catch {
+        raw = void 0;
+      }
     }
     if (raw === void 0) {
       const attrs = await file.getAttrs(svPath);
@@ -12264,7 +12266,7 @@ async function readSourceVideoGroupJsonStreaming(file, groupPath) {
   }
   if (raw === void 0) return null;
   try {
-    return JSON.parse(raw.trim().replace(/\0+$/, ""));
+    return JSON.parse(raw);
   } catch {
     return null;
   }
@@ -16994,18 +16996,13 @@ function readVideoCrops(file) {
   if (!keys.includes("video_crops")) return out;
   const ds = file.get("video_crops");
   if (!ds) return out;
-  let raw = ds.value;
-  if (Array.isArray(raw)) raw = raw[0];
   let json;
-  if (typeof raw === "string") {
-    json = raw;
-  } else if (raw instanceof Uint8Array) {
-    json = textDecoder2.decode(raw);
-  } else if (raw != null) {
-    json = String(raw);
-  } else {
-    return out;
+  try {
+    json = datasetValueToString(ds.value);
+  } catch {
+    json = void 0;
   }
+  if (json === void 0) return out;
   let parsed;
   try {
     parsed = JSON.parse(json);
@@ -17034,19 +17031,18 @@ function readSourceVideoGroupJson(file, groupPath) {
   const grp = file.get(`${groupPath}/source_video`);
   if (!grp) return null;
   let raw;
-  const ds = file.get(`${groupPath}/source_video/json`);
-  if (ds) {
-    const v = ds.value;
-    if (typeof v === "string") raw = v;
-    else if (v instanceof Uint8Array) raw = textDecoder2.decode(v);
-    else if (Array.isArray(v) && v.length > 0) raw = String(v[0]);
+  try {
+    const ds = file.get(`${groupPath}/source_video/json`);
+    if (ds) raw = datasetValueToString(ds.value);
+  } catch {
+    raw = void 0;
   }
   if (raw === void 0) {
     raw = attrToString((grp.attrs ?? {}).json);
   }
   if (raw === void 0) return null;
   try {
-    return JSON.parse(raw.trim().replace(/\0+$/, ""));
+    return JSON.parse(raw);
   } catch {
     return null;
   }
