@@ -10112,6 +10112,27 @@ var ImageVideoBackend = class _ImageVideoBackend {
     this.lastIndex = frameIndex;
     this.lastPrefetch = this.prefetch(window2);
   }
+  /**
+   * Cheap liveness probe: attempt to read frame 0's ENCODED bytes (no decode),
+   * serving from / seeding the bytes cache. Resolves `true` when the read
+   * succeeds, `false` when it throws (missing file, unreadable path, injected
+   * reader that rejects). Never throws.
+   *
+   * When {@link create} is given a `shape` it skips the up-front frame-0 decode,
+   * so the returned backend can look healthy while pointing at media that isn't
+   * there (issue #213). This lets the SLP loader — or any consumer that opens a
+   * backend from stored metadata — confirm the first frame is reachable and drop
+   * the backend if not.
+   */
+  async probeFirstFrame() {
+    if (this.filename.length === 0) return false;
+    try {
+      await this.startRead(0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
   close() {
     this.bytesCache.clear();
     this.decodedCache.clear();
@@ -10124,6 +10145,181 @@ function isGrayscale(img) {
     if (d[i] !== d[i + 2]) return false;
   }
   return true;
+}
+
+// src/video/path-resolve.ts
+var DEFAULT_MAX_TAIL_DEPTH = 16;
+function splitParts(s) {
+  return s.split("/").filter((c) => c.length > 0 && c !== ".");
+}
+function parsePath(p) {
+  const norm = p.replace(/\\/g, "/");
+  if (norm.startsWith("//")) {
+    return { absolute: true, drive: null, unc: true, parts: splitParts(norm) };
+  }
+  const driveMatch = /^([A-Za-z]:)(.*)$/.exec(norm);
+  if (driveMatch) {
+    const rest = driveMatch[2];
+    return {
+      absolute: rest.startsWith("/"),
+      drive: driveMatch[1],
+      unc: false,
+      parts: splitParts(rest)
+    };
+  }
+  if (norm.startsWith("/")) {
+    return { absolute: true, drive: null, unc: false, parts: splitParts(norm) };
+  }
+  return { absolute: false, drive: null, unc: false, parts: splitParts(norm) };
+}
+function formatPath(pp) {
+  const body = pp.parts.join("/");
+  if (pp.unc) return `//${body}`;
+  if (pp.drive) {
+    return pp.absolute ? `${pp.drive}/${body}` : `${pp.drive}${body}`;
+  }
+  return pp.absolute ? `/${body}` : body;
+}
+function posixBasename(p) {
+  const { parts } = parsePath(p);
+  return parts.length > 0 ? parts[parts.length - 1] : "";
+}
+function posixDirname(p) {
+  const pp = parsePath(p);
+  return formatPath({ ...pp, parts: pp.parts.slice(0, -1) });
+}
+function posixJoin(dir, tail) {
+  const d = parsePath(dir);
+  const t = parsePath(tail);
+  return formatPath({ ...d, parts: [...d.parts, ...t.parts] });
+}
+function lastIndexAfterContiguous(hay, needle) {
+  if (needle.length === 0) return -1;
+  for (let start = hay.length - needle.length; start >= 0; start--) {
+    let ok = true;
+    for (let j = 0; j < needle.length; j++) {
+      if (hay[start + j] !== needle[j]) {
+        ok = false;
+        break;
+      }
+    }
+    if (ok) return start + needle.length;
+  }
+  return -1;
+}
+function anchorCandidate(storedPath, labelsDir) {
+  const sp = parsePath(storedPath);
+  if (sp.parts.length === 0) return null;
+  const basename3 = sp.parts[sp.parts.length - 1];
+  const storedDir = sp.parts.slice(0, -1);
+  const ld = parsePath(labelsDir);
+  const ldParts = ld.parts;
+  const maxL = Math.min(ldParts.length, storedDir.length);
+  for (let L = maxL; L >= 1; L--) {
+    const suffix = ldParts.slice(ldParts.length - L);
+    const end = lastIndexAfterContiguous(storedDir, suffix);
+    if (end >= 0) {
+      const remainder = storedDir.slice(end);
+      return formatPath({ ...ld, parts: [...ldParts, ...remainder, basename3] });
+    }
+  }
+  return null;
+}
+function videoPathCandidates(storedPath, labelsDir, maxDepth = DEFAULT_MAX_TAIL_DEPTH) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const add = (c) => {
+    if (c.length > 0 && !seen.has(c)) {
+      seen.add(c);
+      out.push(c);
+    }
+  };
+  const sp = parsePath(storedPath);
+  add(formatPath(sp));
+  if (labelsDir != null && labelsDir !== "") {
+    if (!sp.absolute && sp.drive == null) {
+      add(posixJoin(labelsDir, storedPath));
+    }
+    const anchor = anchorCandidate(storedPath, labelsDir);
+    if (anchor != null) add(anchor);
+    const parts = sp.parts;
+    const maxK = Math.min(maxDepth, parts.length);
+    for (let k = maxK; k >= 1; k--) {
+      add(posixJoin(labelsDir, parts.slice(parts.length - k).join("/")));
+    }
+  }
+  return out;
+}
+function derivePrefixSwap(firstStored, firstResolved) {
+  const s = parsePath(firstStored);
+  const r = parsePath(firstResolved);
+  let suffixLen = 0;
+  while (suffixLen < s.parts.length && suffixLen < r.parts.length && s.parts[s.parts.length - 1 - suffixLen] === r.parts[r.parts.length - 1 - suffixLen]) {
+    suffixLen++;
+  }
+  return {
+    old: {
+      absolute: s.absolute,
+      drive: s.drive,
+      unc: s.unc,
+      parts: s.parts.slice(0, s.parts.length - suffixLen)
+    },
+    new: {
+      absolute: r.absolute,
+      drive: r.drive,
+      unc: r.unc,
+      parts: r.parts.slice(0, r.parts.length - suffixLen)
+    },
+    suffixLen
+  };
+}
+function applyPrefixSwap(path, swap) {
+  const p = parsePath(path);
+  const { old: o, new: n } = swap;
+  if (p.absolute !== o.absolute || p.drive !== o.drive || p.unc !== o.unc) {
+    return formatPath(p);
+  }
+  if (p.parts.length < o.parts.length) return formatPath(p);
+  for (let i = 0; i < o.parts.length; i++) {
+    if (p.parts[i] !== o.parts[i]) return formatPath(p);
+  }
+  return formatPath({
+    absolute: n.absolute,
+    drive: n.drive,
+    unc: n.unc,
+    parts: [...n.parts, ...p.parts.slice(o.parts.length)]
+  });
+}
+async function resolveFirstExisting(candidates, fs) {
+  for (const candidate of candidates) {
+    try {
+      if (await fs.exists(candidate)) return candidate;
+    } catch {
+    }
+  }
+  return null;
+}
+async function resolveVideoSource(source, labelsDir, fs) {
+  if (Array.isArray(source)) {
+    if (source.length === 0) return { filename: source, firstMissing: false };
+    const first = source[0];
+    const candidates2 = videoPathCandidates(first, labelsDir);
+    const resolved2 = await resolveFirstExisting(candidates2, fs);
+    if (resolved2 == null) return { filename: source, firstMissing: true };
+    if (resolved2 === candidates2[0])
+      return { filename: source, firstMissing: false };
+    const swap = derivePrefixSwap(first, resolved2);
+    return {
+      filename: source.map((p) => applyPrefixSwap(p, swap)),
+      firstMissing: false
+    };
+  }
+  const candidates = videoPathCandidates(source, labelsDir);
+  const resolved = await resolveFirstExisting(candidates, fs);
+  if (resolved == null) return { filename: source, firstMissing: true };
+  if (resolved === candidates[0])
+    return { filename: source, firstMissing: false };
+  return { filename: resolved, firstMissing: false };
 }
 
 // src/video/seq-video.ts
@@ -17106,31 +17302,54 @@ async function readVideos(dataset, labelsPath, openVideos, file, formatId, video
     });
     const shape = height && width && channels ? [frameCount ?? 0, height, width, channels] : void 0;
     const channelOrder = backendMeta.channel_order ?? channelOrderFromAttrs ?? (formatId < 1.4 ? "BGR" : "RGB");
+    let openFilename = filename;
+    let sourceMissing = false;
+    if (openVideos && !embedded) {
+      const fsResolver = getFsResolver();
+      const sourceIsUrl = typeof filename === "string" && isUrl(filename);
+      if (fsResolver && !sourceIsUrl && !isUrl(labelsPath)) {
+        const resolved = await resolveVideoSource(
+          filename,
+          posixDirname(labelsPath),
+          fsResolver
+        );
+        openFilename = resolved.filename;
+        sourceMissing = resolved.firstMissing;
+      }
+    }
     let backend = null;
     let backendError = null;
     if (openVideos) {
-      try {
-        backend = await createVideoBackend(filename, {
-          dataset: datasetPath ?? void 0,
-          embedded,
-          frameNumbers,
-          frameSizes: readFrameSizes(file, datasetPath),
-          format,
-          channelOrder,
-          shape,
-          fps: backendMeta.fps,
-          // Persist the remote `.slp` auth headers onto remote/embedded video
-          // backends so reopens / existence probes stay authenticated. The
-          // factory only uses them for URL-backed backends; embedded/local
-          // backends ignore them.
-          headers: urlHeaders
-        });
-      } catch (err) {
-        backend = null;
+      if (sourceMissing && isImageSource(filename)) {
+        const firstStored = Array.isArray(filename) ? filename[0] ?? "" : filename;
         backendError = {
-          kind: err instanceof UnsupportedVideoFormatError ? "unsupported-format" : isImageSource(filename) ? "image-sequence" : "decode",
-          message: err instanceof Error ? err.message : String(err)
+          kind: "image-sequence",
+          message: `Image sequence not found: could not locate "${posixBasename(firstStored)}" relative to the labels directory "${posixDirname(labelsPath)}". The stored path "${firstStored}" was likely saved on another machine; move or locate the image folder.`
         };
+      } else {
+        try {
+          backend = await createVideoBackend(openFilename, {
+            dataset: datasetPath ?? void 0,
+            embedded,
+            frameNumbers,
+            frameSizes: readFrameSizes(file, datasetPath),
+            format,
+            channelOrder,
+            shape,
+            fps: backendMeta.fps,
+            // Persist the remote `.slp` auth headers onto remote/embedded video
+            // backends so reopens / existence probes stay authenticated. The
+            // factory only uses them for URL-backed backends; embedded/local
+            // backends ignore them.
+            headers: urlHeaders
+          });
+        } catch (err) {
+          backend = null;
+          backendError = {
+            kind: err instanceof UnsupportedVideoFormatError ? "unsupported-format" : isImageSource(filename) ? "image-sequence" : "decode",
+            message: err instanceof Error ? err.message : String(err)
+          };
+        }
       }
     }
     let sourceVideo = null;
@@ -19970,6 +20189,17 @@ export {
   getImageBytesReader,
   computePrefetchWindow,
   ImageVideoBackend,
+  parsePath,
+  formatPath,
+  posixBasename,
+  posixDirname,
+  posixJoin,
+  anchorCandidate,
+  videoPathCandidates,
+  derivePrefixSwap,
+  applyPrefixSwap,
+  resolveFirstExisting,
+  resolveVideoSource,
   BlobByteSource,
   setSeqFileByteSourceFactory,
   SeqHeader,

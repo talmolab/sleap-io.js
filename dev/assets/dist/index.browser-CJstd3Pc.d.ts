@@ -161,6 +161,16 @@ interface VideoBackend {
     getFrame(frameIndex: number, opts?: GetFrameOptions): Promise<VideoFrame | null>;
     getFrameTimes?(): Promise<number[] | null>;
     /**
+     * Optional cheap liveness probe: resolve to `true` if the backend can read its
+     * first frame's SOURCE bytes (no decode), else `false` (never throws). Used to
+     * detect a backend built from stored metadata (an `ImageVideo` given a `shape`
+     * skips the up-front decode) whose media is not actually reachable, so a
+     * consumer can offer a locate/repair affordance instead of rendering blanks.
+     * Backends that always read on `getFrame` (or verify at construction) may omit
+     * this. See issue #213.
+     */
+    probeFirstFrame?(): Promise<boolean>;
+    /**
      * Optional crop pushdown hook (Item 1 of JS issue #153, mirroring Python
      * `read_crop`, `video_reading.py:1647`).
      *
@@ -3282,8 +3292,134 @@ declare class ImageVideoBackend implements VideoBackend {
     prefetch(indices: number[]): Promise<void>;
     /** Compute and launch the read-ahead window for `frameIndex` (fire-and-forget). */
     private triggerPrefetch;
+    /**
+     * Cheap liveness probe: attempt to read frame 0's ENCODED bytes (no decode),
+     * serving from / seeding the bytes cache. Resolves `true` when the read
+     * succeeds, `false` when it throws (missing file, unreadable path, injected
+     * reader that rejects). Never throws.
+     *
+     * When {@link create} is given a `shape` it skips the up-front frame-0 decode,
+     * so the returned backend can look healthy while pointing at media that isn't
+     * there (issue #213). This lets the SLP loader — or any consumer that opens a
+     * backend from stored metadata — confirm the first frame is reachable and drop
+     * the backend if not.
+     */
+    probeFirstFrame(): Promise<boolean>;
     close(): void;
 }
+
+/**
+ * A path decomposed for cross-platform reasoning: backslashes normalized to `/`,
+ * a Windows `drive` letter (`"C:"`, no slash) split out, and the remaining
+ * segments in `parts` (with `.` and empty segments dropped, `..` preserved).
+ */
+interface PosixPath {
+    /** Whether the path is rooted (leading `/`, a UNC `//`, or a `drive` + `/`). */
+    absolute: boolean;
+    /** Windows drive prefix like `"C:"` (no trailing slash), or `null`. */
+    drive: string | null;
+    /**
+     * A UNC / network-share root (leading `\\` or `//`, e.g. `\\server\share`).
+     * Tracked separately so it round-trips as `//…` and is not collapsed to a
+     * single-slash POSIX root — which on Windows would silently re-root the path
+     * to the current drive and lose the share (issue #213).
+     */
+    unc: boolean;
+    /** Path segments after the root/drive. */
+    parts: string[];
+}
+/**
+ * Parse a path string into a {@link PosixPath}. Handles UNC (`\\server\share`),
+ * POSIX absolute (`/a/b`), Windows drive-absolute (`C:/a/b` or `C:\a\b`),
+ * Windows drive-relative (`C:a`), and relative (`a/b`) forms. Never throws.
+ */
+declare function parsePath(p: string): PosixPath;
+/** Render a {@link PosixPath} back to a forward-slash string. Inverse of {@link parsePath}. */
+declare function formatPath(pp: PosixPath): string;
+/** Final path segment (cross-platform), or `""` for a rootless empty path. */
+declare function posixBasename(p: string): string;
+/** Directory portion of a path (cross-platform), preserving root/drive. */
+declare function posixDirname(p: string): string;
+/** Join `tail` (treated as a relative segment) onto directory `dir`. */
+declare function posixJoin(dir: string, tail: string): string;
+/**
+ * Reconstruct a candidate by grafting the stored path's tail onto the labels dir
+ * at their longest shared "anchor": the longest suffix of the labels-dir
+ * segments that also occurs contiguously within the stored path's directory
+ * segments. The stored directory portion AFTER that anchor (plus the basename)
+ * is appended to the FULL labels dir.
+ *
+ * Example — labels dir `L:/code/proj/2026-mars`, stored
+ * `/home/u/code/proj/2026-mars/raw/img_0.jpg`: the anchor is
+ * `code/proj/2026-mars`, so the candidate is
+ * `L:/code/proj/2026-mars/raw/img_0.jpg`.
+ *
+ * Returns `null` when there is no shared anchor.
+ */
+declare function anchorCandidate(storedPath: string, labelsDir: string): string | null;
+/**
+ * Ordered, de-duplicated candidate paths for a single stored source path,
+ * resolved against `labelsDir`. The first entry is always the verbatim
+ * (normalized) stored path. Later entries require a non-empty `labelsDir`.
+ * The trailing-tail grafts are emitted MOST-SPECIFIC-FIRST (deepest tail before
+ * basename) so the first existing match is the least ambiguous.
+ */
+declare function videoPathCandidates(storedPath: string, labelsDir: string, maxDepth?: number): string[];
+/**
+ * A leading-prefix substitution derived from how the first frame resolved:
+ * replace the `old` leading segment (root + parts) of a path with the `new` one,
+ * preserving the shared `suffixLen` trailing segments. Applied to every path in
+ * an image sequence so the whole list is remapped from one resolution probe.
+ */
+interface PrefixSwap {
+    old: PosixPath;
+    new: PosixPath;
+    suffixLen: number;
+}
+/**
+ * Derive the {@link PrefixSwap} that turns `firstStored` into `firstResolved` by
+ * keeping their longest common trailing segments and swapping everything before.
+ */
+declare function derivePrefixSwap(firstStored: string, firstResolved: string): PrefixSwap;
+/**
+ * Apply a {@link PrefixSwap} to `path`: if `path` starts with the swap's `old`
+ * leading prefix (same root/drive and leading segments), replace that prefix
+ * with `new`; otherwise return `path` normalized and unchanged (paths in the
+ * list that don't share the first frame's prefix are left as-is).
+ */
+declare function applyPrefixSwap(path: string, swap: PrefixSwap): string;
+/**
+ * First candidate that {@link FsResolver.exists} confirms, or `null` if none do.
+ * A resolver that throws on a candidate is treated as "does not exist" for that
+ * candidate (the scan continues) — matching the conservative degrade elsewhere.
+ */
+declare function resolveFirstExisting(candidates: string[], fs: FsResolver): Promise<string | null>;
+/** Result of resolving a video source against the labels directory. */
+interface ResolvedVideoSource {
+    /**
+     * The source remapped to on-disk paths where resolution succeeded, or the
+     * original source unchanged when it resolved verbatim / could not be located.
+     * Same shape as the input (string vs string[]).
+     */
+    filename: string | string[];
+    /**
+     * `true` IFF the resolver was consulted and the first frame/file could NOT be
+     * located at ANY candidate — the signal for callers to withhold an unreadable
+     * backend and record a "missing" reason.
+     */
+    firstMissing: boolean;
+}
+/**
+ * Resolve a stored video source (single file or `ImageVideo` list) against the
+ * labels-file directory using `fs` for existence checks.
+ *
+ * Only the first frame of a list is probed; the winning candidate yields one
+ * prefix-swap applied to the whole list. Returns the original source unchanged
+ * on a verbatim hit (no churn) or when nothing could be located (`firstMissing`
+ * then flags the miss). Callers MUST only invoke this when an `FsResolver` is
+ * available; with none, degrade to the stored source directly.
+ */
+declare function resolveVideoSource(source: string | string[], labelsDir: string, fs: FsResolver): Promise<ResolvedVideoSource>;
 
 /**
  * Random-access reader over the bytes of a `.seq` file. Implementations: a
@@ -5166,4 +5302,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { MergeResult as $, openH5Worker as A, BoundingBox as B, Centroid as C, DEFAULT_MAX_BYTES as D, isStreamingSupported as E, type StreamingH5Source as F, readSlpStreaming as G, SkeletonMatchMethod as H, type ImageBytesReader as I, InstanceMatchMethod as J, VideoMatchMethod as K, Labels as L, FrameStrategy as M, ErrorMode as N, SkeletonMatcher as O, type PaletteName as P, InstanceMatcher as Q, ROI as R, SegmentationMask as S, TrackMatchMethod as T, UserROI as U, Video as V, TrackMatcher as W, VideoMatcher as X, ConflictResolution as Y, MergeError as Z, SkeletonMismatchError as _, LabeledFrame as a, getCentroidSkeleton as a$, MatchResult as a0, MergeProgressBar as a1, STRUCTURE_SKELETON_MATCHER as a2, SUBSET_SKELETON_MATCHER as a3, OVERLAP_SKELETON_MATCHER as a4, DUPLICATE_MATCHER as a5, IOU_MATCHER as a6, IDENTITY_INSTANCE_MATCHER as a7, NAME_TRACK_MATCHER as a8, IDENTITY_TRACK_MATCHER as a9, cloneRecordingSession as aA, makeCameraFromDict as aB, Identity as aC, Instance3D as aD, PredictedInstance3D as aE, LazyDataStore as aF, LazyFrameList as aG, _registerMaskFactory as aH, AnnotationType as aI, type Geometry as aJ, type ROIOptions as aK, rasterizeGeometry as aL, encodeWkb as aM, decodeWkb as aN, PredictedROI as aO, encodeRle as aP, decodeRle as aQ, resizeNearest as aR, traceMaskContours as aS, groupRingsIntoPolygons as aT, type SegmentationMaskOptions as aU, type UserSegmentationMaskOptions as aV, UserSegmentationMask as aW, PredictedSegmentationMask as aX, type BoundingBoxOptions as aY, UserBoundingBox as aZ, PredictedBoundingBox as a_, AUTO_VIDEO_MATCHER as aa, PATH_VIDEO_MATCHER as ab, BASENAME_VIDEO_MATCHER as ac, IMAGE_DEDUP_VIDEO_MATCHER as ad, SHAPE_VIDEO_MATCHER as ae, setFsResolver as af, type FsResolver as ag, type MergeStrategy as ah, _relinkFromPredicted as ai, _annotationCentroidXy as aj, _findAnnotationMatches as ak, _findAnnotationLinkMatches as al, _resolveMergedIsNegative as am, EXISTS_TTL_MS as an, type CropOptions as ao, resolveCropRect as ap, type VideoBackendErrorKind as aq, type VideoBackendError as ar, SuggestionFrame as as, rodriguesTransformation as at, Camera as au, CameraGroup as av, InstanceGroup as aw, FrameGroup as ax, RecordingSession as ay, injectSessionFrameResolver as az, LabelsSet as b, stripCrossOriginHeaders as b$, CENTROID_SKELETON as b0, type CentroidOptions as b1, UserCentroid as b2, PredictedCentroid as b3, type LabelImageObjectInfo as b4, type LabelImageOptions as b5, UserLabelImage as b6, PredictedLabelImage as b7, normalizeLabelIds as b8, type VideoFrame as b9, SlpStreamWriter as bA, saveSlpMergedFromStores as bB, saveSlpMergedToSink as bC, type SlpWriteHeader as bD, type AppendStoreOptions as bE, type SlpWriteSink as bF, type MergeStoresOptions as bG, isAnalysisH5File as bH, labelsToCsv as bI, saveLabelsCsv as bJ, type CsvExportOptions as bK, URL_SCHEMES as bL, CLOUD_SCHEMES as bM, GDRIVE_HOSTS as bN, SENSITIVE_HEADERS as bO, SENSITIVE_QUERY_PARAMS as bP, RETRYABLE_STATUSES as bQ, isUrl as bR, isGdriveUrl as bS, redactUrl as bT, redactedCauseSummary as bU, RemoteIOError as bV, type ResolvedUrl as bW, resolveUrl as bX, statusToMessage as bY, raiseRemote as bZ, identityHeaders as b_, type GetFrameOptions as ba, type RangeSource$1 as bb, isRangeSource as bc, type VideoBackend as bd, Mp4BoxVideoBackend as be, type MediaBunnyOptions as bf, MediaBunnyVideoBackend as bg, StreamingHdf5VideoBackend as bh, type ImageVideoOptions as bi, computePrefetchWindow as bj, ImageVideoBackend as bk, loadSlp as bl, saveSlp as bm, loadAnalysisH5 as bn, saveAnalysisH5 as bo, saveAnalysisH5ToBytes as bp, loadSlpSet as bq, saveSlpSet as br, loadVideo as bs, loadLabelImages as bt, setLabelImageFileReader as bu, type PagesAs as bv, type LoadLabelImagesOptions as bw, type LabelImageFileReader as bx, saveSlpToBytes as by, openSlpWriter as bz, type ReadCocoOptions as c, type TrailTarget as c$, withRetries as c0, parseRetryAfterMs as c1, fetchRetrying as c2, headOrRangeProbe as c3, type GeoJSONFeature as c4, type GeoJSONFeatureCollection as c5, roisToGeoJSON as c6, roisFromGeoJSON as c7, writeGeoJSON as c8, readGeoJSON as c9, readTrainingConfigSkeleton as cA, isTrainingConfig as cB, type RGBA as cC, type ColorSpec as cD, type ColorScheme as cE, type MarkerShape as cF, type Overlay as cG, type VideoOverlay as cH, NAMED_COLORS as cI, PALETTES as cJ, getPalette as cK, resolveColor as cL, rgbToCSS as cM, determineColorScheme as cN, drawCircle as cO, drawSquare as cP, drawDiamond as cQ, drawTriangle as cR, drawCross as cS, drawTrails as cT, getMarkerFunction as cU, MARKER_FUNCTIONS as cV, type DrawTrailsOptions as cW, resolveTrailNode as cX, computeTrails as cY, nTrailPaletteColors as cZ, collectTracks as c_, type CocoCategory as ca, type CocoImage as cb, type CocoRle as cc, type CocoSegmentation as cd, type CocoAnnotation as ce, type CocoJson as cf, isCocoData as cg, parseCocoJson as ch, createSkeletonFromCategory as ci, decodeKeypoints as cj, decodeCompressedRleCounts as ck, decodeCocoRle as cl, decodeSegmentation as cm, readCoco as cn, readCocoSet as co, type LabelsDict as cp, toDict as cq, fromDict as cr, toNumpy as cs, fromNumpy as ct, labelsFromNumpy as cu, decodeYamlSkeleton as cv, encodeYamlSkeleton as cw, readSkeletonJson as cx, writeSkeletonJson as cy, readTrainingConfigSkeletons as cz, type RenderOptions as d, type Trail as d0, RenderContext as d1, InstanceContext as d2, drawMasks as d3, drawLabelImage as d4, cropPoints as d5, uncropPoints as d6, type CropRect as d7, type FlatPoints as d8, type PointPairs as d9, cropFrame as da, type FrameLike as db, type RawFrame as dc, type Fill as dd, clampAlpha as de, pickColor as df, type VideoOptions as e, type RGB as f, LabelImage as g, type RawLabelImage as h, getImageBytesReader as i, SeqVideoBackend as j, SeqHeader as k, SeqIndex as l, BlobByteSource as m, type ByteSource as n, createVideoBackend as o, UnsupportedVideoFormatError as p, type VideoBackendType as q, CropVideoBackend as r, setImageBytesReader as s, type CropWrapOptions as t, parseGdrive as u, urlFromConfirmation as v, checkDownloadHost as w, openGdrive as x, StreamingH5File as y, openStreamingH5 as z };
+export { readSlpStreaming as $, SeqIndex as A, BoundingBox as B, Centroid as C, BlobByteSource as D, type ByteSource as E, createVideoBackend as F, UnsupportedVideoFormatError as G, type VideoBackendType as H, type ImageBytesReader as I, CropVideoBackend as J, type CropWrapOptions as K, Labels as L, parseGdrive as M, urlFromConfirmation as N, checkDownloadHost as O, type PaletteName as P, openGdrive as Q, ROI as R, SegmentationMask as S, DEFAULT_MAX_BYTES as T, UserROI as U, Video as V, StreamingH5File as W, openStreamingH5 as X, openH5Worker as Y, isStreamingSupported as Z, type StreamingH5Source as _, LabeledFrame as a, decodeWkb as a$, SkeletonMatchMethod as a0, InstanceMatchMethod as a1, TrackMatchMethod as a2, VideoMatchMethod as a3, FrameStrategy as a4, ErrorMode as a5, SkeletonMatcher as a6, InstanceMatcher as a7, TrackMatcher as a8, VideoMatcher as a9, _resolveMergedIsNegative as aA, EXISTS_TTL_MS as aB, type CropOptions as aC, resolveCropRect as aD, type VideoBackendErrorKind as aE, type VideoBackendError as aF, SuggestionFrame as aG, rodriguesTransformation as aH, Camera as aI, CameraGroup as aJ, InstanceGroup as aK, FrameGroup as aL, RecordingSession as aM, injectSessionFrameResolver as aN, cloneRecordingSession as aO, makeCameraFromDict as aP, Identity as aQ, Instance3D as aR, PredictedInstance3D as aS, LazyDataStore as aT, LazyFrameList as aU, _registerMaskFactory as aV, AnnotationType as aW, type Geometry as aX, type ROIOptions as aY, rasterizeGeometry as aZ, encodeWkb as a_, ConflictResolution as aa, MergeError as ab, SkeletonMismatchError as ac, MergeResult as ad, MatchResult as ae, MergeProgressBar as af, STRUCTURE_SKELETON_MATCHER as ag, SUBSET_SKELETON_MATCHER as ah, OVERLAP_SKELETON_MATCHER as ai, DUPLICATE_MATCHER as aj, IOU_MATCHER as ak, IDENTITY_INSTANCE_MATCHER as al, NAME_TRACK_MATCHER as am, IDENTITY_TRACK_MATCHER as an, AUTO_VIDEO_MATCHER as ao, PATH_VIDEO_MATCHER as ap, BASENAME_VIDEO_MATCHER as aq, IMAGE_DEDUP_VIDEO_MATCHER as ar, SHAPE_VIDEO_MATCHER as as, setFsResolver as at, type FsResolver as au, type MergeStrategy as av, _relinkFromPredicted as aw, _annotationCentroidXy as ax, _findAnnotationMatches as ay, _findAnnotationLinkMatches as az, LabelsSet as b, GDRIVE_HOSTS as b$, PredictedROI as b0, encodeRle as b1, decodeRle as b2, resizeNearest as b3, traceMaskContours as b4, groupRingsIntoPolygons as b5, type SegmentationMaskOptions as b6, type UserSegmentationMaskOptions as b7, UserSegmentationMask as b8, PredictedSegmentationMask as b9, saveSlp as bA, loadAnalysisH5 as bB, saveAnalysisH5 as bC, saveAnalysisH5ToBytes as bD, loadSlpSet as bE, saveSlpSet as bF, loadVideo as bG, loadLabelImages as bH, setLabelImageFileReader as bI, type PagesAs as bJ, type LoadLabelImagesOptions as bK, type LabelImageFileReader as bL, saveSlpToBytes as bM, openSlpWriter as bN, SlpStreamWriter as bO, saveSlpMergedFromStores as bP, saveSlpMergedToSink as bQ, type SlpWriteHeader as bR, type AppendStoreOptions as bS, type SlpWriteSink as bT, type MergeStoresOptions as bU, isAnalysisH5File as bV, labelsToCsv as bW, saveLabelsCsv as bX, type CsvExportOptions as bY, URL_SCHEMES as bZ, CLOUD_SCHEMES as b_, type BoundingBoxOptions as ba, UserBoundingBox as bb, PredictedBoundingBox as bc, getCentroidSkeleton as bd, CENTROID_SKELETON as be, type CentroidOptions as bf, UserCentroid as bg, PredictedCentroid as bh, type LabelImageObjectInfo as bi, type LabelImageOptions as bj, UserLabelImage as bk, PredictedLabelImage as bl, normalizeLabelIds as bm, type VideoFrame as bn, type GetFrameOptions as bo, type RangeSource$1 as bp, isRangeSource as bq, type VideoBackend as br, Mp4BoxVideoBackend as bs, type MediaBunnyOptions as bt, MediaBunnyVideoBackend as bu, StreamingHdf5VideoBackend as bv, type ImageVideoOptions as bw, computePrefetchWindow as bx, ImageVideoBackend as by, loadSlp as bz, type ReadCocoOptions as c, determineColorScheme as c$, SENSITIVE_HEADERS as c0, SENSITIVE_QUERY_PARAMS as c1, RETRYABLE_STATUSES as c2, isUrl as c3, isGdriveUrl as c4, redactUrl as c5, redactedCauseSummary as c6, RemoteIOError as c7, type ResolvedUrl as c8, resolveUrl as c9, decodeSegmentation as cA, readCoco as cB, readCocoSet as cC, type LabelsDict as cD, toDict as cE, fromDict as cF, toNumpy as cG, fromNumpy as cH, labelsFromNumpy as cI, decodeYamlSkeleton as cJ, encodeYamlSkeleton as cK, readSkeletonJson as cL, writeSkeletonJson as cM, readTrainingConfigSkeletons as cN, readTrainingConfigSkeleton as cO, isTrainingConfig as cP, type RGBA as cQ, type ColorSpec as cR, type ColorScheme as cS, type MarkerShape as cT, type Overlay as cU, type VideoOverlay as cV, NAMED_COLORS as cW, PALETTES as cX, getPalette as cY, resolveColor as cZ, rgbToCSS as c_, statusToMessage as ca, raiseRemote as cb, identityHeaders as cc, stripCrossOriginHeaders as cd, withRetries as ce, parseRetryAfterMs as cf, fetchRetrying as cg, headOrRangeProbe as ch, type GeoJSONFeature as ci, type GeoJSONFeatureCollection as cj, roisToGeoJSON as ck, roisFromGeoJSON as cl, writeGeoJSON as cm, readGeoJSON as cn, type CocoCategory as co, type CocoImage as cp, type CocoRle as cq, type CocoSegmentation as cr, type CocoAnnotation as cs, type CocoJson as ct, isCocoData as cu, parseCocoJson as cv, createSkeletonFromCategory as cw, decodeKeypoints as cx, decodeCompressedRleCounts as cy, decodeCocoRle as cz, type RenderOptions as d, drawCircle as d0, drawSquare as d1, drawDiamond as d2, drawTriangle as d3, drawCross as d4, drawTrails as d5, getMarkerFunction as d6, MARKER_FUNCTIONS as d7, type DrawTrailsOptions as d8, resolveTrailNode as d9, computeTrails as da, nTrailPaletteColors as db, collectTracks as dc, type TrailTarget as dd, type Trail as de, RenderContext as df, InstanceContext as dg, drawMasks as dh, drawLabelImage as di, cropPoints as dj, uncropPoints as dk, type CropRect as dl, type FlatPoints as dm, type PointPairs as dn, cropFrame as dp, type FrameLike as dq, type RawFrame as dr, type Fill as ds, clampAlpha as dt, pickColor as du, type VideoOptions as e, type RGB as f, LabelImage as g, type RawLabelImage as h, getImageBytesReader as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, formatPath as n, posixDirname as o, parsePath as p, posixBasename as q, resolveVideoSource as r, setImageBytesReader as s, posixJoin as t, type PosixPath as u, videoPathCandidates as v, type PrefixSwap as w, type ResolvedVideoSource as x, SeqVideoBackend as y, SeqHeader as z };
