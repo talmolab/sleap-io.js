@@ -41,3 +41,4 @@ jobs:
         with:
           name: coverage-${{ matrix.os }}
           path: coverage
+          retention-days: 1
