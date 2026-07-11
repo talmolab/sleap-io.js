@@ -29,6 +29,13 @@ import {
   UnsupportedVideoFormatError,
   isImageSource,
 } from "../../video/factory.js";
+import {
+  resolveVideoSource,
+  posixDirname,
+  posixBasename,
+} from "../../video/path-resolve.js";
+import { getFsResolver } from "../../model/matching.js";
+import { isUrl } from "../../io/remote.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
 import { resolveSourceFrameCount } from "./frame-count.js";
 import type { CropRect } from "../../transform/points.js";
@@ -866,41 +873,83 @@ async function readVideos(
       channelOrderFromAttrs ??
       (formatId < 1.4 ? "BGR" : "RGB");
 
+    // Resolve external (non-embedded) source paths against the labels-file
+    // directory so a project moved between machines — or whose media now lives
+    // in a subfolder next to the `.slp` — still opens. Uses the injected
+    // FsResolver for existence checks (Node, Tauri, and browser-injected all
+    // share one policy); with no resolver, or for URLs / embedded videos, the
+    // stored source is used verbatim. See issue #213 and video/path-resolve.ts.
+    let openFilename: string | string[] = filename;
+    let sourceMissing = false;
+    if (openVideos && !embedded) {
+      const fsResolver = getFsResolver();
+      const sourceIsUrl = typeof filename === "string" && isUrl(filename);
+      if (fsResolver && !sourceIsUrl && !isUrl(labelsPath)) {
+        const resolved = await resolveVideoSource(
+          filename,
+          posixDirname(labelsPath),
+          fsResolver,
+        );
+        openFilename = resolved.filename;
+        sourceMissing = resolved.firstMissing;
+      }
+    }
+
     let backend = null;
     let backendError: VideoBackendError | null = null;
     if (openVideos) {
-      try {
-        backend = await createVideoBackend(filename, {
-          dataset: datasetPath ?? undefined,
-          embedded,
-          frameNumbers,
-          frameSizes: readFrameSizes(file, datasetPath),
-          format,
-          channelOrder,
-          shape,
-          fps: backendMeta.fps,
-          // Persist the remote `.slp` auth headers onto remote/embedded video
-          // backends so reopens / existence probes stay authenticated. The
-          // factory only uses them for URL-backed backends; embedded/local
-          // backends ignore them.
-          headers: urlHeaders,
-        });
-      } catch (err) {
-        // Resilient load: a single video whose backend can't be built — an
-        // image-sequence with missing files, an unsupported `.avi`/`.mpeg`, or
-        // a decode failure — must NOT abort the whole project load. Leave the
-        // backend null and record the reason so the consumer can show an
-        // actionable message / resolver instead of the load throwing.
-        backend = null;
+      if (sourceMissing && isImageSource(filename)) {
+        // The resolver confirms the first image is unreachable. Do NOT hand back
+        // a backend that looks healthy: an ImageVideo given a stored `shape`
+        // skips the up-front frame-0 decode, so it would open "successfully"
+        // while unable to read a single frame (issue #213). Record the reason so
+        // consumers can surface a locate/repair affordance instead of silently
+        // rendering blank frames.
+        const firstStored = Array.isArray(filename)
+          ? (filename[0] ?? "")
+          : filename;
         backendError = {
-          kind:
-            err instanceof UnsupportedVideoFormatError
-              ? "unsupported-format"
-              : isImageSource(filename)
-                ? "image-sequence"
-                : "decode",
-          message: err instanceof Error ? err.message : String(err),
+          kind: "image-sequence",
+          message:
+            `Image sequence not found: could not locate ` +
+            `"${posixBasename(firstStored)}" relative to the labels directory ` +
+            `"${posixDirname(labelsPath)}". The stored path "${firstStored}" ` +
+            `was likely saved on another machine; move or locate the image folder.`,
         };
+      } else {
+        try {
+          backend = await createVideoBackend(openFilename, {
+            dataset: datasetPath ?? undefined,
+            embedded,
+            frameNumbers,
+            frameSizes: readFrameSizes(file, datasetPath),
+            format,
+            channelOrder,
+            shape,
+            fps: backendMeta.fps,
+            // Persist the remote `.slp` auth headers onto remote/embedded video
+            // backends so reopens / existence probes stay authenticated. The
+            // factory only uses them for URL-backed backends; embedded/local
+            // backends ignore them.
+            headers: urlHeaders,
+          });
+        } catch (err) {
+          // Resilient load: a single video whose backend can't be built — an
+          // image-sequence with missing files, an unsupported `.avi`/`.mpeg`, or
+          // a decode failure — must NOT abort the whole project load. Leave the
+          // backend null and record the reason so the consumer can show an
+          // actionable message / resolver instead of the load throwing.
+          backend = null;
+          backendError = {
+            kind:
+              err instanceof UnsupportedVideoFormatError
+                ? "unsupported-format"
+                : isImageSource(filename)
+                  ? "image-sequence"
+                  : "decode",
+            message: err instanceof Error ? err.message : String(err),
+          };
+        }
       }
     }
 

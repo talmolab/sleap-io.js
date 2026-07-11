@@ -30,6 +30,22 @@ export {
   type ImageBytesReader,
 } from "./video/image-source.js";
 export {
+  resolveVideoSource,
+  videoPathCandidates,
+  anchorCandidate,
+  derivePrefixSwap,
+  applyPrefixSwap,
+  resolveFirstExisting,
+  parsePath,
+  formatPath,
+  posixDirname,
+  posixBasename,
+  posixJoin,
+  type PosixPath,
+  type PrefixSwap,
+  type ResolvedVideoSource,
+} from "./video/path-resolve.js";
+export {
   SeqVideoBackend,
   SeqHeader,
   SeqIndex,

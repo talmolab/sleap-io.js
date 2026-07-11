@@ -253,6 +253,28 @@ export class ImageVideoBackend implements VideoBackend {
     this.lastPrefetch = this.prefetch(window);
   }
 
+  /**
+   * Cheap liveness probe: attempt to read frame 0's ENCODED bytes (no decode),
+   * serving from / seeding the bytes cache. Resolves `true` when the read
+   * succeeds, `false` when it throws (missing file, unreadable path, injected
+   * reader that rejects). Never throws.
+   *
+   * When {@link create} is given a `shape` it skips the up-front frame-0 decode,
+   * so the returned backend can look healthy while pointing at media that isn't
+   * there (issue #213). This lets the SLP loader — or any consumer that opens a
+   * backend from stored metadata — confirm the first frame is reachable and drop
+   * the backend if not.
+   */
+  async probeFirstFrame(): Promise<boolean> {
+    if (this.filename.length === 0) return false;
+    try {
+      await this.startRead(0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
   close(): void {
     this.bytesCache.clear();
     this.decodedCache.clear();
