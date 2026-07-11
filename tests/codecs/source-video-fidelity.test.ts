@@ -16,7 +16,11 @@ import fs from "node:fs";
 import os from "node:os";
 import { loadSlp } from "../../src/io/main.js";
 import { saveSlpToBytes } from "../../src/codecs/slp/write.js";
-import { readSlp } from "../../src/codecs/slp/read.js";
+import {
+  readSlp,
+  readSourceVideoGroupJson,
+  readVideoCrops,
+} from "../../src/codecs/slp/read.js";
 import { Video } from "../../src/model/video.js";
 import { Instance } from "../../src/model/instance.js";
 import { Skeleton } from "../../src/model/skeleton.js";
@@ -28,6 +32,7 @@ import {
 } from "../../src/model/matching.js";
 import { buildSourceVideoFromDict } from "../../src/codecs/slp/source-video.js";
 import { readSourceVideoGroupJsonStreaming } from "../../src/codecs/slp/read-streaming.js";
+import { datasetValueToString } from "../../src/codecs/slp/parsers.js";
 
 const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 const slp = (name: string) => path.join(fixtureRoot, "slp", name);
@@ -74,6 +79,169 @@ describe("buildSourceVideoFromDict", () => {
   });
 });
 
+describe("datasetValueToString (scalar |S<n> json dataset decode, #214)", () => {
+  const enc = (s: string) => new TextEncoder().encode(s);
+  const json = '{"backend":{"type":"ImageVideo"}}';
+
+  it("decodes a plain string (h5wasm scalar |S<n>)", () => {
+    expect(datasetValueToString(json)).toBe(json);
+  });
+
+  it("decodes a Uint8Array (raw bytes)", () => {
+    expect(datasetValueToString(enc(json))).toBe(json);
+  });
+
+  it("decodes an ArrayBuffer", () => {
+    expect(datasetValueToString(enc(json).buffer)).toBe(json);
+  });
+
+  it("decodes a length-1 array of string (jsfive scalar |S<n>)", () => {
+    expect(datasetValueToString([json])).toBe(json);
+  });
+
+  it("decodes a length-1 array whose element is a Uint8Array", () => {
+    // The pre-#214 `String(v[0])` path yielded "[object Uint8Array]" here.
+    expect(datasetValueToString([enc(json)])).toBe(json);
+  });
+
+  it("decodes a { buffer } typed-array wrapper (streaming transport)", () => {
+    expect(datasetValueToString({ buffer: enc(json).buffer })).toBe(json);
+  });
+
+  it("unwraps a { value } object", () => {
+    expect(datasetValueToString({ value: json })).toBe(json);
+  });
+
+  it("trims trailing NUL padding from fixed-length storage", () => {
+    expect(datasetValueToString(`${json}\0\0`)).toBe(json);
+    expect(datasetValueToString(enc(`${json}\0`))).toBe(json);
+  });
+
+  it("returns undefined for empty / absent values (never throws)", () => {
+    expect(datasetValueToString(undefined)).toBeUndefined();
+    expect(datasetValueToString(null)).toBeUndefined();
+    expect(datasetValueToString("")).toBeUndefined();
+    expect(datasetValueToString("   ")).toBeUndefined();
+    expect(datasetValueToString(new Uint8Array(0))).toBeUndefined();
+    expect(datasetValueToString([])).toBeUndefined();
+    expect(datasetValueToString(42)).toBeUndefined();
+  });
+});
+
+describe("readSourceVideoGroupJson (sync reader, scalar dataset + crash-safety, #214)", () => {
+  const blob =
+    '{"filename":"o.mp4","backend":{"shape":[80,384,384,1],"filename":"o.mp4"}}';
+  const enc = (s: string) => new TextEncoder().encode(s);
+
+  // Minimal h5wasm-file stand-in: file.get(group) yields { attrs }, and
+  // file.get(group/json) yields a dataset whose `.value` getter returns a
+  // representation (or throws). These branches are unreachable through a real
+  // fixture because h5wasm always decodes the scalar |S<n> to a plain string.
+  const svFile = (opts: {
+    datasetValue?: unknown;
+    datasetThrows?: boolean;
+    hasDataset?: boolean;
+    attrJson?: string;
+  }) => ({
+    get(path: string) {
+      if (path === "video0/source_video") {
+        return {
+          attrs: opts.attrJson !== undefined ? { json: opts.attrJson } : {},
+        };
+      }
+      if (path === "video0/source_video/json") {
+        const exists =
+          opts.hasDataset ??
+          (opts.datasetThrows === true || opts.datasetValue !== undefined);
+        if (!exists) return null;
+        return {
+          get value() {
+            if (opts.datasetThrows) throw new Error("h5wasm .value boom");
+            return opts.datasetValue;
+          },
+        };
+      }
+      return null;
+    },
+  });
+
+  it("decodes a Uint8Array scalar dataset value", () => {
+    const d = readSourceVideoGroupJson(
+      svFile({ datasetValue: enc(blob) }),
+      "video0",
+    );
+    expect((d?.backend as any).shape).toEqual([80, 384, 384, 1]);
+  });
+
+  it("decodes a length-1 array whose element is a Uint8Array (pre-fix String(v[0]) mis-decode)", () => {
+    // Pre-fix `String(v[0])` produced "[object Uint8Array]" -> JSON.parse fails -> null.
+    const d = readSourceVideoGroupJson(
+      svFile({ datasetValue: [enc(blob)] }),
+      "video0",
+    );
+    expect((d?.backend as any).shape).toEqual([80, 384, 384, 1]);
+  });
+
+  it("does not abort the open when .value throws; falls back to the attribute", () => {
+    // Pre-fix: the unguarded `.value` access threw out of readVideos, failing
+    // the whole file open (the issue's "cannot open" symptom).
+    let d: Record<string, unknown> | null = null;
+    expect(() => {
+      d = readSourceVideoGroupJson(
+        svFile({ datasetThrows: true, attrJson: blob }),
+        "video0",
+      );
+    }).not.toThrow();
+    expect((d as any)?.backend?.shape).toEqual([80, 384, 384, 1]);
+  });
+
+  it("returns null (no throw) when .value throws and no attribute exists", () => {
+    let d: Record<string, unknown> | null | undefined;
+    expect(() => {
+      d = readSourceVideoGroupJson(svFile({ datasetThrows: true }), "video0");
+    }).not.toThrow();
+    expect(d).toBeNull();
+  });
+});
+
+describe("readVideoCrops (sync reader crash-safety, #214)", () => {
+  const cropsJson = '[{"video":0,"crop":[1,2,3,4],"fill":0}]';
+  const cropsFile = (opts: {
+    value?: unknown;
+    throws?: boolean;
+    hasKey?: boolean;
+  }) => ({
+    keys: () => (opts.hasKey === false ? [] : ["video_crops"]),
+    get(path: string) {
+      if (path === "video_crops") {
+        return {
+          get value() {
+            if (opts.throws) throw new Error("h5wasm .value boom");
+            return opts.value;
+          },
+        };
+      }
+      return null;
+    },
+  });
+
+  it("decodes a Uint8Array /video_crops value", () => {
+    const m = readVideoCrops(
+      cropsFile({ value: new TextEncoder().encode(cropsJson) }),
+    );
+    expect(m.get(0)?.crop).toEqual([1, 2, 3, 4]);
+  });
+
+  it("does not throw when .value throws (returns empty map)", () => {
+    // Pre-fix `let raw = ds.value` was unguarded -> the throw propagated.
+    let m: Map<number, unknown> | undefined;
+    expect(() => {
+      m = readVideoCrops(cropsFile({ throws: true }));
+    }).not.toThrow();
+    expect(m?.size).toBe(0);
+  });
+});
+
 describe("readSourceVideoGroupJsonStreaming", () => {
   const blob =
     '{"filename":"o.mp4","backend":{"shape":[80,384,384,1],"filename":"o.mp4"}}';
@@ -97,6 +265,46 @@ describe("readSourceVideoGroupJsonStreaming", () => {
       getKeys: async () => ["json"],
       getAttrs: async () => ({}),
       getDatasetValue: async () => ({ value: blob, shape: [1], dtype: "S" }),
+    };
+    const dict = await readSourceVideoGroupJsonStreaming(file, "video0");
+    expect((dict?.backend as any).shape).toEqual([80, 384, 384, 1]);
+  });
+
+  it("decodes a scalar |S<n> json dataset returned as a plain string (#214)", async () => {
+    // What the h5wasm worker returns for Python's np.bytes_ scalar spill.
+    const file = {
+      getKeys: async () => ["json"],
+      getAttrs: async () => ({}),
+      getDatasetValue: async () => ({ value: blob, shape: [], dtype: "A73" }),
+    };
+    const dict = await readSourceVideoGroupJsonStreaming(file, "video0");
+    expect((dict?.backend as any).shape).toEqual([80, 384, 384, 1]);
+  });
+
+  it("decodes a scalar json dataset returned as raw bytes (#214)", async () => {
+    const file = {
+      getKeys: async () => ["json"],
+      getAttrs: async () => ({}),
+      getDatasetValue: async () => ({
+        value: new TextEncoder().encode(blob),
+        shape: [],
+        dtype: "B",
+      }),
+    };
+    const dict = await readSourceVideoGroupJsonStreaming(file, "video0");
+    expect((dict?.backend as any).shape).toEqual([80, 384, 384, 1]);
+  });
+
+  it("falls back to the attribute when the dataset read throws (#214)", async () => {
+    // A throw from getDatasetValue must not lose the lineage when the attribute
+    // is still available (parity with the sync reader's scoped guard).
+    const file = {
+      getKeys: async () => ["json"],
+      getAttrs: async (p: string) =>
+        p === "video0/source_video" ? { json: blob } : {},
+      getDatasetValue: async () => {
+        throw new Error("boom");
+      },
     };
     const dict = await readSourceVideoGroupJsonStreaming(file, "video0");
     expect((dict?.backend as any).shape).toEqual([80, 384, 384, 1]);
@@ -139,6 +347,28 @@ describe("eager reader recovers source_video lineage from fixtures", () => {
     // the HDF5 group. Before the fix, sourceVideo was dropped entirely.
     expect(v.sourceVideo).not.toBeNull();
     expect(String(v.sourceVideo?.filename)).toContain(".mp4");
+  });
+
+  it("spilled_source_video.pkg.slp: source recovered from a scalar |S<n> json DATASET (#214)", async () => {
+    // Python spills oversized (>64 KB) source_video metadata to a scalar
+    // fixed-length-string DATASET (np.bytes_) instead of the @json attribute.
+    // The whole open must not throw, and the ImageVideo lineage (thousands of
+    // frame filenames + backend) must be recovered from that dataset — the
+    // attribute is absent in this fixture. See gen_spilled_source_video_fixture.py.
+    const labels = await readSlp(slp("spilled_source_video.pkg.slp"), {
+      openVideos: false,
+    });
+    const v = labels.videos[0];
+    expect(v.sourceVideo).not.toBeNull();
+    const src = v.sourceVideo!;
+    const meta = src.backendMetadata as Record<string, unknown>;
+    expect(meta.type).toBe("ImageVideo");
+    expect(meta.shape).toEqual([2200, 384, 384, 1]);
+    // The image-sequence filename list survives in full.
+    const fn = src.filename as unknown;
+    expect(Array.isArray(fn)).toBe(true);
+    expect((fn as string[]).length).toBe(2200);
+    expect((fn as string[])[0]).toBe("raw_images_top/frame_00000.jpg");
   });
 });
 

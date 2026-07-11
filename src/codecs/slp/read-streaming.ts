@@ -17,6 +17,7 @@ import {
 import {
   attrToNumber,
   attrToString,
+  datasetValueToString,
   parseMetadataJson,
   missingMetadataJsonError,
   parseJsonEntry,
@@ -465,11 +466,18 @@ export async function readSourceVideoGroupJsonStreaming(
   try {
     const keys = await file.getKeys(svPath);
     if (keys.includes("json")) {
-      const { value } = await file.getDatasetValue(`${svPath}/json`);
-      if (typeof value === "string") raw = value;
-      else if (value instanceof Uint8Array)
-        raw = new TextDecoder().decode(value);
-      else if (Array.isArray(value) && value.length > 0) raw = String(value[0]);
+      // Oversized (spilled) metadata: a scalar `|S<n>` dataset. Decode every
+      // backend representation through the shared helper (h5wasm string,
+      // jsfive length-1 array, raw bytes) rather than the partial inline checks.
+      // Scope the guard tightly (mirrors the sync reader) so a dataset-read
+      // failure falls back to the `json` attribute instead of dropping the
+      // lineage.
+      try {
+        const { value } = await file.getDatasetValue(`${svPath}/json`);
+        raw = datasetValueToString(value);
+      } catch {
+        raw = undefined;
+      }
     }
     if (raw === undefined) {
       const attrs = await file.getAttrs(svPath);
@@ -480,10 +488,7 @@ export async function readSourceVideoGroupJsonStreaming(
   }
   if (raw === undefined) return null;
   try {
-    return JSON.parse(raw.trim().replace(/\0+$/, "")) as Record<
-      string,
-      unknown
-    >;
+    return JSON.parse(raw) as Record<string, unknown>;
   } catch {
     return null;
   }
