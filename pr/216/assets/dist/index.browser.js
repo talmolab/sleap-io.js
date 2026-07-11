@@ -182,7 +182,7 @@ import {
   videoPathCandidates,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-ONZKYQTK.js";
+} from "./chunk-HSFOGTCC.js";
 import {
   Edge,
   Instance,
@@ -202,7 +202,7 @@ import {
   predictedPointsEmpty,
   predictedPointsFromArray,
   predictedPointsFromDict
-} from "./chunk-NIFGJKOL.js";
+} from "./chunk-XLXN4VG4.js";
 import {
   CLOUD_SCHEMES,
   DEFAULT_MAX_BYTES,
