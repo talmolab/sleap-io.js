@@ -68,6 +68,16 @@ export interface VideoBackend {
   ): Promise<VideoFrame | null>;
   getFrameTimes?(): Promise<number[] | null>;
   /**
+   * Optional cheap liveness probe: resolve to `true` if the backend can read its
+   * first frame's SOURCE bytes (no decode), else `false` (never throws). Used to
+   * detect a backend built from stored metadata (an `ImageVideo` given a `shape`
+   * skips the up-front decode) whose media is not actually reachable, so a
+   * consumer can offer a locate/repair affordance instead of rendering blanks.
+   * Backends that always read on `getFrame` (or verify at construction) may omit
+   * this. See issue #213.
+   */
+  probeFirstFrame?(): Promise<boolean>;
+  /**
    * Optional crop pushdown hook (Item 1 of JS issue #153, mirroring Python
    * `read_crop`, `video_reading.py:1647`).
    *
