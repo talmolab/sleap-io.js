@@ -8,6 +8,7 @@ import { readCompoundColumnsManual } from "./h5-compound.js";
 import {
   attrToNumber,
   attrToString,
+  datasetValueToString,
   parseMetadataJson,
   missingMetadataJsonError,
   parseSkeletons,
@@ -674,25 +675,22 @@ interface VideoCropEntry {
  * plain string (Python's scalar S-dtype), a length-1 array of strings (the JS
  * vlen-array form), or raw bytes — all three are normalized here.
  */
-function readVideoCrops(file: any): Map<number, VideoCropEntry> {
+export function readVideoCrops(file: any): Map<number, VideoCropEntry> {
   const out = new Map<number, VideoCropEntry>();
   const keys = file.keys?.() ?? [];
   if (!keys.includes("video_crops")) return out;
   const ds = file.get("video_crops");
   if (!ds) return out;
 
-  let raw: unknown = ds.value;
-  if (Array.isArray(raw)) raw = raw[0];
-  let json: string;
-  if (typeof raw === "string") {
-    json = raw;
-  } else if (raw instanceof Uint8Array) {
-    json = textDecoder.decode(raw);
-  } else if (raw != null) {
-    json = String(raw);
-  } else {
-    return out;
+  // Python writes /video_crops as a scalar `|S<n>` (np.bytes_) JSON dataset;
+  // decode every backend's representation through the shared, throw-safe helper.
+  let json: string | undefined;
+  try {
+    json = datasetValueToString((ds as { value?: unknown }).value);
+  } catch {
+    json = undefined;
   }
+  if (json === undefined) return out;
 
   let parsed: unknown;
   try {
@@ -727,29 +725,31 @@ function readVideoCrops(file: any): Map<number, VideoCropEntry> {
  * first (where oversized metadata is stored) then the `json` *attribute* (the
  * normal case), mirroring Python `_read_source_video_json`. h5wasm sync path.
  */
-function readSourceVideoGroupJson(
+export function readSourceVideoGroupJson(
   file: any,
   groupPath: string,
 ): Record<string, unknown> | null {
   const grp = file.get(`${groupPath}/source_video`);
   if (!grp) return null;
   let raw: string | undefined;
-  const ds = file.get(`${groupPath}/source_video/json`);
-  if (ds) {
-    const v = (ds as { value?: unknown }).value;
-    if (typeof v === "string") raw = v;
-    else if (v instanceof Uint8Array) raw = textDecoder.decode(v);
-    else if (Array.isArray(v) && v.length > 0) raw = String(v[0]);
+  // Prefer the spilled `json` DATASET (oversized metadata, e.g. an ImageVideo
+  // source with thousands of filenames — Python writes it as a scalar `|S<n>`
+  // via np.bytes_). The read is guarded: h5wasm `.value` can throw on unusual
+  // scalar/large datasets, and a throw here would otherwise abort the whole
+  // file open (this runs inside readVideos with no surrounding try/catch), so
+  // fall back to the `json` attribute rather than failing the load.
+  try {
+    const ds = file.get(`${groupPath}/source_video/json`);
+    if (ds) raw = datasetValueToString((ds as { value?: unknown }).value);
+  } catch {
+    raw = undefined;
   }
   if (raw === undefined) {
     raw = attrToString((grp.attrs ?? {}).json);
   }
   if (raw === undefined) return null;
   try {
-    return JSON.parse(raw.trim().replace(/\0+$/, "")) as Record<
-      string,
-      unknown
-    >;
+    return JSON.parse(raw) as Record<string, unknown>;
   } catch {
     return null;
   }

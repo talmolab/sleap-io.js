@@ -154,6 +154,59 @@ export function attrToNumber(attr: unknown): number | undefined {
 }
 
 /**
+ * Decode the `.value` of a scalar (or length-1) HDF5 string dataset
+ * (`H5T_STRING`, `|S<n>`) to a plain string, or `undefined` when it holds no
+ * usable text.
+ *
+ * Oversized JSON that exceeds HDF5's ~64 KB attribute ceiling is spilled by
+ * Python sleap-io into a `json` *dataset* written as `np.bytes_(blob)` — a
+ * SCALAR (shape `()`) fixed-length string. The reader backends surface that
+ * single element in several shapes, all normalized here:
+ *   - h5wasm (sync and worker): a decoded JS `string`
+ *   - jsfive: a length-1 `Array` whose element is the string (or `Uint8Array`)
+ *   - raw bytes: `Uint8Array` / `ArrayBuffer` / another `ArrayBufferView` /
+ *     a `{ buffer }` typed-array wrapper (streaming transport) / `{ value }`
+ * Trailing NUL padding from fixed-length storage is trimmed. Shared by the two
+ * `{group}/source_video` readers and `read_video_crops` so every scalar-`|S<n>`
+ * JSON dataset decodes through one robust path. Never throws.
+ */
+export function datasetValueToString(value: unknown): string | undefined {
+  // Trim (fixed-length NUL padding + whitespace); treat empty as "no text" so
+  // callers fall back to the attribute form.
+  const norm = (s: string): string | undefined => {
+    const t = trimHdf5String(s);
+    return t.length ? t : undefined;
+  };
+  if (value === undefined || value === null) return undefined;
+  if (typeof value === "string") return norm(value);
+  if (value instanceof Uint8Array) return norm(textDecoder.decode(value));
+  if (value instanceof ArrayBuffer) {
+    return norm(textDecoder.decode(new Uint8Array(value)));
+  }
+  if (ArrayBuffer.isView(value)) {
+    const view = value as ArrayBufferView;
+    return norm(
+      textDecoder.decode(
+        new Uint8Array(view.buffer, view.byteOffset, view.byteLength),
+      ),
+    );
+  }
+  if (Array.isArray(value)) {
+    return value.length ? datasetValueToString(value[0]) : undefined;
+  }
+  if (typeof value === "object") {
+    const obj = value as { value?: unknown; buffer?: unknown };
+    if (obj.buffer instanceof ArrayBuffer) {
+      return norm(textDecoder.decode(new Uint8Array(obj.buffer)));
+    }
+    if ("value" in obj && obj.value !== value) {
+      return datasetValueToString(obj.value);
+    }
+  }
+  return undefined;
+}
+
+/**
  * Parse a single JSON entry from a dataset value.
  * Handles both string and Uint8Array entries.
  * Trims trailing nulls/whitespace for fixed-width HDF5 strings.
