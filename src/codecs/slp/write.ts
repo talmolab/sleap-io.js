@@ -1719,20 +1719,25 @@ export async function saveSlpToBytes(
   // source-mode `writeLabels` copy — but source mode never embeds (plan is null).
   const plan = doEmbed ? await planEmbedding(labels, embedMode) : null;
 
+  const fs = getH5FileSystem(module);
   const file = new module.File(memPath, "w");
   try {
-    writeSlpToFile(file, writeLabels, plan);
-    if (plan && plan.size > 0) {
-      await writeEmbeddedVideoData(file, labels, plan);
+    try {
+      writeSlpToFile(file, writeLabels, plan);
+      if (plan && plan.size > 0) {
+        await writeEmbeddedVideoData(file, labels, plan);
+      }
+    } finally {
+      file.close();
     }
+    return fs.readFile!(memPath);
   } finally {
-    file.close();
+    try {
+      fs.unlink!(memPath);
+    } catch {
+      // best-effort cleanup
+    }
   }
-
-  const fs = getH5FileSystem(module);
-  const bytes = fs.readFile!(memPath);
-  fs.unlink!(memPath);
-  return bytes;
 }
 
 export async function writeSlp(
@@ -2564,7 +2569,7 @@ async function collectEncodedFrames(
 ): Promise<Map<number, Uint8Array>> {
   const frameData = new Map<number, Uint8Array>();
   const video = labels.videos[videoIndex];
-  if (!video || !video.backend) return frameData;
+  if (!video?.backend) return frameData;
 
   const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
   const frameIndices = new Set<number>();
@@ -2707,16 +2712,18 @@ async function writeEmbeddedVideoData(
       writtenFns.push(fn);
     }
 
-    // Backstop (raw path only): planned N but wrote 0 -> refuse to write a
-    // stripped file. (encode path keeps today's lenient behavior -> deferred.)
-    if (
-      entry.kind === "raw" &&
-      entry.frameNumbers.length > 0 &&
-      blobs.length === 0
-    ) {
+    // Backstop (raw path only): a raw copy's frameNumbers IS the exact stored
+    // set (embeddedFrameIndices), so every frame must read a blob — a partial
+    // read is anomalous data loss. Refuse to write a stripped file rather than
+    // silently drop images (the #213 data-loss this fix prevents). Note
+    // frameNumbers.length is always > 0 for a raw entry (planEmbedding skips
+    // 0-frame videos). The encode path keeps today's lenient behavior ->
+    // deferred follow-up.
+    if (entry.kind === "raw" && blobs.length < entry.frameNumbers.length) {
       throw new Error(
-        `embedding video${entry.videoIndex}: intended ${entry.frameNumbers.length} ` +
-          `frame(s) but read 0 - refusing to write a file with dropped images.`,
+        `embedding video${entry.videoIndex}: read ${blobs.length} of ` +
+          `${entry.frameNumbers.length} planned frame(s) - refusing to write a ` +
+          `file with dropped images.`,
       );
     }
 

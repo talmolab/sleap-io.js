@@ -163,22 +163,25 @@ describe("re-embed preserves embedded images (raw copy)", () => {
     out.videos[0].close();
   });
 
-  it("vlen and cropped fixtures round-trip byte-for-byte", async () => {
-    for (const name of ["cropped_format_2_3.pkg.slp"]) {
-      const src = await loadSlp(pkg(name), { openVideos: true });
-      const fns = src.videos[0].embeddedFrameIndices!;
-      const srcBlobs = await blobsOf(src.videos[0], fns);
-      const bytes = await saveSlpToBytes(src);
-      const { labels: out, cleanup } = await reloadFromDisk(bytes);
-      expect(out.videos[0].embeddedFrameIndices).toEqual(fns);
-      const outBlobs = await blobsOf(out.videos[0], fns);
-      for (let i = 0; i < fns.length; i++) {
-        expect(bytesEqual(outBlobs[i]!, srcBlobs[i]!)).toBe(true);
-      }
-      src.videos[0].close();
-      out.videos[0].close();
-      cleanup();
+  it("cropped fixture round-trips byte-for-byte", async () => {
+    // vlen's raw-READ path is covered by the earlier Task-1 test ("reads
+    // vlen-layout blobs"); it can't round-trip through loadSlp (bare synthetic
+    // fixture with no metadata JSON group), so only cropped is exercised here.
+    const src = await loadSlp(pkg("cropped_format_2_3.pkg.slp"), {
+      openVideos: true,
+    });
+    const fns = src.videos[0].embeddedFrameIndices!;
+    const srcBlobs = await blobsOf(src.videos[0], fns);
+    const bytes = await saveSlpToBytes(src);
+    const { labels: out, cleanup } = await reloadFromDisk(bytes);
+    expect(out.videos[0].embeddedFrameIndices).toEqual(fns);
+    const outBlobs = await blobsOf(out.videos[0], fns);
+    for (let i = 0; i < fns.length; i++) {
+      expect(bytesEqual(outBlobs[i]!, srcBlobs[i]!)).toBe(true);
     }
+    src.videos[0].close();
+    out.videos[0].close();
+    cleanup();
   });
 
   it('embed:"source" externalizes (drops embedded images)', async () => {
@@ -229,9 +232,15 @@ describe("re-embed preserves embedded images (raw copy)", () => {
       skeletons: [skeleton],
     });
     const bytes = await saveSlpToBytes(labels); // preserve default
-    const out = await loadSlp(bytes, { openVideos: true });
+    // Reload from DISK (not loadSlp(bytes)) so the embedded blob BYTES can be
+    // read back, then byte-compare frame 0 to the fake PNG the sim served.
+    const { labels: out, cleanup } = await reloadFromDisk(bytes);
     expect(out.videos[0].embeddedFrameIndices).toEqual(frameNumbers);
+    const outBlob = await out.videos[0].getFrameBuffer(0);
+    expect(outBlob).not.toBeNull();
+    expect(bytesEqual(outBlob!, PNG)).toBe(true);
     out.videos[0].close();
+    cleanup();
   });
 
   it("throws (never silently writes 0) when a planned blob can't be read", async () => {
