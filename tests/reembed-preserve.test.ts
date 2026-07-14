@@ -243,6 +243,35 @@ describe("re-embed preserves embedded images (raw copy)", () => {
     cleanup();
   });
 
+  it("streams into a resizable 1-D uint8 dataset (h5wasm capability)", async () => {
+    const { getH5Module, getH5FileSystem, ensureH5StagingDir } = await import(
+      "../src/codecs/slp/h5.js"
+    );
+    const m = await getH5Module();
+    ensureH5StagingDir(m);
+    const p = `/tmp/cap_${Date.now()}.h5`;
+    const f = new (m as any).File(p, "w");
+    f.create_dataset({
+      name: "v",
+      data: new Uint8Array(0),
+      shape: [0],
+      maxshape: [null],
+      chunks: [8],
+      dtype: "<B",
+    });
+    const ds = f.get("v");
+    ds.resize([3]);
+    ds.write_slice([[0, 3]], new Uint8Array([1, 2, 3]));
+    ds.resize([5]);
+    ds.write_slice([[3, 5]], new Uint8Array([4, 5]));
+    f.close();
+    const f2 = new (m as any).File(p, "r");
+    const val = Array.from(f2.get("v").value as Uint8Array);
+    f2.close();
+    getH5FileSystem(m).unlink!(p);
+    expect(val).toEqual([1, 2, 3, 4, 5]);
+  });
+
   it("throws (never silently writes 0) when a planned blob can't be read", async () => {
     const frameNumbers = [0, 1];
     const backend = {

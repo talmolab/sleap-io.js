@@ -541,6 +541,14 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
 const DEFAULT_WRITE_WINDOW_FRAMES = 5000;
 /** HDF5 chunk row count for the appendable pose datasets. */
 const WRITE_CHUNK_ROWS = 8192;
+/**
+ * Per-window byte budget for the streamed raw embedded-blob copy: blobs
+ * accumulate up to this many bytes before one `resize` + `write_slice` flush,
+ * bounding peak JS memory to ~one window instead of the whole concatenation.
+ */
+const EMBED_WRITE_WINDOW_BYTES = 32 * 1024 * 1024;
+/** HDF5 chunk length (elements) for the 1-D embedded video byte dataset. */
+const EMBED_VIDEO_CHUNK_BYTES = 1 << 20;
 
 const FRAMES_FIELDS = [
   "frame_id",
@@ -2676,12 +2684,16 @@ function writeEmbeddedVideosJson(
  * entries copy the stored encoded blobs verbatim via `getFrameBuffer` (no
  * decode/re-encode); encode entries write the pre-collected bytes.
  *
- * Correctness-first accumulate-then-write: blobs for a video are gathered into
- * one combined buffer before the single dataset write. (A later task makes this
- * low-peak/streaming into a resizable 1-D dataset.)
+ * Peak memory: the raw path STREAMS stored blobs into a resizable 1-D `<B`
+ * dataset in bounded byte windows (peak ~= one window + the h5wasm MEMFS copy),
+ * rather than holding every blob plus a full concatenated buffer at once. The
+ * encode path keeps accumulate-then-write — its bytes are already fully in JS
+ * memory (`frameData`), so there is nothing to stream. Either way the on-disk
+ * `{group}/video` layout is byte-identical to a single concatenated write; the
+ * reader slices it back into frames via `frame_sizes`.
  *
- * Backstop (raw path only): if a video planned N frames but 0 blobs could be
- * read, throw rather than silently write a file with the images stripped —
+ * Backstop (raw path only): if a video planned N frames but fewer blobs could
+ * be read, throw rather than silently write a file with the images stripped —
  * exactly the #213 data-loss this fix prevents.
  */
 async function writeEmbeddedVideoData(
@@ -2700,17 +2712,13 @@ async function writeEmbeddedVideoData(
     const srcDict = sourceVideoDict(labels.videos[entry.videoIndex]);
     if (srcDict) writeSourceVideoJson(file, group, srcDict);
 
-    const blobs: Uint8Array[] = [];
-    const writtenFns: number[] = [];
-    for (const fn of entry.frameNumbers) {
-      const blob =
-        entry.kind === "raw"
-          ? await entry.video.getFrameBuffer(fn)
-          : (entry.frameData!.get(fn) ?? null);
-      if (!blob || blob.length === 0) continue;
-      blobs.push(blob);
-      writtenFns.push(fn);
-    }
+    // Write `{group}/video` and collect the frame numbers/sizes actually
+    // written. Raw entries stream stored blobs (low peak); encode entries write
+    // their pre-collected in-memory bytes in one shot.
+    const { writtenFns, sizes } =
+      entry.kind === "raw"
+        ? await writeRawEmbeddedVideo(file, group, entry)
+        : writeEncodedEmbeddedVideo(file, group, entry);
 
     // Backstop (raw path only): a raw copy's frameNumbers IS the exact stored
     // set (embeddedFrameIndices), so every frame must read a blob — a partial
@@ -2719,28 +2727,14 @@ async function writeEmbeddedVideoData(
     // frameNumbers.length is always > 0 for a raw entry (planEmbedding skips
     // 0-frame videos). The encode path keeps today's lenient behavior ->
     // deferred follow-up.
-    if (entry.kind === "raw" && blobs.length < entry.frameNumbers.length) {
+    if (entry.kind === "raw" && writtenFns.length < entry.frameNumbers.length) {
       throw new Error(
-        `embedding video${entry.videoIndex}: read ${blobs.length} of ` +
+        `embedding video${entry.videoIndex}: read ${writtenFns.length} of ` +
           `${entry.frameNumbers.length} planned frame(s) - refusing to write a ` +
           `file with dropped images.`,
       );
     }
 
-    // Concatenate all frame bytes into a single 1-D uint8 dataset.
-    const total = blobs.reduce((n, b) => n + b.length, 0);
-    const combined = new Uint8Array(total);
-    let off = 0;
-    for (const b of blobs) {
-      combined.set(b, off);
-      off += b.length;
-    }
-    file.create_dataset({
-      name: `${group}/video`,
-      data: combined,
-      shape: [combined.length],
-      dtype: "<B",
-    });
     const ds = file.get(`${group}/video`);
     if (ds) {
       setStringAttr(ds, "format", entry.format);
@@ -2752,7 +2746,6 @@ async function writeEmbeddedVideoData(
       shape: [writtenFns.length],
       dtype: "<i4",
     });
-    const sizes = blobs.map((b) => b.length);
     file.create_dataset({
       name: `${group}/frame_sizes`,
       data: sizes,
@@ -2760,6 +2753,97 @@ async function writeEmbeddedVideoData(
       dtype: "<i4",
     });
   }
+}
+
+/**
+ * Raw path: stream a video's stored encoded blobs into a resizable 1-D `<B`
+ * dataset at `{group}/video`, flushing to the dataset tail in bounded byte
+ * windows so peak JS memory is ~one window rather than every blob plus a full
+ * concatenated buffer. The on-disk bytes are the in-order concatenation of the
+ * blobs — byte-identical to an accumulate-then-write. A blob that reads back
+ * null/empty is skipped (the caller's backstop then refuses to write a file
+ * with dropped images). Returns the frame numbers/sizes actually written.
+ */
+async function writeRawEmbeddedVideo(
+  file: any,
+  group: string,
+  entry: EmbedPlanEntry,
+): Promise<{ writtenFns: number[]; sizes: number[] }> {
+  file.create_dataset({
+    name: `${group}/video`,
+    data: new Uint8Array(0),
+    shape: [0],
+    maxshape: [null],
+    chunks: [EMBED_VIDEO_CHUNK_BYTES],
+    dtype: "<B",
+  });
+  const vds = file.get(`${group}/video`);
+  const sizes: number[] = [];
+  const writtenFns: number[] = [];
+  let total = 0;
+  let win: Uint8Array[] = [];
+  let winBytes = 0;
+  const flush = () => {
+    if (winBytes === 0) return;
+    const buf = new Uint8Array(winBytes);
+    let o = 0;
+    for (const b of win) {
+      buf.set(b, o);
+      o += b.length;
+    }
+    vds.resize([total + winBytes]);
+    vds.write_slice([[total, total + winBytes]], buf);
+    total += winBytes;
+    win = [];
+    winBytes = 0;
+  };
+  for (const fn of entry.frameNumbers) {
+    const blob = await entry.video.getFrameBuffer(fn);
+    if (!blob || blob.length === 0) continue;
+    win.push(blob);
+    winBytes += blob.length;
+    sizes.push(blob.length);
+    writtenFns.push(fn);
+    if (winBytes >= EMBED_WRITE_WINDOW_BYTES) flush();
+  }
+  flush();
+  return { writtenFns, sizes };
+}
+
+/**
+ * Encode path: write a video's pre-collected frame bytes (`entry.frameData`,
+ * already fully in memory) as a single concatenated 1-D `<B` dataset at
+ * `{group}/video`. Accumulate-then-write is appropriate here — there is nothing
+ * to stream. Returns the frame numbers/sizes written.
+ */
+function writeEncodedEmbeddedVideo(
+  file: any,
+  group: string,
+  entry: EmbedPlanEntry,
+): { writtenFns: number[]; sizes: number[] } {
+  const blobs: Uint8Array[] = [];
+  const writtenFns: number[] = [];
+  for (const fn of entry.frameNumbers) {
+    const blob = entry.frameData!.get(fn) ?? null;
+    if (!blob || blob.length === 0) continue;
+    blobs.push(blob);
+    writtenFns.push(fn);
+  }
+  const total = blobs.reduce((n, b) => n + b.length, 0);
+  const combined = new Uint8Array(total);
+  let off = 0;
+  for (const b of blobs) {
+    combined.set(b, off);
+    off += b.length;
+  }
+  file.create_dataset({
+    name: `${group}/video`,
+    data: combined,
+    shape: [combined.length],
+    dtype: "<B",
+  });
+  const sizes = blobs.map((b) => b.length);
+  return { writtenFns, sizes };
 }
 
 function createMatrixDataset(
