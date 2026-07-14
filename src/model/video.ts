@@ -250,6 +250,16 @@ export class Video {
     return this.backend.getFrame(frameIndex, opts);
   }
 
+  /**
+   * Raw stored encoded blob for `frameNumber` on an embedded video, WITHOUT
+   * decoding — mirrors Python `HDF5Video.get_frame_raw_bytes`. Returns null for
+   * a continuous video, a closed backend, or an unstored frame.
+   */
+  async getFrameBuffer(frameNumber: number): Promise<Uint8Array | null> {
+    if (!this.backend?.getFrameBuffer) return null;
+    return this.backend.getFrameBuffer(frameNumber);
+  }
+
   async getFrameTimes(): Promise<number[] | null> {
     if (!this.backend?.getFrameTimes) return null;
     return this.backend.getFrameTimes();
