@@ -189,6 +189,24 @@ interface VideoBackend {
      * architecture aligned with Python and leaves the fast path open.
      */
     readCrop?(frameIndex: number, crop: CropRect, fill: Fill): Promise<RawFrame | null>;
+    /**
+     * Embedded-image (pkg.slp) backends: return the RAW stored encoded bytes
+     * (PNG/JPEG blob, or raw-pixel row) for source frame number `frameNumber`,
+     * WITHOUT decoding — the JS analog of Python `HDF5Video.get_frame_raw_bytes`.
+     * Returns null if this backend has no stored image for that frame or cannot
+     * provide raw bytes. Continuous-video backends omit this method.
+     */
+    getFrameBuffer?(frameNumber: number): Promise<Uint8Array | null>;
+    /** Encoded format of stored blobs ("png"|"jpg"|"jpeg"|raw). Embedded only. */
+    readonly embeddedFormat?: string;
+    /** Channel order of stored blobs ("RGB"|"BGR"). Embedded only. */
+    readonly embeddedChannelOrder?: string;
+    /**
+     * Deferred (lazyVideoMetadata) backends: fetch per-video metadata skipped at
+     * load. Idempotent; callers await it before reading frameNumbers. No-op /
+     * omitted when everything is already loaded.
+     */
+    ensureLoaded?(): Promise<void>;
     close(): void;
 }
 
@@ -299,6 +317,12 @@ declare class Video {
     get fps(): number | null;
     set fps(value: number | null);
     getFrame(frameIndex: number, opts?: GetFrameOptions): Promise<VideoFrame | null>;
+    /**
+     * Raw stored encoded blob for `frameNumber` on an embedded video, WITHOUT
+     * decoding — mirrors Python `HDF5Video.get_frame_raw_bytes`. Returns null for
+     * a continuous video, a closed backend, or an unstored frame.
+     */
+    getFrameBuffer(frameNumber: number): Promise<Uint8Array | null>;
     getFrameTimes(): Promise<number[] | null>;
     close(): void;
     /**
@@ -3199,6 +3223,9 @@ declare class StreamingHdf5VideoBackend implements VideoBackend {
      */
     ensureLoaded(): Promise<void>;
     getFrame(frameIndex: number): Promise<VideoFrame | null>;
+    get embeddedFormat(): string;
+    get embeddedChannelOrder(): string;
+    getFrameBuffer(frameNumber: number): Promise<Uint8Array | null>;
     probeShape(sourceFrameCount?: number): Promise<void>;
     /**
      * Crop pushdown hook (Item 1 of JS issue #153). Always returns `null`: this
@@ -3643,6 +3670,18 @@ declare class CropVideoBackend implements VideoBackend {
      * a cropped `pkg.slp` would report no embedded set (see {@link VideoBackend.frameNumbers}).
      */
     get frameNumbers(): number[] | undefined;
+    /** Inner backend's embedded blob format (delegated; a crop is spatial). */
+    get embeddedFormat(): string | undefined;
+    /** Inner backend's embedded blob channel order (delegated). */
+    get embeddedChannelOrder(): string | undefined;
+    /**
+     * Raw stored blob for `frameNumber`, delegated to the inner backend. The
+     * stored blobs are the uncropped inner frames (the crop rides `/video_crops`),
+     * so re-embedding copies the inner blobs verbatim.
+     */
+    getFrameBuffer(frameNumber: number): Promise<Uint8Array | null>;
+    /** Deferred-metadata load, delegated to the inner backend (no-op if absent). */
+    ensureLoaded(): Promise<void>;
     /**
      * Cropped frame shape `[F, h, w, c]`.
      *
