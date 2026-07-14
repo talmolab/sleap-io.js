@@ -518,6 +518,15 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
  * - `"suggestions"` - Embed only suggestion frames
  * - `"user+suggestions"` - Embed user instance frames and suggestion frames
  * - `"source"` - Restore original video paths (no embedding)
+ *
+ * ALREADY-EMBEDDED videos (a `.pkg.slp` loaded with open backends) are ALWAYS
+ * preserved: their full stored set of encoded image blobs is copied VERBATIM
+ * (no decode/re-encode — see {@link writeRawEmbeddedVideo}), regardless of the
+ * `embed` mode, UNLESS `embed:"source"` is passed to externalize them. So even
+ * a bare `saveSlpToBytes(labels)` (no options) cannot silently drop embedded
+ * images — the fix for the #213 re-save data loss. As a backstop, the raw-copy
+ * path THROWS (rather than writing a stripped file) if it planned to copy N
+ * frames but could read fewer than N blobs.
  */
 // ===========================================================================
 // Streaming / incremental SLP writer (issue #207)
@@ -2685,7 +2694,8 @@ function writeEmbeddedVideosJson(
  * decode/re-encode); encode entries write the pre-collected bytes.
  *
  * Peak memory: the raw path STREAMS stored blobs into a resizable 1-D `<B`
- * dataset in bounded byte windows (peak ~= one window + the h5wasm MEMFS copy),
+ * dataset in bounded byte windows (peak ~= 2x one window during a flush — the
+ * window's blobs plus their concatenated buffer — plus the h5wasm MEMFS copy),
  * rather than holding every blob plus a full concatenated buffer at once. The
  * encode path keeps accumulate-then-write — its bytes are already fully in JS
  * memory (`frameData`), so there is nothing to stream. Either way the on-disk
@@ -2758,7 +2768,8 @@ async function writeEmbeddedVideoData(
 /**
  * Raw path: stream a video's stored encoded blobs into a resizable 1-D `<B`
  * dataset at `{group}/video`, flushing to the dataset tail in bounded byte
- * windows so peak JS memory is ~one window rather than every blob plus a full
+ * windows so peak JS memory is ~2x one window during a flush (the window's blobs
+ * plus their concatenated buffer) rather than every blob plus a full
  * concatenated buffer. The on-disk bytes are the in-order concatenation of the
  * blobs — byte-identical to an accumulate-then-write. A blob that reads back
  * null/empty is skipped (the caller's backstop then refuses to write a file
