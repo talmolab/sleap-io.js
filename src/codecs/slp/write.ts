@@ -80,29 +80,41 @@ export type SlpWriteOptions = {
   restoreOriginalVideos?: boolean;
 };
 
-/** Frame data collected for embedding a single video. */
-interface EmbeddedVideoFrames {
-  /** Video index in labels.videos */
+/**
+ * A planned embedded video output: copy raw blobs, or (legacy) encode.
+ *
+ * `kind: "raw"` copies an already-embedded video's stored encoded blobs verbatim
+ * via `getFrameBuffer` (no decode / re-encode) — the fast, lossless path that
+ * mirrors Python's re-save of a `.pkg.slp`. `kind: "encode"` is the legacy
+ * new-embed of a continuous video (read + `getFrame` + `frameToBytes`), kept for
+ * Node compatibility.
+ */
+type EmbedPlanEntry = {
+  kind: "raw" | "encode";
   videoIndex: number;
-  /** Frame indices (original video frame numbers) */
-  frameNumbers: number[];
-  /** Encoded frame bytes (PNG/JPEG) indexed by frame number */
-  frameData: Map<number, Uint8Array>;
-  /** Image format (png, jpeg) */
+  video: Video;
+  frameNumbers: number[]; // source frame numbers to write, in order
   format: string;
-  /** Channel order (RGB, BGR) */
   channelOrder: string;
+  /** For "encode": pre-collected bytes keyed by frame number. */
+  frameData?: Map<number, Uint8Array>;
+};
+type EmbedPlan = Map<number, EmbedPlanEntry>;
+
+/** True for a video whose stored encoded blobs we can copy verbatim. */
+function isRawCopyable(video: Video): boolean {
+  return !!(video.hasEmbeddedImages && video.backend?.getFrameBuffer);
 }
 
 function writeSlpToFile(
   file: any,
   labels: Labels,
-  embeddedVideoData?: Map<number, EmbeddedVideoFrames> | null,
+  plan?: EmbedPlan | null,
 ): void {
   writeMetadata(file, labels);
 
-  if (embeddedVideoData && embeddedVideoData.size > 0) {
-    writeEmbeddedVideos(file, labels, embeddedVideoData);
+  if (plan && plan.size > 0) {
+    writeEmbeddedVideosJson(file, labels, plan);
   } else {
     writeVideos(file, labels.videos);
   }
@@ -1612,17 +1624,22 @@ export async function saveSlpToBytes(
 ): Promise<Uint8Array> {
   const embedMode = options?.embed ?? false;
 
-  // Lazy fast path: skip materialization for embed modes that don't need
-  // to read pixel data from videos. Mirrors Python's write_labels dispatch.
-  if (labels.isLazy) {
-    const needsMaterialization =
-      embedMode === true ||
-      embedMode === "all" ||
-      embedMode === "user" ||
-      embedMode === "suggestions" ||
-      embedMode === "user+suggestions";
+  // Auto-preserve already-embedded videos unless the caller externalizes them.
+  // An already-embedded video is ALWAYS raw-copied (preserved) unless the caller
+  // explicitly passes embed:"source" (which restores the external source video),
+  // so even a bare saveSlpToBytes(labels) keeps its stored images (fixes #213).
+  const hasEmbeddedToPreserve =
+    embedMode !== "source" && labels.videos.some(isRawCopyable);
+  const doEmbed =
+    (embedMode !== false && embedMode !== "source") || hasEmbeddedToPreserve;
 
-    if (!needsMaterialization) {
+  // Lazy fast path: skip materialization only when we don't need frame data.
+  // Any real embed OR a preserve of already-embedded images needs frame bytes,
+  // so materialize and continue with the eager path. Mirrors Python's dispatch.
+  if (labels.isLazy) {
+    if (doEmbed) {
+      labels.materialize();
+    } else {
       let lazyWriteLabels: Labels = labels;
       let proceedWithFastPath = true;
 
@@ -1656,9 +1673,6 @@ export async function saveSlpToBytes(
         fs.unlink!(memPath);
         return bytes;
       }
-    } else {
-      // Embed modes that need pixel data: materialize and continue with eager path.
-      labels.materialize();
     }
   }
 
@@ -1700,15 +1714,17 @@ export async function saveSlpToBytes(
   ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
 
-  // If embedding, we need to determine frames per video and prepare embedded data
-  let embeddedVideoData: Map<number, EmbeddedVideoFrames> | null = null;
-  if (embedMode && embedMode !== "source") {
-    embeddedVideoData = await collectFramesForEmbedding(labels, embedMode);
-  }
+  // Plan which videos to embed (raw-copy preserved ones + any new-embed target).
+  // The plan reads raw blobs from `labels.videos` (the ORIGINAL videos), not the
+  // source-mode `writeLabels` copy — but source mode never embeds (plan is null).
+  const plan = doEmbed ? await planEmbedding(labels, embedMode) : null;
 
   const file = new module.File(memPath, "w");
   try {
-    writeSlpToFile(file, writeLabels, embeddedVideoData);
+    writeSlpToFile(file, writeLabels, plan);
+    if (plan && plan.size > 0) {
+      await writeEmbeddedVideoData(file, labels, plan);
+    }
   } finally {
     file.close();
   }
@@ -2489,85 +2505,99 @@ function writeNegativeFrames(file: any, labels: Labels): void {
 }
 
 /**
- * Collect frame data for embedding from video backends.
+ * Plan which videos to embed and how. An already-embedded video is ALWAYS
+ * raw-copied (its FULL stored set preserved via `getFrameBuffer`, no decode)
+ * regardless of `embedMode`; only a NEW embed of a continuous video takes the
+ * legacy getFrame+encode path — and only when a real embed mode was requested.
+ * (`embedMode === "source"` never reaches here — the caller externalizes.)
  */
-async function collectFramesForEmbedding(
+async function planEmbedding(
   labels: Labels,
   embedMode: boolean | string,
-): Promise<Map<number, EmbeddedVideoFrames>> {
-  const result = new Map<number, EmbeddedVideoFrames>();
+): Promise<EmbedPlan> {
+  const plan: EmbedPlan = new Map();
+  const isRealMode = embedMode !== false && embedMode !== "source";
+  for (let vi = 0; vi < labels.videos.length; vi++) {
+    const video = labels.videos[vi];
+    if (isRawCopyable(video)) {
+      // Preserve the FULL stored set regardless of embedMode (semantics A).
+      await video.backend!.ensureLoaded?.();
+      const frameNumbers = video.embeddedFrameIndices ?? [];
+      if (frameNumbers.length === 0) continue;
+      plan.set(vi, {
+        kind: "raw",
+        videoIndex: vi,
+        video,
+        frameNumbers,
+        format: video.backend!.embeddedFormat ?? "png",
+        channelOrder: video.backend!.embeddedChannelOrder ?? "RGB",
+      });
+    } else if (isRealMode && video.backend) {
+      // New-embed of a continuous video: legacy getFrame+encode path (kept for
+      // Node compat; browser-broken — a separate deferred follow-up).
+      const frameData = await collectEncodedFrames(labels, vi, embedMode);
+      if (frameData.size === 0) continue;
+      const frameNumbers = [...frameData.keys()].sort((a, b) => a - b);
+      plan.set(vi, {
+        kind: "encode",
+        videoIndex: vi,
+        video,
+        frameNumbers,
+        format: (video.backendMetadata?.format as string) ?? "png",
+        channelOrder: (video.backendMetadata?.channel_order as string) ?? "RGB",
+        frameData,
+      });
+    }
+  }
+  return plan;
+}
 
-  // Determine which frame indices to embed per video
-  const framesByVideo = new Map<number, Set<number>>();
+/**
+ * Collect encoded frame bytes for a NEW embed of one continuous video, reading
+ * each selected frame via `getFrame` + {@link frameToBytes} (the legacy path).
+ * Selection mirrors the per-video body of the old `collectFramesForEmbedding`.
+ */
+async function collectEncodedFrames(
+  labels: Labels,
+  videoIndex: number,
+  embedMode: boolean | string,
+): Promise<Map<number, Uint8Array>> {
+  const frameData = new Map<number, Uint8Array>();
+  const video = labels.videos[videoIndex];
+  if (!video || !video.backend) return frameData;
+
   const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
+  const frameIndices = new Set<number>();
 
   for (const frame of labels.labeledFrames) {
-    const videoIndex = labels.videos.indexOf(frame.video);
-    if (videoIndex < 0) continue;
-
+    if (labels.videos.indexOf(frame.video) !== videoIndex) continue;
     let include = false;
     if (mode === "all") {
       include = true;
     } else if (mode === "user") {
       include = frame.hasUserInstances;
-    } else if (mode === "suggestions") {
-      // Include if this frame is a suggestion
-      include = false; // handled below
     } else if (mode === "user+suggestions") {
       include = frame.hasUserInstances;
-    }
-
-    if (include) {
-      if (!framesByVideo.has(videoIndex))
-        framesByVideo.set(videoIndex, new Set());
-      framesByVideo.get(videoIndex)!.add(frame.frameIdx);
-    }
+    } // "suggestions": added below
+    if (include) frameIndices.add(frame.frameIdx);
   }
 
-  // Add suggestion frames
   if (mode === "suggestions" || mode === "user+suggestions") {
     for (const suggestion of labels.suggestions) {
-      const videoIndex = labels.videos.indexOf(suggestion.video);
-      if (videoIndex < 0) continue;
-      if (!framesByVideo.has(videoIndex))
-        framesByVideo.set(videoIndex, new Set());
-      framesByVideo.get(videoIndex)!.add(suggestion.frameIdx);
+      if (labels.videos.indexOf(suggestion.video) !== videoIndex) continue;
+      frameIndices.add(suggestion.frameIdx);
     }
   }
 
-  // Read frames from backends
-  for (const [videoIndex, frameIndices] of framesByVideo) {
-    const video = labels.videos[videoIndex];
-    if (!video || !video.backend) continue;
-
-    const sortedFrames = Array.from(frameIndices).sort((a, b) => a - b);
-    const frameData = new Map<number, Uint8Array>();
-
-    for (const frameIdx of sortedFrames) {
-      const frame = await video.getFrame(frameIdx);
-      if (frame) {
-        const bytes = frameToBytes(frame);
-        if (bytes) {
-          frameData.set(frameIdx, bytes);
-        }
-      }
-    }
-
-    if (frameData.size > 0) {
-      const backendFormat = (video.backendMetadata?.format as string) ?? "png";
-      const backendChannelOrder =
-        (video.backendMetadata?.channel_order as string) ?? "RGB";
-      result.set(videoIndex, {
-        videoIndex,
-        frameNumbers: sortedFrames.filter((f) => frameData.has(f)),
-        frameData,
-        format: backendFormat,
-        channelOrder: backendChannelOrder,
-      });
+  const sortedFrames = Array.from(frameIndices).sort((a, b) => a - b);
+  for (const frameIdx of sortedFrames) {
+    const frame = await video.getFrame(frameIdx);
+    if (frame) {
+      const bytes = frameToBytes(frame);
+      if (bytes) frameData.set(frameIdx, bytes);
     }
   }
-
-  return result;
+  return frameData;
 }
 
 /**
@@ -2584,22 +2614,27 @@ function frameToBytes(frame: unknown): Uint8Array | null {
 }
 
 /**
- * Write video metadata and embedded frame data for videos that are being embedded.
+ * Write ONLY the `videos_json` dataset for a plan-driven embed: each planned
+ * video gets an embedded-pointer entry (`filename:"."`, backend pointing at
+ * `video{vi}/video` with the planned format/channel_order + crop-aware inner
+ * shape/fps + source_video lineage); every other video is serialized normally.
+ * The per-group image datasets are written separately by
+ * {@link writeEmbeddedVideoData}.
  */
-function writeEmbeddedVideos(
+function writeEmbeddedVideosJson(
   file: any,
   labels: Labels,
-  embeddedVideoData: Map<number, EmbeddedVideoFrames>,
+  plan: EmbedPlan,
 ): void {
   const payload = labels.videos.map((video, videoIndex) => {
-    const embedData = embeddedVideoData.get(videoIndex);
-    if (embedData) {
+    const entry = plan.get(videoIndex);
+    if (entry) {
       // This video is being embedded - update metadata
       const backend: Record<string, unknown> = {
         filename: ".",
         dataset: `video${videoIndex}/video`,
-        format: embedData.format,
-        channel_order: embedData.channelOrder,
+        format: entry.format,
+        channel_order: entry.channelOrder,
       };
       // For a cropped video, videos_json must describe the UNCROPPED inner frame
       // (the crop rides /video_crops and is re-applied once on read); read the
@@ -2614,7 +2649,7 @@ function writeEmbeddedVideos(
       if (innerShape) backend.shape = innerShape;
       if (inner?.fps != null) backend.fps = inner.fps;
 
-      const entry: Record<string, unknown> = {
+      const outEntry: Record<string, unknown> = {
         filename: ".",
         backend,
       };
@@ -2622,71 +2657,99 @@ function writeEmbeddedVideos(
       // + deeper chain), mirroring newer Python which nests it in videos_json as
       // well as the authoritative HDF5 group written below. See #160.
       const srcDict = sourceVideoDict(video);
-      if (srcDict) entry.source_video = srcDict;
-      return JSON.stringify(entry);
-    } else {
-      return JSON.stringify(serializeVideo(video));
+      if (srcDict) outEntry.source_video = srcDict;
+      return JSON.stringify(outEntry);
     }
+    return JSON.stringify(serializeVideo(video));
   });
   file.create_dataset({ name: "videos_json", data: payload });
+}
 
-  // Write embedded video datasets
-  for (const [videoIndex, embedData] of embeddedVideoData) {
-    const groupName = `video${videoIndex}`;
-    file.create_group(groupName);
+/**
+ * Write the per-video embedded image datasets (`video{vi}/video`,
+ * `frame_numbers`, `frame_sizes`, `source_video`) for each planned video. Raw
+ * entries copy the stored encoded blobs verbatim via `getFrameBuffer` (no
+ * decode/re-encode); encode entries write the pre-collected bytes.
+ *
+ * Correctness-first accumulate-then-write: blobs for a video are gathered into
+ * one combined buffer before the single dataset write. (A later task makes this
+ * low-peak/streaming into a resizable 1-D dataset.)
+ *
+ * Backstop (raw path only): if a video planned N frames but 0 blobs could be
+ * read, throw rather than silently write a file with the images stripped —
+ * exactly the #213 data-loss this fix prevents.
+ */
+async function writeEmbeddedVideoData(
+  file: any,
+  labels: Labels,
+  plan: EmbedPlan,
+): Promise<void> {
+  for (const entry of plan.values()) {
+    const group = `video${entry.videoIndex}`;
+    file.create_group(group);
 
     // Write the source video lineage into the authoritative
     // `{group}/source_video` HDF5 group — the location Python reads for an
     // embedded `.pkg.slp` (it ignores videos_json's source_video for embedded
     // videos). Mirrors Python `write_videos`' lineage pass. See #160.
-    const srcDict = sourceVideoDict(labels.videos[videoIndex]);
-    if (srcDict) writeSourceVideoJson(file, groupName, srcDict);
+    const srcDict = sourceVideoDict(labels.videos[entry.videoIndex]);
+    if (srcDict) writeSourceVideoJson(file, group, srcDict);
 
-    // Write frame data as vlen array
-    const frameBytes: Uint8Array[] = [];
-    for (const frameNum of embedData.frameNumbers) {
-      const data = embedData.frameData.get(frameNum);
-      if (data) frameBytes.push(data);
+    const blobs: Uint8Array[] = [];
+    const writtenFns: number[] = [];
+    for (const fn of entry.frameNumbers) {
+      const blob =
+        entry.kind === "raw"
+          ? await entry.video.getFrameBuffer(fn)
+          : (entry.frameData!.get(fn) ?? null);
+      if (!blob || blob.length === 0) continue;
+      blobs.push(blob);
+      writtenFns.push(fn);
     }
 
-    // Concatenate all frame bytes into a single buffer
-    const totalSize = frameBytes.reduce((sum, b) => sum + b.length, 0);
-    const combined = new Uint8Array(totalSize);
-    let offset = 0;
-    for (const bytes of frameBytes) {
-      combined.set(bytes, offset);
-      offset += bytes.length;
+    // Backstop (raw path only): planned N but wrote 0 -> refuse to write a
+    // stripped file. (encode path keeps today's lenient behavior -> deferred.)
+    if (
+      entry.kind === "raw" &&
+      entry.frameNumbers.length > 0 &&
+      blobs.length === 0
+    ) {
+      throw new Error(
+        `embedding video${entry.videoIndex}: intended ${entry.frameNumbers.length} ` +
+          `frame(s) but read 0 - refusing to write a file with dropped images.`,
+      );
     }
 
-    // Write video data as a 1D uint8 dataset
+    // Concatenate all frame bytes into a single 1-D uint8 dataset.
+    const total = blobs.reduce((n, b) => n + b.length, 0);
+    const combined = new Uint8Array(total);
+    let off = 0;
+    for (const b of blobs) {
+      combined.set(b, off);
+      off += b.length;
+    }
     file.create_dataset({
-      name: `${groupName}/video`,
+      name: `${group}/video`,
       data: combined,
       shape: [combined.length],
       dtype: "<B",
     });
-
-    // Set format and channel_order attributes on the dataset
-    const videoDs = file.get(`${groupName}/video`);
-    if (videoDs) {
-      setStringAttr(videoDs, "format", embedData.format);
-      setStringAttr(videoDs, "channel_order", embedData.channelOrder);
+    const ds = file.get(`${group}/video`);
+    if (ds) {
+      setStringAttr(ds, "format", entry.format);
+      setStringAttr(ds, "channel_order", entry.channelOrder);
     }
-
-    // Write frame_numbers dataset
     file.create_dataset({
-      name: `${groupName}/frame_numbers`,
-      data: embedData.frameNumbers,
-      shape: [embedData.frameNumbers.length],
+      name: `${group}/frame_numbers`,
+      data: writtenFns,
+      shape: [writtenFns.length],
       dtype: "<i4",
     });
-
-    // Write frame_sizes dataset for reliable frame boundary detection
-    const frameSizes = frameBytes.map((b) => b.length);
+    const sizes = blobs.map((b) => b.length);
     file.create_dataset({
-      name: `${groupName}/frame_sizes`,
-      data: frameSizes,
-      shape: [frameSizes.length],
+      name: `${group}/frame_sizes`,
+      data: sizes,
+      shape: [sizes.length],
       dtype: "<i4",
     });
   }
