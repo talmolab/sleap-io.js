@@ -100,5 +100,23 @@ export interface VideoBackend {
     crop: CropRect,
     fill: Fill,
   ): Promise<RawFrame | null>;
+  /**
+   * Embedded-image (pkg.slp) backends: return the RAW stored encoded bytes
+   * (PNG/JPEG blob, or raw-pixel row) for source frame number `frameNumber`,
+   * WITHOUT decoding — the JS analog of Python `HDF5Video.get_frame_raw_bytes`.
+   * Returns null if this backend has no stored image for that frame or cannot
+   * provide raw bytes. Continuous-video backends omit this method.
+   */
+  getFrameBuffer?(frameNumber: number): Promise<Uint8Array | null>;
+  /** Encoded format of stored blobs ("png"|"jpg"|"jpeg"|raw). Embedded only. */
+  readonly embeddedFormat?: string;
+  /** Channel order of stored blobs ("RGB"|"BGR"). Embedded only. */
+  readonly embeddedChannelOrder?: string;
+  /**
+   * Deferred (lazyVideoMetadata) backends: fetch per-video metadata skipped at
+   * load. Idempotent; callers await it before reading frameNumbers. No-op /
+   * omitted when everything is already loaded.
+   */
+  ensureLoaded?(): Promise<void>;
   close(): void;
 }

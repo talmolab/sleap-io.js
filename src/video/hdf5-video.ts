@@ -95,6 +95,29 @@ export class Hdf5VideoBackend implements VideoBackend {
     return image ?? rawBytes;
   }
 
+  get embeddedFormat(): string {
+    return this.format;
+  }
+  get embeddedChannelOrder(): string {
+    return this.channelOrder;
+  }
+
+  /** Raw stored blob for source `frameNumber`, without decoding. */
+  async getFrameBuffer(frameNumber: number): Promise<Uint8Array | null> {
+    const dataset = this.file.get(this.datasetPath);
+    if (!dataset) return null;
+    const index =
+      this.frameNumberToIndex.size > 0
+        ? this.frameNumberToIndex.get(frameNumber)
+        : frameNumber;
+    if (index === undefined) return null;
+    const bytes = await readEmbeddedFrameBytes(
+      this.buildReader(dataset),
+      index,
+    );
+    return bytes && bytes.length > 0 ? bytes : null;
+  }
+
   /**
    * Crop pushdown hook (Item 1 of JS issue #153). Always returns `null`: this
    * embedded backend stores opaque encoded blobs (PNG/JPEG) or per-frame-indexed

@@ -228,6 +228,32 @@ export class CropVideoBackend implements VideoBackend {
     return this.inner.frameNumbers;
   }
 
+  /** Inner backend's embedded blob format (delegated; a crop is spatial). */
+  get embeddedFormat(): string | undefined {
+    return this.inner.embeddedFormat;
+  }
+
+  /** Inner backend's embedded blob channel order (delegated). */
+  get embeddedChannelOrder(): string | undefined {
+    return this.inner.embeddedChannelOrder;
+  }
+
+  /**
+   * Raw stored blob for `frameNumber`, delegated to the inner backend. The
+   * stored blobs are the uncropped inner frames (the crop rides `/video_crops`),
+   * so re-embedding copies the inner blobs verbatim.
+   */
+  getFrameBuffer(frameNumber: number): Promise<Uint8Array | null> {
+    return this.inner.getFrameBuffer
+      ? this.inner.getFrameBuffer(frameNumber)
+      : Promise.resolve(null);
+  }
+
+  /** Deferred-metadata load, delegated to the inner backend (no-op if absent). */
+  ensureLoaded(): Promise<void> {
+    return this.inner.ensureLoaded?.() ?? Promise.resolve();
+  }
+
   /**
    * Cropped frame shape `[F, h, w, c]`.
    *

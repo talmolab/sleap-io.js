@@ -187,6 +187,28 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     return image ?? rawBytes;
   }
 
+  get embeddedFormat(): string {
+    return this.format;
+  }
+  get embeddedChannelOrder(): string {
+    return this.channelOrder;
+  }
+
+  async getFrameBuffer(frameNumber: number): Promise<Uint8Array | null> {
+    if (!this.loaded) await this.ensureLoaded();
+    const index =
+      this.frameNumberToIndex.size > 0
+        ? this.frameNumberToIndex.get(frameNumber)
+        : frameNumber;
+    if (index === undefined) return null;
+    try {
+      const bytes = await readEmbeddedFrameBytes(this.buildReader(), index);
+      return bytes && bytes.length > 0 ? bytes : null;
+    } catch {
+      return null;
+    }
+  }
+
   async probeShape(sourceFrameCount?: number): Promise<void> {
     if (this.shape && this.shape[0] > 0) return;
     try {
