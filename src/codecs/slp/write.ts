@@ -1951,7 +1951,17 @@ function serializeVideo(video: Video): Record<string, unknown> {
     string,
     unknown
   >;
-  if (backend.filename == null) backend.filename = video.filename;
+  // ImageVideo (image sequence): the canonical SLP format stores the full
+  // ordered list under `filenames` (plural) and only the FIRST image under the
+  // scalar `filename` (Python `video_to_dict`, and sleap-io.js's own reader in
+  // parsers.ts `resolveVideoFilename`). Emitting the whole list under `filename`
+  // makes Python's `make_video` do `Path(list)` and crash (#221).
+  if (Array.isArray(video.filename)) {
+    backend.filenames = video.filename;
+    backend.filename = video.filename[0] ?? "";
+  } else if (backend.filename == null) {
+    backend.filename = video.filename;
+  }
 
   // Crop unwrap (SLP 2.3): a cropped Video serializes as its UNCROPPED inner so
   // videos_json describes the full frame and old readers never hit an unknown
