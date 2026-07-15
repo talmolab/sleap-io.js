@@ -7,7 +7,7 @@
  * offsets, per-row metadata blobs, and format-version gating.
  */
 import { describe, it, expect } from "./bun-test";
-import { readSlp } from "../src/codecs/slp/read.js";
+import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
 import { readSessionsStreaming } from "../src/codecs/slp/read-streaming.js";
 import { saveSlpToBytes } from "../src/codecs/slp/write.js";
 import { reconstructInstance3D } from "../src/codecs/slp/parsers.js";
@@ -350,5 +350,36 @@ describe("SLP 2.8 columnar sessions", () => {
     });
     expect(loaded.sessions).toHaveLength(1);
     expect(loaded.sessions[0].cameraGroup.cameras).toHaveLength(1);
+  });
+
+  it("lazy re-save preserves columnar 3D + frame groups (ref-based, no materialization)", async () => {
+    // The lazy read reconstructs frame groups from /session_data (member index refs
+    // + 3D points in memory) without materializing frames; the lazy write path then
+    // re-serializes them from those refs. This should round-trip 3D + grouping
+    // losslessly WITHOUT a verbatim passthrough (unlike Python, which needs one).
+    const labels = make3dLabels({ predicted: true, score: 0.77 });
+    const bytes = new Uint8Array(await saveSlpToBytes(labels));
+
+    const lazy = await readSlpLazy(bytes.buffer as ArrayBuffer, {
+      openVideos: false,
+    });
+    // No frames materialized by reading/holding the sessions.
+    expect(lazy._lazyFrameList?.materializedCount ?? 0).toBe(0);
+
+    const resaved = new Uint8Array(await saveSlpToBytes(lazy));
+    const loaded = await readSlp(resaved.buffer as ArrayBuffer, {
+      openVideos: false,
+    });
+    const ig = loaded.sessions[0].frameGroups.get(0)!.instanceGroups[0];
+    expect(ig.instance3d).toBeInstanceOf(PredictedInstance3D);
+    expect(ig.instance3d!.points).toEqual([
+      [50, 100, 200],
+      [150, 300, 400],
+    ]);
+    expect(ig.instance3d!.score).toBe(0.77);
+    expect((ig.instance3d as PredictedInstance3D).pointScores).toEqual([
+      0.95, 0.88,
+    ]);
+    expect(ig.instanceByCamera.size).toBe(2);
   });
 });
