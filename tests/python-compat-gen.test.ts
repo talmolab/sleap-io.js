@@ -307,3 +307,104 @@ print("OK: Python reads metadata and skeletons from JS-written SLP")
     }
   });
 });
+
+describe("ImageVideo serialization (#221)", () => {
+  const IMG_LIST = [
+    "frames/img_000.png",
+    "frames/img_001.png",
+    "frames/img_002.png",
+  ];
+
+  function imageSeqLabels(): Labels {
+    const skeleton = new Skeleton({ name: "fly", nodes: ["head", "thorax"] });
+    const video = new Video({ filename: IMG_LIST });
+    const inst = new Instance({
+      skeleton,
+      points: [
+        { xy: [10, 20], visible: true, complete: true },
+        { xy: [30, 40], visible: true, complete: true },
+      ],
+    });
+    const frame = new LabeledFrame({ video, frameIdx: 0, instances: [inst] });
+    return new Labels({
+      skeletons: [skeleton],
+      videos: [video],
+      labeledFrames: [frame],
+    });
+  }
+
+  it("serializes the frame list under `filenames` (plural) + a scalar `filename`", async () => {
+    const bytes = await saveSlpToBytes(imageSeqLabels());
+    const module = await ready;
+    const memPath = `/tmp/imgseq_${Date.now()}.slp`;
+    module.FS.writeFile(memPath, bytes);
+    const file = new H5File(memPath, "r");
+    try {
+      const raw = (file.get("videos_json") as { value: unknown }).value;
+      const entry = Array.isArray(raw) ? raw[0] : raw;
+      const s =
+        typeof entry === "string"
+          ? entry
+          : new TextDecoder().decode(entry as Uint8Array);
+      const meta = JSON.parse(s.replace(/[\s\0]+$/, "")) as {
+        backend: { filename: unknown; filenames: unknown };
+      };
+      // Canonical Python shape: scalar first frame + full list under `filenames`.
+      expect(meta.backend.filename).toBe(IMG_LIST[0]);
+      expect(meta.backend.filenames).toEqual(IMG_LIST);
+    } finally {
+      file.close();
+      module.FS.unlink(memPath);
+    }
+  });
+
+  it("round-trips: sleap-io.js reads its own image sequence as the full list", async () => {
+    const { readSlp } = await import("../src/codecs/slp/read.js");
+    const loaded = await readSlp(await saveSlpToBytes(imageSeqLabels()), {
+      openVideos: false,
+    });
+    expect(loaded.videos[0].filename).toEqual(IMG_LIST);
+  });
+
+  it("Python sleap-io reads the JS-written image sequence (would crash pre-#221)", async () => {
+    const slpPath = tmpSlp();
+    const pyPath = slpPath.replace(/\.slp$/, ".py");
+    try {
+      writeFileSync(slpPath, await saveSlpToBytes(imageSeqLabels()));
+      // Exercise the video-reading path (`read_videos` → `make_video`), which is
+      // exactly where #221 crashed: pre-fix the frame list landed in the scalar
+      // `filename`, so `make_video` did `Path([...])` → TypeError. We deliberately
+      // don't call full `sio.load_slp` here — JS writes flat <f8 instance matrices
+      // (no HDF5 compound dtype), so `read_instances` gets float skeleton indices;
+      // that's a separate, pre-existing limitation (see the #76 test above),
+      // unrelated to ImageVideo serialization. open_backend=False since the image
+      // files don't exist on disk (we only assert the filename metadata).
+      const pyScript = `
+from pathlib import Path
+from sleap_io.io.slp import read_videos
+videos = read_videos(${JSON.stringify(slpPath)}, open_backend=False)
+fn = videos[0].filename
+assert isinstance(fn, list), f"expected a list, got {type(fn).__name__}"
+assert len(fn) == 3, f"expected 3 frames, got {len(fn)}"
+assert [Path(p).name for p in fn] == ["img_000.png", "img_001.png", "img_002.png"], (
+    f"wrong frames/order: {fn}"
+)
+print("OK: Python reads JS-written image sequence")
+`;
+      writeFileSync(pyPath, pyScript);
+      const result = execFileSync(
+        "uv",
+        ["run", "--with", "sleap-io", "python", pyPath],
+        { encoding: "utf-8", timeout: 120000 },
+      );
+      expect(result).toContain("OK: Python reads JS-written image sequence");
+    } finally {
+      try {
+        unlinkSync(slpPath);
+      } catch {}
+      try {
+        unlinkSync(pyPath);
+      } catch {}
+    }
+  });
+});
