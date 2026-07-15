@@ -1639,6 +1639,43 @@ export async function saveSlpToBytes(
   labels: Labels,
   options?: SlpWriteOptions,
 ): Promise<Uint8Array> {
+  return writeSlpBytes(labels, options, { includeEmbeddedData: true });
+}
+
+/**
+ * Main-thread half of the streaming pkg.slp writer (Phase 2 / Task 2.1, see
+ * spike/write-bseam-device): write the small structure ONLY — labels,
+ * skeletons, tracks, suggestions, metadata, and `videos_json` (marking
+ * embedded videos per the same plan `saveSlpToBytes` would use) — but SKIP
+ * the big `video{i}/video` embedded-image datasets (and their sibling
+ * `frame_numbers`/`frame_sizes`). A Web Worker later opens the resulting file
+ * in append mode and adds those datasets directly to disk via the raw-copy
+ * path (see `buildSerializableEmbedPlan`), so a desktop save of a many-GB
+ * pkg.slp never needs to hold the embedded image bytes in the wasm heap on
+ * the main thread.
+ *
+ * Shares its setup (embed-mode resolution, lazy materialization, the
+ * `embed:"source"` rebuild, and embedding plan computation) with
+ * `saveSlpToBytes` via the private `writeSlpBytes` helper — the two functions
+ * differ only in whether `writeEmbeddedVideoData` runs afterward.
+ *
+ * @returns SLP bytes containing the structure only. NOT a directly-loadable
+ *   embedded pkg.slp on its own if the plan embeds anything (the videos_json
+ *   claims embedded images that aren't actually present yet) — it is an
+ *   intermediate artifact meant to be completed by the worker's append step.
+ */
+export async function saveSlpStructureToBytes(
+  labels: Labels,
+  options?: SlpWriteOptions,
+): Promise<Uint8Array> {
+  return writeSlpBytes(labels, options, { includeEmbeddedData: false });
+}
+
+async function writeSlpBytes(
+  labels: Labels,
+  options: SlpWriteOptions | undefined,
+  { includeEmbeddedData }: { includeEmbeddedData: boolean },
+): Promise<Uint8Array> {
   const embedMode = options?.embed ?? false;
 
   // Auto-preserve already-embedded videos unless the caller externalizes them.
@@ -1741,7 +1778,7 @@ export async function saveSlpToBytes(
   try {
     try {
       writeSlpToFile(file, writeLabels, plan);
-      if (plan && plan.size > 0) {
+      if (includeEmbeddedData && plan && plan.size > 0) {
         await writeEmbeddedVideoData(file, labels, plan);
       }
     } finally {
@@ -2572,6 +2609,149 @@ async function planEmbedding(
     }
   }
   return plan;
+}
+
+/**
+ * Serializable projection of one raw-copyable {@link EmbedPlanEntry}, safe to
+ * pass across a Web Worker boundary via `structuredClone` (Task 1.1 of the
+ * streaming pkg.slp writer). Contains only plain data — no `Video`/backend
+ * instances, functions, or open file handles — so a worker holding ONLY this
+ * entry plus read access to the SOURCE file (via
+ * {@link SerializableEmbedPlan.sourcePath}) can locate and copy the video's
+ * stored embedded images into the destination file without ever touching the
+ * live `Labels` graph.
+ */
+export type SerializableEmbedEntry = {
+  /**
+   * Destination video index — this video's position in `labels.videos` of the
+   * file being WRITTEN. NOT assumed to equal the video's index in the SOURCE
+   * file (videos can be added/removed/reordered between load and save); the
+   * actual source location is carried separately in `sourceDataset`/
+   * `sourceGroup` below.
+   */
+  videoIndex: number;
+  /**
+   * The SOURCE file's HDF5 dataset path holding the raw encoded blobs (e.g.
+   * `"video0/video"`), read directly off the live backend's `dataset`
+   * property (`VideoBackend.dataset`) — the same path `Hdf5VideoBackend` /
+   * `StreamingHdf5VideoBackend` use internally for `getFrameBuffer`
+   * (delegated through `CropVideoBackend` for a cropped video). This is the
+   * authoritative source location; it is never derived from `videoIndex`.
+   */
+  sourceDataset: string;
+  /**
+   * The SOURCE file's HDF5 GROUP containing `sourceDataset` and its sibling
+   * `frame_numbers` / `frame_sizes` / `source_video` datasets/group — derived
+   * by stripping a trailing `"/video"` from `sourceDataset` (mirrors
+   * `StreamingHdf5VideoBackend.ensureLoaded`'s `groupPath` derivation). The
+   * worker reads `{sourceGroup}/frame_numbers` etc. from the SOURCE file and
+   * writes the copy under `video{videoIndex}` in the destination.
+   */
+  sourceGroup: string;
+  /** Stored image format (`VideoBackend.embeddedFormat`), e.g. "png"/"jpg". */
+  format: string;
+  /**
+   * Stored channel order (`VideoBackend.embeddedChannelOrder`), e.g.
+   * "RGB"/"BGR".
+   */
+  channelOrder: string;
+  /**
+   * The FULL stored source frame numbers being preserved, in storage order
+   * (the raw path always copies the entire stored set regardless of embed
+   * mode — semantics A; see {@link planEmbedding}). Always non-empty:
+   * `planEmbedding` skips 0-frame videos before they can reach this builder.
+   */
+  frameNumbers: number[];
+  /**
+   * Plain-object `source_video` lineage (from {@link sourceVideoDict}), or
+   * `null` when this video has no separate source to record. The worker
+   * writes this into the destination's `{group}/source_video` HDF5 group
+   * using the same JSON/attr logic as {@link writeSourceVideoJson}, without
+   * needing the live `Labels`/`Video` object.
+   */
+  sourceVideoJson: Record<string, unknown> | null;
+};
+
+/**
+ * Fully `structuredClone`-safe embed plan handed to the streaming writer's Web
+ * Worker (Task 1.1). Scope is a straight RE-SAVE of an already-embedded
+ * `pkg.slp` via the raw-copy path ONLY — see
+ * {@link buildSerializableEmbedPlan}.
+ */
+export type SerializableEmbedPlan = {
+  /**
+   * On-disk path of the SOURCE pkg.slp that every entry's `sourceDataset` /
+   * `sourceGroup` are relative to. A single shared path is sufficient because
+   * this task's scope is re-saving ONE already-embedded file; a future
+   * "merge multiple pkg.slp sources into one" scenario would need to move
+   * this onto each entry instead.
+   */
+  sourcePath: string;
+  entries: SerializableEmbedEntry[];
+};
+
+/**
+ * Project a `planEmbedding` result into a worker-transportable
+ * {@link SerializableEmbedPlan}, for the RE-SAVE/raw-copy path ONLY (Task 1.1
+ * of the streaming pkg.slp writer). Reuses `planEmbedding` for video
+ * selection/frameNumbers (no re-derivation of that logic), then strips each
+ * raw entry down to plain data a worker can act on without the live `Labels`/
+ * `Video`/backend objects.
+ *
+ * Throws if `planEmbedding` selected a `kind: "encode"` (new-embed of a
+ * continuous video) entry for any video — the streaming writer's worker half
+ * only knows how to copy an already-embedded video's stored blobs; new-embed
+ * is a deferred follow-up (see the {@link EmbedPlanEntry} doc).
+ *
+ * @param labels Labels to save (already-open embedded video backends).
+ * @param embedMode Same `embed` option as `saveSlpToBytes`/`planEmbedding`.
+ * @param sourcePath On-disk path of the SOURCE pkg.slp; the worker opens it
+ *   via its own read bridge to copy the embedded groups from.
+ * @throws Error if any selected video would use the new-embed ("encode")
+ *   path, or a raw-copyable video's backend exposes no `dataset` to locate
+ *   its source embedded group by.
+ */
+export async function buildSerializableEmbedPlan(
+  labels: Labels,
+  embedMode: boolean | string,
+  sourcePath: string,
+): Promise<SerializableEmbedPlan> {
+  const plan = await planEmbedding(labels, embedMode);
+  const entries: SerializableEmbedEntry[] = [];
+  for (const entry of plan.values()) {
+    if (entry.kind !== "raw") {
+      throw new Error(
+        `buildSerializableEmbedPlan: video${entry.videoIndex} would use the ` +
+          `new-embed ("encode") path, which the streaming writer's worker ` +
+          "half does not support - this path is re-save/raw-copy of an " +
+          "already-embedded pkg.slp ONLY (new-embed of a continuous video is " +
+          "a deferred follow-up).",
+      );
+    }
+    const sourceDataset =
+      entry.video.backend?.dataset ??
+      (entry.video.backendMetadata.dataset as string | undefined);
+    if (!sourceDataset) {
+      throw new Error(
+        `buildSerializableEmbedPlan: video${entry.videoIndex} is raw-copyable ` +
+          'but its backend exposes no "dataset" path, so the worker has no ' +
+          "way to locate its source embedded group.",
+      );
+    }
+    const sourceGroup = sourceDataset.endsWith("/video")
+      ? sourceDataset.slice(0, -"/video".length)
+      : sourceDataset;
+    entries.push({
+      videoIndex: entry.videoIndex,
+      sourceDataset,
+      sourceGroup,
+      format: entry.format,
+      channelOrder: entry.channelOrder,
+      frameNumbers: [...entry.frameNumbers],
+      sourceVideoJson: sourceVideoDict(entry.video),
+    });
+  }
+  return { sourcePath, entries };
 }
 
 /**

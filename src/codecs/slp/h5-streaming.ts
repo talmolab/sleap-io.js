@@ -14,6 +14,7 @@ import {
   type H5WorkerResponse,
 } from "./h5-worker.js";
 import { RemoteIOError, isUrl, resolveUrl } from "../../io/remote.js";
+import type { SerializableEmbedEntry } from "./write.js";
 
 /**
  * Options for opening a streaming HDF5 file.
@@ -90,6 +91,90 @@ export async function serviceRangeBridge(
     Atomics.store(control, 0, 2);
     Atomics.notify(control, 0);
     console.error("[StreamingH5File] readRange failed:", err);
+  }
+}
+
+/**
+ * A random-access, disk-backed write target (e.g. a Tauri native file handle).
+ * The write counterpart to {@link RangeSource}: a Worker's writable Emscripten
+ * device pushes bytes through a SharedArrayBuffer + `Atomics` bridge (the
+ * "write B-seam"), and `writeAt`/`truncate`/`close` run on the MAIN thread
+ * (the Worker cannot do the native IPC itself). `readAt` supports read-modify
+ * writes against the same backing store (e.g. re-reading a partially written
+ * region) without opening a second handle.
+ */
+export interface RangeSink {
+  /** Write `bytes` at `[offset, offset + bytes.length)`. */
+  writeAt(offset: number, bytes: Uint8Array): Promise<void>;
+  /** Read `[offset, offset + length)`; may return fewer bytes at EOF. */
+  readAt(offset: number, length: number): Promise<Uint8Array>;
+  /** Truncate (or extend) the backing store to exactly `length` bytes. */
+  truncate(length: number): Promise<void>;
+  /** Flush and release the underlying handle. */
+  close(): Promise<void>;
+}
+
+/**
+ * Service one B-seam write request against the shared control buffer and data
+ * area: copy `[0, length)` out of `dataArea` (the bytes the Worker staged
+ * there), write them to `sink` at `offset`, publish the outcome in
+ * `control[1]` (RESULT: `0` = ok, `-1` = error), then set `control[0]` = READY
+ * (`2`) and `notify` — RESULT is stored BEFORE the READY release so a
+ * Worker's `Atomics.wait`/load (acquire) sees a consistent result. On a write
+ * failure, publishes RESULT = -1 + READY so the Worker gets a clean error
+ * instead of hanging.
+ *
+ * Extracted (mirroring {@link serviceRangeBridge}) so the (otherwise
+ * Worker-gated) main-thread half of the write protocol is unit-testable.
+ * @internal
+ */
+export async function serviceWriteBridge(
+  control: Int32Array,
+  dataArea: Uint8Array,
+  sink: RangeSink,
+  offset: number,
+  length: number,
+): Promise<void> {
+  try {
+    const bytes = dataArea.subarray(0, length);
+    await sink.writeAt(offset, bytes);
+    Atomics.store(control, 1, 0); // RESULT = ok
+    Atomics.store(control, 0, 2); // STATE = READY
+    Atomics.notify(control, 0);
+  } catch (err) {
+    Atomics.store(control, 1, -1); // RESULT = error
+    Atomics.store(control, 0, 2);
+    Atomics.notify(control, 0);
+    console.error("[StreamingH5Writer] writeAt failed:", err);
+  }
+}
+
+/**
+ * Service one B-seam truncate request against the shared control buffer:
+ * `truncate` the sink to `length`, publish the outcome in `control[1]`
+ * (RESULT: `0` = ok, `-1` = error) BEFORE setting `control[0]` = READY (`2`)
+ * and `notify`ing, mirroring {@link serviceWriteBridge}'s ordering so the
+ * Worker's acquire load always sees a consistent result.
+ *
+ * Extracted so the main-thread half of the truncate protocol is
+ * unit-testable without a Worker.
+ * @internal
+ */
+export async function serviceTruncateBridge(
+  control: Int32Array,
+  sink: RangeSink,
+  length: number,
+): Promise<void> {
+  try {
+    await sink.truncate(length);
+    Atomics.store(control, 1, 0); // RESULT = ok
+    Atomics.store(control, 0, 2); // STATE = READY
+    Atomics.notify(control, 0);
+  } catch (err) {
+    Atomics.store(control, 1, -1); // RESULT = error
+    Atomics.store(control, 0, 2);
+    Atomics.notify(control, 0);
+    console.error("[StreamingH5Writer] truncate failed:", err);
   }
 }
 
@@ -511,6 +596,234 @@ export class StreamingH5File {
     }
     this.worker.terminate();
     this._keys = [];
+  }
+}
+
+/**
+ * A streaming HDF5 file WRITER that uses a Web Worker's writable Emscripten
+ * device (the write B-seam) to stream bytes to a {@link RangeSink} instead of
+ * materializing the file in WASM MEMFS. Mirrors {@link StreamingH5File}'s
+ * worker plumbing (message correlation, `send`, error handling), but its
+ * Worker registers a writable device whose `read`/`write`/`setattr`
+ * (ftruncate) block on the SAB bridge — so `handleMessage` must service THREE
+ * Worker->main request types (range reads for read-modify-write, writes, and
+ * truncates) ahead of the id-correlated response branch.
+ */
+export class StreamingH5Writer {
+  private worker: Worker;
+  private messageId = 0;
+  private pendingMessages = new Map<
+    number,
+    {
+      resolve: (value: H5WorkerResponse) => void;
+      reject: (error: Error) => void;
+    }
+  >();
+
+  // Write B-seam bridge (set by openAppend): the app-provided dest sink plus
+  // the SharedArrayBuffer views the Worker blocks on. See handleMessage.
+  // Every write/truncate, and every 'dest'-tagged range (read) request, routes
+  // through destSink (the Worker tags ALL of createWriteRangeFile's bridge
+  // calls 'dest').
+  private destSink?: RangeSink;
+  // Dual-bridge only (set by openAppend): the source file's reader. A 'source'-
+  // tagged range request routes here instead of destSink.
+  private sourceReader?: (offset: number, length: number) => Promise<Uint8Array>;
+  private control?: Int32Array;
+  private data?: Uint8Array;
+
+  constructor() {
+    this.worker = createH5Worker();
+    this.worker.onmessage = this.handleMessage.bind(this);
+    this.worker.onerror = this.handleError.bind(this);
+  }
+
+  private handleMessage(e: MessageEvent<H5WorkerResponse>): void {
+    // Write B-seam: the Worker's writable device(s) ask the main thread to read,
+    // write, or truncate. These are Worker->main requests (not id-correlated
+    // responses), so handle them first. Every request carries a `target`
+    // ('source' | 'dest' | undefined) stamped by the Worker's bridgeRead/
+    // bridgeWrite/bridgeTruncate — writes and truncates are ALWAYS 'dest' (only
+    // the destination file is ever written to), so only range (read) requests
+    // branch on it.
+    const msg = e.data as unknown as {
+      type?: string;
+      target?: string;
+      offset?: number;
+      length?: number;
+    };
+    if (msg && msg.type === "rangeRequest") {
+      if (msg.target === "source") {
+        if (this.control && this.data && this.sourceReader) {
+          void serviceRangeBridge(
+            this.control,
+            this.data,
+            this.sourceReader,
+            msg.offset ?? 0,
+            msg.length ?? 0,
+          );
+        }
+      } else if (this.control && this.data && this.destSink) {
+        void serviceRangeBridge(
+          this.control,
+          this.data,
+          this.destSink.readAt,
+          msg.offset ?? 0,
+          msg.length ?? 0,
+        );
+      }
+      return;
+    }
+    if (msg && msg.type === "writeRequest") {
+      if (this.control && this.data && this.destSink) {
+        void serviceWriteBridge(
+          this.control,
+          this.data,
+          this.destSink,
+          msg.offset ?? 0,
+          msg.length ?? 0,
+        );
+      }
+      return;
+    }
+    if (msg && msg.type === "truncateRequest") {
+      if (this.control && this.destSink) {
+        void serviceTruncateBridge(this.control, this.destSink, msg.length ?? 0);
+      }
+      return;
+    }
+
+    const { id, ...data } = e.data;
+    const pending = this.pendingMessages.get(id);
+    if (pending) {
+      this.pendingMessages.delete(id);
+      if (data.success) {
+        pending.resolve(e.data);
+      } else {
+        let errorMessage = "Worker operation failed";
+        if (typeof data.error === "string") {
+          errorMessage = data.error;
+        } else if (data.error && typeof data.error === "object") {
+          errorMessage = JSON.stringify(data.error);
+        }
+        pending.reject(new Error(errorMessage));
+      }
+    }
+  }
+
+  private handleError(e: ErrorEvent): void {
+    console.error("[StreamingH5Writer] Worker error:", e.message);
+    for (const [id, pending] of this.pendingMessages) {
+      pending.reject(new Error(`Worker error: ${e.message}`));
+      this.pendingMessages.delete(id);
+    }
+  }
+
+  private send(
+    type: H5WorkerMessage["type"],
+    payload?: Record<string, unknown>,
+  ): Promise<H5WorkerResponse> {
+    return new Promise((resolve, reject) => {
+      const id = ++this.messageId;
+      this.pendingMessages.set(id, { resolve, reject });
+      this.worker.postMessage({ type, payload, id });
+    });
+  }
+
+  /**
+   * Initialize the h5wasm module in the worker.
+   */
+  async init(h5wasmUrl?: string): Promise<void> {
+    await this.send("init", { h5wasmUrl });
+  }
+
+  /**
+   * DUAL-BRIDGE FOUNDATION: open TWO h5wasm files at once in the Worker through
+   * ONE SharedArrayBuffer bridge — a read-only SOURCE (backed by `source`, a
+   * {@link RangeSource}) and a read+write DEST (backed by `destSink`, a
+   * {@link RangeSink}, opened in h5wasm append mode `"a"`). Every bridged
+   * request is tagged `target: 'source' | 'dest'` by the Worker so
+   * {@link handleMessage} can route it to the right reader/sink (see there).
+   *
+   * The caller is responsible for having already opened `destPath` on the
+   * native side in APPEND mode (no truncate — e.g. via a `write_open_append`-
+   * style command) so `destSize`'s pre-existing bytes are actually present on
+   * disk; this method does not create or truncate the destination file itself.
+   * `destSize` seeds the Worker's writable device with the dest file's REAL
+   * current size (rather than 0) so h5wasm's file-size probe can see — and
+   * read — the pre-existing content instead of treating the file as empty.
+   *
+   * Requires cross-origin isolation (SharedArrayBuffer / COOP+COEP).
+   */
+  async openAppend(
+    destSink: RangeSink,
+    destPath: string,
+    destSize: number,
+    source: RangeSource,
+    sourceFilename: string,
+    h5wasmUrl?: string,
+  ): Promise<void> {
+    if (typeof SharedArrayBuffer === "undefined") {
+      throw new Error(
+        "RangeSink streaming requires SharedArrayBuffer (enable cross-origin isolation: COOP 'same-origin' + COEP 'require-corp')",
+      );
+    }
+    await this.init(h5wasmUrl);
+    this.destSink = destSink;
+    this.sourceReader = source.readRange;
+
+    // SAB layout: [0..CONTROL_BYTES) = Int32 control (idx0=STATE, idx1=RETLEN/
+    // RESULT), then ONE shared data area. Both the source and dest devices
+    // block on this same buffer (the Worker only ever has one bridge op in
+    // flight at a time), distinguished purely by the `target` tag on each
+    // posted request.
+    const CONTROL_BYTES = 32;
+    const MAX_CHUNK = 4 * 1024 * 1024;
+    const sab = new SharedArrayBuffer(CONTROL_BYTES + MAX_CHUNK);
+    this.control = new Int32Array(sab, 0, 8);
+    this.data = new Uint8Array(sab, CONTROL_BYTES);
+
+    await this.send("openAppend", {
+      sab,
+      controlBytes: CONTROL_BYTES,
+      sourceFilename,
+      sourceSize: source.size,
+      destFilename: destPath,
+      destSize,
+    });
+  }
+
+  /**
+   * Worker port of `writeEmbeddedVideoData` (write.ts) for the RAW path ONLY:
+   * copies each {@link SerializableEmbedEntry}'s stored embedded-image blobs
+   * from the open SOURCE file into a new `video{videoIndex}` group in the open
+   * DEST file (both opened via {@link openAppend}), streamed in bounded byte
+   * windows so peak JS memory stays ~one window rather than the whole
+   * concatenated video. Mirrors the real writer's create-empty -> resize ->
+   * write_slice pattern and its #213 backstop (throws rather than writing a
+   * file with dropped images).
+   *
+   * Does NOT close either file — call {@link close} afterward (which sends
+   * the Worker's `close` message, tearing down both the source and dest
+   * mounts via `closeAppendFiles`).
+   */
+  async appendEmbeddedVideos(
+    entries: SerializableEmbedEntry[],
+  ): Promise<H5WorkerResponse> {
+    return this.send("appendEmbeddedVideos", { entries });
+  }
+
+  /**
+   * Close the file and terminate the worker. Best-effort: if the worker-side
+   * close fails, the worker is still terminated so no handle is leaked.
+   */
+  async close(): Promise<void> {
+    try {
+      await this.send("close");
+    } catch (err) {
+      console.error("[StreamingH5Writer] close failed:", err);
+    }
+    this.worker.terminate();
   }
 }
 

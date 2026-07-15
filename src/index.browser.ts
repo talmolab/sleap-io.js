@@ -84,10 +84,17 @@ export * from "./transform/index.js";
 // Streaming HDF5 utilities for advanced use cases
 export {
   StreamingH5File,
+  StreamingH5Writer,
   openStreamingH5,
   openH5Worker,
   isStreamingSupported,
+  isRangeSource,
+  serviceRangeBridge,
+  serviceWriteBridge,
+  serviceTruncateBridge,
   type StreamingH5Source,
+  type RangeSource,
+  type RangeSink,
 } from "./codecs/slp/h5-streaming.js";
 
 // Streaming SLP reader (uses Web Worker, recommended for browser)
