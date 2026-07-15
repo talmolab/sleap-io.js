@@ -30,6 +30,7 @@
   "scripts": {
     "preinstall": "node -e \"const fs=require('fs');if(!fs.existsSync('bunfig.toml'))process.exit(0);const ua=process.env.npm_config_user_agent||'';const m=ua.match(/bun[/](\\d+\\.\\d+\\.\\d+)/);if(!m)process.exit(0);const want=require('./package.json').packageManager.split('@')[1];if(m[1]!==want){console.error('\\nError: Bun '+want+' is required (package.json packageManager) but Bun '+m[1]+' is running.\\nInstall the pinned version with:\\n  curl -fsSL https://bun.com/install | bash -s bun-v'+want+'\\n');process.exit(1);}\"",
     "build": "tsup src/index.ts src/index.browser.ts src/lite.ts --format esm --dts --external skia-canvas --external mediabunny --external tiff",
+    "prepare": "bunx tsup src/index.ts src/index.browser.ts src/lite.ts --format esm --dts --external skia-canvas --external mediabunny --external tiff",
     "demo:build": "bun build ./demo/demo.js --outfile ./demo/demo.bundle.js --target browser",
     "test": "bun test --parallel ./tests/",
     "test:coverage": "bun test --parallel --coverage ./tests/",
