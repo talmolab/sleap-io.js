@@ -11,6 +11,8 @@ import {
   datasetValueToString,
   parseMetadataJson,
   missingMetadataJsonError,
+  parseJsonEntry,
+  sessionsReadError,
   parseSkeletons,
   resolveCameraKey,
   reconstructInstance3D,
@@ -1153,12 +1155,21 @@ function readSessions(
 ): RecordingSession[] {
   if (!dataset) return [];
   const values = dataset.value ?? [];
+  // Present-but-empty is a legitimate "no sessions" state; a present dataset whose
+  // entries read back blank/unparseable is the h5wasm vlen ceiling (sleap-io.js#220)
+  // and must fail loud rather than silently drop calibration + grouping + 3D.
+  if (values.length === 0) return [];
   const sessions: RecordingSession[] = [];
   for (const entry of values) {
-    const parsed =
-      typeof entry === "string"
-        ? JSON.parse(entry)
-        : JSON.parse(textDecoder.decode(entry));
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = parseJsonEntry(entry) as Record<string, unknown>;
+    } catch (err) {
+      throw sessionsReadError(values.length, entry, err);
+    }
+    if (!parsed || typeof parsed !== "object") {
+      throw sessionsReadError(values.length, entry);
+    }
     const cameraGroup = new CameraGroup();
     const cameraMap = new Map<string, Camera>();
     const calibration = asRecord(parsed.calibration);

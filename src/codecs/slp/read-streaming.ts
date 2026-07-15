@@ -21,6 +21,7 @@ import {
   parseMetadataJson,
   missingMetadataJsonError,
   parseJsonEntry,
+  sessionsReadError,
   parseSkeletons,
   parseTracks,
   parseVideosMetadata,
@@ -974,10 +975,22 @@ export async function readSessionsStreaming(
 
     const data = await file.getDatasetValue("sessions_json");
     const values = normalizeDatasetArray(data.value);
+    // A present-but-empty dataset is a legitimate "no sessions" state (return []).
+    // A present dataset whose entries read back blank/unparseable is NOT — it is
+    // the h5wasm vlen read ceiling (sleap-io.js#220), handled by sessionsReadError.
+    if (values.length === 0) return [];
 
     const sessions: RecordingSession[] = [];
     for (const entry of values) {
-      const parsed = parseJsonEntry(entry) as Record<string, unknown>;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = parseJsonEntry(entry) as Record<string, unknown>;
+      } catch (err) {
+        throw sessionsReadError(values.length, entry, err);
+      }
+      if (!parsed || typeof parsed !== "object") {
+        throw sessionsReadError(values.length, entry);
+      }
       const calibration = (parsed.calibration ?? {}) as Record<string, unknown>;
 
       const cameraGroup = new CameraGroup();
@@ -1175,8 +1188,13 @@ export async function readSessionsStreaming(
       sessions.push(session);
     }
     return sessions;
-  } catch {
-    return [];
+  } catch (err) {
+    // Fail loud (sleap-io.js#220): a present-but-unreadable sessions_json must
+    // surface, not silently drop calibration + grouping + 3D as an empty list
+    // (which the next save would then overwrite 2D-only). Absent/empty datasets
+    // already returned [] above without reaching here.
+    if (err instanceof Error) throw err;
+    throw new Error(`Failed to read sessions_json: ${String(err)}`);
   }
 }
 

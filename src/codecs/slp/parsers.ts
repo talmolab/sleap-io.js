@@ -228,6 +228,61 @@ export function parseJsonEntry(entry: unknown): unknown {
 }
 
 /**
+ * Decode a variable-length HDF5 dataset entry (string / Uint8Array / buffer view)
+ * to its trimmed text, without JSON-parsing. Returns `undefined` for shapes that
+ * are not text-like. Used by the session readers to distinguish a genuinely
+ * absent/empty dataset from an entry that read back blank (the h5wasm
+ * variable-length-string read ceiling — see {@link sessionsReadError}).
+ */
+export function decodeEntryText(entry: unknown): string | undefined {
+  if (typeof entry === "string") return trimHdf5String(entry);
+  if (entry instanceof Uint8Array)
+    return trimHdf5String(textDecoder.decode(entry));
+  if (entry && typeof entry === "object" && "buffer" in entry)
+    return trimHdf5String(
+      textDecoder.decode(
+        new Uint8Array((entry as { buffer: ArrayBuffer }).buffer),
+      ),
+    );
+  return undefined;
+}
+
+/**
+ * Build a descriptive error for a `sessions_json` dataset that is present but
+ * cannot be recovered — either an entry read back empty (the h5wasm
+ * variable-length-string read ceiling of ~0.45 GB, well under V8's ~512 MB string
+ * cap; see sleap-io.js#220) or an entry that failed to JSON-parse.
+ *
+ * The session readers MUST throw this rather than silently return `[]`: a session
+ * blob that reads empty would otherwise drop calibration + all frame grouping +
+ * all 3D with no indication, and the next save re-writes the file 2D-only,
+ * permanently destroying the data. Fail loud so callers can surface it.
+ *
+ * @param nEntries Number of entries the `sessions_json` dataset reported.
+ * @param entry The offending entry (used only to detect the blank/ceiling case).
+ * @param cause The underlying parse error, if any.
+ */
+export function sessionsReadError(
+  nEntries: number,
+  entry: unknown,
+  cause?: unknown,
+): Error {
+  const text = decodeEntryText(entry);
+  const blank = text === "" || text === undefined;
+  const plural = nEntries === 1 ? "entry" : "entries";
+  const why = blank
+    ? "an entry read back empty — the variable-length string likely exceeds the " +
+      "h5wasm read limit (~0.45 GB), so calibration, frame grouping, and 3D " +
+      "cannot be recovered from this reader"
+    : `an entry could not be parsed as JSON${cause ? ` (${String((cause as Error)?.message ?? cause)})` : ""}`;
+  return new Error(
+    `Failed to read sessions: sessions_json is present (${nEntries} ${plural}) but ${why}. ` +
+      "Refusing to load a sessions-less (2D-only) view of a file that contains session " +
+      "data, to avoid silently overwriting it on the next save.",
+  );
+}
+
+/**
  * Resolve edge type from py/reduce patterns in SLEAP metadata.
  * Type 1 = regular edge, Type 2 = symmetry.
  */
@@ -568,7 +623,15 @@ export function parseSessionsMetadata(values: unknown[]): SessionMetadata[] {
   const sessions: SessionMetadata[] = [];
 
   for (const entry of values) {
-    const parsed = parseJsonEntry(entry) as Record<string, unknown>;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = parseJsonEntry(entry) as Record<string, unknown>;
+    } catch (err) {
+      throw sessionsReadError(values.length, entry, err);
+    }
+    if (!parsed || typeof parsed !== "object") {
+      throw sessionsReadError(values.length, entry);
+    }
     const calibration = (parsed.calibration ?? {}) as Record<string, unknown>;
     const cameras: CameraMetadata[] = [];
 
