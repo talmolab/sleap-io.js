@@ -1850,15 +1850,19 @@ function writeMetadata(file: any, labels: Labels): void {
     formatId = Math.max(formatId, 2.4);
   }
 
-  // NOTE (sessions): the canonical `sessions_json` shape written here
-  // (calibration keyed `cam_<i>`, camcorder/labeled_frame maps keyed by integer
-  // index) is a CONVERGENCE to Python `sleap-io`'s existing format — not a new
-  // on-disk feature — so it deliberately does NOT bump format_id. `format_id` is
-  // a namespace shared with Python, which already defines 2.5 (/identity_links),
-  // 2.6 (/embeddings) and 2.7 (categories); minting a value here would collide
-  // and mislabel the file. Reading stays tolerant of the legacy name-keyed shape,
-  // so re-saving a legacy file upgrades its sessions to the canonical shape with
-  // no version change required.
+  // The slim `sessions_json` shape itself (calibration keyed `cam_<i>`, camcorder
+  // map keyed by integer index) is a convergence to Python's existing format and
+  // does not, on its own, bump `format_id`. `format_id` is a namespace shared with
+  // Python (2.5 identity + re-ID embeddings, 2.6 events, 2.7 categories).
+  //
+  // v2.8: columnar RecordingSession frame-group data (the `/session_data` group).
+  // Bumped ONLY when a session carries frame groups — session-free / single-view
+  // files write no group and stay byte-identical below 2.8. Gated on the same
+  // predicate `writeSessions` uses to write the group, so the version and the
+  // on-disk group never disagree (mirrors Python's group-presence gate).
+  if (sessionsHaveFrameGroups(labels.sessions)) {
+    formatId = Math.max(formatId, 2.8);
+  }
 
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
@@ -2127,42 +2131,81 @@ function writeIdentities(file: any, identities: Identity[]): void {
   file.create_dataset({ name: "identities_json", data: payload });
 }
 
-function writeSessions(
-  file: any,
-  sessions: RecordingSession[],
-  videos: Video[],
-  labeledFrames: LabeledFrame[],
-  identities?: Identity[],
-): void {
-  const labeledFrameIndex = new Map<LabeledFrame, number>();
-  labeledFrames.forEach((lf, idx) => {
-    labeledFrameIndex.set(lf, idx);
-  });
+// ---- SLP 2.8 columnar /session_data field names (snake_case, Python-compatible) --
+// h5wasm cannot create HDF5 compound datasets, so these struct tables are written as
+// flat 2-D float64 matrices + a `field_names` attribute (exactly as points/instances/
+// frames are), and the coordinated Python reader rebuilds the structured array via
+// `_read_dataset_from_open_file`. float64 losslessly holds every index (≤ 2^53), the
+// `-1` sentinels, and the `NaN` scores; the Python reader's int()/float()/isnan casts
+// tolerate the f8 backing. points_3d / pred_points_3d are PLAIN float64 matrices with
+// NO field_names (Python slices them as `block[:, :3]`).
+//
+// NOTE: the on-disk dtype MUST be "<d" (float64), NOT "<f8": h5wasm's dtype parser
+// keys off the type CHAR and ignores the digit, so "<f8" resolves to float32 (char
+// 'f'=4 bytes) and "<i8" to int32 (char 'i'=4) — which would silently truncate 3D
+// precision and, worse, CORRUPT any index past 2^24. "<d" = float64 (char 'd'=8).
+const SESSION_FRAME_GROUP_FIELDS = ["frame_idx", "ig_start", "ig_end"];
+const SESSION_INSTANCE_GROUP_FIELDS = [
+  "identity_idx",
+  "score",
+  "instance_3d_score",
+  "pts3d_start",
+  "pts3d_end",
+  "pts3d_predicted",
+  "member_start",
+  "member_end",
+];
+const SESSION_INSTANCE_GROUP_MEMBER_FIELDS = ["camera", "lf", "inst"];
 
-  const payload = sessions.map((session) =>
-    JSON.stringify(
-      serializeSession(session, videos, labeledFrameIndex, identities),
-    ),
+/**
+ * Whether any session carries a frame group with ≥1 instance group. Gates both the
+ * `/session_data` group and the format 2.8 bump — session-free / single-view files
+ * write no group and stay byte-identical.
+ */
+export function sessionsHaveFrameGroups(sessions: RecordingSession[]): boolean {
+  return sessions.some((s) =>
+    [...s.frameGroups.values()].some((fg) => fg.instanceGroups.length > 0),
   );
-  file.create_dataset({ name: "sessions_json", data: payload });
 }
 
-function serializeSession(
+/**
+ * Coerce an inline/legacy 3-D point row (possibly `null`, or with `null` coords) to a
+ * fixed-width float row, mapping every missing entry to `NaN` — never `Number(null)`
+ * (=== 0), which would move a missing keypoint to the origin. Ports Python's
+ * `_inline_3d_to_array`; `NaN` then round-trips natively in the float dataset.
+ */
+function coerce3dRow(row: unknown, width: number): number[] {
+  const out = new Array<number>(width);
+  if (row == null) {
+    out.fill(Number.NaN);
+    return out;
+  }
+  const arr = row as ArrayLike<unknown>;
+  for (let i = 0; i < width; i++) {
+    const v = arr[i];
+    out[i] = v == null ? Number.NaN : Number(v);
+  }
+  return out;
+}
+
+/**
+ * Build the slim calibration + camera→video map that stays inline in `sessions_json`
+ * (the O(cameras) data). Unchanged from the legacy serializer so the on-disk shape of
+ * these fields is identical; only the per-frame payload moves to `/session_data`.
+ */
+function sessionCalibrationDict(
   session: RecordingSession,
   videos: Video[],
-  labeledFrameIndex: Map<LabeledFrame, number>,
-  identities?: Identity[],
-): Record<string, unknown> {
+): {
+  calibration: Record<string, unknown>;
+  camcorder_to_video_idx_map: Record<string, number>;
+} {
   const calibration: Record<string, unknown> = {
     metadata: session.cameraGroup.metadata ?? {},
   };
-  // Key calibration by `cam_<index>` to match Python `sleap-io`'s
-  // `camera_group_to_dict` byte-for-byte (keeps our on-disk shape a clean subset
-  // of the Python format, per the "upstreamable" goal). The calibration key is
-  // cosmetic on read — both readers resolve cameras by dict ORDER / positional
-  // index, and the camcorder maps below key by bare integer index
-  // (cameraKeyForSession = String(index)), exactly as Python does. `name` is
-  // kept as a field inside each camera dict.
+  // Key calibration by `cam_<index>` to match Python `camera_group_to_dict`. The key
+  // is cosmetic on read (cameras resolve by positional index); the camcorder map
+  // keys by bare integer index, exactly as Python does.
   session.cameraGroup.cameras.forEach((camera, idx) => {
     const key = `cam_${idx}`;
     const camData: Record<string, unknown> = {
@@ -2178,202 +2221,279 @@ function serializeSession(
 
   const camcorder_to_video_idx_map: Record<string, number> = {};
   for (const [camera, video] of session.videoByCamera.entries()) {
-    const cameraKey = cameraKeyForSession(camera, session);
+    const camIdx = session.cameraGroup.cameras.indexOf(camera);
     const videoIndex = videos.indexOf(video);
-    if (cameraKey !== "-1" && videoIndex >= 0) {
-      camcorder_to_video_idx_map[cameraKey] = videoIndex;
+    if (camIdx >= 0 && videoIndex >= 0) {
+      camcorder_to_video_idx_map[String(camIdx)] = videoIndex;
     }
   }
-
-  const frame_group_dicts: Record<string, unknown>[] = [];
-  for (const frameGroup of session.frameGroups.values()) {
-    if (!frameGroup.instanceGroups.length) continue;
-    frame_group_dicts.push(
-      serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities),
-    );
-  }
-
-  return {
-    calibration,
-    camcorder_to_video_idx_map,
-    frame_group_dicts,
-    metadata: session.metadata ?? {},
-  };
+  return { calibration, camcorder_to_video_idx_map };
 }
 
-function serializeFrameGroup(
-  frameGroup: FrameGroup,
-  session: RecordingSession,
-  labeledFrameIndex: Map<LabeledFrame, number>,
-  identities?: Identity[],
-): Record<string, unknown> {
-  const instance_groups = frameGroup.instanceGroups.map((group) =>
-    serializeInstanceGroup(
-      group,
-      session,
-      identities,
-      frameGroup,
-      labeledFrameIndex,
-    ),
-  );
-  // Derive-then-ref-fallback (hybrid write-back), reading RAW backing fields so
-  // an untouched (lazy) group serializes from its stored refs with ZERO frame
-  // materialization, while a mutated/in-memory group re-derives indices from the
-  // concrete map (reflecting any reorder/edit). Never touches the caching getter
-  // (that would materialize + cache between the two saves of the round-trip
-  // equality test).
-  const concreteLfByCamera = frameGroup._labeledFrameByCamera;
-  const lfRefsByCamera = frameGroup._labeledFrameRefsByCamera;
-  const labeled_frame_by_camera: Record<string, number> = {};
-  const frameCameras = new Set<Camera>([
-    ...(concreteLfByCamera?.keys() ?? []),
-    ...(lfRefsByCamera?.keys() ?? []),
-  ]);
-  for (const camera of frameCameras) {
-    const cameraKey = cameraKeyForSession(camera, session);
-    const labeledFrame = concreteLfByCamera?.get(camera);
-    let index =
-      labeledFrame !== undefined
-        ? labeledFrameIndex.get(labeledFrame)
-        : undefined;
-    if (index === undefined) index = lfRefsByCamera?.get(camera);
-    if (index !== undefined) {
-      labeled_frame_by_camera[cameraKey] = index;
-    }
-  }
-
-  return {
-    frame_idx: frameGroup.frameIdx,
-    instance_groups,
-    labeled_frame_by_camera,
-    metadata: frameGroup.metadata ?? {},
-  };
-}
-
-function serializeInstanceGroup(
+/**
+ * Resolve an instance group's members to `(cameraIdx, lfIdx, instIdx)` rows — the
+ * columnarized `camcorder_to_lf_and_inst_idx_map`. Mirrors the legacy serializer's
+ * hybrid derivation: concrete instances resolved via `labeledFrameIndex` first (so
+ * edits/reorders are reflected), falling back to the stored index refs so an
+ * untouched lazy group serializes with ZERO frame materialization.
+ */
+function instanceGroupMemberRows(
   group: InstanceGroup,
   session: RecordingSession,
-  identities?: Identity[],
-  frameGroup?: FrameGroup,
-  labeledFrameIndex?: Map<LabeledFrame, number>,
-): Record<string, unknown> {
-  // Hybrid write-back: read RAW backing fields (never the caching getter, which
-  // would materialize + cache concrete maps between the two saves of the
-  // round-trip equality test). Per camera: try OBJECT DERIVATION first
-  // (labeledFrameIndex.get(lf) + lf.instances.indexOf(inst)) so any
-  // mutation/reorder is reflected; FALL BACK to the stored index refs when the
-  // group was never materialized (lazy pure-ref group). `instances` points are
-  // emitted ONLY for concrete groups (pure-ref groups omit `instances`, matching
-  // Python-canonical shape) — zero frame materialization for untouched groups.
+  frameGroup: FrameGroup,
+  labeledFrameIndex: Map<LabeledFrame, number>,
+): Array<[number, number, number]> {
   const concreteInst = group._instanceByCamera;
   const instRefs = group._instanceRefsByCamera;
-  // Resolve the frame group's labeled-frame map ONLY when this instance group is
-  // concrete (materialized/in-memory) — via the GETTER, not the raw field, so
-  // derivation works even when the consumer reached the mutation through
-  // `instanceByCamera` alone (which does NOT populate the frame group's raw map).
-  // For a concrete instance group the frames are already materialized, so the
-  // getter resolves from cache with no NEW materialization; for an untouched
-  // pure-ref group `concreteInst` is undefined, so we never touch the getter and
-  // the zero-materialization guarantee holds.
   const lfByCamera =
-    concreteInst && frameGroup ? frameGroup.labeledFrameByCamera : undefined;
-
-  const instances: Record<string, Record<string, number[]>> = {};
-  const camcorder_to_lf_and_inst_idx_map: Record<string, [number, number]> = {};
-  const instCameras = new Set<Camera>([
+    concreteInst && labeledFrameIndex.size > 0
+      ? frameGroup.labeledFrameByCamera
+      : undefined;
+  const cameras = session.cameraGroup.cameras;
+  const rows: Array<[number, number, number]> = [];
+  const seen = new Set<Camera>([
     ...(concreteInst?.keys() ?? []),
     ...(instRefs?.keys() ?? []),
   ]);
-  for (const camera of instCameras) {
-    const cameraKey = cameraKeyForSession(camera, session);
-    const instance = concreteInst?.get(camera);
+  for (const camera of seen) {
+    const camIdx = cameras.indexOf(camera);
+    if (camIdx < 0) continue;
     let pair: [number, number] | undefined;
-    if (instance) {
-      if (labeledFrameIndex) {
-        const labeledFrame = lfByCamera?.get(camera);
-        const lfIdx =
-          labeledFrame !== undefined
-            ? labeledFrameIndex.get(labeledFrame)
-            : undefined;
-        const instIdx = labeledFrame
-          ? labeledFrame.instances.indexOf(instance as Instance)
-          : -1;
-        if (lfIdx !== undefined && instIdx >= 0) pair = [lfIdx, instIdx];
-      }
-      instances[cameraKey] = pointsToDict(instance);
+    const instance = concreteInst?.get(camera);
+    if (instance && lfByCamera) {
+      const lf = lfByCamera.get(camera);
+      const lfIdx = lf !== undefined ? labeledFrameIndex.get(lf) : undefined;
+      const instIdx = lf ? lf.instances.indexOf(instance as Instance) : -1;
+      if (lfIdx !== undefined && instIdx >= 0) pair = [lfIdx, instIdx];
     }
     if (!pair && instRefs?.has(camera)) pair = instRefs.get(camera);
-    if (pair) camcorder_to_lf_and_inst_idx_map[cameraKey] = pair;
+    if (pair) rows.push([camIdx, pair[0], pair[1]]);
   }
+  return rows;
+}
 
-  const payload: Record<string, unknown> = {};
-  if (Object.keys(instances).length > 0) {
-    payload.instances = instances;
+/**
+ * Create a chunked + gzip 2-D float64 dataset with NO `field_names` attribute — the
+ * Python reader slices `points_3d`/`pred_points_3d` as a plain matrix (`block[:, :3]`),
+ * and a `field_names` attr would make it rebuild a structured array and break that.
+ * gzip requires a non-zero chunk dim, so callers must guard on `rows.length > 0`.
+ */
+function createGzipFloatMatrix(
+  file: any,
+  name: string,
+  rows: number[][],
+  ncols: number,
+): void {
+  const n = rows.length;
+  const data = new Float64Array(n * ncols);
+  for (let i = 0; i < n; i++) {
+    const r = rows[i];
+    const off = i * ncols;
+    for (let j = 0; j < ncols; j++) data[off + j] = r[j];
   }
-  if (Object.keys(camcorder_to_lf_and_inst_idx_map).length > 0) {
-    payload.camcorder_to_lf_and_inst_idx_map = camcorder_to_lf_and_inst_idx_map;
-  }
-  if (group.score != null) payload.score = group.score;
+  file.create_dataset({
+    name,
+    data,
+    shape: [n, ncols],
+    dtype: "<d", // float64 — see the dtype-char note above ("<f8" would be float32)
+    chunks: [Math.min(WRITE_CHUNK_ROWS, Math.max(1, n)), ncols],
+    compression: "gzip",
+    compression_opts: 1,
+  });
+}
 
-  // 3D points — serialize from Instance3D if present, otherwise raw points
-  if (group.instance3d) {
-    if (group.instance3d.points) {
-      payload.points = group.instance3d.points;
-    }
-    if (group.instance3d.score != null) {
-      payload.instance_3d_score = group.instance3d.score;
-    }
-    if (
-      group.instance3d instanceof PredictedInstance3D &&
-      group.instance3d.pointScores
-    ) {
-      payload.instance_3d_point_scores = group.instance3d.pointScores;
-    }
-  } else if (group.points != null) {
-    payload.points = group.points;
-  }
+/**
+ * Write `RecordingSession` metadata (SLP 2.8 columnar layout).
+ *
+ * `sessions_json` holds only the slim per-session blob (calibration +
+ * `camcorder_to_video_idx_map` + session metadata + an `fg_start`/`fg_end` half-open
+ * range into `session_data/frame_groups`). The unbounded per-frame payload — frame
+ * groups, instance groups, the columnarized member map, and 3-D points — goes into
+ * the `/session_data` group, written only when a session has frame groups (so
+ * session-free / single-view files stay byte-identical and below format 2.8).
+ *
+ * `labeledFrames` may be empty (the lazy / streaming-header paths): member rows then
+ * derive from the stored index refs rather than concrete instances.
+ */
+function writeSessions(
+  file: any,
+  sessions: RecordingSession[],
+  videos: Video[],
+  labeledFrames: LabeledFrame[],
+  identities?: Identity[],
+): void {
+  const labeledFrameIndex = new Map<LabeledFrame, number>();
+  labeledFrames.forEach((lf, idx) => labeledFrameIndex.set(lf, idx));
 
-  // Identity — serialize as index into Labels.identities
-  if (group.identity && identities) {
-    const identityIdx = identities.indexOf(group.identity);
-    if (identityIdx >= 0) {
-      payload.identity_idx = identityIdx;
-    } else {
-      console.warn(
-        `InstanceGroup references an Identity ("${group.identity.name}") not found in Labels.identities — identity will be dropped on save.`,
+  // Columnar accumulators for /session_data (small: fixed-width ints/floats per frame
+  // group / instance group / member, plus the 3-D point rows).
+  const fgRows: number[][] = []; // [frame_idx, ig_start, ig_end]
+  const igRows: number[][] = []; // SESSION_INSTANCE_GROUP_FIELDS
+  const memberRows: number[][] = []; // [camera, lf, inst]
+  const fgMeta: string[] = [];
+  const igMeta: string[] = [];
+  const pts3dRows: number[][] = []; // [x, y, z]
+  const predPts3dRows: number[][] = []; // [x, y, z, score]
+
+  const sessionsJson: string[] = [];
+  for (const session of sessions) {
+    const { calibration, camcorder_to_video_idx_map } = sessionCalibrationDict(
+      session,
+      videos,
+    );
+
+    const fgStart = fgRows.length;
+    for (const frameGroup of session.frameGroups.values()) {
+      if (!frameGroup.instanceGroups.length) continue;
+
+      const igStart = igRows.length;
+      for (const group of frameGroup.instanceGroups) {
+        const memberStart = memberRows.length;
+        for (const m of instanceGroupMemberRows(
+          group,
+          session,
+          frameGroup,
+          labeledFrameIndex,
+        )) {
+          memberRows.push(m);
+        }
+        const memberEnd = memberRows.length;
+
+        // Identity → catalog index (-1 when unset / not registered).
+        let identityIdx = -1;
+        if (group.identity && identities) {
+          identityIdx = identities.indexOf(group.identity);
+          if (identityIdx < 0) {
+            console.warn(
+              `InstanceGroup references an Identity ("${group.identity.name}") not found in Labels.identities — identity will be dropped on save.`,
+            );
+          }
+        }
+
+        const score = group.score != null ? group.score : Number.NaN;
+
+        // 3-D points → points_3d / pred_points_3d row range (NaN = missing keypoint).
+        let pts3dStart = -1;
+        let pts3dEnd = -1;
+        let pts3dPredicted = 0;
+        let i3dScore = Number.NaN;
+        const inst3d = group.instance3d;
+        const points3d = inst3d?.points ?? group.points;
+        if (points3d) {
+          const isPred =
+            inst3d instanceof PredictedInstance3D && inst3d.pointScores != null;
+          if (isPred) {
+            const scores = (inst3d as PredictedInstance3D)
+              .pointScores as number[];
+            pts3dStart = predPts3dRows.length;
+            points3d.forEach((row, i) => {
+              const xyz = coerce3dRow(row, 3);
+              const s = scores[i];
+              predPts3dRows.push([
+                xyz[0],
+                xyz[1],
+                xyz[2],
+                s == null ? Number.NaN : Number(s),
+              ]);
+            });
+            pts3dEnd = predPts3dRows.length;
+            pts3dPredicted = 1;
+          } else {
+            pts3dStart = pts3dRows.length;
+            for (const row of points3d) pts3dRows.push(coerce3dRow(row, 3));
+            pts3dEnd = pts3dRows.length;
+          }
+          if (inst3d?.score != null) i3dScore = inst3d.score;
+        }
+
+        igRows.push([
+          identityIdx,
+          score,
+          i3dScore,
+          pts3dStart,
+          pts3dEnd,
+          pts3dPredicted,
+          memberStart,
+          memberEnd,
+        ]);
+        igMeta.push(
+          group.metadata && Object.keys(group.metadata).length
+            ? JSON.stringify(group.metadata)
+            : "",
+        );
+      }
+      const igEnd = igRows.length;
+      fgRows.push([frameGroup.frameIdx, igStart, igEnd]);
+      fgMeta.push(
+        frameGroup.metadata && Object.keys(frameGroup.metadata).length
+          ? JSON.stringify(frameGroup.metadata)
+          : "",
       );
     }
+    const fgEnd = fgRows.length;
+
+    sessionsJson.push(
+      JSON.stringify({
+        calibration,
+        camcorder_to_video_idx_map,
+        metadata: session.metadata ?? {},
+        fg_start: fgStart,
+        fg_end: fgEnd,
+      }),
+    );
   }
 
-  if (group.metadata && Object.keys(group.metadata).length)
-    payload.metadata = group.metadata;
-  return payload;
-}
+  file.create_dataset({ name: "sessions_json", data: sessionsJson });
 
-function pointsToDict(instance: Instance): Record<string, number[]> {
-  const names = instance.skeleton.nodeNames;
-  const dict: Record<string, number[]> = {};
-  instance.points.forEach((point, idx) => {
-    const name = point.name ?? names[idx] ?? String(idx);
-    const row = [
-      point.xy[0],
-      point.xy[1],
-      point.visible ? 1 : 0,
-      point.complete ? 1 : 0,
-    ];
-    if (point.score != null) {
-      row.push(point.score);
+  // Columnar /session_data group — only when some session has frame groups.
+  if (fgRows.length > 0) {
+    file.create_group("session_data");
+    createMatrixDataset(
+      file,
+      "session_data/frame_groups",
+      fgRows,
+      SESSION_FRAME_GROUP_FIELDS,
+      "<d",
+    );
+    createMatrixDataset(
+      file,
+      "session_data/instance_groups",
+      igRows,
+      SESSION_INSTANCE_GROUP_FIELDS,
+      "<d",
+    );
+    createMatrixDataset(
+      file,
+      "session_data/instance_group_members",
+      memberRows,
+      SESSION_INSTANCE_GROUP_MEMBER_FIELDS,
+      "<d",
+    );
+    if (pts3dRows.length > 0) {
+      createGzipFloatMatrix(file, "session_data/points_3d", pts3dRows, 3);
     }
-    dict[name] = row;
-  });
-  return dict;
-}
-
-function cameraKeyForSession(
-  camera: Camera,
-  session: RecordingSession,
-): string {
-  return String(session.cameraGroup.cameras.indexOf(camera));
+    if (predPts3dRows.length > 0) {
+      createGzipFloatMatrix(
+        file,
+        "session_data/pred_points_3d",
+        predPts3dRows,
+        4,
+      );
+    }
+    // Per-row metadata JSON blobs, presence-guarded (omitted when all empty).
+    if (fgMeta.some((s) => s.length > 0)) {
+      file.create_dataset({
+        name: "session_data/frame_group_meta",
+        data: fgMeta,
+      });
+    }
+    if (igMeta.some((s) => s.length > 0)) {
+      file.create_dataset({
+        name: "session_data/instance_group_meta",
+        data: igMeta,
+      });
+    }
+  }
 }
 
 function writeLabeledFrames(file: any, labels: Labels): void {
