@@ -1,4 +1,6 @@
 import type { Skeleton, Node } from "./skeleton.js";
+import type { Identity } from "./identity.js";
+import type { Embedding } from "./embedding.js";
 
 // Late-binding factory to avoid circular imports with centroid.ts.
 // Set by centroid.ts when it is imported.
@@ -220,6 +222,17 @@ export class Instance {
   track?: Track | null;
   fromPredicted?: PredictedInstance | null;
   trackingScore: number;
+
+  /**
+   * Persistent cross-video re-ID identity of this detection (SLP 2.5+), distinct
+   * from the ephemeral within-video {@link Track}. Persisted in the `/identity`
+   * catalog + `/identity/links`; attached after read, defaults to null.
+   */
+  identity?: Identity | null = null;
+  /** Confidence of the {@link identity} assignment (SLP 2.5+); null if unrecorded. */
+  identityScore?: number | null = null;
+  /** Per-detection re-ID appearance embedding (SLP 2.5+); persisted in `/embeddings`. */
+  identityEmbedding?: Embedding | null = null;
 
   // Columnar keypoint storage (retained). Built once at construction from the
   // transient `Point[]`/dict, which is then discarded. `points` reads/writes go
