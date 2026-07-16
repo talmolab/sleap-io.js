@@ -64,6 +64,10 @@ var Centroid = class _Centroid {
   track;
   trackingScore;
   instance;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity = null;
+  identityScore = null;
+  identityEmbedding = null;
   category;
   name;
   source;
@@ -251,6 +255,10 @@ var ROI = class _ROI {
   track;
   trackingScore = null;
   instance;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity = null;
+  identityScore = null;
+  identityEmbedding = null;
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx = null;
   constructor(options) {
@@ -809,6 +817,10 @@ var BoundingBox = class _BoundingBox {
   track;
   trackingScore;
   instance;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity = null;
+  identityScore = null;
+  identityEmbedding = null;
   category;
   name;
   source;
@@ -1160,6 +1172,10 @@ var SegmentationMask = class _SegmentationMask {
   track;
   trackingScore = null;
   instance;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity = null;
+  identityScore = null;
+  identityEmbedding = null;
   /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
   scale;
   /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
@@ -12960,6 +12976,15 @@ function writeSlpToFile(file, labels, plan) {
     allInstances,
     liCtx
   );
+  const detections = {
+    instance: allInstances,
+    centroid: allCentroids,
+    mask: allMasks,
+    bbox: allBboxes,
+    roi: allRois
+  };
+  writeIdentityLinks(file, labels.identities, detections);
+  writeEmbeddings(file, detections);
 }
 var LazySourceFallback = class extends Error {
   constructor() {
@@ -14084,6 +14109,9 @@ function writeMetadata(file, labels) {
   )) {
     formatId = Math.max(formatId, 2.4);
   }
+  if (hasPerDetectionIdentity(labels)) {
+    formatId = Math.max(formatId, 2.5);
+  }
   if (sessionsHaveFrameGroups(labels.sessions)) {
     formatId = Math.max(formatId, 2.8);
   }
@@ -14289,6 +14317,87 @@ function writeIdentities(file, identities) {
     file.create_dataset({ name: "identity/meta_key", data: metaKey });
     file.create_dataset({ name: "identity/meta_val", data: metaVal });
   }
+}
+var OWNER_INSTANCE = 0;
+var OWNER_CENTROID = 2;
+var OWNER_MASK = 3;
+var OWNER_BBOX = 4;
+var OWNER_ROI = 5;
+function ownerCollections(c) {
+  return [
+    [OWNER_INSTANCE, c.instance],
+    [OWNER_CENTROID, c.centroid],
+    [OWNER_MASK, c.mask],
+    [OWNER_BBOX, c.bbox],
+    [OWNER_ROI, c.roi]
+  ];
+}
+function writeIdentityLinks(file, identities, c) {
+  if (!identities.length) return;
+  const idToIdx = new Map(identities.map((id, i) => [id, i]));
+  const rows = [];
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      if (det.identity == null) return;
+      const idx = idToIdx.get(det.identity);
+      if (idx == null) {
+        console.warn(
+          `Detection references an Identity ("${det.identity.name}") not found in Labels.identities \u2014 identity link dropped on save.`
+        );
+        return;
+      }
+      rows.push([ownerType, ownerId, idx, det.identityScore ?? Number.NaN]);
+    });
+  }
+  if (!rows.length) return;
+  if (!file.get("identity")) file.create_group("identity");
+  createMatrixDataset(
+    file,
+    "identity/links",
+    rows,
+    ["owner_type", "owner_id", "identity_idx", "identity_score"],
+    "<d"
+  );
+}
+function writeEmbeddings(file, c) {
+  const vectors = [];
+  const ownerTypes = [];
+  const ownerIds = [];
+  let dim = -1;
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      const emb = det.identityEmbedding;
+      if (emb == null) return;
+      if (dim === -1) dim = emb.vector.length;
+      if (emb.vector.length !== dim) {
+        throw new Error(
+          `All re-ID embeddings must share one dimension; got ${emb.vector.length} and ${dim}.`
+        );
+      }
+      vectors.push(emb.vector);
+      ownerTypes.push(ownerType);
+      ownerIds.push(ownerId);
+    });
+  }
+  if (!vectors.length) return;
+  file.create_group("embeddings");
+  createGzipFloatMatrix(file, "embeddings/vectors", vectors, dim);
+  file.create_dataset({
+    name: "embeddings/owner_type",
+    data: new Float64Array(ownerTypes),
+    shape: [ownerTypes.length],
+    dtype: "<d"
+  });
+  file.create_dataset({
+    name: "embeddings/owner_id",
+    data: new Float64Array(ownerIds),
+    shape: [ownerIds.length],
+    dtype: "<d"
+  });
+}
+function hasPerDetectionIdentity(labels) {
+  const any = (list) => list.some((d) => d.identity != null || d.identityEmbedding != null);
+  return labels.labeledFrames.some((f) => any(f.instances)) || any(labels.masks) || any(labels.centroids) || any(labels.bboxes) || any(labels.rois);
 }
 var SESSION_FRAME_GROUP_FIELDS = ["frame_idx", "ig_start", "ig_end"];
 var SESSION_INSTANCE_GROUP_FIELDS = [
@@ -16806,6 +16915,40 @@ async function readSlp(source, options) {
       tracks,
       allInstances
     );
+    const idLinks = readIdentityLinks(file, emscripten);
+    const idEmbs = readEmbeddings(file);
+    if (idLinks.size || idEmbs.size) {
+      attachIdentityToOwners(
+        allInstances,
+        identities,
+        idLinks.get(0),
+        idEmbs.get(0)
+      );
+      attachIdentityToOwners(
+        centroidTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(2),
+        idEmbs.get(2)
+      );
+      attachIdentityToOwners(
+        maskTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(3),
+        idEmbs.get(3)
+      );
+      attachIdentityToOwners(
+        bboxTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(4),
+        idEmbs.get(4)
+      );
+      attachIdentityToOwners(
+        roiTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(5),
+        idEmbs.get(5)
+      );
+    }
     const frameMap = /* @__PURE__ */ new Map();
     for (const lf of labeledFrames) {
       const vidIdx = videos.indexOf(lf.video);
@@ -17417,6 +17560,70 @@ function readIdentityCatalog(file) {
   const json = file.get("identities_json");
   if (json) return readIdentities(json);
   return readIdentityGroup(file);
+}
+function readIdentityLinks(file, emscripten) {
+  const result = /* @__PURE__ */ new Map();
+  const ds = file.get("identity/links");
+  if (!ds) return result;
+  const cols = normalizeStructDataset(ds, emscripten);
+  const ot = cols.owner_type ?? [];
+  const oid = cols.owner_id ?? [];
+  const idx = cols.identity_idx ?? [];
+  const sc = cols.identity_score ?? [];
+  for (let i = 0; i < ot.length; i += 1) {
+    const ownerType = Number(ot[i]);
+    const ownerId = Number(oid[i]);
+    const score = Number(sc[i]);
+    let sub = result.get(ownerType);
+    if (!sub) {
+      sub = /* @__PURE__ */ new Map();
+      result.set(ownerType, sub);
+    }
+    sub.set(ownerId, [Number(idx[i]), Number.isNaN(score) ? null : score]);
+  }
+  return result;
+}
+function readEmbeddings(file) {
+  const result = /* @__PURE__ */ new Map();
+  const vecDs = file.get("embeddings/vectors");
+  if (!vecDs) return result;
+  const flat = vecDs.value;
+  const shape = vecDs.shape;
+  const rows = shape?.[0] ?? 0;
+  const dim = shape && shape.length >= 2 ? shape[1] : 0;
+  if (!rows || !dim) return result;
+  const ot = file.get("embeddings/owner_type")?.value ?? [];
+  const oid = file.get("embeddings/owner_id")?.value ?? [];
+  for (let i = 0; i < rows; i += 1) {
+    const ownerType = Number(ot[i]);
+    const ownerId = Number(oid[i]);
+    const vec = new Array(dim);
+    for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
+    let sub = result.get(ownerType);
+    if (!sub) {
+      sub = /* @__PURE__ */ new Map();
+      result.set(ownerType, sub);
+    }
+    sub.set(ownerId, new Embedding(vec));
+  }
+  return result;
+}
+function attachIdentityToOwners(owners, identities, links, embs) {
+  if (links) {
+    for (const [ownerId, [idx, score]] of links) {
+      const det = owners[ownerId];
+      if (det && idx >= 0 && idx < identities.length) {
+        det.identity = identities[idx];
+        det.identityScore = score;
+      }
+    }
+  }
+  if (embs) {
+    for (const [ownerId, emb] of embs) {
+      const det = owners[ownerId];
+      if (det) det.identityEmbedding = emb;
+    }
+  }
 }
 function readSessionDataEager(file, emscripten) {
   if (!file.get("session_data")) return null;

@@ -922,6 +922,10 @@ declare class Centroid {
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
+    /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+    identity?: Identity | null;
+    identityScore?: number | null;
+    identityEmbedding?: Embedding | null;
     category: string;
     name: string;
     source: string;
@@ -1020,6 +1024,10 @@ declare class ROI {
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
+    /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+    identity?: Identity | null;
+    identityScore?: number | null;
+    identityEmbedding?: Embedding | null;
     /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx: number | null;
     constructor(options: ROIOptions);
@@ -1127,6 +1135,10 @@ declare class SegmentationMask {
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
+    /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+    identity?: Identity | null;
+    identityScore?: number | null;
+    identityEmbedding?: Embedding | null;
     /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
     scale: [number, number];
     /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
@@ -1286,6 +1298,10 @@ declare class BoundingBox {
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
+    /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+    identity?: Identity | null;
+    identityScore?: number | null;
+    identityEmbedding?: Embedding | null;
     category: string;
     name: string;
     source: string;
