@@ -14319,7 +14319,12 @@ function writeVideos(file, videos) {
 }
 function serializeVideo(video) {
   const backend = { ...video.backendMetadata ?? {} };
-  if (backend.filename == null) backend.filename = video.filename;
+  if (Array.isArray(video.filename)) {
+    backend.filenames = video.filename;
+    backend.filename = video.filename[0] ?? "";
+  } else if (backend.filename == null) {
+    backend.filename = video.filename;
+  }
   const liveBackend = video.backend;
   if (liveBackend instanceof CropVideoBackend) {
     const inner = liveBackend.inner;
