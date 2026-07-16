@@ -271,42 +271,34 @@ export async function readSlp(
       allInstances,
     );
 
-    // Per-detection re-ID identity + embeddings (SLP 2.5): attach onto each
-    // modality's ordered detection list (index == owner_id). No-op on pre-2.5 files.
-    const idLinks = readIdentityLinks(file, emscripten);
-    const idEmbs = readEmbeddings(file);
-    if (idLinks.size || idEmbs.size) {
-      attachIdentityToOwners(
-        allInstances,
-        identities,
-        idLinks.get(0),
-        idEmbs.get(0),
-      );
-      attachIdentityToOwners(
-        centroidTuples.map((t) => t[0]),
-        identities,
-        idLinks.get(2),
-        idEmbs.get(2),
-      );
-      attachIdentityToOwners(
-        maskTuples.map((t) => t[0]),
-        identities,
-        idLinks.get(3),
-        idEmbs.get(3),
-      );
-      attachIdentityToOwners(
-        bboxTuples.map((t) => t[0]),
-        identities,
-        idLinks.get(4),
-        idEmbs.get(4),
-      );
-      attachIdentityToOwners(
-        roiTuples.map((t) => t[0]),
-        identities,
-        idLinks.get(5),
-        idEmbs.get(5),
-      );
-    }
+    // Per-detection re-ID identity (SLP 2.5) + category (SLP 2.7): attach onto each
+    // modality's ordered detection list (index == owner_id). No-op on older files.
+    const pdMaps = readPerDetectionMaps(file, emscripten);
+    attachOwnerType(pdMaps, 0, allInstances, identities);
+    attachOwnerType(
+      pdMaps,
+      2,
+      centroidTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      3,
+      maskTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      4,
+      bboxTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      5,
+      roiTuples.map((t) => t[0]),
+      identities,
+    );
 
     // Distribute annotations into LabeledFrames using routing tuples
     const frameMap = new Map<string, LabeledFrame>();
@@ -581,40 +573,41 @@ export async function readSlpLazy(
     const centroidTuples = readCentroids(file, videos, tracks);
     const labelImageTuples = readLabelImages(file, videos, tracks);
 
-    // Per-detection identity + embeddings (SLP 2.5). Instances materialize lazily,
-    // so the OWNER_INSTANCE maps + catalog are handed to the store and attached in
-    // materializeFrame; the other modalities are concrete here and attached now.
-    const lazyLinks = readIdentityLinks(file, emscripten);
-    const lazyEmbs = readEmbeddings(file);
-    if (lazyLinks.size || lazyEmbs.size) {
-      store.identities = identities;
-      store._instanceIdentityLinks = lazyLinks.get(0);
-      store._instanceEmbeddings = lazyEmbs.get(0);
-      attachIdentityToOwners(
-        centroidTuples.map((t) => t[0]),
-        identities,
-        lazyLinks.get(2),
-        lazyEmbs.get(2),
-      );
-      attachIdentityToOwners(
-        maskTuples.map((t) => t[0]),
-        identities,
-        lazyLinks.get(3),
-        lazyEmbs.get(3),
-      );
-      attachIdentityToOwners(
-        bboxTuples.map((t) => t[0]),
-        identities,
-        lazyLinks.get(4),
-        lazyEmbs.get(4),
-      );
-      attachIdentityToOwners(
-        roiTuples.map((t) => t[0]),
-        identities,
-        lazyLinks.get(5),
-        lazyEmbs.get(5),
-      );
-    }
+    // Per-detection identity (SLP 2.5) + category (SLP 2.7). Instances materialize
+    // lazily, so the OWNER_INSTANCE maps + catalogs are handed to the store and
+    // attached in materializeFrame; the other modalities are concrete and attached
+    // now.
+    const pdMaps = readPerDetectionMaps(file, emscripten);
+    store.identities = identities;
+    store._instanceIdentityLinks = pdMaps.idLinks.get(0);
+    store._instanceEmbeddings = pdMaps.idEmbs.get(0);
+    store.categoryCatalog = pdMaps.categoryCatalog;
+    store._instanceCategoryLinks = pdMaps.catLinks.get(0);
+    store._instanceCategoryEmbeddings = pdMaps.catEmbs.get(0);
+    attachOwnerType(
+      pdMaps,
+      2,
+      centroidTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      3,
+      maskTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      4,
+      bboxTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      5,
+      roiTuples.map((t) => t[0]),
+      identities,
+    );
 
     // Build per-frame annotation dicts for lazy materialization
     const buildAnnByFrame = <T>(
@@ -1277,27 +1270,34 @@ interface IdentityBearingRead {
   identity?: Identity | null;
   identityScore?: number | null;
   identityEmbedding?: Embedding | null;
+  category?: string | null;
+  categoryScore?: number | null;
+  categoryEmbedding?: Embedding | null;
 }
 
 /**
- * Read `/identity/links` (SLP 2.5): a genuine compound (Python) or a
- * flat-2-D+`field_names` (JS) `(owner_type, owner_id, identity_idx, identity_score)`
- * table, via `normalizeStructDataset` (handles both). Returns a map
- * `owner_type → owner_id → [identity_idx, score|null]` (NaN score → null). Empty
- * when the dataset is absent. `i8`/`u8` columns are `Number()`-coerced.
+ * Read a per-detection links table — `/identity/links` (SLP 2.5) or
+ * `/categories/links` (SLP 2.7) — a genuine compound (Python) or a
+ * flat-2-D+`field_names` (JS) `(owner_type, owner_id, <idxField>, <scoreField>)`
+ * table via `normalizeStructDataset` (handles both). Returns
+ * `owner_type → owner_id → [idx, score|null]` (NaN score → null); empty when the
+ * dataset is absent. `i8`/`u8` columns are `Number()`-coerced.
  */
-function readIdentityLinks(
+function readLinksTable(
   file: any,
+  path: string,
+  idxField: string,
+  scoreField: string,
   emscripten?: unknown,
 ): Map<number, Map<number, [number, number | null]>> {
   const result = new Map<number, Map<number, [number, number | null]>>();
-  const ds = file.get("identity/links");
+  const ds = file.get(path);
   if (!ds) return result;
   const cols = normalizeStructDataset(ds, emscripten);
   const ot = cols.owner_type ?? [];
   const oid = cols.owner_id ?? [];
-  const idx = cols.identity_idx ?? [];
-  const sc = cols.identity_score ?? [];
+  const idx = cols[idxField] ?? [];
+  const sc = cols[scoreField] ?? [];
   for (let i = 0; i < ot.length; i += 1) {
     const ownerType = Number(ot[i]);
     const ownerId = Number(oid[i]);
@@ -1312,23 +1312,54 @@ function readIdentityLinks(
   return result;
 }
 
+const readIdentityLinks = (file: any, emscripten?: unknown) =>
+  readLinksTable(
+    file,
+    "identity/links",
+    "identity_idx",
+    "identity_score",
+    emscripten,
+  );
+
+const readCategoryLinks = (file: any, emscripten?: unknown) =>
+  readLinksTable(
+    file,
+    "categories/links",
+    "category_idx",
+    "category_score",
+    emscripten,
+  );
+
+/** Read the `/categories/name` catalog (SLP 2.7) as plain strings. */
+function readCategoryCatalog(file: any): string[] {
+  const ds = file.get("categories/name");
+  if (!ds) return [];
+  return (ds.value ?? []).map(decodeStr);
+}
+
 /**
- * Read the `/embeddings` group (SLP 2.5): a plain `(N, D)` float `vectors` matrix
- * joined by parallel `owner_type` / `owner_id` columns. Returns
- * `owner_type → owner_id → Embedding`. Empty when absent. `i8` columns are
+ * Read one `/embeddings` triple — `(vectors, owner_type, owner_id)` (identity, SLP
+ * 2.5) or `(category_vectors, category_owner_type, category_owner_id)` (category,
+ * SLP 2.7) — a plain `(N, D)` float matrix + parallel join columns. Returns
+ * `owner_type → owner_id → Embedding`; empty when absent. `i8` columns are
  * `Number()`-coerced.
  */
-function readEmbeddings(file: any): Map<number, Map<number, Embedding>> {
+function readEmbeddingTriple(
+  file: any,
+  vecName: string,
+  otName: string,
+  oidName: string,
+): Map<number, Map<number, Embedding>> {
   const result = new Map<number, Map<number, Embedding>>();
-  const vecDs = file.get("embeddings/vectors");
+  const vecDs = file.get(`embeddings/${vecName}`);
   if (!vecDs) return result;
   const flat = vecDs.value as ArrayLike<number>;
   const shape = vecDs.shape as number[] | undefined;
   const rows = shape?.[0] ?? 0;
   const dim = shape && shape.length >= 2 ? shape[1] : 0;
   if (!rows || !dim) return result;
-  const ot = file.get("embeddings/owner_type")?.value ?? [];
-  const oid = file.get("embeddings/owner_id")?.value ?? [];
+  const ot = file.get(`embeddings/${otName}`)?.value ?? [];
+  const oid = file.get(`embeddings/${oidName}`)?.value ?? [];
   for (let i = 0; i < rows; i += 1) {
     const ownerType = Number(ot[i]);
     const ownerId = Number(oid[i]);
@@ -1343,6 +1374,17 @@ function readEmbeddings(file: any): Map<number, Map<number, Embedding>> {
   }
   return result;
 }
+
+const readEmbeddings = (file: any) =>
+  readEmbeddingTriple(file, "vectors", "owner_type", "owner_id");
+
+const readCategoryEmbeddings = (file: any) =>
+  readEmbeddingTriple(
+    file,
+    "category_vectors",
+    "category_owner_type",
+    "category_owner_id",
+  );
 
 /**
  * Attach per-detection identity + score + embedding onto a modality's ordered
@@ -1370,6 +1412,78 @@ function attachIdentityToOwners(
       if (det) det.identityEmbedding = emb;
     }
   }
+}
+
+/**
+ * Attach per-detection category (string) + score + embedding onto a modality's
+ * ordered detection list (index == `owner_id`), from the `/categories` catalog +
+ * `/categories/links` + category embeddings for one owner type.
+ */
+function attachCategoryToOwners(
+  owners: IdentityBearingRead[],
+  catalog: string[],
+  links: Map<number, [number, number | null]> | undefined,
+  embs: Map<number, Embedding> | undefined,
+): void {
+  if (links) {
+    for (const [ownerId, [idx, score]] of links) {
+      const det = owners[ownerId];
+      if (det && idx >= 0 && idx < catalog.length) {
+        det.category = catalog[idx];
+        det.categoryScore = score;
+      }
+    }
+  }
+  if (embs) {
+    for (const [ownerId, emb] of embs) {
+      const det = owners[ownerId];
+      if (det) det.categoryEmbedding = emb;
+    }
+  }
+}
+
+/** All per-detection identity (SLP 2.5) + category (SLP 2.7) join maps + the
+ * category catalog, read once. Empty maps on pre-2.5/2.7 files. */
+interface PerDetectionMaps {
+  idLinks: Map<number, Map<number, [number, number | null]>>;
+  idEmbs: Map<number, Map<number, Embedding>>;
+  catLinks: Map<number, Map<number, [number, number | null]>>;
+  catEmbs: Map<number, Map<number, Embedding>>;
+  categoryCatalog: string[];
+}
+
+function readPerDetectionMaps(
+  file: any,
+  emscripten?: unknown,
+): PerDetectionMaps {
+  return {
+    idLinks: readIdentityLinks(file, emscripten),
+    idEmbs: readEmbeddings(file),
+    catLinks: readCategoryLinks(file, emscripten),
+    catEmbs: readCategoryEmbeddings(file),
+    categoryCatalog: readCategoryCatalog(file),
+  };
+}
+
+/** Attach identity + category for one owner type onto its ordered detection list. */
+function attachOwnerType(
+  maps: PerDetectionMaps,
+  ownerType: number,
+  owners: IdentityBearingRead[],
+  identities: Identity[],
+): void {
+  attachIdentityToOwners(
+    owners,
+    identities,
+    maps.idLinks.get(ownerType),
+    maps.idEmbs.get(ownerType),
+  );
+  attachCategoryToOwners(
+    owners,
+    maps.categoryCatalog,
+    maps.catLinks.get(ownerType),
+    maps.catEmbs.get(ownerType),
+  );
 }
 
 /**

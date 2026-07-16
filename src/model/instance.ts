@@ -233,6 +233,12 @@ export class Instance {
   identityScore?: number | null = null;
   /** Per-detection re-ID appearance embedding (SLP 2.5+); persisted in `/embeddings`. */
   identityEmbedding?: Embedding | null = null;
+  /** Class/category membership (SLP 2.7+); persisted via the `/categories` catalog + links. */
+  category?: string | null = null;
+  /** Confidence of the {@link category} assignment (SLP 2.7+); null if unrecorded. */
+  categoryScore?: number | null = null;
+  /** Per-detection category appearance embedding (SLP 2.7+); persisted in `/embeddings`. */
+  categoryEmbedding?: Embedding | null = null;
 
   // Columnar keypoint storage (retained). Built once at construction from the
   // transient `Point[]`/dict, which is then discarded. `points` reads/writes go

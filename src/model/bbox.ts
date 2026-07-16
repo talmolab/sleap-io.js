@@ -33,6 +33,9 @@ export class BoundingBox {
   identity?: Identity | null = null;
   identityScore?: number | null = null;
   identityEmbedding?: Embedding | null = null;
+  /** Category confidence + appearance embedding (SLP 2.7+). */
+  categoryScore?: number | null = null;
+  categoryEmbedding?: Embedding | null = null;
   category: string;
   name: string;
   source: string;

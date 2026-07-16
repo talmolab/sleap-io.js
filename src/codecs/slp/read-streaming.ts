@@ -336,12 +336,13 @@ export async function readFromStreamingFile(
   report(8);
   const identities = await readIdentitiesStreaming(file);
 
-  // Per-detection identity + embeddings (SLP 2.5), OWNER_INSTANCE. Applied directly
-  // to concrete instances (non-lazy) or handed to the lazy store for on-demand
-  // attach in materializeFrame.
+  // Per-detection identity (SLP 2.5) + category (SLP 2.7), OWNER_INSTANCE. Applied
+  // directly to concrete instances (non-lazy) or handed to the lazy store for
+  // on-demand attach in materializeFrame.
   if (labeledFrames || lazyStore) {
-    const { links, embs } = await readStreamingInstanceIdentity(file);
-    if (links.size || embs.size) {
+    const { links, embs, catLinks, catEmbs, categoryCatalog } =
+      await readStreamingInstanceIdentity(file);
+    if (links.size || embs.size || catLinks.size || catEmbs.size) {
       if (labeledFrames) {
         const allInstances = labeledFrames.flatMap((f) => f.instances);
         for (const [ownerId, [idx, score]] of links) {
@@ -355,11 +356,25 @@ export async function readFromStreamingFile(
           const inst = allInstances[ownerId];
           if (inst) inst.identityEmbedding = emb;
         }
+        for (const [ownerId, [idx, score]] of catLinks) {
+          const inst = allInstances[ownerId];
+          if (inst && idx >= 0 && idx < categoryCatalog.length) {
+            inst.category = categoryCatalog[idx];
+            inst.categoryScore = score;
+          }
+        }
+        for (const [ownerId, emb] of catEmbs) {
+          const inst = allInstances[ownerId];
+          if (inst) inst.categoryEmbedding = emb;
+        }
       }
       if (lazyStore) {
         lazyStore.identities = identities;
         lazyStore._instanceIdentityLinks = links;
         lazyStore._instanceEmbeddings = embs;
+        lazyStore.categoryCatalog = categoryCatalog;
+        lazyStore._instanceCategoryLinks = catLinks;
+        lazyStore._instanceCategoryEmbeddings = catEmbs;
       }
     }
   }
@@ -1030,67 +1045,111 @@ async function readIdentitiesStreaming(
 async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
   links: Map<number, [number, number | null]>;
   embs: Map<number, Embedding>;
+  catLinks: Map<number, [number, number | null]>;
+  catEmbs: Map<number, Embedding>;
+  categoryCatalog: string[];
 }> {
-  const links = new Map<number, [number, number | null]>();
-  const embs = new Map<number, Embedding>();
   const rootKeys = file.keys();
 
-  try {
-    if (rootKeys.includes("identity")) {
-      const idChildren = await file.getKeys("identity");
-      if (idChildren.includes("links")) {
-        const cols = await readStructDatasetStreaming(
-          file,
-          "identity/links",
-          true,
-        );
-        const ot = cols.owner_type ?? [];
-        const oid = cols.owner_id ?? [];
-        const idx = cols.identity_idx ?? [];
-        const sc = cols.identity_score ?? [];
-        for (let i = 0; i < ot.length; i += 1) {
-          if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
-          const score = Number(sc[i]);
-          links.set(Number(oid[i]), [
-            Number(idx[i]),
-            Number.isNaN(score) ? null : score,
-          ]);
-        }
+  // OWNER_INSTANCE rows of a links table (identity or categories).
+  const readOwnerInstanceLinks = async (
+    group: string,
+    idxField: string,
+    scoreField: string,
+  ): Promise<Map<number, [number, number | null]>> => {
+    const out = new Map<number, [number, number | null]>();
+    try {
+      if (!rootKeys.includes(group)) return out;
+      if (!(await file.getKeys(group)).includes("links")) return out;
+      const cols = await readStructDatasetStreaming(
+        file,
+        `${group}/links`,
+        true,
+      );
+      const ot = cols.owner_type ?? [];
+      const oid = cols.owner_id ?? [];
+      const idx = cols[idxField] ?? [];
+      const sc = cols[scoreField] ?? [];
+      for (let i = 0; i < ot.length; i += 1) {
+        if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
+        const score = Number(sc[i]);
+        out.set(Number(oid[i]), [
+          Number(idx[i]),
+          Number.isNaN(score) ? null : score,
+        ]);
       }
+    } catch {
+      /* optional */
+    }
+    return out;
+  };
+
+  // OWNER_INSTANCE rows of an /embeddings triple (identity or category).
+  const readOwnerInstanceEmbs = async (
+    vecName: string,
+    otName: string,
+    oidName: string,
+  ): Promise<Map<number, Embedding>> => {
+    const out = new Map<number, Embedding>();
+    try {
+      if (!rootKeys.includes("embeddings")) return out;
+      if (!(await file.getKeys("embeddings")).includes(vecName)) return out;
+      const vd = await file.getDatasetValue(`embeddings/${vecName}`);
+      const flat = vd.value as ArrayLike<number>;
+      const rows = vd.shape?.[0] ?? 0;
+      const dim = vd.shape && vd.shape.length >= 2 ? vd.shape[1] : 0;
+      if (!rows || !dim) return out;
+      const ot = normalizeDatasetArray(
+        (await file.getDatasetValue(`embeddings/${otName}`)).value,
+      );
+      const oid = normalizeDatasetArray(
+        (await file.getDatasetValue(`embeddings/${oidName}`)).value,
+      );
+      for (let i = 0; i < rows; i += 1) {
+        if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
+        const vec = new Array<number>(dim);
+        for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
+        out.set(Number(oid[i]), new Embedding(vec));
+      }
+    } catch {
+      /* optional */
+    }
+    return out;
+  };
+
+  let categoryCatalog: string[] = [];
+  try {
+    if (
+      rootKeys.includes("categories") &&
+      (await file.getKeys("categories")).includes("name")
+    ) {
+      categoryCatalog = normalizeDatasetArray(
+        (await file.getDatasetValue("categories/name")).value,
+      ).map((n) => decodeEntryText(n) ?? "");
     }
   } catch {
-    /* identity links optional */
+    /* optional */
   }
 
-  try {
-    if (rootKeys.includes("embeddings")) {
-      const embChildren = await file.getKeys("embeddings");
-      if (embChildren.includes("vectors")) {
-        const vd = await file.getDatasetValue("embeddings/vectors");
-        const flat = vd.value as ArrayLike<number>;
-        const rows = vd.shape?.[0] ?? 0;
-        const dim = vd.shape && vd.shape.length >= 2 ? vd.shape[1] : 0;
-        if (rows && dim) {
-          const ot = normalizeDatasetArray(
-            (await file.getDatasetValue("embeddings/owner_type")).value,
-          );
-          const oid = normalizeDatasetArray(
-            (await file.getDatasetValue("embeddings/owner_id")).value,
-          );
-          for (let i = 0; i < rows; i += 1) {
-            if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
-            const vec = new Array<number>(dim);
-            for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
-            embs.set(Number(oid[i]), new Embedding(vec));
-          }
-        }
-      }
-    }
-  } catch {
-    /* embeddings optional */
-  }
-
-  return { links, embs };
+  return {
+    links: await readOwnerInstanceLinks(
+      "identity",
+      "identity_idx",
+      "identity_score",
+    ),
+    embs: await readOwnerInstanceEmbs("vectors", "owner_type", "owner_id"),
+    catLinks: await readOwnerInstanceLinks(
+      "categories",
+      "category_idx",
+      "category_score",
+    ),
+    catEmbs: await readOwnerInstanceEmbs(
+      "category_vectors",
+      "category_owner_type",
+      "category_owner_id",
+    ),
+    categoryCatalog,
+  };
 }
 
 /**

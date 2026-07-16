@@ -67,6 +67,9 @@ export class LazyDataStore {
     identities?: Identity[];
     instanceIdentityLinks?: Map<number, [number, number | null]>;
     instanceEmbeddings?: Map<number, Embedding>;
+    categoryCatalog?: string[];
+    instanceCategoryLinks?: Map<number, [number, number | null]>;
+    instanceCategoryEmbeddings?: Map<number, Embedding>;
   }) {
     this.framesData = options.framesData;
     this.instancesData = options.instancesData;
@@ -80,6 +83,9 @@ export class LazyDataStore {
     this.identities = options.identities;
     this._instanceIdentityLinks = options.instanceIdentityLinks;
     this._instanceEmbeddings = options.instanceEmbeddings;
+    this.categoryCatalog = options.categoryCatalog;
+    this._instanceCategoryLinks = options.instanceCategoryLinks;
+    this._instanceCategoryEmbeddings = options.instanceCategoryEmbeddings;
   }
 
   /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
@@ -88,6 +94,12 @@ export class LazyDataStore {
   _instanceIdentityLinks?: Map<number, [number, number | null]>;
   /** owner_id (global instance_id) → Embedding, OWNER_INSTANCE. @internal */
   _instanceEmbeddings?: Map<number, Embedding>;
+  /** Category catalog (strings) for resolving per-instance category links (SLP 2.7). @internal */
+  categoryCatalog?: string[];
+  /** owner_id (global instance_id) → [category_idx, score|null], OWNER_INSTANCE. @internal */
+  _instanceCategoryLinks?: Map<number, [number, number | null]>;
+  /** owner_id (global instance_id) → category Embedding, OWNER_INSTANCE. @internal */
+  _instanceCategoryEmbeddings?: Map<number, Embedding>;
 
   /**
    * Create an independent copy of this store's raw column data.
@@ -124,6 +136,9 @@ export class LazyDataStore {
       identities: this.identities,
       instanceIdentityLinks: this._instanceIdentityLinks,
       instanceEmbeddings: this._instanceEmbeddings,
+      categoryCatalog: this.categoryCatalog,
+      instanceCategoryLinks: this._instanceCategoryLinks,
+      instanceCategoryEmbeddings: this._instanceCategoryEmbeddings,
     });
 
     // Copy per-frame annotation dicts
@@ -255,6 +270,19 @@ export class LazyDataStore {
       }
       const emb = this._instanceEmbeddings?.get(instIdx);
       if (emb) instance.identityEmbedding = emb;
+
+      const catLink = this._instanceCategoryLinks?.get(instIdx);
+      if (
+        catLink &&
+        this.categoryCatalog &&
+        catLink[0] >= 0 &&
+        catLink[0] < this.categoryCatalog.length
+      ) {
+        instance.category = this.categoryCatalog[catLink[0]];
+        instance.categoryScore = catLink[1];
+      }
+      const catEmb = this._instanceCategoryEmbeddings?.get(instIdx);
+      if (catEmb) instance.categoryEmbedding = catEmb;
 
       instanceById.set(instIdx, instance);
       instances.push(instance);

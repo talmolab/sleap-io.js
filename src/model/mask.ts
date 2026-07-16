@@ -327,6 +327,9 @@ export class SegmentationMask {
   identity?: Identity | null = null;
   identityScore?: number | null = null;
   identityEmbedding?: Embedding | null = null;
+  /** Category confidence + appearance embedding (SLP 2.7+). */
+  categoryScore?: number | null = null;
+  categoryEmbedding?: Embedding | null = null;
   /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
   scale: [number, number];
   /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
