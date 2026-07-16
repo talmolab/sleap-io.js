@@ -242,7 +242,7 @@ export async function readSlp(
     }
 
     report(5); // Reading identities
-    const identities = readIdentities(file.get("identities_json"));
+    const identities = readIdentityCatalog(file);
     report(6); // Reading sessions
     const sessions = readSessions(
       file.get("sessions_json"),
@@ -522,7 +522,7 @@ export async function readSlpLazy(
     // Read sessions — grouping is captured as index refs only (no frame
     // materialization); refs resolve lazily via the injected frame resolver.
     report(5); // Reading identities
-    const identities = readIdentities(file.get("identities_json"));
+    const identities = readIdentityCatalog(file);
     report(6); // Reading sessions
     const sessions = readSessions(
       file.get("sessions_json"),
@@ -1149,6 +1149,53 @@ function readIdentities(dataset: any): Identity[] {
     );
   }
   return identities;
+}
+
+/** Decode a vlen-string dataset element (string / bytes) to a plain string. */
+function decodeStr(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v instanceof Uint8Array) return textDecoder.decode(v);
+  return String(v ?? "");
+}
+
+/**
+ * Read the Python-compatible `/identity` group (SLP 2.5): a native vlen `name`
+ * catalog + optional EAV metadata (`meta_owner`/`meta_key`/`meta_val`). Color is
+ * recovered from `metadata["color"]` back onto `Identity.color`. Returns `[]` when
+ * the group is absent. Used as the fallback when a file has no legacy
+ * `identities_json` (i.e. a Python-written file); JS-written files carry both and
+ * prefer the typed `identities_json`.
+ */
+function readIdentityGroup(file: any): Identity[] {
+  if (!file.get("identity") || !file.get("identity/name")) return [];
+  const names = (file.get("identity/name").value ?? []).map(decodeStr);
+  const metadata: Record<string, unknown>[] = names.map(() => ({}));
+  const ownerDs = file.get("identity/meta_owner");
+  if (ownerDs) {
+    const owners = Array.from(ownerDs.value ?? []).map(Number);
+    const keys = (file.get("identity/meta_key")?.value ?? []).map(decodeStr);
+    const vals = (file.get("identity/meta_val")?.value ?? []).map(decodeStr);
+    owners.forEach((o: number, i: number) => {
+      if (metadata[o]) metadata[o][keys[i]] = vals[i];
+    });
+  }
+  return names.map((name: string, i: number) => {
+    const meta = metadata[i];
+    const color = typeof meta.color === "string" ? meta.color : undefined;
+    const { color: _color, ...rest } = meta;
+    return new Identity({ name, color, metadata: rest });
+  });
+}
+
+/**
+ * Read the identity catalog, preferring the legacy typed `identities_json` (JS-native,
+ * present on JS-written files) and falling back to the Python `/identity` group (on
+ * Python-written files). Both are written by the JS writer (dual-write).
+ */
+function readIdentityCatalog(file: any): Identity[] {
+  const json = file.get("identities_json");
+  if (json) return readIdentities(json);
+  return readIdentityGroup(file);
 }
 
 /**

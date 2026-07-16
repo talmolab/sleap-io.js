@@ -2113,6 +2113,7 @@ function writeSuggestions(
 
 function writeIdentities(file: any, identities: Identity[]): void {
   if (!identities.length) return;
+  // Legacy JS-native `identities_json` (typed metadata; kept for older JS readers).
   const payload = identities.map((identity) => {
     const d: Record<string, unknown> = { name: identity.name };
     if (identity.color != null) d.color = identity.color;
@@ -2124,6 +2125,40 @@ function writeIdentities(file: any, identities: Identity[]): void {
     return JSON.stringify(d);
   });
   file.create_dataset({ name: "identities_json", data: payload });
+
+  // Python-compatible /identity group (SLP 2.5): a native vlen `name` catalog plus
+  // an optional entity-attribute-value metadata table. Written ALONGSIDE
+  // identities_json (dual-write) so both Python and older JS readers interoperate.
+  // Python has no first-class `color`, so color is folded into metadata["color"]
+  // (docs/formats/slp.md). Values are stringified to match Python's string-only EAV.
+  file.create_group("identity");
+  file.create_dataset({
+    name: "identity/name",
+    data: identities.map((i) => i.name),
+  });
+  const metaOwner: number[] = [];
+  const metaKey: string[] = [];
+  const metaVal: string[] = [];
+  identities.forEach((identity, idx) => {
+    const meta: Record<string, unknown> = { ...identity.metadata };
+    if (identity.color != null && meta.color == null)
+      meta.color = identity.color;
+    for (const [k, v] of Object.entries(meta)) {
+      metaOwner.push(idx);
+      metaKey.push(String(k));
+      metaVal.push(String(v));
+    }
+  });
+  if (metaOwner.length) {
+    file.create_dataset({
+      name: "identity/meta_owner",
+      data: new Int32Array(metaOwner),
+      shape: [metaOwner.length],
+      dtype: "<i", // int32 (see the dtype-char note above)
+    });
+    file.create_dataset({ name: "identity/meta_key", data: metaKey });
+    file.create_dataset({ name: "identity/meta_val", data: metaVal });
+  }
 }
 
 // ---- SLP 2.8 columnar /session_data field names (snake_case, Python-compatible) --
