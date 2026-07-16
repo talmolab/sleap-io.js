@@ -54,6 +54,7 @@ import {
   RecordingSession,
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
+import { Embedding } from "../../model/embedding.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
 import {
@@ -268,6 +269,43 @@ export async function readSlp(
       tracks,
       allInstances,
     );
+
+    // Per-detection re-ID identity + embeddings (SLP 2.5): attach onto each
+    // modality's ordered detection list (index == owner_id). No-op on pre-2.5 files.
+    const idLinks = readIdentityLinks(file, emscripten);
+    const idEmbs = readEmbeddings(file);
+    if (idLinks.size || idEmbs.size) {
+      attachIdentityToOwners(
+        allInstances,
+        identities,
+        idLinks.get(0),
+        idEmbs.get(0),
+      );
+      attachIdentityToOwners(
+        centroidTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(2),
+        idEmbs.get(2),
+      );
+      attachIdentityToOwners(
+        maskTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(3),
+        idEmbs.get(3),
+      );
+      attachIdentityToOwners(
+        bboxTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(4),
+        idEmbs.get(4),
+      );
+      attachIdentityToOwners(
+        roiTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(5),
+        idEmbs.get(5),
+      );
+    }
 
     // Distribute annotations into LabeledFrames using routing tuples
     const frameMap = new Map<string, LabeledFrame>();
@@ -1196,6 +1234,106 @@ function readIdentityCatalog(file: any): Identity[] {
   const json = file.get("identities_json");
   if (json) return readIdentities(json);
   return readIdentityGroup(file);
+}
+
+/** A detection that can carry a per-detection identity/embedding (SLP 2.5). */
+interface IdentityBearingRead {
+  identity?: Identity | null;
+  identityScore?: number | null;
+  identityEmbedding?: Embedding | null;
+}
+
+/**
+ * Read `/identity/links` (SLP 2.5): a genuine compound (Python) or a
+ * flat-2-D+`field_names` (JS) `(owner_type, owner_id, identity_idx, identity_score)`
+ * table, via `normalizeStructDataset` (handles both). Returns a map
+ * `owner_type → owner_id → [identity_idx, score|null]` (NaN score → null). Empty
+ * when the dataset is absent. `i8`/`u8` columns are `Number()`-coerced.
+ */
+function readIdentityLinks(
+  file: any,
+  emscripten?: unknown,
+): Map<number, Map<number, [number, number | null]>> {
+  const result = new Map<number, Map<number, [number, number | null]>>();
+  const ds = file.get("identity/links");
+  if (!ds) return result;
+  const cols = normalizeStructDataset(ds, emscripten);
+  const ot = cols.owner_type ?? [];
+  const oid = cols.owner_id ?? [];
+  const idx = cols.identity_idx ?? [];
+  const sc = cols.identity_score ?? [];
+  for (let i = 0; i < ot.length; i += 1) {
+    const ownerType = Number(ot[i]);
+    const ownerId = Number(oid[i]);
+    const score = Number(sc[i]);
+    let sub = result.get(ownerType);
+    if (!sub) {
+      sub = new Map();
+      result.set(ownerType, sub);
+    }
+    sub.set(ownerId, [Number(idx[i]), Number.isNaN(score) ? null : score]);
+  }
+  return result;
+}
+
+/**
+ * Read the `/embeddings` group (SLP 2.5): a plain `(N, D)` float `vectors` matrix
+ * joined by parallel `owner_type` / `owner_id` columns. Returns
+ * `owner_type → owner_id → Embedding`. Empty when absent. `i8` columns are
+ * `Number()`-coerced.
+ */
+function readEmbeddings(file: any): Map<number, Map<number, Embedding>> {
+  const result = new Map<number, Map<number, Embedding>>();
+  const vecDs = file.get("embeddings/vectors");
+  if (!vecDs) return result;
+  const flat = vecDs.value as ArrayLike<number>;
+  const shape = vecDs.shape as number[] | undefined;
+  const rows = shape?.[0] ?? 0;
+  const dim = shape && shape.length >= 2 ? shape[1] : 0;
+  if (!rows || !dim) return result;
+  const ot = file.get("embeddings/owner_type")?.value ?? [];
+  const oid = file.get("embeddings/owner_id")?.value ?? [];
+  for (let i = 0; i < rows; i += 1) {
+    const ownerType = Number(ot[i]);
+    const ownerId = Number(oid[i]);
+    const vec = new Array<number>(dim);
+    for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
+    let sub = result.get(ownerType);
+    if (!sub) {
+      sub = new Map();
+      result.set(ownerType, sub);
+    }
+    sub.set(ownerId, new Embedding(vec));
+  }
+  return result;
+}
+
+/**
+ * Attach per-detection identity + score + embedding onto a modality's ordered
+ * detection list (index == `owner_id`), from the `/identity/links` + `/embeddings`
+ * maps for one owner type. Mutates the detection objects in place.
+ */
+function attachIdentityToOwners(
+  owners: IdentityBearingRead[],
+  identities: Identity[],
+  links: Map<number, [number, number | null]> | undefined,
+  embs: Map<number, Embedding> | undefined,
+): void {
+  if (links) {
+    for (const [ownerId, [idx, score]] of links) {
+      const det = owners[ownerId];
+      if (det && idx >= 0 && idx < identities.length) {
+        det.identity = identities[idx];
+        det.identityScore = score;
+      }
+    }
+  }
+  if (embs) {
+    for (const [ownerId, emb] of embs) {
+      const det = owners[ownerId];
+      if (det) det.identityEmbedding = emb;
+    }
+  }
 }
 
 /**
