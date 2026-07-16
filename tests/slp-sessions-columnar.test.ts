@@ -413,6 +413,44 @@ describe("SLP 2.8 columnar sessions", () => {
     expect(ig.metadata).toEqual({ tag: "z" });
   });
 
+  it("reads a Python-written 2.8 file (genuine compound tables, i8/u8 indices)", async () => {
+    // Cross-language: Python writes /session_data as true HDF5 compound datasets
+    // (i8/u8/i4/u1 mixed dtypes) rather than the JS flat-2D+field_names form. The
+    // reader must handle both (compound via readCompoundColumnsManual, i8/u8 -> Number).
+    const { fileURLToPath } = await import("node:url");
+    const { readFileSync } = await import("node:fs");
+    const nodePath = await import("node:path");
+    const fixtureRoot = fileURLToPath(new URL("./data", import.meta.url));
+    const p = nodePath.join(
+      fixtureRoot,
+      "slp",
+      "py_written_28_multiview3d.slp",
+    );
+    const bytes = readFileSync(p);
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
+
+    expect(loaded.sessions).toHaveLength(1);
+    const s = loaded.sessions[0];
+    expect(s.cameraGroup.cameras).toHaveLength(2);
+    const fg = s.frameGroups.get(0)!;
+    expect(fg.metadata).toEqual({ fnote: "hi" });
+    const ig = fg.instanceGroups[0];
+    expect(ig.metadata).toEqual({ app: "lucid", n: 7 });
+    expect(ig.instance3d).toBeInstanceOf(PredictedInstance3D);
+    const pts = ig.instance3d!.points!;
+    // Full float64 precision + NaN missing keypoint survive cross-language.
+    expect(pts[0]).toEqual([121.57910322579006, 2.5, 3.5]);
+    expect(pts[1].every((c) => Number.isNaN(c))).toBe(true);
+    expect(ig.instance3d!.score).toBe(0.9200000001);
+    const ps = (ig.instance3d as PredictedInstance3D).pointScores!;
+    expect(ps[0]).toBe(0.95);
+    expect(Number.isNaN(ps[1])).toBe(true);
+    // Member index refs resolved to the two per-camera instances.
+    expect(ig.instanceByCamera.size).toBe(2);
+  });
+
   it("lite reader leaves frameGroups unset for a legacy (no /session_data) file", async () => {
     const { loadSlpMetadata } = await import("../src/lite.js");
     // A session with no frame groups writes no /session_data (and no fg range).
