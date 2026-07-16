@@ -18,6 +18,7 @@ import {
   type SessionPointMatrix,
   parseSkeletons,
   resolveCameraKey,
+  normalizeCameraSize,
   reconstructInstance3D,
   resolveIdentity,
   resolveVideoFilename,
@@ -1461,7 +1462,7 @@ function readSessions(
         tvec: (cameraData.translation as number[] | undefined) ?? [0, 0, 0],
         matrix: cameraData.matrix as number[][] | undefined,
         distortions: cameraData.distortions as number[] | undefined,
-        size: cameraData.size as [number, number] | undefined,
+        size: normalizeCameraSize(cameraData.size),
       });
       cameraGroup.cameras.push(camera);
       cameraMap.set(String(key), camera);

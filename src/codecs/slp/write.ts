@@ -2407,7 +2407,10 @@ function sessionCalibrationDict(
       matrix: camera.matrix,
       distortions: camera.distortions,
     };
-    if (camera.size) camData.size = camera.size;
+    // Always write `size`, using "" when unknown — matches Python `camera_to_dict`
+    // (`"" if camera.size is None else list(size)`). Python's `make_camera` does a
+    // bare `camera_dict.pop("size")`, so omitting the key KeyErrors on read.
+    camData.size = camera.size && camera.size.length === 2 ? camera.size : "";
     calibration[key] = camData;
   });
 
