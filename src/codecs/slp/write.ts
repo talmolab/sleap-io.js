@@ -220,6 +220,7 @@ function writeSlpToFile(
     roi: allRois,
   };
   writeIdentityLinks(file, labels.identities, detections);
+  writeCategoryLinks(file, detections);
   writeEmbeddings(file, detections);
 }
 
@@ -1860,6 +1861,12 @@ function writeMetadata(file: any, labels: Labels): void {
     formatId = Math.max(formatId, 2.5);
   }
 
+  // v2.7: class/category subsystem (/categories catalog + /categories/links +
+  // category_* embeddings), gated on a detection actually carrying a category.
+  if (hasPerDetectionCategory(labels)) {
+    formatId = Math.max(formatId, 2.7);
+  }
+
   // v2.8: columnar RecordingSession frame-group data (the `/session_data` group).
   // Bumped ONLY when a session carries frame groups — session-free / single-view
   // files write no group and stay byte-identical below 2.8. Gated on the same
@@ -2189,11 +2196,14 @@ const OWNER_MASK = 3;
 const OWNER_BBOX = 4;
 const OWNER_ROI = 5;
 
-/** A detection that can carry a per-detection identity/embedding. */
+/** A detection that can carry per-detection identity + category (SLP 2.5/2.7). */
 interface IdentityBearing {
   identity?: Identity | null;
   identityScore?: number | null;
   identityEmbedding?: { vector: number[] } | null;
+  category?: string | null;
+  categoryScore?: number | null;
+  categoryEmbedding?: { vector: number[] } | null;
 }
 
 /** The five detection collections, each in the SAME global order its modality
@@ -2263,26 +2273,30 @@ function writeIdentityLinks(
 }
 
 /**
- * Write per-detection re-ID embeddings (SLP 2.5) to the `/embeddings` group:
- * `vectors` `(N, D)` float matrix (chunked+gzip, no field_names) joined to
- * detections by parallel `owner_type` / `owner_id` columns (same join as
- * `/identity/links`). Written whenever any detection carries an
- * `identityEmbedding` (lossless preserve). All vectors must share one dimension D.
- * No-op when none present.
+ * Write one `/embeddings` triple: a `(N, D)` float `vectors` matrix (chunked+gzip,
+ * no field_names) + parallel `owner_type` / `owner_id` join columns. Used for both
+ * the identity vectors (`vectors`/`owner_type`/`owner_id`) and the independent
+ * category vectors (`category_vectors`/`category_owner_type`/`category_owner_id`).
+ * All vectors in a triple must share one dimension. No-op when none present.
  */
-function writeEmbeddings(file: any, c: DetectionCollections): void {
+function writeEmbeddingTriple(
+  file: any,
+  c: DetectionCollections,
+  names: [string, string, string],
+  get: (d: IdentityBearing) => { vector: number[] } | null | undefined,
+): void {
   const vectors: number[][] = [];
   const ownerTypes: number[] = [];
   const ownerIds: number[] = [];
   let dim = -1;
   for (const [ownerType, list] of ownerCollections(c)) {
     list.forEach((det, ownerId) => {
-      const emb = det.identityEmbedding;
+      const emb = get(det);
       if (emb == null) return;
       if (dim === -1) dim = emb.vector.length;
       if (emb.vector.length !== dim) {
         throw new Error(
-          `All re-ID embeddings must share one dimension; got ${emb.vector.length} and ${dim}.`,
+          `All ${names[0]} must share one dimension; got ${emb.vector.length} and ${dim}.`,
         );
       }
       vectors.push(emb.vector);
@@ -2291,35 +2305,127 @@ function writeEmbeddings(file: any, c: DetectionCollections): void {
     });
   }
   if (!vectors.length) return;
-  file.create_group("embeddings");
-  // Plain (N, D) float matrix (NO field_names — Python reads it as a matrix).
-  createGzipFloatMatrix(file, "embeddings/vectors", vectors, dim);
-  // Parallel 1-D join columns (float64; Python int-casts on read).
+  if (!file.get("embeddings")) file.create_group("embeddings");
+  createGzipFloatMatrix(file, `embeddings/${names[0]}`, vectors, dim);
   file.create_dataset({
-    name: "embeddings/owner_type",
+    name: `embeddings/${names[1]}`,
     data: new Float64Array(ownerTypes),
     shape: [ownerTypes.length],
     dtype: "<d",
   });
   file.create_dataset({
-    name: "embeddings/owner_id",
+    name: `embeddings/${names[2]}`,
     data: new Float64Array(ownerIds),
     shape: [ownerIds.length],
     dtype: "<d",
   });
 }
 
-/** Whether any detection carries a per-detection identity or embedding (gates the
- * format 2.5 bump). */
-function hasPerDetectionIdentity(labels: Labels): boolean {
-  const any = (list: IdentityBearing[]) =>
-    list.some((d) => d.identity != null || d.identityEmbedding != null);
+/**
+ * Write per-detection re-ID (SLP 2.5) + category (SLP 2.7) embeddings to the
+ * `/embeddings` group as two independent triples sharing the same owner join.
+ * Written whenever a detection carries the corresponding embedding (lossless
+ * preserve). No-op when none present.
+ */
+function writeEmbeddings(file: any, c: DetectionCollections): void {
+  writeEmbeddingTriple(
+    file,
+    c,
+    ["vectors", "owner_type", "owner_id"],
+    (d) => d.identityEmbedding,
+  );
+  writeEmbeddingTriple(
+    file,
+    c,
+    ["category_vectors", "category_owner_type", "category_owner_id"],
+    (d) => d.categoryEmbedding,
+  );
+}
+
+/** Distinct non-empty category strings across all detections, in first-seen order
+ * (the `/categories/name` catalog). JS categories are plain strings, so the catalog
+ * is derived from the strings themselves (no per-category metadata). */
+function collectCategoryCatalog(c: DetectionCollections): string[] {
+  const seen = new Set<string>();
+  const catalog: string[] = [];
+  for (const [, list] of ownerCollections(c)) {
+    for (const det of list) {
+      const cat = det.category;
+      if (cat && !seen.has(cat)) {
+        seen.add(cat);
+        catalog.push(cat);
+      }
+    }
+  }
+  return catalog;
+}
+
+/**
+ * Write the class/category subsystem (SLP 2.7): the `/categories/name` catalog
+ * (distinct category strings) + `/categories/links` (owner_type, owner_id,
+ * category_idx, category_score) — one row per detection with a non-empty category,
+ * flat-2-D `<d`+field_names (the Python reader converts it, sleap-io#548). No-op
+ * when no detection carries a category.
+ */
+function writeCategoryLinks(file: any, c: DetectionCollections): void {
+  const catalog = collectCategoryCatalog(c);
+  if (!catalog.length) return;
+  const catToIdx = new Map<string, number>(catalog.map((n, i) => [n, i]));
+  const rows: number[][] = [];
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      const cat = det.category;
+      if (!cat) return;
+      rows.push([
+        ownerType,
+        ownerId,
+        catToIdx.get(cat) as number,
+        det.categoryScore ?? Number.NaN,
+      ]);
+    });
+  }
+  if (!rows.length) return;
+  file.create_group("categories");
+  file.create_dataset({ name: "categories/name", data: catalog });
+  createMatrixDataset(
+    file,
+    "categories/links",
+    rows,
+    ["owner_type", "owner_id", "category_idx", "category_score"],
+    "<d",
+  );
+}
+
+/** Whether any detection satisfies `pred` across all five modalities (used to gate
+ * the identity 2.5 / category 2.7 format bumps). */
+function anyDetection(
+  labels: Labels,
+  pred: (d: IdentityBearing) => boolean,
+): boolean {
+  const any = (list: IdentityBearing[]) => list.some(pred);
   return (
     labels.labeledFrames.some((f) => any(f.instances as IdentityBearing[])) ||
     any(labels.masks as IdentityBearing[]) ||
     any(labels.centroids as IdentityBearing[]) ||
     any(labels.bboxes as IdentityBearing[]) ||
     any(labels.rois as IdentityBearing[])
+  );
+}
+
+/** Whether any detection carries a per-detection identity or embedding (format 2.5). */
+function hasPerDetectionIdentity(labels: Labels): boolean {
+  return anyDetection(
+    labels,
+    (d) => d.identity != null || d.identityEmbedding != null,
+  );
+}
+
+/** Whether any detection carries a category or category embedding (format 2.7). */
+function hasPerDetectionCategory(labels: Labels): boolean {
+  return anyDetection(
+    labels,
+    (d) =>
+      (d.category != null && d.category !== "") || d.categoryEmbedding != null,
   );
 }
 
