@@ -174,7 +174,7 @@ import {
   videoPathCandidates,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-X34FQQ4E.js";
+} from "./chunk-Y5TWRJT3.js";
 import {
   Camera,
   CameraGroup,
