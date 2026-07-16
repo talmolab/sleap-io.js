@@ -21,6 +21,10 @@ import {
   parseMetadataJson,
   missingMetadataJsonError,
   parseJsonEntry,
+  sessionsReadError,
+  reconstructColumnarFrameGroups,
+  type SessionData,
+  type SessionPointMatrix,
   parseSkeletons,
   parseTracks,
   parseVideosMetadata,
@@ -974,10 +978,26 @@ export async function readSessionsStreaming(
 
     const data = await file.getDatasetValue("sessions_json");
     const values = normalizeDatasetArray(data.value);
+    // A present-but-empty dataset is a legitimate "no sessions" state (return []).
+    // A present dataset whose entries read back blank/unparseable is NOT — it is
+    // the h5wasm vlen read ceiling (sleap-io.js#220), handled by sessionsReadError.
+    if (values.length === 0) return [];
+
+    // SLP 2.8 columnar /session_data (read once for all sessions), or null for
+    // legacy ≤2.7 files.
+    const sessionData = await readSessionDataStreaming(file);
 
     const sessions: RecordingSession[] = [];
     for (const entry of values) {
-      const parsed = parseJsonEntry(entry) as Record<string, unknown>;
+      let parsed: Record<string, unknown>;
+      try {
+        parsed = parseJsonEntry(entry) as Record<string, unknown>;
+      } catch (err) {
+        throw sessionsReadError(values.length, entry, err);
+      }
+      if (!parsed || typeof parsed !== "object") {
+        throw sessionsReadError(values.length, entry);
+      }
       const calibration = (parsed.calibration ?? {}) as Record<string, unknown>;
 
       const cameraGroup = new CameraGroup();
@@ -1028,6 +1048,25 @@ export async function readSessionsStreaming(
         }
       }
 
+      // SLP 2.8 columnar path: reconstruct from /session_data via the session's
+      // fg_start/fg_end range (shared with the eager reader). Dispatched on both
+      // fg_start (slim sessions_json) and the loaded /session_data group.
+      const fgStart = parsed.fg_start;
+      if (fgStart != null && sessionData) {
+        const frameGroupMap = reconstructColumnarFrameGroups(
+          cameraGroup.cameras,
+          skeletons,
+          identities,
+          sessionData,
+          Number(fgStart),
+          Number(parsed.fg_end),
+        );
+        for (const [k, v] of frameGroupMap) session.frameGroups.set(k, v);
+        sessions.push(session);
+        continue;
+      }
+
+      // Legacy (≤2.7) inline path.
       const frameGroups = Array.isArray(parsed.frame_group_dicts)
         ? parsed.frame_group_dicts
         : [];
@@ -1175,9 +1214,73 @@ export async function readSessionsStreaming(
       sessions.push(session);
     }
     return sessions;
-  } catch {
-    return [];
+  } catch (err) {
+    // Fail loud (sleap-io.js#220): a present-but-unreadable sessions_json must
+    // surface, not silently drop calibration + grouping + 3D as an empty list
+    // (which the next save would then overwrite 2D-only). Absent/empty datasets
+    // already returned [] above without reaching here.
+    if (err instanceof Error) throw err;
+    throw new Error(`Failed to read sessions_json: ${String(err)}`);
   }
+}
+
+/**
+ * Read the columnar `/session_data` group (SLP 2.8) over the streaming/worker API
+ * into a backend-agnostic {@link SessionData} for {@link reconstructColumnarFrameGroups},
+ * or `null` when the group is absent (legacy ≤2.7) or missing a struct table.
+ *
+ * `file.keys()` is a root-level snapshot, so the group's child datasets are listed
+ * via `getKeys("session_data")`; the struct tables are read through
+ * `readStructDatasetStreaming` (with `assumePresent`, since presence is already
+ * confirmed), and `points_3d`/`pred_points_3d` + the vlen meta arrays via
+ * `getDatasetValue` (whole-read — the tables are small; range-reads can come later).
+ */
+async function readSessionDataStreaming(
+  file: StreamingH5File,
+): Promise<SessionData | null> {
+  if (!file.keys().includes("session_data")) return null;
+  const children = new Set(await file.getKeys("session_data"));
+
+  const struct = async (
+    name: string,
+  ): Promise<Record<string, unknown[]> | null> => {
+    if (!children.has(name)) return null;
+    const cols = await readStructDatasetStreaming(
+      file,
+      `session_data/${name}`,
+      true,
+    );
+    return Object.keys(cols).length ? cols : null;
+  };
+  const frameGroups = await struct("frame_groups");
+  const instanceGroups = await struct("instance_groups");
+  const members = await struct("instance_group_members");
+  if (!frameGroups || !instanceGroups || !members) return null;
+
+  const matrix = async (
+    name: string,
+    ncolsDefault: number,
+  ): Promise<SessionPointMatrix | null> => {
+    if (!children.has(name)) return null;
+    const d = await file.getDatasetValue(`session_data/${name}`);
+    const ncols = d.shape && d.shape.length >= 2 ? d.shape[1] : ncolsDefault;
+    return { flat: d.value as ArrayLike<number>, ncols };
+  };
+  const meta = async (name: string): Promise<unknown[] | null> => {
+    if (!children.has(name)) return null;
+    const d = await file.getDatasetValue(`session_data/${name}`);
+    return normalizeDatasetArray(d.value);
+  };
+
+  return {
+    frameGroups,
+    instanceGroups,
+    members,
+    points3d: await matrix("points_3d", 3),
+    predPoints3d: await matrix("pred_points_3d", 4),
+    frameGroupMeta: await meta("frame_group_meta"),
+    instanceGroupMeta: await meta("instance_group_meta"),
+  };
 }
 
 /**
@@ -1186,10 +1289,13 @@ export async function readSessionsStreaming(
 async function readStructDatasetStreaming(
   file: StreamingH5File,
   path: string,
+  assumePresent = false,
 ): Promise<Record<string, unknown[]>> {
   try {
-    const keys = file.keys();
-    if (!keys.includes(path)) return {};
+    // `file.keys()` is a root-level snapshot, so a nested path (e.g.
+    // `session_data/frame_groups`) is never listed there — callers that have
+    // already confirmed presence via `getKeys` pass `assumePresent`.
+    if (!assumePresent && !file.keys().includes(path)) return {};
 
     const meta = await file.getDatasetMeta(path);
     const data = await file.getDatasetValue(path);
@@ -1202,9 +1308,11 @@ async function readStructDatasetStreaming(
         const attrs = await file.getAttrs(path);
         const fnAttr = attrs.field_names ?? attrs.fieldNames;
         if (fnAttr) {
-          let raw = Array.isArray(fnAttr)
+          // Accept an array, a `{value}` wrapper (worker-serialized), or a bare
+          // string/bytes (some backends return the attribute value unwrapped).
+          let raw: unknown = Array.isArray(fnAttr)
             ? fnAttr
-            : (fnAttr as { value?: unknown })?.value;
+            : ((fnAttr as { value?: unknown })?.value ?? fnAttr);
           if (typeof raw === "string") {
             try {
               raw = JSON.parse(raw);

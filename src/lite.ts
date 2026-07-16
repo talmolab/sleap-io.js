@@ -26,6 +26,7 @@ import {
   getShape,
   getValue,
   isDataset,
+  isGroup,
   type JsfiveSource,
 } from "./codecs/slp/jsfive.js";
 import {
@@ -35,6 +36,8 @@ import {
   parseVideosMetadata,
   parseSuggestions,
   parseSessionsMetadata,
+  type SessionData,
+  type SessionPointMatrix,
 } from "./codecs/slp/parsers.js";
 import type {
   VideoMetadata,
@@ -127,6 +130,81 @@ export interface SlpMetadata {
  * console.log(`${metadata.counts.instances} instances`);
  * ```
  */
+/**
+ * Read the columnar `/session_data` group (SLP 2.8) via jsfive into a
+ * backend-agnostic {@link SessionData} for {@link parseSessionsMetadata}, or `null`
+ * when the group is absent (legacy ≤2.7). jsfive returns a 2-D dataset's value as a
+ * flat plain array + a `shape`, and the `field_names` attribute as a JSON string, so
+ * the struct tables are strided into column records here. Whole-reads only (jsfive
+ * has no hyperslab slicing); the tables are small and `points_3d` is chunked+gzip.
+ */
+function readSessionDataJsfive(
+  file: ReturnType<typeof openJsfiveFile>,
+): SessionData | null {
+  const grp = file.get("session_data");
+  if (!grp || !isGroup(grp)) return null;
+
+  const struct = (name: string): Record<string, unknown[]> | null => {
+    const ds = file.get(`session_data/${name}`);
+    if (!ds || !isDataset(ds)) return null;
+    const flat = getValue(ds) as ArrayLike<number> | null;
+    const shape = getShape(ds);
+    const fnRaw = (getAttrs(ds) as Record<string, unknown>)?.field_names;
+    let fields: string[] = [];
+    if (typeof fnRaw === "string") {
+      try {
+        fields = JSON.parse(fnRaw) as string[];
+      } catch {
+        /* not JSON */
+      }
+    } else if (Array.isArray(fnRaw)) {
+      fields = (fnRaw as unknown[]).map(String);
+    }
+    if (!flat || shape.length < 2 || fields.length === 0) return null;
+    const [nrows, ncols] = shape;
+    const cols: Record<string, unknown[]> = {};
+    fields.forEach((f, j) => {
+      const col = new Array<number>(nrows);
+      for (let i = 0; i < nrows; i++) col[i] = Number(flat[i * ncols + j]);
+      cols[f] = col;
+    });
+    return cols;
+  };
+  const frameGroups = struct("frame_groups");
+  const instanceGroups = struct("instance_groups");
+  const members = struct("instance_group_members");
+  if (!frameGroups || !instanceGroups || !members) return null;
+
+  const matrix = (
+    name: string,
+    ncolsDefault: number,
+  ): SessionPointMatrix | null => {
+    const ds = file.get(`session_data/${name}`);
+    if (!ds || !isDataset(ds)) return null;
+    const flat = getValue(ds) as ArrayLike<number> | null;
+    if (!flat) return null;
+    const shape = getShape(ds);
+    return { flat, ncols: shape.length >= 2 ? shape[1] : ncolsDefault };
+  };
+  const meta = (name: string): unknown[] | null => {
+    const ds = file.get(`session_data/${name}`);
+    if (!ds || !isDataset(ds)) return null;
+    const v = getValue(ds);
+    if (Array.isArray(v)) return v;
+    return v != null ? [v] : null;
+  };
+
+  return {
+    frameGroups,
+    instanceGroups,
+    members,
+    points3d: matrix("points_3d", 3),
+    predPoints3d: matrix("pred_points_3d", 4),
+    frameGroupMeta: meta("frame_group_meta"),
+    instanceGroupMeta: meta("instance_group_meta"),
+  };
+}
+
 export async function loadSlpMetadata(
   source: JsfiveSource,
   options?: { filename?: string },
@@ -212,11 +290,16 @@ export async function loadSlpMetadata(
       ? parseSuggestions(suggestionsValue)
       : [];
 
-    // Parse sessions from sessions_json dataset
+    // Parse sessions from sessions_json dataset, reconstructing full 3D from the
+    // columnar /session_data group (SLP 2.8+) when present.
     const sessionsDataset = file.get("sessions_json");
     const sessionsValue = getValue(sessionsDataset);
     const sessions = Array.isArray(sessionsValue)
-      ? parseSessionsMetadata(sessionsValue)
+      ? parseSessionsMetadata(
+          sessionsValue,
+          readSessionDataJsfive(file),
+          skeletons,
+        )
       : [];
 
     // Get counts from dataset shapes (works without reading compound values)

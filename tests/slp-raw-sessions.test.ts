@@ -454,13 +454,16 @@ describe("Raw sessions_json surface (#197)", () => {
     const written = sessionsJson[0];
 
     // KNOWN LIMITATION (documented, not fixed): the fixed-shape serializer drops
-    // unmodeled top-level keys and re-derives camcorder_to_lf_and_inst_idx_map.
+    // unmodeled top-level keys and re-derives the member map (now columnar).
     expect(Object.hasOwn(written, "unmodeled_top_level_key")).toBe(false);
-    // The write emits its own top-level shape (no verbatim echo of the source).
+    // The write emits its own slim SLP 2.8 top-level shape (calibration + video
+    // map + metadata + the fg_start/fg_end range into /session_data); no verbatim
+    // echo of the source, and no inline frame_group_dicts.
     expect(Object.keys(written).sort()).toEqual([
       "calibration",
       "camcorder_to_video_idx_map",
-      "frame_group_dicts",
+      "fg_end",
+      "fg_start",
       "metadata",
     ]);
 
