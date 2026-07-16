@@ -21,6 +21,7 @@ import {
   parseMetadataJson,
   missingMetadataJsonError,
   parseJsonEntry,
+  decodeEntryText,
   sessionsReadError,
   reconstructColumnarFrameGroups,
   type SessionData,
@@ -56,6 +57,7 @@ import {
   RecordingSession,
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
+import { Embedding } from "../../model/embedding.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
 import { resolveSourceFrameCount } from "./frame-count.js";
@@ -332,6 +334,12 @@ export async function readFromStreamingFile(
   // Read identities
   report(8);
   const identities = await readIdentitiesStreaming(file);
+
+  // Per-detection identity + embeddings (SLP 2.5), non-lazy path only (instances
+  // are concrete here); lazy streaming attach is threaded via LazyDataStore.
+  if (labeledFrames) {
+    await attachStreamingInstanceIdentity(file, labeledFrames, identities);
+  }
 
   // Read sessions — grouping captured as index refs (no frame materialization).
   report(9);
@@ -936,25 +944,134 @@ async function readIdentitiesStreaming(
 ): Promise<Identity[]> {
   try {
     const keys = file.keys();
-    if (!keys.includes("identities_json")) return [];
-
-    const data = await file.getDatasetValue("identities_json");
-    const values = normalizeDatasetArray(data.value);
-    const identities: Identity[] = [];
-    for (const entry of values) {
-      const parsed = parseJsonEntry(entry) as Record<string, unknown>;
-      const { name, color, ...rest } = parsed;
-      identities.push(
-        new Identity({
-          name: (name as string) ?? "",
-          color: color as string | undefined,
-          metadata: rest,
-        }),
-      );
+    if (keys.includes("identities_json")) {
+      const data = await file.getDatasetValue("identities_json");
+      const values = normalizeDatasetArray(data.value);
+      const identities: Identity[] = [];
+      for (const entry of values) {
+        const parsed = parseJsonEntry(entry) as Record<string, unknown>;
+        const { name, color, ...rest } = parsed;
+        identities.push(
+          new Identity({
+            name: (name as string) ?? "",
+            color: color as string | undefined,
+            metadata: rest,
+          }),
+        );
+      }
+      return identities;
     }
-    return identities;
+    // Python-style /identity group fallback (no identities_json).
+    if (keys.includes("identity")) {
+      const children = await file.getKeys("identity");
+      if (children.includes("name")) {
+        const names = normalizeDatasetArray(
+          (await file.getDatasetValue("identity/name")).value,
+        ).map((n) => decodeEntryText(n) ?? "");
+        const metadata: Record<string, unknown>[] = names.map(() => ({}));
+        if (children.includes("meta_owner")) {
+          const owners = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_owner")).value,
+          ).map(Number);
+          const mkeys = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_key")).value,
+          ).map((k) => decodeEntryText(k) ?? "");
+          const mvals = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_val")).value,
+          ).map((v) => decodeEntryText(v) ?? "");
+          owners.forEach((o, i) => {
+            if (metadata[o]) metadata[o][mkeys[i]] = mvals[i];
+          });
+        }
+        return names.map((name, i) => {
+          const m = metadata[i];
+          const color = typeof m.color === "string" ? m.color : undefined;
+          const { color: _color, ...rest } = m;
+          return new Identity({ name, color, metadata: rest });
+        });
+      }
+    }
+    return [];
   } catch {
     return [];
+  }
+}
+
+/**
+ * Read + attach per-detection identity (SLP 2.5) for the non-lazy streaming path.
+ * Streaming builds only `Instance`s, so only OWNER_INSTANCE links/embeddings are
+ * attached (by global instance_id = the flattened frame-then-instance order). No-op
+ * on pre-2.5 files. (Lazy streaming attach is threaded through LazyDataStore
+ * separately — not yet wired.)
+ */
+async function attachStreamingInstanceIdentity(
+  file: StreamingH5File,
+  labeledFrames: LabeledFrame[],
+  identities: Identity[],
+): Promise<void> {
+  const rootKeys = file.keys();
+  const allInstances = labeledFrames.flatMap((f) => f.instances);
+
+  // /identity/links (compound or flat-2D) -> attach identity + score.
+  try {
+    if (rootKeys.includes("identity")) {
+      const idChildren = await file.getKeys("identity");
+      if (idChildren.includes("links")) {
+        const cols = await readStructDatasetStreaming(
+          file,
+          "identity/links",
+          true,
+        );
+        const ot = cols.owner_type ?? [];
+        const oid = cols.owner_id ?? [];
+        const idx = cols.identity_idx ?? [];
+        const sc = cols.identity_score ?? [];
+        for (let i = 0; i < ot.length; i += 1) {
+          if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
+          const ownerId = Number(oid[i]);
+          const identIdx = Number(idx[i]);
+          const inst = allInstances[ownerId];
+          if (inst && identIdx >= 0 && identIdx < identities.length) {
+            inst.identity = identities[identIdx];
+            const score = Number(sc[i]);
+            inst.identityScore = Number.isNaN(score) ? null : score;
+          }
+        }
+      }
+    }
+  } catch {
+    /* identity links optional */
+  }
+
+  // /embeddings (plain vectors + owner cols) -> attach identityEmbedding.
+  try {
+    if (rootKeys.includes("embeddings")) {
+      const embChildren = await file.getKeys("embeddings");
+      if (embChildren.includes("vectors")) {
+        const vd = await file.getDatasetValue("embeddings/vectors");
+        const flat = vd.value as ArrayLike<number>;
+        const rows = vd.shape?.[0] ?? 0;
+        const dim = vd.shape && vd.shape.length >= 2 ? vd.shape[1] : 0;
+        if (rows && dim) {
+          const ot = normalizeDatasetArray(
+            (await file.getDatasetValue("embeddings/owner_type")).value,
+          );
+          const oid = normalizeDatasetArray(
+            (await file.getDatasetValue("embeddings/owner_id")).value,
+          );
+          for (let i = 0; i < rows; i += 1) {
+            if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
+            const inst = allInstances[Number(oid[i])];
+            if (!inst) continue;
+            const vec = new Array<number>(dim);
+            for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
+            inst.identityEmbedding = new Embedding(vec);
+          }
+        }
+      }
+    }
+  } catch {
+    /* embeddings optional */
   }
 }
 

@@ -17,8 +17,66 @@ import { Labels } from "../src/model/labels.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
 import { Identity } from "../src/model/identity.js";
 import { Embedding } from "../src/model/embedding.js";
+import { readFromStreamingFile } from "../src/codecs/slp/read-streaming.js";
+import type { StreamingH5File } from "../src/codecs/slp/h5-streaming.js";
+import { ready, File as H5File } from "h5wasm/node";
 
 const SK = new Skeleton({ nodes: ["A", "B"], edges: [] });
+
+/** Back a StreamingH5File with a real h5wasm/node file opened from `bytes`. */
+async function makeStreamingFake(
+  bytes: Uint8Array,
+): Promise<{ fake: StreamingH5File; close: () => void }> {
+  const module = await ready;
+  try {
+    module.FS.mkdir("/tmp");
+  } catch {
+    /* exists */
+  }
+  const p = `/tmp/idstream_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+  module.FS.writeFile(p, bytes);
+  const h5 = new H5File(p, "r");
+  const get = (dp: string) => h5.get(dp) as any;
+  const fake = {
+    keys: () => h5.keys() as string[],
+    getKeys: async (dp: string) => {
+      const g = get(dp);
+      return typeof g?.keys === "function" ? (g.keys() as string[]) : [];
+    },
+    getAttrs: async (dp: string) => {
+      const a = (get(dp)?.attrs as Record<string, any>) ?? {};
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(a)) out[k] = v?.value ?? v;
+      return out;
+    },
+    getDatasetMeta: async (dp: string) => {
+      const d = get(dp);
+      return {
+        shape: (d?.shape as number[]) ?? [],
+        dtype: (d?.dtype as string) ?? "",
+      };
+    },
+    getDatasetValue: async (dp: string) => {
+      const d = get(dp);
+      return {
+        value: d?.value,
+        shape: (d?.shape as number[]) ?? [],
+        dtype: (d?.dtype as string) ?? "",
+      };
+    },
+  } as unknown as StreamingH5File;
+  return {
+    fake,
+    close: () => {
+      h5.close();
+      try {
+        module.FS.unlink(p);
+      } catch {
+        /* ignore */
+      }
+    },
+  };
+}
 
 function labelsWithInstanceIdentities(): {
   labels: Labels;
@@ -133,6 +191,57 @@ describe("Per-detection identity links + embeddings (SLP 2.5)", () => {
     expect(all[2].identity?.name).toBe("A");
     expect(all[2].identityEmbedding?.vector).toHaveLength(3);
     expect(all[2].identityEmbedding?.vector[2]).toBeCloseTo(0.9, 5);
+  });
+
+  it("streaming reader attaches per-instance identity + embedding (JS + Python files)", async () => {
+    // JS-written file, streamed.
+    const { labels } = labelsWithInstanceIdentities();
+    const jsBytes = new Uint8Array(await saveSlpToBytes(labels));
+    let f = await makeStreamingFake(jsBytes);
+    try {
+      const loaded = await readFromStreamingFile(
+        f.fake,
+        "t.slp",
+        "t.slp",
+        false,
+      );
+      const all = loaded.labeledFrames.flatMap((fr) => fr.instances);
+      expect(all).toHaveLength(4);
+      expect(all[0].identity?.name).toBe("A");
+      expect(all[0].identityScore).toBe(0.9);
+      expect(all[0].identityEmbedding?.vector).toEqual([0.1, 0.2, 0.3]);
+      expect(all[1].identity?.name).toBe("B");
+    } finally {
+      f.close();
+    }
+
+    // Python-written file (compound links + float32 embeddings), streamed.
+    const { readFileSync } = await import("node:fs");
+    const { fileURLToPath } = await import("node:url");
+    const nodePath = await import("node:path");
+    const fixtureRoot = fileURLToPath(new URL("./data", import.meta.url));
+    const pyBytes = new Uint8Array(
+      readFileSync(
+        nodePath.join(fixtureRoot, "slp", "py_written_25_identity.slp"),
+      ),
+    );
+    f = await makeStreamingFake(pyBytes);
+    try {
+      const loaded = await readFromStreamingFile(
+        f.fake,
+        "t.slp",
+        "t.slp",
+        false,
+      );
+      expect(loaded.identities.map((i) => i.name)).toEqual(["A", "B"]);
+      const all = loaded.labeledFrames.flatMap((fr) => fr.instances);
+      expect(all).toHaveLength(3);
+      expect(all[0].identity?.name).toBe("A");
+      expect(all[0].identityScore).toBeCloseTo(0.9, 5);
+      expect(all[2].identity?.name).toBe("A");
+    } finally {
+      f.close();
+    }
   });
 
   it("does not bump format_id when identities exist but no detection is linked", async () => {
