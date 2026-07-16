@@ -1,5 +1,5 @@
-import { S as Skeleton, T as Track } from './instance-D8nEmSif.js';
-export { E as Edge, N as Node, a as Symmetry } from './instance-D8nEmSif.js';
+import { F as FrameGroup, S as Skeleton, T as Track } from './dictionary-DQYyBPak.js';
+export { E as Edge, N as Node, a as Symmetry } from './dictionary-DQYyBPak.js';
 
 /**
  * jsfive-based HDF5 file interface.
@@ -85,6 +85,15 @@ interface SessionMetadata {
     videosByCamera: Record<string, number>;
     /** Additional session metadata */
     metadata?: Record<string, unknown>;
+    /**
+     * Reconstructed frame groups with 3D data (SLP 2.8+), when the columnar
+     * `/session_data` group was supplied. Each `InstanceGroup` carries its
+     * `instance3d` (concrete 3D points), `score`, `identity`, `metadata`, and member
+     * index refs; the 2D `instanceByCamera` stays unresolved in the lite path (no
+     * frames are materialized). Absent for legacy ≤2.7 files or when `/session_data`
+     * was not read.
+     */
+    frameGroups?: FrameGroup[];
 }
 
 /**
@@ -143,34 +152,6 @@ interface SlpMetadata {
     /** Raw provenance data (SLEAP version, build info, etc.) */
     provenance?: Record<string, unknown>;
 }
-/**
- * Load SLP file metadata using jsfive (no WASM required).
- *
- * This is a lightweight alternative to `loadSlp()` for environments
- * that don't support WebAssembly compilation (e.g., Cloudflare Workers).
- *
- * Returns metadata only - does NOT include:
- * - Actual pose coordinates (requires compound dataset reading)
- * - Video frame data (requires VLEN sequence reading)
- * - Instance-frame relationships
- * - Instance scores
- *
- * @param source - ArrayBuffer or Uint8Array containing the SLP file
- * @param options - Optional configuration
- * @param options.filename - Filename hint for embedded video paths
- * @returns SlpMetadata object with skeletons, counts, video info
- * @throws Error if the file is not a valid SLP file
- *
- * @example
- * ```typescript
- * const buffer = await fetch('file.slp').then(r => r.arrayBuffer());
- * const metadata = await loadSlpMetadata(buffer);
- *
- * console.log(`${metadata.skeletons.length} skeleton(s)`);
- * console.log(`${metadata.counts.labeledFrames} labeled frames`);
- * console.log(`${metadata.counts.instances} instances`);
- * ```
- */
 declare function loadSlpMetadata(source: JsfiveSource, options?: {
     filename?: string;
 }): Promise<SlpMetadata>;

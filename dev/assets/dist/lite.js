@@ -10,7 +10,7 @@ import {
   parseSuggestions,
   parseTracks,
   parseVideosMetadata
-} from "./chunk-XLXN4VG4.js";
+} from "./chunk-BNWCKREL.js";
 
 // src/codecs/slp/jsfive.ts
 import * as hdf5 from "jsfive";
@@ -45,6 +45,10 @@ function isDataset(item) {
   if (!item) return false;
   return "value" in item || "shape" in item;
 }
+function isGroup(item) {
+  if (!item) return false;
+  return "keys" in item && !("value" in item);
+}
 function getAttrs(item) {
   if (!item) return {};
   return item.attrs ?? {};
@@ -63,6 +67,63 @@ function getValue(item) {
 }
 
 // src/lite.ts
+function readSessionDataJsfive(file) {
+  const grp = file.get("session_data");
+  if (!grp || !isGroup(grp)) return null;
+  const struct = (name) => {
+    const ds = file.get(`session_data/${name}`);
+    if (!ds || !isDataset(ds)) return null;
+    const flat = getValue(ds);
+    const shape = getShape(ds);
+    const fnRaw = getAttrs(ds)?.field_names;
+    let fields = [];
+    if (typeof fnRaw === "string") {
+      try {
+        fields = JSON.parse(fnRaw);
+      } catch {
+      }
+    } else if (Array.isArray(fnRaw)) {
+      fields = fnRaw.map(String);
+    }
+    if (!flat || shape.length < 2 || fields.length === 0) return null;
+    const [nrows, ncols] = shape;
+    const cols = {};
+    fields.forEach((f, j) => {
+      const col = new Array(nrows);
+      for (let i = 0; i < nrows; i++) col[i] = Number(flat[i * ncols + j]);
+      cols[f] = col;
+    });
+    return cols;
+  };
+  const frameGroups = struct("frame_groups");
+  const instanceGroups = struct("instance_groups");
+  const members = struct("instance_group_members");
+  if (!frameGroups || !instanceGroups || !members) return null;
+  const matrix = (name, ncolsDefault) => {
+    const ds = file.get(`session_data/${name}`);
+    if (!ds || !isDataset(ds)) return null;
+    const flat = getValue(ds);
+    if (!flat) return null;
+    const shape = getShape(ds);
+    return { flat, ncols: shape.length >= 2 ? shape[1] : ncolsDefault };
+  };
+  const meta = (name) => {
+    const ds = file.get(`session_data/${name}`);
+    if (!ds || !isDataset(ds)) return null;
+    const v = getValue(ds);
+    if (Array.isArray(v)) return v;
+    return v != null ? [v] : null;
+  };
+  return {
+    frameGroups,
+    instanceGroups,
+    members,
+    points3d: matrix("points_3d", 3),
+    predPoints3d: matrix("pred_points_3d", 4),
+    frameGroupMeta: meta("frame_group_meta"),
+    instanceGroupMeta: meta("instance_group_meta")
+  };
+}
 async function loadSlpMetadata(source, options) {
   const file = openJsfiveFile(source, options?.filename);
   try {
@@ -114,7 +175,11 @@ async function loadSlpMetadata(source, options) {
     const suggestions = Array.isArray(suggestionsValue) ? parseSuggestions(suggestionsValue) : [];
     const sessionsDataset = file.get("sessions_json");
     const sessionsValue = getValue(sessionsDataset);
-    const sessions = Array.isArray(sessionsValue) ? parseSessionsMetadata(sessionsValue) : [];
+    const sessions = Array.isArray(sessionsValue) ? parseSessionsMetadata(
+      sessionsValue,
+      readSessionDataJsfive(file),
+      skeletons
+    ) : [];
     const framesDs = file.get("frames");
     const instancesDs = file.get("instances");
     const pointsDs = file.get("points");
