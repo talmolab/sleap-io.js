@@ -2474,7 +2474,16 @@ declare class LazyDataStore {
         videos: Video[];
         formatId: number;
         negativeFrames?: Set<string>;
+        identities?: Identity[];
+        instanceIdentityLinks?: Map<number, [number, number | null]>;
+        instanceEmbeddings?: Map<number, Embedding>;
     });
+    /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
+    identities?: Identity[];
+    /** owner_id (global instance_id) → [identity_idx, score|null], OWNER_INSTANCE. @internal */
+    _instanceIdentityLinks?: Map<number, [number, number | null]>;
+    /** owner_id (global instance_id) → Embedding, OWNER_INSTANCE. @internal */
+    _instanceEmbeddings?: Map<number, Embedding>;
     /**
      * Create an independent copy of this store's raw column data.
      * Videos, skeletons, and tracks arrays are shared (not cloned) —

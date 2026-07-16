@@ -5389,7 +5389,16 @@ var LazyDataStore = class _LazyDataStore {
     this.videos = options.videos;
     this.formatId = options.formatId;
     this.negativeFrames = options.negativeFrames ?? /* @__PURE__ */ new Set();
+    this.identities = options.identities;
+    this._instanceIdentityLinks = options.instanceIdentityLinks;
+    this._instanceEmbeddings = options.instanceEmbeddings;
   }
+  /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
+  identities;
+  /** owner_id (global instance_id) → [identity_idx, score|null], OWNER_INSTANCE. @internal */
+  _instanceIdentityLinks;
+  /** owner_id (global instance_id) → Embedding, OWNER_INSTANCE. @internal */
+  _instanceEmbeddings;
   /**
    * Create an independent copy of this store's raw column data.
    * Videos, skeletons, and tracks arrays are shared (not cloned) —
@@ -5419,7 +5428,10 @@ var LazyDataStore = class _LazyDataStore {
       tracks: this.tracks,
       videos: this.videos,
       formatId: this.formatId,
-      negativeFrames: new Set(this.negativeFrames)
+      negativeFrames: new Set(this.negativeFrames),
+      identities: this.identities,
+      instanceIdentityLinks: this._instanceIdentityLinks,
+      instanceEmbeddings: this._instanceEmbeddings
     });
     newStore._centroidByFrame = copyAnnMap(this._centroidByFrame);
     newStore._bboxByFrame = copyAnnMap(this._bboxByFrame);
@@ -5520,6 +5532,13 @@ var LazyDataStore = class _LazyDataStore {
           });
         }
       }
+      const link = this._instanceIdentityLinks?.get(instIdx);
+      if (link && this.identities && link[0] >= 0 && link[0] < this.identities.length) {
+        instance.identity = this.identities[link[0]];
+        instance.identityScore = link[1];
+      }
+      const emb = this._instanceEmbeddings?.get(instIdx);
+      if (emb) instance.identityEmbedding = emb;
       instanceById.set(instIdx, instance);
       instances.push(instance);
     }
@@ -12037,8 +12056,29 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   });
   report(8);
   const identities = await readIdentitiesStreaming(file);
-  if (labeledFrames) {
-    await attachStreamingInstanceIdentity(file, labeledFrames, identities);
+  if (labeledFrames || lazyStore) {
+    const { links, embs } = await readStreamingInstanceIdentity(file);
+    if (links.size || embs.size) {
+      if (labeledFrames) {
+        const allInstances = labeledFrames.flatMap((f) => f.instances);
+        for (const [ownerId, [idx, score]] of links) {
+          const inst = allInstances[ownerId];
+          if (inst && idx >= 0 && idx < identities.length) {
+            inst.identity = identities[idx];
+            inst.identityScore = score;
+          }
+        }
+        for (const [ownerId, emb] of embs) {
+          const inst = allInstances[ownerId];
+          if (inst) inst.identityEmbedding = emb;
+        }
+      }
+      if (lazyStore) {
+        lazyStore.identities = identities;
+        lazyStore._instanceIdentityLinks = links;
+        lazyStore._instanceEmbeddings = embs;
+      }
+    }
   }
   report(9);
   const sessions = await readSessionsStreaming(
@@ -12455,9 +12495,10 @@ async function readIdentitiesStreaming(file) {
     return [];
   }
 }
-async function attachStreamingInstanceIdentity(file, labeledFrames, identities) {
+async function readStreamingInstanceIdentity(file) {
+  const links = /* @__PURE__ */ new Map();
+  const embs = /* @__PURE__ */ new Map();
   const rootKeys = file.keys();
-  const allInstances = labeledFrames.flatMap((f) => f.instances);
   try {
     if (rootKeys.includes("identity")) {
       const idChildren = await file.getKeys("identity");
@@ -12473,14 +12514,11 @@ async function attachStreamingInstanceIdentity(file, labeledFrames, identities) 
         const sc = cols.identity_score ?? [];
         for (let i = 0; i < ot.length; i += 1) {
           if (Number(ot[i]) !== 0) continue;
-          const ownerId = Number(oid[i]);
-          const identIdx = Number(idx[i]);
-          const inst = allInstances[ownerId];
-          if (inst && identIdx >= 0 && identIdx < identities.length) {
-            inst.identity = identities[identIdx];
-            const score = Number(sc[i]);
-            inst.identityScore = Number.isNaN(score) ? null : score;
-          }
+          const score = Number(sc[i]);
+          links.set(Number(oid[i]), [
+            Number(idx[i]),
+            Number.isNaN(score) ? null : score
+          ]);
         }
       }
     }
@@ -12503,17 +12541,16 @@ async function attachStreamingInstanceIdentity(file, labeledFrames, identities) 
           );
           for (let i = 0; i < rows; i += 1) {
             if (Number(ot[i]) !== 0) continue;
-            const inst = allInstances[Number(oid[i])];
-            if (!inst) continue;
             const vec = new Array(dim);
             for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
-            inst.identityEmbedding = new Embedding(vec);
+            embs.set(Number(oid[i]), new Embedding(vec));
           }
         }
       }
     }
   } catch {
   }
+  return { links, embs };
 }
 async function readSessionsStreaming(file, videos, skeletons, identities, captureRaw = false) {
   try {
@@ -17225,6 +17262,37 @@ async function readSlpLazy(source, options) {
     const maskTuples = readMasks(file, videos, tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
     const labelImageTuples = readLabelImages(file, videos, tracks);
+    const lazyLinks = readIdentityLinks(file, emscripten);
+    const lazyEmbs = readEmbeddings(file);
+    if (lazyLinks.size || lazyEmbs.size) {
+      store.identities = identities;
+      store._instanceIdentityLinks = lazyLinks.get(0);
+      store._instanceEmbeddings = lazyEmbs.get(0);
+      attachIdentityToOwners(
+        centroidTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(2),
+        lazyEmbs.get(2)
+      );
+      attachIdentityToOwners(
+        maskTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(3),
+        lazyEmbs.get(3)
+      );
+      attachIdentityToOwners(
+        bboxTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(4),
+        lazyEmbs.get(4)
+      );
+      attachIdentityToOwners(
+        roiTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(5),
+        lazyEmbs.get(5)
+      );
+    }
     const buildAnnByFrame = (tuples) => {
       const byFrame = /* @__PURE__ */ new Map();
       const undistributed = [];
