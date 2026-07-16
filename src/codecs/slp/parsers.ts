@@ -868,8 +868,10 @@ export function reconstructColumnarFrameGroups(
         if (!camera) continue;
         const lf = num(mem.lf, m);
         const inst = num(mem.inst, m);
-        (instanceRefsByCamera ??= new Map()).set(camera, [lf, inst]);
-        (labeledFrameRefsByCamera ??= new Map()).set(camera, lf);
+        if (!instanceRefsByCamera) instanceRefsByCamera = new Map();
+        instanceRefsByCamera.set(camera, [lf, inst]);
+        if (!labeledFrameRefsByCamera) labeledFrameRefsByCamera = new Map();
+        labeledFrameRefsByCamera.set(camera, lf);
       }
 
       // 3D points from the points_3d / pred_points_3d row range (NaN = missing).

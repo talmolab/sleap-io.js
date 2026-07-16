@@ -27,7 +27,7 @@ import type {
 } from "../../model/label-image.js";
 import { deflate } from "pako";
 import type { Identity } from "../../model/identity.js";
-import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
+import { PredictedInstance3D } from "../../model/instance3d.js";
 import type { LazyDataStore } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
 
@@ -2308,7 +2308,9 @@ function writeSessions(
   identities?: Identity[],
 ): void {
   const labeledFrameIndex = new Map<LabeledFrame, number>();
-  labeledFrames.forEach((lf, idx) => labeledFrameIndex.set(lf, idx));
+  labeledFrames.forEach((lf, idx) => {
+    labeledFrameIndex.set(lf, idx);
+  });
 
   // Columnar accumulators for /session_data (small: fixed-width ints/floats per frame
   // group / instance group / member, plus the 3-D point rows).
