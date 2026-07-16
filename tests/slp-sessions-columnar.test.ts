@@ -382,4 +382,56 @@ describe("SLP 2.8 columnar sessions", () => {
     ]);
     expect(ig.instanceByCamera.size).toBe(2);
   });
+
+  it("lite (jsfive) reader surfaces columnar 3D via SessionMetadata.frameGroups", async () => {
+    const { loadSlpMetadata } = await import("../src/lite.js");
+    const labels = make3dLabels({
+      predicted: true,
+      score: 0.81,
+      igMeta: { tag: "z" },
+      fgMeta: { fnote: 1 },
+    });
+    const bytes = new Uint8Array(await saveSlpToBytes(labels));
+
+    const meta = await loadSlpMetadata(bytes.buffer as ArrayBuffer);
+    expect(meta.sessions).toHaveLength(1);
+    const fgs = meta.sessions[0].frameGroups;
+    expect(fgs).toBeDefined();
+    expect(fgs!).toHaveLength(1);
+    expect(fgs![0].frameIdx).toBe(0);
+    expect(fgs![0].metadata).toEqual({ fnote: 1 });
+    const ig = fgs![0].instanceGroups[0];
+    expect(ig.instance3d).toBeInstanceOf(PredictedInstance3D);
+    expect(ig.instance3d!.points).toEqual([
+      [50, 100, 200],
+      [150, 300, 400],
+    ]);
+    expect(ig.instance3d!.score).toBe(0.81);
+    expect((ig.instance3d as PredictedInstance3D).pointScores).toEqual([
+      0.95, 0.88,
+    ]);
+    expect(ig.metadata).toEqual({ tag: "z" });
+  });
+
+  it("lite reader leaves frameGroups unset for a legacy (no /session_data) file", async () => {
+    const { loadSlpMetadata } = await import("../src/lite.js");
+    // A session with no frame groups writes no /session_data (and no fg range).
+    const video = new Video({ filename: "cam.mp4" });
+    const cam = new Camera({ name: "cam", rvec: [0, 0, 0], tvec: [0, 0, 0] });
+    const session = new RecordingSession({
+      cameraGroup: new CameraGroup({ cameras: [cam] }),
+    });
+    session.addVideo(video, cam);
+    const labels = new Labels({
+      labeledFrames: [],
+      videos: [video],
+      skeletons: [SKELETON],
+      sessions: [session],
+    });
+    const bytes = new Uint8Array(await saveSlpToBytes(labels));
+    const meta = await loadSlpMetadata(bytes.buffer as ArrayBuffer);
+    expect(meta.sessions).toHaveLength(1);
+    expect(meta.sessions[0].frameGroups).toBeUndefined();
+    expect(meta.sessions[0].cameras).toHaveLength(1);
+  });
 });

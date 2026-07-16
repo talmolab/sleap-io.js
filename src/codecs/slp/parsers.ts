@@ -614,12 +614,31 @@ export interface SessionMetadata {
   videosByCamera: Record<string, number>;
   /** Additional session metadata */
   metadata?: Record<string, unknown>;
+  /**
+   * Reconstructed frame groups with 3D data (SLP 2.8+), when the columnar
+   * `/session_data` group was supplied. Each `InstanceGroup` carries its
+   * `instance3d` (concrete 3D points), `score`, `identity`, `metadata`, and member
+   * index refs; the 2D `instanceByCamera` stays unresolved in the lite path (no
+   * frames are materialized). Absent for legacy ≤2.7 files or when `/session_data`
+   * was not read.
+   */
+  frameGroups?: FrameGroup[];
 }
 
 /**
  * Parse recording session metadata from sessions_json dataset values.
+ *
+ * When `sessionData` (the columnar `/session_data` group, SLP 2.8+) and, per
+ * session, an `fg_start`/`fg_end` range are present, each session's `frameGroups`
+ * are reconstructed with full 3D via {@link reconstructColumnarFrameGroups} — used
+ * by the lite (jsfive) reader to surface 3D without materializing frames. Legacy
+ * ≤2.7 files (no `fg_start`) leave `frameGroups` unset.
  */
-export function parseSessionsMetadata(values: unknown[]): SessionMetadata[] {
+export function parseSessionsMetadata(
+  values: unknown[],
+  sessionData?: SessionData | null,
+  skeletons: Skeleton[] = [],
+): SessionMetadata[] {
   const sessions: SessionMetadata[] = [];
 
   for (const entry of values) {
@@ -634,17 +653,29 @@ export function parseSessionsMetadata(values: unknown[]): SessionMetadata[] {
     }
     const calibration = (parsed.calibration ?? {}) as Record<string, unknown>;
     const cameras: CameraMetadata[] = [];
+    const cameraObjs: Camera[] = [];
 
     for (const [key, data] of Object.entries(calibration)) {
       if (key === "metadata") continue;
       const cameraData = data as Record<string, unknown>;
-      cameras.push({
-        name: (cameraData.name as string | undefined) ?? key,
-        rvec: (cameraData.rotation as number[] | undefined) ?? [0, 0, 0],
-        tvec: (cameraData.translation as number[] | undefined) ?? [0, 0, 0],
-        matrix: cameraData.matrix as number[][] | undefined,
-        distortions: cameraData.distortions as number[] | undefined,
-      });
+      const rvec = (cameraData.rotation as number[] | undefined) ?? [0, 0, 0];
+      const tvec = (cameraData.translation as number[] | undefined) ?? [
+        0, 0, 0,
+      ];
+      const name = (cameraData.name as string | undefined) ?? key;
+      const matrix = cameraData.matrix as number[][] | undefined;
+      const distortions = cameraData.distortions as number[] | undefined;
+      cameras.push({ name, rvec, tvec, matrix, distortions });
+      cameraObjs.push(
+        new Camera({
+          name,
+          rvec,
+          tvec,
+          matrix,
+          distortions,
+          size: cameraData.size as [number, number] | undefined,
+        }),
+      );
     }
 
     const videosByCamera: Record<string, number> = {};
@@ -656,10 +687,27 @@ export function parseSessionsMetadata(values: unknown[]): SessionMetadata[] {
       videosByCamera[cameraKey] = Number(videoIdx);
     }
 
+    // SLP 2.8 columnar path: reconstruct frame groups + 3D from /session_data.
+    let frameGroups: FrameGroup[] | undefined;
+    const fgStart = parsed.fg_start;
+    if (fgStart != null && sessionData) {
+      frameGroups = [
+        ...reconstructColumnarFrameGroups(
+          cameraObjs,
+          skeletons,
+          undefined,
+          sessionData,
+          Number(fgStart),
+          Number(parsed.fg_end),
+        ).values(),
+      ];
+    }
+
     sessions.push({
       cameras,
       videosByCamera,
       metadata: parsed.metadata as Record<string, unknown> | undefined,
+      ...(frameGroups ? { frameGroups } : {}),
     });
   }
 
