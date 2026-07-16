@@ -14,6 +14,8 @@ import type { BoundingBox } from "./bbox.js";
 import type { SegmentationMask } from "./mask.js";
 import type { LabelImage } from "./label-image.js";
 import type { ROI } from "./roi.js";
+import type { Identity } from "./identity.js";
+import type { Embedding } from "./embedding.js";
 
 /**
  * Raw data store holding HDF5 dataset arrays for lazy materialization.
@@ -62,6 +64,9 @@ export class LazyDataStore {
     videos: Video[];
     formatId: number;
     negativeFrames?: Set<string>;
+    identities?: Identity[];
+    instanceIdentityLinks?: Map<number, [number, number | null]>;
+    instanceEmbeddings?: Map<number, Embedding>;
   }) {
     this.framesData = options.framesData;
     this.instancesData = options.instancesData;
@@ -72,7 +77,17 @@ export class LazyDataStore {
     this.videos = options.videos;
     this.formatId = options.formatId;
     this.negativeFrames = options.negativeFrames ?? new Set();
+    this.identities = options.identities;
+    this._instanceIdentityLinks = options.instanceIdentityLinks;
+    this._instanceEmbeddings = options.instanceEmbeddings;
   }
+
+  /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
+  identities?: Identity[];
+  /** owner_id (global instance_id) → [identity_idx, score|null], OWNER_INSTANCE. @internal */
+  _instanceIdentityLinks?: Map<number, [number, number | null]>;
+  /** owner_id (global instance_id) → Embedding, OWNER_INSTANCE. @internal */
+  _instanceEmbeddings?: Map<number, Embedding>;
 
   /**
    * Create an independent copy of this store's raw column data.
@@ -106,6 +121,9 @@ export class LazyDataStore {
       videos: this.videos,
       formatId: this.formatId,
       negativeFrames: new Set(this.negativeFrames),
+      identities: this.identities,
+      instanceIdentityLinks: this._instanceIdentityLinks,
+      instanceEmbeddings: this._instanceEmbeddings,
     });
 
     // Copy per-frame annotation dicts
@@ -223,6 +241,20 @@ export class LazyDataStore {
           });
         }
       }
+
+      // Per-detection identity + embedding (SLP 2.5), by global instance_id.
+      const link = this._instanceIdentityLinks?.get(instIdx);
+      if (
+        link &&
+        this.identities &&
+        link[0] >= 0 &&
+        link[0] < this.identities.length
+      ) {
+        instance.identity = this.identities[link[0]];
+        instance.identityScore = link[1];
+      }
+      const emb = this._instanceEmbeddings?.get(instIdx);
+      if (emb) instance.identityEmbedding = emb;
 
       instanceById.set(instIdx, instance);
       instances.push(instance);

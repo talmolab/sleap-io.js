@@ -673,7 +673,7 @@ export function parseSessionsMetadata(
           tvec,
           matrix,
           distortions,
-          size: cameraData.size as [number, number] | undefined,
+          size: normalizeCameraSize(cameraData.size),
         }),
       );
     }
@@ -712,6 +712,20 @@ export function parseSessionsMetadata(
   }
 
   return sessions;
+}
+
+/**
+ * Normalize a camera `size` value read from calibration to a `[w, h]` tuple or
+ * `undefined`. Python writes `""` for a size-less camera and `[w, h]` otherwise
+ * (and older sleap-io.js omitted the key), so anything that is not a 2-element
+ * array becomes `undefined`.
+ */
+export function normalizeCameraSize(
+  raw: unknown,
+): [number, number] | undefined {
+  return Array.isArray(raw) && raw.length === 2
+    ? [Number(raw[0]), Number(raw[1])]
+    : undefined;
 }
 
 /**

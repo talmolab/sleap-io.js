@@ -22,6 +22,7 @@ export * from "./model/suggestions.js";
 export * from "./model/labels-set.js";
 export * from "./model/camera.js";
 export * from "./model/identity.js";
+export * from "./model/embedding.js";
 export * from "./model/instance3d.js";
 export * from "./model/lazy.js";
 export * from "./model/roi.js";

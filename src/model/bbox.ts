@@ -1,6 +1,8 @@
 import type { Track, Instance } from "./instance.js";
 import type { SegmentationMask } from "./mask.js";
 import { ROI } from "./roi.js";
+import type { Identity } from "./identity.js";
+import type { Embedding } from "./embedding.js";
 
 /** Options for constructing a BoundingBox. */
 export interface BoundingBoxOptions {
@@ -27,6 +29,10 @@ export class BoundingBox {
   track: Track | null;
   trackingScore: number | null;
   instance: Instance | null;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity?: Identity | null = null;
+  identityScore?: number | null = null;
+  identityEmbedding?: Embedding | null = null;
   category: string;
   name: string;
   source: string;

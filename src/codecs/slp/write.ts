@@ -208,6 +208,19 @@ function writeSlpToFile(
     allInstances,
     liCtx,
   );
+
+  // Per-detection re-ID identity (SLP 2.5): /identity/links + /embeddings. The flat
+  // per-modality lists above are in the SAME global order the modality datasets were
+  // written, so a detection's array index == its owner_id (matching Python).
+  const detections: DetectionCollections = {
+    instance: allInstances,
+    centroid: allCentroids,
+    mask: allMasks,
+    bbox: allBboxes,
+    roi: allRois,
+  };
+  writeIdentityLinks(file, labels.identities, detections);
+  writeEmbeddings(file, detections);
 }
 
 /**
@@ -1840,6 +1853,13 @@ function writeMetadata(file: any, labels: Labels): void {
   // does not, on its own, bump `format_id`. `format_id` is a namespace shared with
   // Python (2.5 identity + re-ID embeddings, 2.6 events, 2.7 categories).
   //
+  // v2.5: per-detection re-ID identity (/identity/links + /embeddings). Bumped only
+  // when a detection actually carries an identity link or embedding; the identity
+  // CATALOG alone (identities present but unlinked) does not trigger it.
+  if (hasPerDetectionIdentity(labels)) {
+    formatId = Math.max(formatId, 2.5);
+  }
+
   // v2.8: columnar RecordingSession frame-group data (the `/session_data` group).
   // Bumped ONLY when a session carries frame groups — session-free / single-view
   // files write no group and stay byte-identical below 2.8. Gated on the same
@@ -2113,6 +2133,7 @@ function writeSuggestions(
 
 function writeIdentities(file: any, identities: Identity[]): void {
   if (!identities.length) return;
+  // Legacy JS-native `identities_json` (typed metadata; kept for older JS readers).
   const payload = identities.map((identity) => {
     const d: Record<string, unknown> = { name: identity.name };
     if (identity.color != null) d.color = identity.color;
@@ -2124,6 +2145,182 @@ function writeIdentities(file: any, identities: Identity[]): void {
     return JSON.stringify(d);
   });
   file.create_dataset({ name: "identities_json", data: payload });
+
+  // Python-compatible /identity group (SLP 2.5): a native vlen `name` catalog plus
+  // an optional entity-attribute-value metadata table. Written ALONGSIDE
+  // identities_json (dual-write) so both Python and older JS readers interoperate.
+  // Python has no first-class `color`, so color is folded into metadata["color"]
+  // (docs/formats/slp.md). Values are stringified to match Python's string-only EAV.
+  file.create_group("identity");
+  file.create_dataset({
+    name: "identity/name",
+    data: identities.map((i) => i.name),
+  });
+  const metaOwner: number[] = [];
+  const metaKey: string[] = [];
+  const metaVal: string[] = [];
+  identities.forEach((identity, idx) => {
+    const meta: Record<string, unknown> = { ...identity.metadata };
+    if (identity.color != null && meta.color == null)
+      meta.color = identity.color;
+    for (const [k, v] of Object.entries(meta)) {
+      metaOwner.push(idx);
+      metaKey.push(String(k));
+      metaVal.push(String(v));
+    }
+  });
+  if (metaOwner.length) {
+    file.create_dataset({
+      name: "identity/meta_owner",
+      data: new Int32Array(metaOwner),
+      shape: [metaOwner.length],
+      dtype: "<i", // int32 (see the dtype-char note above)
+    });
+    file.create_dataset({ name: "identity/meta_key", data: metaKey });
+    file.create_dataset({ name: "identity/meta_val", data: metaVal });
+  }
+}
+
+// ---- Per-detection identity/embedding owner types (SLP 2.5) --------------------
+// Shared with Python (slp.py OWNER_*). Value 1 is unused; label images get none.
+const OWNER_INSTANCE = 0;
+const OWNER_CENTROID = 2;
+const OWNER_MASK = 3;
+const OWNER_BBOX = 4;
+const OWNER_ROI = 5;
+
+/** A detection that can carry a per-detection identity/embedding. */
+interface IdentityBearing {
+  identity?: Identity | null;
+  identityScore?: number | null;
+  identityEmbedding?: { vector: number[] } | null;
+}
+
+/** The five detection collections, each in the SAME global order its modality
+ * dataset was written (array index == owner_id). */
+interface DetectionCollections {
+  instance: IdentityBearing[];
+  centroid: IdentityBearing[];
+  mask: IdentityBearing[];
+  bbox: IdentityBearing[];
+  roi: IdentityBearing[];
+}
+
+/** Owner-type → ordered detection list (owner_id = index within each list). */
+function ownerCollections(
+  c: DetectionCollections,
+): Array<[number, IdentityBearing[]]> {
+  return [
+    [OWNER_INSTANCE, c.instance],
+    [OWNER_CENTROID, c.centroid],
+    [OWNER_MASK, c.mask],
+    [OWNER_BBOX, c.bbox],
+    [OWNER_ROI, c.roi],
+  ];
+}
+
+/**
+ * Write per-detection identity links (SLP 2.5) to `/identity/links`: one
+ * `(owner_type, owner_id, identity_idx, identity_score)` row per detection carrying
+ * an `Identity` registered in the catalog. `owner_id` is the detection's global
+ * per-modality index (matching how the modality datasets — and Python — are
+ * written). Emitted as a flat-2-D `<d` matrix + `field_names` (the h5wasm compound
+ * stand-in); the coordinated Python reader (sleap-io#547) converts it. No-op when
+ * there are no identities or no linked detections.
+ */
+function writeIdentityLinks(
+  file: any,
+  identities: Identity[],
+  c: DetectionCollections,
+): void {
+  if (!identities.length) return;
+  const idToIdx = new Map<Identity, number>(identities.map((id, i) => [id, i]));
+  const rows: number[][] = [];
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      if (det.identity == null) return;
+      const idx = idToIdx.get(det.identity);
+      if (idx == null) {
+        console.warn(
+          `Detection references an Identity ("${det.identity.name}") not found in Labels.identities — identity link dropped on save.`,
+        );
+        return;
+      }
+      rows.push([ownerType, ownerId, idx, det.identityScore ?? Number.NaN]);
+    });
+  }
+  if (!rows.length) return;
+  // The /identity group is created by writeIdentities (runs earlier when
+  // identities exist); create defensively in case it does not.
+  if (!file.get("identity")) file.create_group("identity");
+  createMatrixDataset(
+    file,
+    "identity/links",
+    rows,
+    ["owner_type", "owner_id", "identity_idx", "identity_score"],
+    "<d",
+  );
+}
+
+/**
+ * Write per-detection re-ID embeddings (SLP 2.5) to the `/embeddings` group:
+ * `vectors` `(N, D)` float matrix (chunked+gzip, no field_names) joined to
+ * detections by parallel `owner_type` / `owner_id` columns (same join as
+ * `/identity/links`). Written whenever any detection carries an
+ * `identityEmbedding` (lossless preserve). All vectors must share one dimension D.
+ * No-op when none present.
+ */
+function writeEmbeddings(file: any, c: DetectionCollections): void {
+  const vectors: number[][] = [];
+  const ownerTypes: number[] = [];
+  const ownerIds: number[] = [];
+  let dim = -1;
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      const emb = det.identityEmbedding;
+      if (emb == null) return;
+      if (dim === -1) dim = emb.vector.length;
+      if (emb.vector.length !== dim) {
+        throw new Error(
+          `All re-ID embeddings must share one dimension; got ${emb.vector.length} and ${dim}.`,
+        );
+      }
+      vectors.push(emb.vector);
+      ownerTypes.push(ownerType);
+      ownerIds.push(ownerId);
+    });
+  }
+  if (!vectors.length) return;
+  file.create_group("embeddings");
+  // Plain (N, D) float matrix (NO field_names — Python reads it as a matrix).
+  createGzipFloatMatrix(file, "embeddings/vectors", vectors, dim);
+  // Parallel 1-D join columns (float64; Python int-casts on read).
+  file.create_dataset({
+    name: "embeddings/owner_type",
+    data: new Float64Array(ownerTypes),
+    shape: [ownerTypes.length],
+    dtype: "<d",
+  });
+  file.create_dataset({
+    name: "embeddings/owner_id",
+    data: new Float64Array(ownerIds),
+    shape: [ownerIds.length],
+    dtype: "<d",
+  });
+}
+
+/** Whether any detection carries a per-detection identity or embedding (gates the
+ * format 2.5 bump). */
+function hasPerDetectionIdentity(labels: Labels): boolean {
+  const any = (list: IdentityBearing[]) =>
+    list.some((d) => d.identity != null || d.identityEmbedding != null);
+  return (
+    labels.labeledFrames.some((f) => any(f.instances as IdentityBearing[])) ||
+    any(labels.masks as IdentityBearing[]) ||
+    any(labels.centroids as IdentityBearing[]) ||
+    any(labels.bboxes as IdentityBearing[]) ||
+    any(labels.rois as IdentityBearing[])
+  );
 }
 
 // ---- SLP 2.8 columnar /session_data field names (snake_case, Python-compatible) --
@@ -2210,7 +2407,10 @@ function sessionCalibrationDict(
       matrix: camera.matrix,
       distortions: camera.distortions,
     };
-    if (camera.size) camData.size = camera.size;
+    // Always write `size`, using "" when unknown — matches Python `camera_to_dict`
+    // (`"" if camera.size is None else list(size)`). Python's `make_camera` does a
+    // bare `camera_dict.pop("size")`, so omitting the key KeyErrors on read.
+    camData.size = camera.size && camera.size.length === 2 ? camera.size : "";
     calibration[key] = camData;
   });
 

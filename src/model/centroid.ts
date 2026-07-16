@@ -5,6 +5,8 @@ import {
   _registerCentroidFactory,
 } from "./instance.js";
 import { Skeleton } from "./skeleton.js";
+import type { Identity } from "./identity.js";
+import type { Embedding } from "./embedding.js";
 
 /** Shared single-node skeleton for centroid-to-instance conversions. */
 let _centroidSkeleton: Skeleton | null = null;
@@ -55,6 +57,10 @@ export class Centroid {
   track: Track | null;
   trackingScore: number | null;
   instance: Instance | null;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity?: Identity | null = null;
+  identityScore?: number | null = null;
+  identityEmbedding?: Embedding | null = null;
   category: string;
   name: string;
   source: string;

@@ -21,6 +21,7 @@ import {
   parseMetadataJson,
   missingMetadataJsonError,
   parseJsonEntry,
+  decodeEntryText,
   sessionsReadError,
   reconstructColumnarFrameGroups,
   type SessionData,
@@ -30,6 +31,7 @@ import {
   parseVideosMetadata,
   parseSuggestions,
   resolveCameraKey,
+  normalizeCameraSize,
   reconstructInstance3D,
   resolveIdentity,
 } from "./parsers.js";
@@ -56,6 +58,7 @@ import {
   RecordingSession,
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
+import { Embedding } from "../../model/embedding.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
 import { resolveSourceFrameCount } from "./frame-count.js";
@@ -332,6 +335,34 @@ export async function readFromStreamingFile(
   // Read identities
   report(8);
   const identities = await readIdentitiesStreaming(file);
+
+  // Per-detection identity + embeddings (SLP 2.5), OWNER_INSTANCE. Applied directly
+  // to concrete instances (non-lazy) or handed to the lazy store for on-demand
+  // attach in materializeFrame.
+  if (labeledFrames || lazyStore) {
+    const { links, embs } = await readStreamingInstanceIdentity(file);
+    if (links.size || embs.size) {
+      if (labeledFrames) {
+        const allInstances = labeledFrames.flatMap((f) => f.instances);
+        for (const [ownerId, [idx, score]] of links) {
+          const inst = allInstances[ownerId];
+          if (inst && idx >= 0 && idx < identities.length) {
+            inst.identity = identities[idx];
+            inst.identityScore = score;
+          }
+        }
+        for (const [ownerId, emb] of embs) {
+          const inst = allInstances[ownerId];
+          if (inst) inst.identityEmbedding = emb;
+        }
+      }
+      if (lazyStore) {
+        lazyStore.identities = identities;
+        lazyStore._instanceIdentityLinks = links;
+        lazyStore._instanceEmbeddings = embs;
+      }
+    }
+  }
 
   // Read sessions — grouping captured as index refs (no frame materialization).
   report(9);
@@ -936,26 +967,130 @@ async function readIdentitiesStreaming(
 ): Promise<Identity[]> {
   try {
     const keys = file.keys();
-    if (!keys.includes("identities_json")) return [];
-
-    const data = await file.getDatasetValue("identities_json");
-    const values = normalizeDatasetArray(data.value);
-    const identities: Identity[] = [];
-    for (const entry of values) {
-      const parsed = parseJsonEntry(entry) as Record<string, unknown>;
-      const { name, color, ...rest } = parsed;
-      identities.push(
-        new Identity({
-          name: (name as string) ?? "",
-          color: color as string | undefined,
-          metadata: rest,
-        }),
-      );
+    if (keys.includes("identities_json")) {
+      const data = await file.getDatasetValue("identities_json");
+      const values = normalizeDatasetArray(data.value);
+      const identities: Identity[] = [];
+      for (const entry of values) {
+        const parsed = parseJsonEntry(entry) as Record<string, unknown>;
+        const { name, color, ...rest } = parsed;
+        identities.push(
+          new Identity({
+            name: (name as string) ?? "",
+            color: color as string | undefined,
+            metadata: rest,
+          }),
+        );
+      }
+      return identities;
     }
-    return identities;
+    // Python-style /identity group fallback (no identities_json).
+    if (keys.includes("identity")) {
+      const children = await file.getKeys("identity");
+      if (children.includes("name")) {
+        const names = normalizeDatasetArray(
+          (await file.getDatasetValue("identity/name")).value,
+        ).map((n) => decodeEntryText(n) ?? "");
+        const metadata: Record<string, unknown>[] = names.map(() => ({}));
+        if (children.includes("meta_owner")) {
+          const owners = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_owner")).value,
+          ).map(Number);
+          const mkeys = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_key")).value,
+          ).map((k) => decodeEntryText(k) ?? "");
+          const mvals = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_val")).value,
+          ).map((v) => decodeEntryText(v) ?? "");
+          owners.forEach((o, i) => {
+            if (metadata[o]) metadata[o][mkeys[i]] = mvals[i];
+          });
+        }
+        return names.map((name, i) => {
+          const m = metadata[i];
+          const color = typeof m.color === "string" ? m.color : undefined;
+          const { color: _color, ...rest } = m;
+          return new Identity({ name, color, metadata: rest });
+        });
+      }
+    }
+    return [];
   } catch {
     return [];
   }
+}
+
+/**
+ * Read the OWNER_INSTANCE per-detection identity links + embeddings (SLP 2.5) over
+ * the streaming API, keyed by global instance_id. Returns empty maps on pre-2.5
+ * files. Streaming builds only `Instance`s, so only OWNER_INSTANCE is read; the
+ * result is applied either to a concrete instance list (non-lazy) or handed to the
+ * `LazyDataStore` for on-demand attach (lazy).
+ */
+async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
+  links: Map<number, [number, number | null]>;
+  embs: Map<number, Embedding>;
+}> {
+  const links = new Map<number, [number, number | null]>();
+  const embs = new Map<number, Embedding>();
+  const rootKeys = file.keys();
+
+  try {
+    if (rootKeys.includes("identity")) {
+      const idChildren = await file.getKeys("identity");
+      if (idChildren.includes("links")) {
+        const cols = await readStructDatasetStreaming(
+          file,
+          "identity/links",
+          true,
+        );
+        const ot = cols.owner_type ?? [];
+        const oid = cols.owner_id ?? [];
+        const idx = cols.identity_idx ?? [];
+        const sc = cols.identity_score ?? [];
+        for (let i = 0; i < ot.length; i += 1) {
+          if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
+          const score = Number(sc[i]);
+          links.set(Number(oid[i]), [
+            Number(idx[i]),
+            Number.isNaN(score) ? null : score,
+          ]);
+        }
+      }
+    }
+  } catch {
+    /* identity links optional */
+  }
+
+  try {
+    if (rootKeys.includes("embeddings")) {
+      const embChildren = await file.getKeys("embeddings");
+      if (embChildren.includes("vectors")) {
+        const vd = await file.getDatasetValue("embeddings/vectors");
+        const flat = vd.value as ArrayLike<number>;
+        const rows = vd.shape?.[0] ?? 0;
+        const dim = vd.shape && vd.shape.length >= 2 ? vd.shape[1] : 0;
+        if (rows && dim) {
+          const ot = normalizeDatasetArray(
+            (await file.getDatasetValue("embeddings/owner_type")).value,
+          );
+          const oid = normalizeDatasetArray(
+            (await file.getDatasetValue("embeddings/owner_id")).value,
+          );
+          for (let i = 0; i < rows; i += 1) {
+            if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
+            const vec = new Array<number>(dim);
+            for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
+            embs.set(Number(oid[i]), new Embedding(vec));
+          }
+        }
+      }
+    }
+  } catch {
+    /* embeddings optional */
+  }
+
+  return { links, embs };
 }
 
 /**
@@ -1012,7 +1147,7 @@ export async function readSessionsStreaming(
           tvec: (cameraData.translation as number[] | undefined) ?? [0, 0, 0],
           matrix: cameraData.matrix as number[][] | undefined,
           distortions: cameraData.distortions as number[] | undefined,
-          size: cameraData.size as [number, number] | undefined,
+          size: normalizeCameraSize(cameraData.size),
         });
         cameraGroup.cameras.push(camera);
         cameraMap.set(String(key), camera);
