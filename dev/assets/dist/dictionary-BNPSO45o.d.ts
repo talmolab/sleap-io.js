@@ -191,6 +191,12 @@ declare class Instance {
     identityScore?: number | null;
     /** Per-detection re-ID appearance embedding (SLP 2.5+); persisted in `/embeddings`. */
     identityEmbedding?: Embedding | null;
+    /** Class/category membership (SLP 2.7+); persisted via the `/categories` catalog + links. */
+    category?: string | null;
+    /** Confidence of the {@link category} assignment (SLP 2.7+); null if unrecorded. */
+    categoryScore?: number | null;
+    /** Per-detection category appearance embedding (SLP 2.7+); persisted in `/embeddings`. */
+    categoryEmbedding?: Embedding | null;
     _xy: Float64Array;
     _visible: Uint8Array;
     _complete: Uint8Array;
@@ -926,6 +932,9 @@ declare class Centroid {
     identity?: Identity | null;
     identityScore?: number | null;
     identityEmbedding?: Embedding | null;
+    /** Category confidence + appearance embedding (SLP 2.7+). */
+    categoryScore?: number | null;
+    categoryEmbedding?: Embedding | null;
     category: string;
     name: string;
     source: string;
@@ -1028,6 +1037,9 @@ declare class ROI {
     identity?: Identity | null;
     identityScore?: number | null;
     identityEmbedding?: Embedding | null;
+    /** Category confidence + appearance embedding (SLP 2.7+). */
+    categoryScore?: number | null;
+    categoryEmbedding?: Embedding | null;
     /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx: number | null;
     constructor(options: ROIOptions);
@@ -1139,6 +1151,9 @@ declare class SegmentationMask {
     identity?: Identity | null;
     identityScore?: number | null;
     identityEmbedding?: Embedding | null;
+    /** Category confidence + appearance embedding (SLP 2.7+). */
+    categoryScore?: number | null;
+    categoryEmbedding?: Embedding | null;
     /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
     scale: [number, number];
     /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
@@ -1302,6 +1317,9 @@ declare class BoundingBox {
     identity?: Identity | null;
     identityScore?: number | null;
     identityEmbedding?: Embedding | null;
+    /** Category confidence + appearance embedding (SLP 2.7+). */
+    categoryScore?: number | null;
+    categoryEmbedding?: Embedding | null;
     category: string;
     name: string;
     source: string;
@@ -2477,6 +2495,9 @@ declare class LazyDataStore {
         identities?: Identity[];
         instanceIdentityLinks?: Map<number, [number, number | null]>;
         instanceEmbeddings?: Map<number, Embedding>;
+        categoryCatalog?: string[];
+        instanceCategoryLinks?: Map<number, [number, number | null]>;
+        instanceCategoryEmbeddings?: Map<number, Embedding>;
     });
     /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
     identities?: Identity[];
@@ -2484,6 +2505,12 @@ declare class LazyDataStore {
     _instanceIdentityLinks?: Map<number, [number, number | null]>;
     /** owner_id (global instance_id) → Embedding, OWNER_INSTANCE. @internal */
     _instanceEmbeddings?: Map<number, Embedding>;
+    /** Category catalog (strings) for resolving per-instance category links (SLP 2.7). @internal */
+    categoryCatalog?: string[];
+    /** owner_id (global instance_id) → [category_idx, score|null], OWNER_INSTANCE. @internal */
+    _instanceCategoryLinks?: Map<number, [number, number | null]>;
+    /** owner_id (global instance_id) → category Embedding, OWNER_INSTANCE. @internal */
+    _instanceCategoryEmbeddings?: Map<number, Embedding>;
     /**
      * Create an independent copy of this store's raw column data.
      * Videos, skeletons, and tracks arrays are shared (not cloned) —

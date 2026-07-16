@@ -1,5 +1,5 @@
-import { F as FrameGroup, S as Skeleton, T as Track } from './dictionary-CI-hjCzO.js';
-export { E as Edge, N as Node, a as Symmetry } from './dictionary-CI-hjCzO.js';
+import { F as FrameGroup, S as Skeleton, T as Track } from './dictionary-BNPSO45o.js';
+export { E as Edge, N as Node, a as Symmetry } from './dictionary-BNPSO45o.js';
 
 /**
  * jsfive-based HDF5 file interface.

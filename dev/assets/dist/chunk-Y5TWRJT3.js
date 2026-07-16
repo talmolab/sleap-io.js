@@ -36,7 +36,7 @@ import {
   resolveIdentity,
   resolveVideoFilename,
   sessionsReadError
-} from "./chunk-MZWHLB6H.js";
+} from "./chunk-H7G4PJNA.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -70,6 +70,9 @@ var Centroid = class _Centroid {
   identity = null;
   identityScore = null;
   identityEmbedding = null;
+  /** Category confidence + appearance embedding (SLP 2.7+). */
+  categoryScore = null;
+  categoryEmbedding = null;
   category;
   name;
   source;
@@ -261,6 +264,9 @@ var ROI = class _ROI {
   identity = null;
   identityScore = null;
   identityEmbedding = null;
+  /** Category confidence + appearance embedding (SLP 2.7+). */
+  categoryScore = null;
+  categoryEmbedding = null;
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx = null;
   constructor(options) {
@@ -823,6 +829,9 @@ var BoundingBox = class _BoundingBox {
   identity = null;
   identityScore = null;
   identityEmbedding = null;
+  /** Category confidence + appearance embedding (SLP 2.7+). */
+  categoryScore = null;
+  categoryEmbedding = null;
   category;
   name;
   source;
@@ -1178,6 +1187,9 @@ var SegmentationMask = class _SegmentationMask {
   identity = null;
   identityScore = null;
   identityEmbedding = null;
+  /** Category confidence + appearance embedding (SLP 2.7+). */
+  categoryScore = null;
+  categoryEmbedding = null;
   /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
   scale;
   /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
@@ -5393,6 +5405,9 @@ var LazyDataStore = class _LazyDataStore {
     this.identities = options.identities;
     this._instanceIdentityLinks = options.instanceIdentityLinks;
     this._instanceEmbeddings = options.instanceEmbeddings;
+    this.categoryCatalog = options.categoryCatalog;
+    this._instanceCategoryLinks = options.instanceCategoryLinks;
+    this._instanceCategoryEmbeddings = options.instanceCategoryEmbeddings;
   }
   /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
   identities;
@@ -5400,6 +5415,12 @@ var LazyDataStore = class _LazyDataStore {
   _instanceIdentityLinks;
   /** owner_id (global instance_id) → Embedding, OWNER_INSTANCE. @internal */
   _instanceEmbeddings;
+  /** Category catalog (strings) for resolving per-instance category links (SLP 2.7). @internal */
+  categoryCatalog;
+  /** owner_id (global instance_id) → [category_idx, score|null], OWNER_INSTANCE. @internal */
+  _instanceCategoryLinks;
+  /** owner_id (global instance_id) → category Embedding, OWNER_INSTANCE. @internal */
+  _instanceCategoryEmbeddings;
   /**
    * Create an independent copy of this store's raw column data.
    * Videos, skeletons, and tracks arrays are shared (not cloned) —
@@ -5432,7 +5453,10 @@ var LazyDataStore = class _LazyDataStore {
       negativeFrames: new Set(this.negativeFrames),
       identities: this.identities,
       instanceIdentityLinks: this._instanceIdentityLinks,
-      instanceEmbeddings: this._instanceEmbeddings
+      instanceEmbeddings: this._instanceEmbeddings,
+      categoryCatalog: this.categoryCatalog,
+      instanceCategoryLinks: this._instanceCategoryLinks,
+      instanceCategoryEmbeddings: this._instanceCategoryEmbeddings
     });
     newStore._centroidByFrame = copyAnnMap(this._centroidByFrame);
     newStore._bboxByFrame = copyAnnMap(this._bboxByFrame);
@@ -5540,6 +5564,13 @@ var LazyDataStore = class _LazyDataStore {
       }
       const emb = this._instanceEmbeddings?.get(instIdx);
       if (emb) instance.identityEmbedding = emb;
+      const catLink = this._instanceCategoryLinks?.get(instIdx);
+      if (catLink && this.categoryCatalog && catLink[0] >= 0 && catLink[0] < this.categoryCatalog.length) {
+        instance.category = this.categoryCatalog[catLink[0]];
+        instance.categoryScore = catLink[1];
+      }
+      const catEmb = this._instanceCategoryEmbeddings?.get(instIdx);
+      if (catEmb) instance.categoryEmbedding = catEmb;
       instanceById.set(instIdx, instance);
       instances.push(instance);
     }
@@ -12058,8 +12089,8 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   report(8);
   const identities = await readIdentitiesStreaming(file);
   if (labeledFrames || lazyStore) {
-    const { links, embs } = await readStreamingInstanceIdentity(file);
-    if (links.size || embs.size) {
+    const { links, embs, catLinks, catEmbs, categoryCatalog } = await readStreamingInstanceIdentity(file);
+    if (links.size || embs.size || catLinks.size || catEmbs.size) {
       if (labeledFrames) {
         const allInstances = labeledFrames.flatMap((f) => f.instances);
         for (const [ownerId, [idx, score]] of links) {
@@ -12073,11 +12104,25 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
           const inst = allInstances[ownerId];
           if (inst) inst.identityEmbedding = emb;
         }
+        for (const [ownerId, [idx, score]] of catLinks) {
+          const inst = allInstances[ownerId];
+          if (inst && idx >= 0 && idx < categoryCatalog.length) {
+            inst.category = categoryCatalog[idx];
+            inst.categoryScore = score;
+          }
+        }
+        for (const [ownerId, emb] of catEmbs) {
+          const inst = allInstances[ownerId];
+          if (inst) inst.categoryEmbedding = emb;
+        }
       }
       if (lazyStore) {
         lazyStore.identities = identities;
         lazyStore._instanceIdentityLinks = links;
         lazyStore._instanceEmbeddings = embs;
+        lazyStore.categoryCatalog = categoryCatalog;
+        lazyStore._instanceCategoryLinks = catLinks;
+        lazyStore._instanceCategoryEmbeddings = catEmbs;
       }
     }
   }
@@ -12497,61 +12542,87 @@ async function readIdentitiesStreaming(file) {
   }
 }
 async function readStreamingInstanceIdentity(file) {
-  const links = /* @__PURE__ */ new Map();
-  const embs = /* @__PURE__ */ new Map();
   const rootKeys = file.keys();
-  try {
-    if (rootKeys.includes("identity")) {
-      const idChildren = await file.getKeys("identity");
-      if (idChildren.includes("links")) {
-        const cols = await readStructDatasetStreaming(
-          file,
-          "identity/links",
-          true
-        );
-        const ot = cols.owner_type ?? [];
-        const oid = cols.owner_id ?? [];
-        const idx = cols.identity_idx ?? [];
-        const sc = cols.identity_score ?? [];
-        for (let i = 0; i < ot.length; i += 1) {
-          if (Number(ot[i]) !== 0) continue;
-          const score = Number(sc[i]);
-          links.set(Number(oid[i]), [
-            Number(idx[i]),
-            Number.isNaN(score) ? null : score
-          ]);
-        }
+  const readOwnerInstanceLinks = async (group, idxField, scoreField) => {
+    const out = /* @__PURE__ */ new Map();
+    try {
+      if (!rootKeys.includes(group)) return out;
+      if (!(await file.getKeys(group)).includes("links")) return out;
+      const cols = await readStructDatasetStreaming(
+        file,
+        `${group}/links`,
+        true
+      );
+      const ot = cols.owner_type ?? [];
+      const oid = cols.owner_id ?? [];
+      const idx = cols[idxField] ?? [];
+      const sc = cols[scoreField] ?? [];
+      for (let i = 0; i < ot.length; i += 1) {
+        if (Number(ot[i]) !== 0) continue;
+        const score = Number(sc[i]);
+        out.set(Number(oid[i]), [
+          Number(idx[i]),
+          Number.isNaN(score) ? null : score
+        ]);
       }
+    } catch {
+    }
+    return out;
+  };
+  const readOwnerInstanceEmbs = async (vecName, otName, oidName) => {
+    const out = /* @__PURE__ */ new Map();
+    try {
+      if (!rootKeys.includes("embeddings")) return out;
+      if (!(await file.getKeys("embeddings")).includes(vecName)) return out;
+      const vd = await file.getDatasetValue(`embeddings/${vecName}`);
+      const flat = vd.value;
+      const rows = vd.shape?.[0] ?? 0;
+      const dim = vd.shape && vd.shape.length >= 2 ? vd.shape[1] : 0;
+      if (!rows || !dim) return out;
+      const ot = normalizeDatasetArray(
+        (await file.getDatasetValue(`embeddings/${otName}`)).value
+      );
+      const oid = normalizeDatasetArray(
+        (await file.getDatasetValue(`embeddings/${oidName}`)).value
+      );
+      for (let i = 0; i < rows; i += 1) {
+        if (Number(ot[i]) !== 0) continue;
+        const vec = new Array(dim);
+        for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
+        out.set(Number(oid[i]), new Embedding(vec));
+      }
+    } catch {
+    }
+    return out;
+  };
+  let categoryCatalog = [];
+  try {
+    if (rootKeys.includes("categories") && (await file.getKeys("categories")).includes("name")) {
+      categoryCatalog = normalizeDatasetArray(
+        (await file.getDatasetValue("categories/name")).value
+      ).map((n) => decodeEntryText(n) ?? "");
     }
   } catch {
   }
-  try {
-    if (rootKeys.includes("embeddings")) {
-      const embChildren = await file.getKeys("embeddings");
-      if (embChildren.includes("vectors")) {
-        const vd = await file.getDatasetValue("embeddings/vectors");
-        const flat = vd.value;
-        const rows = vd.shape?.[0] ?? 0;
-        const dim = vd.shape && vd.shape.length >= 2 ? vd.shape[1] : 0;
-        if (rows && dim) {
-          const ot = normalizeDatasetArray(
-            (await file.getDatasetValue("embeddings/owner_type")).value
-          );
-          const oid = normalizeDatasetArray(
-            (await file.getDatasetValue("embeddings/owner_id")).value
-          );
-          for (let i = 0; i < rows; i += 1) {
-            if (Number(ot[i]) !== 0) continue;
-            const vec = new Array(dim);
-            for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
-            embs.set(Number(oid[i]), new Embedding(vec));
-          }
-        }
-      }
-    }
-  } catch {
-  }
-  return { links, embs };
+  return {
+    links: await readOwnerInstanceLinks(
+      "identity",
+      "identity_idx",
+      "identity_score"
+    ),
+    embs: await readOwnerInstanceEmbs("vectors", "owner_type", "owner_id"),
+    catLinks: await readOwnerInstanceLinks(
+      "categories",
+      "category_idx",
+      "category_score"
+    ),
+    catEmbs: await readOwnerInstanceEmbs(
+      "category_vectors",
+      "category_owner_type",
+      "category_owner_id"
+    ),
+    categoryCatalog
+  };
 }
 async function readSessionsStreaming(file, videos, skeletons, identities, captureRaw = false) {
   try {
@@ -13117,6 +13188,7 @@ function writeSlpToFile(file, labels, plan) {
     roi: allRois
   };
   writeIdentityLinks(file, labels.identities, detections);
+  writeCategoryLinks(file, detections);
   writeEmbeddings(file, detections);
 }
 var LazySourceFallback = class extends Error {
@@ -14245,6 +14317,9 @@ function writeMetadata(file, labels) {
   if (hasPerDetectionIdentity(labels)) {
     formatId = Math.max(formatId, 2.5);
   }
+  if (hasPerDetectionCategory(labels)) {
+    formatId = Math.max(formatId, 2.7);
+  }
   if (sessionsHaveFrameGroups(labels.sessions)) {
     formatId = Math.max(formatId, 2.8);
   }
@@ -14497,19 +14572,19 @@ function writeIdentityLinks(file, identities, c) {
     "<d"
   );
 }
-function writeEmbeddings(file, c) {
+function writeEmbeddingTriple(file, c, names, get) {
   const vectors = [];
   const ownerTypes = [];
   const ownerIds = [];
   let dim = -1;
   for (const [ownerType, list] of ownerCollections(c)) {
     list.forEach((det, ownerId) => {
-      const emb = det.identityEmbedding;
+      const emb = get(det);
       if (emb == null) return;
       if (dim === -1) dim = emb.vector.length;
       if (emb.vector.length !== dim) {
         throw new Error(
-          `All re-ID embeddings must share one dimension; got ${emb.vector.length} and ${dim}.`
+          `All ${names[0]} must share one dimension; got ${emb.vector.length} and ${dim}.`
         );
       }
       vectors.push(emb.vector);
@@ -14518,24 +14593,92 @@ function writeEmbeddings(file, c) {
     });
   }
   if (!vectors.length) return;
-  file.create_group("embeddings");
-  createGzipFloatMatrix(file, "embeddings/vectors", vectors, dim);
+  if (!file.get("embeddings")) file.create_group("embeddings");
+  createGzipFloatMatrix(file, `embeddings/${names[0]}`, vectors, dim);
   file.create_dataset({
-    name: "embeddings/owner_type",
+    name: `embeddings/${names[1]}`,
     data: new Float64Array(ownerTypes),
     shape: [ownerTypes.length],
     dtype: "<d"
   });
   file.create_dataset({
-    name: "embeddings/owner_id",
+    name: `embeddings/${names[2]}`,
     data: new Float64Array(ownerIds),
     shape: [ownerIds.length],
     dtype: "<d"
   });
 }
-function hasPerDetectionIdentity(labels) {
-  const any = (list) => list.some((d) => d.identity != null || d.identityEmbedding != null);
+function writeEmbeddings(file, c) {
+  writeEmbeddingTriple(
+    file,
+    c,
+    ["vectors", "owner_type", "owner_id"],
+    (d) => d.identityEmbedding
+  );
+  writeEmbeddingTriple(
+    file,
+    c,
+    ["category_vectors", "category_owner_type", "category_owner_id"],
+    (d) => d.categoryEmbedding
+  );
+}
+function collectCategoryCatalog(c) {
+  const seen = /* @__PURE__ */ new Set();
+  const catalog = [];
+  for (const [, list] of ownerCollections(c)) {
+    for (const det of list) {
+      const cat = det.category;
+      if (cat && !seen.has(cat)) {
+        seen.add(cat);
+        catalog.push(cat);
+      }
+    }
+  }
+  return catalog;
+}
+function writeCategoryLinks(file, c) {
+  const catalog = collectCategoryCatalog(c);
+  if (!catalog.length) return;
+  const catToIdx = new Map(catalog.map((n, i) => [n, i]));
+  const rows = [];
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      const cat = det.category;
+      if (!cat) return;
+      rows.push([
+        ownerType,
+        ownerId,
+        catToIdx.get(cat),
+        det.categoryScore ?? Number.NaN
+      ]);
+    });
+  }
+  if (!rows.length) return;
+  file.create_group("categories");
+  file.create_dataset({ name: "categories/name", data: catalog });
+  createMatrixDataset(
+    file,
+    "categories/links",
+    rows,
+    ["owner_type", "owner_id", "category_idx", "category_score"],
+    "<d"
+  );
+}
+function anyDetection(labels, pred) {
+  const any = (list) => list.some(pred);
   return labels.labeledFrames.some((f) => any(f.instances)) || any(labels.masks) || any(labels.centroids) || any(labels.bboxes) || any(labels.rois);
+}
+function hasPerDetectionIdentity(labels) {
+  return anyDetection(
+    labels,
+    (d) => d.identity != null || d.identityEmbedding != null
+  );
+}
+function hasPerDetectionCategory(labels) {
+  return anyDetection(
+    labels,
+    (d) => d.category != null && d.category !== "" || d.categoryEmbedding != null
+  );
 }
 var SESSION_FRAME_GROUP_FIELDS = ["frame_idx", "ig_start", "ig_end"];
 var SESSION_INSTANCE_GROUP_FIELDS = [
@@ -17053,40 +17196,32 @@ async function readSlp(source, options) {
       tracks,
       allInstances
     );
-    const idLinks = readIdentityLinks(file, emscripten);
-    const idEmbs = readEmbeddings(file);
-    if (idLinks.size || idEmbs.size) {
-      attachIdentityToOwners(
-        allInstances,
-        identities,
-        idLinks.get(0),
-        idEmbs.get(0)
-      );
-      attachIdentityToOwners(
-        centroidTuples.map((t) => t[0]),
-        identities,
-        idLinks.get(2),
-        idEmbs.get(2)
-      );
-      attachIdentityToOwners(
-        maskTuples.map((t) => t[0]),
-        identities,
-        idLinks.get(3),
-        idEmbs.get(3)
-      );
-      attachIdentityToOwners(
-        bboxTuples.map((t) => t[0]),
-        identities,
-        idLinks.get(4),
-        idEmbs.get(4)
-      );
-      attachIdentityToOwners(
-        roiTuples.map((t) => t[0]),
-        identities,
-        idLinks.get(5),
-        idEmbs.get(5)
-      );
-    }
+    const pdMaps = readPerDetectionMaps(file, emscripten);
+    attachOwnerType(pdMaps, 0, allInstances, identities);
+    attachOwnerType(
+      pdMaps,
+      2,
+      centroidTuples.map((t) => t[0]),
+      identities
+    );
+    attachOwnerType(
+      pdMaps,
+      3,
+      maskTuples.map((t) => t[0]),
+      identities
+    );
+    attachOwnerType(
+      pdMaps,
+      4,
+      bboxTuples.map((t) => t[0]),
+      identities
+    );
+    attachOwnerType(
+      pdMaps,
+      5,
+      roiTuples.map((t) => t[0]),
+      identities
+    );
     const frameMap = /* @__PURE__ */ new Map();
     for (const lf of labeledFrames) {
       const vidIdx = videos.indexOf(lf.video);
@@ -17268,37 +17403,37 @@ async function readSlpLazy(source, options) {
     const maskTuples = readMasks(file, videos, tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
     const labelImageTuples = readLabelImages(file, videos, tracks);
-    const lazyLinks = readIdentityLinks(file, emscripten);
-    const lazyEmbs = readEmbeddings(file);
-    if (lazyLinks.size || lazyEmbs.size) {
-      store.identities = identities;
-      store._instanceIdentityLinks = lazyLinks.get(0);
-      store._instanceEmbeddings = lazyEmbs.get(0);
-      attachIdentityToOwners(
-        centroidTuples.map((t) => t[0]),
-        identities,
-        lazyLinks.get(2),
-        lazyEmbs.get(2)
-      );
-      attachIdentityToOwners(
-        maskTuples.map((t) => t[0]),
-        identities,
-        lazyLinks.get(3),
-        lazyEmbs.get(3)
-      );
-      attachIdentityToOwners(
-        bboxTuples.map((t) => t[0]),
-        identities,
-        lazyLinks.get(4),
-        lazyEmbs.get(4)
-      );
-      attachIdentityToOwners(
-        roiTuples.map((t) => t[0]),
-        identities,
-        lazyLinks.get(5),
-        lazyEmbs.get(5)
-      );
-    }
+    const pdMaps = readPerDetectionMaps(file, emscripten);
+    store.identities = identities;
+    store._instanceIdentityLinks = pdMaps.idLinks.get(0);
+    store._instanceEmbeddings = pdMaps.idEmbs.get(0);
+    store.categoryCatalog = pdMaps.categoryCatalog;
+    store._instanceCategoryLinks = pdMaps.catLinks.get(0);
+    store._instanceCategoryEmbeddings = pdMaps.catEmbs.get(0);
+    attachOwnerType(
+      pdMaps,
+      2,
+      centroidTuples.map((t) => t[0]),
+      identities
+    );
+    attachOwnerType(
+      pdMaps,
+      3,
+      maskTuples.map((t) => t[0]),
+      identities
+    );
+    attachOwnerType(
+      pdMaps,
+      4,
+      bboxTuples.map((t) => t[0]),
+      identities
+    );
+    attachOwnerType(
+      pdMaps,
+      5,
+      roiTuples.map((t) => t[0]),
+      identities
+    );
     const buildAnnByFrame = (tuples) => {
       const byFrame = /* @__PURE__ */ new Map();
       const undistributed = [];
@@ -17730,15 +17865,15 @@ function readIdentityCatalog(file) {
   if (json) return readIdentities(json);
   return readIdentityGroup(file);
 }
-function readIdentityLinks(file, emscripten) {
+function readLinksTable(file, path, idxField, scoreField, emscripten) {
   const result = /* @__PURE__ */ new Map();
-  const ds = file.get("identity/links");
+  const ds = file.get(path);
   if (!ds) return result;
   const cols = normalizeStructDataset(ds, emscripten);
   const ot = cols.owner_type ?? [];
   const oid = cols.owner_id ?? [];
-  const idx = cols.identity_idx ?? [];
-  const sc = cols.identity_score ?? [];
+  const idx = cols[idxField] ?? [];
+  const sc = cols[scoreField] ?? [];
   for (let i = 0; i < ot.length; i += 1) {
     const ownerType = Number(ot[i]);
     const ownerId = Number(oid[i]);
@@ -17752,17 +17887,36 @@ function readIdentityLinks(file, emscripten) {
   }
   return result;
 }
-function readEmbeddings(file) {
+var readIdentityLinks = (file, emscripten) => readLinksTable(
+  file,
+  "identity/links",
+  "identity_idx",
+  "identity_score",
+  emscripten
+);
+var readCategoryLinks = (file, emscripten) => readLinksTable(
+  file,
+  "categories/links",
+  "category_idx",
+  "category_score",
+  emscripten
+);
+function readCategoryCatalog(file) {
+  const ds = file.get("categories/name");
+  if (!ds) return [];
+  return (ds.value ?? []).map(decodeStr);
+}
+function readEmbeddingTriple(file, vecName, otName, oidName) {
   const result = /* @__PURE__ */ new Map();
-  const vecDs = file.get("embeddings/vectors");
+  const vecDs = file.get(`embeddings/${vecName}`);
   if (!vecDs) return result;
   const flat = vecDs.value;
   const shape = vecDs.shape;
   const rows = shape?.[0] ?? 0;
   const dim = shape && shape.length >= 2 ? shape[1] : 0;
   if (!rows || !dim) return result;
-  const ot = file.get("embeddings/owner_type")?.value ?? [];
-  const oid = file.get("embeddings/owner_id")?.value ?? [];
+  const ot = file.get(`embeddings/${otName}`)?.value ?? [];
+  const oid = file.get(`embeddings/${oidName}`)?.value ?? [];
   for (let i = 0; i < rows; i += 1) {
     const ownerType = Number(ot[i]);
     const ownerId = Number(oid[i]);
@@ -17777,6 +17931,13 @@ function readEmbeddings(file) {
   }
   return result;
 }
+var readEmbeddings = (file) => readEmbeddingTriple(file, "vectors", "owner_type", "owner_id");
+var readCategoryEmbeddings = (file) => readEmbeddingTriple(
+  file,
+  "category_vectors",
+  "category_owner_type",
+  "category_owner_id"
+);
 function attachIdentityToOwners(owners, identities, links, embs) {
   if (links) {
     for (const [ownerId, [idx, score]] of links) {
@@ -17793,6 +17954,46 @@ function attachIdentityToOwners(owners, identities, links, embs) {
       if (det) det.identityEmbedding = emb;
     }
   }
+}
+function attachCategoryToOwners(owners, catalog, links, embs) {
+  if (links) {
+    for (const [ownerId, [idx, score]] of links) {
+      const det = owners[ownerId];
+      if (det && idx >= 0 && idx < catalog.length) {
+        det.category = catalog[idx];
+        det.categoryScore = score;
+      }
+    }
+  }
+  if (embs) {
+    for (const [ownerId, emb] of embs) {
+      const det = owners[ownerId];
+      if (det) det.categoryEmbedding = emb;
+    }
+  }
+}
+function readPerDetectionMaps(file, emscripten) {
+  return {
+    idLinks: readIdentityLinks(file, emscripten),
+    idEmbs: readEmbeddings(file),
+    catLinks: readCategoryLinks(file, emscripten),
+    catEmbs: readCategoryEmbeddings(file),
+    categoryCatalog: readCategoryCatalog(file)
+  };
+}
+function attachOwnerType(maps, ownerType, owners, identities) {
+  attachIdentityToOwners(
+    owners,
+    identities,
+    maps.idLinks.get(ownerType),
+    maps.idEmbs.get(ownerType)
+  );
+  attachCategoryToOwners(
+    owners,
+    maps.categoryCatalog,
+    maps.catLinks.get(ownerType),
+    maps.catEmbs.get(ownerType)
+  );
 }
 function readSessionDataEager(file, emscripten) {
   if (!file.get("session_data")) return null;
