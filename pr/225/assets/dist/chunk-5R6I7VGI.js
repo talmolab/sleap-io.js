@@ -21,6 +21,7 @@ import {
   decodeEntryText,
   injectSessionFrameResolver,
   missingMetadataJsonError,
+  normalizeCameraSize,
   parseJsonEntry,
   parseMetadataJson,
   parseSkeletons,
@@ -35,7 +36,7 @@ import {
   resolveIdentity,
   resolveVideoFilename,
   sessionsReadError
-} from "./chunk-WSFKCZJ4.js";
+} from "./chunk-MZWHLB6H.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -12583,7 +12584,7 @@ async function readSessionsStreaming(file, videos, skeletons, identities, captur
           tvec: cameraData.translation ?? [0, 0, 0],
           matrix: cameraData.matrix,
           distortions: cameraData.distortions,
-          size: cameraData.size
+          size: normalizeCameraSize(cameraData.size)
         });
         cameraGroup.cameras.push(camera);
         cameraMap.set(String(key), camera);
@@ -14574,7 +14575,7 @@ function sessionCalibrationDict(session, videos) {
       matrix: camera.matrix,
       distortions: camera.distortions
     };
-    if (camera.size) camData.size = camera.size;
+    camData.size = camera.size && camera.size.length === 2 ? camera.size : "";
     calibration[key] = camData;
   });
   const camcorder_to_video_idx_map = {};
@@ -17851,7 +17852,7 @@ function readSessions(dataset, videos, skeletons, identities, captureRaw = false
         tvec: cameraData.translation ?? [0, 0, 0],
         matrix: cameraData.matrix,
         distortions: cameraData.distortions,
-        size: cameraData.size
+        size: normalizeCameraSize(cameraData.size)
       });
       cameraGroup.cameras.push(camera);
       cameraMap.set(String(key), camera);

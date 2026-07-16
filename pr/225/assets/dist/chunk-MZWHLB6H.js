@@ -1635,7 +1635,7 @@ function parseSessionsMetadata(values, sessionData, skeletons = []) {
           tvec,
           matrix,
           distortions,
-          size: cameraData.size
+          size: normalizeCameraSize(cameraData.size)
         })
       );
     }
@@ -1666,6 +1666,9 @@ function parseSessionsMetadata(values, sessionData, skeletons = []) {
     });
   }
   return sessions;
+}
+function normalizeCameraSize(raw) {
+  return Array.isArray(raw) && raw.length === 2 ? [Number(raw[0]), Number(raw[1])] : void 0;
 }
 function resolveCameraKey(cameraKey, cameraMap, cameras) {
   let camera = cameraMap.get(cameraKey);
@@ -1850,6 +1853,7 @@ export {
   parseVideosMetadata,
   parseSuggestions,
   parseSessionsMetadata,
+  normalizeCameraSize,
   resolveCameraKey,
   reconstructInstance3D,
   reconstructColumnarFrameGroups,
