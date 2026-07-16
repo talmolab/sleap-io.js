@@ -1037,26 +1037,11 @@ export class SlpStreamWriter {
             type = 1;
             score = inst.score ?? 0;
             ptStart = predPts.length;
-            for (const p of inst.points) {
-              predPts.push([
-                p.xy[0],
-                p.xy[1],
-                p.visible ? 1 : 0,
-                p.complete ? 1 : 0,
-                (p as { score?: number }).score ?? 0,
-              ]);
-            }
+            emitInstancePoints(predPts, inst, true);
             ptEnd = predPts.length;
           } else {
             ptStart = userPts.length;
-            for (const p of inst.points) {
-              userPts.push([
-                p.xy[0],
-                p.xy[1],
-                p.visible ? 1 : 0,
-                p.complete ? 1 : 0,
-              ]);
-            }
+            emitInstancePoints(userPts, inst as Instance, false);
             ptEnd = userPts.length;
             if (inst.fromPredicted)
               links.push([localInstId, inst.fromPredicted]);
@@ -2496,6 +2481,51 @@ function writeSessions(
   }
 }
 
+// One-time warning keys for the point-count enforcement below (avoids log spam
+// across 100k+ frames when an upstream produced malformed instances).
+const _spanWarned = new Set<string>();
+
+/**
+ * Push exactly `nNodes` point rows for `instance` into `target`, enforcing the SLP
+ * invariant that an instance's point count equals its skeleton's node count. Python
+ * `read_instances` requires `point_id_end - point_id_start == n_nodes`; an instance
+ * that somehow holds a different number of points (e.g. built from a coordinate array
+ * whose length ≠ the skeleton — see `pointsFromArray`) would otherwise write an
+ * inconsistent span that breaks the Python reader (luc3d#161). Missing points are
+ * padded as invisible `NaN` rows and any extras are dropped, warning once.
+ *
+ * `predicted` selects a 5-col row (x, y, visible, complete, score) vs 4-col.
+ */
+function emitInstancePoints(
+  target: number[][],
+  instance: Instance | PredictedInstance,
+  predicted: boolean,
+): void {
+  const nNodes = instance.skeleton.nodeNames.length;
+  const pts = instance.points;
+  if (pts.length !== nNodes && !_spanWarned.has(instance.skeleton.name ?? "")) {
+    _spanWarned.add(instance.skeleton.name ?? "");
+    console.warn(
+      `Instance has ${pts.length} point(s) but its skeleton "${instance.skeleton.name ?? "?"}" has ${nNodes} node(s); ` +
+        "padding/truncating to the node count so the written SLP stays self-consistent (a mismatch would break the Python reader).",
+    );
+  }
+  for (let i = 0; i < nNodes; i++) {
+    const p = pts[i];
+    if (p) {
+      const row = [p.xy[0], p.xy[1], p.visible ? 1 : 0, p.complete ? 1 : 0];
+      if (predicted) row.push((p as { score?: number }).score ?? 0);
+      target.push(row);
+    } else {
+      target.push(
+        predicted
+          ? [Number.NaN, Number.NaN, 0, 0, 0]
+          : [Number.NaN, Number.NaN, 0, 0],
+      );
+    }
+  }
+}
+
 function writeLabeledFrames(file: any, labels: Labels): void {
   const frames: number[][] = [];
   const instances: number[][] = [];
@@ -2529,26 +2559,11 @@ function writeLabeledFrames(file: any, labels: Labels): void {
       if (instance instanceof PredictedInstance) {
         score = instance.score ?? 0;
         pointStart = predPoints.length;
-        for (const point of instance.points) {
-          predPoints.push([
-            point.xy[0],
-            point.xy[1],
-            point.visible ? 1 : 0,
-            point.complete ? 1 : 0,
-            (point as any).score ?? 0,
-          ]);
-        }
+        emitInstancePoints(predPoints, instance, true);
         pointEnd = predPoints.length;
       } else {
         pointStart = points.length;
-        for (const point of instance.points) {
-          points.push([
-            point.xy[0],
-            point.xy[1],
-            point.visible ? 1 : 0,
-            point.complete ? 1 : 0,
-          ]);
-        }
+        emitInstancePoints(points, instance as Instance, false);
         pointEnd = points.length;
         if (instance.fromPredicted) {
           predictedLinks.push([instanceId, instance.fromPredicted]);
