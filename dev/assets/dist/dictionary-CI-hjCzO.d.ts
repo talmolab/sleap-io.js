@@ -77,6 +77,33 @@ declare class Skeleton {
     private symmetryFrom;
 }
 
+declare class Identity {
+    name: string;
+    color?: string;
+    metadata: Record<string, unknown>;
+    constructor(options?: {
+        name?: string;
+        color?: string;
+        metadata?: Record<string, unknown>;
+    });
+}
+
+/**
+ * A per-detection re-ID appearance embedding (SLP 2.5+).
+ *
+ * Mirrors Python `sleap_io.model.embedding.Embedding`: a 1-D feature vector produced
+ * by a re-identification / appearance model, attached to a detection alongside its
+ * {@link Identity} assignment. Stored on disk in the `/embeddings` group as an
+ * `(N, D)` float matrix joined to detections by `(owner_type, owner_id)`.
+ */
+declare class Embedding {
+    /** The 1-D feature vector. */
+    vector: number[];
+    constructor(vector: ArrayLike<number>);
+    /** Dimensionality `D` of the vector. */
+    get dim(): number;
+}
+
 type CentroidFactory = (instance: Instance | PredictedInstance, options?: {
     method?: string;
     node?: string | number;
@@ -154,6 +181,16 @@ declare class Instance {
     track?: Track | null;
     fromPredicted?: PredictedInstance | null;
     trackingScore: number;
+    /**
+     * Persistent cross-video re-ID identity of this detection (SLP 2.5+), distinct
+     * from the ephemeral within-video {@link Track}. Persisted in the `/identity`
+     * catalog + `/identity/links`; attached after read, defaults to null.
+     */
+    identity?: Identity | null;
+    /** Confidence of the {@link identity} assignment (SLP 2.5+); null if unrecorded. */
+    identityScore?: number | null;
+    /** Per-detection re-ID appearance embedding (SLP 2.5+); persisted in `/embeddings`. */
+    identityEmbedding?: Embedding | null;
     _xy: Float64Array;
     _visible: Uint8Array;
     _complete: Uint8Array;
@@ -885,6 +922,10 @@ declare class Centroid {
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
+    /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+    identity?: Identity | null;
+    identityScore?: number | null;
+    identityEmbedding?: Embedding | null;
     category: string;
     name: string;
     source: string;
@@ -983,6 +1024,10 @@ declare class ROI {
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
+    /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+    identity?: Identity | null;
+    identityScore?: number | null;
+    identityEmbedding?: Embedding | null;
     /** @internal Deferred instance index for lazy resolution. */
     _instanceIdx: number | null;
     constructor(options: ROIOptions);
@@ -1090,6 +1135,10 @@ declare class SegmentationMask {
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
+    /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+    identity?: Identity | null;
+    identityScore?: number | null;
+    identityEmbedding?: Embedding | null;
     /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
     scale: [number, number];
     /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
@@ -1249,6 +1298,10 @@ declare class BoundingBox {
     track: Track | null;
     trackingScore: number | null;
     instance: Instance | null;
+    /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+    identity?: Identity | null;
+    identityScore?: number | null;
+    identityEmbedding?: Embedding | null;
     category: string;
     name: string;
     source: string;
@@ -2141,17 +2194,6 @@ declare class SuggestionFrame {
     });
 }
 
-declare class Identity {
-    name: string;
-    color?: string;
-    metadata: Record<string, unknown>;
-    constructor(options?: {
-        name?: string;
-        color?: string;
-        metadata?: Record<string, unknown>;
-    });
-}
-
 declare class Instance3D {
     points: number[][] | null;
     skeleton: Skeleton;
@@ -2432,7 +2474,16 @@ declare class LazyDataStore {
         videos: Video[];
         formatId: number;
         negativeFrames?: Set<string>;
+        identities?: Identity[];
+        instanceIdentityLinks?: Map<number, [number, number | null]>;
+        instanceEmbeddings?: Map<number, Embedding>;
     });
+    /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
+    identities?: Identity[];
+    /** owner_id (global instance_id) → [identity_idx, score|null], OWNER_INSTANCE. @internal */
+    _instanceIdentityLinks?: Map<number, [number, number | null]>;
+    /** owner_id (global instance_id) → Embedding, OWNER_INSTANCE. @internal */
+    _instanceEmbeddings?: Map<number, Embedding>;
     /**
      * Create an independent copy of this store's raw column data.
      * Videos, skeletons, and tracks arrays are shared (not cloned) —
@@ -3217,4 +3268,4 @@ declare function toDict(labels: Labels, options?: {
 }): LabelsDict;
 declare function fromDict(data: LabelsDict): Labels;
 
-export { _findAnnotationLinkMatches as $, AUTO_VIDEO_MATCHER as A, BoundingBox as B, Centroid as C, DUPLICATE_MATCHER as D, Edge as E, FrameGroup as F, PATH_VIDEO_MATCHER as G, BASENAME_VIDEO_MATCHER as H, Instance as I, IMAGE_DEDUP_VIDEO_MATCHER as J, SHAPE_VIDEO_MATCHER as K, Labels as L, MergeError as M, Node as N, OVERLAP_SKELETON_MATCHER as O, PredictedInstance as P, setFsResolver as Q, ROI as R, Skeleton as S, Track as T, UserROI as U, Video as V, type FsResolver as W, type MergeStrategy as X, _annotationCentroidXy as Y, _findAnnotationMatches as Z, _relinkFromPredicted as _, Symmetry as a, PredictedLabelImage as a$, _resolveMergedIsNegative as a0, _registerCentroidFactory as a1, type Point as a2, type PredictedPoint as a3, type PointsArray as a4, type PredictedPointsArray as a5, type PointColumns as a6, pointsEmpty as a7, predictedPointsEmpty as a8, clonePoint as a9, AnnotationType as aA, type Geometry as aB, type ROIOptions as aC, rasterizeGeometry as aD, encodeWkb as aE, decodeWkb as aF, PredictedROI as aG, encodeRle as aH, decodeRle as aI, resizeNearest as aJ, traceMaskContours as aK, groupRingsIntoPolygons as aL, type SegmentationMaskOptions as aM, type UserSegmentationMaskOptions as aN, UserSegmentationMask as aO, PredictedSegmentationMask as aP, type BoundingBoxOptions as aQ, UserBoundingBox as aR, PredictedBoundingBox as aS, getCentroidSkeleton as aT, CENTROID_SKELETON as aU, type CentroidOptions as aV, UserCentroid as aW, PredictedCentroid as aX, type LabelImageObjectInfo as aY, type LabelImageOptions as aZ, UserLabelImage as a_, pointsFromArray as aa, predictedPointsFromArray as ab, PointView as ac, pointsFromDict as ad, predictedPointsFromDict as ae, type NodeOrIndex as af, EXISTS_TTL_MS as ag, type CropOptions as ah, resolveCropRect as ai, type VideoBackendErrorKind as aj, type VideoBackendError as ak, SuggestionFrame as al, rodriguesTransformation as am, Camera as an, CameraGroup as ao, InstanceGroup as ap, RecordingSession as aq, injectSessionFrameResolver as ar, cloneRecordingSession as as, makeCameraFromDict as at, Identity as au, Instance3D as av, PredictedInstance3D as aw, LazyDataStore as ax, LazyFrameList as ay, _registerMaskFactory as az, LabeledFrame as b, normalizeLabelIds as b0, type VideoFrame as b1, type GetFrameOptions as b2, type RangeSource as b3, isRangeSource as b4, type VideoBackend as b5, type LabelsDict as b6, toDict as b7, fromDict as b8, cropPoints as b9, uncropPoints as ba, type CropRect as bb, type FlatPoints as bc, type PointPairs as bd, cropFrame as be, type FrameLike as bf, type RawFrame as bg, type Fill as bh, LabelsSet as c, LabelImage as d, SegmentationMask as e, SkeletonMatchMethod as f, InstanceMatchMethod as g, TrackMatchMethod as h, VideoMatchMethod as i, FrameStrategy as j, ErrorMode as k, SkeletonMatcher as l, InstanceMatcher as m, TrackMatcher as n, VideoMatcher as o, ConflictResolution as p, SkeletonMismatchError as q, MergeResult as r, MatchResult as s, MergeProgressBar as t, STRUCTURE_SKELETON_MATCHER as u, SUBSET_SKELETON_MATCHER as v, IOU_MATCHER as w, IDENTITY_INSTANCE_MATCHER as x, NAME_TRACK_MATCHER as y, IDENTITY_TRACK_MATCHER as z };
+export { _findAnnotationLinkMatches as $, AUTO_VIDEO_MATCHER as A, BoundingBox as B, Centroid as C, DUPLICATE_MATCHER as D, Edge as E, FrameGroup as F, PATH_VIDEO_MATCHER as G, BASENAME_VIDEO_MATCHER as H, Instance as I, IMAGE_DEDUP_VIDEO_MATCHER as J, SHAPE_VIDEO_MATCHER as K, Labels as L, MergeError as M, Node as N, OVERLAP_SKELETON_MATCHER as O, PredictedInstance as P, setFsResolver as Q, ROI as R, Skeleton as S, Track as T, UserROI as U, Video as V, type FsResolver as W, type MergeStrategy as X, _annotationCentroidXy as Y, _findAnnotationMatches as Z, _relinkFromPredicted as _, Symmetry as a, UserLabelImage as a$, _resolveMergedIsNegative as a0, _registerCentroidFactory as a1, type Point as a2, type PredictedPoint as a3, type PointsArray as a4, type PredictedPointsArray as a5, type PointColumns as a6, pointsEmpty as a7, predictedPointsEmpty as a8, clonePoint as a9, _registerMaskFactory as aA, AnnotationType as aB, type Geometry as aC, type ROIOptions as aD, rasterizeGeometry as aE, encodeWkb as aF, decodeWkb as aG, PredictedROI as aH, encodeRle as aI, decodeRle as aJ, resizeNearest as aK, traceMaskContours as aL, groupRingsIntoPolygons as aM, type SegmentationMaskOptions as aN, type UserSegmentationMaskOptions as aO, UserSegmentationMask as aP, PredictedSegmentationMask as aQ, type BoundingBoxOptions as aR, UserBoundingBox as aS, PredictedBoundingBox as aT, getCentroidSkeleton as aU, CENTROID_SKELETON as aV, type CentroidOptions as aW, UserCentroid as aX, PredictedCentroid as aY, type LabelImageObjectInfo as aZ, type LabelImageOptions as a_, pointsFromArray as aa, predictedPointsFromArray as ab, PointView as ac, pointsFromDict as ad, predictedPointsFromDict as ae, type NodeOrIndex as af, EXISTS_TTL_MS as ag, type CropOptions as ah, resolveCropRect as ai, type VideoBackendErrorKind as aj, type VideoBackendError as ak, SuggestionFrame as al, rodriguesTransformation as am, Camera as an, CameraGroup as ao, InstanceGroup as ap, RecordingSession as aq, injectSessionFrameResolver as ar, cloneRecordingSession as as, makeCameraFromDict as at, Identity as au, Embedding as av, Instance3D as aw, PredictedInstance3D as ax, LazyDataStore as ay, LazyFrameList as az, LabeledFrame as b, PredictedLabelImage as b0, normalizeLabelIds as b1, type VideoFrame as b2, type GetFrameOptions as b3, type RangeSource as b4, isRangeSource as b5, type VideoBackend as b6, type LabelsDict as b7, toDict as b8, fromDict as b9, cropPoints as ba, uncropPoints as bb, type CropRect as bc, type FlatPoints as bd, type PointPairs as be, cropFrame as bf, type FrameLike as bg, type RawFrame as bh, type Fill as bi, LabelsSet as c, LabelImage as d, SegmentationMask as e, SkeletonMatchMethod as f, InstanceMatchMethod as g, TrackMatchMethod as h, VideoMatchMethod as i, FrameStrategy as j, ErrorMode as k, SkeletonMatcher as l, InstanceMatcher as m, TrackMatcher as n, VideoMatcher as o, ConflictResolution as p, SkeletonMismatchError as q, MergeResult as r, MatchResult as s, MergeProgressBar as t, STRUCTURE_SKELETON_MATCHER as u, SUBSET_SKELETON_MATCHER as v, IOU_MATCHER as w, IDENTITY_INSTANCE_MATCHER as x, NAME_TRACK_MATCHER as y, IDENTITY_TRACK_MATCHER as z };

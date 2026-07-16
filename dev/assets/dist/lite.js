@@ -10,7 +10,7 @@ import {
   parseSuggestions,
   parseTracks,
   parseVideosMetadata
-} from "./chunk-BNWCKREL.js";
+} from "./chunk-MZWHLB6H.js";
 
 // src/codecs/slp/jsfive.ts
 import * as hdf5 from "jsfive";

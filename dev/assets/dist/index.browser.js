@@ -10,6 +10,7 @@ import {
   CropVideoBackend,
   DUPLICATE_MATCHER,
   EXISTS_TTL_MS,
+  Embedding,
   ErrorMode,
   FrameStrategy,
   IDENTITY_INSTANCE_MATCHER,
@@ -173,7 +174,7 @@ import {
   videoPathCandidates,
   writeGeoJSON,
   writeSkeletonJson
-} from "./chunk-VT7B7IFZ.js";
+} from "./chunk-5VZZBGOL.js";
 import {
   Camera,
   CameraGroup,
@@ -202,7 +203,7 @@ import {
   predictedPointsFromArray,
   predictedPointsFromDict,
   rodriguesTransformation
-} from "./chunk-BNWCKREL.js";
+} from "./chunk-MZWHLB6H.js";
 import {
   CLOUD_SCHEMES,
   DEFAULT_MAX_BYTES,
@@ -247,6 +248,7 @@ export {
   DUPLICATE_MATCHER,
   EXISTS_TTL_MS,
   Edge,
+  Embedding,
   ErrorMode,
   FrameGroup,
   FrameStrategy,

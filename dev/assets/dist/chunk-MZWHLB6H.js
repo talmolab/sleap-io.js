@@ -141,6 +141,16 @@ var Instance = class _Instance {
   track;
   fromPredicted;
   trackingScore;
+  /**
+   * Persistent cross-video re-ID identity of this detection (SLP 2.5+), distinct
+   * from the ephemeral within-video {@link Track}. Persisted in the `/identity`
+   * catalog + `/identity/links`; attached after read, defaults to null.
+   */
+  identity = null;
+  /** Confidence of the {@link identity} assignment (SLP 2.5+); null if unrecorded. */
+  identityScore = null;
+  /** Per-detection re-ID appearance embedding (SLP 2.5+); persisted in `/embeddings`. */
+  identityEmbedding = null;
   // Columnar keypoint storage (retained). Built once at construction from the
   // transient `Point[]`/dict, which is then discarded. `points` reads/writes go
   // through lightweight PointView flyweights over these. See {@link PointView}.
@@ -1625,7 +1635,7 @@ function parseSessionsMetadata(values, sessionData, skeletons = []) {
           tvec,
           matrix,
           distortions,
-          size: cameraData.size
+          size: normalizeCameraSize(cameraData.size)
         })
       );
     }
@@ -1656,6 +1666,9 @@ function parseSessionsMetadata(values, sessionData, skeletons = []) {
     });
   }
   return sessions;
+}
+function normalizeCameraSize(raw) {
+  return Array.isArray(raw) && raw.length === 2 ? [Number(raw[0]), Number(raw[1])] : void 0;
 }
 function resolveCameraKey(cameraKey, cameraMap, cameras) {
   let camera = cameraMap.get(cameraKey);
@@ -1832,6 +1845,7 @@ export {
   attrToNumber,
   datasetValueToString,
   parseJsonEntry,
+  decodeEntryText,
   sessionsReadError,
   parseSkeletons,
   parseTracks,
@@ -1839,6 +1853,7 @@ export {
   parseVideosMetadata,
   parseSuggestions,
   parseSessionsMetadata,
+  normalizeCameraSize,
   resolveCameraKey,
   reconstructInstance3D,
   reconstructColumnarFrameGroups,

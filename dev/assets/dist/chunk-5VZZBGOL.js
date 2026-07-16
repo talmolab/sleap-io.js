@@ -18,8 +18,10 @@ import {
   clonePoint,
   cloneRecordingSession,
   datasetValueToString,
+  decodeEntryText,
   injectSessionFrameResolver,
   missingMetadataJsonError,
+  normalizeCameraSize,
   parseJsonEntry,
   parseMetadataJson,
   parseSkeletons,
@@ -34,7 +36,7 @@ import {
   resolveIdentity,
   resolveVideoFilename,
   sessionsReadError
-} from "./chunk-BNWCKREL.js";
+} from "./chunk-MZWHLB6H.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -64,6 +66,10 @@ var Centroid = class _Centroid {
   track;
   trackingScore;
   instance;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity = null;
+  identityScore = null;
+  identityEmbedding = null;
   category;
   name;
   source;
@@ -251,6 +257,10 @@ var ROI = class _ROI {
   track;
   trackingScore = null;
   instance;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity = null;
+  identityScore = null;
+  identityEmbedding = null;
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx = null;
   constructor(options) {
@@ -809,6 +819,10 @@ var BoundingBox = class _BoundingBox {
   track;
   trackingScore;
   instance;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity = null;
+  identityScore = null;
+  identityEmbedding = null;
   category;
   name;
   source;
@@ -1160,6 +1174,10 @@ var SegmentationMask = class _SegmentationMask {
   track;
   trackingScore = null;
   instance;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity = null;
+  identityScore = null;
+  identityEmbedding = null;
   /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
   scale;
   /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */
@@ -5372,7 +5390,16 @@ var LazyDataStore = class _LazyDataStore {
     this.videos = options.videos;
     this.formatId = options.formatId;
     this.negativeFrames = options.negativeFrames ?? /* @__PURE__ */ new Set();
+    this.identities = options.identities;
+    this._instanceIdentityLinks = options.instanceIdentityLinks;
+    this._instanceEmbeddings = options.instanceEmbeddings;
   }
+  /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
+  identities;
+  /** owner_id (global instance_id) → [identity_idx, score|null], OWNER_INSTANCE. @internal */
+  _instanceIdentityLinks;
+  /** owner_id (global instance_id) → Embedding, OWNER_INSTANCE. @internal */
+  _instanceEmbeddings;
   /**
    * Create an independent copy of this store's raw column data.
    * Videos, skeletons, and tracks arrays are shared (not cloned) —
@@ -5402,7 +5429,10 @@ var LazyDataStore = class _LazyDataStore {
       tracks: this.tracks,
       videos: this.videos,
       formatId: this.formatId,
-      negativeFrames: new Set(this.negativeFrames)
+      negativeFrames: new Set(this.negativeFrames),
+      identities: this.identities,
+      instanceIdentityLinks: this._instanceIdentityLinks,
+      instanceEmbeddings: this._instanceEmbeddings
     });
     newStore._centroidByFrame = copyAnnMap(this._centroidByFrame);
     newStore._bboxByFrame = copyAnnMap(this._bboxByFrame);
@@ -5503,6 +5533,13 @@ var LazyDataStore = class _LazyDataStore {
           });
         }
       }
+      const link = this._instanceIdentityLinks?.get(instIdx);
+      if (link && this.identities && link[0] >= 0 && link[0] < this.identities.length) {
+        instance.identity = this.identities[link[0]];
+        instance.identityScore = link[1];
+      }
+      const emb = this._instanceEmbeddings?.get(instIdx);
+      if (emb) instance.identityEmbedding = emb;
       instanceById.set(instIdx, instance);
       instances.push(instance);
     }
@@ -8583,6 +8620,19 @@ var Identity = class {
     this.name = options?.name ?? "";
     this.color = options?.color;
     this.metadata = options?.metadata ?? {};
+  }
+};
+
+// src/model/embedding.ts
+var Embedding = class {
+  /** The 1-D feature vector. */
+  vector;
+  constructor(vector) {
+    this.vector = Array.from(vector, Number);
+  }
+  /** Dimensionality `D` of the vector. */
+  get dim() {
+    return this.vector.length;
   }
 };
 
@@ -12007,6 +12057,30 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   });
   report(8);
   const identities = await readIdentitiesStreaming(file);
+  if (labeledFrames || lazyStore) {
+    const { links, embs } = await readStreamingInstanceIdentity(file);
+    if (links.size || embs.size) {
+      if (labeledFrames) {
+        const allInstances = labeledFrames.flatMap((f) => f.instances);
+        for (const [ownerId, [idx, score]] of links) {
+          const inst = allInstances[ownerId];
+          if (inst && idx >= 0 && idx < identities.length) {
+            inst.identity = identities[idx];
+            inst.identityScore = score;
+          }
+        }
+        for (const [ownerId, emb] of embs) {
+          const inst = allInstances[ownerId];
+          if (inst) inst.identityEmbedding = emb;
+        }
+      }
+      if (lazyStore) {
+        lazyStore.identities = identities;
+        lazyStore._instanceIdentityLinks = links;
+        lazyStore._instanceEmbeddings = embs;
+      }
+    }
+  }
   report(9);
   const sessions = await readSessionsStreaming(
     file,
@@ -12371,25 +12445,113 @@ async function readSuggestionsStreaming(file, videos) {
 async function readIdentitiesStreaming(file) {
   try {
     const keys = file.keys();
-    if (!keys.includes("identities_json")) return [];
-    const data = await file.getDatasetValue("identities_json");
-    const values = normalizeDatasetArray(data.value);
-    const identities = [];
-    for (const entry of values) {
-      const parsed = parseJsonEntry(entry);
-      const { name, color, ...rest } = parsed;
-      identities.push(
-        new Identity({
-          name: name ?? "",
-          color,
-          metadata: rest
-        })
-      );
+    if (keys.includes("identities_json")) {
+      const data = await file.getDatasetValue("identities_json");
+      const values = normalizeDatasetArray(data.value);
+      const identities = [];
+      for (const entry of values) {
+        const parsed = parseJsonEntry(entry);
+        const { name, color, ...rest } = parsed;
+        identities.push(
+          new Identity({
+            name: name ?? "",
+            color,
+            metadata: rest
+          })
+        );
+      }
+      return identities;
     }
-    return identities;
+    if (keys.includes("identity")) {
+      const children = await file.getKeys("identity");
+      if (children.includes("name")) {
+        const names = normalizeDatasetArray(
+          (await file.getDatasetValue("identity/name")).value
+        ).map((n) => decodeEntryText(n) ?? "");
+        const metadata = names.map(() => ({}));
+        if (children.includes("meta_owner")) {
+          const owners = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_owner")).value
+          ).map(Number);
+          const mkeys = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_key")).value
+          ).map((k) => decodeEntryText(k) ?? "");
+          const mvals = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_val")).value
+          ).map((v) => decodeEntryText(v) ?? "");
+          owners.forEach((o, i) => {
+            if (metadata[o]) metadata[o][mkeys[i]] = mvals[i];
+          });
+        }
+        return names.map((name, i) => {
+          const m = metadata[i];
+          const color = typeof m.color === "string" ? m.color : void 0;
+          const { color: _color, ...rest } = m;
+          return new Identity({ name, color, metadata: rest });
+        });
+      }
+    }
+    return [];
   } catch {
     return [];
   }
+}
+async function readStreamingInstanceIdentity(file) {
+  const links = /* @__PURE__ */ new Map();
+  const embs = /* @__PURE__ */ new Map();
+  const rootKeys = file.keys();
+  try {
+    if (rootKeys.includes("identity")) {
+      const idChildren = await file.getKeys("identity");
+      if (idChildren.includes("links")) {
+        const cols = await readStructDatasetStreaming(
+          file,
+          "identity/links",
+          true
+        );
+        const ot = cols.owner_type ?? [];
+        const oid = cols.owner_id ?? [];
+        const idx = cols.identity_idx ?? [];
+        const sc = cols.identity_score ?? [];
+        for (let i = 0; i < ot.length; i += 1) {
+          if (Number(ot[i]) !== 0) continue;
+          const score = Number(sc[i]);
+          links.set(Number(oid[i]), [
+            Number(idx[i]),
+            Number.isNaN(score) ? null : score
+          ]);
+        }
+      }
+    }
+  } catch {
+  }
+  try {
+    if (rootKeys.includes("embeddings")) {
+      const embChildren = await file.getKeys("embeddings");
+      if (embChildren.includes("vectors")) {
+        const vd = await file.getDatasetValue("embeddings/vectors");
+        const flat = vd.value;
+        const rows = vd.shape?.[0] ?? 0;
+        const dim = vd.shape && vd.shape.length >= 2 ? vd.shape[1] : 0;
+        if (rows && dim) {
+          const ot = normalizeDatasetArray(
+            (await file.getDatasetValue("embeddings/owner_type")).value
+          );
+          const oid = normalizeDatasetArray(
+            (await file.getDatasetValue("embeddings/owner_id")).value
+          );
+          for (let i = 0; i < rows; i += 1) {
+            if (Number(ot[i]) !== 0) continue;
+            const vec = new Array(dim);
+            for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
+            embs.set(Number(oid[i]), new Embedding(vec));
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  return { links, embs };
 }
 async function readSessionsStreaming(file, videos, skeletons, identities, captureRaw = false) {
   try {
@@ -12422,7 +12584,7 @@ async function readSessionsStreaming(file, videos, skeletons, identities, captur
           tvec: cameraData.translation ?? [0, 0, 0],
           matrix: cameraData.matrix,
           distortions: cameraData.distortions,
-          size: cameraData.size
+          size: normalizeCameraSize(cameraData.size)
         });
         cameraGroup.cameras.push(camera);
         cameraMap.set(String(key), camera);
@@ -12947,6 +13109,15 @@ function writeSlpToFile(file, labels, plan) {
     allInstances,
     liCtx
   );
+  const detections = {
+    instance: allInstances,
+    centroid: allCentroids,
+    mask: allMasks,
+    bbox: allBboxes,
+    roi: allRois
+  };
+  writeIdentityLinks(file, labels.identities, detections);
+  writeEmbeddings(file, detections);
 }
 var LazySourceFallback = class extends Error {
   constructor() {
@@ -14071,6 +14242,9 @@ function writeMetadata(file, labels) {
   )) {
     formatId = Math.max(formatId, 2.4);
   }
+  if (hasPerDetectionIdentity(labels)) {
+    formatId = Math.max(formatId, 2.5);
+  }
   if (sessionsHaveFrameGroups(labels.sessions)) {
     formatId = Math.max(formatId, 2.8);
   }
@@ -14252,6 +14426,116 @@ function writeIdentities(file, identities) {
     return JSON.stringify(d);
   });
   file.create_dataset({ name: "identities_json", data: payload });
+  file.create_group("identity");
+  file.create_dataset({
+    name: "identity/name",
+    data: identities.map((i) => i.name)
+  });
+  const metaOwner = [];
+  const metaKey = [];
+  const metaVal = [];
+  identities.forEach((identity, idx) => {
+    const meta = { ...identity.metadata };
+    if (identity.color != null && meta.color == null)
+      meta.color = identity.color;
+    for (const [k, v] of Object.entries(meta)) {
+      metaOwner.push(idx);
+      metaKey.push(String(k));
+      metaVal.push(String(v));
+    }
+  });
+  if (metaOwner.length) {
+    file.create_dataset({
+      name: "identity/meta_owner",
+      data: new Int32Array(metaOwner),
+      shape: [metaOwner.length],
+      dtype: "<i"
+      // int32 (see the dtype-char note above)
+    });
+    file.create_dataset({ name: "identity/meta_key", data: metaKey });
+    file.create_dataset({ name: "identity/meta_val", data: metaVal });
+  }
+}
+var OWNER_INSTANCE = 0;
+var OWNER_CENTROID = 2;
+var OWNER_MASK = 3;
+var OWNER_BBOX = 4;
+var OWNER_ROI = 5;
+function ownerCollections(c) {
+  return [
+    [OWNER_INSTANCE, c.instance],
+    [OWNER_CENTROID, c.centroid],
+    [OWNER_MASK, c.mask],
+    [OWNER_BBOX, c.bbox],
+    [OWNER_ROI, c.roi]
+  ];
+}
+function writeIdentityLinks(file, identities, c) {
+  if (!identities.length) return;
+  const idToIdx = new Map(identities.map((id, i) => [id, i]));
+  const rows = [];
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      if (det.identity == null) return;
+      const idx = idToIdx.get(det.identity);
+      if (idx == null) {
+        console.warn(
+          `Detection references an Identity ("${det.identity.name}") not found in Labels.identities \u2014 identity link dropped on save.`
+        );
+        return;
+      }
+      rows.push([ownerType, ownerId, idx, det.identityScore ?? Number.NaN]);
+    });
+  }
+  if (!rows.length) return;
+  if (!file.get("identity")) file.create_group("identity");
+  createMatrixDataset(
+    file,
+    "identity/links",
+    rows,
+    ["owner_type", "owner_id", "identity_idx", "identity_score"],
+    "<d"
+  );
+}
+function writeEmbeddings(file, c) {
+  const vectors = [];
+  const ownerTypes = [];
+  const ownerIds = [];
+  let dim = -1;
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      const emb = det.identityEmbedding;
+      if (emb == null) return;
+      if (dim === -1) dim = emb.vector.length;
+      if (emb.vector.length !== dim) {
+        throw new Error(
+          `All re-ID embeddings must share one dimension; got ${emb.vector.length} and ${dim}.`
+        );
+      }
+      vectors.push(emb.vector);
+      ownerTypes.push(ownerType);
+      ownerIds.push(ownerId);
+    });
+  }
+  if (!vectors.length) return;
+  file.create_group("embeddings");
+  createGzipFloatMatrix(file, "embeddings/vectors", vectors, dim);
+  file.create_dataset({
+    name: "embeddings/owner_type",
+    data: new Float64Array(ownerTypes),
+    shape: [ownerTypes.length],
+    dtype: "<d"
+  });
+  file.create_dataset({
+    name: "embeddings/owner_id",
+    data: new Float64Array(ownerIds),
+    shape: [ownerIds.length],
+    dtype: "<d"
+  });
+}
+function hasPerDetectionIdentity(labels) {
+  const any = (list) => list.some((d) => d.identity != null || d.identityEmbedding != null);
+  return labels.labeledFrames.some((f) => any(f.instances)) || any(labels.masks) || any(labels.centroids) || any(labels.bboxes) || any(labels.rois);
 }
 var SESSION_FRAME_GROUP_FIELDS = ["frame_idx", "ig_start", "ig_end"];
 var SESSION_INSTANCE_GROUP_FIELDS = [
@@ -14296,7 +14580,7 @@ function sessionCalibrationDict(session, videos) {
       matrix: camera.matrix,
       distortions: camera.distortions
     };
-    if (camera.size) camData.size = camera.size;
+    camData.size = camera.size && camera.size.length === 2 ? camera.size : "";
     calibration[key] = camData;
   });
   const camcorder_to_video_idx_map = {};
@@ -16743,7 +17027,7 @@ async function readSlp(source, options) {
       }
     }
     report(5);
-    const identities = readIdentities(file.get("identities_json"));
+    const identities = readIdentityCatalog(file);
     report(6);
     const sessions = readSessions(
       file.get("sessions_json"),
@@ -16769,6 +17053,40 @@ async function readSlp(source, options) {
       tracks,
       allInstances
     );
+    const idLinks = readIdentityLinks(file, emscripten);
+    const idEmbs = readEmbeddings(file);
+    if (idLinks.size || idEmbs.size) {
+      attachIdentityToOwners(
+        allInstances,
+        identities,
+        idLinks.get(0),
+        idEmbs.get(0)
+      );
+      attachIdentityToOwners(
+        centroidTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(2),
+        idEmbs.get(2)
+      );
+      attachIdentityToOwners(
+        maskTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(3),
+        idEmbs.get(3)
+      );
+      attachIdentityToOwners(
+        bboxTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(4),
+        idEmbs.get(4)
+      );
+      attachIdentityToOwners(
+        roiTuples.map((t) => t[0]),
+        identities,
+        idLinks.get(5),
+        idEmbs.get(5)
+      );
+    }
     const frameMap = /* @__PURE__ */ new Map();
     for (const lf of labeledFrames) {
       const vidIdx = videos.indexOf(lf.video);
@@ -16931,7 +17249,7 @@ async function readSlpLazy(source, options) {
     });
     const lazyFrames = new LazyFrameList(store);
     report(5);
-    const identities = readIdentities(file.get("identities_json"));
+    const identities = readIdentityCatalog(file);
     report(6);
     const sessions = readSessions(
       file.get("sessions_json"),
@@ -16950,6 +17268,37 @@ async function readSlpLazy(source, options) {
     const maskTuples = readMasks(file, videos, tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
     const labelImageTuples = readLabelImages(file, videos, tracks);
+    const lazyLinks = readIdentityLinks(file, emscripten);
+    const lazyEmbs = readEmbeddings(file);
+    if (lazyLinks.size || lazyEmbs.size) {
+      store.identities = identities;
+      store._instanceIdentityLinks = lazyLinks.get(0);
+      store._instanceEmbeddings = lazyEmbs.get(0);
+      attachIdentityToOwners(
+        centroidTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(2),
+        lazyEmbs.get(2)
+      );
+      attachIdentityToOwners(
+        maskTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(3),
+        lazyEmbs.get(3)
+      );
+      attachIdentityToOwners(
+        bboxTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(4),
+        lazyEmbs.get(4)
+      );
+      attachIdentityToOwners(
+        roiTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(5),
+        lazyEmbs.get(5)
+      );
+    }
     const buildAnnByFrame = (tuples) => {
       const byFrame = /* @__PURE__ */ new Map();
       const undistributed = [];
@@ -17351,6 +17700,100 @@ function readIdentities(dataset) {
   }
   return identities;
 }
+function decodeStr(v) {
+  if (typeof v === "string") return v;
+  if (v instanceof Uint8Array) return textDecoder2.decode(v);
+  return String(v ?? "");
+}
+function readIdentityGroup(file) {
+  if (!file.get("identity") || !file.get("identity/name")) return [];
+  const names = (file.get("identity/name").value ?? []).map(decodeStr);
+  const metadata = names.map(() => ({}));
+  const ownerDs = file.get("identity/meta_owner");
+  if (ownerDs) {
+    const owners = Array.from(ownerDs.value ?? []).map(Number);
+    const keys = (file.get("identity/meta_key")?.value ?? []).map(decodeStr);
+    const vals = (file.get("identity/meta_val")?.value ?? []).map(decodeStr);
+    owners.forEach((o, i) => {
+      if (metadata[o]) metadata[o][keys[i]] = vals[i];
+    });
+  }
+  return names.map((name, i) => {
+    const meta = metadata[i];
+    const color = typeof meta.color === "string" ? meta.color : void 0;
+    const { color: _color, ...rest } = meta;
+    return new Identity({ name, color, metadata: rest });
+  });
+}
+function readIdentityCatalog(file) {
+  const json = file.get("identities_json");
+  if (json) return readIdentities(json);
+  return readIdentityGroup(file);
+}
+function readIdentityLinks(file, emscripten) {
+  const result = /* @__PURE__ */ new Map();
+  const ds = file.get("identity/links");
+  if (!ds) return result;
+  const cols = normalizeStructDataset(ds, emscripten);
+  const ot = cols.owner_type ?? [];
+  const oid = cols.owner_id ?? [];
+  const idx = cols.identity_idx ?? [];
+  const sc = cols.identity_score ?? [];
+  for (let i = 0; i < ot.length; i += 1) {
+    const ownerType = Number(ot[i]);
+    const ownerId = Number(oid[i]);
+    const score = Number(sc[i]);
+    let sub = result.get(ownerType);
+    if (!sub) {
+      sub = /* @__PURE__ */ new Map();
+      result.set(ownerType, sub);
+    }
+    sub.set(ownerId, [Number(idx[i]), Number.isNaN(score) ? null : score]);
+  }
+  return result;
+}
+function readEmbeddings(file) {
+  const result = /* @__PURE__ */ new Map();
+  const vecDs = file.get("embeddings/vectors");
+  if (!vecDs) return result;
+  const flat = vecDs.value;
+  const shape = vecDs.shape;
+  const rows = shape?.[0] ?? 0;
+  const dim = shape && shape.length >= 2 ? shape[1] : 0;
+  if (!rows || !dim) return result;
+  const ot = file.get("embeddings/owner_type")?.value ?? [];
+  const oid = file.get("embeddings/owner_id")?.value ?? [];
+  for (let i = 0; i < rows; i += 1) {
+    const ownerType = Number(ot[i]);
+    const ownerId = Number(oid[i]);
+    const vec = new Array(dim);
+    for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
+    let sub = result.get(ownerType);
+    if (!sub) {
+      sub = /* @__PURE__ */ new Map();
+      result.set(ownerType, sub);
+    }
+    sub.set(ownerId, new Embedding(vec));
+  }
+  return result;
+}
+function attachIdentityToOwners(owners, identities, links, embs) {
+  if (links) {
+    for (const [ownerId, [idx, score]] of links) {
+      const det = owners[ownerId];
+      if (det && idx >= 0 && idx < identities.length) {
+        det.identity = identities[idx];
+        det.identityScore = score;
+      }
+    }
+  }
+  if (embs) {
+    for (const [ownerId, emb] of embs) {
+      const det = owners[ownerId];
+      if (det) det.identityEmbedding = emb;
+    }
+  }
+}
 function readSessionDataEager(file, emscripten) {
   if (!file.get("session_data")) return null;
   const struct = (name) => {
@@ -17414,7 +17857,7 @@ function readSessions(dataset, videos, skeletons, identities, captureRaw = false
         tvec: cameraData.translation ?? [0, 0, 0],
         matrix: cameraData.matrix,
         distortions: cameraData.distortions,
-        size: cameraData.size
+        size: normalizeCameraSize(cameraData.size)
       });
       cameraGroup.cameras.push(camera);
       cameraMap.set(String(key), camera);
@@ -20101,6 +20544,7 @@ export {
   LabelsSet,
   Labels,
   Identity,
+  Embedding,
   isRangeSource,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
