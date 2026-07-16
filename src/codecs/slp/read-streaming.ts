@@ -335,10 +335,32 @@ export async function readFromStreamingFile(
   report(8);
   const identities = await readIdentitiesStreaming(file);
 
-  // Per-detection identity + embeddings (SLP 2.5), non-lazy path only (instances
-  // are concrete here); lazy streaming attach is threaded via LazyDataStore.
-  if (labeledFrames) {
-    await attachStreamingInstanceIdentity(file, labeledFrames, identities);
+  // Per-detection identity + embeddings (SLP 2.5), OWNER_INSTANCE. Applied directly
+  // to concrete instances (non-lazy) or handed to the lazy store for on-demand
+  // attach in materializeFrame.
+  if (labeledFrames || lazyStore) {
+    const { links, embs } = await readStreamingInstanceIdentity(file);
+    if (links.size || embs.size) {
+      if (labeledFrames) {
+        const allInstances = labeledFrames.flatMap((f) => f.instances);
+        for (const [ownerId, [idx, score]] of links) {
+          const inst = allInstances[ownerId];
+          if (inst && idx >= 0 && idx < identities.length) {
+            inst.identity = identities[idx];
+            inst.identityScore = score;
+          }
+        }
+        for (const [ownerId, emb] of embs) {
+          const inst = allInstances[ownerId];
+          if (inst) inst.identityEmbedding = emb;
+        }
+      }
+      if (lazyStore) {
+        lazyStore.identities = identities;
+        lazyStore._instanceIdentityLinks = links;
+        lazyStore._instanceEmbeddings = embs;
+      }
+    }
   }
 
   // Read sessions — grouping captured as index refs (no frame materialization).
@@ -998,21 +1020,20 @@ async function readIdentitiesStreaming(
 }
 
 /**
- * Read + attach per-detection identity (SLP 2.5) for the non-lazy streaming path.
- * Streaming builds only `Instance`s, so only OWNER_INSTANCE links/embeddings are
- * attached (by global instance_id = the flattened frame-then-instance order). No-op
- * on pre-2.5 files. (Lazy streaming attach is threaded through LazyDataStore
- * separately — not yet wired.)
+ * Read the OWNER_INSTANCE per-detection identity links + embeddings (SLP 2.5) over
+ * the streaming API, keyed by global instance_id. Returns empty maps on pre-2.5
+ * files. Streaming builds only `Instance`s, so only OWNER_INSTANCE is read; the
+ * result is applied either to a concrete instance list (non-lazy) or handed to the
+ * `LazyDataStore` for on-demand attach (lazy).
  */
-async function attachStreamingInstanceIdentity(
-  file: StreamingH5File,
-  labeledFrames: LabeledFrame[],
-  identities: Identity[],
-): Promise<void> {
+async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
+  links: Map<number, [number, number | null]>;
+  embs: Map<number, Embedding>;
+}> {
+  const links = new Map<number, [number, number | null]>();
+  const embs = new Map<number, Embedding>();
   const rootKeys = file.keys();
-  const allInstances = labeledFrames.flatMap((f) => f.instances);
 
-  // /identity/links (compound or flat-2D) -> attach identity + score.
   try {
     if (rootKeys.includes("identity")) {
       const idChildren = await file.getKeys("identity");
@@ -1028,14 +1049,11 @@ async function attachStreamingInstanceIdentity(
         const sc = cols.identity_score ?? [];
         for (let i = 0; i < ot.length; i += 1) {
           if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
-          const ownerId = Number(oid[i]);
-          const identIdx = Number(idx[i]);
-          const inst = allInstances[ownerId];
-          if (inst && identIdx >= 0 && identIdx < identities.length) {
-            inst.identity = identities[identIdx];
-            const score = Number(sc[i]);
-            inst.identityScore = Number.isNaN(score) ? null : score;
-          }
+          const score = Number(sc[i]);
+          links.set(Number(oid[i]), [
+            Number(idx[i]),
+            Number.isNaN(score) ? null : score,
+          ]);
         }
       }
     }
@@ -1043,7 +1061,6 @@ async function attachStreamingInstanceIdentity(
     /* identity links optional */
   }
 
-  // /embeddings (plain vectors + owner cols) -> attach identityEmbedding.
   try {
     if (rootKeys.includes("embeddings")) {
       const embChildren = await file.getKeys("embeddings");
@@ -1061,11 +1078,9 @@ async function attachStreamingInstanceIdentity(
           );
           for (let i = 0; i < rows; i += 1) {
             if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
-            const inst = allInstances[Number(oid[i])];
-            if (!inst) continue;
             const vec = new Array<number>(dim);
             for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
-            inst.identityEmbedding = new Embedding(vec);
+            embs.set(Number(oid[i]), new Embedding(vec));
           }
         }
       }
@@ -1073,6 +1088,8 @@ async function attachStreamingInstanceIdentity(
   } catch {
     /* embeddings optional */
   }
+
+  return { links, embs };
 }
 
 /**

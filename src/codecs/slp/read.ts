@@ -580,6 +580,41 @@ export async function readSlpLazy(
     const centroidTuples = readCentroids(file, videos, tracks);
     const labelImageTuples = readLabelImages(file, videos, tracks);
 
+    // Per-detection identity + embeddings (SLP 2.5). Instances materialize lazily,
+    // so the OWNER_INSTANCE maps + catalog are handed to the store and attached in
+    // materializeFrame; the other modalities are concrete here and attached now.
+    const lazyLinks = readIdentityLinks(file, emscripten);
+    const lazyEmbs = readEmbeddings(file);
+    if (lazyLinks.size || lazyEmbs.size) {
+      store.identities = identities;
+      store._instanceIdentityLinks = lazyLinks.get(0);
+      store._instanceEmbeddings = lazyEmbs.get(0);
+      attachIdentityToOwners(
+        centroidTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(2),
+        lazyEmbs.get(2),
+      );
+      attachIdentityToOwners(
+        maskTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(3),
+        lazyEmbs.get(3),
+      );
+      attachIdentityToOwners(
+        bboxTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(4),
+        lazyEmbs.get(4),
+      );
+      attachIdentityToOwners(
+        roiTuples.map((t) => t[0]),
+        identities,
+        lazyLinks.get(5),
+        lazyEmbs.get(5),
+      );
+    }
+
     // Build per-frame annotation dicts for lazy materialization
     const buildAnnByFrame = <T>(
       tuples: [T, number, number][],

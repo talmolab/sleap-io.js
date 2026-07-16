@@ -244,6 +244,29 @@ describe("Per-detection identity links + embeddings (SLP 2.5)", () => {
     }
   });
 
+  it("lazy read attaches per-instance identity on materialization", async () => {
+    const { readSlpLazy } = await import("../src/codecs/slp/read.js");
+    const { labels } = labelsWithInstanceIdentities();
+    const bytes = new Uint8Array(await saveSlpToBytes(labels));
+    const lazy = await readSlpLazy(bytes.buffer as ArrayBuffer, {
+      openVideos: false,
+    });
+    // Materialize each frame on demand (attaches identity per global instance_id).
+    const n = lazy._lazyFrameList?.length ?? 0;
+    const all: Instance[] = [];
+    for (let i = 0; i < n; i += 1) {
+      const fr = lazy.frameAt(i);
+      if (fr) for (const inst of fr.instances) all.push(inst as Instance);
+    }
+    expect(all).toHaveLength(4);
+    expect(all[0].identity?.name).toBe("A");
+    expect(all[0].identityScore).toBe(0.9);
+    expect(all[0].identityEmbedding?.vector).toEqual([0.1, 0.2, 0.3]);
+    expect(all[1].identity?.name).toBe("B");
+    expect(all[2].identity?.name).toBe("A");
+    expect(all[3].identity?.name).toBe("B");
+  });
+
   it("does not bump format_id when identities exist but no detection is linked", async () => {
     const video = new Video({ filename: "v.mp4" });
     const inst = Instance.fromArray(
