@@ -1842,6 +1842,7 @@ export {
   attrToNumber,
   datasetValueToString,
   parseJsonEntry,
+  decodeEntryText,
   sessionsReadError,
   parseSkeletons,
   parseTracks,

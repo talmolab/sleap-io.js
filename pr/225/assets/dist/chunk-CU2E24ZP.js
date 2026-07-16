@@ -18,6 +18,7 @@ import {
   clonePoint,
   cloneRecordingSession,
   datasetValueToString,
+  decodeEntryText,
   injectSessionFrameResolver,
   missingMetadataJsonError,
   parseJsonEntry,
@@ -34,7 +35,7 @@ import {
   resolveIdentity,
   resolveVideoFilename,
   sessionsReadError
-} from "./chunk-TWDCF7K7.js";
+} from "./chunk-WSFKCZJ4.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -12036,6 +12037,9 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   });
   report(8);
   const identities = await readIdentitiesStreaming(file);
+  if (labeledFrames) {
+    await attachStreamingInstanceIdentity(file, labeledFrames, identities);
+  }
   report(9);
   const sessions = await readSessionsStreaming(
     file,
@@ -12400,24 +12404,115 @@ async function readSuggestionsStreaming(file, videos) {
 async function readIdentitiesStreaming(file) {
   try {
     const keys = file.keys();
-    if (!keys.includes("identities_json")) return [];
-    const data = await file.getDatasetValue("identities_json");
-    const values = normalizeDatasetArray(data.value);
-    const identities = [];
-    for (const entry of values) {
-      const parsed = parseJsonEntry(entry);
-      const { name, color, ...rest } = parsed;
-      identities.push(
-        new Identity({
-          name: name ?? "",
-          color,
-          metadata: rest
-        })
-      );
+    if (keys.includes("identities_json")) {
+      const data = await file.getDatasetValue("identities_json");
+      const values = normalizeDatasetArray(data.value);
+      const identities = [];
+      for (const entry of values) {
+        const parsed = parseJsonEntry(entry);
+        const { name, color, ...rest } = parsed;
+        identities.push(
+          new Identity({
+            name: name ?? "",
+            color,
+            metadata: rest
+          })
+        );
+      }
+      return identities;
     }
-    return identities;
+    if (keys.includes("identity")) {
+      const children = await file.getKeys("identity");
+      if (children.includes("name")) {
+        const names = normalizeDatasetArray(
+          (await file.getDatasetValue("identity/name")).value
+        ).map((n) => decodeEntryText(n) ?? "");
+        const metadata = names.map(() => ({}));
+        if (children.includes("meta_owner")) {
+          const owners = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_owner")).value
+          ).map(Number);
+          const mkeys = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_key")).value
+          ).map((k) => decodeEntryText(k) ?? "");
+          const mvals = normalizeDatasetArray(
+            (await file.getDatasetValue("identity/meta_val")).value
+          ).map((v) => decodeEntryText(v) ?? "");
+          owners.forEach((o, i) => {
+            if (metadata[o]) metadata[o][mkeys[i]] = mvals[i];
+          });
+        }
+        return names.map((name, i) => {
+          const m = metadata[i];
+          const color = typeof m.color === "string" ? m.color : void 0;
+          const { color: _color, ...rest } = m;
+          return new Identity({ name, color, metadata: rest });
+        });
+      }
+    }
+    return [];
   } catch {
     return [];
+  }
+}
+async function attachStreamingInstanceIdentity(file, labeledFrames, identities) {
+  const rootKeys = file.keys();
+  const allInstances = labeledFrames.flatMap((f) => f.instances);
+  try {
+    if (rootKeys.includes("identity")) {
+      const idChildren = await file.getKeys("identity");
+      if (idChildren.includes("links")) {
+        const cols = await readStructDatasetStreaming(
+          file,
+          "identity/links",
+          true
+        );
+        const ot = cols.owner_type ?? [];
+        const oid = cols.owner_id ?? [];
+        const idx = cols.identity_idx ?? [];
+        const sc = cols.identity_score ?? [];
+        for (let i = 0; i < ot.length; i += 1) {
+          if (Number(ot[i]) !== 0) continue;
+          const ownerId = Number(oid[i]);
+          const identIdx = Number(idx[i]);
+          const inst = allInstances[ownerId];
+          if (inst && identIdx >= 0 && identIdx < identities.length) {
+            inst.identity = identities[identIdx];
+            const score = Number(sc[i]);
+            inst.identityScore = Number.isNaN(score) ? null : score;
+          }
+        }
+      }
+    }
+  } catch {
+  }
+  try {
+    if (rootKeys.includes("embeddings")) {
+      const embChildren = await file.getKeys("embeddings");
+      if (embChildren.includes("vectors")) {
+        const vd = await file.getDatasetValue("embeddings/vectors");
+        const flat = vd.value;
+        const rows = vd.shape?.[0] ?? 0;
+        const dim = vd.shape && vd.shape.length >= 2 ? vd.shape[1] : 0;
+        if (rows && dim) {
+          const ot = normalizeDatasetArray(
+            (await file.getDatasetValue("embeddings/owner_type")).value
+          );
+          const oid = normalizeDatasetArray(
+            (await file.getDatasetValue("embeddings/owner_id")).value
+          );
+          for (let i = 0; i < rows; i += 1) {
+            if (Number(ot[i]) !== 0) continue;
+            const inst = allInstances[Number(oid[i])];
+            if (!inst) continue;
+            const vec = new Array(dim);
+            for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
+            inst.identityEmbedding = new Embedding(vec);
+          }
+        }
+      }
+    }
+  } catch {
   }
 }
 async function readSessionsStreaming(file, videos, skeletons, identities, captureRaw = false) {
