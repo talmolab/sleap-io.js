@@ -14172,20 +14172,38 @@ function makeLazySourceLabels(labels) {
   out._lazyDataStore = labels._lazyDataStore;
   return out;
 }
-function writeLazyMatrixDataset(file, name, columns, fieldNames, dtype) {
+function lazyColumnsToRows(columns, fieldNames) {
   const rowCount = (columns[fieldNames[0]] ?? []).length;
   const colCount = fieldNames.length;
   const rows = [];
   for (let i = 0; i < rowCount; i++) {
     const row = new Array(colCount);
     for (let j = 0; j < colCount; j++) {
-      const col = columns[fieldNames[j]] ?? [];
-      const v = col[i];
+      const v = (columns[fieldNames[j]] ?? [])[i];
       row[j] = v === void 0 || v === null ? 0 : Number(v);
     }
     rows.push(row);
   }
-  createMatrixDataset(file, name, rows, fieldNames, dtype, true);
+  return rows;
+}
+function writeLazyMatrixDataset(file, name, columns, fieldNames, dtype) {
+  createMatrixDataset(
+    file,
+    name,
+    lazyColumnsToRows(columns, fieldNames),
+    fieldNames,
+    dtype,
+    true
+  );
+}
+function writeLazyCompoundDataset(file, name, columns, fields) {
+  const fieldNames = fields.map(([fieldName]) => fieldName);
+  createCompoundDataset(
+    file,
+    name,
+    lazyColumnsToRows(columns, fieldNames),
+    fields
+  );
 }
 function writeLazyFramesAndInstances(file, store) {
   writeLazyMatrixDataset(
@@ -14195,37 +14213,23 @@ function writeLazyFramesAndInstances(file, store) {
     ["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"],
     "<i8"
   );
-  writeLazyMatrixDataset(
+  writeLazyCompoundDataset(
     file,
     "instances",
     store.instancesData,
-    [
-      "instance_id",
-      "instance_type",
-      "frame_id",
-      "skeleton",
-      "track",
-      "from_predicted",
-      "score",
-      "point_id_start",
-      "point_id_end",
-      "tracking_score"
-    ],
-    "<f8"
+    INSTANCE_COMPOUND_FIELDS
   );
-  writeLazyMatrixDataset(
+  writeLazyCompoundDataset(
     file,
     "points",
     store.pointsData,
-    ["x", "y", "visible", "complete"],
-    "<f8"
+    POINT_COMPOUND_FIELDS
   );
-  writeLazyMatrixDataset(
+  writeLazyCompoundDataset(
     file,
     "pred_points",
     store.predPointsData,
-    ["x", "y", "visible", "complete", "score"],
-    "<f8"
+    PRED_POINT_COMPOUND_FIELDS
   );
 }
 function writeLazyNegativeFrames(file, store) {
@@ -14236,13 +14240,11 @@ function writeLazyNegativeFrames(file, store) {
     rows.push([Number(vidStr), Number(fidxStr)]);
   }
   rows.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  createMatrixDataset(
+  createCompoundDataset(
     file,
     "negative_frames",
     rows,
-    NEGATIVE_FRAMES_FIELDS,
-    "<i8",
-    true
+    NEGATIVE_FRAME_COMPOUND_FIELDS
   );
 }
 function writeSlpToFileLazy(file, labels) {
@@ -16004,34 +16006,23 @@ function buildLabelTableRows(labels) {
 function writeLabeledFrames(file, labels) {
   const { frames, instances, points, predPoints } = buildLabelTableRows(labels);
   createMatrixDataset(file, "frames", frames, FRAMES_FIELDS, "<i8", true);
-  createMatrixDataset(
-    file,
-    "instances",
-    instances,
-    INSTANCES_FIELDS,
-    "<f8",
-    true
-  );
-  createMatrixDataset(file, "points", points, POINTS_FIELDS, "<f8", true);
-  createMatrixDataset(
+  createCompoundDataset(file, "instances", instances, INSTANCE_COMPOUND_FIELDS);
+  createCompoundDataset(file, "points", points, POINT_COMPOUND_FIELDS);
+  createCompoundDataset(
     file,
     "pred_points",
     predPoints,
-    PRED_POINTS_FIELDS,
-    "<f8",
-    true
+    PRED_POINT_COMPOUND_FIELDS
   );
 }
 function writeNegativeFrames(file, labels) {
   const rows = buildNegativeFrameRows(labels);
   if (!rows.length) return;
-  createMatrixDataset(
+  createCompoundDataset(
     file,
     "negative_frames",
     rows,
-    NEGATIVE_FRAMES_FIELDS,
-    "<i8",
-    true
+    NEGATIVE_FRAME_COMPOUND_FIELDS
   );
 }
 var H5T_ENUM_CLASS = 8;
@@ -16490,6 +16481,79 @@ function createMatrixDataset(file, name, rows, fieldNames, dtype, resizable = fa
   }
   const dataset = file.get(name);
   setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
+}
+var INSTANCE_COMPOUND_FIELDS = [
+  ["instance_id", "<q"],
+  // i8
+  ["instance_type", "<B"],
+  // u1
+  ["frame_id", "<Q"],
+  // u8
+  ["skeleton", "<I"],
+  // u4
+  ["track", "<i"],
+  // i4 (carries -1)
+  ["from_predicted", "<q"],
+  // i8 (carries -1)
+  ["score", "<f"],
+  // f4
+  ["point_id_start", "<Q"],
+  // u8
+  ["point_id_end", "<Q"],
+  // u8
+  ["tracking_score", "<f"]
+  // f4
+];
+var POINT_COMPOUND_FIELDS = [
+  ["x", "<d"],
+  // f8
+  ["y", "<d"],
+  // f8
+  ["visible", "<B"],
+  // bool -> u1
+  ["complete", "<B"]
+  // bool -> u1
+];
+var PRED_POINT_COMPOUND_FIELDS = [
+  ["x", "<d"],
+  // f8
+  ["y", "<d"],
+  // f8
+  ["visible", "<B"],
+  // bool -> u1
+  ["complete", "<B"],
+  // bool -> u1
+  ["score", "<d"]
+  // f8
+];
+var NEGATIVE_FRAME_COMPOUND_FIELDS = [
+  ["video_id", "<I"],
+  // u4
+  ["frame_idx", "<Q"]
+  // u8
+];
+function createCompoundDataset(file, name, rows, fields) {
+  const rowCount = rows.length;
+  const columns = /* @__PURE__ */ new Map();
+  for (let j = 0; j < fields.length; j++) {
+    const col = new Array(rowCount);
+    for (let i = 0; i < rowCount; i++) col[i] = rows[i][j];
+    columns.set(fields[j][0], col);
+  }
+  const chunkRows = Math.max(1, Math.min(WRITE_CHUNK_ROWS, rowCount || 1));
+  file.create_dataset({
+    name,
+    data: columns,
+    shape: [rowCount],
+    maxshape: [null],
+    chunks: [chunkRows],
+    dtype: fields
+  });
+  setStringAttr(
+    file.get(name),
+    "field_names",
+    JSON.stringify(fields.map(([fieldName]) => fieldName))
+  );
 }
 function writeRois(file, rois, videos, tracks, instances, contexts) {
   if (!rois.length) return;
