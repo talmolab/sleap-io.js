@@ -148,6 +148,11 @@ export async function saveSlp(
 }
 
 export { saveSlpToBytes } from "../codecs/slp/write.js";
+// Main-thread half of the streaming pkg.slp writer (Phase 2 / Task 2.1):
+// write the small label/metadata structure only, skipping the big
+// `video{i}/video` embedded-image datasets — a Web Worker adds those later by
+// appending straight to disk (see `buildSerializableEmbedPlan` below).
+export { saveSlpStructureToBytes } from "../codecs/slp/write.js";
 // Streaming / incremental SLP writer + multi-store merge (issue #207): build a
 // large multi-camera `.slp` without holding the whole `Labels` graph in memory.
 export {
@@ -161,6 +166,15 @@ export type {
   AppendStoreOptions,
   SlpWriteSink,
   MergeStoresOptions,
+} from "../codecs/slp/write.js";
+// Serializable embed plan for the streaming pkg.slp writer's Web Worker half
+// (Task 1.1, re-save/raw-copy path only) — the app needs this to build a
+// structuredClone-safe description of what to embed before handing off to the
+// worker.
+export { buildSerializableEmbedPlan } from "../codecs/slp/write.js";
+export type {
+  SerializableEmbedEntry,
+  SerializableEmbedPlan,
 } from "../codecs/slp/write.js";
 
 /**
