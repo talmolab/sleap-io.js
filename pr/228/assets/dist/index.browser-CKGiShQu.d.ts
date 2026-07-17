@@ -1,4 +1,4 @@
-import { b6 as VideoBackend, b4 as RangeSource$1, b3 as GetFrameOptions, b2 as VideoFrame, W as FsResolver, bc as CropRect, bi as Fill, bd as FlatPoints, be as PointPairs, T as Track, a$ as UserLabelImage, L as Labels, S as Skeleton, V as Video, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-BNPSO45o.js';
+import { b4 as VideoBackend, bh as RangeSource$1, b3 as GetFrameOptions, b2 as VideoFrame, L as Labels, S as Skeleton, V as Video, T as Track, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, W as FsResolver, ba as CropRect, bg as Fill, bb as FlatPoints, bc as PointPairs, a$ as UserLabelImage, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-D4blHDU3.js';
 
 declare class Mp4BoxVideoBackend implements VideoBackend {
     filename: string;
@@ -100,6 +100,559 @@ declare class MediaBunnyVideoBackend implements VideoBackend {
     private cacheFrame;
 }
 
+interface H5WorkerResponse {
+    id: number;
+    success: boolean;
+    error?: string;
+    [key: string]: unknown;
+}
+
+type SlpWriteOptions = {
+    embed?: boolean | string;
+    restoreOriginalVideos?: boolean;
+};
+/** Static header (everything except the pose frames) for {@link openSlpWriter}. */
+interface SlpWriteHeader {
+    skeletons: Skeleton[];
+    videos: Video[];
+    tracks?: Track[];
+    suggestions?: SuggestionFrame[];
+    identities?: Identity[];
+    sessions?: RecordingSession[];
+    provenance?: Record<string, unknown>;
+}
+/** Per-store id offsets applied while appending (see {@link SlpStreamWriter.appendStore}). */
+interface AppendStoreOptions {
+    /** Added to each frame's (remapped) video index. */
+    videoIndexOffset?: number;
+    /** Added to each instance's non-null track index. */
+    trackOffset?: number;
+    /** Added to each instance's skeleton index. */
+    skeletonOffset?: number;
+    /** Frames per append window (defaults to {@link DEFAULT_WRITE_WINDOW_FRAMES}). */
+    windowFrames?: number;
+}
+/**
+ * A chunked byte sink for {@link SlpStreamWriter.writeToSink} — the output-side
+ * companion to the append writer. Satisfied by a browser
+ * `FileSystemWritableFileStream` (OPFS / save-file-picker) and by Node's
+ * `fs.WriteStream`, so the finished file need not be resident as one big
+ * `Uint8Array`.
+ */
+interface SlpWriteSink {
+    write(chunk: Uint8Array): unknown | Promise<unknown>;
+    close?(): unknown | Promise<unknown>;
+}
+/**
+ * Incremental SLP writer. Open with {@link openSlpWriter} (which writes the
+ * header and creates the resizable pose datasets), append one or more
+ * {@link LazyDataStore}s with {@link appendStore}, then {@link close} to get the
+ * file bytes. Ids are rebased per store so multiple stores concatenate into one
+ * consistent multi-video file.
+ */
+declare class SlpStreamWriter {
+    private file;
+    private module;
+    private memPath;
+    private videos;
+    private skeletons;
+    private tracks;
+    private frameRows;
+    private instRows;
+    private pointRows;
+    private predPointRows;
+    private negativeFrames;
+    private closed;
+    private writtenFrames;
+    private pendingRois;
+    private pendingMasks;
+    private pendingBboxes;
+    private pendingCentroids;
+    private pendingLabelImages;
+    /** @internal — use {@link openSlpWriter}. */
+    constructor(module: any, file: any, memPath: string, header: {
+        videos: Video[];
+        skeletons: Skeleton[];
+        tracks: Track[];
+    });
+    /**
+     * Append every frame of `store` (in windows), rebasing its ids onto the
+     * running file so the store's videos/instances/points/tracks land at the
+     * offsets given in `opts`. Point coordinates and all per-instance fields are
+     * copied verbatim from the store's columns — no `Instance`/`LabeledFrame`
+     * object is constructed. The store's frame/instance/point tables are assumed
+     * ordered by frame (the SLP on-disk invariant).
+     *
+     * A `(video, frameIdx)` already written (by an earlier append) is SKIPPED — so
+     * append overlays via {@link appendFrames} first for them to win. Frame /
+     * instance / point ids are assigned from running OUTPUT counters (not the
+     * store's positions), so skips leave no gaps; cross-references
+     * (`from_predicted`, annotation instance links) are remapped through the
+     * skipped ranges. `store` must not itself contain duplicate `(video, frameIdx)`.
+     */
+    appendStore(store: LazyDataStore, opts?: AppendStoreOptions): void;
+    /**
+     * Append a batch of already-materialized `LabeledFrame`s — the write-side of
+     * an edit overlay: user-corrected or newly-added frames layered onto a lazy
+     * stream. Each frame's `video`/`skeleton`/`track` is resolved against this
+     * writer's header (by identity); `from_predicted` links are resolved among the
+     * batch. Intended for a bounded batch (the corrected subset), so it is not
+     * windowed. Interleave freely with {@link appendStore}.
+     */
+    appendFrames(frames: LabeledFrame[]): void;
+    /**
+     * Collect a store's per-frame + undistributed annotations, remapping the
+     * video index (`+vOff`) and the instance link (through `outIdxOf`, `+instBase`)
+     * onto the combined file. Annotations on a SKIPPED (overlaid) frame — whose
+     * combined `"vid:frameIdx"` key is in `skippedKeys` — are dropped. The store's
+     * map keys are `"videoIndex:frameIdx"` (array-index video).
+     */
+    private collectStoreAnnotations;
+    /**
+     * Collect a materialized frame's annotations, resolving each annotation's live
+     * `instance` to its GLOBAL index via the batch's local map (`+instBase`).
+     * Annotations without a live `instance` in the batch drop their link (-1).
+     */
+    private collectFrameAnnotations;
+    /**
+     * Write all accumulated annotation datasets. The per-type writers read the
+     * instance link off each object, so the resolved GLOBAL index is applied via a
+     * contained mutate→write→restore (source annotations are left unchanged).
+     */
+    private writePendingAnnotations;
+    /** Write pending `negative_frames` and close the HDF5 file (shared finalize). */
+    private finalizeFile;
+    /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
+    close(): Uint8Array;
+    /**
+     * Finalize and stream the file to `sink` in chunks, then unlink it — the
+     * output-side companion to {@link appendStore}, so the finished file never has
+     * to be resident as one big `Uint8Array` on the JS side. Reads the in-memory
+     * HDF5 file with chunked FS reads when available (falling back to a single
+     * read). `sink.close()` is awaited if present.
+     *
+     * @param opts.chunkBytes Chunk size (default 8 MiB).
+     */
+    writeToSink(sink: SlpWriteSink, opts?: {
+        chunkBytes?: number;
+    }): Promise<void>;
+    /**
+     * Release the underlying HDF5 file WITHOUT producing bytes — call to clean up
+     * a writer that will not be finished (e.g. after an error). Idempotent and
+     * best-effort (never throws); the file/MEMFS path are closed and unlinked.
+     */
+    dispose(): void;
+}
+/**
+ * Open a streaming SLP writer: create the in-memory HDF5 file, write the header
+ * (skeletons/videos/tracks/suggestions/identities/sessions/provenance), and
+ * create the resizable `frames`/`instances`/`points`/`pred_points` datasets.
+ * Frame data is appended later via {@link SlpStreamWriter.appendStore}.
+ */
+declare function openSlpWriter(header: SlpWriteHeader): Promise<SlpStreamWriter>;
+/**
+ * Merge N per-camera {@link LazyDataStore}s into one combined multi-video
+ * `.slp`, streaming each store's frames in bounded windows (peak memory ≪ the
+ * whole graph). The combined `videos` and `tracks` are the concatenation of the
+ * stores' (video index and track index remapped accordingly); all stores must
+ * share a structurally-identical skeleton list (the multi-camera case), which
+ * becomes the combined skeleton set. Session graph / identities / suggestions /
+ * provenance for the combined file are supplied via `options`.
+ *
+ * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
+ */
+interface MergeStoresOptions {
+    sessions?: RecordingSession[];
+    identities?: Identity[];
+    suggestions?: SuggestionFrame[];
+    provenance?: Record<string, unknown>;
+    windowFrames?: number;
+}
+/**
+ * Merge N per-camera {@link LazyDataStore}s into one combined multi-video
+ * `.slp`, streaming each store's frames in bounded windows (peak memory ≪ the
+ * whole graph). The combined `videos` and `tracks` are the concatenation of the
+ * stores' (video index and track index remapped accordingly); all stores must
+ * share a structurally-identical skeleton list (the multi-camera case), which
+ * becomes the combined skeleton set. Session graph / identities / suggestions /
+ * provenance for the combined file are supplied via `options`.
+ *
+ * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
+ */
+declare function saveSlpMergedFromStores(stores: LazyDataStore[], options?: MergeStoresOptions): Promise<Uint8Array>;
+/**
+ * Like {@link saveSlpMergedFromStores}, but streams the combined file to `sink`
+ * in chunks instead of returning bytes — so neither the input `Labels` graph nor
+ * the whole output is ever fully resident. Use with a browser
+ * `FileSystemWritableFileStream` (OPFS / save picker) or Node `fs.WriteStream`.
+ */
+declare function saveSlpMergedToSink(stores: LazyDataStore[], sink: SlpWriteSink, options?: MergeStoresOptions & {
+    chunkBytes?: number;
+}): Promise<void>;
+declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Promise<Uint8Array>;
+/**
+ * Main-thread half of the streaming pkg.slp writer (Phase 2 / Task 2.1, see
+ * spike/write-bseam-device): write the small structure ONLY — labels,
+ * skeletons, tracks, suggestions, metadata, and `videos_json` (marking
+ * embedded videos per the same plan `saveSlpToBytes` would use) — but SKIP
+ * the big `video{i}/video` embedded-image datasets (and their sibling
+ * `frame_numbers`/`frame_sizes`). A Web Worker later opens the resulting file
+ * in append mode and adds those datasets directly to disk via the raw-copy
+ * path (see `buildSerializableEmbedPlan`), so a desktop save of a many-GB
+ * pkg.slp never needs to hold the embedded image bytes in the wasm heap on
+ * the main thread.
+ *
+ * Shares its setup (embed-mode resolution, lazy materialization, the
+ * `embed:"source"` rebuild, and embedding plan computation) with
+ * `saveSlpToBytes` via the private `writeSlpBytes` helper — the two functions
+ * differ only in whether `writeEmbeddedVideoData` runs afterward.
+ *
+ * @returns SLP bytes containing the structure only. NOT a directly-loadable
+ *   embedded pkg.slp on its own if the plan embeds anything (the videos_json
+ *   claims embedded images that aren't actually present yet) — it is an
+ *   intermediate artifact meant to be completed by the worker's append step.
+ */
+declare function saveSlpStructureToBytes(labels: Labels, options?: SlpWriteOptions): Promise<Uint8Array>;
+/**
+ * Build the exact JSON string written into the `/metadata` `json` attribute by
+ * {@link writeMetadata}. Exposed so the in-place saver can re-emit that attribute
+ * (via {@link writeLabelTablesInPlace}) without re-serializing the whole file.
+ * The caller decides WHEN metadata actually changed and passes this into
+ * {@link buildLabelTableUpdate}'s `metadataJson` option; a value-only pose edit
+ * leaves it unset so the attribute is untouched.
+ */
+declare function buildMetadataJson(labels: Labels): string;
+/**
+ * Serialize `tracks` to the exact per-track JSON strings written into the
+ * `tracks_json` dataset. Shared by {@link writeTracks} and the in-place
+ * writability gate ({@link buildExpectedSidecars}) so the gate's comparison to
+ * the on-disk `tracks_json` is byte-exact.
+ */
+declare function buildTracksJson(tracks: Array<{
+    name: string;
+}>): string[];
+/**
+ * Serialize `suggestions` to the exact per-suggestion JSON strings written into
+ * the `suggestions_json` dataset. Shared by {@link writeSuggestions} and the
+ * in-place writability gate so the comparison is byte-exact.
+ */
+declare function buildSuggestionsJson(suggestions: SuggestionFrame[], videos: Video[]): string[];
+/**
+ * A cheap per-video signature — filename(s), shape, and embedded-flag — that
+ * uniquely identifies a video WITHOUT reproducing the full `videos_json`
+ * serialization (which depends on backend metadata and is easy to diff
+ * spuriously). Used by the in-place writability gate to refuse an edit that
+ * added/removed/repointed a video (which would leave `videos_json` — and the
+ * embedded `video{i}` groups — stale relative to the rewritten frames table).
+ * The caller builds the on-disk side from the videos it parsed on open, and the
+ * expected side (via {@link buildExpectedSidecars}) from the current labels.
+ */
+declare function buildVideoSignatures(videos: Video[]): string[];
+/** The five mutable label tables as `number[][]` matrices (shared row builder). */
+interface LabelTableRows {
+    frames: number[][];
+    instances: number[][];
+    points: number[][];
+    predPoints: number[][];
+    negativeFrames: number[][];
+}
+/**
+ * Build the `frames`/`instances`/`points`/`pred_points`/`negative_frames` row
+ * matrices from `labels`, exactly as the eager writer would serialize them.
+ *
+ * Shared by {@link writeLabeledFrames} (the full save path) and
+ * {@link buildLabelTableUpdate} (the in-place save path) so both emit
+ * byte-identical columns using the same field-name constants. Contains no HDF5
+ * I/O — pure `Labels` → `number[][]`.
+ */
+declare function buildLabelTableRows(labels: Labels): LabelTableRows;
+/** One label table as logical rows + its column (field) names. */
+interface LabelTable {
+    fields: string[];
+    rows: number[][];
+}
+/**
+ * The small, mutable structure of a `.pkg.slp`, ready to patch in place. Each
+ * table is `{ fields, rows }` (logical `number[][]`, layout-agnostic — the writer
+ * packs it into whatever on-disk layout the target dataset uses). `metadataJson`
+ * is set only when metadata actually changed (caller decides) so a value-only
+ * pose edit leaves the `/metadata` attribute untouched.
+ */
+interface LabelTableUpdate {
+    frames: LabelTable;
+    instances: LabelTable;
+    points: LabelTable;
+    predPoints: LabelTable;
+    negativeFrames?: LabelTable;
+    metadataJson?: string;
+}
+/**
+ * Build a {@link LabelTableUpdate} from `labels` — the in-place counterpart to
+ * the eager writer. Reuses {@link buildLabelTableRows} so the columns are
+ * byte-identical to a full save. `negativeFrames` is always included (possibly
+ * with 0 rows) so an in-place save can also empty an existing `negative_frames`
+ * table when the user removed all negative frames. Pass `opts.metadataJson`
+ * (e.g. from {@link buildMetadataJson}) only when metadata changed.
+ */
+declare function buildLabelTableUpdate(labels: Labels, opts?: {
+    metadataJson?: string;
+}): LabelTableUpdate;
+/** One on-disk compound member's identity (for the writability gate). */
+interface OnDiskMember {
+    name: string;
+    /** HDF5 datatype class id (`H5Tget_class`): 0=int, 1=float, 8=enum. */
+    typeClass: number;
+    /** Member size in bytes. */
+    size?: number;
+    /** Whether the integer member is signed (h5wasm reports float as unsigned). */
+    signed?: boolean;
+}
+/** On-disk shape/layout of one label table, as seen by the writability gate. */
+interface OnDiskTable {
+    /** Current row count (axis-0 extent). */
+    rows: number;
+    /** Column count (matrix width, or compound member count). */
+    cols: number;
+    /** Storage layout: a 2-D numeric matrix, or a 1-D compound record dataset. */
+    layout: "flat" | "compound";
+    /** Whether the dataset is chunked (⇒ resizable on axis 0). */
+    chunked?: boolean;
+    /** Compound members (only for `layout: "compound"`). */
+    members?: OnDiskMember[];
+}
+/** The on-disk state of the label tables the gate inspects. */
+interface OnDiskTables {
+    frames?: OnDiskTable;
+    instances?: OnDiskTable;
+    points?: OnDiskTable;
+    predPoints?: OnDiskTable;
+    negativeFrames?: OnDiskTable;
+}
+/** Result of {@link checkInPlaceWritable}. */
+type InPlaceWritable = {
+    ok: true;
+} | {
+    ok: false;
+    reason: string;
+};
+/** Minimal `getDatasetMeta` shape consumed by {@link onDiskTableFromMeta}. */
+interface DatasetMetaLike {
+    shape?: number[];
+    metadata?: {
+        chunks?: unknown;
+        compound_type?: {
+            members?: Array<{
+                name: string;
+                type: number;
+                size?: number;
+                signed?: boolean;
+            }>;
+        };
+    };
+}
+/**
+ * Convert a `getDatasetMeta` result (from the streaming reader) into an
+ * {@link OnDiskTable} for the writability gate. Returns `undefined` when the
+ * dataset is absent. Detects compound vs flat from the presence of
+ * `compound_type.members`, and resizability from the presence of `chunks`.
+ */
+declare function onDiskTableFromMeta(meta: DatasetMetaLike | null | undefined): OnDiskTable | undefined;
+/**
+ * The JSON sidecar datasets/attribute that the in-place writer does NOT rewrite
+ * but which the label tables reference by index — so an edit that changed any of
+ * them would leave the (rewritten) tables pointing into stale sidecar data. The
+ * gate compares these to prove the save is confined to the label tables (+ the
+ * `/metadata` json attr). `tracks_json` / `suggestions_json` are the on-disk
+ * per-element JSON string arrays; `metadataJson` is the `/metadata` `json`
+ * attribute string. `null` means the dataset/attr is absent.
+ *
+ * The video SET is covered SEMANTICALLY via `videos` (per-video signatures, see
+ * {@link buildVideoSignatures}) rather than a byte-exact `videos_json` compare.
+ *
+ * NOT covered here (the in-place path is only safe for edits that leave these
+ * unchanged; the caller must guarantee it, and the app's post-write verify is the
+ * final backstop): `identities_json`, `sessions_json`, and the annotation
+ * datasets (rois/masks/bboxes/centroids/label_images) — their serializers are
+ * complex and reproducing them risks spurious refusals. Extending the gate to
+ * those is a follow-up.
+ */
+interface OnDiskSidecars {
+    tracksJson: string[] | null;
+    suggestionsJson: string[] | null;
+    metadataJson: string | null;
+    /** Per-video signatures (see {@link buildVideoSignatures}). */
+    videos: string[] | null;
+}
+/**
+ * Serialize the sidecars a `labels` would write, for exact comparison against
+ * {@link OnDiskSidecars} in {@link checkInPlaceWritable}. Reuses the same
+ * serializers the full writer uses ({@link buildTracksJson},
+ * {@link buildSuggestionsJson}, {@link buildMetadataJson}) so the comparison is
+ * byte-exact.
+ */
+declare function buildExpectedSidecars(labels: Labels): OnDiskSidecars;
+/**
+ * Decide whether `update` can be written into `onDisk` IN PLACE, or whether the
+ * caller must fall back to a full re-save. NOT writable when:
+ *  - any table's compound members include an HDF5 enum/bool (typeClass 8) —
+ *    Python-written points store `visible`/`complete` this way and h5wasm cannot
+ *    write them; OR
+ *  - a table's row count changes (structural edit) but the on-disk dataset is
+ *    contiguous (not chunked ⇒ not resizable) — an old file written before the
+ *    chunked-table change (value-only edits are fine on contiguous); OR
+ *  - the track set/order or the suggestions changed — the in-place writer does
+ *    NOT rewrite `tracks_json` / `suggestions_json`, so the (rewritten) instances
+ *    table's `track` indices would point into a STALE `tracks_json` → silent
+ *    track/suggestion corruption on reload (the HIGH bug this guards); OR
+ *  - the VIDEO SET changed (a video was added/removed/repointed) — the in-place
+ *    writer does NOT rewrite `videos_json` or the embedded `video{i}` groups, so
+ *    the (rewritten) frames table's `video` indices would point into a stale
+ *    video list. Compared semantically via per-video signatures
+ *    ({@link buildVideoSignatures}), not a byte-exact `videos_json` diff; OR
+ *  - the `/metadata` json changed (e.g. a skeleton or provenance edit) but
+ *    `update.metadataJson` was not set to carry that change into the attr.
+ *
+ * A pose/point/visibility/score/track-membership-preserving edit still passes.
+ *
+ * CALLER CONTRACT:
+ *  - `onDisk` MUST describe every label table that actually exists on disk
+ *    (frames/instances/points/pred_points/negative_frames) — an omitted table
+ *    skips its resizability check here; the post-resize assertion inside
+ *    {@link writeLabelTablesInPlace} is the loud backstop if one is missed.
+ *  - This gate proves confinement for the label tables + tracks + suggestions +
+ *    videos + metadata ONLY. It does NOT check `identities_json`, `sessions_json`,
+ *    or the annotation datasets (rois/masks/bboxes/centroids/label_images). The
+ *    in-place path therefore ASSUMES those are unchanged; the caller (app) MUST
+ *    NOT route an edit that touches them to in-place (route it to a full re-save),
+ *    and its post-write verify is the final backstop.
+ * Pure function (no I/O): the caller reads `sidecars.onDisk` from the file (the
+ * videos it parsed on open) and builds `sidecars.expected` via
+ * {@link buildExpectedSidecars}.
+ */
+declare function checkInPlaceWritable(update: LabelTableUpdate, onDisk: OnDiskTables, sidecars: {
+    onDisk: OnDiskSidecars;
+    expected: OnDiskSidecars;
+}): InPlaceWritable;
+/**
+ * Patch the label tables of an ALREADY-OPEN, writable h5wasm `File` (opened r+ /
+ * mode `"a"`) in place from `update`, then (if `update.metadataJson` is set)
+ * replace the `/metadata` `json` attribute. Works on any open h5wasm File —
+ * Node FS, MEMFS, or the bridged write device (the streaming worker).
+ *
+ * DATA SAFETY: only the frames/instances/points/pred_points/negative_frames
+ * datasets and the `/metadata` attribute are ever referenced — the embedded
+ * `video{i}/video` groups are never opened, read, or written. The caller is
+ * responsible for having gated with {@link checkInPlaceWritable} (and, ideally,
+ * a post-write verify) before calling this: the gate proves the edit is confined
+ * to these tables (tracks/suggestions/metadata unchanged or carried). As a
+ * backstop for an incomplete gate, each per-table resize is asserted to have
+ * actually taken effect (h5wasm silently no-ops resize on a non-resizable
+ * dataset) — a resize that can't happen THROWS here rather than writing ghost
+ * rows, so the caller falls back to a full re-save.
+ *
+ * Does NOT flush or close the file — the caller owns the file lifecycle.
+ */
+declare function writeLabelTablesInPlace(file: any, update: LabelTableUpdate): void;
+/**
+ * Serializable projection of one raw-copyable {@link EmbedPlanEntry}, safe to
+ * pass across a Web Worker boundary via `structuredClone` (Task 1.1 of the
+ * streaming pkg.slp writer). Contains only plain data — no `Video`/backend
+ * instances, functions, or open file handles — so a worker holding ONLY this
+ * entry plus read access to the SOURCE file (via
+ * {@link SerializableEmbedPlan.sourcePath}) can locate and copy the video's
+ * stored embedded images into the destination file without ever touching the
+ * live `Labels` graph.
+ */
+type SerializableEmbedEntry = {
+    /**
+     * Destination video index — this video's position in `labels.videos` of the
+     * file being WRITTEN. NOT assumed to equal the video's index in the SOURCE
+     * file (videos can be added/removed/reordered between load and save); the
+     * actual source location is carried separately in `sourceDataset`/
+     * `sourceGroup` below.
+     */
+    videoIndex: number;
+    /**
+     * The SOURCE file's HDF5 dataset path holding the raw encoded blobs (e.g.
+     * `"video0/video"`), read directly off the live backend's `dataset`
+     * property (`VideoBackend.dataset`) — the same path `Hdf5VideoBackend` /
+     * `StreamingHdf5VideoBackend` use internally for `getFrameBuffer`
+     * (delegated through `CropVideoBackend` for a cropped video). This is the
+     * authoritative source location; it is never derived from `videoIndex`.
+     */
+    sourceDataset: string;
+    /**
+     * The SOURCE file's HDF5 GROUP containing `sourceDataset` and its sibling
+     * `frame_numbers` / `frame_sizes` / `source_video` datasets/group — derived
+     * by stripping a trailing `"/video"` from `sourceDataset` (mirrors
+     * `StreamingHdf5VideoBackend.ensureLoaded`'s `groupPath` derivation). The
+     * worker reads `{sourceGroup}/frame_numbers` etc. from the SOURCE file and
+     * writes the copy under `video{videoIndex}` in the destination.
+     */
+    sourceGroup: string;
+    /** Stored image format (`VideoBackend.embeddedFormat`), e.g. "png"/"jpg". */
+    format: string;
+    /**
+     * Stored channel order (`VideoBackend.embeddedChannelOrder`), e.g.
+     * "RGB"/"BGR".
+     */
+    channelOrder: string;
+    /**
+     * The FULL stored source frame numbers being preserved, in storage order
+     * (the raw path always copies the entire stored set regardless of embed
+     * mode — semantics A; see {@link planEmbedding}). Always non-empty:
+     * `planEmbedding` skips 0-frame videos before they can reach this builder.
+     */
+    frameNumbers: number[];
+    /**
+     * Plain-object `source_video` lineage (from {@link sourceVideoDict}), or
+     * `null` when this video has no separate source to record. The worker
+     * writes this into the destination's `{group}/source_video` HDF5 group
+     * using the same JSON/attr logic as {@link writeSourceVideoJson}, without
+     * needing the live `Labels`/`Video` object.
+     */
+    sourceVideoJson: Record<string, unknown> | null;
+};
+/**
+ * Fully `structuredClone`-safe embed plan handed to the streaming writer's Web
+ * Worker (Task 1.1). Scope is a straight RE-SAVE of an already-embedded
+ * `pkg.slp` via the raw-copy path ONLY — see
+ * {@link buildSerializableEmbedPlan}.
+ */
+type SerializableEmbedPlan = {
+    /**
+     * On-disk path of the SOURCE pkg.slp that every entry's `sourceDataset` /
+     * `sourceGroup` are relative to. A single shared path is sufficient because
+     * this task's scope is re-saving ONE already-embedded file; a future
+     * "merge multiple pkg.slp sources into one" scenario would need to move
+     * this onto each entry instead.
+     */
+    sourcePath: string;
+    entries: SerializableEmbedEntry[];
+};
+/**
+ * Project a `planEmbedding` result into a worker-transportable
+ * {@link SerializableEmbedPlan}, for the RE-SAVE/raw-copy path ONLY (Task 1.1
+ * of the streaming pkg.slp writer). Reuses `planEmbedding` for video
+ * selection/frameNumbers (no re-derivation of that logic), then strips each
+ * raw entry down to plain data a worker can act on without the live `Labels`/
+ * `Video`/backend objects.
+ *
+ * Throws if `planEmbedding` selected a `kind: "encode"` (new-embed of a
+ * continuous video) entry for any video — the streaming writer's worker half
+ * only knows how to copy an already-embedded video's stored blobs; new-embed
+ * is a deferred follow-up (see the {@link EmbedPlanEntry} doc).
+ *
+ * @param labels Labels to save (already-open embedded video backends).
+ * @param embedMode Same `embed` option as `saveSlpToBytes`/`planEmbedding`.
+ * @param sourcePath On-disk path of the SOURCE pkg.slp; the worker opens it
+ *   via its own read bridge to copy the embedded groups from.
+ * @throws Error if any selected video would use the new-embed ("encode")
+ *   path, or a raw-copyable video's backend exposes no `dataset` to locate
+ *   its source embedded group by.
+ */
+declare function buildSerializableEmbedPlan(labels: Labels, embedMode: boolean | string, sourcePath: string): Promise<SerializableEmbedPlan>;
+
 /**
  * Streaming HDF5 file access via Web Worker.
  *
@@ -109,6 +662,7 @@ declare class MediaBunnyVideoBackend implements VideoBackend {
  *
  * @module
  */
+
 /**
  * Options for opening a streaming HDF5 file.
  */
@@ -137,6 +691,69 @@ interface RangeSource {
     /** Read `[offset, offset + length)`; may return fewer bytes at EOF. */
     readRange: (offset: number, length: number) => Promise<Uint8Array>;
 }
+/** Type guard for {@link RangeSource}. */
+declare function isRangeSource(source: unknown): source is RangeSource;
+/**
+ * Service one B-seam byte-request against the shared control/data buffers: read
+ * `[offset, offset + length)` via `reader`, copy the bytes into `dataArea`
+ * (clamped to BOTH the requested length and the data-area size), publish the
+ * returned length in `control[1]` (RETLEN), then set `control[0]` = READY (`2`)
+ * and `notify` — RETLEN is stored BEFORE the READY release so a Worker's
+ * `Atomics.wait`/load (acquire) sees a consistent (length, data) pair. On a read
+ * failure, publishes 0 bytes + READY so the Worker gets a clean short read / EOF
+ * instead of hanging.
+ *
+ * Extracted from {@link StreamingH5File}'s Worker message handler so the
+ * (otherwise Worker-gated) main-thread half of the protocol is unit-testable.
+ * @internal
+ */
+declare function serviceRangeBridge(control: Int32Array, dataArea: Uint8Array, reader: (offset: number, length: number) => Promise<Uint8Array>, offset: number, length: number): Promise<void>;
+/**
+ * A random-access, disk-backed write target (e.g. a Tauri native file handle).
+ * The write counterpart to {@link RangeSource}: a Worker's writable Emscripten
+ * device pushes bytes through a SharedArrayBuffer + `Atomics` bridge (the
+ * "write B-seam"), and `writeAt`/`truncate`/`close` run on the MAIN thread
+ * (the Worker cannot do the native IPC itself). `readAt` supports read-modify
+ * writes against the same backing store (e.g. re-reading a partially written
+ * region) without opening a second handle.
+ */
+interface RangeSink {
+    /** Write `bytes` at `[offset, offset + bytes.length)`. */
+    writeAt(offset: number, bytes: Uint8Array): Promise<void>;
+    /** Read `[offset, offset + length)`; may return fewer bytes at EOF. */
+    readAt(offset: number, length: number): Promise<Uint8Array>;
+    /** Truncate (or extend) the backing store to exactly `length` bytes. */
+    truncate(length: number): Promise<void>;
+    /** Flush and release the underlying handle. */
+    close(): Promise<void>;
+}
+/**
+ * Service one B-seam write request against the shared control buffer and data
+ * area: copy `[0, length)` out of `dataArea` (the bytes the Worker staged
+ * there), write them to `sink` at `offset`, publish the outcome in
+ * `control[1]` (RESULT: `0` = ok, `-1` = error), then set `control[0]` = READY
+ * (`2`) and `notify` — RESULT is stored BEFORE the READY release so a
+ * Worker's `Atomics.wait`/load (acquire) sees a consistent result. On a write
+ * failure, publishes RESULT = -1 + READY so the Worker gets a clean error
+ * instead of hanging.
+ *
+ * Extracted (mirroring {@link serviceRangeBridge}) so the (otherwise
+ * Worker-gated) main-thread half of the write protocol is unit-testable.
+ * @internal
+ */
+declare function serviceWriteBridge(control: Int32Array, dataArea: Uint8Array, sink: RangeSink, offset: number, length: number): Promise<void>;
+/**
+ * Service one B-seam truncate request against the shared control buffer:
+ * `truncate` the sink to `length`, publish the outcome in `control[1]`
+ * (RESULT: `0` = ok, `-1` = error) BEFORE setting `control[0]` = READY (`2`)
+ * and `notify`ing, mirroring {@link serviceWriteBridge}'s ordering so the
+ * Worker's acquire load always sees a consistent result.
+ *
+ * Extracted so the main-thread half of the truncate protocol is
+ * unit-testable without a Worker.
+ * @internal
+ */
+declare function serviceTruncateBridge(control: Int32Array, sink: RangeSink, length: number): Promise<void>;
 /**
  * Source types supported by the streaming HDF5 file.
  */
@@ -238,11 +855,16 @@ declare class StreamingH5File {
      */
     getAttrs(path: string): Promise<Record<string, unknown>>;
     /**
-     * Get dataset metadata (shape, dtype) without reading values.
+     * Get dataset metadata (shape, dtype, and the raw h5wasm `metadata`) without
+     * reading values. `metadata` carries the layout details the in-place
+     * writability gate needs — `compound_type.members` (per-member dtype class,
+     * used to detect Python's non-writable enum/bool columns) and `chunks` (⇒
+     * resizable). Pass this straight to `onDiskTableFromMeta`.
      */
     getDatasetMeta(path: string): Promise<{
         shape: number[];
         dtype: string;
+        metadata?: Record<string, unknown>;
     }>;
     /**
      * Read a dataset's value.
@@ -257,6 +879,94 @@ declare class StreamingH5File {
     }>;
     /**
      * Close the file and terminate the worker.
+     */
+    close(): Promise<void>;
+}
+/**
+ * A streaming HDF5 file WRITER that uses a Web Worker's writable Emscripten
+ * device (the write B-seam) to stream bytes to a {@link RangeSink} instead of
+ * materializing the file in WASM MEMFS. Mirrors {@link StreamingH5File}'s
+ * worker plumbing (message correlation, `send`, error handling), but its
+ * Worker registers a writable device whose `read`/`write`/`setattr`
+ * (ftruncate) block on the SAB bridge — so `handleMessage` must service THREE
+ * Worker->main request types (range reads for read-modify-write, writes, and
+ * truncates) ahead of the id-correlated response branch.
+ */
+declare class StreamingH5Writer {
+    private worker;
+    private messageId;
+    private pendingMessages;
+    private destSink?;
+    private sourceReader?;
+    private control?;
+    private data?;
+    constructor();
+    private handleMessage;
+    private handleError;
+    private send;
+    /**
+     * Initialize the h5wasm module in the worker.
+     */
+    init(h5wasmUrl?: string): Promise<void>;
+    /**
+     * DUAL-BRIDGE FOUNDATION: open TWO h5wasm files at once in the Worker through
+     * ONE SharedArrayBuffer bridge — a read-only SOURCE (backed by `source`, a
+     * {@link RangeSource}) and a read+write DEST (backed by `destSink`, a
+     * {@link RangeSink}, opened in h5wasm append mode `"a"`). Every bridged
+     * request is tagged `target: 'source' | 'dest'` by the Worker so
+     * {@link handleMessage} can route it to the right reader/sink (see there).
+     *
+     * The caller is responsible for having already opened `destPath` on the
+     * native side in APPEND mode (no truncate — e.g. via a `write_open_append`-
+     * style command) so `destSize`'s pre-existing bytes are actually present on
+     * disk; this method does not create or truncate the destination file itself.
+     * `destSize` seeds the Worker's writable device with the dest file's REAL
+     * current size (rather than 0) so h5wasm's file-size probe can see — and
+     * read — the pre-existing content instead of treating the file as empty.
+     *
+     * Requires cross-origin isolation (SharedArrayBuffer / COOP+COEP).
+     */
+    openAppend(destSink: RangeSink, destPath: string, destSize: number, source: RangeSource, sourceFilename: string, h5wasmUrl?: string): Promise<void>;
+    /**
+     * Worker port of `writeEmbeddedVideoData` (write.ts) for the RAW path ONLY:
+     * copies each {@link SerializableEmbedEntry}'s stored embedded-image blobs
+     * from the open SOURCE file into a new `video{videoIndex}` group in the open
+     * DEST file (both opened via {@link openAppend}), streamed in bounded byte
+     * windows so peak JS memory stays ~one window rather than the whole
+     * concatenated video. Mirrors the real writer's create-empty -> resize ->
+     * write_slice pattern and its #213 backstop (throws rather than writing a
+     * file with dropped images).
+     *
+     * Does NOT close either file — call {@link close} afterward (which sends
+     * the Worker's `close` message, tearing down both the source and dest
+     * mounts via `closeAppendFiles`).
+     */
+    appendEmbeddedVideos(entries: SerializableEmbedEntry[]): Promise<H5WorkerResponse>;
+    /**
+     * SINGLE-file write B-seam for the in-place label save: open ONLY the DEST
+     * file (`destPath`, backed by `destSink`) in h5wasm append mode `"a"` (no
+     * truncate), no source file. The counterpart to {@link openAppend} that
+     * {@link updateLabelsInPlace} uses to patch the small label tables of an
+     * existing `.pkg.slp` without re-copying its embedded video.
+     *
+     * The caller must have already opened `destPath` on the native side in a
+     * NON-truncating mode so its pre-existing bytes are intact; `destSize` seeds
+     * the Worker's writable device with the file's real current size. Requires
+     * cross-origin isolation (SharedArrayBuffer / COOP+COEP).
+     */
+    openWrite(destSink: RangeSink, destPath: string, destSize: number, h5wasmUrl?: string): Promise<void>;
+    /**
+     * Patch the open DEST file's label tables in place from `update` (see
+     * {@link openWrite}). Each table's `number[][]` rows are pre-flattened to a
+     * row-major `Float64Array` here and TRANSFERRED to the Worker (rather than
+     * structured-cloning a nested array), which packs them into the on-disk layout
+     * (flat matrix or compound record) and replaces the `/metadata` json attr when
+     * `update.metadataJson` is set. Never touches any `video{i}/video` group.
+     */
+    updateLabelsInPlace(update: LabelTableUpdate): Promise<H5WorkerResponse>;
+    /**
+     * Close the file and terminate the worker. Best-effort: if the worker-side
+     * close fails, the worker is still terminated so no handle is leaked.
      */
     close(): Promise<void>;
 }
@@ -955,190 +1665,6 @@ declare function setLabelImageFileReader(fn: LabelImageFileReader | null): void;
  *   single-element array in `classes` mode.
  */
 declare function loadLabelImages(source: string | File | Blob, options?: LoadLabelImagesOptions): Promise<UserLabelImage[]>;
-
-type SlpWriteOptions = {
-    embed?: boolean | string;
-    restoreOriginalVideos?: boolean;
-};
-/** Static header (everything except the pose frames) for {@link openSlpWriter}. */
-interface SlpWriteHeader {
-    skeletons: Skeleton[];
-    videos: Video[];
-    tracks?: Track[];
-    suggestions?: SuggestionFrame[];
-    identities?: Identity[];
-    sessions?: RecordingSession[];
-    provenance?: Record<string, unknown>;
-}
-/** Per-store id offsets applied while appending (see {@link SlpStreamWriter.appendStore}). */
-interface AppendStoreOptions {
-    /** Added to each frame's (remapped) video index. */
-    videoIndexOffset?: number;
-    /** Added to each instance's non-null track index. */
-    trackOffset?: number;
-    /** Added to each instance's skeleton index. */
-    skeletonOffset?: number;
-    /** Frames per append window (defaults to {@link DEFAULT_WRITE_WINDOW_FRAMES}). */
-    windowFrames?: number;
-}
-/**
- * A chunked byte sink for {@link SlpStreamWriter.writeToSink} — the output-side
- * companion to the append writer. Satisfied by a browser
- * `FileSystemWritableFileStream` (OPFS / save-file-picker) and by Node's
- * `fs.WriteStream`, so the finished file need not be resident as one big
- * `Uint8Array`.
- */
-interface SlpWriteSink {
-    write(chunk: Uint8Array): unknown | Promise<unknown>;
-    close?(): unknown | Promise<unknown>;
-}
-/**
- * Incremental SLP writer. Open with {@link openSlpWriter} (which writes the
- * header and creates the resizable pose datasets), append one or more
- * {@link LazyDataStore}s with {@link appendStore}, then {@link close} to get the
- * file bytes. Ids are rebased per store so multiple stores concatenate into one
- * consistent multi-video file.
- */
-declare class SlpStreamWriter {
-    private file;
-    private module;
-    private memPath;
-    private videos;
-    private skeletons;
-    private tracks;
-    private frameRows;
-    private instRows;
-    private pointRows;
-    private predPointRows;
-    private negativeFrames;
-    private closed;
-    private writtenFrames;
-    private pendingRois;
-    private pendingMasks;
-    private pendingBboxes;
-    private pendingCentroids;
-    private pendingLabelImages;
-    /** @internal — use {@link openSlpWriter}. */
-    constructor(module: any, file: any, memPath: string, header: {
-        videos: Video[];
-        skeletons: Skeleton[];
-        tracks: Track[];
-    });
-    /**
-     * Append every frame of `store` (in windows), rebasing its ids onto the
-     * running file so the store's videos/instances/points/tracks land at the
-     * offsets given in `opts`. Point coordinates and all per-instance fields are
-     * copied verbatim from the store's columns — no `Instance`/`LabeledFrame`
-     * object is constructed. The store's frame/instance/point tables are assumed
-     * ordered by frame (the SLP on-disk invariant).
-     *
-     * A `(video, frameIdx)` already written (by an earlier append) is SKIPPED — so
-     * append overlays via {@link appendFrames} first for them to win. Frame /
-     * instance / point ids are assigned from running OUTPUT counters (not the
-     * store's positions), so skips leave no gaps; cross-references
-     * (`from_predicted`, annotation instance links) are remapped through the
-     * skipped ranges. `store` must not itself contain duplicate `(video, frameIdx)`.
-     */
-    appendStore(store: LazyDataStore, opts?: AppendStoreOptions): void;
-    /**
-     * Append a batch of already-materialized `LabeledFrame`s — the write-side of
-     * an edit overlay: user-corrected or newly-added frames layered onto a lazy
-     * stream. Each frame's `video`/`skeleton`/`track` is resolved against this
-     * writer's header (by identity); `from_predicted` links are resolved among the
-     * batch. Intended for a bounded batch (the corrected subset), so it is not
-     * windowed. Interleave freely with {@link appendStore}.
-     */
-    appendFrames(frames: LabeledFrame[]): void;
-    /**
-     * Collect a store's per-frame + undistributed annotations, remapping the
-     * video index (`+vOff`) and the instance link (through `outIdxOf`, `+instBase`)
-     * onto the combined file. Annotations on a SKIPPED (overlaid) frame — whose
-     * combined `"vid:frameIdx"` key is in `skippedKeys` — are dropped. The store's
-     * map keys are `"videoIndex:frameIdx"` (array-index video).
-     */
-    private collectStoreAnnotations;
-    /**
-     * Collect a materialized frame's annotations, resolving each annotation's live
-     * `instance` to its GLOBAL index via the batch's local map (`+instBase`).
-     * Annotations without a live `instance` in the batch drop their link (-1).
-     */
-    private collectFrameAnnotations;
-    /**
-     * Write all accumulated annotation datasets. The per-type writers read the
-     * instance link off each object, so the resolved GLOBAL index is applied via a
-     * contained mutate→write→restore (source annotations are left unchanged).
-     */
-    private writePendingAnnotations;
-    /** Write pending `negative_frames` and close the HDF5 file (shared finalize). */
-    private finalizeFile;
-    /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
-    close(): Uint8Array;
-    /**
-     * Finalize and stream the file to `sink` in chunks, then unlink it — the
-     * output-side companion to {@link appendStore}, so the finished file never has
-     * to be resident as one big `Uint8Array` on the JS side. Reads the in-memory
-     * HDF5 file with chunked FS reads when available (falling back to a single
-     * read). `sink.close()` is awaited if present.
-     *
-     * @param opts.chunkBytes Chunk size (default 8 MiB).
-     */
-    writeToSink(sink: SlpWriteSink, opts?: {
-        chunkBytes?: number;
-    }): Promise<void>;
-    /**
-     * Release the underlying HDF5 file WITHOUT producing bytes — call to clean up
-     * a writer that will not be finished (e.g. after an error). Idempotent and
-     * best-effort (never throws); the file/MEMFS path are closed and unlinked.
-     */
-    dispose(): void;
-}
-/**
- * Open a streaming SLP writer: create the in-memory HDF5 file, write the header
- * (skeletons/videos/tracks/suggestions/identities/sessions/provenance), and
- * create the resizable `frames`/`instances`/`points`/`pred_points` datasets.
- * Frame data is appended later via {@link SlpStreamWriter.appendStore}.
- */
-declare function openSlpWriter(header: SlpWriteHeader): Promise<SlpStreamWriter>;
-/**
- * Merge N per-camera {@link LazyDataStore}s into one combined multi-video
- * `.slp`, streaming each store's frames in bounded windows (peak memory ≪ the
- * whole graph). The combined `videos` and `tracks` are the concatenation of the
- * stores' (video index and track index remapped accordingly); all stores must
- * share a structurally-identical skeleton list (the multi-camera case), which
- * becomes the combined skeleton set. Session graph / identities / suggestions /
- * provenance for the combined file are supplied via `options`.
- *
- * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
- */
-interface MergeStoresOptions {
-    sessions?: RecordingSession[];
-    identities?: Identity[];
-    suggestions?: SuggestionFrame[];
-    provenance?: Record<string, unknown>;
-    windowFrames?: number;
-}
-/**
- * Merge N per-camera {@link LazyDataStore}s into one combined multi-video
- * `.slp`, streaming each store's frames in bounded windows (peak memory ≪ the
- * whole graph). The combined `videos` and `tracks` are the concatenation of the
- * stores' (video index and track index remapped accordingly); all stores must
- * share a structurally-identical skeleton list (the multi-camera case), which
- * becomes the combined skeleton set. Session graph / identities / suggestions /
- * provenance for the combined file are supplied via `options`.
- *
- * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
- */
-declare function saveSlpMergedFromStores(stores: LazyDataStore[], options?: MergeStoresOptions): Promise<Uint8Array>;
-/**
- * Like {@link saveSlpMergedFromStores}, but streams the combined file to `sink`
- * in chunks instead of returning bytes — so neither the input `Labels` graph nor
- * the whole output is ever fully resident. Use with a browser
- * `FileSystemWritableFileStream` (OPFS / save picker) or Node `fs.WriteStream`.
- */
-declare function saveSlpMergedToSink(stores: LazyDataStore[], sink: SlpWriteSink, options?: MergeStoresOptions & {
-    chunkBytes?: number;
-}): Promise<void>;
-declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Promise<Uint8Array>;
 
 /**
  * SLEAP Analysis HDF5 format I/O.
@@ -2445,4 +2971,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { loadAnalysisH5 as $, urlFromConfirmation as A, BlobByteSource as B, CropVideoBackend as C, checkDownloadHost as D, openGdrive as E, DEFAULT_MAX_BYTES as F, StreamingH5File as G, openStreamingH5 as H, type ImageBytesReader as I, openH5Worker as J, isStreamingSupported as K, type StreamingH5Source as L, readSlpStreaming as M, Mp4BoxVideoBackend as N, type MediaBunnyOptions as O, type PaletteName as P, MediaBunnyVideoBackend as Q, type ReadCocoOptions as R, SeqVideoBackend as S, StreamingHdf5VideoBackend as T, UnsupportedVideoFormatError as U, type VideoOptions as V, type ImageVideoOptions as W, computePrefetchWindow as X, ImageVideoBackend as Y, loadSlp as Z, saveSlp as _, type RenderOptions as a, readCoco as a$, saveAnalysisH5 as a0, saveAnalysisH5ToBytes as a1, loadSlpSet as a2, saveSlpSet as a3, loadVideo as a4, loadLabelImages as a5, setLabelImageFileReader as a6, type PagesAs as a7, type LoadLabelImagesOptions as a8, type LabelImageFileReader as a9, statusToMessage as aA, raiseRemote as aB, identityHeaders as aC, stripCrossOriginHeaders as aD, withRetries as aE, parseRetryAfterMs as aF, fetchRetrying as aG, headOrRangeProbe as aH, type GeoJSONFeature as aI, type GeoJSONFeatureCollection as aJ, roisToGeoJSON as aK, roisFromGeoJSON as aL, writeGeoJSON as aM, readGeoJSON as aN, type CocoCategory as aO, type CocoImage as aP, type CocoRle as aQ, type CocoSegmentation as aR, type CocoAnnotation as aS, type CocoJson as aT, isCocoData as aU, parseCocoJson as aV, createSkeletonFromCategory as aW, decodeKeypoints as aX, decodeCompressedRleCounts as aY, decodeCocoRle as aZ, decodeSegmentation as a_, saveSlpToBytes as aa, openSlpWriter as ab, SlpStreamWriter as ac, saveSlpMergedFromStores as ad, saveSlpMergedToSink as ae, type SlpWriteHeader as af, type AppendStoreOptions as ag, type SlpWriteSink as ah, type MergeStoresOptions as ai, isAnalysisH5File as aj, labelsToCsv as ak, saveLabelsCsv as al, type CsvExportOptions as am, URL_SCHEMES as an, CLOUD_SCHEMES as ao, GDRIVE_HOSTS as ap, SENSITIVE_HEADERS as aq, SENSITIVE_QUERY_PARAMS as ar, RETRYABLE_STATUSES as as, isUrl as at, isGdriveUrl as au, redactUrl as av, redactedCauseSummary as aw, RemoteIOError as ax, type ResolvedUrl as ay, resolveUrl as az, type RGB as b, readCocoSet as b0, toNumpy as b1, fromNumpy as b2, labelsFromNumpy as b3, decodeYamlSkeleton as b4, encodeYamlSkeleton as b5, readSkeletonJson as b6, writeSkeletonJson as b7, readTrainingConfigSkeletons as b8, readTrainingConfigSkeleton as b9, type TrailTarget as bA, type Trail as bB, RenderContext as bC, InstanceContext as bD, drawMasks as bE, drawLabelImage as bF, clampAlpha as bG, pickColor as bH, isTrainingConfig as ba, type RGBA as bb, type ColorSpec as bc, type ColorScheme as bd, type MarkerShape as be, type Overlay as bf, type VideoOverlay as bg, NAMED_COLORS as bh, PALETTES as bi, getPalette as bj, resolveColor as bk, rgbToCSS as bl, determineColorScheme as bm, drawCircle as bn, drawSquare as bo, drawDiamond as bp, drawTriangle as bq, drawCross as br, drawTrails as bs, getMarkerFunction as bt, MARKER_FUNCTIONS as bu, type DrawTrailsOptions as bv, resolveTrailNode as bw, computeTrails as bx, nTrailPaletteColors as by, collectTracks as bz, type RawLabelImage as c, anchorCandidate as d, derivePrefixSwap as e, applyPrefixSwap as f, getImageBytesReader as g, resolveFirstExisting as h, formatPath as i, posixDirname as j, posixBasename as k, posixJoin as l, type PosixPath as m, type PrefixSwap as n, type ResolvedVideoSource as o, parsePath as p, SeqHeader as q, resolveVideoSource as r, setImageBytesReader as s, SeqIndex as t, type ByteSource as u, videoPathCandidates as v, createVideoBackend as w, type VideoBackendType as x, type CropWrapOptions as y, parseGdrive as z };
+export { MediaBunnyVideoBackend as $, urlFromConfirmation as A, BlobByteSource as B, CropVideoBackend as C, checkDownloadHost as D, openGdrive as E, DEFAULT_MAX_BYTES as F, StreamingH5File as G, StreamingH5Writer as H, type ImageBytesReader as I, openStreamingH5 as J, openH5Worker as K, isStreamingSupported as L, isRangeSource as M, serviceRangeBridge as N, serviceWriteBridge as O, type PaletteName as P, serviceTruncateBridge as Q, type ReadCocoOptions as R, SeqVideoBackend as S, type StreamingH5Source as T, UnsupportedVideoFormatError as U, type VideoOptions as V, type RangeSource as W, type RangeSink as X, readSlpStreaming as Y, Mp4BoxVideoBackend as Z, type MediaBunnyOptions as _, type RenderOptions as a, RemoteIOError as a$, StreamingHdf5VideoBackend as a0, type ImageVideoOptions as a1, computePrefetchWindow as a2, ImageVideoBackend as a3, loadSlp as a4, saveSlp as a5, loadAnalysisH5 as a6, saveAnalysisH5 as a7, saveAnalysisH5ToBytes as a8, loadSlpSet as a9, buildExpectedSidecars as aA, checkInPlaceWritable as aB, onDiskTableFromMeta as aC, writeLabelTablesInPlace as aD, type LabelTable as aE, type LabelTableRows as aF, type LabelTableUpdate as aG, type OnDiskMember as aH, type OnDiskTable as aI, type OnDiskTables as aJ, type OnDiskSidecars as aK, type InPlaceWritable as aL, type DatasetMetaLike as aM, isAnalysisH5File as aN, labelsToCsv as aO, saveLabelsCsv as aP, type CsvExportOptions as aQ, URL_SCHEMES as aR, CLOUD_SCHEMES as aS, GDRIVE_HOSTS as aT, SENSITIVE_HEADERS as aU, SENSITIVE_QUERY_PARAMS as aV, RETRYABLE_STATUSES as aW, isUrl as aX, isGdriveUrl as aY, redactUrl as aZ, redactedCauseSummary as a_, saveSlpSet as aa, loadVideo as ab, loadLabelImages as ac, setLabelImageFileReader as ad, type PagesAs as ae, type LoadLabelImagesOptions as af, type LabelImageFileReader as ag, saveSlpToBytes as ah, saveSlpStructureToBytes as ai, openSlpWriter as aj, SlpStreamWriter as ak, saveSlpMergedFromStores as al, saveSlpMergedToSink as am, type SlpWriteHeader as an, type AppendStoreOptions as ao, type SlpWriteSink as ap, type MergeStoresOptions as aq, buildSerializableEmbedPlan as ar, type SerializableEmbedEntry as as, type SerializableEmbedPlan as at, buildLabelTableRows as au, buildLabelTableUpdate as av, buildMetadataJson as aw, buildTracksJson as ax, buildSuggestionsJson as ay, buildVideoSignatures as az, type RGB as b, computeTrails as b$, type ResolvedUrl as b0, resolveUrl as b1, statusToMessage as b2, raiseRemote as b3, identityHeaders as b4, stripCrossOriginHeaders as b5, withRetries as b6, parseRetryAfterMs as b7, fetchRetrying as b8, headOrRangeProbe as b9, readSkeletonJson as bA, writeSkeletonJson as bB, readTrainingConfigSkeletons as bC, readTrainingConfigSkeleton as bD, isTrainingConfig as bE, type RGBA as bF, type ColorSpec as bG, type ColorScheme as bH, type MarkerShape as bI, type Overlay as bJ, type VideoOverlay as bK, NAMED_COLORS as bL, PALETTES as bM, getPalette as bN, resolveColor as bO, rgbToCSS as bP, determineColorScheme as bQ, drawCircle as bR, drawSquare as bS, drawDiamond as bT, drawTriangle as bU, drawCross as bV, drawTrails as bW, getMarkerFunction as bX, MARKER_FUNCTIONS as bY, type DrawTrailsOptions as bZ, resolveTrailNode as b_, type GeoJSONFeature as ba, type GeoJSONFeatureCollection as bb, roisToGeoJSON as bc, roisFromGeoJSON as bd, writeGeoJSON as be, readGeoJSON as bf, type CocoCategory as bg, type CocoImage as bh, type CocoRle as bi, type CocoSegmentation as bj, type CocoAnnotation as bk, type CocoJson as bl, isCocoData as bm, parseCocoJson as bn, createSkeletonFromCategory as bo, decodeKeypoints as bp, decodeCompressedRleCounts as bq, decodeCocoRle as br, decodeSegmentation as bs, readCoco as bt, readCocoSet as bu, toNumpy as bv, fromNumpy as bw, labelsFromNumpy as bx, decodeYamlSkeleton as by, encodeYamlSkeleton as bz, type RawLabelImage as c, nTrailPaletteColors as c0, collectTracks as c1, type TrailTarget as c2, type Trail as c3, RenderContext as c4, InstanceContext as c5, drawMasks as c6, drawLabelImage as c7, clampAlpha as c8, pickColor as c9, anchorCandidate as d, derivePrefixSwap as e, applyPrefixSwap as f, getImageBytesReader as g, resolveFirstExisting as h, formatPath as i, posixDirname as j, posixBasename as k, posixJoin as l, type PosixPath as m, type PrefixSwap as n, type ResolvedVideoSource as o, parsePath as p, SeqHeader as q, resolveVideoSource as r, setImageBytesReader as s, SeqIndex as t, type ByteSource as u, videoPathCandidates as v, createVideoBackend as w, type VideoBackendType as x, type CropWrapOptions as y, parseGdrive as z };
