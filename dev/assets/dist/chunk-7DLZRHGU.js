@@ -10646,6 +10646,21 @@ self.onmessage = async function(e) {
         respond(id, appendResult);
         break;
 
+      case 'openWrite':
+        const openWriteResult = openWrite(
+          payload.sab,
+          payload.controlBytes,
+          payload.destFilename,
+          payload.destSize
+        );
+        respond(id, openWriteResult);
+        break;
+
+      case 'updateLabelsInPlace':
+        const updateResult = updateLabelsInPlace(payload);
+        respond(id, updateResult);
+        break;
+
       case 'getKeys':
         const keys = getKeys(payload.path);
         respond(id, { success: true, keys });
@@ -11086,6 +11101,32 @@ function openAppend(sab, controlBytes, sourceFilename, sourceSize, destFilename,
   };
 }
 
+// SINGLE-file write B-seam (in-place label save \u2014 openWrite/updateLabelsInPlace):
+// open ONLY a read+write DEST file in h5wasm append mode ('a', non-truncating)
+// backed by createWriteRangeFile (tag 'dest'), no source file. Reuses the same
+// dual-bridge dest globals (currentDestFile/destMountPath) so closeFile ->
+// closeAppendFiles tears it down. \`destSize\` seeds writeFileSize with the file's
+// real on-disk size so h5wasm can read the existing bytes (same rationale as
+// openAppend). The Rust side must already hold the file open in a non-truncating
+// mode. Used to patch the small label tables in place (never the video groups).
+function openWrite(sab, controlBytes, destFilename, destSize) {
+  if (!h5wasmModule) throw new Error('h5wasm not initialized');
+  closeFile();
+
+  rangeControl = new Int32Array(sab, 0, 8);
+  rangeData = new Uint8Array(sab, controlBytes || 32);
+  rangeMaxChunk = rangeData.length;
+
+  var dstFname = (((destFilename || 'dest.h5').split('/').pop() || '').split('\\\\').pop()) || 'dest.h5';
+  destMountPath = '/write-dst-' + Date.now();
+  destMountFilename = dstFname;
+  FS.mkdir(destMountPath);
+  createWriteRangeFile(destMountPath, dstFname, destSize);
+  currentDestFile = new h5wasm.File(destMountPath + '/' + dstFname, 'a');
+
+  return { success: true, destKeys: currentDestFile.keys() };
+}
+
 // Per-window byte budget for appendEmbeddedVideos' streamed raw blob copy, and
 // the HDF5 chunk length (elements) for the 1-D embedded video byte dataset.
 // MUST match EMBED_WRITE_WINDOW_BYTES / EMBED_VIDEO_CHUNK_BYTES in write.ts
@@ -11342,6 +11383,112 @@ function appendEmbeddedVideos(entries) {
 
   currentDestFile.flush();
   return { success: true, perVideo: perVideo };
+}
+
+// HDF5 datatype class ids used by the in-place writer port (H5Tget_class).
+var H5T_ENUM_CLASS = 8;
+var H5T_FLOAT_CLASS = 1;
+
+// Worker port of memberColumnTypedArray (write.ts \u2014 KEEP IN LOCKSTEP): pack one
+// logical column (numbers) into the TypedArray matching an on-disk compound
+// member's dtype (int/float, width, signedness). int64 -> Big(U)Int64Array.
+function memberColumnTypedArrayWorker(member, values) {
+  var size = member.size == null ? 8 : member.size;
+  if (member.type === H5T_ENUM_CLASS) {
+    throw new Error('cannot write enum/bool compound member ' + member.name + ' in place');
+  }
+  if (member.type === H5T_FLOAT_CLASS) {
+    return size === 4 ? Float32Array.from(values) : Float64Array.from(values);
+  }
+  var signed = member.signed !== false;
+  if (size === 8) {
+    var big = values.map(function (v) { return BigInt(Math.trunc(v)); });
+    return signed ? BigInt64Array.from(big) : BigUint64Array.from(big);
+  }
+  if (size === 1) return (signed ? Int8Array : Uint8Array).from(values);
+  if (size === 2) return (signed ? Int16Array : Uint16Array).from(values);
+  return (signed ? Int32Array : Uint32Array).from(values);
+}
+
+// Worker port of writeOneTableInPlace (write.ts \u2014 KEEP IN LOCKSTEP): overwrite
+// one already-open dataset from a row-major Float64Array (\`flat\`), resizing first
+// when the row count changed, handling BOTH flat 2-D and 1-D compound layouts.
+// Creates the dataset (chunked flat) if absent AND non-empty. NEVER touches a
+// video group.
+function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colCount, dtype) {
+  var ds = file.get(diskName);
+  if (!ds) {
+    if (rowCount === 0) return;
+    var chunkRows = Math.max(1, Math.min(8192, rowCount));
+    file.create_dataset({
+      name: diskName,
+      data: flat,
+      shape: [rowCount, colCount],
+      maxshape: [null, colCount],
+      chunks: [chunkRows, colCount],
+      dtype: dtype
+    });
+    setStringAttrWorker(file.get(diskName), 'field_names', JSON.stringify(fields));
+    return;
+  }
+  var md = ds.metadata;
+  var members = md && md.compound_type && md.compound_type.members;
+  var isCompound = !!(members && members.length > 0);
+  var curRows = (ds.shape && ds.shape[0]) || 0;
+  if (curRows !== rowCount) {
+    ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
+    // h5wasm silently no-ops resize on a non-resizable dataset \u2014 read the shape
+    // back and THROW so a short write / ghost rows can't corrupt the file (KEEP
+    // IN LOCKSTEP with writeOneTableInPlace in write.ts).
+    var newRows = (ds.shape && ds.shape[0]);
+    if (newRows === undefined || newRows === null) newRows = -1;
+    if (newRows !== rowCount) {
+      throw new Error('in-place resize of ' + diskName + ' did not take effect (had ' + curRows + ' rows, wanted ' + rowCount + ', got ' + newRows + '); the dataset is not resizable - re-save the whole file instead');
+    }
+  }
+  if (rowCount === 0) return;
+  if (isCompound) {
+    var fieldIndex = {};
+    for (var fi = 0; fi < fields.length; fi++) fieldIndex[fields[fi]] = fi;
+    var columns = new Map();
+    for (var mi = 0; mi < members.length; mi++) {
+      var m = members[mi];
+      var ci = fieldIndex[m.name];
+      if (ci === undefined) {
+        throw new Error('in-place update for ' + diskName + ' is missing compound member ' + m.name);
+      }
+      var colVals = new Array(rowCount);
+      for (var r = 0; r < rowCount; r++) colVals[r] = flat[r * colCount + ci];
+      columns.set(m.name, memberColumnTypedArrayWorker(m, colVals));
+    }
+    ds.write_slice([[0, rowCount]], columns);
+  } else {
+    ds.write_slice([[0, rowCount], [0, colCount]], flat);
+  }
+}
+
+// Worker port of writeLabelTablesInPlace (write.ts \u2014 KEEP IN LOCKSTEP): patch the
+// label tables of the open DEST file (openWrite) from the transferred update, then
+// (if metadataJson is set) replace the /metadata json attr. Payload tables carry
+// pre-flattened Float64Array columns (row-major) to avoid structured-cloning a
+// number[][]. Flushes at the end. Never opens a video group.
+function updateLabelsInPlace(payload) {
+  if (!currentDestFile) throw new Error('updateLabelsInPlace: no dest file open (call openWrite first)');
+  var tables = payload.tables || [];
+  for (var t = 0; t < tables.length; t++) {
+    var tb = tables[t];
+    var flat = tb.flat instanceof Float64Array ? tb.flat : new Float64Array(tb.flat);
+    writeOneTableInPlaceWorker(currentDestFile, tb.name, tb.fields, flat, tb.rowCount, tb.colCount, tb.dtype);
+  }
+  if (payload.metadataJson !== undefined && payload.metadataJson !== null) {
+    var mg = currentDestFile.get('metadata');
+    if (mg) {
+      try { mg.delete_attribute('json'); } catch (e) {}
+      setStringAttrWorker(mg, 'json', payload.metadataJson);
+    }
+  }
+  currentDestFile.flush();
+  return { success: true };
 }
 
 function getKeys(path) {
@@ -11968,7 +12115,11 @@ var StreamingH5File = class {
     return result.attrs || {};
   }
   /**
-   * Get dataset metadata (shape, dtype) without reading values.
+   * Get dataset metadata (shape, dtype, and the raw h5wasm `metadata`) without
+   * reading values. `metadata` carries the layout details the in-place
+   * writability gate needs — `compound_type.members` (per-member dtype class,
+   * used to detect Python's non-writable enum/bool columns) and `chunks` (⇒
+   * resizable). Pass this straight to `onDiskTableFromMeta`.
    */
   async getDatasetMeta(path) {
     const result = await this.send("getDatasetMeta", { path });
@@ -12092,11 +12243,11 @@ var StreamingH5Writer = class {
       this.pendingMessages.delete(id);
     }
   }
-  send(type, payload) {
+  send(type, payload, transfer) {
     return new Promise((resolve, reject) => {
       const id = ++this.messageId;
       this.pendingMessages.set(id, { resolve, reject });
-      this.worker.postMessage({ type, payload, id });
+      this.worker.postMessage({ type, payload, id }, transfer ?? []);
     });
   }
   /**
@@ -12162,6 +12313,81 @@ var StreamingH5Writer = class {
    */
   async appendEmbeddedVideos(entries) {
     return this.send("appendEmbeddedVideos", { entries });
+  }
+  /**
+   * SINGLE-file write B-seam for the in-place label save: open ONLY the DEST
+   * file (`destPath`, backed by `destSink`) in h5wasm append mode `"a"` (no
+   * truncate), no source file. The counterpart to {@link openAppend} that
+   * {@link updateLabelsInPlace} uses to patch the small label tables of an
+   * existing `.pkg.slp` without re-copying its embedded video.
+   *
+   * The caller must have already opened `destPath` on the native side in a
+   * NON-truncating mode so its pre-existing bytes are intact; `destSize` seeds
+   * the Worker's writable device with the file's real current size. Requires
+   * cross-origin isolation (SharedArrayBuffer / COOP+COEP).
+   */
+  async openWrite(destSink, destPath, destSize, h5wasmUrl) {
+    if (typeof SharedArrayBuffer === "undefined") {
+      throw new Error(
+        "RangeSink streaming requires SharedArrayBuffer (enable cross-origin isolation: COOP 'same-origin' + COEP 'require-corp')"
+      );
+    }
+    await this.init(h5wasmUrl);
+    this.destSink = destSink;
+    this.sourceReader = void 0;
+    const CONTROL_BYTES = 32;
+    const MAX_CHUNK = 4 * 1024 * 1024;
+    const sab = new SharedArrayBuffer(CONTROL_BYTES + MAX_CHUNK);
+    this.control = new Int32Array(sab, 0, 8);
+    this.data = new Uint8Array(sab, CONTROL_BYTES);
+    await this.send("openWrite", {
+      sab,
+      controlBytes: CONTROL_BYTES,
+      destFilename: destPath,
+      destSize
+    });
+  }
+  /**
+   * Patch the open DEST file's label tables in place from `update` (see
+   * {@link openWrite}). Each table's `number[][]` rows are pre-flattened to a
+   * row-major `Float64Array` here and TRANSFERRED to the Worker (rather than
+   * structured-cloning a nested array), which packs them into the on-disk layout
+   * (flat matrix or compound record) and replaces the `/metadata` json attr when
+   * `update.metadataJson` is set. Never touches any `video{i}/video` group.
+   */
+  async updateLabelsInPlace(update) {
+    const tables = [];
+    const transfer = [];
+    const push = (name, dtype, table) => {
+      if (!table) return;
+      const rowCount = table.rows.length;
+      const colCount = table.fields.length;
+      const flat = new Float64Array(rowCount * colCount);
+      for (let i = 0; i < rowCount; i++) {
+        const row = table.rows[i];
+        const off = i * colCount;
+        for (let j = 0; j < colCount; j++) flat[off + j] = row[j];
+      }
+      tables.push({
+        name,
+        fields: table.fields,
+        flat,
+        rowCount,
+        colCount,
+        dtype
+      });
+      transfer.push(flat.buffer);
+    };
+    push("frames", "<i8", update.frames);
+    push("instances", "<f8", update.instances);
+    push("points", "<f8", update.points);
+    push("pred_points", "<f8", update.predPoints);
+    push("negative_frames", "<i8", update.negativeFrames);
+    return this.send(
+      "updateLabelsInPlace",
+      { tables, metadataJson: update.metadataJson ?? null },
+      transfer
+    );
   }
   /**
    * Close the file and terminate the worker. Best-effort: if the worker-side
@@ -13959,7 +14185,7 @@ function writeLazyMatrixDataset(file, name, columns, fieldNames, dtype) {
     }
     rows.push(row);
   }
-  createMatrixDataset(file, name, rows, fieldNames, dtype);
+  createMatrixDataset(file, name, rows, fieldNames, dtype, true);
 }
 function writeLazyFramesAndInstances(file, store) {
   writeLazyMatrixDataset(
@@ -14014,8 +14240,9 @@ function writeLazyNegativeFrames(file, store) {
     file,
     "negative_frames",
     rows,
-    ["video_id", "frame_idx"],
-    "<i8"
+    NEGATIVE_FRAMES_FIELDS,
+    "<i8",
+    true
   );
 }
 function writeSlpToFileLazy(file, labels) {
@@ -14126,6 +14353,7 @@ var INSTANCES_FIELDS = [
 ];
 var POINTS_FIELDS = ["x", "y", "visible", "complete"];
 var PRED_POINTS_FIELDS = ["x", "y", "visible", "complete", "score"];
+var NEGATIVE_FRAMES_FIELDS = ["video_id", "frame_idx"];
 function numAt(col, i, def = 0) {
   const v = col?.[i];
   return v === void 0 || v === null ? def : Number(v);
@@ -14990,7 +15218,7 @@ async function writeSlp(filename, labels, options) {
     );
   }
 }
-function writeMetadata(file, labels) {
+function buildMetadataJson(labels) {
   const { skeletons, nodes } = serializeSkeletons(labels.skeletons);
   const metadata = {
     version: "2.0.0",
@@ -15002,6 +15230,10 @@ function writeMetadata(file, labels) {
     negative_anchors: {},
     provenance: labels.provenance ?? {}
   };
+  return JSON.stringify(metadata);
+}
+function writeMetadata(file, labels) {
+  const metadataJson = buildMetadataJson(labels);
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
   const hasIdentities = (labels.identities?.length ?? 0) > 0;
   const hasPredicted = labels.rois.some((r) => r.isPredicted) || labels.masks.some((m) => m.isPredicted) || (labels.labelImages ?? []).some((li) => li.isPredicted);
@@ -15040,7 +15272,7 @@ function writeMetadata(file, labels) {
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
-  setStringAttr(metadataGroup, "json", JSON.stringify(metadata));
+  setStringAttr(metadataGroup, "json", metadataJson);
 }
 function serializeSkeletons(skeletons) {
   const nodes = [];
@@ -15186,21 +15418,35 @@ function writeVideoCrops(file, videos) {
   const payload = JSON.stringify(crops);
   file.create_dataset({ name: "video_crops", data: [payload] });
 }
-function writeTracks(file, tracks) {
-  const payload = tracks.map(
-    (track) => JSON.stringify([SPAWNED_ON, track.name])
-  );
-  file.create_dataset({ name: "tracks_json", data: payload });
+function buildTracksJson(tracks) {
+  return tracks.map((track) => JSON.stringify([SPAWNED_ON, track.name]));
 }
-function writeSuggestions(file, suggestions, videos) {
-  const payload = suggestions.map(
+function buildSuggestionsJson(suggestions, videos) {
+  return suggestions.map(
     (suggestion) => JSON.stringify({
       video: String(videos.indexOf(suggestion.video)),
       frame_idx: suggestion.frameIdx,
       group: suggestion.group ?? "default"
     })
   );
-  file.create_dataset({ name: "suggestions_json", data: payload });
+}
+function buildVideoSignatures(videos) {
+  return videos.map(
+    (v) => JSON.stringify({
+      filename: v.filename,
+      shape: v.shape ?? null,
+      embedded: v.hasEmbeddedImages
+    })
+  );
+}
+function writeTracks(file, tracks) {
+  file.create_dataset({ name: "tracks_json", data: buildTracksJson(tracks) });
+}
+function writeSuggestions(file, suggestions, videos) {
+  file.create_dataset({
+    name: "suggestions_json",
+    data: buildSuggestionsJson(suggestions, videos)
+  });
 }
 function writeIdentities(file, identities) {
   if (!identities.length) return;
@@ -15671,7 +15917,16 @@ function emitInstancePoints(target, instance, predicted) {
     }
   }
 }
-function writeLabeledFrames(file, labels) {
+function buildNegativeFrameRows(labels) {
+  const rows = [];
+  for (const frame of labels.labeledFrames) {
+    if (!frame.isNegative) continue;
+    const videoIndex = Math.max(0, labels.videos.indexOf(frame.video));
+    rows.push([videoIndex, frame.frameIdx]);
+  }
+  return rows;
+}
+function buildLabelTableRows(labels) {
   const frames = [];
   const instances = [];
   const points = [];
@@ -15738,61 +15993,247 @@ function writeLabeledFrames(file, labels) {
       instances[instanceId][5] = -1;
     }
   }
-  createMatrixDataset(
-    file,
-    "frames",
+  return {
     frames,
-    ["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"],
-    "<i8"
-  );
+    instances,
+    points,
+    predPoints,
+    negativeFrames: buildNegativeFrameRows(labels)
+  };
+}
+function writeLabeledFrames(file, labels) {
+  const { frames, instances, points, predPoints } = buildLabelTableRows(labels);
+  createMatrixDataset(file, "frames", frames, FRAMES_FIELDS, "<i8", true);
   createMatrixDataset(
     file,
     "instances",
     instances,
-    [
-      "instance_id",
-      "instance_type",
-      "frame_id",
-      "skeleton",
-      "track",
-      "from_predicted",
-      "score",
-      "point_id_start",
-      "point_id_end",
-      "tracking_score"
-    ],
-    "<f8"
+    INSTANCES_FIELDS,
+    "<f8",
+    true
   );
-  createMatrixDataset(
-    file,
-    "points",
-    points,
-    ["x", "y", "visible", "complete"],
-    "<f8"
-  );
+  createMatrixDataset(file, "points", points, POINTS_FIELDS, "<f8", true);
   createMatrixDataset(
     file,
     "pred_points",
     predPoints,
-    ["x", "y", "visible", "complete", "score"],
-    "<f8"
+    PRED_POINTS_FIELDS,
+    "<f8",
+    true
   );
 }
 function writeNegativeFrames(file, labels) {
-  const negativeFrames = labels.labeledFrames.filter((f) => f.isNegative);
-  if (!negativeFrames.length) return;
-  const rows = [];
-  for (const frame of negativeFrames) {
-    const videoIndex = Math.max(0, labels.videos.indexOf(frame.video));
-    rows.push([videoIndex, frame.frameIdx]);
-  }
+  const rows = buildNegativeFrameRows(labels);
+  if (!rows.length) return;
   createMatrixDataset(
     file,
     "negative_frames",
     rows,
-    ["video_id", "frame_idx"],
-    "<i8"
+    NEGATIVE_FRAMES_FIELDS,
+    "<i8",
+    true
   );
+}
+var H5T_ENUM_CLASS = 8;
+var H5T_FLOAT_CLASS = 1;
+function buildLabelTableUpdate(labels, opts) {
+  const r = buildLabelTableRows(labels);
+  const update = {
+    frames: { fields: FRAMES_FIELDS, rows: r.frames },
+    instances: { fields: INSTANCES_FIELDS, rows: r.instances },
+    points: { fields: POINTS_FIELDS, rows: r.points },
+    predPoints: { fields: PRED_POINTS_FIELDS, rows: r.predPoints },
+    negativeFrames: { fields: NEGATIVE_FRAMES_FIELDS, rows: r.negativeFrames }
+  };
+  if (opts?.metadataJson !== void 0) update.metadataJson = opts.metadataJson;
+  return update;
+}
+function onDiskTableFromMeta(meta) {
+  if (!meta || !Array.isArray(meta.shape)) return void 0;
+  const md = meta.metadata;
+  const members = md?.compound_type?.members;
+  const chunked = !!md?.chunks;
+  if (members && members.length > 0) {
+    return {
+      rows: meta.shape[0] ?? 0,
+      cols: members.length,
+      layout: "compound",
+      chunked,
+      members: members.map((m) => ({
+        name: m.name,
+        typeClass: m.type,
+        size: m.size,
+        signed: m.signed
+      }))
+    };
+  }
+  return {
+    rows: meta.shape[0] ?? 0,
+    cols: meta.shape[1] ?? 1,
+    layout: "flat",
+    chunked
+  };
+}
+function buildExpectedSidecars(labels) {
+  return {
+    tracksJson: buildTracksJson(labels.tracks),
+    suggestionsJson: buildSuggestionsJson(labels.suggestions, labels.videos),
+    metadataJson: buildMetadataJson(labels),
+    videos: buildVideoSignatures(labels.videos)
+  };
+}
+function sameStringArray(a, b) {
+  const aa = a ?? [];
+  const bb = b ?? [];
+  if (aa.length !== bb.length) return false;
+  for (let i = 0; i < aa.length; i++) if (aa[i] !== bb[i]) return false;
+  return true;
+}
+function checkInPlaceWritable(update, onDisk, sidecars) {
+  const checks = [
+    ["frames", update.frames, onDisk.frames],
+    ["instances", update.instances, onDisk.instances],
+    ["points", update.points, onDisk.points],
+    ["pred_points", update.predPoints, onDisk.predPoints],
+    ["negative_frames", update.negativeFrames, onDisk.negativeFrames]
+  ];
+  for (const [name, table, od] of checks) {
+    if (!od) continue;
+    if (od.layout === "compound" && od.members) {
+      const enumMember = od.members.find((m) => m.typeClass === H5T_ENUM_CLASS);
+      if (enumMember) {
+        return {
+          ok: false,
+          reason: `table "${name}" member "${enumMember.name}" is an HDF5 enum/bool (typeClass ${H5T_ENUM_CLASS}); h5wasm cannot write it \u2014 re-save the whole file instead`
+        };
+      }
+    }
+    if (table && table.rows.length !== od.rows && !od.chunked) {
+      return {
+        ok: false,
+        reason: `table "${name}" row count changed (${od.rows} \u2192 ${table.rows.length}) but the on-disk dataset is contiguous (not resizable) \u2014 re-save the whole file instead`
+      };
+    }
+  }
+  if (!sameStringArray(sidecars.onDisk.tracksJson, sidecars.expected.tracksJson)) {
+    return {
+      ok: false,
+      reason: "the track set/order changed; an in-place save cannot update tracks_json (the instances table would point into a stale track list) \u2014 re-save the whole file instead"
+    };
+  }
+  if (!sameStringArray(
+    sidecars.onDisk.suggestionsJson,
+    sidecars.expected.suggestionsJson
+  )) {
+    return {
+      ok: false,
+      reason: "the suggestions changed; an in-place save cannot update suggestions_json \u2014 re-save the whole file instead"
+    };
+  }
+  if (!sameStringArray(sidecars.onDisk.videos, sidecars.expected.videos)) {
+    return {
+      ok: false,
+      reason: "the video set changed (a video was added, removed, or repointed); an in-place save cannot update videos_json or the embedded video groups (the frames table would point into a stale video list) \u2014 re-save the whole file instead"
+    };
+  }
+  if (sidecars.onDisk.metadataJson !== sidecars.expected.metadataJson && update.metadataJson === void 0) {
+    return {
+      ok: false,
+      reason: "the /metadata json changed (e.g. a skeleton or provenance edit) but update.metadataJson was not set to carry it \u2014 set update.metadataJson, or re-save the whole file instead"
+    };
+  }
+  return { ok: true };
+}
+function memberColumnTypedArray(member, values) {
+  const size = member.size ?? 8;
+  if (member.type === H5T_ENUM_CLASS) {
+    throw new Error(
+      `cannot write enum/bool compound member "${member.name}" in place`
+    );
+  }
+  if (member.type === H5T_FLOAT_CLASS) {
+    return size === 4 ? Float32Array.from(values) : Float64Array.from(values);
+  }
+  const signed = member.signed !== false;
+  if (size === 8) {
+    const big = values.map((v) => BigInt(Math.trunc(v)));
+    return signed ? BigInt64Array.from(big) : BigUint64Array.from(big);
+  }
+  if (size === 1) return (signed ? Int8Array : Uint8Array).from(values);
+  if (size === 2) return (signed ? Int16Array : Uint16Array).from(values);
+  return (signed ? Int32Array : Uint32Array).from(values);
+}
+function writeOneTableInPlace(file, diskName, table, dtype) {
+  const rowCount = table.rows.length;
+  const colCount = table.fields.length;
+  const ds = file.get(diskName);
+  if (!ds) {
+    if (rowCount === 0) return;
+    createMatrixDataset(file, diskName, table.rows, table.fields, dtype, true);
+    return;
+  }
+  const md = ds.metadata;
+  const members = md?.compound_type?.members;
+  const isCompound = !!(members && members.length > 0);
+  const curRows = ds.shape?.[0] ?? 0;
+  if (curRows !== rowCount) {
+    ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
+    const newRows = ds.shape?.[0] ?? -1;
+    if (newRows !== rowCount) {
+      throw new Error(
+        `in-place resize of "${diskName}" did not take effect (had ${curRows} rows, wanted ${rowCount}, got ${newRows}); the dataset is not resizable \u2014 re-save the whole file instead`
+      );
+    }
+  }
+  if (rowCount === 0) return;
+  if (isCompound) {
+    const fieldIndex = new Map(table.fields.map((f, i) => [f, i]));
+    const columns = /* @__PURE__ */ new Map();
+    for (const m of members) {
+      const ci = fieldIndex.get(m.name);
+      if (ci === void 0) {
+        throw new Error(
+          `in-place update for "${diskName}" is missing compound member "${m.name}"`
+        );
+      }
+      const colVals = table.rows.map((row) => row[ci]);
+      columns.set(m.name, memberColumnTypedArray(m, colVals));
+    }
+    ds.write_slice([[0, rowCount]], columns);
+  } else {
+    const flat = new Float64Array(rowCount * colCount);
+    for (let i = 0; i < rowCount; i++) {
+      const row = table.rows[i];
+      const off = i * colCount;
+      for (let j = 0; j < colCount; j++) flat[off + j] = row[j];
+    }
+    ds.write_slice(
+      [
+        [0, rowCount],
+        [0, colCount]
+      ],
+      flat
+    );
+  }
+}
+function writeLabelTablesInPlace(file, update) {
+  writeOneTableInPlace(file, "frames", update.frames, "<i8");
+  writeOneTableInPlace(file, "instances", update.instances, "<f8");
+  writeOneTableInPlace(file, "points", update.points, "<f8");
+  writeOneTableInPlace(file, "pred_points", update.predPoints, "<f8");
+  if (update.negativeFrames) {
+    writeOneTableInPlace(file, "negative_frames", update.negativeFrames, "<i8");
+  }
+  if (update.metadataJson !== void 0) {
+    const metadataGroup = file.get("metadata");
+    if (metadataGroup) {
+      try {
+        metadataGroup.delete_attribute("json");
+      } catch {
+      }
+      setStringAttr(metadataGroup, "json", update.metadataJson);
+    }
+  }
 }
 async function planEmbedding(labels, embedMode) {
   const plan = /* @__PURE__ */ new Map();
@@ -16022,7 +16463,7 @@ function writeEncodedEmbeddedVideo(file, group, entry) {
   const sizes = blobs.map((b) => b.length);
   return { writtenFns, sizes };
 }
-function createMatrixDataset(file, name, rows, fieldNames, dtype) {
+function createMatrixDataset(file, name, rows, fieldNames, dtype, resizable = false) {
   const rowCount = rows.length;
   const colCount = fieldNames.length;
   const TypedArray = dtype.includes("i") ? dtype.includes("4") ? Int32Array : Float64Array : Float64Array;
@@ -16034,7 +16475,19 @@ function createMatrixDataset(file, name, rows, fieldNames, dtype) {
       data[offset + j] = row[j];
     }
   }
-  file.create_dataset({ name, data, shape: [rowCount, colCount], dtype });
+  if (resizable) {
+    const chunkRows = Math.max(1, Math.min(WRITE_CHUNK_ROWS, rowCount || 1));
+    file.create_dataset({
+      name,
+      data,
+      shape: [rowCount, colCount],
+      maxshape: [null, colCount],
+      chunks: [chunkRows, colCount],
+      dtype
+    });
+  } else {
+    file.create_dataset({ name, data, shape: [rowCount, colCount], dtype });
+  }
   const dataset = file.get(name);
   setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
 }
@@ -21535,6 +21988,16 @@ export {
   saveSlpMergedToSink,
   saveSlpToBytes,
   saveSlpStructureToBytes,
+  buildMetadataJson,
+  buildTracksJson,
+  buildSuggestionsJson,
+  buildVideoSignatures,
+  buildLabelTableRows,
+  buildLabelTableUpdate,
+  onDiskTableFromMeta,
+  buildExpectedSidecars,
+  checkInPlaceWritable,
+  writeLabelTablesInPlace,
   buildSerializableEmbedPlan,
   isAnalysisH5File,
   setLabelImageFileReader,

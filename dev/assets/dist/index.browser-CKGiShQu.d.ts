@@ -314,6 +314,246 @@ declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Prom
  */
 declare function saveSlpStructureToBytes(labels: Labels, options?: SlpWriteOptions): Promise<Uint8Array>;
 /**
+ * Build the exact JSON string written into the `/metadata` `json` attribute by
+ * {@link writeMetadata}. Exposed so the in-place saver can re-emit that attribute
+ * (via {@link writeLabelTablesInPlace}) without re-serializing the whole file.
+ * The caller decides WHEN metadata actually changed and passes this into
+ * {@link buildLabelTableUpdate}'s `metadataJson` option; a value-only pose edit
+ * leaves it unset so the attribute is untouched.
+ */
+declare function buildMetadataJson(labels: Labels): string;
+/**
+ * Serialize `tracks` to the exact per-track JSON strings written into the
+ * `tracks_json` dataset. Shared by {@link writeTracks} and the in-place
+ * writability gate ({@link buildExpectedSidecars}) so the gate's comparison to
+ * the on-disk `tracks_json` is byte-exact.
+ */
+declare function buildTracksJson(tracks: Array<{
+    name: string;
+}>): string[];
+/**
+ * Serialize `suggestions` to the exact per-suggestion JSON strings written into
+ * the `suggestions_json` dataset. Shared by {@link writeSuggestions} and the
+ * in-place writability gate so the comparison is byte-exact.
+ */
+declare function buildSuggestionsJson(suggestions: SuggestionFrame[], videos: Video[]): string[];
+/**
+ * A cheap per-video signature — filename(s), shape, and embedded-flag — that
+ * uniquely identifies a video WITHOUT reproducing the full `videos_json`
+ * serialization (which depends on backend metadata and is easy to diff
+ * spuriously). Used by the in-place writability gate to refuse an edit that
+ * added/removed/repointed a video (which would leave `videos_json` — and the
+ * embedded `video{i}` groups — stale relative to the rewritten frames table).
+ * The caller builds the on-disk side from the videos it parsed on open, and the
+ * expected side (via {@link buildExpectedSidecars}) from the current labels.
+ */
+declare function buildVideoSignatures(videos: Video[]): string[];
+/** The five mutable label tables as `number[][]` matrices (shared row builder). */
+interface LabelTableRows {
+    frames: number[][];
+    instances: number[][];
+    points: number[][];
+    predPoints: number[][];
+    negativeFrames: number[][];
+}
+/**
+ * Build the `frames`/`instances`/`points`/`pred_points`/`negative_frames` row
+ * matrices from `labels`, exactly as the eager writer would serialize them.
+ *
+ * Shared by {@link writeLabeledFrames} (the full save path) and
+ * {@link buildLabelTableUpdate} (the in-place save path) so both emit
+ * byte-identical columns using the same field-name constants. Contains no HDF5
+ * I/O — pure `Labels` → `number[][]`.
+ */
+declare function buildLabelTableRows(labels: Labels): LabelTableRows;
+/** One label table as logical rows + its column (field) names. */
+interface LabelTable {
+    fields: string[];
+    rows: number[][];
+}
+/**
+ * The small, mutable structure of a `.pkg.slp`, ready to patch in place. Each
+ * table is `{ fields, rows }` (logical `number[][]`, layout-agnostic — the writer
+ * packs it into whatever on-disk layout the target dataset uses). `metadataJson`
+ * is set only when metadata actually changed (caller decides) so a value-only
+ * pose edit leaves the `/metadata` attribute untouched.
+ */
+interface LabelTableUpdate {
+    frames: LabelTable;
+    instances: LabelTable;
+    points: LabelTable;
+    predPoints: LabelTable;
+    negativeFrames?: LabelTable;
+    metadataJson?: string;
+}
+/**
+ * Build a {@link LabelTableUpdate} from `labels` — the in-place counterpart to
+ * the eager writer. Reuses {@link buildLabelTableRows} so the columns are
+ * byte-identical to a full save. `negativeFrames` is always included (possibly
+ * with 0 rows) so an in-place save can also empty an existing `negative_frames`
+ * table when the user removed all negative frames. Pass `opts.metadataJson`
+ * (e.g. from {@link buildMetadataJson}) only when metadata changed.
+ */
+declare function buildLabelTableUpdate(labels: Labels, opts?: {
+    metadataJson?: string;
+}): LabelTableUpdate;
+/** One on-disk compound member's identity (for the writability gate). */
+interface OnDiskMember {
+    name: string;
+    /** HDF5 datatype class id (`H5Tget_class`): 0=int, 1=float, 8=enum. */
+    typeClass: number;
+    /** Member size in bytes. */
+    size?: number;
+    /** Whether the integer member is signed (h5wasm reports float as unsigned). */
+    signed?: boolean;
+}
+/** On-disk shape/layout of one label table, as seen by the writability gate. */
+interface OnDiskTable {
+    /** Current row count (axis-0 extent). */
+    rows: number;
+    /** Column count (matrix width, or compound member count). */
+    cols: number;
+    /** Storage layout: a 2-D numeric matrix, or a 1-D compound record dataset. */
+    layout: "flat" | "compound";
+    /** Whether the dataset is chunked (⇒ resizable on axis 0). */
+    chunked?: boolean;
+    /** Compound members (only for `layout: "compound"`). */
+    members?: OnDiskMember[];
+}
+/** The on-disk state of the label tables the gate inspects. */
+interface OnDiskTables {
+    frames?: OnDiskTable;
+    instances?: OnDiskTable;
+    points?: OnDiskTable;
+    predPoints?: OnDiskTable;
+    negativeFrames?: OnDiskTable;
+}
+/** Result of {@link checkInPlaceWritable}. */
+type InPlaceWritable = {
+    ok: true;
+} | {
+    ok: false;
+    reason: string;
+};
+/** Minimal `getDatasetMeta` shape consumed by {@link onDiskTableFromMeta}. */
+interface DatasetMetaLike {
+    shape?: number[];
+    metadata?: {
+        chunks?: unknown;
+        compound_type?: {
+            members?: Array<{
+                name: string;
+                type: number;
+                size?: number;
+                signed?: boolean;
+            }>;
+        };
+    };
+}
+/**
+ * Convert a `getDatasetMeta` result (from the streaming reader) into an
+ * {@link OnDiskTable} for the writability gate. Returns `undefined` when the
+ * dataset is absent. Detects compound vs flat from the presence of
+ * `compound_type.members`, and resizability from the presence of `chunks`.
+ */
+declare function onDiskTableFromMeta(meta: DatasetMetaLike | null | undefined): OnDiskTable | undefined;
+/**
+ * The JSON sidecar datasets/attribute that the in-place writer does NOT rewrite
+ * but which the label tables reference by index — so an edit that changed any of
+ * them would leave the (rewritten) tables pointing into stale sidecar data. The
+ * gate compares these to prove the save is confined to the label tables (+ the
+ * `/metadata` json attr). `tracks_json` / `suggestions_json` are the on-disk
+ * per-element JSON string arrays; `metadataJson` is the `/metadata` `json`
+ * attribute string. `null` means the dataset/attr is absent.
+ *
+ * The video SET is covered SEMANTICALLY via `videos` (per-video signatures, see
+ * {@link buildVideoSignatures}) rather than a byte-exact `videos_json` compare.
+ *
+ * NOT covered here (the in-place path is only safe for edits that leave these
+ * unchanged; the caller must guarantee it, and the app's post-write verify is the
+ * final backstop): `identities_json`, `sessions_json`, and the annotation
+ * datasets (rois/masks/bboxes/centroids/label_images) — their serializers are
+ * complex and reproducing them risks spurious refusals. Extending the gate to
+ * those is a follow-up.
+ */
+interface OnDiskSidecars {
+    tracksJson: string[] | null;
+    suggestionsJson: string[] | null;
+    metadataJson: string | null;
+    /** Per-video signatures (see {@link buildVideoSignatures}). */
+    videos: string[] | null;
+}
+/**
+ * Serialize the sidecars a `labels` would write, for exact comparison against
+ * {@link OnDiskSidecars} in {@link checkInPlaceWritable}. Reuses the same
+ * serializers the full writer uses ({@link buildTracksJson},
+ * {@link buildSuggestionsJson}, {@link buildMetadataJson}) so the comparison is
+ * byte-exact.
+ */
+declare function buildExpectedSidecars(labels: Labels): OnDiskSidecars;
+/**
+ * Decide whether `update` can be written into `onDisk` IN PLACE, or whether the
+ * caller must fall back to a full re-save. NOT writable when:
+ *  - any table's compound members include an HDF5 enum/bool (typeClass 8) —
+ *    Python-written points store `visible`/`complete` this way and h5wasm cannot
+ *    write them; OR
+ *  - a table's row count changes (structural edit) but the on-disk dataset is
+ *    contiguous (not chunked ⇒ not resizable) — an old file written before the
+ *    chunked-table change (value-only edits are fine on contiguous); OR
+ *  - the track set/order or the suggestions changed — the in-place writer does
+ *    NOT rewrite `tracks_json` / `suggestions_json`, so the (rewritten) instances
+ *    table's `track` indices would point into a STALE `tracks_json` → silent
+ *    track/suggestion corruption on reload (the HIGH bug this guards); OR
+ *  - the VIDEO SET changed (a video was added/removed/repointed) — the in-place
+ *    writer does NOT rewrite `videos_json` or the embedded `video{i}` groups, so
+ *    the (rewritten) frames table's `video` indices would point into a stale
+ *    video list. Compared semantically via per-video signatures
+ *    ({@link buildVideoSignatures}), not a byte-exact `videos_json` diff; OR
+ *  - the `/metadata` json changed (e.g. a skeleton or provenance edit) but
+ *    `update.metadataJson` was not set to carry that change into the attr.
+ *
+ * A pose/point/visibility/score/track-membership-preserving edit still passes.
+ *
+ * CALLER CONTRACT:
+ *  - `onDisk` MUST describe every label table that actually exists on disk
+ *    (frames/instances/points/pred_points/negative_frames) — an omitted table
+ *    skips its resizability check here; the post-resize assertion inside
+ *    {@link writeLabelTablesInPlace} is the loud backstop if one is missed.
+ *  - This gate proves confinement for the label tables + tracks + suggestions +
+ *    videos + metadata ONLY. It does NOT check `identities_json`, `sessions_json`,
+ *    or the annotation datasets (rois/masks/bboxes/centroids/label_images). The
+ *    in-place path therefore ASSUMES those are unchanged; the caller (app) MUST
+ *    NOT route an edit that touches them to in-place (route it to a full re-save),
+ *    and its post-write verify is the final backstop.
+ * Pure function (no I/O): the caller reads `sidecars.onDisk` from the file (the
+ * videos it parsed on open) and builds `sidecars.expected` via
+ * {@link buildExpectedSidecars}.
+ */
+declare function checkInPlaceWritable(update: LabelTableUpdate, onDisk: OnDiskTables, sidecars: {
+    onDisk: OnDiskSidecars;
+    expected: OnDiskSidecars;
+}): InPlaceWritable;
+/**
+ * Patch the label tables of an ALREADY-OPEN, writable h5wasm `File` (opened r+ /
+ * mode `"a"`) in place from `update`, then (if `update.metadataJson` is set)
+ * replace the `/metadata` `json` attribute. Works on any open h5wasm File —
+ * Node FS, MEMFS, or the bridged write device (the streaming worker).
+ *
+ * DATA SAFETY: only the frames/instances/points/pred_points/negative_frames
+ * datasets and the `/metadata` attribute are ever referenced — the embedded
+ * `video{i}/video` groups are never opened, read, or written. The caller is
+ * responsible for having gated with {@link checkInPlaceWritable} (and, ideally,
+ * a post-write verify) before calling this: the gate proves the edit is confined
+ * to these tables (tracks/suggestions/metadata unchanged or carried). As a
+ * backstop for an incomplete gate, each per-table resize is asserted to have
+ * actually taken effect (h5wasm silently no-ops resize on a non-resizable
+ * dataset) — a resize that can't happen THROWS here rather than writing ghost
+ * rows, so the caller falls back to a full re-save.
+ *
+ * Does NOT flush or close the file — the caller owns the file lifecycle.
+ */
+declare function writeLabelTablesInPlace(file: any, update: LabelTableUpdate): void;
+/**
  * Serializable projection of one raw-copyable {@link EmbedPlanEntry}, safe to
  * pass across a Web Worker boundary via `structuredClone` (Task 1.1 of the
  * streaming pkg.slp writer). Contains only plain data — no `Video`/backend
@@ -615,11 +855,16 @@ declare class StreamingH5File {
      */
     getAttrs(path: string): Promise<Record<string, unknown>>;
     /**
-     * Get dataset metadata (shape, dtype) without reading values.
+     * Get dataset metadata (shape, dtype, and the raw h5wasm `metadata`) without
+     * reading values. `metadata` carries the layout details the in-place
+     * writability gate needs — `compound_type.members` (per-member dtype class,
+     * used to detect Python's non-writable enum/bool columns) and `chunks` (⇒
+     * resizable). Pass this straight to `onDiskTableFromMeta`.
      */
     getDatasetMeta(path: string): Promise<{
         shape: number[];
         dtype: string;
+        metadata?: Record<string, unknown>;
     }>;
     /**
      * Read a dataset's value.
@@ -697,6 +942,28 @@ declare class StreamingH5Writer {
      * mounts via `closeAppendFiles`).
      */
     appendEmbeddedVideos(entries: SerializableEmbedEntry[]): Promise<H5WorkerResponse>;
+    /**
+     * SINGLE-file write B-seam for the in-place label save: open ONLY the DEST
+     * file (`destPath`, backed by `destSink`) in h5wasm append mode `"a"` (no
+     * truncate), no source file. The counterpart to {@link openAppend} that
+     * {@link updateLabelsInPlace} uses to patch the small label tables of an
+     * existing `.pkg.slp` without re-copying its embedded video.
+     *
+     * The caller must have already opened `destPath` on the native side in a
+     * NON-truncating mode so its pre-existing bytes are intact; `destSize` seeds
+     * the Worker's writable device with the file's real current size. Requires
+     * cross-origin isolation (SharedArrayBuffer / COOP+COEP).
+     */
+    openWrite(destSink: RangeSink, destPath: string, destSize: number, h5wasmUrl?: string): Promise<void>;
+    /**
+     * Patch the open DEST file's label tables in place from `update` (see
+     * {@link openWrite}). Each table's `number[][]` rows are pre-flattened to a
+     * row-major `Float64Array` here and TRANSFERRED to the Worker (rather than
+     * structured-cloning a nested array), which packs them into the on-disk layout
+     * (flat matrix or compound record) and replaces the `/metadata` json attr when
+     * `update.metadataJson` is set. Never touches any `video{i}/video` group.
+     */
+    updateLabelsInPlace(update: LabelTableUpdate): Promise<H5WorkerResponse>;
     /**
      * Close the file and terminate the worker. Best-effort: if the worker-side
      * close fails, the worker is still terminated so no handle is leaked.
@@ -2704,4 +2971,4 @@ interface StreamingSlpOptions {
  */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { MediaBunnyVideoBackend as $, urlFromConfirmation as A, BlobByteSource as B, CropVideoBackend as C, checkDownloadHost as D, openGdrive as E, DEFAULT_MAX_BYTES as F, StreamingH5File as G, StreamingH5Writer as H, type ImageBytesReader as I, openStreamingH5 as J, openH5Worker as K, isStreamingSupported as L, isRangeSource as M, serviceRangeBridge as N, serviceWriteBridge as O, type PaletteName as P, serviceTruncateBridge as Q, type ReadCocoOptions as R, SeqVideoBackend as S, type StreamingH5Source as T, UnsupportedVideoFormatError as U, type VideoOptions as V, type RangeSource as W, type RangeSink as X, readSlpStreaming as Y, Mp4BoxVideoBackend as Z, type MediaBunnyOptions as _, type RenderOptions as a, type CocoRle as a$, StreamingHdf5VideoBackend as a0, type ImageVideoOptions as a1, computePrefetchWindow as a2, ImageVideoBackend as a3, loadSlp as a4, saveSlp as a5, loadAnalysisH5 as a6, saveAnalysisH5 as a7, saveAnalysisH5ToBytes as a8, loadSlpSet as a9, GDRIVE_HOSTS as aA, SENSITIVE_HEADERS as aB, SENSITIVE_QUERY_PARAMS as aC, RETRYABLE_STATUSES as aD, isUrl as aE, isGdriveUrl as aF, redactUrl as aG, redactedCauseSummary as aH, RemoteIOError as aI, type ResolvedUrl as aJ, resolveUrl as aK, statusToMessage as aL, raiseRemote as aM, identityHeaders as aN, stripCrossOriginHeaders as aO, withRetries as aP, parseRetryAfterMs as aQ, fetchRetrying as aR, headOrRangeProbe as aS, type GeoJSONFeature as aT, type GeoJSONFeatureCollection as aU, roisToGeoJSON as aV, roisFromGeoJSON as aW, writeGeoJSON as aX, readGeoJSON as aY, type CocoCategory as aZ, type CocoImage as a_, saveSlpSet as aa, loadVideo as ab, loadLabelImages as ac, setLabelImageFileReader as ad, type PagesAs as ae, type LoadLabelImagesOptions as af, type LabelImageFileReader as ag, saveSlpToBytes as ah, saveSlpStructureToBytes as ai, openSlpWriter as aj, SlpStreamWriter as ak, saveSlpMergedFromStores as al, saveSlpMergedToSink as am, type SlpWriteHeader as an, type AppendStoreOptions as ao, type SlpWriteSink as ap, type MergeStoresOptions as aq, buildSerializableEmbedPlan as ar, type SerializableEmbedEntry as as, type SerializableEmbedPlan as at, isAnalysisH5File as au, labelsToCsv as av, saveLabelsCsv as aw, type CsvExportOptions as ax, URL_SCHEMES as ay, CLOUD_SCHEMES as az, type RGB as b, type CocoSegmentation as b0, type CocoAnnotation as b1, type CocoJson as b2, isCocoData as b3, parseCocoJson as b4, createSkeletonFromCategory as b5, decodeKeypoints as b6, decodeCompressedRleCounts as b7, decodeCocoRle as b8, decodeSegmentation as b9, drawDiamond as bA, drawTriangle as bB, drawCross as bC, drawTrails as bD, getMarkerFunction as bE, MARKER_FUNCTIONS as bF, type DrawTrailsOptions as bG, resolveTrailNode as bH, computeTrails as bI, nTrailPaletteColors as bJ, collectTracks as bK, type TrailTarget as bL, type Trail as bM, RenderContext as bN, InstanceContext as bO, drawMasks as bP, drawLabelImage as bQ, clampAlpha as bR, pickColor as bS, readCoco as ba, readCocoSet as bb, toNumpy as bc, fromNumpy as bd, labelsFromNumpy as be, decodeYamlSkeleton as bf, encodeYamlSkeleton as bg, readSkeletonJson as bh, writeSkeletonJson as bi, readTrainingConfigSkeletons as bj, readTrainingConfigSkeleton as bk, isTrainingConfig as bl, type RGBA as bm, type ColorSpec as bn, type ColorScheme as bo, type MarkerShape as bp, type Overlay as bq, type VideoOverlay as br, NAMED_COLORS as bs, PALETTES as bt, getPalette as bu, resolveColor as bv, rgbToCSS as bw, determineColorScheme as bx, drawCircle as by, drawSquare as bz, type RawLabelImage as c, anchorCandidate as d, derivePrefixSwap as e, applyPrefixSwap as f, getImageBytesReader as g, resolveFirstExisting as h, formatPath as i, posixDirname as j, posixBasename as k, posixJoin as l, type PosixPath as m, type PrefixSwap as n, type ResolvedVideoSource as o, parsePath as p, SeqHeader as q, resolveVideoSource as r, setImageBytesReader as s, SeqIndex as t, type ByteSource as u, videoPathCandidates as v, createVideoBackend as w, type VideoBackendType as x, type CropWrapOptions as y, parseGdrive as z };
+export { MediaBunnyVideoBackend as $, urlFromConfirmation as A, BlobByteSource as B, CropVideoBackend as C, checkDownloadHost as D, openGdrive as E, DEFAULT_MAX_BYTES as F, StreamingH5File as G, StreamingH5Writer as H, type ImageBytesReader as I, openStreamingH5 as J, openH5Worker as K, isStreamingSupported as L, isRangeSource as M, serviceRangeBridge as N, serviceWriteBridge as O, type PaletteName as P, serviceTruncateBridge as Q, type ReadCocoOptions as R, SeqVideoBackend as S, type StreamingH5Source as T, UnsupportedVideoFormatError as U, type VideoOptions as V, type RangeSource as W, type RangeSink as X, readSlpStreaming as Y, Mp4BoxVideoBackend as Z, type MediaBunnyOptions as _, type RenderOptions as a, RemoteIOError as a$, StreamingHdf5VideoBackend as a0, type ImageVideoOptions as a1, computePrefetchWindow as a2, ImageVideoBackend as a3, loadSlp as a4, saveSlp as a5, loadAnalysisH5 as a6, saveAnalysisH5 as a7, saveAnalysisH5ToBytes as a8, loadSlpSet as a9, buildExpectedSidecars as aA, checkInPlaceWritable as aB, onDiskTableFromMeta as aC, writeLabelTablesInPlace as aD, type LabelTable as aE, type LabelTableRows as aF, type LabelTableUpdate as aG, type OnDiskMember as aH, type OnDiskTable as aI, type OnDiskTables as aJ, type OnDiskSidecars as aK, type InPlaceWritable as aL, type DatasetMetaLike as aM, isAnalysisH5File as aN, labelsToCsv as aO, saveLabelsCsv as aP, type CsvExportOptions as aQ, URL_SCHEMES as aR, CLOUD_SCHEMES as aS, GDRIVE_HOSTS as aT, SENSITIVE_HEADERS as aU, SENSITIVE_QUERY_PARAMS as aV, RETRYABLE_STATUSES as aW, isUrl as aX, isGdriveUrl as aY, redactUrl as aZ, redactedCauseSummary as a_, saveSlpSet as aa, loadVideo as ab, loadLabelImages as ac, setLabelImageFileReader as ad, type PagesAs as ae, type LoadLabelImagesOptions as af, type LabelImageFileReader as ag, saveSlpToBytes as ah, saveSlpStructureToBytes as ai, openSlpWriter as aj, SlpStreamWriter as ak, saveSlpMergedFromStores as al, saveSlpMergedToSink as am, type SlpWriteHeader as an, type AppendStoreOptions as ao, type SlpWriteSink as ap, type MergeStoresOptions as aq, buildSerializableEmbedPlan as ar, type SerializableEmbedEntry as as, type SerializableEmbedPlan as at, buildLabelTableRows as au, buildLabelTableUpdate as av, buildMetadataJson as aw, buildTracksJson as ax, buildSuggestionsJson as ay, buildVideoSignatures as az, type RGB as b, computeTrails as b$, type ResolvedUrl as b0, resolveUrl as b1, statusToMessage as b2, raiseRemote as b3, identityHeaders as b4, stripCrossOriginHeaders as b5, withRetries as b6, parseRetryAfterMs as b7, fetchRetrying as b8, headOrRangeProbe as b9, readSkeletonJson as bA, writeSkeletonJson as bB, readTrainingConfigSkeletons as bC, readTrainingConfigSkeleton as bD, isTrainingConfig as bE, type RGBA as bF, type ColorSpec as bG, type ColorScheme as bH, type MarkerShape as bI, type Overlay as bJ, type VideoOverlay as bK, NAMED_COLORS as bL, PALETTES as bM, getPalette as bN, resolveColor as bO, rgbToCSS as bP, determineColorScheme as bQ, drawCircle as bR, drawSquare as bS, drawDiamond as bT, drawTriangle as bU, drawCross as bV, drawTrails as bW, getMarkerFunction as bX, MARKER_FUNCTIONS as bY, type DrawTrailsOptions as bZ, resolveTrailNode as b_, type GeoJSONFeature as ba, type GeoJSONFeatureCollection as bb, roisToGeoJSON as bc, roisFromGeoJSON as bd, writeGeoJSON as be, readGeoJSON as bf, type CocoCategory as bg, type CocoImage as bh, type CocoRle as bi, type CocoSegmentation as bj, type CocoAnnotation as bk, type CocoJson as bl, isCocoData as bm, parseCocoJson as bn, createSkeletonFromCategory as bo, decodeKeypoints as bp, decodeCompressedRleCounts as bq, decodeCocoRle as br, decodeSegmentation as bs, readCoco as bt, readCocoSet as bu, toNumpy as bv, fromNumpy as bw, labelsFromNumpy as bx, decodeYamlSkeleton as by, encodeYamlSkeleton as bz, type RawLabelImage as c, nTrailPaletteColors as c0, collectTracks as c1, type TrailTarget as c2, type Trail as c3, RenderContext as c4, InstanceContext as c5, drawMasks as c6, drawLabelImage as c7, clampAlpha as c8, pickColor as c9, anchorCandidate as d, derivePrefixSwap as e, applyPrefixSwap as f, getImageBytesReader as g, resolveFirstExisting as h, formatPath as i, posixDirname as j, posixBasename as k, posixJoin as l, type PosixPath as m, type PrefixSwap as n, type ResolvedVideoSource as o, parsePath as p, SeqHeader as q, resolveVideoSource as r, setImageBytesReader as s, SeqIndex as t, type ByteSource as u, videoPathCandidates as v, createVideoBackend as w, type VideoBackendType as x, type CropWrapOptions as y, parseGdrive as z };
