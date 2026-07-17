@@ -628,7 +628,10 @@ export class StreamingH5Writer {
   private destSink?: RangeSink;
   // Dual-bridge only (set by openAppend): the source file's reader. A 'source'-
   // tagged range request routes here instead of destSink.
-  private sourceReader?: (offset: number, length: number) => Promise<Uint8Array>;
+  private sourceReader?: (
+    offset: number,
+    length: number,
+  ) => Promise<Uint8Array>;
   private control?: Int32Array;
   private data?: Uint8Array;
 
@@ -688,7 +691,11 @@ export class StreamingH5Writer {
     }
     if (msg && msg.type === "truncateRequest") {
       if (this.control && this.destSink) {
-        void serviceTruncateBridge(this.control, this.destSink, msg.length ?? 0);
+        void serviceTruncateBridge(
+          this.control,
+          this.destSink,
+          msg.length ?? 0,
+        );
       }
       return;
     }
