@@ -11,8 +11,14 @@ import {
   datasetValueToString,
   parseMetadataJson,
   missingMetadataJsonError,
+  parseJsonEntry,
+  sessionsReadError,
+  reconstructColumnarFrameGroups,
+  type SessionData,
+  type SessionPointMatrix,
   parseSkeletons,
   resolveCameraKey,
+  normalizeCameraSize,
   reconstructInstance3D,
   resolveIdentity,
   resolveVideoFilename,
@@ -49,6 +55,7 @@ import {
   RecordingSession,
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
+import { Embedding } from "../../model/embedding.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
 import {
@@ -237,7 +244,7 @@ export async function readSlp(
     }
 
     report(5); // Reading identities
-    const identities = readIdentities(file.get("identities_json"));
+    const identities = readIdentityCatalog(file);
     report(6); // Reading sessions
     const sessions = readSessions(
       file.get("sessions_json"),
@@ -245,6 +252,7 @@ export async function readSlp(
       skeletons,
       identities,
       options?.rawSessions ?? false,
+      readSessionDataEager(file, emscripten),
     );
     report(7); // Reading annotations
     const allInstances = labeledFrames.flatMap((f) => f.instances);
@@ -261,6 +269,35 @@ export async function readSlp(
       videos,
       tracks,
       allInstances,
+    );
+
+    // Per-detection re-ID identity (SLP 2.5) + category (SLP 2.7): attach onto each
+    // modality's ordered detection list (index == owner_id). No-op on older files.
+    const pdMaps = readPerDetectionMaps(file, emscripten);
+    attachOwnerType(pdMaps, 0, allInstances, identities);
+    attachOwnerType(
+      pdMaps,
+      2,
+      centroidTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      3,
+      maskTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      4,
+      bboxTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      5,
+      roiTuples.map((t) => t[0]),
+      identities,
     );
 
     // Distribute annotations into LabeledFrames using routing tuples
@@ -516,7 +553,7 @@ export async function readSlpLazy(
     // Read sessions — grouping is captured as index refs only (no frame
     // materialization); refs resolve lazily via the injected frame resolver.
     report(5); // Reading identities
-    const identities = readIdentities(file.get("identities_json"));
+    const identities = readIdentityCatalog(file);
     report(6); // Reading sessions
     const sessions = readSessions(
       file.get("sessions_json"),
@@ -524,6 +561,7 @@ export async function readSlpLazy(
       skeletons,
       identities,
       options?.rawSessions ?? false,
+      readSessionDataEager(file, emscripten),
     );
     report(7); // Reading annotations
     const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
@@ -534,6 +572,42 @@ export async function readSlpLazy(
     const maskTuples = readMasks(file, videos, tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
     const labelImageTuples = readLabelImages(file, videos, tracks);
+
+    // Per-detection identity (SLP 2.5) + category (SLP 2.7). Instances materialize
+    // lazily, so the OWNER_INSTANCE maps + catalogs are handed to the store and
+    // attached in materializeFrame; the other modalities are concrete and attached
+    // now.
+    const pdMaps = readPerDetectionMaps(file, emscripten);
+    store.identities = identities;
+    store._instanceIdentityLinks = pdMaps.idLinks.get(0);
+    store._instanceEmbeddings = pdMaps.idEmbs.get(0);
+    store.categoryCatalog = pdMaps.categoryCatalog;
+    store._instanceCategoryLinks = pdMaps.catLinks.get(0);
+    store._instanceCategoryEmbeddings = pdMaps.catEmbs.get(0);
+    attachOwnerType(
+      pdMaps,
+      2,
+      centroidTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      3,
+      maskTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      4,
+      bboxTuples.map((t) => t[0]),
+      identities,
+    );
+    attachOwnerType(
+      pdMaps,
+      5,
+      roiTuples.map((t) => t[0]),
+      identities,
+    );
 
     // Build per-frame annotation dicts for lazy materialization
     const buildAnnByFrame = <T>(
@@ -1144,21 +1218,352 @@ function readIdentities(dataset: any): Identity[] {
   return identities;
 }
 
+/** Decode a vlen-string dataset element (string / bytes) to a plain string. */
+function decodeStr(v: unknown): string {
+  if (typeof v === "string") return v;
+  if (v instanceof Uint8Array) return textDecoder.decode(v);
+  return String(v ?? "");
+}
+
+/**
+ * Read the Python-compatible `/identity` group (SLP 2.5): a native vlen `name`
+ * catalog + optional EAV metadata (`meta_owner`/`meta_key`/`meta_val`). Color is
+ * recovered from `metadata["color"]` back onto `Identity.color`. Returns `[]` when
+ * the group is absent. Used as the fallback when a file has no legacy
+ * `identities_json` (i.e. a Python-written file); JS-written files carry both and
+ * prefer the typed `identities_json`.
+ */
+function readIdentityGroup(file: any): Identity[] {
+  if (!file.get("identity") || !file.get("identity/name")) return [];
+  const names = (file.get("identity/name").value ?? []).map(decodeStr);
+  const metadata: Record<string, unknown>[] = names.map(() => ({}));
+  const ownerDs = file.get("identity/meta_owner");
+  if (ownerDs) {
+    const owners = Array.from(ownerDs.value ?? []).map(Number);
+    const keys = (file.get("identity/meta_key")?.value ?? []).map(decodeStr);
+    const vals = (file.get("identity/meta_val")?.value ?? []).map(decodeStr);
+    owners.forEach((o: number, i: number) => {
+      if (metadata[o]) metadata[o][keys[i]] = vals[i];
+    });
+  }
+  return names.map((name: string, i: number) => {
+    const meta = metadata[i];
+    const color = typeof meta.color === "string" ? meta.color : undefined;
+    const { color: _color, ...rest } = meta;
+    return new Identity({ name, color, metadata: rest });
+  });
+}
+
+/**
+ * Read the identity catalog, preferring the legacy typed `identities_json` (JS-native,
+ * present on JS-written files) and falling back to the Python `/identity` group (on
+ * Python-written files). Both are written by the JS writer (dual-write).
+ */
+function readIdentityCatalog(file: any): Identity[] {
+  const json = file.get("identities_json");
+  if (json) return readIdentities(json);
+  return readIdentityGroup(file);
+}
+
+/** A detection that can carry a per-detection identity/embedding (SLP 2.5). */
+interface IdentityBearingRead {
+  identity?: Identity | null;
+  identityScore?: number | null;
+  identityEmbedding?: Embedding | null;
+  category?: string | null;
+  categoryScore?: number | null;
+  categoryEmbedding?: Embedding | null;
+}
+
+/**
+ * Read a per-detection links table — `/identity/links` (SLP 2.5) or
+ * `/categories/links` (SLP 2.7) — a genuine compound (Python) or a
+ * flat-2-D+`field_names` (JS) `(owner_type, owner_id, <idxField>, <scoreField>)`
+ * table via `normalizeStructDataset` (handles both). Returns
+ * `owner_type → owner_id → [idx, score|null]` (NaN score → null); empty when the
+ * dataset is absent. `i8`/`u8` columns are `Number()`-coerced.
+ */
+function readLinksTable(
+  file: any,
+  path: string,
+  idxField: string,
+  scoreField: string,
+  emscripten?: unknown,
+): Map<number, Map<number, [number, number | null]>> {
+  const result = new Map<number, Map<number, [number, number | null]>>();
+  const ds = file.get(path);
+  if (!ds) return result;
+  const cols = normalizeStructDataset(ds, emscripten);
+  const ot = cols.owner_type ?? [];
+  const oid = cols.owner_id ?? [];
+  const idx = cols[idxField] ?? [];
+  const sc = cols[scoreField] ?? [];
+  for (let i = 0; i < ot.length; i += 1) {
+    const ownerType = Number(ot[i]);
+    const ownerId = Number(oid[i]);
+    const score = Number(sc[i]);
+    let sub = result.get(ownerType);
+    if (!sub) {
+      sub = new Map();
+      result.set(ownerType, sub);
+    }
+    sub.set(ownerId, [Number(idx[i]), Number.isNaN(score) ? null : score]);
+  }
+  return result;
+}
+
+const readIdentityLinks = (file: any, emscripten?: unknown) =>
+  readLinksTable(
+    file,
+    "identity/links",
+    "identity_idx",
+    "identity_score",
+    emscripten,
+  );
+
+const readCategoryLinks = (file: any, emscripten?: unknown) =>
+  readLinksTable(
+    file,
+    "categories/links",
+    "category_idx",
+    "category_score",
+    emscripten,
+  );
+
+/** Read the `/categories/name` catalog (SLP 2.7) as plain strings. */
+function readCategoryCatalog(file: any): string[] {
+  const ds = file.get("categories/name");
+  if (!ds) return [];
+  return (ds.value ?? []).map(decodeStr);
+}
+
+/**
+ * Read one `/embeddings` triple — `(vectors, owner_type, owner_id)` (identity, SLP
+ * 2.5) or `(category_vectors, category_owner_type, category_owner_id)` (category,
+ * SLP 2.7) — a plain `(N, D)` float matrix + parallel join columns. Returns
+ * `owner_type → owner_id → Embedding`; empty when absent. `i8` columns are
+ * `Number()`-coerced.
+ */
+function readEmbeddingTriple(
+  file: any,
+  vecName: string,
+  otName: string,
+  oidName: string,
+): Map<number, Map<number, Embedding>> {
+  const result = new Map<number, Map<number, Embedding>>();
+  const vecDs = file.get(`embeddings/${vecName}`);
+  if (!vecDs) return result;
+  const flat = vecDs.value as ArrayLike<number>;
+  const shape = vecDs.shape as number[] | undefined;
+  const rows = shape?.[0] ?? 0;
+  const dim = shape && shape.length >= 2 ? shape[1] : 0;
+  if (!rows || !dim) return result;
+  const ot = file.get(`embeddings/${otName}`)?.value ?? [];
+  const oid = file.get(`embeddings/${oidName}`)?.value ?? [];
+  for (let i = 0; i < rows; i += 1) {
+    const ownerType = Number(ot[i]);
+    const ownerId = Number(oid[i]);
+    const vec = new Array<number>(dim);
+    for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
+    let sub = result.get(ownerType);
+    if (!sub) {
+      sub = new Map();
+      result.set(ownerType, sub);
+    }
+    sub.set(ownerId, new Embedding(vec));
+  }
+  return result;
+}
+
+const readEmbeddings = (file: any) =>
+  readEmbeddingTriple(file, "vectors", "owner_type", "owner_id");
+
+const readCategoryEmbeddings = (file: any) =>
+  readEmbeddingTriple(
+    file,
+    "category_vectors",
+    "category_owner_type",
+    "category_owner_id",
+  );
+
+/**
+ * Attach per-detection identity + score + embedding onto a modality's ordered
+ * detection list (index == `owner_id`), from the `/identity/links` + `/embeddings`
+ * maps for one owner type. Mutates the detection objects in place.
+ */
+function attachIdentityToOwners(
+  owners: IdentityBearingRead[],
+  identities: Identity[],
+  links: Map<number, [number, number | null]> | undefined,
+  embs: Map<number, Embedding> | undefined,
+): void {
+  if (links) {
+    for (const [ownerId, [idx, score]] of links) {
+      const det = owners[ownerId];
+      if (det && idx >= 0 && idx < identities.length) {
+        det.identity = identities[idx];
+        det.identityScore = score;
+      }
+    }
+  }
+  if (embs) {
+    for (const [ownerId, emb] of embs) {
+      const det = owners[ownerId];
+      if (det) det.identityEmbedding = emb;
+    }
+  }
+}
+
+/**
+ * Attach per-detection category (string) + score + embedding onto a modality's
+ * ordered detection list (index == `owner_id`), from the `/categories` catalog +
+ * `/categories/links` + category embeddings for one owner type.
+ */
+function attachCategoryToOwners(
+  owners: IdentityBearingRead[],
+  catalog: string[],
+  links: Map<number, [number, number | null]> | undefined,
+  embs: Map<number, Embedding> | undefined,
+): void {
+  if (links) {
+    for (const [ownerId, [idx, score]] of links) {
+      const det = owners[ownerId];
+      if (det && idx >= 0 && idx < catalog.length) {
+        det.category = catalog[idx];
+        det.categoryScore = score;
+      }
+    }
+  }
+  if (embs) {
+    for (const [ownerId, emb] of embs) {
+      const det = owners[ownerId];
+      if (det) det.categoryEmbedding = emb;
+    }
+  }
+}
+
+/** All per-detection identity (SLP 2.5) + category (SLP 2.7) join maps + the
+ * category catalog, read once. Empty maps on pre-2.5/2.7 files. */
+interface PerDetectionMaps {
+  idLinks: Map<number, Map<number, [number, number | null]>>;
+  idEmbs: Map<number, Map<number, Embedding>>;
+  catLinks: Map<number, Map<number, [number, number | null]>>;
+  catEmbs: Map<number, Map<number, Embedding>>;
+  categoryCatalog: string[];
+}
+
+function readPerDetectionMaps(
+  file: any,
+  emscripten?: unknown,
+): PerDetectionMaps {
+  return {
+    idLinks: readIdentityLinks(file, emscripten),
+    idEmbs: readEmbeddings(file),
+    catLinks: readCategoryLinks(file, emscripten),
+    catEmbs: readCategoryEmbeddings(file),
+    categoryCatalog: readCategoryCatalog(file),
+  };
+}
+
+/** Attach identity + category for one owner type onto its ordered detection list. */
+function attachOwnerType(
+  maps: PerDetectionMaps,
+  ownerType: number,
+  owners: IdentityBearingRead[],
+  identities: Identity[],
+): void {
+  attachIdentityToOwners(
+    owners,
+    identities,
+    maps.idLinks.get(ownerType),
+    maps.idEmbs.get(ownerType),
+  );
+  attachCategoryToOwners(
+    owners,
+    maps.categoryCatalog,
+    maps.catLinks.get(ownerType),
+    maps.catEmbs.get(ownerType),
+  );
+}
+
+/**
+ * Read the columnar `/session_data` group (SLP 2.8) into an in-memory
+ * {@link SessionData} for the eager (h5wasm) reader, or `null` when the group is
+ * absent (legacy ≤2.7 files) or missing a required struct table. Struct tables go
+ * through `normalizeStructDataset` (so both a JS-written flat-2D+`field_names` matrix
+ * and a Python-written compound resolve to column records); the `points_3d` /
+ * `pred_points_3d` float matrices are read raw (flat buffer + column count).
+ */
+function readSessionDataEager(
+  file: any,
+  emscripten?: unknown,
+): SessionData | null {
+  if (!file.get("session_data")) return null;
+  const struct = (name: string): Record<string, any[]> | null => {
+    const ds = file.get(`session_data/${name}`);
+    return ds ? normalizeStructDataset(ds, emscripten) : null;
+  };
+  const frameGroups = struct("frame_groups");
+  const instanceGroups = struct("instance_groups");
+  const members = struct("instance_group_members");
+  if (!frameGroups || !instanceGroups || !members) return null;
+
+  const matrix = (
+    name: string,
+    ncolsDefault: number,
+  ): SessionPointMatrix | null => {
+    const ds = file.get(`session_data/${name}`);
+    if (!ds) return null;
+    const shape = ds.shape as number[] | undefined;
+    return {
+      flat: ds.value as ArrayLike<number>,
+      ncols: shape && shape.length >= 2 ? shape[1] : ncolsDefault,
+    };
+  };
+  const meta = (name: string): unknown[] | null => {
+    const ds = file.get(`session_data/${name}`);
+    if (!ds) return null;
+    const v = ds.value;
+    if (Array.isArray(v)) return v;
+    return v != null ? Array.from(v as ArrayLike<unknown>) : null;
+  };
+
+  return {
+    frameGroups,
+    instanceGroups,
+    members,
+    points3d: matrix("points_3d", 3),
+    predPoints3d: matrix("pred_points_3d", 4),
+    frameGroupMeta: meta("frame_group_meta"),
+    instanceGroupMeta: meta("instance_group_meta"),
+  };
+}
+
 function readSessions(
   dataset: any,
   videos: Video[],
   skeletons: Skeleton[],
   identities?: Identity[],
   captureRaw: boolean = false,
+  sessionData?: SessionData | null,
 ): RecordingSession[] {
   if (!dataset) return [];
   const values = dataset.value ?? [];
+  // Present-but-empty is a legitimate "no sessions" state; a present dataset whose
+  // entries read back blank/unparseable is the h5wasm vlen ceiling (sleap-io.js#220)
+  // and must fail loud rather than silently drop calibration + grouping + 3D.
+  if (values.length === 0) return [];
   const sessions: RecordingSession[] = [];
   for (const entry of values) {
-    const parsed =
-      typeof entry === "string"
-        ? JSON.parse(entry)
-        : JSON.parse(textDecoder.decode(entry));
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = parseJsonEntry(entry) as Record<string, unknown>;
+    } catch (err) {
+      throw sessionsReadError(values.length, entry, err);
+    }
+    if (!parsed || typeof parsed !== "object") {
+      throw sessionsReadError(values.length, entry);
+    }
     const cameraGroup = new CameraGroup();
     const cameraMap = new Map<string, Camera>();
     const calibration = asRecord(parsed.calibration);
@@ -1171,7 +1576,7 @@ function readSessions(
         tvec: (cameraData.translation as number[] | undefined) ?? [0, 0, 0],
         matrix: cameraData.matrix as number[][] | undefined,
         distortions: cameraData.distortions as number[] | undefined,
-        size: cameraData.size as [number, number] | undefined,
+        size: normalizeCameraSize(cameraData.size),
       });
       cameraGroup.cameras.push(camera);
       cameraMap.set(String(key), camera);
@@ -1203,6 +1608,25 @@ function readSessions(
       }
     }
 
+    // SLP 2.8 columnar path: reconstruct frame groups from the /session_data tables
+    // via the session's fg_start/fg_end range. Dispatched on the presence of both
+    // fg_start (slim sessions_json) and the loaded /session_data group.
+    const fgStart = parsed.fg_start;
+    if (fgStart != null && sessionData) {
+      const frameGroupMap = reconstructColumnarFrameGroups(
+        cameraGroup.cameras,
+        skeletons,
+        identities,
+        sessionData,
+        Number(fgStart),
+        Number(parsed.fg_end),
+      );
+      for (const [k, v] of frameGroupMap) session.frameGroups.set(k, v);
+      sessions.push(session);
+      continue;
+    }
+
+    // Legacy (≤2.7) inline path: frame groups nested in the sessions_json blob.
     const frameGroups = Array.isArray(parsed.frame_group_dicts)
       ? parsed.frame_group_dicts
       : [];

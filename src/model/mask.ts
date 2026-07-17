@@ -6,6 +6,8 @@ import {
   _registerMaskFactory,
 } from "./roi.js";
 import type { Geometry } from "./roi.js";
+import type { Identity } from "./identity.js";
+import type { Embedding } from "./embedding.js";
 import {
   type BoundingBox,
   UserBoundingBox,
@@ -321,6 +323,13 @@ export class SegmentationMask {
   track: Track | null;
   trackingScore: number | null = null;
   instance: Instance | null;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity?: Identity | null = null;
+  identityScore?: number | null = null;
+  identityEmbedding?: Embedding | null = null;
+  /** Category confidence + appearance embedding (SLP 2.7+). */
+  categoryScore?: number | null = null;
+  categoryEmbedding?: Embedding | null = null;
   /** Spatial scale factor: image_coord = mask_coord / scale + offset. Default [1, 1]. */
   scale: [number, number];
   /** Spatial offset: image_coord = mask_coord / scale + offset. Default [0, 0]. */

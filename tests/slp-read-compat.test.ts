@@ -185,28 +185,31 @@ describe("Python format compatibility", () => {
 
     const bytes = await saveSlpToBytes(labels);
 
-    // Read the session JSON and strip JS-specific fields
+    // Build a LEGACY (<=2.7) inline sessions_json exactly as a Python-written file
+    // would have it: frame_group_dicts nested inline, each instance group carrying
+    // ONLY the camcorder_to_lf_and_inst_idx_map (index refs) with NO inline
+    // `instances` dict and NO labeled_frame_by_camera — and NO /session_data group
+    // / fg_start. The reader must reconstruct grouping from the camcorder map alone
+    // (the legacy path that stays supported alongside the SLP 2.8 columnar layout).
     const { openH5File, getH5Module, getH5FileSystem } = await import(
       "../src/codecs/slp/h5.js"
     );
-    const { file: origFile, close: closeOrig } = await openH5File(
-      new Uint8Array(bytes).buffer,
-    );
-    const sessDs = origFile.get("sessions_json") as any;
-    const sessionJson = JSON.parse(
-      typeof sessDs.value[0] === "string"
-        ? sessDs.value[0]
-        : new TextDecoder().decode(sessDs.value[0]),
-    );
-
-    // Verify the map exists before stripping
-    const ig = sessionJson.frame_group_dicts[0].instance_groups[0];
-    expect(ig.camcorder_to_lf_and_inst_idx_map).toBeDefined();
-
-    // Remove JS-only fields to simulate Python format
-    delete ig.instances;
-    delete sessionJson.frame_group_dicts[0].labeled_frame_by_camera;
-    closeOrig();
+    const sessionJson = {
+      calibration: {
+        metadata: {},
+        cam_0: { name: "cam", rotation: [0, 0, 0], translation: [0, 0, 0] },
+      },
+      camcorder_to_video_idx_map: { "0": 0 },
+      frame_group_dicts: [
+        {
+          frame_idx: 0,
+          instance_groups: [
+            { camcorder_to_lf_and_inst_idx_map: { "0": [0, 0] } },
+          ],
+        },
+      ],
+      metadata: {},
+    };
 
     // Build a new SLP file with the patched session JSON
     const module = await getH5Module();

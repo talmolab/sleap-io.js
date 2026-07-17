@@ -169,11 +169,9 @@ describe("SLP write with identity and 3D data", () => {
     expect(pred.pointScores).toEqual([0.95, 0.88]);
   });
 
-  it("does not bump format_id for sessions (converges to the Python shape, no new version)", async () => {
-    // The canonical sessions_json shape is a convergence to Python `sleap-io`'s
-    // existing format, not a new on-disk feature, so writing sessions must NOT
-    // mint a format_id. `format_id` is a namespace shared with Python, which
-    // already defines 2.5 (/identity_links), 2.6 (/embeddings), 2.7 (categories).
+  it("bumps format_id to 2.8 when a session has frame groups (columnar /session_data)", async () => {
+    // A session that carries frame groups triggers the columnar /session_data
+    // group (SLP 2.8), gated on the same predicate the writer uses to emit it.
     const labels = makeTestLabels({ withIdentity: true });
     expect(labels.sessions.length).toBeGreaterThan(0);
     const bytes = await saveSlpToBytes(labels);
@@ -183,9 +181,9 @@ describe("SLP write with identity and 3D data", () => {
       const metadataGroup = file.get("metadata");
       const attrs = (metadataGroup as any).attrs ?? {};
       const formatId = Number(attrs["format_id"]?.value ?? attrs["format_id"]);
-      // Identities present -> 1.9 bump; sessions add nothing on top of that.
-      expect(formatId).toBeCloseTo(1.9);
-      expect(formatId).toBeLessThan(2.5);
+      expect(formatId).toBeCloseTo(2.8);
+      // ...and the columnar group is actually present.
+      expect(file.get("session_data")).toBeTruthy();
     } finally {
       close();
     }
@@ -221,35 +219,33 @@ describe("SLP write with identity and 3D data", () => {
     ]);
   });
 
-  it("writes camcorder_to_lf_and_inst_idx_map with numeric keys", async () => {
+  it("columnarizes the camera→(lf,inst) member map into /session_data", async () => {
     const labels = makeTestLabels();
     const bytes = await saveSlpToBytes(labels);
     const { openH5File } = await import("../src/codecs/slp/h5.js");
     const { file, close } = await openH5File(new Uint8Array(bytes).buffer);
     try {
+      // The slim sessions_json no longer carries frame_group_dicts.
       const ds = file.get("sessions_json") as any;
       const sessionJson = JSON.parse(
         typeof ds.value[0] === "string"
           ? ds.value[0]
           : new TextDecoder().decode(ds.value[0]),
       );
-      const fg = sessionJson.frame_group_dicts[0];
-      const ig = fg.instance_groups[0];
+      expect(sessionJson.frame_group_dicts).toBeUndefined();
+      expect(typeof sessionJson.fg_start).toBe("number");
+      expect(typeof sessionJson.fg_end).toBe("number");
 
-      // camcorder_to_lf_and_inst_idx_map should exist with numeric keys
-      expect(ig.camcorder_to_lf_and_inst_idx_map).toBeDefined();
-      const mapKeys = Object.keys(ig.camcorder_to_lf_and_inst_idx_map);
-      expect(mapKeys.every((k: string) => !isNaN(Number(k)))).toBe(true);
-
-      // Each value should be [lfIdx, instIdx]
-      for (const val of Object.values(ig.camcorder_to_lf_and_inst_idx_map)) {
-        expect(Array.isArray(val)).toBe(true);
-        expect((val as number[]).length).toBe(2);
-      }
-
-      // instances keys should also be numeric
-      const instKeys = Object.keys(ig.instances);
-      expect(instKeys.every((k: string) => !isNaN(Number(k)))).toBe(true);
+      // The membership lives columnar: instance_group_members(camera, lf, inst).
+      const membersDs = file.get("session_data/instance_group_members") as any;
+      expect(membersDs).toBeTruthy();
+      const [nrows, ncols] = membersDs.shape as number[];
+      expect(ncols).toBe(3); // camera, lf, inst
+      // makeTestLabels has 2 cameras in one instance group -> 2 member rows.
+      expect(nrows).toBe(2);
+      const flat = Array.from(membersDs.value as ArrayLike<number>).map(Number);
+      // Every value is a finite non-negative index.
+      expect(flat.every((v) => Number.isFinite(v) && v >= 0)).toBe(true);
     } finally {
       close();
     }

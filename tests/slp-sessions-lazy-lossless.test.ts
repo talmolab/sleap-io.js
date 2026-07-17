@@ -24,10 +24,50 @@ import path from "node:path";
 const fixtureRoot = fileURLToPath(new URL("./data", import.meta.url));
 const MULTIVIEW = path.join(fixtureRoot, "slp", "multiview.slp");
 
-/** Read the raw sessions_json entries and format_id via a fresh h5wasm open. */
+/** Decode an HDF5 attribute (string / bytes / {value} / array) to a string. */
+function attrStr(attrs: any, name: string): string | undefined {
+  const a = attrs?.[name];
+  const v = a?.value ?? a;
+  if (typeof v === "string") return v;
+  if (v instanceof Uint8Array) return new TextDecoder().decode(v);
+  if (Array.isArray(v)) return String(v[0]);
+  return undefined;
+}
+
+/** Read a flat-2D + `field_names` struct dataset into column arrays of numbers. */
+function readStructCols(
+  file: any,
+  name: string,
+): Record<string, number[]> | null {
+  const ds = file.get(name);
+  if (!ds) return null;
+  const flat = ds.value as ArrayLike<number>;
+  const shape = ds.shape as number[];
+  const fn = attrStr(ds.attrs, "field_names");
+  if (!fn) return null;
+  const fields = JSON.parse(fn) as string[];
+  const [nrows, ncols] = shape;
+  const cols: Record<string, number[]> = {};
+  fields.forEach((f, j) => {
+    const col = new Array<number>(nrows);
+    for (let i = 0; i < nrows; i++) col[i] = Number(flat[i * ncols + j]);
+    cols[f] = col;
+  });
+  return cols;
+}
+
+interface ColumnarSessionData {
+  frameGroups: Record<string, number[]>;
+  instanceGroups: Record<string, number[]>;
+  members: Record<string, number[]>;
+}
+
+/** Read the raw sessions_json entries, format_id, and (SLP 2.8) the columnar
+ * /session_data struct tables via a fresh h5wasm open. */
 async function inspect(bytes: Uint8Array): Promise<{
   sessionsJson: Array<Record<string, unknown>>;
   formatId: number;
+  sessionData: ColumnarSessionData | null;
 }> {
   const module = await ready;
   // Ensure /tmp exists (see inspectSessions in slp-raw-sessions.test.ts): the
@@ -56,7 +96,14 @@ async function inspect(bytes: Uint8Array): Promise<{
       (meta.attrs.format_id as { value?: unknown })?.value ??
         meta.attrs.format_id,
     );
-    return { sessionsJson, formatId };
+    const fg = readStructCols(file, "session_data/frame_groups");
+    const ig = readStructCols(file, "session_data/instance_groups");
+    const mem = readStructCols(file, "session_data/instance_group_members");
+    const sessionData =
+      fg && ig && mem
+        ? { frameGroups: fg, instanceGroups: ig, members: mem }
+        : null;
+    return { sessionsJson, formatId, sessionData };
   } finally {
     file.close();
     module.FS.unlink(p);
@@ -97,10 +144,11 @@ describe("Lossless lazy-native sessions (#197)", () => {
     );
 
     expect(second.sessionsJson).toEqual(first.sessionsJson);
-    // Grouping survived: a non-empty camcorder map is present.
-    const fg = (first.sessionsJson[0].frame_group_dicts as any[])[0];
-    const ig = fg.instance_groups[0];
-    expect(Object.keys(ig.camcorder_to_lf_and_inst_idx_map).length).toBe(8);
+    // The columnar /session_data tables are byte-stable across the round-trip too.
+    expect(second.sessionData).toEqual(first.sessionData);
+    // Grouping survived: the first instance group has one member per camera (8).
+    const ig = first.sessionData!.instanceGroups;
+    expect(ig.member_end[0] - ig.member_start[0]).toBe(8);
   });
 
   it("eager, lazy, and streaming reads produce identical canonical sessions_json", async () => {
@@ -152,24 +200,22 @@ describe("Lossless lazy-native sessions (#197)", () => {
     // Grouping never forced a single frame to materialize.
     expect(labels._lazyFrameList!.materializedCount).toBe(0);
 
-    // ...yet the full camcorder grouping map survived to disk.
-    const { sessionsJson } = await inspect(bytes);
-    const fg = (sessionsJson[0].frame_group_dicts as any[])[0];
-    const ig = fg.instance_groups[0];
-    expect(Object.keys(ig.camcorder_to_lf_and_inst_idx_map).length).toBe(8);
-    // Pure-ref group: no inline `instances` (Python-canonical shape).
-    expect(Object.hasOwn(ig, "instances")).toBe(false);
+    // ...yet the full member grouping (one row per camera) survived to the
+    // columnar /session_data tables, built purely from the as-read index refs.
+    const { sessionData } = await inspect(bytes);
+    expect(sessionData).not.toBeNull();
+    const ig = sessionData!.instanceGroups;
+    expect(ig.member_end[0] - ig.member_start[0]).toBe(8);
   });
 
   it("writes Python-canonical cam_N calibration keys + integer camcorder maps", async () => {
     const labels = await readSlp(MULTIVIEW, { openVideos: false });
-    const { sessionsJson, formatId } = await inspect(
+    const { sessionsJson, formatId, sessionData } = await inspect(
       new Uint8Array(await saveSlpToBytes(labels)),
     );
-    // Sessions do NOT bump format_id — the canonical shape is a convergence to
-    // Python's existing format, not a new on-disk feature (Python already owns
-    // 2.5+).
-    expect(formatId).toBeLessThan(2.5);
+    // Frame groups present -> the columnar /session_data group is written and the
+    // format bumps to 2.8 (SLP 2.8), matching Python's group-presence gate.
+    expect(formatId).toBeCloseTo(2.8);
 
     const s0 = sessionsJson[0];
     const calib = s0.calibration as Record<string, Record<string, unknown>>;
@@ -199,13 +245,11 @@ describe("Lossless lazy-native sessions (#197)", () => {
     )) {
       expect(k).toMatch(/^\d+$/);
     }
-    // camcorder pairs are NUMBERS (upgraded from the legacy string pairs).
-    const fg = (s0.frame_group_dicts as any[])[0];
-    const pair = Object.values(
-      fg.instance_groups[0].camcorder_to_lf_and_inst_idx_map,
-    )[0] as unknown[];
-    expect(typeof pair[0]).toBe("number");
-    expect(typeof pair[1]).toBe("number");
+    // The columnarized member map (camera, lf, inst) holds NUMBERS.
+    expect(sessionData).not.toBeNull();
+    expect(typeof sessionData!.members.camera[0]).toBe("number");
+    expect(typeof sessionData!.members.lf[0]).toBe("number");
+    expect(typeof sessionData!.members.inst[0]).toBe("number");
   });
 
   it("legacy file re-saves to the canonical Python shape (converter)", async () => {
@@ -228,19 +272,18 @@ describe("Lossless lazy-native sessions (#197)", () => {
     const bytes = new Uint8Array(await saveSlpToBytes(labels));
     const out = await inspect(bytes);
 
-    // No format bump (convergence to Python's shape, not a new feature)...
-    expect(out.formatId).toBeLessThan(2.5);
-    // ...calibration stays cam_N (Python parity, unchanged from source)...
+    // Re-save emits the columnar SLP 2.8 layout -> format bumps to 2.8...
+    expect(out.formatId).toBeCloseTo(2.8);
+    // ...calibration stays cam_N in the slim sessions_json (Python parity)...
     const calibKeys = Object.keys(
       out.sessionsJson[0].calibration as Record<string, unknown>,
     ).filter((k) => k !== "metadata");
     expect(calibKeys.every((k) => /^cam_\d+$/.test(k))).toBe(true);
-    // ...and the legacy STRING ref pairs are normalized to NUMBERS.
-    const outPair = Object.values(
-      (out.sessionsJson[0].frame_group_dicts as any[])[0].instance_groups[0]
-        .camcorder_to_lf_and_inst_idx_map,
-    )[0] as unknown[];
-    expect(typeof outPair[0]).toBe("number");
+    // ...and the legacy inline STRING ref pairs are normalized to NUMBERS in the
+    // columnar member table.
+    expect(out.sessionData).not.toBeNull();
+    expect(typeof out.sessionData!.members.lf[0]).toBe("number");
+    expect(typeof out.sessionData!.members.inst[0]).toBe("number");
 
     // Reloading the upgraded file yields the same grouping sizes as the source.
     const reloaded = await readSlp(bytes.buffer as ArrayBuffer, {
@@ -257,42 +300,35 @@ describe("Lossless lazy-native sessions (#197)", () => {
     );
   });
 
-  it("mutation is reflected: accessing + editing a group emits concrete points", async () => {
+  it("mutation is reflected: editing a group's instance survives the round-trip", async () => {
     const labels = await readSlp(MULTIVIEW, { openVideos: false });
     const fg = labels.sessions[0].frameGroups.get(0)!;
     const ig = fg.instanceGroups[0];
 
-    // Force concrete resolution (caches _instanceByCamera and, via the frame
-    // group, _labeledFrameByCamera) so the write takes the object-derivation path.
-    const [[camera, instance]] = fg.labeledFrameByCamera; // materialize frame map
-    void camera;
-    void instance;
+    // Reach the instance through the group's resolved map and mutate a coordinate.
     const [firstCam, firstInst] = [...ig.instanceByCamera][0];
-    // Mutate a point coordinate to a sentinel value.
     firstInst.points[0].xy = [12345, 67890];
+    const camIdx = labels.sessions[0].cameraGroup.cameras.indexOf(firstCam);
 
-    const { sessionsJson } = await inspect(
-      new Uint8Array(await saveSlpToBytes(labels)),
-    );
-    const outIg = (sessionsJson[0].frame_group_dicts as any[])[0]
-      .instance_groups[0];
-    // Concrete group now emits inline `instances` points including the mutation.
-    expect(outIg.instances).toBeDefined();
-    const flat = JSON.stringify(outIg.instances);
-    expect(flat).toContain("12345");
-    expect(flat).toContain("67890");
-    // A camcorder pair still exists for the mutated camera (derive-first).
-    expect(
-      Object.keys(outIg.camcorder_to_lf_and_inst_idx_map).length,
-    ).toBeGreaterThan(0);
-    void firstCam;
+    // Round-trip: the member ref still points at the (now-mutated) 2D instance in
+    // /points, so the reloaded session resolves to the mutated coordinate.
+    const bytes = new Uint8Array(await saveSlpToBytes(labels));
+    const reloaded = await readSlp(bytes.buffer as ArrayBuffer, {
+      openVideos: false,
+    });
+    const rCam = reloaded.sessions[0].cameraGroup.cameras[camIdx];
+    const rInst = reloaded.sessions[0].frameGroups
+      .get(0)!
+      .instanceGroups[0].instanceByCamera.get(rCam)!;
+    expect(rInst.points[0].xy[0]).toBe(12345);
+    expect(rInst.points[0].xy[1]).toBe(67890);
   });
 
-  it("mutation via instanceByCamera alone (no frame-map access) derives the correct index", async () => {
+  it("mutation via instanceByCamera alone (no frame-map access) derives the correct member ref", async () => {
     // Reviewer repro: reach the mutation through ONLY the instance group's map —
     // never touching fg.labeledFrameByCamera — then shift the instance's index.
-    // The written camcorder pair must reflect the NEW index (derive-first via the
-    // frame-group GETTER), not the stale as-read ref.
+    // The written member row must reflect the NEW (lf, inst) index (derive-first via
+    // the frame-group GETTER), not the stale as-read ref.
     const { Instance } = await import("../src/model/instance.js");
     const labels = await readSlp(MULTIVIEW, { openVideos: false });
     const session = labels.sessions[0];
@@ -312,16 +348,19 @@ describe("Lossless lazy-native sessions (#197)", () => {
     const expectedLfIdx = labels.labeledFrames.indexOf(lf);
     const expectedInstIdx = lf.instances.indexOf(instance);
 
-    const { sessionsJson } = await inspect(
+    const { sessionData } = await inspect(
       new Uint8Array(await saveSlpToBytes(labels)),
     );
-    const outIg = (sessionsJson[0].frame_group_dicts as any[])[0]
-      .instance_groups[0];
-    const cameraKey = String(session.cameraGroup.cameras.indexOf(camera));
-    expect(outIg.camcorder_to_lf_and_inst_idx_map[cameraKey]).toEqual([
-      expectedLfIdx,
-      expectedInstIdx,
-    ]);
+    expect(sessionData).not.toBeNull();
+    const camIdx = session.cameraGroup.cameras.indexOf(camera);
+    // Find this camera's member row in the first instance group (fg 0, ig 0).
+    const igCols = sessionData!.instanceGroups;
+    const mem = sessionData!.members;
+    let found: [number, number] | undefined;
+    for (let m = igCols.member_start[0]; m < igCols.member_end[0]; m++) {
+      if (mem.camera[m] === camIdx) found = [mem.lf[m], mem.inst[m]];
+    }
+    expect(found).toEqual([expectedLfIdx, expectedInstIdx]);
   });
 
   it("Labels.copy() preserves the typed session model and re-saves byte-identically", async () => {

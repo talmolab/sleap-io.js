@@ -27,7 +27,7 @@ import type {
 } from "../../model/label-image.js";
 import { deflate } from "pako";
 import type { Identity } from "../../model/identity.js";
-import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
+import { PredictedInstance3D } from "../../model/instance3d.js";
 import type { LazyDataStore } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
 
@@ -208,6 +208,20 @@ function writeSlpToFile(
     allInstances,
     liCtx,
   );
+
+  // Per-detection re-ID identity (SLP 2.5): /identity/links + /embeddings. The flat
+  // per-modality lists above are in the SAME global order the modality datasets were
+  // written, so a detection's array index == its owner_id (matching Python).
+  const detections: DetectionCollections = {
+    instance: allInstances,
+    centroid: allCentroids,
+    mask: allMasks,
+    bbox: allBboxes,
+    roi: allRois,
+  };
+  writeIdentityLinks(file, labels.identities, detections);
+  writeCategoryLinks(file, detections);
+  writeEmbeddings(file, detections);
 }
 
 /**
@@ -1037,26 +1051,11 @@ export class SlpStreamWriter {
             type = 1;
             score = inst.score ?? 0;
             ptStart = predPts.length;
-            for (const p of inst.points) {
-              predPts.push([
-                p.xy[0],
-                p.xy[1],
-                p.visible ? 1 : 0,
-                p.complete ? 1 : 0,
-                (p as { score?: number }).score ?? 0,
-              ]);
-            }
+            emitInstancePoints(predPts, inst, true);
             ptEnd = predPts.length;
           } else {
             ptStart = userPts.length;
-            for (const p of inst.points) {
-              userPts.push([
-                p.xy[0],
-                p.xy[1],
-                p.visible ? 1 : 0,
-                p.complete ? 1 : 0,
-              ]);
-            }
+            emitInstancePoints(userPts, inst as Instance, false);
             ptEnd = userPts.length;
             if (inst.fromPredicted)
               links.push([localInstId, inst.fromPredicted]);
@@ -1887,15 +1886,32 @@ function writeMetadata(file: any, labels: Labels): void {
     formatId = Math.max(formatId, 2.4);
   }
 
-  // NOTE (sessions): the canonical `sessions_json` shape written here
-  // (calibration keyed `cam_<i>`, camcorder/labeled_frame maps keyed by integer
-  // index) is a CONVERGENCE to Python `sleap-io`'s existing format — not a new
-  // on-disk feature — so it deliberately does NOT bump format_id. `format_id` is
-  // a namespace shared with Python, which already defines 2.5 (/identity_links),
-  // 2.6 (/embeddings) and 2.7 (categories); minting a value here would collide
-  // and mislabel the file. Reading stays tolerant of the legacy name-keyed shape,
-  // so re-saving a legacy file upgrades its sessions to the canonical shape with
-  // no version change required.
+  // The slim `sessions_json` shape itself (calibration keyed `cam_<i>`, camcorder
+  // map keyed by integer index) is a convergence to Python's existing format and
+  // does not, on its own, bump `format_id`. `format_id` is a namespace shared with
+  // Python (2.5 identity + re-ID embeddings, 2.6 events, 2.7 categories).
+  //
+  // v2.5: per-detection re-ID identity (/identity/links + /embeddings). Bumped only
+  // when a detection actually carries an identity link or embedding; the identity
+  // CATALOG alone (identities present but unlinked) does not trigger it.
+  if (hasPerDetectionIdentity(labels)) {
+    formatId = Math.max(formatId, 2.5);
+  }
+
+  // v2.7: class/category subsystem (/categories catalog + /categories/links +
+  // category_* embeddings), gated on a detection actually carrying a category.
+  if (hasPerDetectionCategory(labels)) {
+    formatId = Math.max(formatId, 2.7);
+  }
+
+  // v2.8: columnar RecordingSession frame-group data (the `/session_data` group).
+  // Bumped ONLY when a session carries frame groups — session-free / single-view
+  // files write no group and stay byte-identical below 2.8. Gated on the same
+  // predicate `writeSessions` uses to write the group, so the version and the
+  // on-disk group never disagree (mirrors Python's group-presence gate).
+  if (sessionsHaveFrameGroups(labels.sessions)) {
+    formatId = Math.max(formatId, 2.8);
+  }
 
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
@@ -1988,7 +2004,17 @@ function serializeVideo(video: Video): Record<string, unknown> {
     string,
     unknown
   >;
-  if (backend.filename == null) backend.filename = video.filename;
+  // ImageVideo (image sequence): the canonical SLP format stores the full
+  // ordered list under `filenames` (plural) and only the FIRST image under the
+  // scalar `filename` (Python `video_to_dict`, and sleap-io.js's own reader in
+  // parsers.ts `resolveVideoFilename`). Emitting the whole list under `filename`
+  // makes Python's `make_video` do `Path(list)` and crash (#221).
+  if (Array.isArray(video.filename)) {
+    backend.filenames = video.filename;
+    backend.filename = video.filename[0] ?? "";
+  } else if (backend.filename == null) {
+    backend.filename = video.filename;
+  }
 
   // Crop unwrap (SLP 2.3): a cropped Video serializes as its UNCROPPED inner so
   // videos_json describes the full frame and old readers never hit an unknown
@@ -2151,6 +2177,7 @@ function writeSuggestions(
 
 function writeIdentities(file: any, identities: Identity[]): void {
   if (!identities.length) return;
+  // Legacy JS-native `identities_json` (typed metadata; kept for older JS readers).
   const payload = identities.map((identity) => {
     const d: Record<string, unknown> = { name: identity.name };
     if (identity.color != null) d.color = identity.color;
@@ -2162,8 +2189,470 @@ function writeIdentities(file: any, identities: Identity[]): void {
     return JSON.stringify(d);
   });
   file.create_dataset({ name: "identities_json", data: payload });
+
+  // Python-compatible /identity group (SLP 2.5): a native vlen `name` catalog plus
+  // an optional entity-attribute-value metadata table. Written ALONGSIDE
+  // identities_json (dual-write) so both Python and older JS readers interoperate.
+  // Python has no first-class `color`, so color is folded into metadata["color"]
+  // (docs/formats/slp.md). Values are stringified to match Python's string-only EAV.
+  file.create_group("identity");
+  file.create_dataset({
+    name: "identity/name",
+    data: identities.map((i) => i.name),
+  });
+  const metaOwner: number[] = [];
+  const metaKey: string[] = [];
+  const metaVal: string[] = [];
+  identities.forEach((identity, idx) => {
+    const meta: Record<string, unknown> = { ...identity.metadata };
+    if (identity.color != null && meta.color == null)
+      meta.color = identity.color;
+    for (const [k, v] of Object.entries(meta)) {
+      metaOwner.push(idx);
+      metaKey.push(String(k));
+      metaVal.push(String(v));
+    }
+  });
+  if (metaOwner.length) {
+    file.create_dataset({
+      name: "identity/meta_owner",
+      data: new Int32Array(metaOwner),
+      shape: [metaOwner.length],
+      dtype: "<i", // int32 (see the dtype-char note above)
+    });
+    file.create_dataset({ name: "identity/meta_key", data: metaKey });
+    file.create_dataset({ name: "identity/meta_val", data: metaVal });
+  }
 }
 
+// ---- Per-detection identity/embedding owner types (SLP 2.5) --------------------
+// Shared with Python (slp.py OWNER_*). Value 1 is unused; label images get none.
+const OWNER_INSTANCE = 0;
+const OWNER_CENTROID = 2;
+const OWNER_MASK = 3;
+const OWNER_BBOX = 4;
+const OWNER_ROI = 5;
+
+/** A detection that can carry per-detection identity + category (SLP 2.5/2.7). */
+interface IdentityBearing {
+  identity?: Identity | null;
+  identityScore?: number | null;
+  identityEmbedding?: { vector: number[] } | null;
+  category?: string | null;
+  categoryScore?: number | null;
+  categoryEmbedding?: { vector: number[] } | null;
+}
+
+/** The five detection collections, each in the SAME global order its modality
+ * dataset was written (array index == owner_id). */
+interface DetectionCollections {
+  instance: IdentityBearing[];
+  centroid: IdentityBearing[];
+  mask: IdentityBearing[];
+  bbox: IdentityBearing[];
+  roi: IdentityBearing[];
+}
+
+/** Owner-type → ordered detection list (owner_id = index within each list). */
+function ownerCollections(
+  c: DetectionCollections,
+): Array<[number, IdentityBearing[]]> {
+  return [
+    [OWNER_INSTANCE, c.instance],
+    [OWNER_CENTROID, c.centroid],
+    [OWNER_MASK, c.mask],
+    [OWNER_BBOX, c.bbox],
+    [OWNER_ROI, c.roi],
+  ];
+}
+
+/**
+ * Write per-detection identity links (SLP 2.5) to `/identity/links`: one
+ * `(owner_type, owner_id, identity_idx, identity_score)` row per detection carrying
+ * an `Identity` registered in the catalog. `owner_id` is the detection's global
+ * per-modality index (matching how the modality datasets — and Python — are
+ * written). Emitted as a flat-2-D `<d` matrix + `field_names` (the h5wasm compound
+ * stand-in); the coordinated Python reader (sleap-io#547) converts it. No-op when
+ * there are no identities or no linked detections.
+ */
+function writeIdentityLinks(
+  file: any,
+  identities: Identity[],
+  c: DetectionCollections,
+): void {
+  if (!identities.length) return;
+  const idToIdx = new Map<Identity, number>(identities.map((id, i) => [id, i]));
+  const rows: number[][] = [];
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      if (det.identity == null) return;
+      const idx = idToIdx.get(det.identity);
+      if (idx == null) {
+        console.warn(
+          `Detection references an Identity ("${det.identity.name}") not found in Labels.identities — identity link dropped on save.`,
+        );
+        return;
+      }
+      rows.push([ownerType, ownerId, idx, det.identityScore ?? Number.NaN]);
+    });
+  }
+  if (!rows.length) return;
+  // The /identity group is created by writeIdentities (runs earlier when
+  // identities exist); create defensively in case it does not.
+  if (!file.get("identity")) file.create_group("identity");
+  createMatrixDataset(
+    file,
+    "identity/links",
+    rows,
+    ["owner_type", "owner_id", "identity_idx", "identity_score"],
+    "<d",
+  );
+}
+
+/**
+ * Write one `/embeddings` triple: a `(N, D)` float `vectors` matrix (chunked+gzip,
+ * no field_names) + parallel `owner_type` / `owner_id` join columns. Used for both
+ * the identity vectors (`vectors`/`owner_type`/`owner_id`) and the independent
+ * category vectors (`category_vectors`/`category_owner_type`/`category_owner_id`).
+ * All vectors in a triple must share one dimension. No-op when none present.
+ */
+function writeEmbeddingTriple(
+  file: any,
+  c: DetectionCollections,
+  names: [string, string, string],
+  get: (d: IdentityBearing) => { vector: number[] } | null | undefined,
+): void {
+  const vectors: number[][] = [];
+  const ownerTypes: number[] = [];
+  const ownerIds: number[] = [];
+  let dim = -1;
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      const emb = get(det);
+      if (emb == null) return;
+      if (dim === -1) dim = emb.vector.length;
+      if (emb.vector.length !== dim) {
+        throw new Error(
+          `All ${names[0]} must share one dimension; got ${emb.vector.length} and ${dim}.`,
+        );
+      }
+      vectors.push(emb.vector);
+      ownerTypes.push(ownerType);
+      ownerIds.push(ownerId);
+    });
+  }
+  if (!vectors.length) return;
+  if (!file.get("embeddings")) file.create_group("embeddings");
+  createGzipFloatMatrix(file, `embeddings/${names[0]}`, vectors, dim);
+  file.create_dataset({
+    name: `embeddings/${names[1]}`,
+    data: new Float64Array(ownerTypes),
+    shape: [ownerTypes.length],
+    dtype: "<d",
+  });
+  file.create_dataset({
+    name: `embeddings/${names[2]}`,
+    data: new Float64Array(ownerIds),
+    shape: [ownerIds.length],
+    dtype: "<d",
+  });
+}
+
+/**
+ * Write per-detection re-ID (SLP 2.5) + category (SLP 2.7) embeddings to the
+ * `/embeddings` group as two independent triples sharing the same owner join.
+ * Written whenever a detection carries the corresponding embedding (lossless
+ * preserve). No-op when none present.
+ */
+function writeEmbeddings(file: any, c: DetectionCollections): void {
+  writeEmbeddingTriple(
+    file,
+    c,
+    ["vectors", "owner_type", "owner_id"],
+    (d) => d.identityEmbedding,
+  );
+  writeEmbeddingTriple(
+    file,
+    c,
+    ["category_vectors", "category_owner_type", "category_owner_id"],
+    (d) => d.categoryEmbedding,
+  );
+}
+
+/** Distinct non-empty category strings across all detections, in first-seen order
+ * (the `/categories/name` catalog). JS categories are plain strings, so the catalog
+ * is derived from the strings themselves (no per-category metadata). */
+function collectCategoryCatalog(c: DetectionCollections): string[] {
+  const seen = new Set<string>();
+  const catalog: string[] = [];
+  for (const [, list] of ownerCollections(c)) {
+    for (const det of list) {
+      const cat = det.category;
+      if (cat && !seen.has(cat)) {
+        seen.add(cat);
+        catalog.push(cat);
+      }
+    }
+  }
+  return catalog;
+}
+
+/**
+ * Write the class/category subsystem (SLP 2.7): the `/categories/name` catalog
+ * (distinct category strings) + `/categories/links` (owner_type, owner_id,
+ * category_idx, category_score) — one row per detection with a non-empty category,
+ * flat-2-D `<d`+field_names (the Python reader converts it, sleap-io#548). No-op
+ * when no detection carries a category.
+ */
+function writeCategoryLinks(file: any, c: DetectionCollections): void {
+  const catalog = collectCategoryCatalog(c);
+  if (!catalog.length) return;
+  const catToIdx = new Map<string, number>(catalog.map((n, i) => [n, i]));
+  const rows: number[][] = [];
+  for (const [ownerType, list] of ownerCollections(c)) {
+    list.forEach((det, ownerId) => {
+      const cat = det.category;
+      if (!cat) return;
+      rows.push([
+        ownerType,
+        ownerId,
+        catToIdx.get(cat) as number,
+        det.categoryScore ?? Number.NaN,
+      ]);
+    });
+  }
+  if (!rows.length) return;
+  file.create_group("categories");
+  file.create_dataset({ name: "categories/name", data: catalog });
+  createMatrixDataset(
+    file,
+    "categories/links",
+    rows,
+    ["owner_type", "owner_id", "category_idx", "category_score"],
+    "<d",
+  );
+}
+
+/** Whether any detection satisfies `pred` across all five modalities (used to gate
+ * the identity 2.5 / category 2.7 format bumps). */
+function anyDetection(
+  labels: Labels,
+  pred: (d: IdentityBearing) => boolean,
+): boolean {
+  const any = (list: IdentityBearing[]) => list.some(pred);
+  return (
+    labels.labeledFrames.some((f) => any(f.instances as IdentityBearing[])) ||
+    any(labels.masks as IdentityBearing[]) ||
+    any(labels.centroids as IdentityBearing[]) ||
+    any(labels.bboxes as IdentityBearing[]) ||
+    any(labels.rois as IdentityBearing[])
+  );
+}
+
+/** Whether any detection carries a per-detection identity or embedding (format 2.5). */
+function hasPerDetectionIdentity(labels: Labels): boolean {
+  return anyDetection(
+    labels,
+    (d) => d.identity != null || d.identityEmbedding != null,
+  );
+}
+
+/** Whether any detection carries a category or category embedding (format 2.7). */
+function hasPerDetectionCategory(labels: Labels): boolean {
+  return anyDetection(
+    labels,
+    (d) =>
+      (d.category != null && d.category !== "") || d.categoryEmbedding != null,
+  );
+}
+
+// ---- SLP 2.8 columnar /session_data field names (snake_case, Python-compatible) --
+// h5wasm cannot create HDF5 compound datasets, so these struct tables are written as
+// flat 2-D float64 matrices + a `field_names` attribute (exactly as points/instances/
+// frames are), and the coordinated Python reader rebuilds the structured array via
+// `_read_dataset_from_open_file`. float64 losslessly holds every index (≤ 2^53), the
+// `-1` sentinels, and the `NaN` scores; the Python reader's int()/float()/isnan casts
+// tolerate the f8 backing. points_3d / pred_points_3d are PLAIN float64 matrices with
+// NO field_names (Python slices them as `block[:, :3]`).
+//
+// NOTE: the on-disk dtype MUST be "<d" (float64), NOT "<f8": h5wasm's dtype parser
+// keys off the type CHAR and ignores the digit, so "<f8" resolves to float32 (char
+// 'f'=4 bytes) and "<i8" to int32 (char 'i'=4) — which would silently truncate 3D
+// precision and, worse, CORRUPT any index past 2^24. "<d" = float64 (char 'd'=8).
+const SESSION_FRAME_GROUP_FIELDS = ["frame_idx", "ig_start", "ig_end"];
+const SESSION_INSTANCE_GROUP_FIELDS = [
+  "identity_idx",
+  "score",
+  "instance_3d_score",
+  "pts3d_start",
+  "pts3d_end",
+  "pts3d_predicted",
+  "member_start",
+  "member_end",
+];
+const SESSION_INSTANCE_GROUP_MEMBER_FIELDS = ["camera", "lf", "inst"];
+
+/**
+ * Whether any session carries a frame group with ≥1 instance group. Gates both the
+ * `/session_data` group and the format 2.8 bump — session-free / single-view files
+ * write no group and stay byte-identical.
+ */
+export function sessionsHaveFrameGroups(sessions: RecordingSession[]): boolean {
+  return sessions.some((s) =>
+    [...s.frameGroups.values()].some((fg) => fg.instanceGroups.length > 0),
+  );
+}
+
+/**
+ * Coerce an inline/legacy 3-D point row (possibly `null`, or with `null` coords) to a
+ * fixed-width float row, mapping every missing entry to `NaN` — never `Number(null)`
+ * (=== 0), which would move a missing keypoint to the origin. Ports Python's
+ * `_inline_3d_to_array`; `NaN` then round-trips natively in the float dataset.
+ */
+function coerce3dRow(row: unknown, width: number): number[] {
+  const out = new Array<number>(width);
+  if (row == null) {
+    out.fill(Number.NaN);
+    return out;
+  }
+  const arr = row as ArrayLike<unknown>;
+  for (let i = 0; i < width; i++) {
+    const v = arr[i];
+    out[i] = v == null ? Number.NaN : Number(v);
+  }
+  return out;
+}
+
+/**
+ * Build the slim calibration + camera→video map that stays inline in `sessions_json`
+ * (the O(cameras) data). Unchanged from the legacy serializer so the on-disk shape of
+ * these fields is identical; only the per-frame payload moves to `/session_data`.
+ */
+function sessionCalibrationDict(
+  session: RecordingSession,
+  videos: Video[],
+): {
+  calibration: Record<string, unknown>;
+  camcorder_to_video_idx_map: Record<string, number>;
+} {
+  const calibration: Record<string, unknown> = {
+    metadata: session.cameraGroup.metadata ?? {},
+  };
+  // Key calibration by `cam_<index>` to match Python `camera_group_to_dict`. The key
+  // is cosmetic on read (cameras resolve by positional index); the camcorder map
+  // keys by bare integer index, exactly as Python does.
+  session.cameraGroup.cameras.forEach((camera, idx) => {
+    const key = `cam_${idx}`;
+    const camData: Record<string, unknown> = {
+      name: camera.name ?? key,
+      rotation: camera.rvec,
+      translation: camera.tvec,
+      matrix: camera.matrix,
+      distortions: camera.distortions,
+    };
+    // Always write `size`, using "" when unknown — matches Python `camera_to_dict`
+    // (`"" if camera.size is None else list(size)`). Python's `make_camera` does a
+    // bare `camera_dict.pop("size")`, so omitting the key KeyErrors on read.
+    camData.size = camera.size && camera.size.length === 2 ? camera.size : "";
+    calibration[key] = camData;
+  });
+
+  const camcorder_to_video_idx_map: Record<string, number> = {};
+  for (const [camera, video] of session.videoByCamera.entries()) {
+    const camIdx = session.cameraGroup.cameras.indexOf(camera);
+    const videoIndex = videos.indexOf(video);
+    if (camIdx >= 0 && videoIndex >= 0) {
+      camcorder_to_video_idx_map[String(camIdx)] = videoIndex;
+    }
+  }
+  return { calibration, camcorder_to_video_idx_map };
+}
+
+/**
+ * Resolve an instance group's members to `(cameraIdx, lfIdx, instIdx)` rows — the
+ * columnarized `camcorder_to_lf_and_inst_idx_map`. Mirrors the legacy serializer's
+ * hybrid derivation: concrete instances resolved via `labeledFrameIndex` first (so
+ * edits/reorders are reflected), falling back to the stored index refs so an
+ * untouched lazy group serializes with ZERO frame materialization.
+ */
+function instanceGroupMemberRows(
+  group: InstanceGroup,
+  session: RecordingSession,
+  frameGroup: FrameGroup,
+  labeledFrameIndex: Map<LabeledFrame, number>,
+): Array<[number, number, number]> {
+  const concreteInst = group._instanceByCamera;
+  const instRefs = group._instanceRefsByCamera;
+  const lfByCamera =
+    concreteInst && labeledFrameIndex.size > 0
+      ? frameGroup.labeledFrameByCamera
+      : undefined;
+  const cameras = session.cameraGroup.cameras;
+  const rows: Array<[number, number, number]> = [];
+  const seen = new Set<Camera>([
+    ...(concreteInst?.keys() ?? []),
+    ...(instRefs?.keys() ?? []),
+  ]);
+  for (const camera of seen) {
+    const camIdx = cameras.indexOf(camera);
+    if (camIdx < 0) continue;
+    let pair: [number, number] | undefined;
+    const instance = concreteInst?.get(camera);
+    if (instance && lfByCamera) {
+      const lf = lfByCamera.get(camera);
+      const lfIdx = lf !== undefined ? labeledFrameIndex.get(lf) : undefined;
+      const instIdx = lf ? lf.instances.indexOf(instance as Instance) : -1;
+      if (lfIdx !== undefined && instIdx >= 0) pair = [lfIdx, instIdx];
+    }
+    if (!pair && instRefs?.has(camera)) pair = instRefs.get(camera);
+    if (pair) rows.push([camIdx, pair[0], pair[1]]);
+  }
+  return rows;
+}
+
+/**
+ * Create a chunked + gzip 2-D float64 dataset with NO `field_names` attribute — the
+ * Python reader slices `points_3d`/`pred_points_3d` as a plain matrix (`block[:, :3]`),
+ * and a `field_names` attr would make it rebuild a structured array and break that.
+ * gzip requires a non-zero chunk dim, so callers must guard on `rows.length > 0`.
+ */
+function createGzipFloatMatrix(
+  file: any,
+  name: string,
+  rows: number[][],
+  ncols: number,
+): void {
+  const n = rows.length;
+  const data = new Float64Array(n * ncols);
+  for (let i = 0; i < n; i++) {
+    const r = rows[i];
+    const off = i * ncols;
+    for (let j = 0; j < ncols; j++) data[off + j] = r[j];
+  }
+  file.create_dataset({
+    name,
+    data,
+    shape: [n, ncols],
+    dtype: "<d", // float64 — see the dtype-char note above ("<f8" would be float32)
+    chunks: [Math.min(WRITE_CHUNK_ROWS, Math.max(1, n)), ncols],
+    compression: "gzip",
+    compression_opts: 1,
+  });
+}
+
+/**
+ * Write `RecordingSession` metadata (SLP 2.8 columnar layout).
+ *
+ * `sessions_json` holds only the slim per-session blob (calibration +
+ * `camcorder_to_video_idx_map` + session metadata + an `fg_start`/`fg_end` half-open
+ * range into `session_data/frame_groups`). The unbounded per-frame payload — frame
+ * groups, instance groups, the columnarized member map, and 3-D points — goes into
+ * the `/session_data` group, written only when a session has frame groups (so
+ * session-free / single-view files stay byte-identical and below format 2.8).
+ *
+ * `labeledFrames` may be empty (the lazy / streaming-header paths): member rows then
+ * derive from the stored index refs rather than concrete instances.
+ */
 function writeSessions(
   file: any,
   sessions: RecordingSession[],
@@ -2176,241 +2665,220 @@ function writeSessions(
     labeledFrameIndex.set(lf, idx);
   });
 
-  const payload = sessions.map((session) =>
-    JSON.stringify(
-      serializeSession(session, videos, labeledFrameIndex, identities),
-    ),
-  );
-  file.create_dataset({ name: "sessions_json", data: payload });
-}
+  // Columnar accumulators for /session_data (small: fixed-width ints/floats per frame
+  // group / instance group / member, plus the 3-D point rows).
+  const fgRows: number[][] = []; // [frame_idx, ig_start, ig_end]
+  const igRows: number[][] = []; // SESSION_INSTANCE_GROUP_FIELDS
+  const memberRows: number[][] = []; // [camera, lf, inst]
+  const fgMeta: string[] = [];
+  const igMeta: string[] = [];
+  const pts3dRows: number[][] = []; // [x, y, z]
+  const predPts3dRows: number[][] = []; // [x, y, z, score]
 
-function serializeSession(
-  session: RecordingSession,
-  videos: Video[],
-  labeledFrameIndex: Map<LabeledFrame, number>,
-  identities?: Identity[],
-): Record<string, unknown> {
-  const calibration: Record<string, unknown> = {
-    metadata: session.cameraGroup.metadata ?? {},
-  };
-  // Key calibration by `cam_<index>` to match Python `sleap-io`'s
-  // `camera_group_to_dict` byte-for-byte (keeps our on-disk shape a clean subset
-  // of the Python format, per the "upstreamable" goal). The calibration key is
-  // cosmetic on read — both readers resolve cameras by dict ORDER / positional
-  // index, and the camcorder maps below key by bare integer index
-  // (cameraKeyForSession = String(index)), exactly as Python does. `name` is
-  // kept as a field inside each camera dict.
-  session.cameraGroup.cameras.forEach((camera, idx) => {
-    const key = `cam_${idx}`;
-    const camData: Record<string, unknown> = {
-      name: camera.name ?? key,
-      rotation: camera.rvec,
-      translation: camera.tvec,
-      matrix: camera.matrix,
-      distortions: camera.distortions,
-    };
-    if (camera.size) camData.size = camera.size;
-    calibration[key] = camData;
-  });
+  const sessionsJson: string[] = [];
+  for (const session of sessions) {
+    const { calibration, camcorder_to_video_idx_map } = sessionCalibrationDict(
+      session,
+      videos,
+    );
 
-  const camcorder_to_video_idx_map: Record<string, number> = {};
-  for (const [camera, video] of session.videoByCamera.entries()) {
-    const cameraKey = cameraKeyForSession(camera, session);
-    const videoIndex = videos.indexOf(video);
-    if (cameraKey !== "-1" && videoIndex >= 0) {
-      camcorder_to_video_idx_map[cameraKey] = videoIndex;
+    const fgStart = fgRows.length;
+    for (const frameGroup of session.frameGroups.values()) {
+      if (!frameGroup.instanceGroups.length) continue;
+
+      const igStart = igRows.length;
+      for (const group of frameGroup.instanceGroups) {
+        const memberStart = memberRows.length;
+        for (const m of instanceGroupMemberRows(
+          group,
+          session,
+          frameGroup,
+          labeledFrameIndex,
+        )) {
+          memberRows.push(m);
+        }
+        const memberEnd = memberRows.length;
+
+        // Identity → catalog index (-1 when unset / not registered).
+        let identityIdx = -1;
+        if (group.identity && identities) {
+          identityIdx = identities.indexOf(group.identity);
+          if (identityIdx < 0) {
+            console.warn(
+              `InstanceGroup references an Identity ("${group.identity.name}") not found in Labels.identities — identity will be dropped on save.`,
+            );
+          }
+        }
+
+        const score = group.score != null ? group.score : Number.NaN;
+
+        // 3-D points → points_3d / pred_points_3d row range (NaN = missing keypoint).
+        let pts3dStart = -1;
+        let pts3dEnd = -1;
+        let pts3dPredicted = 0;
+        let i3dScore = Number.NaN;
+        const inst3d = group.instance3d;
+        const points3d = inst3d?.points ?? group.points;
+        if (points3d) {
+          const isPred =
+            inst3d instanceof PredictedInstance3D && inst3d.pointScores != null;
+          if (isPred) {
+            const scores = (inst3d as PredictedInstance3D)
+              .pointScores as number[];
+            pts3dStart = predPts3dRows.length;
+            points3d.forEach((row, i) => {
+              const xyz = coerce3dRow(row, 3);
+              const s = scores[i];
+              predPts3dRows.push([
+                xyz[0],
+                xyz[1],
+                xyz[2],
+                s == null ? Number.NaN : Number(s),
+              ]);
+            });
+            pts3dEnd = predPts3dRows.length;
+            pts3dPredicted = 1;
+          } else {
+            pts3dStart = pts3dRows.length;
+            for (const row of points3d) pts3dRows.push(coerce3dRow(row, 3));
+            pts3dEnd = pts3dRows.length;
+          }
+          if (inst3d?.score != null) i3dScore = inst3d.score;
+        }
+
+        igRows.push([
+          identityIdx,
+          score,
+          i3dScore,
+          pts3dStart,
+          pts3dEnd,
+          pts3dPredicted,
+          memberStart,
+          memberEnd,
+        ]);
+        igMeta.push(
+          group.metadata && Object.keys(group.metadata).length
+            ? JSON.stringify(group.metadata)
+            : "",
+        );
+      }
+      const igEnd = igRows.length;
+      fgRows.push([frameGroup.frameIdx, igStart, igEnd]);
+      fgMeta.push(
+        frameGroup.metadata && Object.keys(frameGroup.metadata).length
+          ? JSON.stringify(frameGroup.metadata)
+          : "",
+      );
     }
-  }
+    const fgEnd = fgRows.length;
 
-  const frame_group_dicts: Record<string, unknown>[] = [];
-  for (const frameGroup of session.frameGroups.values()) {
-    if (!frameGroup.instanceGroups.length) continue;
-    frame_group_dicts.push(
-      serializeFrameGroup(frameGroup, session, labeledFrameIndex, identities),
+    sessionsJson.push(
+      JSON.stringify({
+        calibration,
+        camcorder_to_video_idx_map,
+        metadata: session.metadata ?? {},
+        fg_start: fgStart,
+        fg_end: fgEnd,
+      }),
     );
   }
 
-  return {
-    calibration,
-    camcorder_to_video_idx_map,
-    frame_group_dicts,
-    metadata: session.metadata ?? {},
-  };
+  file.create_dataset({ name: "sessions_json", data: sessionsJson });
+
+  // Columnar /session_data group — only when some session has frame groups.
+  if (fgRows.length > 0) {
+    file.create_group("session_data");
+    createMatrixDataset(
+      file,
+      "session_data/frame_groups",
+      fgRows,
+      SESSION_FRAME_GROUP_FIELDS,
+      "<d",
+    );
+    createMatrixDataset(
+      file,
+      "session_data/instance_groups",
+      igRows,
+      SESSION_INSTANCE_GROUP_FIELDS,
+      "<d",
+    );
+    createMatrixDataset(
+      file,
+      "session_data/instance_group_members",
+      memberRows,
+      SESSION_INSTANCE_GROUP_MEMBER_FIELDS,
+      "<d",
+    );
+    if (pts3dRows.length > 0) {
+      createGzipFloatMatrix(file, "session_data/points_3d", pts3dRows, 3);
+    }
+    if (predPts3dRows.length > 0) {
+      createGzipFloatMatrix(
+        file,
+        "session_data/pred_points_3d",
+        predPts3dRows,
+        4,
+      );
+    }
+    // Per-row metadata JSON blobs, presence-guarded (omitted when all empty).
+    if (fgMeta.some((s) => s.length > 0)) {
+      file.create_dataset({
+        name: "session_data/frame_group_meta",
+        data: fgMeta,
+      });
+    }
+    if (igMeta.some((s) => s.length > 0)) {
+      file.create_dataset({
+        name: "session_data/instance_group_meta",
+        data: igMeta,
+      });
+    }
+  }
 }
 
-function serializeFrameGroup(
-  frameGroup: FrameGroup,
-  session: RecordingSession,
-  labeledFrameIndex: Map<LabeledFrame, number>,
-  identities?: Identity[],
-): Record<string, unknown> {
-  const instance_groups = frameGroup.instanceGroups.map((group) =>
-    serializeInstanceGroup(
-      group,
-      session,
-      identities,
-      frameGroup,
-      labeledFrameIndex,
-    ),
-  );
-  // Derive-then-ref-fallback (hybrid write-back), reading RAW backing fields so
-  // an untouched (lazy) group serializes from its stored refs with ZERO frame
-  // materialization, while a mutated/in-memory group re-derives indices from the
-  // concrete map (reflecting any reorder/edit). Never touches the caching getter
-  // (that would materialize + cache between the two saves of the round-trip
-  // equality test).
-  const concreteLfByCamera = frameGroup._labeledFrameByCamera;
-  const lfRefsByCamera = frameGroup._labeledFrameRefsByCamera;
-  const labeled_frame_by_camera: Record<string, number> = {};
-  const frameCameras = new Set<Camera>([
-    ...(concreteLfByCamera?.keys() ?? []),
-    ...(lfRefsByCamera?.keys() ?? []),
-  ]);
-  for (const camera of frameCameras) {
-    const cameraKey = cameraKeyForSession(camera, session);
-    const labeledFrame = concreteLfByCamera?.get(camera);
-    let index =
-      labeledFrame !== undefined
-        ? labeledFrameIndex.get(labeledFrame)
-        : undefined;
-    if (index === undefined) index = lfRefsByCamera?.get(camera);
-    if (index !== undefined) {
-      labeled_frame_by_camera[cameraKey] = index;
-    }
+// One-time warning keys for the point-count enforcement below (avoids log spam
+// across 100k+ frames when an upstream produced malformed instances).
+const _spanWarned = new Set<string>();
+
+/**
+ * Push exactly `nNodes` point rows for `instance` into `target`, enforcing the SLP
+ * invariant that an instance's point count equals its skeleton's node count. Python
+ * `read_instances` requires `point_id_end - point_id_start == n_nodes`; an instance
+ * that somehow holds a different number of points (e.g. built from a coordinate array
+ * whose length ≠ the skeleton — see `pointsFromArray`) would otherwise write an
+ * inconsistent span that breaks the Python reader (luc3d#161). Missing points are
+ * padded as invisible `NaN` rows and any extras are dropped, warning once.
+ *
+ * `predicted` selects a 5-col row (x, y, visible, complete, score) vs 4-col.
+ */
+function emitInstancePoints(
+  target: number[][],
+  instance: Instance | PredictedInstance,
+  predicted: boolean,
+): void {
+  const nNodes = instance.skeleton.nodeNames.length;
+  const pts = instance.points;
+  if (pts.length !== nNodes && !_spanWarned.has(instance.skeleton.name ?? "")) {
+    _spanWarned.add(instance.skeleton.name ?? "");
+    console.warn(
+      `Instance has ${pts.length} point(s) but its skeleton "${instance.skeleton.name ?? "?"}" has ${nNodes} node(s); ` +
+        "padding/truncating to the node count so the written SLP stays self-consistent (a mismatch would break the Python reader).",
+    );
   }
-
-  return {
-    frame_idx: frameGroup.frameIdx,
-    instance_groups,
-    labeled_frame_by_camera,
-    metadata: frameGroup.metadata ?? {},
-  };
-}
-
-function serializeInstanceGroup(
-  group: InstanceGroup,
-  session: RecordingSession,
-  identities?: Identity[],
-  frameGroup?: FrameGroup,
-  labeledFrameIndex?: Map<LabeledFrame, number>,
-): Record<string, unknown> {
-  // Hybrid write-back: read RAW backing fields (never the caching getter, which
-  // would materialize + cache concrete maps between the two saves of the
-  // round-trip equality test). Per camera: try OBJECT DERIVATION first
-  // (labeledFrameIndex.get(lf) + lf.instances.indexOf(inst)) so any
-  // mutation/reorder is reflected; FALL BACK to the stored index refs when the
-  // group was never materialized (lazy pure-ref group). `instances` points are
-  // emitted ONLY for concrete groups (pure-ref groups omit `instances`, matching
-  // Python-canonical shape) — zero frame materialization for untouched groups.
-  const concreteInst = group._instanceByCamera;
-  const instRefs = group._instanceRefsByCamera;
-  // Resolve the frame group's labeled-frame map ONLY when this instance group is
-  // concrete (materialized/in-memory) — via the GETTER, not the raw field, so
-  // derivation works even when the consumer reached the mutation through
-  // `instanceByCamera` alone (which does NOT populate the frame group's raw map).
-  // For a concrete instance group the frames are already materialized, so the
-  // getter resolves from cache with no NEW materialization; for an untouched
-  // pure-ref group `concreteInst` is undefined, so we never touch the getter and
-  // the zero-materialization guarantee holds.
-  const lfByCamera =
-    concreteInst && frameGroup ? frameGroup.labeledFrameByCamera : undefined;
-
-  const instances: Record<string, Record<string, number[]>> = {};
-  const camcorder_to_lf_and_inst_idx_map: Record<string, [number, number]> = {};
-  const instCameras = new Set<Camera>([
-    ...(concreteInst?.keys() ?? []),
-    ...(instRefs?.keys() ?? []),
-  ]);
-  for (const camera of instCameras) {
-    const cameraKey = cameraKeyForSession(camera, session);
-    const instance = concreteInst?.get(camera);
-    let pair: [number, number] | undefined;
-    if (instance) {
-      if (labeledFrameIndex) {
-        const labeledFrame = lfByCamera?.get(camera);
-        const lfIdx =
-          labeledFrame !== undefined
-            ? labeledFrameIndex.get(labeledFrame)
-            : undefined;
-        const instIdx = labeledFrame
-          ? labeledFrame.instances.indexOf(instance as Instance)
-          : -1;
-        if (lfIdx !== undefined && instIdx >= 0) pair = [lfIdx, instIdx];
-      }
-      instances[cameraKey] = pointsToDict(instance);
-    }
-    if (!pair && instRefs?.has(camera)) pair = instRefs.get(camera);
-    if (pair) camcorder_to_lf_and_inst_idx_map[cameraKey] = pair;
-  }
-
-  const payload: Record<string, unknown> = {};
-  if (Object.keys(instances).length > 0) {
-    payload.instances = instances;
-  }
-  if (Object.keys(camcorder_to_lf_and_inst_idx_map).length > 0) {
-    payload.camcorder_to_lf_and_inst_idx_map = camcorder_to_lf_and_inst_idx_map;
-  }
-  if (group.score != null) payload.score = group.score;
-
-  // 3D points — serialize from Instance3D if present, otherwise raw points
-  if (group.instance3d) {
-    if (group.instance3d.points) {
-      payload.points = group.instance3d.points;
-    }
-    if (group.instance3d.score != null) {
-      payload.instance_3d_score = group.instance3d.score;
-    }
-    if (
-      group.instance3d instanceof PredictedInstance3D &&
-      group.instance3d.pointScores
-    ) {
-      payload.instance_3d_point_scores = group.instance3d.pointScores;
-    }
-  } else if (group.points != null) {
-    payload.points = group.points;
-  }
-
-  // Identity — serialize as index into Labels.identities
-  if (group.identity && identities) {
-    const identityIdx = identities.indexOf(group.identity);
-    if (identityIdx >= 0) {
-      payload.identity_idx = identityIdx;
+  for (let i = 0; i < nNodes; i++) {
+    const p = pts[i];
+    if (p) {
+      const row = [p.xy[0], p.xy[1], p.visible ? 1 : 0, p.complete ? 1 : 0];
+      if (predicted) row.push((p as { score?: number }).score ?? 0);
+      target.push(row);
     } else {
-      console.warn(
-        `InstanceGroup references an Identity ("${group.identity.name}") not found in Labels.identities — identity will be dropped on save.`,
+      target.push(
+        predicted
+          ? [Number.NaN, Number.NaN, 0, 0, 0]
+          : [Number.NaN, Number.NaN, 0, 0],
       );
     }
   }
-
-  if (group.metadata && Object.keys(group.metadata).length)
-    payload.metadata = group.metadata;
-  return payload;
-}
-
-function pointsToDict(instance: Instance): Record<string, number[]> {
-  const names = instance.skeleton.nodeNames;
-  const dict: Record<string, number[]> = {};
-  instance.points.forEach((point, idx) => {
-    const name = point.name ?? names[idx] ?? String(idx);
-    const row = [
-      point.xy[0],
-      point.xy[1],
-      point.visible ? 1 : 0,
-      point.complete ? 1 : 0,
-    ];
-    if (point.score != null) {
-      row.push(point.score);
-    }
-    dict[name] = row;
-  });
-  return dict;
-}
-
-function cameraKeyForSession(
-  camera: Camera,
-  session: RecordingSession,
-): string {
-  return String(session.cameraGroup.cameras.indexOf(camera));
 }
 
 function writeLabeledFrames(file: any, labels: Labels): void {
@@ -2446,26 +2914,11 @@ function writeLabeledFrames(file: any, labels: Labels): void {
       if (instance instanceof PredictedInstance) {
         score = instance.score ?? 0;
         pointStart = predPoints.length;
-        for (const point of instance.points) {
-          predPoints.push([
-            point.xy[0],
-            point.xy[1],
-            point.visible ? 1 : 0,
-            point.complete ? 1 : 0,
-            (point as any).score ?? 0,
-          ]);
-        }
+        emitInstancePoints(predPoints, instance, true);
         pointEnd = predPoints.length;
       } else {
         pointStart = points.length;
-        for (const point of instance.points) {
-          points.push([
-            point.xy[0],
-            point.xy[1],
-            point.visible ? 1 : 0,
-            point.complete ? 1 : 0,
-          ]);
-        }
+        emitInstancePoints(points, instance as Instance, false);
         pointEnd = points.length;
         if (instance.fromPredicted) {
           predictedLinks.push([instanceId, instance.fromPredicted]);

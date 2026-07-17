@@ -2,6 +2,8 @@ import type { Video } from "./video.js";
 import type { Track, Instance } from "./instance.js";
 
 import type { SegmentationMask } from "./mask.js";
+import type { Identity } from "./identity.js";
+import type { Embedding } from "./embedding.js";
 
 // Late-binding factory to avoid circular imports with mask.ts.
 // Set by mask.ts when it is imported.
@@ -52,6 +54,13 @@ export class ROI {
   track: Track | null;
   trackingScore: number | null = null;
   instance: Instance | null;
+  /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+  identity?: Identity | null = null;
+  identityScore?: number | null = null;
+  identityEmbedding?: Embedding | null = null;
+  /** Category confidence + appearance embedding (SLP 2.7+). */
+  categoryScore?: number | null = null;
+  categoryEmbedding?: Embedding | null = null;
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx: number | null = null;
 

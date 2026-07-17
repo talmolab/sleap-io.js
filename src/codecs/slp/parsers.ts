@@ -5,7 +5,7 @@
 
 import { Skeleton, Node } from "../../model/skeleton.js";
 import { Track } from "../../model/instance.js";
-import { Camera } from "../../model/camera.js";
+import { Camera, FrameGroup, InstanceGroup } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
 import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
 
@@ -225,6 +225,61 @@ export function parseJsonEntry(entry: unknown): unknown {
     );
   }
   return entry;
+}
+
+/**
+ * Decode a variable-length HDF5 dataset entry (string / Uint8Array / buffer view)
+ * to its trimmed text, without JSON-parsing. Returns `undefined` for shapes that
+ * are not text-like. Used by the session readers to distinguish a genuinely
+ * absent/empty dataset from an entry that read back blank (the h5wasm
+ * variable-length-string read ceiling — see {@link sessionsReadError}).
+ */
+export function decodeEntryText(entry: unknown): string | undefined {
+  if (typeof entry === "string") return trimHdf5String(entry);
+  if (entry instanceof Uint8Array)
+    return trimHdf5String(textDecoder.decode(entry));
+  if (entry && typeof entry === "object" && "buffer" in entry)
+    return trimHdf5String(
+      textDecoder.decode(
+        new Uint8Array((entry as { buffer: ArrayBuffer }).buffer),
+      ),
+    );
+  return undefined;
+}
+
+/**
+ * Build a descriptive error for a `sessions_json` dataset that is present but
+ * cannot be recovered — either an entry read back empty (the h5wasm
+ * variable-length-string read ceiling of ~0.45 GB, well under V8's ~512 MB string
+ * cap; see sleap-io.js#220) or an entry that failed to JSON-parse.
+ *
+ * The session readers MUST throw this rather than silently return `[]`: a session
+ * blob that reads empty would otherwise drop calibration + all frame grouping +
+ * all 3D with no indication, and the next save re-writes the file 2D-only,
+ * permanently destroying the data. Fail loud so callers can surface it.
+ *
+ * @param nEntries Number of entries the `sessions_json` dataset reported.
+ * @param entry The offending entry (used only to detect the blank/ceiling case).
+ * @param cause The underlying parse error, if any.
+ */
+export function sessionsReadError(
+  nEntries: number,
+  entry: unknown,
+  cause?: unknown,
+): Error {
+  const text = decodeEntryText(entry);
+  const blank = text === "" || text === undefined;
+  const plural = nEntries === 1 ? "entry" : "entries";
+  const why = blank
+    ? "an entry read back empty — the variable-length string likely exceeds the " +
+      "h5wasm read limit (~0.45 GB), so calibration, frame grouping, and 3D " +
+      "cannot be recovered from this reader"
+    : `an entry could not be parsed as JSON${cause ? ` (${String((cause as Error)?.message ?? cause)})` : ""}`;
+  return new Error(
+    `Failed to read sessions: sessions_json is present (${nEntries} ${plural}) but ${why}. ` +
+      "Refusing to load a sessions-less (2D-only) view of a file that contains session " +
+      "data, to avoid silently overwriting it on the next save.",
+  );
 }
 
 /**
@@ -559,29 +614,68 @@ export interface SessionMetadata {
   videosByCamera: Record<string, number>;
   /** Additional session metadata */
   metadata?: Record<string, unknown>;
+  /**
+   * Reconstructed frame groups with 3D data (SLP 2.8+), when the columnar
+   * `/session_data` group was supplied. Each `InstanceGroup` carries its
+   * `instance3d` (concrete 3D points), `score`, `identity`, `metadata`, and member
+   * index refs; the 2D `instanceByCamera` stays unresolved in the lite path (no
+   * frames are materialized). Absent for legacy ≤2.7 files or when `/session_data`
+   * was not read.
+   */
+  frameGroups?: FrameGroup[];
 }
 
 /**
  * Parse recording session metadata from sessions_json dataset values.
+ *
+ * When `sessionData` (the columnar `/session_data` group, SLP 2.8+) and, per
+ * session, an `fg_start`/`fg_end` range are present, each session's `frameGroups`
+ * are reconstructed with full 3D via {@link reconstructColumnarFrameGroups} — used
+ * by the lite (jsfive) reader to surface 3D without materializing frames. Legacy
+ * ≤2.7 files (no `fg_start`) leave `frameGroups` unset.
  */
-export function parseSessionsMetadata(values: unknown[]): SessionMetadata[] {
+export function parseSessionsMetadata(
+  values: unknown[],
+  sessionData?: SessionData | null,
+  skeletons: Skeleton[] = [],
+): SessionMetadata[] {
   const sessions: SessionMetadata[] = [];
 
   for (const entry of values) {
-    const parsed = parseJsonEntry(entry) as Record<string, unknown>;
+    let parsed: Record<string, unknown>;
+    try {
+      parsed = parseJsonEntry(entry) as Record<string, unknown>;
+    } catch (err) {
+      throw sessionsReadError(values.length, entry, err);
+    }
+    if (!parsed || typeof parsed !== "object") {
+      throw sessionsReadError(values.length, entry);
+    }
     const calibration = (parsed.calibration ?? {}) as Record<string, unknown>;
     const cameras: CameraMetadata[] = [];
+    const cameraObjs: Camera[] = [];
 
     for (const [key, data] of Object.entries(calibration)) {
       if (key === "metadata") continue;
       const cameraData = data as Record<string, unknown>;
-      cameras.push({
-        name: (cameraData.name as string | undefined) ?? key,
-        rvec: (cameraData.rotation as number[] | undefined) ?? [0, 0, 0],
-        tvec: (cameraData.translation as number[] | undefined) ?? [0, 0, 0],
-        matrix: cameraData.matrix as number[][] | undefined,
-        distortions: cameraData.distortions as number[] | undefined,
-      });
+      const rvec = (cameraData.rotation as number[] | undefined) ?? [0, 0, 0];
+      const tvec = (cameraData.translation as number[] | undefined) ?? [
+        0, 0, 0,
+      ];
+      const name = (cameraData.name as string | undefined) ?? key;
+      const matrix = cameraData.matrix as number[][] | undefined;
+      const distortions = cameraData.distortions as number[] | undefined;
+      cameras.push({ name, rvec, tvec, matrix, distortions });
+      cameraObjs.push(
+        new Camera({
+          name,
+          rvec,
+          tvec,
+          matrix,
+          distortions,
+          size: normalizeCameraSize(cameraData.size),
+        }),
+      );
     }
 
     const videosByCamera: Record<string, number> = {};
@@ -593,14 +687,45 @@ export function parseSessionsMetadata(values: unknown[]): SessionMetadata[] {
       videosByCamera[cameraKey] = Number(videoIdx);
     }
 
+    // SLP 2.8 columnar path: reconstruct frame groups + 3D from /session_data.
+    let frameGroups: FrameGroup[] | undefined;
+    const fgStart = parsed.fg_start;
+    if (fgStart != null && sessionData) {
+      frameGroups = [
+        ...reconstructColumnarFrameGroups(
+          cameraObjs,
+          skeletons,
+          undefined,
+          sessionData,
+          Number(fgStart),
+          Number(parsed.fg_end),
+        ).values(),
+      ];
+    }
+
     sessions.push({
       cameras,
       videosByCamera,
       metadata: parsed.metadata as Record<string, unknown> | undefined,
+      ...(frameGroups ? { frameGroups } : {}),
     });
   }
 
   return sessions;
+}
+
+/**
+ * Normalize a camera `size` value read from calibration to a `[w, h]` tuple or
+ * `undefined`. Python writes `""` for a size-less camera and `[w, h]` otherwise
+ * (and older sleap-io.js omitted the key), so anything that is not a 2-element
+ * array becomes `undefined`.
+ */
+export function normalizeCameraSize(
+  raw: unknown,
+): [number, number] | undefined {
+  return Array.isArray(raw) && raw.length === 2
+    ? [Number(raw[0]), Number(raw[1])]
+    : undefined;
 }
 
 /**
@@ -625,19 +750,44 @@ export function resolveCameraKey(
 /**
  * Reconstruct an Instance3D or PredictedInstance3D from a session record.
  */
+/**
+ * Map inline 3D `null` entries (missing keypoints, produced by `JSON.stringify(NaN)`
+ * in ≤2.7 files and by sleap-io.js's own legacy writer) to `NaN` — a `null` row
+ * becomes a full-NaN row, a `null` coord becomes `NaN`. Matches Python's
+ * `_inline_3d_to_array` and `Instance3D`'s "NaN = missing keypoint" semantics.
+ * Without this, `Number(null) === 0` would move a missing keypoint to the origin and
+ * ragged null rows would break downstream shape assumptions (luc3d#161).
+ */
+function coerceInline3dPoints(raw: unknown[]): number[][] {
+  const width =
+    (raw.find((r) => r != null) as unknown[] | undefined)?.length ?? 3;
+  return raw.map((row) =>
+    row == null
+      ? new Array<number>(width).fill(Number.NaN)
+      : (row as unknown[]).map((v) => (v == null ? Number.NaN : Number(v))),
+  );
+}
+
+/** Map a flat inline per-point score list's `null` entries to `NaN`. */
+function coerceInline1d(raw: unknown[]): number[] {
+  return raw.map((v) => (v == null ? Number.NaN : Number(v)));
+}
+
 export function reconstructInstance3D(
   record: Record<string, unknown>,
   skeletons: Skeleton[],
 ): Instance3D | undefined {
   const rawPoints = record.points;
-  const pointsValue = Array.isArray(rawPoints)
-    ? (rawPoints as number[][])
-    : undefined;
-  if (!pointsValue) return undefined;
+  if (!Array.isArray(rawPoints)) return undefined;
+  // Coerce legacy `null` keypoints/scores to NaN (luc3d#161).
+  const pointsValue = coerceInline3dPoints(rawPoints as unknown[]);
 
   const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
   const score = record.instance_3d_score as number | undefined;
-  const pointScores = record.instance_3d_point_scores as number[] | undefined;
+  const rawScores = record.instance_3d_point_scores;
+  const pointScores = Array.isArray(rawScores)
+    ? coerceInline1d(rawScores as unknown[])
+    : undefined;
 
   if (pointScores) {
     return new PredictedInstance3D({
@@ -648,6 +798,160 @@ export function reconstructInstance3D(
     });
   }
   return new Instance3D({ points: pointsValue, skeleton, score });
+}
+
+/** A columnar `/session_data` point matrix read into memory: a flat float buffer +
+ * its column count (row `r` = `flat[r*ncols .. r*ncols+ncols]`). */
+export interface SessionPointMatrix {
+  flat: ArrayLike<number>;
+  ncols: number;
+}
+
+/**
+ * The columnar `/session_data` group (SLP 2.8) read into memory as plain column
+ * arrays, backend-agnostic so the eager (h5wasm), streaming (worker), and lite
+ * (jsfive) readers can all feed {@link reconstructColumnarFrameGroups}. Struct-table
+ * columns are `ArrayLike<unknown>` (numbers, or BigInt for a Python-written i8/u8
+ * compound — always `Number()`-coerced on use). Meta arrays are one JSON blob per
+ * row (empty string when that row had no metadata), or `null` when the
+ * presence-guarded dataset was omitted.
+ */
+export interface SessionData {
+  frameGroups: Record<string, ArrayLike<unknown>>; // frame_idx, ig_start, ig_end
+  instanceGroups: Record<string, ArrayLike<unknown>>; // SESSION_INSTANCE_GROUP_FIELDS
+  members: Record<string, ArrayLike<unknown>>; // camera, lf, inst
+  points3d: SessionPointMatrix | null;
+  predPoints3d: SessionPointMatrix | null;
+  frameGroupMeta: unknown[] | null;
+  instanceGroupMeta: unknown[] | null;
+}
+
+/** Decode a per-row JSON metadata blob from a `*_meta` vlen-string array. Returns
+ * `{}` when the (presence-guarded) dataset was absent or the row was blank. */
+function decodeMetaBlob(
+  arr: unknown[] | null,
+  idx: number,
+): Record<string, unknown> {
+  if (!arr || idx >= arr.length) return {};
+  const text = decodeEntryText(arr[idx]);
+  if (!text) return {};
+  return JSON.parse(text) as Record<string, unknown>;
+}
+
+/**
+ * Reconstruct a session's `FrameGroup`s from the columnar `/session_data` tables
+ * (SLP 2.8), using its `fg_start`/`fg_end` half-open range into `frame_groups`.
+ *
+ * Backend-agnostic: operates purely on an in-memory {@link SessionData} + the
+ * session's resolved `cameras`, so the eager, streaming, and lite readers share it.
+ * Members are captured as index refs (`camera → [lf, inst]`) WITHOUT materializing
+ * frames — resolved lazily later via the injected frame resolver, exactly like the
+ * legacy inline reader. `Number()`-coerces every struct field so a Python-written
+ * BigInt (i8/u8) compound and a JS-written `<f8` flat matrix both work.
+ */
+export function reconstructColumnarFrameGroups(
+  cameras: Camera[],
+  skeletons: Skeleton[],
+  identities: Identity[] | undefined,
+  sessionData: SessionData,
+  fgStart: number,
+  fgEnd: number,
+): Map<number, FrameGroup> {
+  const result = new Map<number, FrameGroup>();
+  const fg = sessionData.frameGroups;
+  const ig = sessionData.instanceGroups;
+  const mem = sessionData.members;
+  const num = (col: ArrayLike<unknown> | undefined, i: number): number =>
+    Number((col as ArrayLike<unknown>)?.[i]);
+
+  for (let f = fgStart; f < fgEnd; f++) {
+    const frameIdx = num(fg.frame_idx, f);
+    const igStart = num(fg.ig_start, f);
+    const igEnd = num(fg.ig_end, f);
+
+    const instanceGroups: InstanceGroup[] = [];
+    let labeledFrameRefsByCamera: Map<Camera, number> | undefined;
+
+    for (let g = igStart; g < igEnd; g++) {
+      // Members → camera → [lf, inst] refs (+ the frame group's camera → lf refs).
+      const memberStart = num(ig.member_start, g);
+      const memberEnd = num(ig.member_end, g);
+      let instanceRefsByCamera: Map<Camera, [number, number]> | undefined;
+      for (let m = memberStart; m < memberEnd; m++) {
+        const camera = cameras[num(mem.camera, m)];
+        if (!camera) continue;
+        const lf = num(mem.lf, m);
+        const inst = num(mem.inst, m);
+        if (!instanceRefsByCamera) instanceRefsByCamera = new Map();
+        instanceRefsByCamera.set(camera, [lf, inst]);
+        if (!labeledFrameRefsByCamera) labeledFrameRefsByCamera = new Map();
+        labeledFrameRefsByCamera.set(camera, lf);
+      }
+
+      // 3D points from the points_3d / pred_points_3d row range (NaN = missing).
+      let instance3d: Instance3D | undefined;
+      const pts3dStart = num(ig.pts3d_start, g);
+      if (pts3dStart >= 0) {
+        const pts3dEnd = num(ig.pts3d_end, g);
+        const predicted = num(ig.pts3d_predicted, g) === 1;
+        const src = predicted ? sessionData.predPoints3d : sessionData.points3d;
+        if (src) {
+          const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
+          const i3dScore = num(ig.instance_3d_score, g);
+          const score = Number.isNaN(i3dScore) ? undefined : i3dScore;
+          const points: number[][] = [];
+          const pointScores: number[] = [];
+          const { flat, ncols } = src;
+          for (let r = pts3dStart; r < pts3dEnd; r++) {
+            const base = r * ncols;
+            points.push([
+              Number(flat[base]),
+              Number(flat[base + 1]),
+              Number(flat[base + 2]),
+            ]);
+            if (predicted) pointScores.push(Number(flat[base + 3]));
+          }
+          instance3d = predicted
+            ? new PredictedInstance3D({ points, skeleton, score, pointScores })
+            : new Instance3D({ points, skeleton, score });
+        }
+      }
+
+      const scoreRaw = num(ig.score, g);
+      const score = Number.isNaN(scoreRaw) ? undefined : scoreRaw;
+
+      let identity: Identity | undefined;
+      const identityIdx = num(ig.identity_idx, g);
+      if (identityIdx >= 0 && identities) {
+        if (identityIdx < identities.length) identity = identities[identityIdx];
+        else
+          console.warn(
+            `identity_idx ${identityIdx} is out of bounds (${identities.length} identities available) — skipping identity for this instance group.`,
+          );
+      }
+
+      instanceGroups.push(
+        new InstanceGroup({
+          instanceRefsByCamera,
+          score,
+          instance3d,
+          identity,
+          metadata: decodeMetaBlob(sessionData.instanceGroupMeta, g),
+        }),
+      );
+    }
+
+    result.set(
+      frameIdx,
+      new FrameGroup({
+        frameIdx,
+        instanceGroups,
+        labeledFrameRefsByCamera,
+        metadata: decodeMetaBlob(sessionData.frameGroupMeta, f),
+      }),
+    );
+  }
+  return result;
 }
 
 /**
