@@ -10566,12 +10566,38 @@ async function fetchRetryingWorker(url, init, retries) {
 let mountType = null;
 let currentFilename = null;
 
+// Dual-bridge (write B-seam, append mode \u2014 openAppend/appendEmbeddedVideos): TWO
+// h5wasm files open at once, a read-only SOURCE and a read+write DEST, both routed
+// through the SAME rangeControl/rangeData/rangeMaxChunk below (the worker only ever
+// blocks on one bridge op at a time, so sharing is safe) but distinguished by a
+// 'source'/'dest' tag on every bridged request (see bridgeRead/bridgeWrite/
+// bridgeTruncate). currentFile/mountPath/mountType above remain for the pre-existing
+// SINGLE-file paths (openRangeFile/openLocalFile/etc); these dual-file
+// globals are independent so the two families of open/close never collide.
+let currentSourceFile = null;
+let currentDestFile = null;
+let sourceMountPath = null;
+let sourceMountFilename = null;
+let destMountPath = null;
+let destMountFilename = null;
+
 // B-seam range bridge: SharedArrayBuffer views the custom device uses to request
-// bytes from the main thread synchronously (Atomics.wait). Set by openRangeFile.
-// Control layout: Int32[0] = STATE (1=REQUEST pending, 2=READY), Int32[1] = RETLEN.
+// bytes from the main thread synchronously (Atomics.wait). Set by openRangeFile /
+// openAppend (whichever ran most recently \u2014 only one bridge is
+// active at a time). Control layout: Int32[0] = STATE (1=REQUEST pending, 2=READY),
+// Int32[1] = RETLEN.
 let rangeControl = null;
 let rangeData = null;
 let rangeMaxChunk = 0;
+
+// Write half of the B-seam: current logical size of the writable range file
+// (tracked here because MEMFS \`contents\` is not the source of truth \u2014 the
+// bridge, not the wasm heap, holds the bytes). Set by createWriteRangeFile /
+// updated by stream_ops.write and node_ops.setattr (ftruncate). In append mode
+// (openAppend) this is SEEDED to the dest file's pre-existing on-disk size (passed
+// in as destSize) rather than 0, so h5wasm's fstat/usedBytes-based file-size probe
+// sees the real size of the already-written bytes instead of an empty file.
+let writeFileSize = 0;
 
 self.onmessage = async function(e) {
   const { type, payload, id } = e.data;
@@ -10601,6 +10627,23 @@ self.onmessage = async function(e) {
       case 'openRange':
         const rangeResult = openRangeFile(payload.sab, payload.size, payload.filename, payload.controlBytes);
         respond(id, rangeResult);
+        break;
+
+      case 'openAppend':
+        const openAppendResult = openAppend(
+          payload.sab,
+          payload.controlBytes,
+          payload.sourceFilename,
+          payload.sourceSize,
+          payload.destFilename,
+          payload.destSize
+        );
+        respond(id, openAppendResult);
+        break;
+
+      case 'appendEmbeddedVideos':
+        const appendResult = appendEmbeddedVideos(payload.entries);
+        respond(id, appendResult);
         break;
 
       case 'getKeys':
@@ -10803,10 +10846,14 @@ async function openBufferFile(buffer, filename = 'data.h5') {
 // until it writes the bytes back into the shared data area and wakes us. Returns a
 // view over the shared data area (valid only until the next bridgeRead) \u2014 callers
 // copy immediately. \`want\` is capped to the data area size; the device loops.
-function bridgeRead(offset, length) {
+// \`target\` ('source'|'dest'|undefined) is stamped onto the posted request so a
+// dual-bridge main-thread listener (StreamingH5Writer.openAppend) can route the
+// request to the right reader; the single-bridge paths (createRangeFile) pass no
+// target, which is harmless \u2014 those listeners don't look at it.
+function bridgeRead(offset, length, target) {
   var want = length < rangeMaxChunk ? length : rangeMaxChunk;
   Atomics.store(rangeControl, 0, 1);                                  // STATE = REQUEST
-  self.postMessage({ type: 'rangeRequest', offset: offset, length: want });
+  self.postMessage({ type: 'rangeRequest', target: target, offset: offset, length: want });
   Atomics.wait(rangeControl, 0, 1);                                  // block until STATE != REQUEST
   var got = Atomics.load(rangeControl, 1);                           // RETLEN (acquire)
   return rangeData.subarray(0, got);
@@ -10846,6 +10893,42 @@ function createRangeFile(parent, name, size) {
   return node;
 }
 
+// Dual-bridge SOURCE device: identical to createRangeFile (read-only, fixed size)
+// except its reads are tagged 'source' so a dual-bridge main-thread listener
+// (StreamingH5Writer.openAppend) can route them to the source reader instead of
+// the dest sink. Kept as a separate function (rather than parameterizing
+// createRangeFile) so the already-shipped single-file read path is untouched.
+function createSourceRangeFile(parent, name, size) {
+  var contents = { length: size };
+  var node = FS.createFile(parent, name, { isDevice: false, contents: contents }, true, false);
+  node.contents = contents;
+  Object.defineProperties(node, { usedBytes: { get: function() { return size; } } });
+  var stream_ops = {};
+  var origOps = node.stream_ops;
+  for (var key in origOps) {
+    (function(k, fn) {
+      stream_ops[k] = function() { FS.forceLoadFile(node); return fn.apply(null, arguments); };
+    })(key, origOps[key]);
+  }
+  stream_ops.read = function(stream, buffer, offset, length, position) {
+    if (position >= size) return 0;
+    var end = position + length;
+    if (end > size) end = size;
+    var got = 0;
+    var pos = position;
+    while (pos < end) {
+      var chunk = bridgeRead(pos, end - pos, 'source');
+      if (chunk.length === 0) break;                                  // short read / EOF
+      buffer.set(chunk, offset + got);
+      got += chunk.length;
+      pos += chunk.length;
+    }
+    return got;
+  };
+  node.stream_ops = stream_ops;
+  return node;
+}
+
 function openRangeFile(sab, size, filename, controlBytes) {
   if (!h5wasmModule) {
     throw new Error('h5wasm not initialized');
@@ -10871,6 +10954,394 @@ function openRangeFile(sab, size, filename, controlBytes) {
     filename: currentFile.filename,
     keys: currentFile.keys()
   };
+}
+
+// Write half of the B-seam: copy the payload into the shared data area and BLOCK
+// until the main thread has written it to disk and woken us. Loops for payloads
+// larger than the data area. Throws on a signalled write error (result != 0).
+// \`target\` is always 'dest' in practice (writes only ever go to the destination
+// file) but is threaded through for symmetry with bridgeRead/bridgeTruncate.
+function bridgeWrite(fileOffset, buffer, bufOffset, length, target) {
+  var written = 0;
+  while (written < length) {
+    var want = (length - written) < rangeMaxChunk ? (length - written) : rangeMaxChunk;
+    rangeData.set(buffer.subarray(bufOffset + written, bufOffset + written + want), 0);
+    Atomics.store(rangeControl, 0, 3);                                   // STATE = WRITE_REQUEST
+    self.postMessage({ type: 'writeRequest', target: target, offset: fileOffset + written, length: want });
+    Atomics.wait(rangeControl, 0, 3);                                    // block until != WRITE_REQUEST
+    if (Atomics.load(rangeControl, 1) !== 0) {
+      throw new Error('bridgeWrite failed at offset ' + (fileOffset + written));
+    }
+    written += want;
+  }
+}
+
+// Truncate/extend the backing file to len via the bridge; block until done.
+// \`target\` is always 'dest' (only the destination file is ever truncated).
+function bridgeTruncate(len, target) {
+  Atomics.store(rangeControl, 0, 4);                                     // STATE = TRUNCATE_REQUEST
+  self.postMessage({ type: 'truncateRequest', target: target, length: len });
+  Atomics.wait(rangeControl, 0, 4);
+  if (Atomics.load(rangeControl, 1) !== 0) throw new Error('bridgeTruncate failed at len ' + len);
+}
+
+// A WRITABLE Emscripten file node whose read/write/llseek/truncate are serviced
+// by the bridge (Rust std::fs on the main thread) instead of MEMFS. Mirrors
+// createRangeFile, but: canWrite=true, dynamic size (writeFileSize), and it
+// overrides stream_ops.write + node_ops.setattr (ftruncate) on top of read.
+//
+// \`initialSize\` seeds writeFileSize (default 0). The dual-bridge APPEND case
+// (openAppend) passes the dest file's actual pre-existing on-disk size here:
+// h5wasm's file-size probe reads node.usedBytes (-> writeFileSize), so without
+// this an existing non-empty file would appear to be 0 bytes and fail to open in
+// 'a' mode. All bridge calls from this device are tagged 'dest' \u2014 this device only
+// ever backs the destination file, never the source.
+function createWriteRangeFile(parent, name, initialSize) {
+  writeFileSize = initialSize || 0;
+  var contents = { length: writeFileSize };
+  var node = FS.createFile(parent, name, { isDevice: false, contents: contents }, true, true); // canRead, canWrite
+  node.contents = contents;
+  Object.defineProperties(node, { usedBytes: { get: function() { return writeFileSize; } } });
+
+  // stream_ops: wrap defaults with forceLoadFile no-op (harmless; contents is set),
+  // then override read (read-back of just-written metadata) and write.
+  var stream_ops = {};
+  var origStreamOps = node.stream_ops;
+  for (var sk in origStreamOps) {
+    (function(k, fn) {
+      stream_ops[k] = function() { FS.forceLoadFile(node); return fn.apply(null, arguments); };
+    })(sk, origStreamOps[sk]);
+  }
+  stream_ops.read = function(stream, buffer, offset, length, position) {
+    if (position >= writeFileSize) return 0;
+    var end = position + length;
+    if (end > writeFileSize) end = writeFileSize;
+    var got = 0, pos = position;
+    while (pos < end) {
+      var chunk = bridgeRead(pos, end - pos, 'dest');
+      if (chunk.length === 0) break;
+      buffer.set(chunk, offset + got);
+      got += chunk.length;
+      pos += chunk.length;
+    }
+    return got;
+  };
+  stream_ops.write = function(stream, buffer, offset, length, position) {
+    bridgeWrite(position, buffer, offset, length, 'dest');
+    if (position + length > writeFileSize) writeFileSize = position + length;
+    return length;
+  };
+  // llseek: rely on the wrapped default (SEEK_END uses node.usedBytes -> writeFileSize).
+  node.stream_ops = stream_ops;
+
+  // node_ops: override setattr so ftruncate is bridged (NOT written into MEMFS contents).
+  var node_ops = {};
+  var origNodeOps = node.node_ops;
+  for (var nk in origNodeOps) node_ops[nk] = origNodeOps[nk];
+  node_ops.setattr = function(n, attr) {
+    if (attr.size !== undefined && attr.size !== null) {
+      bridgeTruncate(attr.size, 'dest');
+      writeFileSize = attr.size;
+    }
+    if (attr.timestamp !== undefined) n.timestamp = attr.timestamp;
+    // NOTE: deliberately do NOT call the default setattr (it would resize MEMFS contents).
+  };
+  node.node_ops = node_ops;
+  return node;
+}
+
+// Dual-bridge foundation: open TWO h5wasm files at once through the ONE bridge
+// (sab) \u2014 a read-only SOURCE (createSourceRangeFile, tag 'source') and a
+// read+write DEST (createWriteRangeFile, tag 'dest') opened in h5wasm append mode
+// ('a'). The Rust side of the dest file must already be open via write_open_append
+// (no truncate) so its pre-existing bytes are intact on disk; \`destSize\` seeds
+// writeFileSize so h5wasm sees the dest file's REAL current size instead of 0 (see
+// createWriteRangeFile's doc comment) and can read its existing content.
+function openAppend(sab, controlBytes, sourceFilename, sourceSize, destFilename, destSize) {
+  if (!h5wasmModule) throw new Error('h5wasm not initialized');
+  closeFile();
+
+  rangeControl = new Int32Array(sab, 0, 8);
+  rangeData = new Uint8Array(sab, controlBytes || 32);
+  rangeMaxChunk = rangeData.length;
+
+  var srcFname = (((sourceFilename || 'source.h5').split('/').pop() || '').split('\\\\').pop()) || 'source.h5';
+  sourceMountPath = '/append-src-' + Date.now();
+  sourceMountFilename = srcFname;
+  FS.mkdir(sourceMountPath);
+  createSourceRangeFile(sourceMountPath, srcFname, sourceSize);
+  currentSourceFile = new h5wasm.File(sourceMountPath + '/' + srcFname, 'r');
+
+  var dstFname = (((destFilename || 'dest.h5').split('/').pop() || '').split('\\\\').pop()) || 'dest.h5';
+  destMountPath = '/append-dst-' + Date.now();
+  destMountFilename = dstFname;
+  FS.mkdir(destMountPath);
+  createWriteRangeFile(destMountPath, dstFname, destSize);
+  currentDestFile = new h5wasm.File(destMountPath + '/' + dstFname, 'a');
+
+  return {
+    success: true,
+    sourceKeys: currentSourceFile.keys(),
+    destKeys: currentDestFile.keys()
+  };
+}
+
+// Per-window byte budget for appendEmbeddedVideos' streamed raw blob copy, and
+// the HDF5 chunk length (elements) for the 1-D embedded video byte dataset.
+// MUST match EMBED_WRITE_WINDOW_BYTES / EMBED_VIDEO_CHUNK_BYTES in write.ts
+// (~line 558) \u2014 keep them in lockstep.
+var EMBED_WRITE_WINDOW_BYTES = 32 * 1024 * 1024;
+var EMBED_VIDEO_CHUNK_BYTES = 1 << 20;
+
+// Reinterpret an h5wasm slice()/value read as a Uint8Array without copying when
+// possible (mirrors asUint8Array in ../../video/embedded-frame.ts \u2014 KEEP IN
+// LOCKSTEP). Crucially this reinterprets an Int8Array's (h5wasm dtype '<b')
+// bytes as unsigned, matching how the image bytes were originally written.
+function asUint8ArrayWorker(value) {
+  if (value == null) return null;
+  if (value instanceof Uint8Array) return value;
+  if (value instanceof ArrayBuffer) return new Uint8Array(value);
+  if (ArrayBuffer.isView(value)) {
+    return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (Array.isArray(value)) return Uint8Array.from(value);
+  return null;
+}
+
+// Per-sourceGroup cache for readSourceBlob: the classified storage layout, the
+// live h5wasm video Dataset handle, and (when present) frame_sizes read ONCE
+// as an Int32Array. Populated by getSourceBlobGroupInfo on first use per group.
+var sourceBlobGroupCache = {};
+
+// Classify + cache one embedded video group's layout/video-dataset/frame_sizes
+// from the open SOURCE file. Mirrors classifyLayout in
+// ../../video/embedded-frame.ts (KEEP IN LOCKSTEP) EXCEPT the 1-D vlen-vs-concat
+// split is resolved from the dataset's own vlen METADATA (available directly
+// here, since the worker holds the live h5wasm Dataset) rather than comparing
+// shape[0] to a separately-known frame count.
+function getSourceBlobGroupInfo(sourceGroup) {
+  var info = sourceBlobGroupCache[sourceGroup];
+  if (info) return info;
+  if (!currentSourceFile) throw new Error('readSourceBlob: no source file open (call openAppend first)');
+  var videoDs = currentSourceFile.get(sourceGroup + '/video');
+  if (!videoDs) throw new Error('readSourceBlob: source dataset not found: ' + sourceGroup + '/video');
+  var shape = videoDs.shape || [];
+  var layout;
+  if (shape.length >= 2) {
+    layout = 'padded';
+  } else {
+    var M = h5wasmModule && h5wasmModule.Module;
+    var md = videoDs.metadata;
+    var vlenClass = (M && M.H5T_class_t && M.H5T_class_t.H5T_VLEN) ? M.H5T_class_t.H5T_VLEN.value : 9;
+    var isVlen = !!(md && (md.vlen === true || md.type === vlenClass));
+    layout = isVlen ? 'vlen' : 'concat';
+  }
+  var frameSizes = null;
+  try {
+    var fsDs = currentSourceFile.get(sourceGroup + '/frame_sizes');
+    if (fsDs) {
+      var raw = fsDs.value;
+      frameSizes = raw instanceof Int32Array ? raw : Int32Array.from(raw);
+    }
+  } catch (e) { /* no frame_sizes dataset (legacy source) - leave null */ }
+  info = { layout: layout, videoDs: videoDs, frameSizes: frameSizes, offsets: null };
+  sourceBlobGroupCache[sourceGroup] = info;
+  return info;
+}
+
+// Worker port of readEmbeddedFrameBytes (../../video/embedded-frame.ts \u2014 KEEP IN
+// LOCKSTEP) for the raw source->dest copy path only: returns the raw stored
+// blob (Uint8Array, NO decode) for stored-frame \`index\` (0-based storage-order
+// index, NOT a source frame number) of the embedded video group \`sourceGroup\`
+// in the open SOURCE file. Supports all three storage layouts. Returns null if
+// the frame cannot be located (caller treats that as a dropped frame).
+function readSourceBlob(sourceGroup, index) {
+  var info = getSourceBlobGroupInfo(sourceGroup);
+  var sizes = info.frameSizes;
+
+  // padded (2-D, and N-D raw): slice row \`index\` only, then trim to
+  // frame_sizes[index] when known (mirrors trimPaddedRow's exact-size branch;
+  // for a fixed-size raw row frame_sizes[index] === row.length, so this is a
+  // no-op trim there).
+  if (info.layout === 'padded') {
+    var shape = info.videoDs.shape;
+    var slice = shape.map(function(dim, d) { return d === 0 ? [index, index + 1] : [0, dim]; });
+    var row = asUint8ArrayWorker(info.videoDs.slice(slice));
+    if (!row) return null;
+    var size = sizes ? sizes[index] : undefined;
+    if (size != null && size >= 0 && size <= row.length) {
+      return size === row.length ? row : row.subarray(0, size);
+    }
+    return row;
+  }
+
+  // vlen (legacy pkg.slp): one encoded image per element. h5wasm's high-level
+  // single-element slice is memory-unsafe here (its post-read vlen reclaim
+  // walks the FULL dataset dataspace over a one-element buffer and corrupts the
+  // heap), so read the one hvl_t element manually \u2014 the exact approach used in
+  // getDatasetValue's vlen branch above (and readVlenElementManual in
+  // ../../video/embedded-frame.ts) \u2014 freeing only that element's inner blob.
+  if (info.layout === 'vlen') {
+    var M = h5wasmModule && h5wasmModule.Module;
+    var md = info.videoDs.metadata;
+    if (M && M._malloc && M.get_dataset_data && M.HEAPU8 && M._free && md && md.size === 8) {
+      var dataPtr = M._malloc(md.size);
+      if (!dataPtr) throw new Error('readSourceBlob: malloc failed for vlen element ' + index);
+      try {
+        M.get_dataset_data(info.videoDs.file_id, info.videoDs.path, [1n], [BigInt(index)], [1n], BigInt(dataPtr));
+        // HEAPU32 isn't exported; build the view over HEAPU8.buffer each call
+        // (heap growth can detach the previous ArrayBuffer).
+        var u32 = new Uint32Array(M.HEAPU8.buffer, Number(dataPtr), 2);
+        var len = u32[0];
+        var blobPtr = u32[1];
+        if (!blobPtr) return new Uint8Array(0);
+        var out = M.HEAPU8.slice(blobPtr, blobPtr + len);
+        M._free(blobPtr); // free ONLY the inner blob - the per-element reclaim
+        return out;
+      } finally {
+        M._free(dataPtr);
+      }
+    }
+    // Can't do the manual single-element read (unexpected hvl_t size / no
+    // Module access) - fall back to a whole-dataset read (safe, higher memory).
+    var whole = info.videoDs.value;
+    return Array.isArray(whole) ? asUint8ArrayWorker(whole[index]) : null;
+  }
+
+  // concat: 1-D fixed <B, all frames concatenated - exact byte-range slice via
+  // the cumulative sum of frame_sizes[0..index), computed once and cached.
+  if (!sizes) throw new Error('readSourceBlob: concat layout requires frame_sizes at ' + sourceGroup);
+  if (!info.offsets) {
+    var offsets = new Array(sizes.length);
+    var off = 0;
+    for (var i = 0; i < sizes.length; i++) { offsets[i] = off; off += sizes[i]; }
+    info.offsets = offsets;
+  }
+  var start = info.offsets[index];
+  var end = start + sizes[index];
+  return asUint8ArrayWorker(info.videoDs.slice([[start, end]]));
+}
+
+// Worker-side setStringAttr (mirrors write.ts's setStringAttr - KEEP IN
+// LOCKSTEP): a fixed-length HDF5 string attribute (h5py reads it back as
+// bytes, so Python's .decode() still works).
+function setStringAttrWorker(target, name, value) {
+  var byteLength = new TextEncoder().encode(value).length;
+  target.create_attribute(name, value, null, 'S' + byteLength);
+}
+
+// Worker-side writeSourceVideoJson (mirrors write.ts's writeSourceVideoJson -
+// KEEP IN LOCKSTEP): writes the source video's metadata JSON into
+// '{groupPath}/source_video', normally as a 'json' string attribute, or (only
+// if it would exceed the 64 KB HDF5 attribute ceiling) a 'json' dataset in the
+// same group instead.
+function writeSourceVideoJsonWorker(file, groupPath, sourceDict) {
+  var blob = JSON.stringify(sourceDict);
+  file.create_group(groupPath + '/source_video');
+  var byteLength = new TextEncoder().encode(blob).length;
+  if (byteLength <= 64000) {
+    setStringAttrWorker(file.get(groupPath + '/source_video'), 'json', blob);
+    return;
+  }
+  file.create_dataset({ name: groupPath + '/source_video/json', data: [blob] });
+}
+
+// Worker port of writeEmbeddedVideoData (write.ts ~2852) for the RAW path ONLY
+// (SerializableEmbedEntry - Task 1.1's re-save/raw-copy embed plan). Requires
+// openAppend to have already opened BOTH currentSourceFile and currentDestFile.
+// For each entry: creates 'video{videoIndex}' in the DEST, writes the
+// source_video lineage (if any), then streams the SOURCE group's stored blobs
+// (via readSourceBlob) into a new resizable 1-D <B 'video{videoIndex}/video'
+// dataset in bounded byte windows (mirrors writeRawEmbeddedVideo's create-empty
+// -> resize -> write_slice window pattern), and finally writes
+// frame_numbers/frame_sizes + format/channel_order attrs. Does NOT close either
+// file (the caller's subsequent 'close' message does that via closeAppendFiles,
+// so more writes could still follow).
+//
+// Backstop (mirrors the #213 data-loss guard in writeEmbeddedVideoData): an
+// entry's frameNumbers IS the exact stored set, so every stored index must read
+// a blob - if fewer blobs were read than planned, THROW rather than silently
+// write a file with the images stripped.
+function appendEmbeddedVideos(entries) {
+  if (!currentSourceFile) throw new Error('appendEmbeddedVideos: no source file open (call openAppend first)');
+  if (!currentDestFile) throw new Error('appendEmbeddedVideos: no dest file open (call openAppend first)');
+
+  var perVideo = [];
+  for (var e = 0; e < entries.length; e++) {
+    var entry = entries[e];
+    var group = 'video' + entry.videoIndex;
+    currentDestFile.create_group(group);
+
+    if (entry.sourceVideoJson) {
+      writeSourceVideoJsonWorker(currentDestFile, group, entry.sourceVideoJson);
+    }
+
+    currentDestFile.create_dataset({
+      name: group + '/video',
+      data: new Uint8Array(0),
+      shape: [0],
+      maxshape: [null],
+      chunks: [EMBED_VIDEO_CHUNK_BYTES],
+      dtype: '<B'
+    });
+    var vds = currentDestFile.get(group + '/video'); // re-fetch handle (mirror write.ts pattern)
+
+    var sizes = [];
+    var writtenFns = [];
+    var total = 0;
+    var win = [];
+    var winBytes = 0;
+    var flush = function() {
+      if (winBytes === 0) return;
+      var buf = new Uint8Array(winBytes);
+      var o = 0;
+      for (var k = 0; k < win.length; k++) { buf.set(win[k], o); o += win[k].length; }
+      vds.resize([total + winBytes]);
+      vds.write_slice([[total, total + winBytes]], buf);
+      total += winBytes;
+      win = [];
+      winBytes = 0;
+    };
+
+    for (var i = 0; i < entry.frameNumbers.length; i++) {
+      var blob = readSourceBlob(entry.sourceGroup, i);
+      if (!blob || blob.length === 0) continue;
+      win.push(blob);
+      winBytes += blob.length;
+      sizes.push(blob.length);
+      writtenFns.push(entry.frameNumbers[i]);
+      if (winBytes >= EMBED_WRITE_WINDOW_BYTES) flush();
+    }
+    flush();
+
+    if (writtenFns.length < entry.frameNumbers.length) {
+      throw new Error(
+        'embedding video' + entry.videoIndex + ': read ' + writtenFns.length + ' of ' +
+        entry.frameNumbers.length + ' planned frame(s) - refusing to write a file with dropped images.'
+      );
+    }
+
+    setStringAttrWorker(vds, 'format', entry.format);
+    setStringAttrWorker(vds, 'channel_order', entry.channelOrder);
+
+    currentDestFile.create_dataset({
+      name: group + '/frame_numbers',
+      data: writtenFns,
+      shape: [writtenFns.length],
+      dtype: '<i4'
+    });
+    currentDestFile.create_dataset({
+      name: group + '/frame_sizes',
+      data: sizes,
+      shape: [sizes.length],
+      dtype: '<i4'
+    });
+
+    perVideo.push({ videoIndex: entry.videoIndex, framesWritten: writtenFns.length });
+  }
+
+  currentDestFile.flush();
+  return { success: true, perVideo: perVideo };
 }
 
 function getKeys(path) {
@@ -11099,6 +11570,47 @@ function getDatasetValue(path, slice) {
   };
 }
 
+// Shared best-effort cleanup logger for closeFile/closeAppendFiles \u2014 FS.unlink/
+// FS.rmdir/FS.unmount failures during teardown are non-fatal (the worker is
+// closing this file/mount regardless) but shouldn't be silently swallowed.
+function warnCleanup(op, path, e) {
+  try {
+    var msg = '[h5-worker] cleanup ' + op + '(' + path + ') failed: ' + (e && (e.message || e.errno || e));
+    if (typeof console !== 'undefined' && console.warn) console.warn(msg);
+  } catch (_) {}
+}
+
+// Tear down the dual-bridge SOURCE + DEST files/mounts (openAppend /
+// appendEmbeddedVideos). Safe to call when neither is open (e.g. the single-file
+// paths never touch these globals). Called from closeFile() so a plain 'close'
+// message cleans up dual-bridge state too, and from openAppend() itself so a
+// second openAppend without an intervening close doesn't leak the first pair of
+// MEMFS mounts.
+function closeAppendFiles() {
+  if (currentSourceFile) {
+    try { currentSourceFile.close(); } catch (e) {}
+    currentSourceFile = null;
+  }
+  if (currentDestFile) {
+    try { currentDestFile.close(); } catch (e) {}
+    currentDestFile = null;
+  }
+  if (sourceMountPath && FS) {
+    var srcPath = sourceMountPath + '/' + sourceMountFilename;
+    try { FS.unlink(srcPath); } catch (e) { warnCleanup('unlink', srcPath, e); }
+    try { FS.rmdir(sourceMountPath); } catch (e) { warnCleanup('rmdir', sourceMountPath, e); }
+    sourceMountPath = null;
+    sourceMountFilename = null;
+  }
+  if (destMountPath && FS) {
+    var dstPath = destMountPath + '/' + destMountFilename;
+    try { FS.unlink(dstPath); } catch (e) { warnCleanup('unlink', dstPath, e); }
+    try { FS.rmdir(destMountPath); } catch (e) { warnCleanup('rmdir', destMountPath, e); }
+    destMountPath = null;
+    destMountFilename = null;
+  }
+}
+
 function closeFile() {
   if (currentFile) {
     try { currentFile.close(); } catch (e) {}
@@ -11110,34 +11622,29 @@ function closeFile() {
     // right sequence per mount type, repeated open/close cycles leak MEMFS
     // entries (and for 'buffer' mounts, the entire file bytes) for the lifetime
     // of the worker.
-    const warn = function(op, path, e) {
-      try {
-        var msg = '[h5-worker] cleanup ' + op + '(' + path + ') failed: ' + (e && (e.message || e.errno || e));
-        if (typeof console !== 'undefined' && console.warn) console.warn(msg);
-      } catch (_) {}
-    };
     if (mountType === 'buffer') {
       // mountPath is the file; parent dir was created by FS.mkdir.
       var parent = mountPath.substring(0, mountPath.lastIndexOf('/'));
-      try { FS.unlink(mountPath); } catch (e) { warn('unlink', mountPath, e); }
-      try { FS.rmdir(parent); } catch (e) { warn('rmdir', parent, e); }
-    } else if (mountType === 'remote' || mountType === 'range') {
+      try { FS.unlink(mountPath); } catch (e) { warnCleanup('unlink', mountPath, e); }
+      try { FS.rmdir(parent); } catch (e) { warnCleanup('rmdir', parent, e); }
+    } else if (mountType === 'remote' || mountType === 'range' || mountType === 'writerange') {
       // mountPath is the dir containing the lazy / range-backed file.
       var lazyPath = mountPath + '/' + currentFilename;
-      try { FS.unlink(lazyPath); } catch (e) { warn('unlink', lazyPath, e); }
-      try { FS.rmdir(mountPath); } catch (e) { warn('rmdir', mountPath, e); }
+      try { FS.unlink(lazyPath); } catch (e) { warnCleanup('unlink', lazyPath, e); }
+      try { FS.rmdir(mountPath); } catch (e) { warnCleanup('rmdir', mountPath, e); }
     } else if (mountType === 'local') {
       // WORKERFS mount must be unmounted before rmdir.
-      try { FS.unmount(mountPath); } catch (e) { warn('unmount', mountPath, e); }
-      try { FS.rmdir(mountPath); } catch (e) { warn('rmdir', mountPath, e); }
+      try { FS.unmount(mountPath); } catch (e) { warnCleanup('unmount', mountPath, e); }
+      try { FS.rmdir(mountPath); } catch (e) { warnCleanup('rmdir', mountPath, e); }
     } else {
       // Unknown mount type \u2014 best effort rmdir (preserves pre-existing behavior).
-      try { FS.rmdir(mountPath); } catch (e) { warn('rmdir', mountPath, e); }
+      try { FS.rmdir(mountPath); } catch (e) { warnCleanup('rmdir', mountPath, e); }
     }
     mountPath = null;
     mountType = null;
     currentFilename = null;
   }
+  closeAppendFiles();
 }
 `;
 function createH5Worker() {
@@ -11171,6 +11678,33 @@ async function serviceRangeBridge(control, dataArea, reader, offset, length) {
     Atomics.store(control, 0, 2);
     Atomics.notify(control, 0);
     console.error("[StreamingH5File] readRange failed:", err);
+  }
+}
+async function serviceWriteBridge(control, dataArea, sink, offset, length) {
+  try {
+    const bytes = dataArea.subarray(0, length);
+    await sink.writeAt(offset, bytes);
+    Atomics.store(control, 1, 0);
+    Atomics.store(control, 0, 2);
+    Atomics.notify(control, 0);
+  } catch (err) {
+    Atomics.store(control, 1, -1);
+    Atomics.store(control, 0, 2);
+    Atomics.notify(control, 0);
+    console.error("[StreamingH5Writer] writeAt failed:", err);
+  }
+}
+async function serviceTruncateBridge(control, sink, length) {
+  try {
+    await sink.truncate(length);
+    Atomics.store(control, 1, 0);
+    Atomics.store(control, 0, 2);
+    Atomics.notify(control, 0);
+  } catch (err) {
+    Atomics.store(control, 1, -1);
+    Atomics.store(control, 0, 2);
+    Atomics.notify(control, 0);
+    console.error("[StreamingH5Writer] truncate failed:", err);
   }
 }
 function reconstructValue(data) {
@@ -11466,6 +12000,180 @@ var StreamingH5File = class {
     }
     this.worker.terminate();
     this._keys = [];
+  }
+};
+var StreamingH5Writer = class {
+  worker;
+  messageId = 0;
+  pendingMessages = /* @__PURE__ */ new Map();
+  // Write B-seam bridge (set by openAppend): the app-provided dest sink plus
+  // the SharedArrayBuffer views the Worker blocks on. See handleMessage.
+  // Every write/truncate, and every 'dest'-tagged range (read) request, routes
+  // through destSink (the Worker tags ALL of createWriteRangeFile's bridge
+  // calls 'dest').
+  destSink;
+  // Dual-bridge only (set by openAppend): the source file's reader. A 'source'-
+  // tagged range request routes here instead of destSink.
+  sourceReader;
+  control;
+  data;
+  constructor() {
+    this.worker = createH5Worker();
+    this.worker.onmessage = this.handleMessage.bind(this);
+    this.worker.onerror = this.handleError.bind(this);
+  }
+  handleMessage(e) {
+    const msg = e.data;
+    if (msg && msg.type === "rangeRequest") {
+      if (msg.target === "source") {
+        if (this.control && this.data && this.sourceReader) {
+          void serviceRangeBridge(
+            this.control,
+            this.data,
+            this.sourceReader,
+            msg.offset ?? 0,
+            msg.length ?? 0
+          );
+        }
+      } else if (this.control && this.data && this.destSink) {
+        void serviceRangeBridge(
+          this.control,
+          this.data,
+          this.destSink.readAt,
+          msg.offset ?? 0,
+          msg.length ?? 0
+        );
+      }
+      return;
+    }
+    if (msg && msg.type === "writeRequest") {
+      if (this.control && this.data && this.destSink) {
+        void serviceWriteBridge(
+          this.control,
+          this.data,
+          this.destSink,
+          msg.offset ?? 0,
+          msg.length ?? 0
+        );
+      }
+      return;
+    }
+    if (msg && msg.type === "truncateRequest") {
+      if (this.control && this.destSink) {
+        void serviceTruncateBridge(
+          this.control,
+          this.destSink,
+          msg.length ?? 0
+        );
+      }
+      return;
+    }
+    const { id, ...data } = e.data;
+    const pending = this.pendingMessages.get(id);
+    if (pending) {
+      this.pendingMessages.delete(id);
+      if (data.success) {
+        pending.resolve(e.data);
+      } else {
+        let errorMessage = "Worker operation failed";
+        if (typeof data.error === "string") {
+          errorMessage = data.error;
+        } else if (data.error && typeof data.error === "object") {
+          errorMessage = JSON.stringify(data.error);
+        }
+        pending.reject(new Error(errorMessage));
+      }
+    }
+  }
+  handleError(e) {
+    console.error("[StreamingH5Writer] Worker error:", e.message);
+    for (const [id, pending] of this.pendingMessages) {
+      pending.reject(new Error(`Worker error: ${e.message}`));
+      this.pendingMessages.delete(id);
+    }
+  }
+  send(type, payload) {
+    return new Promise((resolve, reject) => {
+      const id = ++this.messageId;
+      this.pendingMessages.set(id, { resolve, reject });
+      this.worker.postMessage({ type, payload, id });
+    });
+  }
+  /**
+   * Initialize the h5wasm module in the worker.
+   */
+  async init(h5wasmUrl) {
+    await this.send("init", { h5wasmUrl });
+  }
+  /**
+   * DUAL-BRIDGE FOUNDATION: open TWO h5wasm files at once in the Worker through
+   * ONE SharedArrayBuffer bridge — a read-only SOURCE (backed by `source`, a
+   * {@link RangeSource}) and a read+write DEST (backed by `destSink`, a
+   * {@link RangeSink}, opened in h5wasm append mode `"a"`). Every bridged
+   * request is tagged `target: 'source' | 'dest'` by the Worker so
+   * {@link handleMessage} can route it to the right reader/sink (see there).
+   *
+   * The caller is responsible for having already opened `destPath` on the
+   * native side in APPEND mode (no truncate — e.g. via a `write_open_append`-
+   * style command) so `destSize`'s pre-existing bytes are actually present on
+   * disk; this method does not create or truncate the destination file itself.
+   * `destSize` seeds the Worker's writable device with the dest file's REAL
+   * current size (rather than 0) so h5wasm's file-size probe can see — and
+   * read — the pre-existing content instead of treating the file as empty.
+   *
+   * Requires cross-origin isolation (SharedArrayBuffer / COOP+COEP).
+   */
+  async openAppend(destSink, destPath, destSize, source, sourceFilename, h5wasmUrl) {
+    if (typeof SharedArrayBuffer === "undefined") {
+      throw new Error(
+        "RangeSink streaming requires SharedArrayBuffer (enable cross-origin isolation: COOP 'same-origin' + COEP 'require-corp')"
+      );
+    }
+    await this.init(h5wasmUrl);
+    this.destSink = destSink;
+    this.sourceReader = source.readRange;
+    const CONTROL_BYTES = 32;
+    const MAX_CHUNK = 4 * 1024 * 1024;
+    const sab = new SharedArrayBuffer(CONTROL_BYTES + MAX_CHUNK);
+    this.control = new Int32Array(sab, 0, 8);
+    this.data = new Uint8Array(sab, CONTROL_BYTES);
+    await this.send("openAppend", {
+      sab,
+      controlBytes: CONTROL_BYTES,
+      sourceFilename,
+      sourceSize: source.size,
+      destFilename: destPath,
+      destSize
+    });
+  }
+  /**
+   * Worker port of `writeEmbeddedVideoData` (write.ts) for the RAW path ONLY:
+   * copies each {@link SerializableEmbedEntry}'s stored embedded-image blobs
+   * from the open SOURCE file into a new `video{videoIndex}` group in the open
+   * DEST file (both opened via {@link openAppend}), streamed in bounded byte
+   * windows so peak JS memory stays ~one window rather than the whole
+   * concatenated video. Mirrors the real writer's create-empty -> resize ->
+   * write_slice pattern and its #213 backstop (throws rather than writing a
+   * file with dropped images).
+   *
+   * Does NOT close either file — call {@link close} afterward (which sends
+   * the Worker's `close` message, tearing down both the source and dest
+   * mounts via `closeAppendFiles`).
+   */
+  async appendEmbeddedVideos(entries) {
+    return this.send("appendEmbeddedVideos", { entries });
+  }
+  /**
+   * Close the file and terminate the worker. Best-effort: if the worker-side
+   * close fails, the worker is still terminated so no handle is leaked.
+   */
+  async close() {
+    try {
+      await this.send("close");
+    } catch (err) {
+      console.error("[StreamingH5Writer] close failed:", err);
+    }
+    this.worker.terminate();
   }
 };
 function isStreamingSupported() {
@@ -14174,6 +14882,12 @@ async function saveSlpMergedToSink(stores, sink, options) {
   await writer.writeToSink(sink, { chunkBytes: options?.chunkBytes });
 }
 async function saveSlpToBytes(labels, options) {
+  return writeSlpBytes(labels, options, { includeEmbeddedData: true });
+}
+async function saveSlpStructureToBytes(labels, options) {
+  return writeSlpBytes(labels, options, { includeEmbeddedData: false });
+}
+async function writeSlpBytes(labels, options, { includeEmbeddedData }) {
   const embedMode = options?.embed ?? false;
   const hasEmbeddedToPreserve = embedMode !== "source" && labels.videos.some(isRawCopyable);
   const doEmbed = embedMode !== false && embedMode !== "source" || hasEmbeddedToPreserve;
@@ -14252,7 +14966,7 @@ async function saveSlpToBytes(labels, options) {
   try {
     try {
       writeSlpToFile(file, writeLabels2, plan);
-      if (plan && plan.size > 0) {
+      if (includeEmbeddedData && plan && plan.size > 0) {
         await writeEmbeddedVideoData(file, labels, plan);
       }
     } finally {
@@ -15113,6 +15827,34 @@ async function planEmbedding(labels, embedMode) {
     }
   }
   return plan;
+}
+async function buildSerializableEmbedPlan(labels, embedMode, sourcePath) {
+  const plan = await planEmbedding(labels, embedMode);
+  const entries = [];
+  for (const entry of plan.values()) {
+    if (entry.kind !== "raw") {
+      throw new Error(
+        `buildSerializableEmbedPlan: video${entry.videoIndex} would use the new-embed ("encode") path, which the streaming writer's worker half does not support - this path is re-save/raw-copy of an already-embedded pkg.slp ONLY (new-embed of a continuous video is a deferred follow-up).`
+      );
+    }
+    const sourceDataset = entry.video.backend?.dataset ?? entry.video.backendMetadata.dataset;
+    if (!sourceDataset) {
+      throw new Error(
+        `buildSerializableEmbedPlan: video${entry.videoIndex} is raw-copyable but its backend exposes no "dataset" path, so the worker has no way to locate its source embedded group.`
+      );
+    }
+    const sourceGroup = sourceDataset.endsWith("/video") ? sourceDataset.slice(0, -"/video".length) : sourceDataset;
+    entries.push({
+      videoIndex: entry.videoIndex,
+      sourceDataset,
+      sourceGroup,
+      format: entry.format,
+      channelOrder: entry.channelOrder,
+      frameNumbers: [...entry.frameNumbers],
+      sourceVideoJson: sourceVideoDict(entry.video)
+    });
+  }
+  return { sourcePath, entries };
 }
 async function collectEncodedFrames(labels, videoIndex, embedMode) {
   const frameData = /* @__PURE__ */ new Map();
@@ -20746,7 +21488,6 @@ export {
   Labels,
   Identity,
   Embedding,
-  isRangeSource,
   Mp4BoxVideoBackend,
   StreamingHdf5VideoBackend,
   setImageBytesReader,
@@ -20770,7 +21511,12 @@ export {
   SeqHeader,
   SeqIndex,
   SeqVideoBackend,
+  isRangeSource2 as isRangeSource,
+  serviceRangeBridge,
+  serviceWriteBridge,
+  serviceTruncateBridge,
   StreamingH5File,
+  StreamingH5Writer,
   isStreamingSupported,
   openStreamingH5,
   openH5Worker,
@@ -20788,6 +21534,8 @@ export {
   saveSlpMergedFromStores,
   saveSlpMergedToSink,
   saveSlpToBytes,
+  saveSlpStructureToBytes,
+  buildSerializableEmbedPlan,
   isAnalysisH5File,
   setLabelImageFileReader,
   loadLabelImages,
