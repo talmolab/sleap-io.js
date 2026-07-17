@@ -173,6 +173,21 @@ self.onmessage = async function(e) {
         respond(id, appendResult);
         break;
 
+      case 'openWrite':
+        const openWriteResult = openWrite(
+          payload.sab,
+          payload.controlBytes,
+          payload.destFilename,
+          payload.destSize
+        );
+        respond(id, openWriteResult);
+        break;
+
+      case 'updateLabelsInPlace':
+        const updateResult = updateLabelsInPlace(payload);
+        respond(id, updateResult);
+        break;
+
       case 'getKeys':
         const keys = getKeys(payload.path);
         respond(id, { success: true, keys });
@@ -613,6 +628,32 @@ function openAppend(sab, controlBytes, sourceFilename, sourceSize, destFilename,
   };
 }
 
+// SINGLE-file write B-seam (in-place label save — openWrite/updateLabelsInPlace):
+// open ONLY a read+write DEST file in h5wasm append mode ('a', non-truncating)
+// backed by createWriteRangeFile (tag 'dest'), no source file. Reuses the same
+// dual-bridge dest globals (currentDestFile/destMountPath) so closeFile ->
+// closeAppendFiles tears it down. \`destSize\` seeds writeFileSize with the file's
+// real on-disk size so h5wasm can read the existing bytes (same rationale as
+// openAppend). The Rust side must already hold the file open in a non-truncating
+// mode. Used to patch the small label tables in place (never the video groups).
+function openWrite(sab, controlBytes, destFilename, destSize) {
+  if (!h5wasmModule) throw new Error('h5wasm not initialized');
+  closeFile();
+
+  rangeControl = new Int32Array(sab, 0, 8);
+  rangeData = new Uint8Array(sab, controlBytes || 32);
+  rangeMaxChunk = rangeData.length;
+
+  var dstFname = (((destFilename || 'dest.h5').split('/').pop() || '').split('\\\\').pop()) || 'dest.h5';
+  destMountPath = '/write-dst-' + Date.now();
+  destMountFilename = dstFname;
+  FS.mkdir(destMountPath);
+  createWriteRangeFile(destMountPath, dstFname, destSize);
+  currentDestFile = new h5wasm.File(destMountPath + '/' + dstFname, 'a');
+
+  return { success: true, destKeys: currentDestFile.keys() };
+}
+
 // Per-window byte budget for appendEmbeddedVideos' streamed raw blob copy, and
 // the HDF5 chunk length (elements) for the 1-D embedded video byte dataset.
 // MUST match EMBED_WRITE_WINDOW_BYTES / EMBED_VIDEO_CHUNK_BYTES in write.ts
@@ -869,6 +910,112 @@ function appendEmbeddedVideos(entries) {
 
   currentDestFile.flush();
   return { success: true, perVideo: perVideo };
+}
+
+// HDF5 datatype class ids used by the in-place writer port (H5Tget_class).
+var H5T_ENUM_CLASS = 8;
+var H5T_FLOAT_CLASS = 1;
+
+// Worker port of memberColumnTypedArray (write.ts — KEEP IN LOCKSTEP): pack one
+// logical column (numbers) into the TypedArray matching an on-disk compound
+// member's dtype (int/float, width, signedness). int64 -> Big(U)Int64Array.
+function memberColumnTypedArrayWorker(member, values) {
+  var size = member.size == null ? 8 : member.size;
+  if (member.type === H5T_ENUM_CLASS) {
+    throw new Error('cannot write enum/bool compound member ' + member.name + ' in place');
+  }
+  if (member.type === H5T_FLOAT_CLASS) {
+    return size === 4 ? Float32Array.from(values) : Float64Array.from(values);
+  }
+  var signed = member.signed !== false;
+  if (size === 8) {
+    var big = values.map(function (v) { return BigInt(Math.trunc(v)); });
+    return signed ? BigInt64Array.from(big) : BigUint64Array.from(big);
+  }
+  if (size === 1) return (signed ? Int8Array : Uint8Array).from(values);
+  if (size === 2) return (signed ? Int16Array : Uint16Array).from(values);
+  return (signed ? Int32Array : Uint32Array).from(values);
+}
+
+// Worker port of writeOneTableInPlace (write.ts — KEEP IN LOCKSTEP): overwrite
+// one already-open dataset from a row-major Float64Array (\`flat\`), resizing first
+// when the row count changed, handling BOTH flat 2-D and 1-D compound layouts.
+// Creates the dataset (chunked flat) if absent AND non-empty. NEVER touches a
+// video group.
+function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colCount, dtype) {
+  var ds = file.get(diskName);
+  if (!ds) {
+    if (rowCount === 0) return;
+    var chunkRows = Math.max(1, Math.min(8192, rowCount));
+    file.create_dataset({
+      name: diskName,
+      data: flat,
+      shape: [rowCount, colCount],
+      maxshape: [null, colCount],
+      chunks: [chunkRows, colCount],
+      dtype: dtype
+    });
+    setStringAttrWorker(file.get(diskName), 'field_names', JSON.stringify(fields));
+    return;
+  }
+  var md = ds.metadata;
+  var members = md && md.compound_type && md.compound_type.members;
+  var isCompound = !!(members && members.length > 0);
+  var curRows = (ds.shape && ds.shape[0]) || 0;
+  if (curRows !== rowCount) {
+    ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
+    // h5wasm silently no-ops resize on a non-resizable dataset — read the shape
+    // back and THROW so a short write / ghost rows can't corrupt the file (KEEP
+    // IN LOCKSTEP with writeOneTableInPlace in write.ts).
+    var newRows = (ds.shape && ds.shape[0]);
+    if (newRows === undefined || newRows === null) newRows = -1;
+    if (newRows !== rowCount) {
+      throw new Error('in-place resize of ' + diskName + ' did not take effect (had ' + curRows + ' rows, wanted ' + rowCount + ', got ' + newRows + '); the dataset is not resizable - re-save the whole file instead');
+    }
+  }
+  if (rowCount === 0) return;
+  if (isCompound) {
+    var fieldIndex = {};
+    for (var fi = 0; fi < fields.length; fi++) fieldIndex[fields[fi]] = fi;
+    var columns = new Map();
+    for (var mi = 0; mi < members.length; mi++) {
+      var m = members[mi];
+      var ci = fieldIndex[m.name];
+      if (ci === undefined) {
+        throw new Error('in-place update for ' + diskName + ' is missing compound member ' + m.name);
+      }
+      var colVals = new Array(rowCount);
+      for (var r = 0; r < rowCount; r++) colVals[r] = flat[r * colCount + ci];
+      columns.set(m.name, memberColumnTypedArrayWorker(m, colVals));
+    }
+    ds.write_slice([[0, rowCount]], columns);
+  } else {
+    ds.write_slice([[0, rowCount], [0, colCount]], flat);
+  }
+}
+
+// Worker port of writeLabelTablesInPlace (write.ts — KEEP IN LOCKSTEP): patch the
+// label tables of the open DEST file (openWrite) from the transferred update, then
+// (if metadataJson is set) replace the /metadata json attr. Payload tables carry
+// pre-flattened Float64Array columns (row-major) to avoid structured-cloning a
+// number[][]. Flushes at the end. Never opens a video group.
+function updateLabelsInPlace(payload) {
+  if (!currentDestFile) throw new Error('updateLabelsInPlace: no dest file open (call openWrite first)');
+  var tables = payload.tables || [];
+  for (var t = 0; t < tables.length; t++) {
+    var tb = tables[t];
+    var flat = tb.flat instanceof Float64Array ? tb.flat : new Float64Array(tb.flat);
+    writeOneTableInPlaceWorker(currentDestFile, tb.name, tb.fields, flat, tb.rowCount, tb.colCount, tb.dtype);
+  }
+  if (payload.metadataJson !== undefined && payload.metadataJson !== null) {
+    var mg = currentDestFile.get('metadata');
+    if (mg) {
+      try { mg.delete_attribute('json'); } catch (e) {}
+      setStringAttrWorker(mg, 'json', payload.metadataJson);
+    }
+  }
+  currentDestFile.flush();
+  return { success: true };
 }
 
 function getKeys(path) {
@@ -1207,6 +1354,8 @@ export type H5WorkerMessageType =
   | "openRange"
   | "openAppend"
   | "appendEmbeddedVideos"
+  | "openWrite"
+  | "updateLabelsInPlace"
   | "getKeys"
   | "getAttr"
   | "getAttrs"

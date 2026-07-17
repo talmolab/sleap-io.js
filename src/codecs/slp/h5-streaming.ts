@@ -14,7 +14,11 @@ import {
   type H5WorkerResponse,
 } from "./h5-worker.js";
 import { RemoteIOError, isUrl, resolveUrl } from "../../io/remote.js";
-import type { SerializableEmbedEntry } from "./write.js";
+import type {
+  SerializableEmbedEntry,
+  LabelTableUpdate,
+  LabelTable,
+} from "./write.js";
 
 /**
  * Options for opening a streaming HDF5 file.
@@ -553,13 +557,23 @@ export class StreamingH5File {
   }
 
   /**
-   * Get dataset metadata (shape, dtype) without reading values.
+   * Get dataset metadata (shape, dtype, and the raw h5wasm `metadata`) without
+   * reading values. `metadata` carries the layout details the in-place
+   * writability gate needs — `compound_type.members` (per-member dtype class,
+   * used to detect Python's non-writable enum/bool columns) and `chunks` (⇒
+   * resizable). Pass this straight to `onDiskTableFromMeta`.
    */
-  async getDatasetMeta(
-    path: string,
-  ): Promise<{ shape: number[]; dtype: string }> {
+  async getDatasetMeta(path: string): Promise<{
+    shape: number[];
+    dtype: string;
+    metadata?: Record<string, unknown>;
+  }> {
     const result = await this.send("getDatasetMeta", { path });
-    const meta = result.meta as { shape: number[]; dtype: string };
+    const meta = result.meta as {
+      shape: number[];
+      dtype: string;
+      metadata?: Record<string, unknown>;
+    };
     return meta;
   }
 
@@ -729,11 +743,12 @@ export class StreamingH5Writer {
   private send(
     type: H5WorkerMessage["type"],
     payload?: Record<string, unknown>,
+    transfer?: Transferable[],
   ): Promise<H5WorkerResponse> {
     return new Promise((resolve, reject) => {
       const id = ++this.messageId;
       this.pendingMessages.set(id, { resolve, reject });
-      this.worker.postMessage({ type, payload, id });
+      this.worker.postMessage({ type, payload, id }, transfer ?? []);
     });
   }
 
@@ -818,6 +833,104 @@ export class StreamingH5Writer {
     entries: SerializableEmbedEntry[],
   ): Promise<H5WorkerResponse> {
     return this.send("appendEmbeddedVideos", { entries });
+  }
+
+  /**
+   * SINGLE-file write B-seam for the in-place label save: open ONLY the DEST
+   * file (`destPath`, backed by `destSink`) in h5wasm append mode `"a"` (no
+   * truncate), no source file. The counterpart to {@link openAppend} that
+   * {@link updateLabelsInPlace} uses to patch the small label tables of an
+   * existing `.pkg.slp` without re-copying its embedded video.
+   *
+   * The caller must have already opened `destPath` on the native side in a
+   * NON-truncating mode so its pre-existing bytes are intact; `destSize` seeds
+   * the Worker's writable device with the file's real current size. Requires
+   * cross-origin isolation (SharedArrayBuffer / COOP+COEP).
+   */
+  async openWrite(
+    destSink: RangeSink,
+    destPath: string,
+    destSize: number,
+    h5wasmUrl?: string,
+  ): Promise<void> {
+    if (typeof SharedArrayBuffer === "undefined") {
+      throw new Error(
+        "RangeSink streaming requires SharedArrayBuffer (enable cross-origin isolation: COOP 'same-origin' + COEP 'require-corp')",
+      );
+    }
+    await this.init(h5wasmUrl);
+    this.destSink = destSink;
+    this.sourceReader = undefined; // single-file: all bridge ops are 'dest'
+
+    const CONTROL_BYTES = 32;
+    const MAX_CHUNK = 4 * 1024 * 1024;
+    const sab = new SharedArrayBuffer(CONTROL_BYTES + MAX_CHUNK);
+    this.control = new Int32Array(sab, 0, 8);
+    this.data = new Uint8Array(sab, CONTROL_BYTES);
+
+    await this.send("openWrite", {
+      sab,
+      controlBytes: CONTROL_BYTES,
+      destFilename: destPath,
+      destSize,
+    });
+  }
+
+  /**
+   * Patch the open DEST file's label tables in place from `update` (see
+   * {@link openWrite}). Each table's `number[][]` rows are pre-flattened to a
+   * row-major `Float64Array` here and TRANSFERRED to the Worker (rather than
+   * structured-cloning a nested array), which packs them into the on-disk layout
+   * (flat matrix or compound record) and replaces the `/metadata` json attr when
+   * `update.metadataJson` is set. Never touches any `video{i}/video` group.
+   */
+  async updateLabelsInPlace(
+    update: LabelTableUpdate,
+  ): Promise<H5WorkerResponse> {
+    const tables: Array<{
+      name: string;
+      fields: string[];
+      flat: Float64Array;
+      rowCount: number;
+      colCount: number;
+      dtype: string;
+    }> = [];
+    const transfer: Transferable[] = [];
+    const push = (
+      name: string,
+      dtype: string,
+      table: LabelTable | undefined,
+    ): void => {
+      if (!table) return;
+      const rowCount = table.rows.length;
+      const colCount = table.fields.length;
+      const flat = new Float64Array(rowCount * colCount);
+      for (let i = 0; i < rowCount; i++) {
+        const row = table.rows[i];
+        const off = i * colCount;
+        for (let j = 0; j < colCount; j++) flat[off + j] = row[j];
+      }
+      tables.push({
+        name,
+        fields: table.fields,
+        flat,
+        rowCount,
+        colCount,
+        dtype,
+      });
+      transfer.push(flat.buffer);
+    };
+    push("frames", "<i8", update.frames);
+    push("instances", "<f8", update.instances);
+    push("points", "<f8", update.points);
+    push("pred_points", "<f8", update.predPoints);
+    push("negative_frames", "<i8", update.negativeFrames);
+
+    return this.send(
+      "updateLabelsInPlace",
+      { tables, metadataJson: update.metadataJson ?? null },
+      transfer,
+    );
   }
 
   /**

@@ -330,7 +330,9 @@ function writeLazyMatrixDataset(
     }
     rows.push(row);
   }
-  createMatrixDataset(file, name, rows, fieldNames, dtype);
+  // resizable=true: the lazy fast-path writer's label tables must also be
+  // in-place-editable on re-save (matches the eager writer).
+  createMatrixDataset(file, name, rows, fieldNames, dtype, true);
 }
 
 function writeLazyFramesAndInstances(file: any, store: LazyDataStore): void {
@@ -388,8 +390,9 @@ function writeLazyNegativeFrames(file: any, store: LazyDataStore): void {
     file,
     "negative_frames",
     rows,
-    ["video_id", "frame_idx"],
+    NEGATIVE_FRAMES_FIELDS,
     "<i8",
+    true,
   );
 }
 
@@ -594,6 +597,7 @@ const INSTANCES_FIELDS = [
 ];
 const POINTS_FIELDS = ["x", "y", "visible", "complete"];
 const PRED_POINTS_FIELDS = ["x", "y", "visible", "complete", "score"];
+const NEGATIVE_FRAMES_FIELDS = ["video_id", "frame_idx"];
 
 /** Read a numeric column cell with a default (mirrors the lazy reader). */
 function numAt(col: any[] | undefined, i: number, def = 0): number {
@@ -1810,7 +1814,15 @@ export async function writeSlp(
   }
 }
 
-function writeMetadata(file: any, labels: Labels): void {
+/**
+ * Build the exact JSON string written into the `/metadata` `json` attribute by
+ * {@link writeMetadata}. Exposed so the in-place saver can re-emit that attribute
+ * (via {@link writeLabelTablesInPlace}) without re-serializing the whole file.
+ * The caller decides WHEN metadata actually changed and passes this into
+ * {@link buildLabelTableUpdate}'s `metadataJson` option; a value-only pose edit
+ * leaves it unset so the attribute is untouched.
+ */
+export function buildMetadataJson(labels: Labels): string {
   const { skeletons, nodes } = serializeSkeletons(labels.skeletons);
   const metadata = {
     version: "2.0.0",
@@ -1822,6 +1834,11 @@ function writeMetadata(file: any, labels: Labels): void {
     negative_anchors: {},
     provenance: labels.provenance ?? {},
   };
+  return JSON.stringify(metadata);
+}
+
+function writeMetadata(file: any, labels: Labels): void {
+  const metadataJson = buildMetadataJson(labels);
 
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
   const hasIdentities = (labels.identities?.length ?? 0) > 0;
@@ -1916,7 +1933,7 @@ function writeMetadata(file: any, labels: Labels): void {
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
-  setStringAttr(metadataGroup, "json", JSON.stringify(metadata));
+  setStringAttr(metadataGroup, "json", metadataJson);
 }
 
 function serializeSkeletons(skeletons: Skeleton[]): {
@@ -2153,11 +2170,56 @@ function writeVideoCrops(file: any, videos: Video[]): void {
   file.create_dataset({ name: "video_crops", data: [payload] });
 }
 
-function writeTracks(file: any, tracks: Array<{ name: string }>): void {
-  const payload = tracks.map((track) =>
-    JSON.stringify([SPAWNED_ON, track.name]),
+/**
+ * Serialize `tracks` to the exact per-track JSON strings written into the
+ * `tracks_json` dataset. Shared by {@link writeTracks} and the in-place
+ * writability gate ({@link buildExpectedSidecars}) so the gate's comparison to
+ * the on-disk `tracks_json` is byte-exact.
+ */
+export function buildTracksJson(tracks: Array<{ name: string }>): string[] {
+  return tracks.map((track) => JSON.stringify([SPAWNED_ON, track.name]));
+}
+
+/**
+ * Serialize `suggestions` to the exact per-suggestion JSON strings written into
+ * the `suggestions_json` dataset. Shared by {@link writeSuggestions} and the
+ * in-place writability gate so the comparison is byte-exact.
+ */
+export function buildSuggestionsJson(
+  suggestions: SuggestionFrame[],
+  videos: Video[],
+): string[] {
+  return suggestions.map((suggestion) =>
+    JSON.stringify({
+      video: String(videos.indexOf(suggestion.video)),
+      frame_idx: suggestion.frameIdx,
+      group: suggestion.group ?? "default",
+    }),
   );
-  file.create_dataset({ name: "tracks_json", data: payload });
+}
+
+/**
+ * A cheap per-video signature — filename(s), shape, and embedded-flag — that
+ * uniquely identifies a video WITHOUT reproducing the full `videos_json`
+ * serialization (which depends on backend metadata and is easy to diff
+ * spuriously). Used by the in-place writability gate to refuse an edit that
+ * added/removed/repointed a video (which would leave `videos_json` — and the
+ * embedded `video{i}` groups — stale relative to the rewritten frames table).
+ * The caller builds the on-disk side from the videos it parsed on open, and the
+ * expected side (via {@link buildExpectedSidecars}) from the current labels.
+ */
+export function buildVideoSignatures(videos: Video[]): string[] {
+  return videos.map((v) =>
+    JSON.stringify({
+      filename: v.filename,
+      shape: v.shape ?? null,
+      embedded: v.hasEmbeddedImages,
+    }),
+  );
+}
+
+function writeTracks(file: any, tracks: Array<{ name: string }>): void {
+  file.create_dataset({ name: "tracks_json", data: buildTracksJson(tracks) });
 }
 
 function writeSuggestions(
@@ -2165,14 +2227,10 @@ function writeSuggestions(
   suggestions: SuggestionFrame[],
   videos: Video[],
 ): void {
-  const payload = suggestions.map((suggestion) =>
-    JSON.stringify({
-      video: String(videos.indexOf(suggestion.video)),
-      frame_idx: suggestion.frameIdx,
-      group: suggestion.group ?? "default",
-    }),
-  );
-  file.create_dataset({ name: "suggestions_json", data: payload });
+  file.create_dataset({
+    name: "suggestions_json",
+    data: buildSuggestionsJson(suggestions, videos),
+  });
 }
 
 function writeIdentities(file: any, identities: Identity[]): void {
@@ -2881,7 +2939,36 @@ function emitInstancePoints(
   }
 }
 
-function writeLabeledFrames(file: any, labels: Labels): void {
+/** The five mutable label tables as `number[][]` matrices (shared row builder). */
+export interface LabelTableRows {
+  frames: number[][];
+  instances: number[][];
+  points: number[][];
+  predPoints: number[][];
+  negativeFrames: number[][];
+}
+
+/** Build the `negative_frames` rows (`[video_id, frame_idx]`), in frame order. */
+function buildNegativeFrameRows(labels: Labels): number[][] {
+  const rows: number[][] = [];
+  for (const frame of labels.labeledFrames) {
+    if (!frame.isNegative) continue;
+    const videoIndex = Math.max(0, labels.videos.indexOf(frame.video));
+    rows.push([videoIndex, frame.frameIdx]);
+  }
+  return rows;
+}
+
+/**
+ * Build the `frames`/`instances`/`points`/`pred_points`/`negative_frames` row
+ * matrices from `labels`, exactly as the eager writer would serialize them.
+ *
+ * Shared by {@link writeLabeledFrames} (the full save path) and
+ * {@link buildLabelTableUpdate} (the in-place save path) so both emit
+ * byte-identical columns using the same field-name constants. Contains no HDF5
+ * I/O — pure `Labels` → `number[][]`.
+ */
+export function buildLabelTableRows(labels: Labels): LabelTableRows {
   const frames: number[][] = [];
   const instances: number[][] = [];
   const points: number[][] = [];
@@ -2958,62 +3045,537 @@ function writeLabeledFrames(file: any, labels: Labels): void {
     }
   }
 
-  createMatrixDataset(
-    file,
-    "frames",
+  return {
     frames,
-    ["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"],
-    "<i8",
-  );
+    instances,
+    points,
+    predPoints,
+    negativeFrames: buildNegativeFrameRows(labels),
+  };
+}
+
+function writeLabeledFrames(file: any, labels: Labels): void {
+  const { frames, instances, points, predPoints } = buildLabelTableRows(labels);
+
+  // Mutable label tables are written CHUNKED + unlimited (resizable=true) so a
+  // later edit can be re-saved in place (write_slice / resize) without touching
+  // the embedded video groups. See createMatrixDataset / writeLabelTablesInPlace.
+  createMatrixDataset(file, "frames", frames, FRAMES_FIELDS, "<i8", true);
   createMatrixDataset(
     file,
     "instances",
     instances,
-    [
-      "instance_id",
-      "instance_type",
-      "frame_id",
-      "skeleton",
-      "track",
-      "from_predicted",
-      "score",
-      "point_id_start",
-      "point_id_end",
-      "tracking_score",
-    ],
+    INSTANCES_FIELDS,
     "<f8",
+    true,
   );
-  createMatrixDataset(
-    file,
-    "points",
-    points,
-    ["x", "y", "visible", "complete"],
-    "<f8",
-  );
+  createMatrixDataset(file, "points", points, POINTS_FIELDS, "<f8", true);
   createMatrixDataset(
     file,
     "pred_points",
     predPoints,
-    ["x", "y", "visible", "complete", "score"],
+    PRED_POINTS_FIELDS,
     "<f8",
+    true,
   );
 }
 
 function writeNegativeFrames(file: any, labels: Labels): void {
-  const negativeFrames = labels.labeledFrames.filter((f) => f.isNegative);
-  if (!negativeFrames.length) return;
-  const rows: number[][] = [];
-  for (const frame of negativeFrames) {
-    const videoIndex = Math.max(0, labels.videos.indexOf(frame.video));
-    rows.push([videoIndex, frame.frameIdx]);
-  }
+  const rows = buildNegativeFrameRows(labels);
+  if (!rows.length) return;
   createMatrixDataset(
     file,
     "negative_frames",
     rows,
-    ["video_id", "frame_idx"],
+    NEGATIVE_FRAMES_FIELDS,
     "<i8",
+    true,
   );
+}
+
+// ===========================================================================
+// Fast in-place label save (edit re-save)
+//
+// Re-save an existing `.pkg.slp` by patching ONLY the small label tables
+// (frames/instances/points/pred_points/negative_frames) + the /metadata `json`
+// attribute, NEVER reading or writing the multi-GB embedded `video{i}/video`
+// groups. On a network share this makes an edit-save ~100x faster (no re-copy of
+// the embedded images). Feasibility + primitives were validated against h5wasm:
+// `write_slice` (same-shape overwrite) works on flat AND compound datasets with
+// ZERO file growth; `resize` (H5Dset_extent) grows/shrinks chunked+unlimited
+// datasets in place. Python-written files store points `visible`/`complete` as an
+// HDF5 enum/bool (typeClass 8) that h5wasm cannot write — such files must fall
+// back to a full re-save (see checkInPlaceWritable).
+// ===========================================================================
+
+/** HDF5 datatype class id for an enum member (bool/enum) — not writable by h5wasm. */
+const H5T_ENUM_CLASS = 8;
+/** HDF5 datatype class id for a float member. */
+const H5T_FLOAT_CLASS = 1;
+
+/** One label table as logical rows + its column (field) names. */
+export interface LabelTable {
+  fields: string[];
+  rows: number[][];
+}
+
+/**
+ * The small, mutable structure of a `.pkg.slp`, ready to patch in place. Each
+ * table is `{ fields, rows }` (logical `number[][]`, layout-agnostic — the writer
+ * packs it into whatever on-disk layout the target dataset uses). `metadataJson`
+ * is set only when metadata actually changed (caller decides) so a value-only
+ * pose edit leaves the `/metadata` attribute untouched.
+ */
+export interface LabelTableUpdate {
+  frames: LabelTable;
+  instances: LabelTable;
+  points: LabelTable;
+  predPoints: LabelTable;
+  negativeFrames?: LabelTable;
+  metadataJson?: string;
+}
+
+/**
+ * Build a {@link LabelTableUpdate} from `labels` — the in-place counterpart to
+ * the eager writer. Reuses {@link buildLabelTableRows} so the columns are
+ * byte-identical to a full save. `negativeFrames` is always included (possibly
+ * with 0 rows) so an in-place save can also empty an existing `negative_frames`
+ * table when the user removed all negative frames. Pass `opts.metadataJson`
+ * (e.g. from {@link buildMetadataJson}) only when metadata changed.
+ */
+export function buildLabelTableUpdate(
+  labels: Labels,
+  opts?: { metadataJson?: string },
+): LabelTableUpdate {
+  const r = buildLabelTableRows(labels);
+  const update: LabelTableUpdate = {
+    frames: { fields: FRAMES_FIELDS, rows: r.frames },
+    instances: { fields: INSTANCES_FIELDS, rows: r.instances },
+    points: { fields: POINTS_FIELDS, rows: r.points },
+    predPoints: { fields: PRED_POINTS_FIELDS, rows: r.predPoints },
+    negativeFrames: { fields: NEGATIVE_FRAMES_FIELDS, rows: r.negativeFrames },
+  };
+  if (opts?.metadataJson !== undefined) update.metadataJson = opts.metadataJson;
+  return update;
+}
+
+/** One on-disk compound member's identity (for the writability gate). */
+export interface OnDiskMember {
+  name: string;
+  /** HDF5 datatype class id (`H5Tget_class`): 0=int, 1=float, 8=enum. */
+  typeClass: number;
+  /** Member size in bytes. */
+  size?: number;
+  /** Whether the integer member is signed (h5wasm reports float as unsigned). */
+  signed?: boolean;
+}
+
+/** On-disk shape/layout of one label table, as seen by the writability gate. */
+export interface OnDiskTable {
+  /** Current row count (axis-0 extent). */
+  rows: number;
+  /** Column count (matrix width, or compound member count). */
+  cols: number;
+  /** Storage layout: a 2-D numeric matrix, or a 1-D compound record dataset. */
+  layout: "flat" | "compound";
+  /** Whether the dataset is chunked (⇒ resizable on axis 0). */
+  chunked?: boolean;
+  /** Compound members (only for `layout: "compound"`). */
+  members?: OnDiskMember[];
+}
+
+/** The on-disk state of the label tables the gate inspects. */
+export interface OnDiskTables {
+  frames?: OnDiskTable;
+  instances?: OnDiskTable;
+  points?: OnDiskTable;
+  predPoints?: OnDiskTable;
+  negativeFrames?: OnDiskTable;
+}
+
+/** Result of {@link checkInPlaceWritable}. */
+export type InPlaceWritable = { ok: true } | { ok: false; reason: string };
+
+/** Minimal `getDatasetMeta` shape consumed by {@link onDiskTableFromMeta}. */
+export interface DatasetMetaLike {
+  shape?: number[];
+  metadata?: {
+    chunks?: unknown;
+    compound_type?: {
+      members?: Array<{
+        name: string;
+        type: number;
+        size?: number;
+        signed?: boolean;
+      }>;
+    };
+  };
+}
+
+/**
+ * Convert a `getDatasetMeta` result (from the streaming reader) into an
+ * {@link OnDiskTable} for the writability gate. Returns `undefined` when the
+ * dataset is absent. Detects compound vs flat from the presence of
+ * `compound_type.members`, and resizability from the presence of `chunks`.
+ */
+export function onDiskTableFromMeta(
+  meta: DatasetMetaLike | null | undefined,
+): OnDiskTable | undefined {
+  if (!meta || !Array.isArray(meta.shape)) return undefined;
+  const md = meta.metadata;
+  const members = md?.compound_type?.members;
+  const chunked = !!md?.chunks;
+  if (members && members.length > 0) {
+    return {
+      rows: meta.shape[0] ?? 0,
+      cols: members.length,
+      layout: "compound",
+      chunked,
+      members: members.map((m) => ({
+        name: m.name,
+        typeClass: m.type,
+        size: m.size,
+        signed: m.signed,
+      })),
+    };
+  }
+  return {
+    rows: meta.shape[0] ?? 0,
+    cols: meta.shape[1] ?? 1,
+    layout: "flat",
+    chunked,
+  };
+}
+
+/**
+ * The JSON sidecar datasets/attribute that the in-place writer does NOT rewrite
+ * but which the label tables reference by index — so an edit that changed any of
+ * them would leave the (rewritten) tables pointing into stale sidecar data. The
+ * gate compares these to prove the save is confined to the label tables (+ the
+ * `/metadata` json attr). `tracks_json` / `suggestions_json` are the on-disk
+ * per-element JSON string arrays; `metadataJson` is the `/metadata` `json`
+ * attribute string. `null` means the dataset/attr is absent.
+ *
+ * The video SET is covered SEMANTICALLY via `videos` (per-video signatures, see
+ * {@link buildVideoSignatures}) rather than a byte-exact `videos_json` compare.
+ *
+ * NOT covered here (the in-place path is only safe for edits that leave these
+ * unchanged; the caller must guarantee it, and the app's post-write verify is the
+ * final backstop): `identities_json`, `sessions_json`, and the annotation
+ * datasets (rois/masks/bboxes/centroids/label_images) — their serializers are
+ * complex and reproducing them risks spurious refusals. Extending the gate to
+ * those is a follow-up.
+ */
+export interface OnDiskSidecars {
+  tracksJson: string[] | null;
+  suggestionsJson: string[] | null;
+  metadataJson: string | null;
+  /** Per-video signatures (see {@link buildVideoSignatures}). */
+  videos: string[] | null;
+}
+
+/**
+ * Serialize the sidecars a `labels` would write, for exact comparison against
+ * {@link OnDiskSidecars} in {@link checkInPlaceWritable}. Reuses the same
+ * serializers the full writer uses ({@link buildTracksJson},
+ * {@link buildSuggestionsJson}, {@link buildMetadataJson}) so the comparison is
+ * byte-exact.
+ */
+export function buildExpectedSidecars(labels: Labels): OnDiskSidecars {
+  return {
+    tracksJson: buildTracksJson(labels.tracks),
+    suggestionsJson: buildSuggestionsJson(labels.suggestions, labels.videos),
+    metadataJson: buildMetadataJson(labels),
+    videos: buildVideoSignatures(labels.videos),
+  };
+}
+
+/** Element-wise string-array equality (null treated as empty). */
+function sameStringArray(a: string[] | null, b: string[] | null): boolean {
+  const aa = a ?? [];
+  const bb = b ?? [];
+  if (aa.length !== bb.length) return false;
+  for (let i = 0; i < aa.length; i++) if (aa[i] !== bb[i]) return false;
+  return true;
+}
+
+/**
+ * Decide whether `update` can be written into `onDisk` IN PLACE, or whether the
+ * caller must fall back to a full re-save. NOT writable when:
+ *  - any table's compound members include an HDF5 enum/bool (typeClass 8) —
+ *    Python-written points store `visible`/`complete` this way and h5wasm cannot
+ *    write them; OR
+ *  - a table's row count changes (structural edit) but the on-disk dataset is
+ *    contiguous (not chunked ⇒ not resizable) — an old file written before the
+ *    chunked-table change (value-only edits are fine on contiguous); OR
+ *  - the track set/order or the suggestions changed — the in-place writer does
+ *    NOT rewrite `tracks_json` / `suggestions_json`, so the (rewritten) instances
+ *    table's `track` indices would point into a STALE `tracks_json` → silent
+ *    track/suggestion corruption on reload (the HIGH bug this guards); OR
+ *  - the VIDEO SET changed (a video was added/removed/repointed) — the in-place
+ *    writer does NOT rewrite `videos_json` or the embedded `video{i}` groups, so
+ *    the (rewritten) frames table's `video` indices would point into a stale
+ *    video list. Compared semantically via per-video signatures
+ *    ({@link buildVideoSignatures}), not a byte-exact `videos_json` diff; OR
+ *  - the `/metadata` json changed (e.g. a skeleton or provenance edit) but
+ *    `update.metadataJson` was not set to carry that change into the attr.
+ *
+ * A pose/point/visibility/score/track-membership-preserving edit still passes.
+ *
+ * CALLER CONTRACT:
+ *  - `onDisk` MUST describe every label table that actually exists on disk
+ *    (frames/instances/points/pred_points/negative_frames) — an omitted table
+ *    skips its resizability check here; the post-resize assertion inside
+ *    {@link writeLabelTablesInPlace} is the loud backstop if one is missed.
+ *  - This gate proves confinement for the label tables + tracks + suggestions +
+ *    videos + metadata ONLY. It does NOT check `identities_json`, `sessions_json`,
+ *    or the annotation datasets (rois/masks/bboxes/centroids/label_images). The
+ *    in-place path therefore ASSUMES those are unchanged; the caller (app) MUST
+ *    NOT route an edit that touches them to in-place (route it to a full re-save),
+ *    and its post-write verify is the final backstop.
+ * Pure function (no I/O): the caller reads `sidecars.onDisk` from the file (the
+ * videos it parsed on open) and builds `sidecars.expected` via
+ * {@link buildExpectedSidecars}.
+ */
+export function checkInPlaceWritable(
+  update: LabelTableUpdate,
+  onDisk: OnDiskTables,
+  sidecars: { onDisk: OnDiskSidecars; expected: OnDiskSidecars },
+): InPlaceWritable {
+  const checks: Array<
+    [string, LabelTable | undefined, OnDiskTable | undefined]
+  > = [
+    ["frames", update.frames, onDisk.frames],
+    ["instances", update.instances, onDisk.instances],
+    ["points", update.points, onDisk.points],
+    ["pred_points", update.predPoints, onDisk.predPoints],
+    ["negative_frames", update.negativeFrames, onDisk.negativeFrames],
+  ];
+  for (const [name, table, od] of checks) {
+    if (!od) continue; // absent on disk → writer creates it (resizable)
+    if (od.layout === "compound" && od.members) {
+      const enumMember = od.members.find((m) => m.typeClass === H5T_ENUM_CLASS);
+      if (enumMember) {
+        return {
+          ok: false,
+          reason: `table "${name}" member "${enumMember.name}" is an HDF5 enum/bool (typeClass ${H5T_ENUM_CLASS}); h5wasm cannot write it — re-save the whole file instead`,
+        };
+      }
+    }
+    if (table && table.rows.length !== od.rows && !od.chunked) {
+      return {
+        ok: false,
+        reason: `table "${name}" row count changed (${od.rows} → ${table.rows.length}) but the on-disk dataset is contiguous (not resizable) — re-save the whole file instead`,
+      };
+    }
+  }
+
+  // Confinement: the label tables index into tracks_json / suggestions_json /
+  // metadata, which the in-place writer does NOT rewrite (except the /metadata
+  // attr, and only when update.metadataJson is set). If any changed, an in-place
+  // save would desync — refuse so the caller full-rewrites.
+  if (
+    !sameStringArray(sidecars.onDisk.tracksJson, sidecars.expected.tracksJson)
+  ) {
+    return {
+      ok: false,
+      reason:
+        "the track set/order changed; an in-place save cannot update tracks_json (the instances table would point into a stale track list) — re-save the whole file instead",
+    };
+  }
+  if (
+    !sameStringArray(
+      sidecars.onDisk.suggestionsJson,
+      sidecars.expected.suggestionsJson,
+    )
+  ) {
+    return {
+      ok: false,
+      reason:
+        "the suggestions changed; an in-place save cannot update suggestions_json — re-save the whole file instead",
+    };
+  }
+  if (!sameStringArray(sidecars.onDisk.videos, sidecars.expected.videos)) {
+    return {
+      ok: false,
+      reason:
+        "the video set changed (a video was added, removed, or repointed); an in-place save cannot update videos_json or the embedded video groups (the frames table would point into a stale video list) — re-save the whole file instead",
+    };
+  }
+  if (
+    sidecars.onDisk.metadataJson !== sidecars.expected.metadataJson &&
+    update.metadataJson === undefined
+  ) {
+    return {
+      ok: false,
+      reason:
+        "the /metadata json changed (e.g. a skeleton or provenance edit) but update.metadataJson was not set to carry it — set update.metadataJson, or re-save the whole file instead",
+    };
+  }
+
+  return { ok: true };
+}
+
+/**
+ * Pack one logical column (`values`, extracted from the update rows) into the
+ * TypedArray that matches an on-disk compound `member`'s dtype, honoring
+ * h5wasm's single-char member dtype (int/float, width, signedness). Int64
+ * members become Big(U)Int64Array (values are exact ≤ 2^53). Throws on an enum
+ * member (the gate should have refused the file first).
+ */
+function memberColumnTypedArray(
+  member: { name: string; type: number; size?: number; signed?: boolean },
+  values: number[],
+): ArrayBufferView {
+  const size = member.size ?? 8;
+  if (member.type === H5T_ENUM_CLASS) {
+    throw new Error(
+      `cannot write enum/bool compound member "${member.name}" in place`,
+    );
+  }
+  if (member.type === H5T_FLOAT_CLASS) {
+    return size === 4 ? Float32Array.from(values) : Float64Array.from(values);
+  }
+  // Integer member. h5wasm reports floats as signed:false, so default ints to
+  // signed unless explicitly unsigned (matches readCompoundColumnsManual).
+  const signed = member.signed !== false;
+  if (size === 8) {
+    const big = values.map((v) => BigInt(Math.trunc(v)));
+    return signed ? BigInt64Array.from(big) : BigUint64Array.from(big);
+  }
+  if (size === 1) return (signed ? Int8Array : Uint8Array).from(values);
+  if (size === 2) return (signed ? Int16Array : Uint16Array).from(values);
+  return (signed ? Int32Array : Uint32Array).from(values);
+}
+
+/**
+ * Overwrite one already-open dataset (`diskName`) with `table`'s rows, resizing
+ * first when the row count changed. Handles BOTH on-disk layouts:
+ *  - flat 2-D matrix: `write_slice([[0,n],[0,cols]], Float64Array)` (h5wasm
+ *    converts f64 → the dataset's `<i8`/`<f8` dtype, mirroring how it was
+ *    written); and
+ *  - 1-D compound: a per-member column `Map` keyed by the on-disk member name,
+ *    each column packed to the member's dtype.
+ * Creates the dataset (chunked/resizable, flat) if it is absent AND non-empty.
+ * NEVER touches any `video{i}` group.
+ */
+function writeOneTableInPlace(
+  file: any,
+  diskName: string,
+  table: LabelTable,
+  dtype: string,
+): void {
+  const rowCount = table.rows.length;
+  const colCount = table.fields.length;
+  const ds = file.get(diskName);
+  if (!ds) {
+    // Absent on disk: create it fresh (resizable, matching the eager writer).
+    // Skip an empty table so we don't add a dataset a file never had.
+    if (rowCount === 0) return;
+    createMatrixDataset(file, diskName, table.rows, table.fields, dtype, true);
+    return;
+  }
+
+  const md = ds.metadata;
+  const members = md?.compound_type?.members as
+    | Array<{ name: string; type: number; size?: number; signed?: boolean }>
+    | undefined;
+  const isCompound = !!(members && members.length > 0);
+  const curRows = ds.shape?.[0] ?? 0;
+
+  if (curRows !== rowCount) {
+    ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
+    // h5wasm SILENTLY no-ops resize() on a non-resizable (contiguous) dataset
+    // rather than throwing — which would leave stale ghost rows / a short write.
+    // Read the shape back and abort loudly so the caller full-rewrites instead
+    // of corrupting the file. (The gate should have refused this, but this is the
+    // backstop if the caller passed an incomplete OnDiskTables.)
+    const newRows = ds.shape?.[0] ?? -1;
+    if (newRows !== rowCount) {
+      throw new Error(
+        `in-place resize of "${diskName}" did not take effect (had ${curRows} rows, wanted ${rowCount}, got ${newRows}); the dataset is not resizable — re-save the whole file instead`,
+      );
+    }
+  }
+  if (rowCount === 0) return; // resized to empty; nothing to write
+
+  if (isCompound) {
+    const fieldIndex = new Map(table.fields.map((f, i) => [f, i]));
+    const columns = new Map<string, ArrayBufferView>();
+    for (const m of members!) {
+      const ci = fieldIndex.get(m.name);
+      if (ci === undefined) {
+        throw new Error(
+          `in-place update for "${diskName}" is missing compound member "${m.name}"`,
+        );
+      }
+      const colVals = table.rows.map((row) => row[ci]);
+      columns.set(m.name, memberColumnTypedArray(m, colVals));
+    }
+    ds.write_slice([[0, rowCount]], columns);
+  } else {
+    const flat = new Float64Array(rowCount * colCount);
+    for (let i = 0; i < rowCount; i++) {
+      const row = table.rows[i];
+      const off = i * colCount;
+      for (let j = 0; j < colCount; j++) flat[off + j] = row[j];
+    }
+    ds.write_slice(
+      [
+        [0, rowCount],
+        [0, colCount],
+      ],
+      flat,
+    );
+  }
+}
+
+/**
+ * Patch the label tables of an ALREADY-OPEN, writable h5wasm `File` (opened r+ /
+ * mode `"a"`) in place from `update`, then (if `update.metadataJson` is set)
+ * replace the `/metadata` `json` attribute. Works on any open h5wasm File —
+ * Node FS, MEMFS, or the bridged write device (the streaming worker).
+ *
+ * DATA SAFETY: only the frames/instances/points/pred_points/negative_frames
+ * datasets and the `/metadata` attribute are ever referenced — the embedded
+ * `video{i}/video` groups are never opened, read, or written. The caller is
+ * responsible for having gated with {@link checkInPlaceWritable} (and, ideally,
+ * a post-write verify) before calling this: the gate proves the edit is confined
+ * to these tables (tracks/suggestions/metadata unchanged or carried). As a
+ * backstop for an incomplete gate, each per-table resize is asserted to have
+ * actually taken effect (h5wasm silently no-ops resize on a non-resizable
+ * dataset) — a resize that can't happen THROWS here rather than writing ghost
+ * rows, so the caller falls back to a full re-save.
+ *
+ * Does NOT flush or close the file — the caller owns the file lifecycle.
+ */
+export function writeLabelTablesInPlace(
+  file: any,
+  update: LabelTableUpdate,
+): void {
+  writeOneTableInPlace(file, "frames", update.frames, "<i8");
+  writeOneTableInPlace(file, "instances", update.instances, "<f8");
+  writeOneTableInPlace(file, "points", update.points, "<f8");
+  writeOneTableInPlace(file, "pred_points", update.predPoints, "<f8");
+  if (update.negativeFrames) {
+    writeOneTableInPlace(file, "negative_frames", update.negativeFrames, "<i8");
+  }
+
+  if (update.metadataJson !== undefined) {
+    const metadataGroup = file.get("metadata");
+    if (metadataGroup) {
+      // The json attr is a fixed-length S-string; a new value of a different
+      // length can't overwrite in place, so delete + recreate. (Attribute
+      // storage may relocate within the object header — harmless to dataset
+      // bytes, but noted as a risk for very large metadata.)
+      try {
+        metadataGroup.delete_attribute("json");
+      } catch {
+        // no existing attr — fine
+      }
+      setStringAttr(metadataGroup, "json", update.metadataJson);
+    }
+  }
 }
 
 /**
@@ -3490,12 +4052,25 @@ function writeEncodedEmbeddedVideo(
   return { writtenFns, sizes };
 }
 
+/**
+ * Write a 2-D matrix dataset with a `field_names` attribute.
+ *
+ * When `resizable` is true the dataset is created CHUNKED with an unlimited
+ * axis-0 `maxshape` (mirroring {@link createAppendableMatrixDataset}) so it can
+ * later be grown/shrunk in place via `resize` + `write_slice` — the on-disk
+ * pre-requisite for the fast in-place label save ({@link writeLabelTablesInPlace}).
+ * The logical content is byte-for-byte identical to the contiguous layout; only
+ * the storage layout changes. Used for the mutable label tables
+ * (frames/instances/points/pred_points/negative_frames); the annotation tables
+ * stay contiguous (`resizable` defaults to false).
+ */
 function createMatrixDataset(
   file: any,
   name: string,
   rows: number[][],
   fieldNames: string[],
   dtype: string,
+  resizable = false,
 ): void {
   const rowCount = rows.length;
   const colCount = fieldNames.length;
@@ -3513,7 +4088,21 @@ function createMatrixDataset(
       data[offset + j] = row[j];
     }
   }
-  file.create_dataset({ name, data, shape: [rowCount, colCount], dtype });
+  if (resizable) {
+    // Chunk rows cap the per-chunk allocation for large tables while staying
+    // small for tiny files (chunk >= 1 is required by HDF5, even for 0 rows).
+    const chunkRows = Math.max(1, Math.min(WRITE_CHUNK_ROWS, rowCount || 1));
+    file.create_dataset({
+      name,
+      data,
+      shape: [rowCount, colCount],
+      maxshape: [null, colCount],
+      chunks: [chunkRows, colCount],
+      dtype,
+    });
+  } else {
+    file.create_dataset({ name, data, shape: [rowCount, colCount], dtype });
+  }
   const dataset = file.get(name);
   setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
 }

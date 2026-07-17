@@ -176,6 +176,32 @@ export type {
   SerializableEmbedEntry,
   SerializableEmbedPlan,
 } from "../codecs/slp/write.js";
+// Fast in-place label save (edit re-save): patch ONLY the small label tables +
+// the /metadata json attr of an existing .pkg.slp, never touching the multi-GB
+// embedded `video{i}/video` groups — ~100x faster edit-saves on network shares.
+export {
+  buildLabelTableRows,
+  buildLabelTableUpdate,
+  buildMetadataJson,
+  buildTracksJson,
+  buildSuggestionsJson,
+  buildVideoSignatures,
+  buildExpectedSidecars,
+  checkInPlaceWritable,
+  onDiskTableFromMeta,
+  writeLabelTablesInPlace,
+} from "../codecs/slp/write.js";
+export type {
+  LabelTable,
+  LabelTableRows,
+  LabelTableUpdate,
+  OnDiskMember,
+  OnDiskTable,
+  OnDiskTables,
+  OnDiskSidecars,
+  InPlaceWritable,
+  DatasetMetaLike,
+} from "../codecs/slp/write.js";
 
 /**
  * Load a SLEAP Analysis HDF5 file (.h5).
