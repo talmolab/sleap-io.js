@@ -3,7 +3,9 @@
 // writeLabelTablesInPlace patches ONLY the small label tables (value-only via
 // write_slice, structural via resize+write_slice) and NEVER the embedded
 // `video{i}/video` group or the file's overall size (for value-only edits), on
-// BOTH flat (app-written) and compound (Python-written / #218) table layouts.
+// BOTH app-written (compound, uint8 bool) and Python-written (compound, enum
+// bool / #218) table layouts — the pose tables are compound + chunked so they
+// open in Python AND stay in-place editable.
 import { describe, it, expect } from "./bun-test";
 import {
   saveSlpToBytes,
@@ -116,22 +118,38 @@ function bytesEqual(a: Uint8Array, b: Uint8Array): boolean {
   return true;
 }
 
-/** Read a FLAT 2-D dataset's row-major `.value` into `number[][]`. */
-function readFlatMatrix(f: any, name: string, cols: number): number[][] {
-  const flat = Array.from(f.get(name).value as ArrayLike<number>, Number);
+/**
+ * Read a label table into row-major `number[][]`, handling BOTH on-disk layouts:
+ * a flat 2-D matrix (e.g. `frames`) and an HDF5 COMPOUND 1-D dataset (the pose
+ * tables `instances`/`points`/`pred_points` after #218). For a compound dataset
+ * `.value` is already an array of member-ordered rows (64-bit members come back
+ * as BigInt → coerced to Number); `cols` is used only for the flat layout.
+ */
+function readTableRows(f: any, name: string, cols: number): number[][] {
+  const ds = f.get(name);
+  const members = ds.metadata?.compound_type?.members as
+    | { name: string }[]
+    | undefined;
+  if (members?.length) {
+    const rows = (ds.value as ArrayLike<ArrayLike<unknown>>) ?? [];
+    return Array.from(rows, (row) =>
+      Array.from(row as ArrayLike<unknown>, Number),
+    );
+  }
+  const flat = Array.from((ds.value as ArrayLike<number>) ?? [], Number);
   const out: number[][] = [];
   for (let i = 0; i < flat.length; i += cols) out.push(flat.slice(i, i + cols));
   return out;
 }
 
-describe("writeLabelTablesInPlace — flat (app-written) tables", () => {
+describe("writeLabelTablesInPlace — app-written (compound, uint8 bool) tables", () => {
   it("value-only edit: coords change, other rows + video bytes + file size unchanged", async () => {
     await ready;
     const fp = path.join(SCRATCH, `inplace_flat_value_${Date.now()}.pkg.slp`);
     if (existsSync(fp)) rmSync(fp);
     const blob = makeVideoBlob();
 
-    // App-written .pkg.slp (flat chunked pose tables), plus an embedded video.
+    // App-written .pkg.slp (compound chunked pose tables, #218), plus an embedded video.
     const v1 = makeLabels(3, 0);
     writeFileSync(fp, await saveSlpToBytes(v1));
     injectEmbeddedVideo(fp, blob);
@@ -154,7 +172,7 @@ describe("writeLabelTablesInPlace — flat (app-written) tables", () => {
 
     const f2 = new H5File(fp, "r");
     try {
-      const pts = readFlatMatrix(f2, "points", 4);
+      const pts = readTableRows(f2, "points", 4);
       // point 0 overwritten
       expect(pts[0][0]).toBeCloseTo(999.5, 6);
       expect(pts[0][1]).toBeCloseTo(888.25, 6);
@@ -204,12 +222,12 @@ describe("writeLabelTablesInPlace — flat (app-written) tables", () => {
     try {
       expect(f2.get("instances").shape[0]).toBe(3); // resized up
       expect(f2.get("points").shape[0]).toBe(6);
-      const pts = readFlatMatrix(f2, "points", 4);
+      const pts = readTableRows(f2, "points", 4);
       // new instance 2, node A → [21,22]
       expect(pts[4][0]).toBeCloseTo(21, 6);
       expect(pts[4][1]).toBeCloseTo(22, 6);
       // frames' instance range end must now be 3
-      const frames = readFlatMatrix(f2, "frames", 5);
+      const frames = readTableRows(f2, "frames", 5);
       expect(frames[0][4]).toBe(3);
     } finally {
       f2.close();

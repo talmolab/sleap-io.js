@@ -301,16 +301,31 @@ function makeLazySourceLabels(labels: Labels): Labels {
 }
 
 /**
- * Write `frames`/`instances`/`points`/`pred_points` HDF5 datasets directly
- * from the lazy store's parsed column data, bypassing materialization.
- *
- * The columns are stored as `Record<string, any[]>` (parsed from the original
- * HDF5 reader). We rebuild row-major typed arrays and call the existing
- * {@link createMatrixDataset} helper so we get identical output to the eager
- * writer for these four datasets.
+ * Rebuild row-major `number[][]` from a lazy store's parsed column data
+ * (`Record<string, any[]>`, from the HDF5 reader), so the pose datasets can be
+ * written with the same helpers the eager writer uses ({@link createMatrixDataset}
+ * / {@link createCompoundDataset}) for byte-identical output.
  *
  * TODO: a column-aware fast path could avoid the row rebuild entirely.
  */
+function lazyColumnsToRows(
+  columns: Record<string, any[]>,
+  fieldNames: string[],
+): number[][] {
+  const rowCount = (columns[fieldNames[0]] ?? []).length;
+  const colCount = fieldNames.length;
+  const rows: number[][] = [];
+  for (let i = 0; i < rowCount; i++) {
+    const row = new Array<number>(colCount);
+    for (let j = 0; j < colCount; j++) {
+      const v = (columns[fieldNames[j]] ?? [])[i];
+      row[j] = v === undefined || v === null ? 0 : Number(v);
+    }
+    rows.push(row);
+  }
+  return rows;
+}
+
 function writeLazyMatrixDataset(
   file: any,
   name: string,
@@ -318,21 +333,34 @@ function writeLazyMatrixDataset(
   fieldNames: string[],
   dtype: string,
 ): void {
-  const rowCount = (columns[fieldNames[0]] ?? []).length;
-  const colCount = fieldNames.length;
-  const rows: number[][] = [];
-  for (let i = 0; i < rowCount; i++) {
-    const row = new Array<number>(colCount);
-    for (let j = 0; j < colCount; j++) {
-      const col = columns[fieldNames[j]] ?? [];
-      const v = col[i];
-      row[j] = v === undefined || v === null ? 0 : Number(v);
-    }
-    rows.push(row);
-  }
   // resizable=true: the lazy fast-path writer's label tables must also be
-  // in-place-editable on re-save (matches the eager writer).
-  createMatrixDataset(file, name, rows, fieldNames, dtype, true);
+  // in-place-editable on re-save (matches the eager writer). Only `frames` (a
+  // flat int matrix) uses this now; the pose tables go through
+  // writeLazyCompoundDataset.
+  createMatrixDataset(
+    file,
+    name,
+    lazyColumnsToRows(columns, fieldNames),
+    fieldNames,
+    dtype,
+    true,
+  );
+}
+
+/** Lazy-store analog of {@link createCompoundDataset}: columns → compound. */
+function writeLazyCompoundDataset(
+  file: any,
+  name: string,
+  columns: Record<string, any[]>,
+  fields: CompoundField[],
+): void {
+  const fieldNames = fields.map(([fieldName]) => fieldName);
+  createCompoundDataset(
+    file,
+    name,
+    lazyColumnsToRows(columns, fieldNames),
+    fields,
+  );
 }
 
 function writeLazyFramesAndInstances(file: any, store: LazyDataStore): void {
@@ -343,37 +371,23 @@ function writeLazyFramesAndInstances(file: any, store: LazyDataStore): void {
     ["frame_id", "video", "frame_idx", "instance_id_start", "instance_id_end"],
     "<i8",
   );
-  writeLazyMatrixDataset(
+  writeLazyCompoundDataset(
     file,
     "instances",
     store.instancesData,
-    [
-      "instance_id",
-      "instance_type",
-      "frame_id",
-      "skeleton",
-      "track",
-      "from_predicted",
-      "score",
-      "point_id_start",
-      "point_id_end",
-      "tracking_score",
-    ],
-    "<f8",
+    INSTANCE_COMPOUND_FIELDS,
   );
-  writeLazyMatrixDataset(
+  writeLazyCompoundDataset(
     file,
     "points",
     store.pointsData,
-    ["x", "y", "visible", "complete"],
-    "<f8",
+    POINT_COMPOUND_FIELDS,
   );
-  writeLazyMatrixDataset(
+  writeLazyCompoundDataset(
     file,
     "pred_points",
     store.predPointsData,
-    ["x", "y", "visible", "complete", "score"],
-    "<f8",
+    PRED_POINT_COMPOUND_FIELDS,
   );
 }
 
@@ -386,13 +400,11 @@ function writeLazyNegativeFrames(file: any, store: LazyDataStore): void {
   }
   // Deterministic ordering for byte-stable output.
   rows.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
-  createMatrixDataset(
+  createCompoundDataset(
     file,
     "negative_frames",
     rows,
-    NEGATIVE_FRAMES_FIELDS,
-    "<i8",
-    true,
+    NEGATIVE_FRAME_COMPOUND_FIELDS,
   );
 }
 
@@ -3057,39 +3069,32 @@ export function buildLabelTableRows(labels: Labels): LabelTableRows {
 function writeLabeledFrames(file: any, labels: Labels): void {
   const { frames, instances, points, predPoints } = buildLabelTableRows(labels);
 
-  // Mutable label tables are written CHUNKED + unlimited (resizable=true) so a
-  // later edit can be re-saved in place (write_slice / resize) without touching
-  // the embedded video groups. See createMatrixDataset / writeLabelTablesInPlace.
+  // `frames` stays a flat int matrix (Python reads it positionally), written
+  // CHUNKED + unlimited (resizable=true) so it can be resized in place on an edit
+  // re-save. The pose tables are HDF5 COMPOUND with integer id columns — so files
+  // open in Python sleap-io / the PyQt GUI (#218) — AND chunked + unlimited, so
+  // the fast in-place edit-save can patch them via write_slice / resize without
+  // rewriting the embedded video groups. See createCompoundDataset /
+  // writeLabelTablesInPlace.
   createMatrixDataset(file, "frames", frames, FRAMES_FIELDS, "<i8", true);
-  createMatrixDataset(
-    file,
-    "instances",
-    instances,
-    INSTANCES_FIELDS,
-    "<f8",
-    true,
-  );
-  createMatrixDataset(file, "points", points, POINTS_FIELDS, "<f8", true);
-  createMatrixDataset(
+  createCompoundDataset(file, "instances", instances, INSTANCE_COMPOUND_FIELDS);
+  createCompoundDataset(file, "points", points, POINT_COMPOUND_FIELDS);
+  createCompoundDataset(
     file,
     "pred_points",
     predPoints,
-    PRED_POINTS_FIELDS,
-    "<f8",
-    true,
+    PRED_POINT_COMPOUND_FIELDS,
   );
 }
 
 function writeNegativeFrames(file: any, labels: Labels): void {
   const rows = buildNegativeFrameRows(labels);
   if (!rows.length) return;
-  createMatrixDataset(
+  createCompoundDataset(
     file,
     "negative_frames",
     rows,
-    NEGATIVE_FRAMES_FIELDS,
-    "<i8",
-    true,
+    NEGATIVE_FRAME_COMPOUND_FIELDS,
   );
 }
 
@@ -4105,6 +4110,101 @@ function createMatrixDataset(
   }
   const dataset = file.get(name);
   setStringAttr(dataset, "field_names", JSON.stringify(fieldNames));
+}
+
+/** One member of a compound (structured) dataset: `[name, HDF5 dtype]`. */
+type CompoundField = [name: string, dtype: string];
+
+// Per-member (name, dtype) layout for the pose tables written as HDF5 COMPOUND
+// datasets — matching Python sleap-io's on-disk dtypes (see `io/slp.py`
+// `instance_dtype`/`point_dtype`/`predicted_point_dtype` + the negative-frames
+// dtype). Writing these as a flat float matrix made Python read the id/count
+// columns (skeleton, track, …) back as `numpy.float32`, so `skeletons[id]`
+// raised `TypeError: list indices must be integers` (#218) — the values were
+// fine, only the on-disk dtype was wrong.
+//
+// NB: h5wasm dtype strings are SINGLE-CHAR — the trailing digits are ignored
+// (`<f8` is really float32!), and `u`/numpy widths aren't accepted. The chars:
+// `q`/`Q` = (u)int64, `i`/`I` = (u)int32, `b`/`B` = (u)int8, `f` = float32,
+// `d` = float64. Python stores `visible`/`complete` as bool (`?`); HDF5-bool
+// isn't writable through h5wasm, so we store them as uint8 (Python casts them
+// back to bool on read).
+const INSTANCE_COMPOUND_FIELDS: CompoundField[] = [
+  ["instance_id", "<q"], // i8
+  ["instance_type", "<B"], // u1
+  ["frame_id", "<Q"], // u8
+  ["skeleton", "<I"], // u4
+  ["track", "<i"], // i4 (carries -1)
+  ["from_predicted", "<q"], // i8 (carries -1)
+  ["score", "<f"], // f4
+  ["point_id_start", "<Q"], // u8
+  ["point_id_end", "<Q"], // u8
+  ["tracking_score", "<f"], // f4
+];
+const POINT_COMPOUND_FIELDS: CompoundField[] = [
+  ["x", "<d"], // f8
+  ["y", "<d"], // f8
+  ["visible", "<B"], // bool -> u1
+  ["complete", "<B"], // bool -> u1
+];
+const PRED_POINT_COMPOUND_FIELDS: CompoundField[] = [
+  ["x", "<d"], // f8
+  ["y", "<d"], // f8
+  ["visible", "<B"], // bool -> u1
+  ["complete", "<B"], // bool -> u1
+  ["score", "<d"], // f8
+];
+const NEGATIVE_FRAME_COMPOUND_FIELDS: CompoundField[] = [
+  ["video_id", "<I"], // u4
+  ["frame_idx", "<Q"], // u8
+];
+
+/**
+ * Write `rows` as an HDF5 COMPOUND (structured) dataset — one struct per row,
+ * each member with its own dtype — the layout Python sleap-io expects for the
+ * pose tables. `fields` gives `[memberName, hdf5Dtype]` in column order;
+ * `rows[i][j]` supplies member j of row i. h5wasm takes the columns as a
+ * per-member `Map` and packs them into an array-of-structures; passing plain
+ * number columns lets it widen 64-bit int members to BigInt itself.
+ *
+ * A `field_names` attribute is stamped too — Python ignores it (it reads the
+ * compound member names), and it keeps this dataset shape identical to the old
+ * matrix output for any JS reader that keys off the attribute.
+ */
+function createCompoundDataset(
+  file: any,
+  name: string,
+  rows: number[][],
+  fields: CompoundField[],
+): void {
+  const rowCount = rows.length;
+  const columns = new Map<string, number[]>();
+  for (let j = 0; j < fields.length; j++) {
+    const col = new Array<number>(rowCount);
+    for (let i = 0; i < rowCount; i++) col[i] = rows[i][j];
+    columns.set(fields[j][0], col);
+  }
+  // Emit the compound pose tables CHUNKED + unlimited (1-D `maxshape: [null]`) so
+  // a later edit can be re-saved IN PLACE (`write_slice` for value edits,
+  // `resize` + `write_slice` for structural edits) without rewriting the
+  // multi-GB embedded video groups — the reconciliation of #218 (compound, for
+  // Python interop) with the in-place edit-save (which requires resizable tables;
+  // see writeLabelTablesInPlace / checkInPlaceWritable). chunk >= 1 is required by
+  // HDF5 even for 0 rows.
+  const chunkRows = Math.max(1, Math.min(WRITE_CHUNK_ROWS, rowCount || 1));
+  file.create_dataset({
+    name,
+    data: columns,
+    shape: [rowCount],
+    maxshape: [null],
+    chunks: [chunkRows],
+    dtype: fields,
+  });
+  setStringAttr(
+    file.get(name),
+    "field_names",
+    JSON.stringify(fields.map(([fieldName]) => fieldName)),
+  );
 }
 
 function writeRois(

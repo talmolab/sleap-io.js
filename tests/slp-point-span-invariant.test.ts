@@ -72,6 +72,24 @@ async function readTables(bytes: Uint8Array): Promise<{
     const readMatrix = (name: string): { flat: number[]; ncols: number } => {
       const ds = file.get(name) as any;
       if (!ds) return { flat: [], ncols: 0 };
+      // The pose tables (`instances`/`points`/`pred_points`) are HDF5 COMPOUND
+      // datasets (integer id columns for Python interop, #218): 1-D shape, and
+      // `.value` is an array of rows, each row an array of member values in
+      // member order — the same column order as the old flat matrix, so the
+      // downstream offsets are unchanged. Flatten to the flat-matrix layout.
+      const members = ds.metadata?.compound_type?.members as
+        | { name: string }[]
+        | undefined;
+      if (members?.length) {
+        const rows = (ds.value as ArrayLike<ArrayLike<unknown>>) ?? [];
+        const flat: number[] = [];
+        for (let i = 0; i < rows.length; i++) {
+          const row = rows[i];
+          for (let j = 0; j < members.length; j++) flat.push(Number(row[j]));
+        }
+        return { flat, ncols: members.length };
+      }
+      // Legacy flat float-matrix layout (pre-#218 files).
       const shape = ds.shape as number[];
       return {
         flat: Array.from((ds.value as ArrayLike<number>) ?? []).map(Number),

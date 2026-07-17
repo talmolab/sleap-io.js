@@ -251,12 +251,33 @@ describe("Python format compatibility", () => {
       for (const name of ["frames", "instances", "points", "pred_points"]) {
         const src = srcFile.get(name) as any;
         if (src?.value != null) {
-          newFile.create_dataset({
-            name,
-            data: src.value,
-            shape: src.shape,
-            dtype: src.dtype,
-          });
+          if (Array.isArray(src.dtype)) {
+            // Compound (structured) dataset — the pose tables now match Python's
+            // on-disk layout. `.value` yields array-of-rows, but `create_dataset`
+            // takes compound data as a per-member column Map, so transpose first.
+            const members = src.dtype as [string, string][];
+            const rows = src.value as any[][];
+            const columns = new Map<string, any[]>();
+            members.forEach(([member], j) => {
+              columns.set(
+                member,
+                rows.map((row) => row[j]),
+              );
+            });
+            newFile.create_dataset({
+              name,
+              data: columns,
+              shape: src.shape,
+              dtype: src.dtype,
+            });
+          } else {
+            newFile.create_dataset({
+              name,
+              data: src.value,
+              shape: src.shape,
+              dtype: src.dtype,
+            });
+          }
           const fn = src.attrs?.field_names;
           if (fn) {
             const fnStr =

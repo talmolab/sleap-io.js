@@ -158,12 +158,35 @@ describe("Identity catalog (SLP 2.5)", () => {
       const copyDs = (name: string) => {
         const d = src.get(name) as any;
         if (!d?.value) return;
-        dst.create_dataset({
-          name,
-          data: d.value,
-          shape: d.shape,
-          dtype: d.dtype,
-        });
+        // The pose tables (`instances`/`points`/`pred_points`) are now HDF5
+        // COMPOUND datasets (#218). h5wasm's create_dataset takes compound data
+        // as a per-member column Map, not the array-of-rows that `.value`
+        // returns — pass columns for compound, raw value otherwise.
+        const members = d.metadata?.compound_type?.members as
+          | { name: string }[]
+          | undefined;
+        if (members?.length) {
+          const rows = d.value as ArrayLike<ArrayLike<unknown>>;
+          const columns = new Map<string, unknown[]>();
+          members.forEach((m, j) => {
+            const col = new Array<unknown>(rows.length);
+            for (let i = 0; i < rows.length; i++) col[i] = rows[i][j];
+            columns.set(m.name, col);
+          });
+          dst.create_dataset({
+            name,
+            data: columns,
+            shape: d.shape,
+            dtype: d.dtype,
+          });
+        } else {
+          dst.create_dataset({
+            name,
+            data: d.value,
+            shape: d.shape,
+            dtype: d.dtype,
+          });
+        }
         const fn = d.attrs?.field_names;
         if (fn) {
           const s =
