@@ -252,10 +252,11 @@ describe("Python compatibility (#76)", () => {
     try {
       writeFileSync(slpPath, bytes);
 
-      // Test metadata reading (#76) and skeleton decoding (format fix).
-      // Full sio.load_slp() not yet supported because JS writes flat <f8
-      // matrices (no compound dtype), so Python gets float indices for the
-      // instances dataset. h5wasm doesn't support compound dtype creation.
+      // Test metadata reading (#76) and skeleton decoding (format fix). Full
+      // sio.load_slp() now works too (JS writes the pose tables as compound
+      // datasets with integer id columns — #218; end-to-end coverage lives in
+      // skeleton-edgeless-nodes.test.ts); this test stays scoped to the
+      // metadata/skeleton readers it was written for.
       //
       // Write the script to a file and invoke via execFileSync (no shell), so
       // the SLP path interpolation and multiline script body don't have to
@@ -373,11 +374,9 @@ describe("ImageVideo serialization (#221)", () => {
       writeFileSync(slpPath, await saveSlpToBytes(imageSeqLabels()));
       // Exercise the video-reading path (`read_videos` → `make_video`), which is
       // exactly where #221 crashed: pre-fix the frame list landed in the scalar
-      // `filename`, so `make_video` did `Path([...])` → TypeError. We deliberately
-      // don't call full `sio.load_slp` here — JS writes flat <f8 instance matrices
-      // (no HDF5 compound dtype), so `read_instances` gets float skeleton indices;
-      // that's a separate, pre-existing limitation (see the #76 test above),
-      // unrelated to ImageVideo serialization. open_backend=False since the image
+      // `filename`, so `make_video` did `Path([...])` → TypeError. Scoped to
+      // `read_videos` on purpose — this test is about ImageVideo serialization,
+      // not the full instance read path. open_backend=False since the image
       // files don't exist on disk (we only assert the filename metadata).
       const pyScript = `
 from pathlib import Path
