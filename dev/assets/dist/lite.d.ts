@@ -1,5 +1,5 @@
-import { F as FrameGroup, S as Skeleton, T as Track } from './dictionary-D4blHDU3.js';
-export { E as Edge, N as Node, a as Symmetry } from './dictionary-D4blHDU3.js';
+import { F as FrameGroup, S as Skeleton, T as Track } from './dictionary-BA-2We_n.js';
+export { E as Edge, N as Node, a as Symmetry } from './dictionary-BA-2We_n.js';
 
 /**
  * jsfive-based HDF5 file interface.

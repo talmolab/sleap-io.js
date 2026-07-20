@@ -378,7 +378,10 @@ var Instance = class _Instance {
   /**
    * Create a Centroid from this instance.
    *
-   * @param method - "centerOfMass" (default), "bboxCenter", or "anchor".
+   * @param method - Computation method. Accepts the legacy camelCase names
+   *   (`"centerOfMass"` (default), `"bboxCenter"`, `"anchor"`) and Python's
+   *   snake_case names (`"center_of_mass"`, `"bbox_center"`). The persisted
+   *   `source` is always canonical snake_case for Python interop.
    * @param node - Node specification for "anchor" method.
    * @returns UserCentroid or PredictedCentroid depending on instance type.
    */

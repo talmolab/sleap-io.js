@@ -266,7 +266,10 @@ declare class Instance {
     /**
      * Create a Centroid from this instance.
      *
-     * @param method - "centerOfMass" (default), "bboxCenter", or "anchor".
+     * @param method - Computation method. Accepts the legacy camelCase names
+     *   (`"centerOfMass"` (default), `"bboxCenter"`, `"anchor"`) and Python's
+     *   snake_case names (`"center_of_mass"`, `"bbox_center"`). The persisted
+     *   `source` is always canonical snake_case for Python interop.
      * @param node - Node specification for "anchor" method.
      * @returns UserCentroid or PredictedCentroid depending on instance type.
      */
@@ -885,6 +888,25 @@ declare class Video {
     mergeWith(other: Video): Video;
 }
 
+/**
+ * Normalize a centroid `source`/`method` string to its canonical snake_case
+ * form for Python/PyQt on-disk interop.
+ *
+ * The SLP on-disk format is snake_case (Python-compatible). Historically the JS
+ * side used camelCase method names (`"centerOfMass"`, `"bboxCenter"`) both for
+ * the `fromInstance` `method` param and — via that param — for the persisted
+ * `source` value, which mismatched Python `sleap-io`. This maps the legacy
+ * camelCase names to Python's snake_case:
+ * - `"centerOfMass"` -> `"center_of_mass"`
+ * - `"bboxCenter"`   -> `"bbox_center"`
+ *
+ * All other values pass through unchanged: already-snake_case names
+ * (`"center_of_mass"`, `"bbox_center"`), `"anchor"` / `"anchor:<node>"`, and
+ * arbitrary sources (e.g. `"trackmate"`). Used by both `Centroid.fromInstance`
+ * (to normalize the `method` param) and the SLP reader (to normalize legacy
+ * camelCase `source` values on load).
+ */
+declare function normalizeCentroidSource(source: string): string;
 /** Return the shared single-node `Skeleton(["centroid"])` instance. */
 declare function getCentroidSkeleton(): Skeleton;
 /**
@@ -956,7 +978,12 @@ declare class Centroid {
      *
      * @param instance - Source instance.
      * @param options - Options for centroid extraction.
-     * @param options.method - "centerOfMass" (default), "bboxCenter", or "anchor".
+     * @param options.method - Computation method. Accepts both the legacy JS
+     *   camelCase names (`"centerOfMass"` (default), `"bboxCenter"`, `"anchor"`)
+     *   and Python's snake_case names (`"center_of_mass"`, `"bbox_center"`). The
+     *   persisted `source` is always the canonical snake_case value
+     *   (`"center_of_mass"`, `"bbox_center"`, or `"anchor:<node>"`) to match
+     *   Python `sleap-io` on disk.
      * @param options.node - Node name or index for "anchor" method.
      * @returns UserCentroid or PredictedCentroid depending on instance type.
      */
@@ -3289,4 +3316,4 @@ declare function toDict(labels: Labels, options?: {
 }): LabelsDict;
 declare function fromDict(data: LabelsDict): Labels;
 
-export { _findAnnotationLinkMatches as $, AUTO_VIDEO_MATCHER as A, BoundingBox as B, Centroid as C, DUPLICATE_MATCHER as D, Edge as E, FrameGroup as F, PATH_VIDEO_MATCHER as G, BASENAME_VIDEO_MATCHER as H, Instance as I, IMAGE_DEDUP_VIDEO_MATCHER as J, SHAPE_VIDEO_MATCHER as K, Labels as L, MergeError as M, Node as N, OVERLAP_SKELETON_MATCHER as O, PredictedInstance as P, setFsResolver as Q, ROI as R, Skeleton as S, Track as T, UserROI as U, Video as V, type FsResolver as W, type MergeStrategy as X, _annotationCentroidXy as Y, _findAnnotationMatches as Z, _relinkFromPredicted as _, Symmetry as a, UserLabelImage as a$, _resolveMergedIsNegative as a0, _registerCentroidFactory as a1, type Point as a2, type PredictedPoint as a3, type PointsArray as a4, type PredictedPointsArray as a5, type PointColumns as a6, pointsEmpty as a7, predictedPointsEmpty as a8, clonePoint as a9, _registerMaskFactory as aA, AnnotationType as aB, type Geometry as aC, type ROIOptions as aD, rasterizeGeometry as aE, encodeWkb as aF, decodeWkb as aG, PredictedROI as aH, encodeRle as aI, decodeRle as aJ, resizeNearest as aK, traceMaskContours as aL, groupRingsIntoPolygons as aM, type SegmentationMaskOptions as aN, type UserSegmentationMaskOptions as aO, UserSegmentationMask as aP, PredictedSegmentationMask as aQ, type BoundingBoxOptions as aR, UserBoundingBox as aS, PredictedBoundingBox as aT, getCentroidSkeleton as aU, CENTROID_SKELETON as aV, type CentroidOptions as aW, UserCentroid as aX, PredictedCentroid as aY, type LabelImageObjectInfo as aZ, type LabelImageOptions as a_, pointsFromArray as aa, predictedPointsFromArray as ab, PointView as ac, pointsFromDict as ad, predictedPointsFromDict as ae, type NodeOrIndex as af, EXISTS_TTL_MS as ag, type CropOptions as ah, resolveCropRect as ai, type VideoBackendErrorKind as aj, type VideoBackendError as ak, SuggestionFrame as al, rodriguesTransformation as am, Camera as an, CameraGroup as ao, InstanceGroup as ap, RecordingSession as aq, injectSessionFrameResolver as ar, cloneRecordingSession as as, makeCameraFromDict as at, Identity as au, Embedding as av, Instance3D as aw, PredictedInstance3D as ax, LazyDataStore as ay, LazyFrameList as az, LabeledFrame as b, PredictedLabelImage as b0, normalizeLabelIds as b1, type VideoFrame as b2, type GetFrameOptions as b3, type VideoBackend as b4, type LabelsDict as b5, toDict as b6, fromDict as b7, cropPoints as b8, uncropPoints as b9, type CropRect as ba, type FlatPoints as bb, type PointPairs as bc, cropFrame as bd, type FrameLike as be, type RawFrame as bf, type Fill as bg, type RangeSource as bh, LabelsSet as c, LabelImage as d, SegmentationMask as e, SkeletonMatchMethod as f, InstanceMatchMethod as g, TrackMatchMethod as h, VideoMatchMethod as i, FrameStrategy as j, ErrorMode as k, SkeletonMatcher as l, InstanceMatcher as m, TrackMatcher as n, VideoMatcher as o, ConflictResolution as p, SkeletonMismatchError as q, MergeResult as r, MatchResult as s, MergeProgressBar as t, STRUCTURE_SKELETON_MATCHER as u, SUBSET_SKELETON_MATCHER as v, IOU_MATCHER as w, IDENTITY_INSTANCE_MATCHER as x, NAME_TRACK_MATCHER as y, IDENTITY_TRACK_MATCHER as z };
+export { _findAnnotationLinkMatches as $, AUTO_VIDEO_MATCHER as A, BoundingBox as B, Centroid as C, DUPLICATE_MATCHER as D, Edge as E, FrameGroup as F, PATH_VIDEO_MATCHER as G, BASENAME_VIDEO_MATCHER as H, Instance as I, IMAGE_DEDUP_VIDEO_MATCHER as J, SHAPE_VIDEO_MATCHER as K, Labels as L, MergeError as M, Node as N, OVERLAP_SKELETON_MATCHER as O, PredictedInstance as P, setFsResolver as Q, ROI as R, Skeleton as S, Track as T, UserROI as U, Video as V, type FsResolver as W, type MergeStrategy as X, _annotationCentroidXy as Y, _findAnnotationMatches as Z, _relinkFromPredicted as _, Symmetry as a, type LabelImageOptions as a$, _resolveMergedIsNegative as a0, _registerCentroidFactory as a1, type Point as a2, type PredictedPoint as a3, type PointsArray as a4, type PredictedPointsArray as a5, type PointColumns as a6, pointsEmpty as a7, predictedPointsEmpty as a8, clonePoint as a9, _registerMaskFactory as aA, AnnotationType as aB, type Geometry as aC, type ROIOptions as aD, rasterizeGeometry as aE, encodeWkb as aF, decodeWkb as aG, PredictedROI as aH, encodeRle as aI, decodeRle as aJ, resizeNearest as aK, traceMaskContours as aL, groupRingsIntoPolygons as aM, type SegmentationMaskOptions as aN, type UserSegmentationMaskOptions as aO, UserSegmentationMask as aP, PredictedSegmentationMask as aQ, type BoundingBoxOptions as aR, UserBoundingBox as aS, PredictedBoundingBox as aT, normalizeCentroidSource as aU, getCentroidSkeleton as aV, CENTROID_SKELETON as aW, type CentroidOptions as aX, UserCentroid as aY, PredictedCentroid as aZ, type LabelImageObjectInfo as a_, pointsFromArray as aa, predictedPointsFromArray as ab, PointView as ac, pointsFromDict as ad, predictedPointsFromDict as ae, type NodeOrIndex as af, EXISTS_TTL_MS as ag, type CropOptions as ah, resolveCropRect as ai, type VideoBackendErrorKind as aj, type VideoBackendError as ak, SuggestionFrame as al, rodriguesTransformation as am, Camera as an, CameraGroup as ao, InstanceGroup as ap, RecordingSession as aq, injectSessionFrameResolver as ar, cloneRecordingSession as as, makeCameraFromDict as at, Identity as au, Embedding as av, Instance3D as aw, PredictedInstance3D as ax, LazyDataStore as ay, LazyFrameList as az, LabeledFrame as b, UserLabelImage as b0, PredictedLabelImage as b1, normalizeLabelIds as b2, type VideoFrame as b3, type GetFrameOptions as b4, type VideoBackend as b5, type LabelsDict as b6, toDict as b7, fromDict as b8, cropPoints as b9, uncropPoints as ba, type CropRect as bb, type FlatPoints as bc, type PointPairs as bd, cropFrame as be, type FrameLike as bf, type RawFrame as bg, type Fill as bh, type RangeSource as bi, LabelsSet as c, LabelImage as d, SegmentationMask as e, SkeletonMatchMethod as f, InstanceMatchMethod as g, TrackMatchMethod as h, VideoMatchMethod as i, FrameStrategy as j, ErrorMode as k, SkeletonMatcher as l, InstanceMatcher as m, TrackMatcher as n, VideoMatcher as o, ConflictResolution as p, SkeletonMismatchError as q, MergeResult as r, MatchResult as s, MergeProgressBar as t, STRUCTURE_SKELETON_MATCHER as u, SUBSET_SKELETON_MATCHER as v, IOU_MATCHER as w, IDENTITY_INSTANCE_MATCHER as x, NAME_TRACK_MATCHER as y, IDENTITY_TRACK_MATCHER as z };

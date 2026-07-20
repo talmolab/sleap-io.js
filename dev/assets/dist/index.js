@@ -144,6 +144,7 @@ import {
   loadVideo,
   nTrailPaletteColors,
   nodeFileExists,
+  normalizeCentroidSource,
   normalizeLabelIds,
   onDiskTableFromMeta,
   openH5File,
@@ -199,7 +200,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-JDRNFDMQ.js";
+} from "./chunk-G26TA52C.js";
 import {
   Camera,
   CameraGroup,
@@ -228,7 +229,7 @@ import {
   predictedPointsFromArray,
   predictedPointsFromDict,
   rodriguesTransformation
-} from "./chunk-H7G4PJNA.js";
+} from "./chunk-GH7XGRS3.js";
 import {
   CLOUD_SCHEMES,
   DEFAULT_MAX_BYTES,
@@ -4157,6 +4158,7 @@ export {
   makeJabsDefaultSkeleton,
   makeSimpleSkeleton,
   nTrailPaletteColors,
+  normalizeCentroidSource,
   normalizeCoordinates,
   normalizeLabelIds,
   onDiskTableFromMeta,

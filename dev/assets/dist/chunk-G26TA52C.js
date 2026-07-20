@@ -36,7 +36,7 @@ import {
   resolveIdentity,
   resolveVideoFilename,
   sessionsReadError
-} from "./chunk-H7G4PJNA.js";
+} from "./chunk-GH7XGRS3.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -51,6 +51,16 @@ import {
 } from "./chunk-YS7Q6CO6.js";
 
 // src/model/centroid.ts
+function normalizeCentroidSource(source) {
+  switch (source) {
+    case "centerOfMass":
+      return "center_of_mass";
+    case "bboxCenter":
+      return "bbox_center";
+    default:
+      return source;
+  }
+}
 var _centroidSkeleton = null;
 function getCentroidSkeleton() {
   if (!_centroidSkeleton) {
@@ -151,12 +161,17 @@ var Centroid = class _Centroid {
    *
    * @param instance - Source instance.
    * @param options - Options for centroid extraction.
-   * @param options.method - "centerOfMass" (default), "bboxCenter", or "anchor".
+   * @param options.method - Computation method. Accepts both the legacy JS
+   *   camelCase names (`"centerOfMass"` (default), `"bboxCenter"`, `"anchor"`)
+   *   and Python's snake_case names (`"center_of_mass"`, `"bbox_center"`). The
+   *   persisted `source` is always the canonical snake_case value
+   *   (`"center_of_mass"`, `"bbox_center"`, or `"anchor:<node>"`) to match
+   *   Python `sleap-io` on disk.
    * @param options.node - Node name or index for "anchor" method.
    * @returns UserCentroid or PredictedCentroid depending on instance type.
    */
   static fromInstance(instance, options) {
-    const method = options?.method ?? "centerOfMass";
+    const method = normalizeCentroidSource(options?.method ?? "centerOfMass");
     const visiblePoints = [];
     for (const point of instance.points) {
       if (point.visible && !Number.isNaN(point.xy[0]) && !Number.isNaN(point.xy[1])) {
@@ -165,15 +180,15 @@ var Centroid = class _Centroid {
     }
     let x;
     let y;
-    if (method === "centerOfMass") {
+    if (method === "center_of_mass") {
       if (!visiblePoints.length) {
-        throw new Error("No visible points for centerOfMass.");
+        throw new Error("No visible points for center_of_mass.");
       }
       x = visiblePoints.reduce((sum, p) => sum + p[0], 0) / visiblePoints.length;
       y = visiblePoints.reduce((sum, p) => sum + p[1], 0) / visiblePoints.length;
-    } else if (method === "bboxCenter") {
+    } else if (method === "bbox_center") {
       if (!visiblePoints.length) {
-        throw new Error("No visible points for bboxCenter.");
+        throw new Error("No visible points for bbox_center.");
       }
       const xs = visiblePoints.map((p) => p[0]);
       const ys = visiblePoints.map((p) => p[1]);
@@ -200,7 +215,7 @@ var Centroid = class _Centroid {
       y = pt.xy[1];
     } else {
       throw new Error(
-        `Unknown method ${JSON.stringify(method)}. Expected 'centerOfMass', 'bboxCenter', or 'anchor'.`
+        `Unknown method ${JSON.stringify(method)}. Expected 'center_of_mass', 'bbox_center', or 'anchor' (camelCase 'centerOfMass'/'bboxCenter' also accepted).`
       );
     }
     const { method: _, node: __, ...extraOptions } = options ?? {};
@@ -17054,7 +17069,7 @@ function writeCentroids(file, centroids, _videos, tracks, instances, contexts) {
     ]);
     categories.push(c.category);
     names.push(c.name);
-    sources.push(c.source);
+    sources.push(normalizeCentroidSource(c.source));
   }
   createMatrixDataset(
     file,
@@ -20253,7 +20268,10 @@ function readCentroids(file, _videos, tracks) {
       trackingScore,
       category: categories[i] ?? "",
       name: names[i] ?? "",
-      source: sources[i] ?? ""
+      // Normalize legacy camelCase `source` values written by older JS versions
+      // to Python's canonical snake_case (`centerOfMass` -> `center_of_mass`,
+      // etc.). `anchor:*` and arbitrary sources pass through unchanged.
+      source: normalizeCentroidSource(sources[i] ?? "")
     };
     const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
     let centroid;
@@ -21920,6 +21938,7 @@ function drawLabelOutlines(image, region, x0, y0, drawH, drawW, outlineWidth, ou
 }
 
 export {
+  normalizeCentroidSource,
   getCentroidSkeleton,
   CENTROID_SKELETON,
   Centroid,

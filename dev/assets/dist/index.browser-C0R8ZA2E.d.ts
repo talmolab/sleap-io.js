@@ -1,4 +1,4 @@
-import { b4 as VideoBackend, bh as RangeSource$1, b3 as GetFrameOptions, b2 as VideoFrame, L as Labels, S as Skeleton, V as Video, T as Track, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, W as FsResolver, ba as CropRect, bg as Fill, bb as FlatPoints, bc as PointPairs, a$ as UserLabelImage, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-D4blHDU3.js';
+import { b5 as VideoBackend, bi as RangeSource$1, b4 as GetFrameOptions, b3 as VideoFrame, L as Labels, S as Skeleton, V as Video, T as Track, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, W as FsResolver, bb as CropRect, bh as Fill, bc as FlatPoints, bd as PointPairs, b0 as UserLabelImage, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-BA-2We_n.js';
 
 declare class Mp4BoxVideoBackend implements VideoBackend {
     filename: string;
