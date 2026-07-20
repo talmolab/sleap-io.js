@@ -79,6 +79,7 @@ import {
   type Centroid,
   UserCentroid,
   PredictedCentroid,
+  normalizeCentroidSource,
 } from "../../model/centroid.js";
 import {
   type LabelImage,
@@ -2854,7 +2855,10 @@ function readCentroids(
       trackingScore,
       category: categories[i] ?? "",
       name: names[i] ?? "",
-      source: sources[i] ?? "",
+      // Normalize legacy camelCase `source` values written by older JS versions
+      // to Python's canonical snake_case (`centerOfMass` -> `center_of_mass`,
+      // etc.). `anchor:*` and arbitrary sources pass through unchanged.
+      source: normalizeCentroidSource(sources[i] ?? ""),
     };
 
     const isPred =
