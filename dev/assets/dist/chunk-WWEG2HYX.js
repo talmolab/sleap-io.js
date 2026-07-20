@@ -17042,56 +17042,51 @@ function writeLabelImages(file, labelImages, _videos, tracks, instances, context
 }
 function writeCentroids(file, centroids, _videos, tracks, instances, contexts) {
   if (!centroids.length) return;
-  const rows = [];
+  const n = centroids.length;
+  const x = new Float64Array(n);
+  const y = new Float64Array(n);
+  const z = new Float64Array(n);
+  const video = new Int32Array(n);
+  const frameIdx = new Int32Array(n);
+  const track = new Int32Array(n);
+  const instance = new Int32Array(n);
+  const isPredicted = new Uint8Array(n);
+  const score = new Float64Array(n);
+  const trackingScore = new Float64Array(n);
   const categories = [];
   const names = [];
   const sources = [];
-  for (let i = 0; i < centroids.length; i++) {
+  for (let i = 0; i < n; i++) {
     const c = centroids[i];
-    const videoIdx = contexts ? contexts[i][0] : -1;
-    const frameIdx = contexts ? contexts[i][1] : -1;
-    const trackIdx = c.track ? tracks.indexOf(c.track) : -1;
-    const score = c.isPredicted ? c.score : Number.NaN;
-    const instanceIdx = c.instance ? instances.indexOf(c.instance) : c._instanceIdx ?? -1;
-    const isPredicted = c.isPredicted ? 1 : 0;
-    const trackingScore = c.trackingScore ?? Number.NaN;
-    rows.push([
-      c.x,
-      c.y,
-      c.z ?? Number.NaN,
-      videoIdx,
-      frameIdx,
-      trackIdx,
-      instanceIdx,
-      isPredicted,
-      score,
-      trackingScore
-    ]);
+    x[i] = c.x;
+    y[i] = c.y;
+    z[i] = c.z ?? Number.NaN;
+    video[i] = contexts ? contexts[i][0] : -1;
+    frameIdx[i] = contexts ? contexts[i][1] : -1;
+    track[i] = c.track ? tracks.indexOf(c.track) : -1;
+    instance[i] = c.instance ? instances.indexOf(c.instance) : c._instanceIdx ?? -1;
+    isPredicted[i] = c.isPredicted ? 1 : 0;
+    score[i] = c.isPredicted ? c.score : Number.NaN;
+    trackingScore[i] = c.trackingScore ?? Number.NaN;
     categories.push(c.category);
     names.push(c.name);
     sources.push(normalizeCentroidSource(c.source));
   }
-  createMatrixDataset(
-    file,
-    "centroids",
-    rows,
-    [
-      "x",
-      "y",
-      "z",
-      "video",
-      "frame_idx",
-      "track",
-      "instance",
-      "is_predicted",
-      "score",
-      "tracking_score"
-    ],
-    "<f8"
-  );
-  writeStringDataset(file, "centroid_categories", categories);
-  writeStringDataset(file, "centroid_names", names);
-  writeStringDataset(file, "centroid_sources", sources);
+  file.create_group("centroids");
+  const col = (name, data, dtype) => file.create_dataset({ name: `centroids/${name}`, data, shape: [n], dtype });
+  col("x", x, "<d");
+  col("y", y, "<d");
+  col("z", z, "<d");
+  col("video", video, "<i4");
+  col("frame_idx", frameIdx, "<i4");
+  col("track", track, "<i4");
+  col("instance", instance, "<i4");
+  col("is_predicted", isPredicted, "<B");
+  col("score", score, "<d");
+  col("tracking_score", trackingScore, "<d");
+  file.create_dataset({ name: "centroids/category", data: categories });
+  file.create_dataset({ name: "centroids/name", data: names });
+  file.create_dataset({ name: "centroids/source", data: sources });
 }
 
 // src/io/analysis-h5.ts
@@ -20216,30 +20211,57 @@ function buildLabeledFrames2(options) {
   return frames;
 }
 function readCentroids(file, _videos, tracks) {
-  const centroidsDs = file.get("centroids");
-  if (!centroidsDs) return [];
-  const data = normalizeStructDataset(centroidsDs);
+  let data;
+  let categories;
+  let names;
+  let sources;
+  if (file.get("centroids/x")) {
+    const col = (name) => file.get(`centroids/${name}`)?.value ?? [];
+    data = {
+      x: col("x"),
+      y: col("y"),
+      z: col("z"),
+      video: col("video"),
+      frame_idx: col("frame_idx"),
+      track: col("track"),
+      instance: col("instance"),
+      is_predicted: col("is_predicted"),
+      score: col("score"),
+      tracking_score: col("tracking_score")
+    };
+    const strCol = (name) => {
+      const ds = file.get(`centroids/${name}`);
+      if (!ds) return [];
+      try {
+        return (ds.value ?? []).length ? Array.from(ds.value, decodeStr) : [];
+      } catch {
+        return [];
+      }
+    };
+    categories = strCol("category");
+    names = strCol("name");
+    sources = strCol("source");
+  } else {
+    const centroidsDs = file.get("centroids");
+    if (!centroidsDs) return [];
+    data = normalizeStructDataset(centroidsDs);
+    categories = readStringMetadata(
+      file,
+      "centroid_categories",
+      centroidsDs,
+      "categories"
+    );
+    names = readStringMetadata(file, "centroid_names", centroidsDs, "names");
+    sources = readStringMetadata(
+      file,
+      "centroid_sources",
+      centroidsDs,
+      "sources"
+    );
+  }
   const xs = data.x ?? [];
   const count = xs.length;
   if (!count) return [];
-  const categories = readStringMetadata(
-    file,
-    "centroid_categories",
-    centroidsDs,
-    "categories"
-  );
-  const names = readStringMetadata(
-    file,
-    "centroid_names",
-    centroidsDs,
-    "names"
-  );
-  const sources = readStringMetadata(
-    file,
-    "centroid_sources",
-    centroidsDs,
-    "sources"
-  );
   const ys = data.y ?? [];
   const zs = data.z ?? [];
   const videoIndices = data.video ?? [];
