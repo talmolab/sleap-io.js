@@ -15026,7 +15026,7 @@ async function openSlpWriter(header) {
       headerLabels.identities
     );
     createAppendableMatrixDataset(file, "frames", FRAMES_FIELDS, "<i8");
-    createAppendableMatrixDataset(file, "instances", INSTANCES_FIELDS, "<f8");
+    createAppendableMatrixDataset(file, "instances", INSTANCES_FIELDS, "<d");
     createAppendableMatrixDataset(file, "points", POINTS_FIELDS, "<f8");
     createAppendableMatrixDataset(
       file,
@@ -16209,7 +16209,7 @@ function writeOneTableInPlace(file, diskName, table, dtype) {
 }
 function writeLabelTablesInPlace(file, update) {
   writeOneTableInPlace(file, "frames", update.frames, "<i8");
-  writeOneTableInPlace(file, "instances", update.instances, "<f8");
+  writeOneTableInPlace(file, "instances", update.instances, "<d");
   writeOneTableInPlace(file, "points", update.points, "<f8");
   writeOneTableInPlace(file, "pred_points", update.predPoints, "<f8");
   if (update.negativeFrames) {
