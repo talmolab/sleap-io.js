@@ -13,9 +13,10 @@ import { LabeledFrame } from "../src/model/labeled-frame.js";
 import { ROI } from "../src/model/roi.js";
 import { SegmentationMask } from "../src/model/mask.js";
 import { UserBoundingBox } from "../src/model/bbox.js";
+import { UserCentroid, PredictedCentroid } from "../src/model/centroid.js";
 import { Track } from "../src/model/instance.js";
 import { ready, File as H5File } from "h5wasm/node";
-import { writeFileSync, unlinkSync } from "node:fs";
+import { writeFileSync, unlinkSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -31,6 +32,35 @@ function tmpSlp(): string {
     tmpdir(),
     `sleap-io-js-test-${Date.now()}-${Math.random().toString(16).slice(2)}.slp`,
   );
+}
+
+// Centroid annotations landed in sleap-io after the current PyPI release
+// (0.6.x has no `sleap_io.model.centroid`); they ship in sleap-io main / the
+// version sleap-nn bundles. Probe once so the Python-direction centroid tests
+// SKIP (rather than fail) until `uv run --with sleap-io` resolves a build that
+// has them, at which point they activate automatically.
+let _pyHasCentroids: boolean | undefined;
+function pythonHasCentroids(): boolean {
+  if (_pyHasCentroids === undefined) {
+    try {
+      execFileSync(
+        "uv",
+        [
+          "run",
+          "--with",
+          "sleap-io",
+          "python",
+          "-c",
+          "import sleap_io.model.centroid",
+        ],
+        { timeout: 120000, stdio: "pipe" },
+      );
+      _pyHasCentroids = true;
+    } catch {
+      _pyHasCentroids = false;
+    }
+  }
+  return _pyHasCentroids;
 }
 
 describe("Python compatibility (#76)", () => {
@@ -397,6 +427,164 @@ print("OK: Python reads JS-written image sequence")
         { encoding: "utf-8", timeout: 120000 },
       );
       expect(result).toContain("OK: Python reads JS-written image sequence");
+    } finally {
+      try {
+        unlinkSync(slpPath);
+      } catch {}
+      try {
+        unlinkSync(pyPath);
+      } catch {}
+    }
+  });
+});
+
+describe("Centroid annotation cross-compat (#centroids)", () => {
+  // Build a project with a pose instance + a UserCentroid linked to it, and a
+  // standalone PredictedCentroid on another frame. Exercises the `/centroids`
+  // group layout that Python sleap-io reads (`grp["x"]`, `grp["instance"]`...).
+  function centroidLabels(): Labels {
+    const skeleton = new Skeleton({
+      name: "rodent",
+      nodes: ["snout", "neck", "tailbase"],
+    });
+    const video = new Video({ filename: "fake.mp4" });
+    const inst = new Instance({
+      skeleton,
+      points: [
+        { xy: [10, 10], visible: true, complete: true },
+        { xy: [12, 12], visible: true, complete: true },
+        { xy: [14, 14], visible: true, complete: true },
+      ],
+    });
+    const uc = new UserCentroid({ x: 12, y: 12, instance: inst, name: "cm" });
+    const pc = new PredictedCentroid({ x: 99, y: 88, score: 0.77 });
+    return new Labels({
+      skeletons: [skeleton],
+      videos: [video],
+      labeledFrames: [
+        new LabeledFrame({
+          video,
+          frameIdx: 0,
+          instances: [inst],
+          centroids: [uc],
+        }),
+        new LabeledFrame({
+          video,
+          frameIdx: 1,
+          instances: [],
+          centroids: [pc],
+        }),
+      ],
+    });
+  }
+
+  it("round-trips: sleap-io.js reads its own centroids", async () => {
+    const { readSlp } = await import("../src/codecs/slp/read.js");
+    const loaded = await readSlp(await saveSlpToBytes(centroidLabels()), {
+      openVideos: false,
+    });
+    const cents = loaded.labeledFrames.flatMap((lf) => lf.centroids);
+    expect(cents.length).toBe(2);
+    const user = cents.find((c) => !c.isPredicted)!;
+    const pred = cents.find((c) => c.isPredicted)!;
+    expect(user.xy).toEqual([12, 12]);
+    expect(user.name).toBe("cm");
+    expect(user.instance).not.toBeNull(); // linked pose instance survives
+    expect((pred as PredictedCentroid).score).toBeCloseTo(0.77, 5);
+  });
+
+  it("Python sleap-io reads JS-written centroids (would crash pre-fix)", async () => {
+    if (!pythonHasCentroids()) {
+      console.warn(
+        "[skip] Python sleap-io lacks centroid support (PyPI 0.6.x); activates once released.",
+      );
+      return;
+    }
+    const slpPath = tmpSlp();
+    const pyPath = slpPath.replace(/\.slp$/, ".py");
+    try {
+      writeFileSync(slpPath, await saveSlpToBytes(centroidLabels()));
+      // Pre-fix, JS wrote `/centroids` as a 2-D matrix dataset, so Python's
+      // group-expecting reader raised "Field names only allowed for compound
+      // types" and load_slp failed. This asserts the group layout is readable.
+      const pyScript = `
+import sleap_io as sio
+labels = sio.load_slp(${JSON.stringify(slpPath)})
+cents = [c for lf in labels.labeled_frames for c in lf.centroids]
+assert len(cents) == 2, f"Expected 2 centroids, got {len(cents)}"
+user = [c for c in cents if not c.is_predicted]
+pred = [c for c in cents if c.is_predicted]
+assert len(user) == 1 and len(pred) == 1, f"Wrong user/pred split: {len(user)}/{len(pred)}"
+assert tuple(user[0].xy) == (12.0, 12.0), f"Bad user xy: {user[0].xy}"
+assert user[0].name == "cm", f"Bad name: {user[0].name!r}"
+assert user[0].instance is not None, "User centroid lost its instance link"
+assert abs(pred[0].score - 0.77) < 1e-4, f"Bad predicted score: {pred[0].score}"
+print("OK: Python reads JS-written centroids")
+`;
+      writeFileSync(pyPath, pyScript);
+      const result = execFileSync(
+        "uv",
+        ["run", "--with", "sleap-io", "python", pyPath],
+        { encoding: "utf-8", timeout: 120000 },
+      );
+      expect(result).toContain("OK: Python reads JS-written centroids");
+    } finally {
+      try {
+        unlinkSync(slpPath);
+      } catch {}
+      try {
+        unlinkSync(pyPath);
+      } catch {}
+    }
+  });
+
+  it("sleap-io.js reads Python-written centroids", async () => {
+    if (!pythonHasCentroids()) {
+      console.warn(
+        "[skip] Python sleap-io lacks centroid support (PyPI 0.6.x); activates once released.",
+      );
+      return;
+    }
+    const { readSlp } = await import("../src/codecs/slp/read.js");
+    const slpPath = tmpSlp();
+    const pyPath = slpPath.replace(/\.slp$/, ".py");
+    try {
+      // Python writes the canonical `/centroids` group; JS must read it (pre-fix
+      // JS silently returned 0 centroids from a Python file).
+      const pyScript = `
+import numpy as np
+import sleap_io as sio
+from sleap_io.model.centroid import UserCentroid, PredictedCentroid
+
+skel = sio.Skeleton(["snout", "neck", "tailbase"], name="rodent")
+video = sio.Video.from_filename("fake.mp4")
+inst = sio.Instance.from_numpy(np.array([[10, 10], [12, 12], [14, 14]], "float32"), skeleton=skel)
+uc = UserCentroid(x=12.0, y=12.0, instance=inst, name="cm")
+pc = PredictedCentroid(x=99.0, y=88.0, score=0.77)
+lf0 = sio.LabeledFrame(video=video, frame_idx=0, instances=[inst], centroids=[uc])
+lf1 = sio.LabeledFrame(video=video, frame_idx=1, centroids=[pc])
+labels = sio.Labels(videos=[video], skeletons=[skel], labeled_frames=[lf0, lf1])
+sio.save_slp(labels, ${JSON.stringify(slpPath)}, embed=False)
+print("OK: Python wrote centroids")
+`;
+      writeFileSync(pyPath, pyScript);
+      const out = execFileSync(
+        "uv",
+        ["run", "--with", "sleap-io", "python", pyPath],
+        { encoding: "utf-8", timeout: 120000 },
+      );
+      expect(out).toContain("OK: Python wrote centroids");
+
+      const loaded = await readSlp(new Uint8Array(readFileSync(slpPath)), {
+        openVideos: false,
+      });
+      const cents = loaded.labeledFrames.flatMap((lf) => lf.centroids);
+      expect(cents.length).toBe(2);
+      const user = cents.find((c) => !c.isPredicted)!;
+      const pred = cents.find((c) => c.isPredicted)!;
+      expect(user.xy).toEqual([12, 12]);
+      expect(user.name).toBe("cm");
+      expect((pred as PredictedCentroid).score).toBeCloseTo(0.77, 4);
     } finally {
       try {
         unlinkSync(slpPath);
