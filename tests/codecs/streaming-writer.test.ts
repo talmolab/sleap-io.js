@@ -29,6 +29,7 @@ import { Labels } from "../../src/model/labels.js";
 import { UserSegmentationMask } from "../../src/model/mask.js";
 import { UserROI } from "../../src/model/roi.js";
 import { saveSlpToBytes } from "../../src/codecs/slp/write.js";
+import { ready, File as H5File } from "h5wasm/node";
 
 const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
 const slp = (name: string) => path.join(fixtureRoot, "slp", name);
@@ -553,5 +554,81 @@ describe("annotation overlays (masks / rois)", () => {
     const f = rt.labeledFrames.find((x) => x.frameIdx === 7)!;
     expect(f.masks).toHaveLength(1);
     expect(f.masks[0].name).toBe("mm");
+  });
+});
+
+describe("instances pose table dtype (#231 — float32 corrupts large ids)", () => {
+  it("writes `instances` as true float64 (size 8), so ids past 2^24 survive", async () => {
+    // h5wasm keys its dtype parser off the type CHAR and IGNORES the trailing
+    // digit, so the old "<f8" resolved to float32 (4 bytes). float32 cannot
+    // represent odd integers above 2^24 (16,777,216), so the integer bookkeeping
+    // columns in the `instances` table (instance_id, frame_id, point_id_start/end,
+    // …) round to even → instance point-spans read back with the wrong node count
+    // → points misattributed to the wrong skeleton nodes, silently (#231). The
+    // streaming append writer must create `instances` as "<d" (true float64).
+    const module = await ready;
+    const s = await store(FIX);
+    const writer = await openSlpWriter({
+      skeletons: s.skeletons,
+      videos: s.videos,
+      tracks: s.tracks,
+    });
+    writer.appendStore(s);
+    const bytes = new Uint8Array(writer.close());
+
+    const memPath = `/tmp/streaming_instances_dtype_${Date.now()}.slp`;
+    module.FS.writeFile(memPath, bytes);
+
+    // (a) On-disk dtype of `instances` must be an 8-byte float (float64), NOT a
+    //     4-byte float (float32 == the "<f8" bug). Direct dtype assertion.
+    let file = new H5File(memPath, "r");
+    let rows0: number;
+    let cols: number;
+    try {
+      const instances = file.get("instances") as any;
+      expect(instances.metadata.type).toBe(1); // H5T_FLOAT_CLASS
+      expect(instances.metadata.size).toBe(8); // float64 — 4 would mean float32
+      const shape = instances.shape!;
+      rows0 = shape[0];
+      cols = shape[1];
+      expect(rows0).toBeGreaterThan(0); // the fixture actually produced rows
+    } finally {
+      file.close();
+    }
+
+    // (b) Exact round-trip of a large ODD id through the writer's ACTUAL
+    //     `instances` dataset, using the same resize + write_slice the streaming
+    //     append performs. Under float32 this reads back as the nearest even value
+    //     (16_777_232) — this assertion directly encodes the corruption bug.
+    const BIG_ODD = 16_777_233; // 2^24 + 17 — not representable in float32
+    file = new H5File(memPath, "a");
+    try {
+      const ds = file.get("instances") as any;
+      ds.resize([rows0 + 1, cols]);
+      const row = new Float64Array(cols);
+      row[0] = BIG_ODD; // instance_id column
+      ds.write_slice(
+        [
+          [rows0, rows0 + 1],
+          [0, cols],
+        ],
+        row,
+      );
+    } finally {
+      file.close();
+    }
+
+    file = new H5File(memPath, "r");
+    try {
+      const ds = file.get("instances") as any;
+      const readBack = ds.slice([
+        [rows0, rows0 + 1],
+        [0, 1],
+      ]) as Float64Array;
+      expect(Number(readBack[0])).toBe(BIG_ODD); // exact — float32 → 16_777_232
+    } finally {
+      file.close();
+      module.FS.unlink(memPath);
+    }
   });
 });
