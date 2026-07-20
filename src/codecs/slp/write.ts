@@ -1494,8 +1494,28 @@ export async function openSlpWriter(
       headerLabels.identities,
     );
 
+    // dtype chars matter: h5wasm keys off the type CHAR and IGNORES the trailing
+    // digit, so "<f8" resolves to float32 (char 'f'=4 bytes) and "<i8" to int32
+    // (char 'i'=4). See the notes above INSTANCE_COMPOUND_FIELDS and
+    // SESSION_FRAME_GROUP_FIELDS.
+    //
+    // `frames`: this is actually int32 ("<q" is h5wasm's int64 code). Harmless
+    // below 2^31 frame/instance rows; the Python reader casts positionally.
     createAppendableMatrixDataset(file, "frames", FRAMES_FIELDS, "<i8");
-    createAppendableMatrixDataset(file, "instances", INSTANCES_FIELDS, "<f8");
+    // `instances`: MUST be true float64 ("<d"), NOT "<f8" (== float32 in h5wasm).
+    // This table holds integer bookkeeping columns (instance_id, frame_id,
+    // skeleton, track, point_id_start/point_id_end, …); float32 cannot represent
+    // odd integers above 2^24 (16,777,216), so on files with >~16.7M point rows the
+    // point_id_start/end spans round to even → instances read back with the wrong
+    // node count → points misattributed to the wrong skeleton nodes, silently
+    // (#231). "<d" (char 'd'=8 bytes) is exact to 2^53. The eager/lazy writers dodge
+    // this via HDF5 compound columns (#218); this streaming path stays a float
+    // matrix, so it must use true float64 here.
+    createAppendableMatrixDataset(file, "instances", INSTANCES_FIELDS, "<d");
+    // `points`/`pred_points` hold only coordinates, visibility flags, and scores —
+    // no large integer ids — so float32 ("<f8") is an intentional, acceptable
+    // choice here (contrast `instances` above, which MUST be "<d"). Remember "<f8"
+    // == float32 in h5wasm (only the type char is read).
     createAppendableMatrixDataset(file, "points", POINTS_FIELDS, "<f8");
     createAppendableMatrixDataset(
       file,
@@ -3558,8 +3578,15 @@ export function writeLabelTablesInPlace(
   file: any,
   update: LabelTableUpdate,
 ): void {
+  // The `dtype` here is only consulted when a table is ABSENT on disk and gets
+  // created fresh as a flat matrix (writeOneTableInPlace → createMatrixDataset);
+  // for an existing dataset the on-disk layout/dtype wins and this arg is ignored.
+  // Even so, `instances` uses "<d" (true float64), NEVER "<f8" (== float32 in
+  // h5wasm — only the type char is read): its id / point_id columns must survive
+  // integers past 2^24 (#231). frames stays int32 ("<i8"); points/pred_points are
+  // coordinate-only, so float32 ("<f8") is acceptable.
   writeOneTableInPlace(file, "frames", update.frames, "<i8");
-  writeOneTableInPlace(file, "instances", update.instances, "<f8");
+  writeOneTableInPlace(file, "instances", update.instances, "<d");
   writeOneTableInPlace(file, "points", update.points, "<f8");
   writeOneTableInPlace(file, "pred_points", update.predPoints, "<f8");
   if (update.negativeFrames) {
