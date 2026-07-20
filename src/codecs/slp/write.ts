@@ -4849,36 +4849,36 @@ function writeCentroids(
 ): void {
   if (!centroids.length) return;
 
-  const rows: number[][] = [];
+  const n = centroids.length;
+  const x = new Float64Array(n);
+  const y = new Float64Array(n);
+  const z = new Float64Array(n);
+  const video = new Int32Array(n);
+  const frameIdx = new Int32Array(n);
+  const track = new Int32Array(n);
+  const instance = new Int32Array(n);
+  const isPredicted = new Uint8Array(n);
+  const score = new Float64Array(n);
+  const trackingScore = new Float64Array(n);
   const categories: string[] = [];
   const names: string[] = [];
   const sources: string[] = [];
 
-  for (let i = 0; i < centroids.length; i++) {
+  for (let i = 0; i < n; i++) {
     const c = centroids[i];
-    const videoIdx = contexts ? contexts[i][0] : -1;
-    const frameIdx = contexts ? contexts[i][1] : -1;
-    const trackIdx = c.track ? tracks.indexOf(c.track as any) : -1;
-    const score = c.isPredicted ? (c as PredictedCentroid).score : Number.NaN;
+    x[i] = c.x;
+    y[i] = c.y;
+    z[i] = c.z ?? Number.NaN;
+    video[i] = contexts ? contexts[i][0] : -1;
+    frameIdx[i] = contexts ? contexts[i][1] : -1;
+    track[i] = c.track ? tracks.indexOf(c.track as any) : -1;
     // Fall back to stored _instanceIdx when no live instance link (e.g., lazy mode).
-    const instanceIdx = c.instance
+    instance[i] = c.instance
       ? instances.indexOf(c.instance as Instance)
       : (c._instanceIdx ?? -1);
-    const isPredicted = c.isPredicted ? 1 : 0;
-    const trackingScore = c.trackingScore ?? Number.NaN;
-
-    rows.push([
-      c.x,
-      c.y,
-      c.z ?? Number.NaN,
-      videoIdx,
-      frameIdx,
-      trackIdx,
-      instanceIdx,
-      isPredicted,
-      score,
-      trackingScore,
-    ]);
+    isPredicted[i] = c.isPredicted ? 1 : 0;
+    score[i] = c.isPredicted ? (c as PredictedCentroid).score : Number.NaN;
+    trackingScore[i] = c.trackingScore ?? Number.NaN;
     categories.push(c.category);
     names.push(c.name);
     // Persist the canonical snake_case source for Python/PyQt interop. Normally
@@ -4888,26 +4888,25 @@ function writeCentroids(
     sources.push(normalizeCentroidSource(c.source));
   }
 
-  createMatrixDataset(
-    file,
-    "centroids",
-    rows,
-    [
-      "x",
-      "y",
-      "z",
-      "video",
-      "frame_idx",
-      "track",
-      "instance",
-      "is_predicted",
-      "score",
-      "tracking_score",
-    ],
-    "<f8",
-  );
-
-  writeStringDataset(file, "centroid_categories", categories);
-  writeStringDataset(file, "centroid_names", names);
-  writeStringDataset(file, "centroid_sources", sources);
+  // Match Python sleap-io's on-disk layout: a `/centroids` GROUP with one named
+  // dataset per field (NOT a flat matrix), so Python/PyQt sleap-io can read
+  // JS-written centroids. (Previously JS wrote a 2-D matrix dataset + a
+  // `field_names` attr, which Python's group-expecting reader rejects with
+  // "Field names only allowed for compound types".)
+  file.create_group("centroids");
+  const col = (name: string, data: ArrayLike<number>, dtype: string) =>
+    file.create_dataset({ name: `centroids/${name}`, data, shape: [n], dtype });
+  col("x", x, "<d");
+  col("y", y, "<d");
+  col("z", z, "<d");
+  col("video", video, "<i4");
+  col("frame_idx", frameIdx, "<i4");
+  col("track", track, "<i4");
+  col("instance", instance, "<i4");
+  col("is_predicted", isPredicted, "<B");
+  col("score", score, "<d");
+  col("tracking_score", trackingScore, "<d");
+  file.create_dataset({ name: "centroids/category", data: categories });
+  file.create_dataset({ name: "centroids/name", data: names });
+  file.create_dataset({ name: "centroids/source", data: sources });
 }

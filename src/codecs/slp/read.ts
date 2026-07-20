@@ -2792,31 +2792,71 @@ function readCentroids(
   _videos: Video[],
   tracks: Track[],
 ): [Centroid, number, number][] {
-  const centroidsDs = file.get("centroids");
-  if (!centroidsDs) return [];
-  const data = normalizeStructDataset(centroidsDs);
+  // Two on-disk layouts are supported:
+  //  - Python / current JS: a `/centroids` GROUP with one child dataset per
+  //    field (x, y, z, video, frame_idx, track, instance, is_predicted, score,
+  //    tracking_score) plus string children (category/name/source).
+  //  - Legacy JS: a flat `/centroids` matrix dataset + `field_names` attr, with
+  //    sibling `centroid_categories`/`centroid_names`/`centroid_sources`.
+  let data: Record<string, ArrayLike<number>>;
+  let categories: string[];
+  let names: string[];
+  let sources: string[];
+
+  if (file.get("centroids/x")) {
+    // Group layout (matches Python sleap-io).
+    const col = (name: string): ArrayLike<number> =>
+      (file.get(`centroids/${name}`)?.value as ArrayLike<number>) ?? [];
+    data = {
+      x: col("x"),
+      y: col("y"),
+      z: col("z"),
+      video: col("video"),
+      frame_idx: col("frame_idx"),
+      track: col("track"),
+      instance: col("instance"),
+      is_predicted: col("is_predicted"),
+      score: col("score"),
+      tracking_score: col("tracking_score"),
+    };
+    const strCol = (name: string): string[] => {
+      const ds = file.get(`centroids/${name}`);
+      if (!ds) return [];
+      try {
+        return ((ds.value as ArrayLike<unknown>) ?? []).length
+          ? Array.from(ds.value as ArrayLike<unknown>, decodeStr)
+          : [];
+      } catch {
+        // Python may store these as vlen-str, which h5wasm can't always read;
+        // the centroid position/type/link still round-trips without them.
+        return [];
+      }
+    };
+    categories = strCol("category");
+    names = strCol("name");
+    sources = strCol("source");
+  } else {
+    const centroidsDs = file.get("centroids");
+    if (!centroidsDs) return [];
+    data = normalizeStructDataset(centroidsDs);
+    categories = readStringMetadata(
+      file,
+      "centroid_categories",
+      centroidsDs,
+      "categories",
+    );
+    names = readStringMetadata(file, "centroid_names", centroidsDs, "names");
+    sources = readStringMetadata(
+      file,
+      "centroid_sources",
+      centroidsDs,
+      "sources",
+    );
+  }
+
   const xs = data.x ?? [];
   const count = xs.length;
   if (!count) return [];
-
-  const categories = readStringMetadata(
-    file,
-    "centroid_categories",
-    centroidsDs,
-    "categories",
-  );
-  const names = readStringMetadata(
-    file,
-    "centroid_names",
-    centroidsDs,
-    "names",
-  );
-  const sources = readStringMetadata(
-    file,
-    "centroid_sources",
-    centroidsDs,
-    "sources",
-  );
 
   const ys = data.y ?? [];
   const zs = data.z ?? [];
