@@ -21,6 +21,7 @@ import type {
 } from "../../model/mask.js";
 import type { BoundingBox, PredictedBoundingBox } from "../../model/bbox.js";
 import type { Centroid, PredictedCentroid } from "../../model/centroid.js";
+import { normalizeCentroidSource } from "../../model/centroid.js";
 import type {
   LabelImage,
   PredictedLabelImage,
@@ -4880,7 +4881,11 @@ function writeCentroids(
     ]);
     categories.push(c.category);
     names.push(c.name);
-    sources.push(c.source);
+    // Persist the canonical snake_case source for Python/PyQt interop. Normally
+    // `c.source` is already snake_case (set by `fromInstance`/reader), but
+    // normalize defensively in case a caller built the Centroid with a legacy
+    // camelCase source directly.
+    sources.push(normalizeCentroidSource(c.source));
   }
 
   createMatrixDataset(

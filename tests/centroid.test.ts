@@ -5,6 +5,7 @@ import {
   PredictedCentroid,
   getCentroidSkeleton,
   CENTROID_SKELETON,
+  normalizeCentroidSource,
 } from "../src/model/centroid.js";
 import { Instance, PredictedInstance, Track } from "../src/model/instance.js";
 import { Skeleton } from "../src/model/skeleton.js";
@@ -126,7 +127,8 @@ describe("Centroid", () => {
     expect(c).toBeInstanceOf(UserCentroid);
     expect(c.x).toBe(20);
     expect(c.y).toBe(30);
-    expect(c.source).toBe("centerOfMass");
+    // Default camelCase method persists Python-canonical snake_case source.
+    expect(c.source).toBe("center_of_mass");
     expect(c.instance).toBe(inst);
   });
 
@@ -142,7 +144,26 @@ describe("Centroid", () => {
     const c = Centroid.fromInstance(inst, { method: "bboxCenter" });
     expect(c.x).toBe(50);
     expect(c.y).toBe(100);
-    expect(c.source).toBe("bboxCenter");
+    // camelCase method arg normalizes to snake_case source on disk.
+    expect(c.source).toBe("bbox_center");
+  });
+
+  it("fromInstance accepts snake_case method (Python parity)", () => {
+    const skel = new Skeleton(["a", "b"]);
+    const inst = new Instance({
+      points: [
+        { xy: [0, 0], visible: true, complete: true },
+        { xy: [100, 200], visible: true, complete: true },
+      ],
+      skeleton: skel,
+    });
+    const com = Centroid.fromInstance(inst, { method: "center_of_mass" });
+    expect(com.x).toBe(50);
+    expect(com.y).toBe(100);
+    expect(com.source).toBe("center_of_mass");
+
+    const bbox = Centroid.fromInstance(inst, { method: "bbox_center" });
+    expect(bbox.source).toBe("bbox_center");
   });
 
   it("fromInstance anchor method", () => {
@@ -206,6 +227,36 @@ describe("Centroid", () => {
     expect(() => Centroid.fromInstance(inst, { method: "invalid" })).toThrow(
       /Unknown method/,
     );
+  });
+
+  it("fromInstance anchor persists snake_case-agnostic 'anchor:<node>' source", () => {
+    const skel = new Skeleton(["head", "tail"]);
+    const inst = new Instance({
+      points: [
+        { xy: [10, 20], visible: true, complete: true, name: "head" },
+        { xy: [30, 40], visible: true, complete: true, name: "tail" },
+      ],
+      skeleton: skel,
+    });
+    const c = Centroid.fromInstance(inst, { method: "anchor", node: "tail" });
+    expect(c.source).toBe("anchor:tail");
+  });
+});
+
+describe("normalizeCentroidSource (Python-interop snake_case)", () => {
+  it("maps legacy camelCase on-disk values to canonical snake_case", () => {
+    // Simulates reading a source value written by an older JS version.
+    expect(normalizeCentroidSource("centerOfMass")).toBe("center_of_mass");
+    expect(normalizeCentroidSource("bboxCenter")).toBe("bbox_center");
+  });
+
+  it("passes through already-canonical and arbitrary sources unchanged", () => {
+    expect(normalizeCentroidSource("center_of_mass")).toBe("center_of_mass");
+    expect(normalizeCentroidSource("bbox_center")).toBe("bbox_center");
+    expect(normalizeCentroidSource("anchor")).toBe("anchor");
+    expect(normalizeCentroidSource("anchor:head")).toBe("anchor:head");
+    expect(normalizeCentroidSource("trackmate")).toBe("trackmate");
+    expect(normalizeCentroidSource("")).toBe("");
   });
 });
 

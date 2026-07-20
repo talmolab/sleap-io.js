@@ -8,6 +8,35 @@ import { Skeleton } from "./skeleton.js";
 import type { Identity } from "./identity.js";
 import type { Embedding } from "./embedding.js";
 
+/**
+ * Normalize a centroid `source`/`method` string to its canonical snake_case
+ * form for Python/PyQt on-disk interop.
+ *
+ * The SLP on-disk format is snake_case (Python-compatible). Historically the JS
+ * side used camelCase method names (`"centerOfMass"`, `"bboxCenter"`) both for
+ * the `fromInstance` `method` param and — via that param — for the persisted
+ * `source` value, which mismatched Python `sleap-io`. This maps the legacy
+ * camelCase names to Python's snake_case:
+ * - `"centerOfMass"` -> `"center_of_mass"`
+ * - `"bboxCenter"`   -> `"bbox_center"`
+ *
+ * All other values pass through unchanged: already-snake_case names
+ * (`"center_of_mass"`, `"bbox_center"`), `"anchor"` / `"anchor:<node>"`, and
+ * arbitrary sources (e.g. `"trackmate"`). Used by both `Centroid.fromInstance`
+ * (to normalize the `method` param) and the SLP reader (to normalize legacy
+ * camelCase `source` values on load).
+ */
+export function normalizeCentroidSource(source: string): string {
+  switch (source) {
+    case "centerOfMass":
+      return "center_of_mass";
+    case "bboxCenter":
+      return "bbox_center";
+    default:
+      return source;
+  }
+}
+
 /** Shared single-node skeleton for centroid-to-instance conversions. */
 let _centroidSkeleton: Skeleton | null = null;
 
@@ -152,7 +181,12 @@ export class Centroid {
    *
    * @param instance - Source instance.
    * @param options - Options for centroid extraction.
-   * @param options.method - "centerOfMass" (default), "bboxCenter", or "anchor".
+   * @param options.method - Computation method. Accepts both the legacy JS
+   *   camelCase names (`"centerOfMass"` (default), `"bboxCenter"`, `"anchor"`)
+   *   and Python's snake_case names (`"center_of_mass"`, `"bbox_center"`). The
+   *   persisted `source` is always the canonical snake_case value
+   *   (`"center_of_mass"`, `"bbox_center"`, or `"anchor:<node>"`) to match
+   *   Python `sleap-io` on disk.
    * @param options.node - Node name or index for "anchor" method.
    * @returns UserCentroid or PredictedCentroid depending on instance type.
    */
@@ -164,7 +198,9 @@ export class Centroid {
       [key: string]: unknown;
     },
   ): Centroid {
-    const method = options?.method ?? "centerOfMass";
+    // Normalize the method to its canonical snake_case form, accepting legacy
+    // camelCase inputs. The normalized value doubles as the persisted `source`.
+    const method = normalizeCentroidSource(options?.method ?? "centerOfMass");
 
     // Gather visible points
     const visiblePoints: [number, number][] = [];
@@ -181,17 +217,17 @@ export class Centroid {
     let x: number;
     let y: number;
 
-    if (method === "centerOfMass") {
+    if (method === "center_of_mass") {
       if (!visiblePoints.length) {
-        throw new Error("No visible points for centerOfMass.");
+        throw new Error("No visible points for center_of_mass.");
       }
       x =
         visiblePoints.reduce((sum, p) => sum + p[0], 0) / visiblePoints.length;
       y =
         visiblePoints.reduce((sum, p) => sum + p[1], 0) / visiblePoints.length;
-    } else if (method === "bboxCenter") {
+    } else if (method === "bbox_center") {
       if (!visiblePoints.length) {
-        throw new Error("No visible points for bboxCenter.");
+        throw new Error("No visible points for bbox_center.");
       }
       const xs = visiblePoints.map((p) => p[0]);
       const ys = visiblePoints.map((p) => p[1]);
@@ -218,7 +254,7 @@ export class Centroid {
       y = pt.xy[1];
     } else {
       throw new Error(
-        `Unknown method ${JSON.stringify(method)}. Expected 'centerOfMass', 'bboxCenter', or 'anchor'.`,
+        `Unknown method ${JSON.stringify(method)}. Expected 'center_of_mass', 'bbox_center', or 'anchor' (camelCase 'centerOfMass'/'bboxCenter' also accepted).`,
       );
     }
 
