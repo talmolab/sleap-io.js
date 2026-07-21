@@ -38,6 +38,8 @@ import {
 import { buildSourceVideoFromDict } from "./source-video.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
+import type { Centroid } from "../../model/centroid.js";
+import { buildCentroidTuples } from "./centroids.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
 import {
@@ -150,6 +152,62 @@ export interface StreamingSlpOptions {
  * });
  * ```
  */
+/**
+ * Read the `/centroids` group (SLP first-class centroid annotations) via the
+ * streaming file API. Mirrors the eager `readCentroids`, but each column is an
+ * async range read. Returns `[centroid, videoIdx, frameIdx]` routing tuples;
+ * `[]` when the group is absent. Without this, a browser/Tauri load (which uses
+ * the streaming reader) silently drops centroids that the eager/lazy readers keep.
+ */
+async function readCentroidsStreaming(
+  file: StreamingH5File,
+  tracks: Track[],
+): Promise<[Centroid, number, number][]> {
+  try {
+    if (!file.keys().includes("centroids")) return [];
+    const numCol = async (name: string): Promise<ArrayLike<number>> => {
+      try {
+        const d = await file.getDatasetValue(`centroids/${name}`);
+        return normalizeDatasetArray(d.value) as ArrayLike<number>;
+      } catch {
+        return [];
+      }
+    };
+    const data: Record<string, ArrayLike<number>> = {
+      x: await numCol("x"),
+      y: await numCol("y"),
+      z: await numCol("z"),
+      video: await numCol("video"),
+      frame_idx: await numCol("frame_idx"),
+      track: await numCol("track"),
+      instance: await numCol("instance"),
+      is_predicted: await numCol("is_predicted"),
+      score: await numCol("score"),
+      tracking_score: await numCol("tracking_score"),
+    };
+    const strCol = async (name: string): Promise<string[]> => {
+      try {
+        const d = await file.getDatasetValue(`centroids/${name}`);
+        return normalizeDatasetArray(d.value).map((v) =>
+          typeof v === "string"
+            ? v
+            : v instanceof Uint8Array
+              ? new TextDecoder().decode(v)
+              : String(v ?? ""),
+        );
+      } catch {
+        return [];
+      }
+    };
+    const categories = await strCol("category");
+    const names = await strCol("name");
+    const sources = await strCol("source");
+    return buildCentroidTuples(data, categories, names, sources, tracks);
+  } catch {
+    return [];
+  }
+}
+
 export async function readSlpStreaming(
   source: StreamingH5Source,
   options?: StreamingSlpOptions,
@@ -376,6 +434,63 @@ export async function readFromStreamingFile(
         lazyStore._instanceCategoryLinks = catLinks;
         lazyStore._instanceCategoryEmbeddings = catEmbs;
       }
+    }
+  }
+
+  // Centroids (`/centroids` group). The eager and lazy readers read these; the
+  // streaming reader (browser/Tauri WebView) must too, or a loaded project
+  // silently drops its centroid annotations.
+  const centroidTuples = await readCentroidsStreaming(file, tracks);
+  if (centroidTuples.length) {
+    if (labeledFrames) {
+      const frameMap = new Map<string, LabeledFrame>();
+      for (const lf of labeledFrames) {
+        frameMap.set(`${videos.indexOf(lf.video)}:${lf.frameIdx}`, lf);
+      }
+      const getOrCreate = (vidIdx: number, frameIdx: number): LabeledFrame => {
+        const key = `${vidIdx}:${frameIdx}`;
+        let lf = frameMap.get(key);
+        if (!lf) {
+          lf = new LabeledFrame({ video: videos[vidIdx], frameIdx });
+          frameMap.set(key, lf);
+          labeledFrames.push(lf);
+        }
+        return lf;
+      };
+      for (const [c, vidIdx, frameIdx] of centroidTuples) {
+        if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
+          getOrCreate(vidIdx, frameIdx).centroids.push(c);
+        }
+      }
+      // Resolve deferred instance refs (mirrors the eager reader).
+      const allInst = labeledFrames.flatMap((lf) => lf.instances);
+      for (const lf of labeledFrames) {
+        for (const c of lf.centroids) {
+          if (
+            c._instanceIdx !== null &&
+            c._instanceIdx >= 0 &&
+            c._instanceIdx < allInst.length
+          ) {
+            c.instance = allInst[c._instanceIdx];
+            c._instanceIdx = null;
+          }
+        }
+      }
+    } else if (lazyStore) {
+      const byFrame = new Map<string, Centroid[]>();
+      const undistributed: Centroid[] = [];
+      for (const [c, vidIdx, frameIdx] of centroidTuples) {
+        if (vidIdx >= 0 && frameIdx >= 0) {
+          const key = `${vidIdx}:${frameIdx}`;
+          const list = byFrame.get(key);
+          if (list) list.push(c);
+          else byFrame.set(key, [c]);
+        } else {
+          undistributed.push(c);
+        }
+      }
+      lazyStore._centroidByFrame = byFrame;
+      lazyStore._undistributedCentroids = undistributed;
     }
   }
 
