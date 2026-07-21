@@ -75,12 +75,8 @@ import {
   UserBoundingBox,
   PredictedBoundingBox,
 } from "../../model/bbox.js";
-import {
-  type Centroid,
-  UserCentroid,
-  PredictedCentroid,
-  normalizeCentroidSource,
-} from "../../model/centroid.js";
+import { type Centroid } from "../../model/centroid.js";
+import { buildCentroidTuples } from "./centroids.js";
 import {
   type LabelImage,
   UserLabelImage,
@@ -2854,72 +2850,5 @@ function readCentroids(
     );
   }
 
-  const xs = data.x ?? [];
-  const count = xs.length;
-  if (!count) return [];
-
-  const ys = data.y ?? [];
-  const zs = data.z ?? [];
-  const videoIndices = data.video ?? [];
-  const frameIndices = data.frame_idx ?? [];
-  const trackIndices = data.track ?? [];
-  const instanceIndices = data.instance ?? [];
-  const isPredictedCol = data.is_predicted ?? [];
-  const scores = data.score ?? [];
-  const trackingScores = data.tracking_score ?? [];
-
-  const centroids: [Centroid, number, number][] = [];
-  for (let i = 0; i < count; i++) {
-    const videoIdx = Number(videoIndices[i]);
-
-    const frameIdxVal = Number(frameIndices[i]);
-
-    const trackIdx = Number(trackIndices[i]);
-    const track =
-      trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-
-    const zVal = zs.length > i ? Number(zs[i]) : Number.NaN;
-    const z = Number.isNaN(zVal) ? null : zVal;
-
-    const tsVal =
-      trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
-    const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
-
-    const instanceIdx = Number(instanceIndices[i]);
-
-    const options = {
-      x: Number(xs[i]),
-      y: Number(ys[i]),
-      z,
-      track,
-      trackingScore,
-      category: categories[i] ?? "",
-      name: names[i] ?? "",
-      // Normalize legacy camelCase `source` values written by older JS versions
-      // to Python's canonical snake_case (`centerOfMass` -> `center_of_mass`,
-      // etc.). `anchor:*` and arbitrary sources pass through unchanged.
-      source: normalizeCentroidSource(sources[i] ?? ""),
-    };
-
-    const isPred =
-      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
-
-    let centroid: Centroid;
-    if (isPred) {
-      const scoreVal = Number(scores[i]);
-      centroid = new PredictedCentroid({
-        ...options,
-        score: Number.isNaN(scoreVal) ? 0 : scoreVal,
-      });
-    } else {
-      centroid = new UserCentroid(options);
-    }
-
-    if (instanceIdx >= 0) {
-      centroid._instanceIdx = instanceIdx;
-    }
-
-    centroids.push([centroid, videoIdx, frameIdxVal]);
-  }
-  return centroids;
+  return buildCentroidTuples(data, categories, names, sources, tracks);
 }
