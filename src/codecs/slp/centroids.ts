@@ -7,7 +7,12 @@
  * Predicted, NaN sentinels, track/instance relinking, source normalization)
  * lives in one place.
  */
-import { type Centroid, UserCentroid, PredictedCentroid, normalizeCentroidSource } from "../../model/centroid.js";
+import {
+  type Centroid,
+  UserCentroid,
+  PredictedCentroid,
+  normalizeCentroidSource,
+} from "../../model/centroid.js";
 import type { Track } from "../../model/instance.js";
 
 /** Numeric columns of the `/centroids` group, keyed by field name. */

@@ -57,7 +57,12 @@ function centroidLabels(): Labels {
     skeletons: [pose],
     videos: [video],
     labeledFrames: [
-      new LabeledFrame({ video, frameIdx: 0, instances: [inst], centroids: [uc] }),
+      new LabeledFrame({
+        video,
+        frameIdx: 0,
+        instances: [inst],
+        centroids: [uc],
+      }),
       new LabeledFrame({ video, frameIdx: 1, instances: [], centroids: [pc] }),
     ],
   });
@@ -70,7 +75,10 @@ async function makeFakeStreamingFile(bytes: Uint8Array): Promise<{
   close: () => void;
 }> {
   const module = await ready;
-  const disk = join(tmpdir(), `stream_centroids_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`);
+  const disk = join(
+    tmpdir(),
+    `stream_centroids_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`,
+  );
   writeFileSync(disk, bytes);
   try {
     module.FS.mkdir("/tmp");
@@ -98,12 +106,19 @@ async function makeFakeStreamingFile(bytes: Uint8Array): Promise<{
       unwrapAttrs((get(dp)?.attrs as Record<string, unknown>) ?? {}),
     getDatasetMeta: async (dp: string) => {
       const d = get(dp);
-      return { shape: (d?.shape as number[]) ?? [], dtype: (d?.dtype as string) ?? "" };
+      return {
+        shape: (d?.shape as number[]) ?? [],
+        dtype: (d?.dtype as string) ?? "",
+      };
     },
     getDatasetValue: async (dp: string) => {
       if (dp in columns) return { value: columns[dp], shape: [], dtype: "" };
       const d = get(dp);
-      return { value: d?.value, shape: (d?.shape as number[]) ?? [], dtype: (d?.dtype as string) ?? "" };
+      return {
+        value: d?.value,
+        shape: (d?.shape as number[]) ?? [],
+        dtype: (d?.dtype as string) ?? "",
+      };
     },
   } as unknown as StreamingH5File;
 
@@ -126,7 +141,15 @@ async function makeFakeStreamingFile(bytes: Uint8Array): Promise<{
 }
 
 const readStreaming = (fake: StreamingH5File, lazy: boolean) =>
-  readFromStreamingFile(fake, "test.slp", "test.slp", false, undefined, false, lazy);
+  readFromStreamingFile(
+    fake,
+    "test.slp",
+    "test.slp",
+    false,
+    undefined,
+    false,
+    lazy,
+  );
 
 describe("streaming reader — centroids", () => {
   it("eager streaming reads /centroids (was silently dropped)", async () => {
