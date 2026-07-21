@@ -12898,6 +12898,63 @@ function buildSourceVideoFromDict(dict, labelsPath) {
   });
 }
 
+// src/codecs/slp/centroids.ts
+function buildCentroidTuples(data, categories, names, sources, tracks) {
+  const xs = data.x ?? [];
+  const count = xs.length;
+  if (!count) return [];
+  const ys = data.y ?? [];
+  const zs = data.z ?? [];
+  const videoIndices = data.video ?? [];
+  const frameIndices = data.frame_idx ?? [];
+  const trackIndices = data.track ?? [];
+  const instanceIndices = data.instance ?? [];
+  const isPredictedCol = data.is_predicted ?? [];
+  const scores = data.score ?? [];
+  const trackingScores = data.tracking_score ?? [];
+  const centroids = [];
+  for (let i = 0; i < count; i++) {
+    const videoIdx = Number(videoIndices[i]);
+    const frameIdxVal = Number(frameIndices[i]);
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const zVal = zs.length > i ? Number(zs[i]) : Number.NaN;
+    const z = Number.isNaN(zVal) ? null : zVal;
+    const tsVal = trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
+    const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
+    const instanceIdx = Number(instanceIndices[i]);
+    const options = {
+      x: Number(xs[i]),
+      y: Number(ys[i]),
+      z,
+      track,
+      trackingScore,
+      category: categories[i] ?? "",
+      name: names[i] ?? "",
+      // Normalize legacy camelCase `source` values written by older JS versions
+      // to Python's canonical snake_case (`centerOfMass` -> `center_of_mass`,
+      // etc.). `anchor:*` and arbitrary sources pass through unchanged.
+      source: normalizeCentroidSource(sources[i] ?? "")
+    };
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    let centroid;
+    if (isPred) {
+      const scoreVal = Number(scores[i]);
+      centroid = new PredictedCentroid({
+        ...options,
+        score: Number.isNaN(scoreVal) ? 0 : scoreVal
+      });
+    } else {
+      centroid = new UserCentroid(options);
+    }
+    if (instanceIdx >= 0) {
+      centroid._instanceIdx = instanceIdx;
+    }
+    centroids.push([centroid, videoIdx, frameIdxVal]);
+  }
+  return centroids;
+}
+
 // src/codecs/slp/frame-count.ts
 function resolveSourceFrameCount(opts) {
   const { framesAttr, jsonFrameCount, frameNumbers } = opts;
@@ -12918,6 +12975,47 @@ function resolveSourceFrameCount(opts) {
 }
 
 // src/codecs/slp/read-streaming.ts
+async function readCentroidsStreaming(file, tracks) {
+  try {
+    if (!file.keys().includes("centroids")) return [];
+    const numCol = async (name) => {
+      try {
+        const d = await file.getDatasetValue(`centroids/${name}`);
+        return normalizeDatasetArray(d.value);
+      } catch {
+        return [];
+      }
+    };
+    const data = {
+      x: await numCol("x"),
+      y: await numCol("y"),
+      z: await numCol("z"),
+      video: await numCol("video"),
+      frame_idx: await numCol("frame_idx"),
+      track: await numCol("track"),
+      instance: await numCol("instance"),
+      is_predicted: await numCol("is_predicted"),
+      score: await numCol("score"),
+      tracking_score: await numCol("tracking_score")
+    };
+    const strCol = async (name) => {
+      try {
+        const d = await file.getDatasetValue(`centroids/${name}`);
+        return normalizeDatasetArray(d.value).map(
+          (v) => typeof v === "string" ? v : v instanceof Uint8Array ? new TextDecoder().decode(v) : String(v ?? "")
+        );
+      } catch {
+        return [];
+      }
+    };
+    const categories = await strCol("category");
+    const names = await strCol("name");
+    const sources = await strCol("source");
+    return buildCentroidTuples(data, categories, names, sources, tracks);
+  } catch {
+    return [];
+  }
+}
 async function readSlpStreaming(source, options) {
   if (!isStreamingSupported()) {
     throw new Error(
@@ -13073,6 +13171,54 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
         lazyStore._instanceCategoryLinks = catLinks;
         lazyStore._instanceCategoryEmbeddings = catEmbs;
       }
+    }
+  }
+  const centroidTuples = await readCentroidsStreaming(file, tracks);
+  if (centroidTuples.length) {
+    if (labeledFrames) {
+      const frameMap = /* @__PURE__ */ new Map();
+      for (const lf of labeledFrames) {
+        frameMap.set(`${videos.indexOf(lf.video)}:${lf.frameIdx}`, lf);
+      }
+      const getOrCreate = (vidIdx, frameIdx) => {
+        const key = `${vidIdx}:${frameIdx}`;
+        let lf = frameMap.get(key);
+        if (!lf) {
+          lf = new LabeledFrame({ video: videos[vidIdx], frameIdx });
+          frameMap.set(key, lf);
+          labeledFrames.push(lf);
+        }
+        return lf;
+      };
+      for (const [c, vidIdx, frameIdx] of centroidTuples) {
+        if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
+          getOrCreate(vidIdx, frameIdx).centroids.push(c);
+        }
+      }
+      const allInst = labeledFrames.flatMap((lf) => lf.instances);
+      for (const lf of labeledFrames) {
+        for (const c of lf.centroids) {
+          if (c._instanceIdx !== null && c._instanceIdx >= 0 && c._instanceIdx < allInst.length) {
+            c.instance = allInst[c._instanceIdx];
+            c._instanceIdx = null;
+          }
+        }
+      }
+    } else if (lazyStore) {
+      const byFrame = /* @__PURE__ */ new Map();
+      const undistributed = [];
+      for (const [c, vidIdx, frameIdx] of centroidTuples) {
+        if (vidIdx >= 0 && frameIdx >= 0) {
+          const key = `${vidIdx}:${frameIdx}`;
+          const list = byFrame.get(key);
+          if (list) list.push(c);
+          else byFrame.set(key, [c]);
+        } else {
+          undistributed.push(c);
+        }
+      }
+      lazyStore._centroidByFrame = byFrame;
+      lazyStore._undistributedCentroids = undistributed;
     }
   }
   report(9);
@@ -20259,59 +20405,7 @@ function readCentroids(file, _videos, tracks) {
       "sources"
     );
   }
-  const xs = data.x ?? [];
-  const count = xs.length;
-  if (!count) return [];
-  const ys = data.y ?? [];
-  const zs = data.z ?? [];
-  const videoIndices = data.video ?? [];
-  const frameIndices = data.frame_idx ?? [];
-  const trackIndices = data.track ?? [];
-  const instanceIndices = data.instance ?? [];
-  const isPredictedCol = data.is_predicted ?? [];
-  const scores = data.score ?? [];
-  const trackingScores = data.tracking_score ?? [];
-  const centroids = [];
-  for (let i = 0; i < count; i++) {
-    const videoIdx = Number(videoIndices[i]);
-    const frameIdxVal = Number(frameIndices[i]);
-    const trackIdx = Number(trackIndices[i]);
-    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-    const zVal = zs.length > i ? Number(zs[i]) : Number.NaN;
-    const z = Number.isNaN(zVal) ? null : zVal;
-    const tsVal = trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
-    const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
-    const instanceIdx = Number(instanceIndices[i]);
-    const options = {
-      x: Number(xs[i]),
-      y: Number(ys[i]),
-      z,
-      track,
-      trackingScore,
-      category: categories[i] ?? "",
-      name: names[i] ?? "",
-      // Normalize legacy camelCase `source` values written by older JS versions
-      // to Python's canonical snake_case (`centerOfMass` -> `center_of_mass`,
-      // etc.). `anchor:*` and arbitrary sources pass through unchanged.
-      source: normalizeCentroidSource(sources[i] ?? "")
-    };
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
-    let centroid;
-    if (isPred) {
-      const scoreVal = Number(scores[i]);
-      centroid = new PredictedCentroid({
-        ...options,
-        score: Number.isNaN(scoreVal) ? 0 : scoreVal
-      });
-    } else {
-      centroid = new UserCentroid(options);
-    }
-    if (instanceIdx >= 0) {
-      centroid._instanceIdx = instanceIdx;
-    }
-    centroids.push([centroid, videoIdx, frameIdxVal]);
-  }
-  return centroids;
+  return buildCentroidTuples(data, categories, names, sources, tracks);
 }
 
 // src/io/main.ts

@@ -2936,39 +2936,6 @@ interface StreamingSlpOptions {
      */
     onProgress?: (current: number, total: number, message?: string) => void;
 }
-/**
- * Read an SLP file using a Web Worker for efficient, non-blocking HDF5 access.
- *
- * This function offloads all h5wasm operations to a Web Worker, keeping the
- * main thread responsive. For URLs, it uses HTTP range requests to download
- * only the data needed rather than the entire file.
- *
- * When `openVideos` is true, video backends are created for embedded videos,
- * allowing frame data to be retrieved. The underlying HDF5 file remains open
- * until all video backends are closed.
- *
- * @param source - URL, File, ArrayBuffer, or Uint8Array containing the SLP file
- * @param options - Optional settings
- * @returns Labels object with all annotation data
- *
- * @example
- * ```typescript
- * // Load from URL with video backends
- * const labels = await readSlpStreaming('https://example.com/labels.slp', {
- *   openVideos: true
- * });
- *
- * // Load from File object (file input)
- * const labels = await readSlpStreaming(fileInput.files[0], {
- *   openVideos: true
- * });
- *
- * // Load from ArrayBuffer
- * const labels = await readSlpStreaming(arrayBuffer, {
- *   filenameHint: 'data.slp'
- * });
- * ```
- */
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
 export { MediaBunnyVideoBackend as $, urlFromConfirmation as A, BlobByteSource as B, CropVideoBackend as C, checkDownloadHost as D, openGdrive as E, DEFAULT_MAX_BYTES as F, StreamingH5File as G, StreamingH5Writer as H, type ImageBytesReader as I, openStreamingH5 as J, openH5Worker as K, isStreamingSupported as L, isRangeSource as M, serviceRangeBridge as N, serviceWriteBridge as O, type PaletteName as P, serviceTruncateBridge as Q, type ReadCocoOptions as R, SeqVideoBackend as S, type StreamingH5Source as T, UnsupportedVideoFormatError as U, type VideoOptions as V, type RangeSource as W, type RangeSink as X, readSlpStreaming as Y, Mp4BoxVideoBackend as Z, type MediaBunnyOptions as _, type RenderOptions as a, RemoteIOError as a$, StreamingHdf5VideoBackend as a0, type ImageVideoOptions as a1, computePrefetchWindow as a2, ImageVideoBackend as a3, loadSlp as a4, saveSlp as a5, loadAnalysisH5 as a6, saveAnalysisH5 as a7, saveAnalysisH5ToBytes as a8, loadSlpSet as a9, buildExpectedSidecars as aA, checkInPlaceWritable as aB, onDiskTableFromMeta as aC, writeLabelTablesInPlace as aD, type LabelTable as aE, type LabelTableRows as aF, type LabelTableUpdate as aG, type OnDiskMember as aH, type OnDiskTable as aI, type OnDiskTables as aJ, type OnDiskSidecars as aK, type InPlaceWritable as aL, type DatasetMetaLike as aM, isAnalysisH5File as aN, labelsToCsv as aO, saveLabelsCsv as aP, type CsvExportOptions as aQ, URL_SCHEMES as aR, CLOUD_SCHEMES as aS, GDRIVE_HOSTS as aT, SENSITIVE_HEADERS as aU, SENSITIVE_QUERY_PARAMS as aV, RETRYABLE_STATUSES as aW, isUrl as aX, isGdriveUrl as aY, redactUrl as aZ, redactedCauseSummary as a_, saveSlpSet as aa, loadVideo as ab, loadLabelImages as ac, setLabelImageFileReader as ad, type PagesAs as ae, type LoadLabelImagesOptions as af, type LabelImageFileReader as ag, saveSlpToBytes as ah, saveSlpStructureToBytes as ai, openSlpWriter as aj, SlpStreamWriter as ak, saveSlpMergedFromStores as al, saveSlpMergedToSink as am, type SlpWriteHeader as an, type AppendStoreOptions as ao, type SlpWriteSink as ap, type MergeStoresOptions as aq, buildSerializableEmbedPlan as ar, type SerializableEmbedEntry as as, type SerializableEmbedPlan as at, buildLabelTableRows as au, buildLabelTableUpdate as av, buildMetadataJson as aw, buildTracksJson as ax, buildSuggestionsJson as ay, buildVideoSignatures as az, type RGB as b, computeTrails as b$, type ResolvedUrl as b0, resolveUrl as b1, statusToMessage as b2, raiseRemote as b3, identityHeaders as b4, stripCrossOriginHeaders as b5, withRetries as b6, parseRetryAfterMs as b7, fetchRetrying as b8, headOrRangeProbe as b9, readSkeletonJson as bA, writeSkeletonJson as bB, readTrainingConfigSkeletons as bC, readTrainingConfigSkeleton as bD, isTrainingConfig as bE, type RGBA as bF, type ColorSpec as bG, type ColorScheme as bH, type MarkerShape as bI, type Overlay as bJ, type VideoOverlay as bK, NAMED_COLORS as bL, PALETTES as bM, getPalette as bN, resolveColor as bO, rgbToCSS as bP, determineColorScheme as bQ, drawCircle as bR, drawSquare as bS, drawDiamond as bT, drawTriangle as bU, drawCross as bV, drawTrails as bW, getMarkerFunction as bX, MARKER_FUNCTIONS as bY, type DrawTrailsOptions as bZ, resolveTrailNode as b_, type GeoJSONFeature as ba, type GeoJSONFeatureCollection as bb, roisToGeoJSON as bc, roisFromGeoJSON as bd, writeGeoJSON as be, readGeoJSON as bf, type CocoCategory as bg, type CocoImage as bh, type CocoRle as bi, type CocoSegmentation as bj, type CocoAnnotation as bk, type CocoJson as bl, isCocoData as bm, parseCocoJson as bn, createSkeletonFromCategory as bo, decodeKeypoints as bp, decodeCompressedRleCounts as bq, decodeCocoRle as br, decodeSegmentation as bs, readCoco as bt, readCocoSet as bu, toNumpy as bv, fromNumpy as bw, labelsFromNumpy as bx, decodeYamlSkeleton as by, encodeYamlSkeleton as bz, type RawLabelImage as c, nTrailPaletteColors as c0, collectTracks as c1, type TrailTarget as c2, type Trail as c3, RenderContext as c4, InstanceContext as c5, drawMasks as c6, drawLabelImage as c7, clampAlpha as c8, pickColor as c9, anchorCandidate as d, derivePrefixSwap as e, applyPrefixSwap as f, getImageBytesReader as g, resolveFirstExisting as h, formatPath as i, posixDirname as j, posixBasename as k, posixJoin as l, type PosixPath as m, type PrefixSwap as n, type ResolvedVideoSource as o, parsePath as p, SeqHeader as q, resolveVideoSource as r, setImageBytesReader as s, SeqIndex as t, type ByteSource as u, videoPathCandidates as v, createVideoBackend as w, type VideoBackendType as x, type CropWrapOptions as y, parseGdrive as z };
