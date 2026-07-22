@@ -934,6 +934,34 @@ export class StreamingH5Writer {
   }
 
   /**
+   * SINGLE-file OPFS write B-seam (Scenario A — browser large save). Opens a DEST
+   * file backed by an OPFS `FileSystemSyncAccessHandle` that the WORKER owns and
+   * writes to synchronously. Unlike {@link openWrite}/{@link openAppend}, this
+   * needs NO SharedArrayBuffer, NO Atomics bridge, and NO cross-origin isolation
+   * (COOP/COEP) — the whole read/write/truncate loop runs in-thread against the
+   * sync handle — so it works on plain static hosting (e.g. GitHub Pages).
+   *
+   * `destSize` 0 (default) creates a FRESH file; a non-zero size opens an existing
+   * OPFS file non-truncating (append mode, for later re-embed). The caller drives
+   * the SLP write against the opened dest file, then calls {@link close}.
+   */
+  async openWriteOpfs(
+    opfsPath: string,
+    destSize = 0,
+    h5wasmUrl?: string,
+  ): Promise<void> {
+    await this.init(h5wasmUrl);
+    // No bridge: the Worker services its own device via the OPFS sync handle, so
+    // there is nothing to wire on the main thread (no destSink/control/data) and
+    // handleMessage never receives write/range/truncate requests for this path.
+    this.destSink = undefined;
+    this.sourceReader = undefined;
+    this.control = undefined;
+    this.data = undefined;
+    await this.send("openWriteOpfs", { opfsPath, destSize });
+  }
+
+  /**
    * Close the file and terminate the worker. Best-effort: if the worker-side
    * close fails, the worker is still terminated so no handle is leaked.
    */

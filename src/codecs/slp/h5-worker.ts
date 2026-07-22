@@ -108,6 +108,13 @@ let sourceMountFilename = null;
 let destMountPath = null;
 let destMountFilename = null;
 
+// OPFS write device (Scenario A — browser large save): the FileSystemSyncAccessHandle
+// this Worker opens and writes to DIRECTLY (synchronously), with NO SharedArrayBuffer,
+// NO Atomics, and NO main-thread bridge. This is what lets a >4GB save work on a
+// non-cross-origin-isolated origin (e.g. GitHub Pages). Set by openWriteOpfs; flushed
+// and closed by closeAppendFiles.
+let currentOpfsHandle = null;
+
 // B-seam range bridge: SharedArrayBuffer views the custom device uses to request
 // bytes from the main thread synchronously (Atomics.wait). Set by openRangeFile /
 // openAppend (whichever ran most recently — only one bridge is
@@ -181,6 +188,11 @@ self.onmessage = async function(e) {
           payload.destSize
         );
         respond(id, openWriteResult);
+        break;
+
+      case 'openWriteOpfs':
+        const openWriteOpfsResult = await openWriteOpfs(payload.opfsPath, payload.destSize);
+        respond(id, openWriteOpfsResult);
         break;
 
       case 'updateLabelsInPlace':
@@ -650,6 +662,105 @@ function openWrite(sab, controlBytes, destFilename, destSize) {
   FS.mkdir(destMountPath);
   createWriteRangeFile(destMountPath, dstFname, destSize);
   currentDestFile = new h5wasm.File(destMountPath + '/' + dstFname, 'a');
+
+  return { success: true, destKeys: currentDestFile.keys() };
+}
+
+// --- OPFS write device (Scenario A: browser large save, no SAB) --------------
+// Open (creating if needed) an OPFS file at opfsPath and return its
+// FileSystemSyncAccessHandle. OPFS + createSyncAccessHandle are Worker-only and
+// need only a secure context (HTTPS/localhost) -- NOT cross-origin isolation, so
+// this works on plain static hosting (e.g. GitHub Pages).
+async function openOpfsSyncHandle(opfsPath, create) {
+  if (typeof navigator === 'undefined' || !navigator.storage || !navigator.storage.getDirectory) {
+    throw new Error('OPFS unavailable (navigator.storage.getDirectory missing)');
+  }
+  var root = await navigator.storage.getDirectory();
+  var parts = String(opfsPath || '').split('/').filter(function(p) { return p && p !== '.'; });
+  var fname = parts.pop();
+  if (!fname) throw new Error('invalid OPFS path: ' + opfsPath);
+  var dir = root;
+  for (var i = 0; i < parts.length; i++) {
+    dir = await dir.getDirectoryHandle(parts[i], { create: !!create });
+  }
+  var fh = await dir.getFileHandle(fname, { create: !!create });
+  if (typeof fh.createSyncAccessHandle !== 'function') {
+    throw new Error('OPFS createSyncAccessHandle unavailable (Worker + secure context required)');
+  }
+  return await fh.createSyncAccessHandle();
+}
+
+// A WRITABLE Emscripten file node whose read/write/truncate are serviced by an
+// OPFS sync access handle IN THIS WORKER -- the direct, synchronous analogue of
+// createWriteRangeFile with NO bridge, NO Atomics, NO SharedArrayBuffer.
+// initialSize seeds writeFileSize (0 for a fresh file). All handle ops are
+// synchronous, so h5wasm's synchronous device calls resolve in-thread.
+function createWriteOpfsFile(parent, name, initialSize, handle) {
+  writeFileSize = initialSize || 0;
+  var contents = { length: writeFileSize };
+  var node = FS.createFile(parent, name, { isDevice: false, contents: contents }, true, true); // canRead, canWrite
+  node.contents = contents;
+  Object.defineProperties(node, { usedBytes: { get: function() { return writeFileSize; } } });
+
+  var stream_ops = {};
+  var origStreamOps = node.stream_ops;
+  for (var sk in origStreamOps) {
+    (function(k, fn) {
+      stream_ops[k] = function() { FS.forceLoadFile(node); return fn.apply(null, arguments); };
+    })(sk, origStreamOps[sk]);
+  }
+  stream_ops.read = function(stream, buffer, offset, length, position) {
+    if (position >= writeFileSize) return 0;
+    var end = position + length;
+    if (end > writeFileSize) end = writeFileSize;
+    var toRead = end - position;
+    if (toRead <= 0) return 0;
+    // Read straight from the OPFS handle into the wasm heap view (no bridge).
+    return handle.read(buffer.subarray(offset, offset + toRead), { at: position });
+  };
+  stream_ops.write = function(stream, buffer, offset, length, position) {
+    var wrote = handle.write(buffer.subarray(offset, offset + length), { at: position });
+    if (position + wrote > writeFileSize) writeFileSize = position + wrote;
+    return wrote;
+  };
+  node.stream_ops = stream_ops;
+
+  var node_ops = {};
+  var origNodeOps = node.node_ops;
+  for (var nk in origNodeOps) node_ops[nk] = origNodeOps[nk];
+  node_ops.setattr = function(n, attr) {
+    if (attr.size !== undefined && attr.size !== null) {
+      handle.truncate(attr.size);
+      writeFileSize = attr.size;
+    }
+    if (attr.timestamp !== undefined) n.timestamp = attr.timestamp;
+    // Deliberately do NOT call the default setattr (it would resize MEMFS contents).
+  };
+  node.node_ops = node_ops;
+  return node;
+}
+
+// SINGLE-file OPFS write B-seam: open ONLY a read+write DEST file backed by an
+// OPFS sync handle this Worker owns. destSize 0 opens a FRESH file (h5wasm mode
+// 'w'); a non-zero destSize opens an existing OPFS file append-style ('a',
+// non-truncating) for later re-embed work. Reuses the dest globals so
+// closeFile -> closeAppendFiles tears it down and closes the handle.
+async function openWriteOpfs(opfsPath, destSize) {
+  if (!h5wasmModule) throw new Error('h5wasm not initialized');
+  closeFile();
+
+  var handle = await openOpfsSyncHandle(opfsPath, true);
+  currentOpfsHandle = handle;
+  var size = destSize || 0;
+  // A fresh save starts from an empty file; a seeded size keeps existing bytes.
+  if (!size) handle.truncate(0);
+
+  var dstFname = (((opfsPath || 'dest.h5').split('/').pop() || '').split('\\\\').pop()) || 'dest.h5';
+  destMountPath = '/opfs-dst-' + Date.now();
+  destMountFilename = dstFname;
+  FS.mkdir(destMountPath);
+  createWriteOpfsFile(destMountPath, dstFname, size, handle);
+  currentDestFile = new h5wasm.File(destMountPath + '/' + dstFname, size ? 'a' : 'w');
 
   return { success: true, destKeys: currentDestFile.keys() };
 }
@@ -1269,6 +1380,13 @@ function closeAppendFiles() {
     try { currentDestFile.close(); } catch (e) {}
     currentDestFile = null;
   }
+  // Flush + close the OPFS sync handle AFTER the h5wasm File close above (that
+  // close flushes h5wasm's buffered writes through the device into the handle).
+  if (currentOpfsHandle) {
+    try { currentOpfsHandle.flush(); } catch (e) {}
+    try { currentOpfsHandle.close(); } catch (e) {}
+    currentOpfsHandle = null;
+  }
   if (sourceMountPath && FS) {
     var srcPath = sourceMountPath + '/' + sourceMountFilename;
     try { FS.unlink(srcPath); } catch (e) { warnCleanup('unlink', srcPath, e); }
@@ -1355,6 +1473,7 @@ export type H5WorkerMessageType =
   | "openAppend"
   | "appendEmbeddedVideos"
   | "openWrite"
+  | "openWriteOpfs"
   | "updateLabelsInPlace"
   | "getKeys"
   | "getAttr"
