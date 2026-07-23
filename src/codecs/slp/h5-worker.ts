@@ -115,6 +115,10 @@ let destMountFilename = null;
 // and closed by closeAppendFiles.
 let currentOpfsHandle = null;
 
+// True when the dual-bridge SOURCE was mounted via WORKERFS (a browser File), as in
+// openAppendOpfs — its teardown needs FS.unmount, not FS.unlink.
+let sourceMountIsWorkerfs = false;
+
 // B-seam range bridge: SharedArrayBuffer views the custom device uses to request
 // bytes from the main thread synchronously (Atomics.wait). Set by openRangeFile /
 // openAppend (whichever ran most recently — only one bridge is
@@ -193,6 +197,16 @@ self.onmessage = async function(e) {
       case 'openWriteOpfs':
         const openWriteOpfsResult = await openWriteOpfs(payload.opfsPath, payload.destSize);
         respond(id, openWriteOpfsResult);
+        break;
+
+      case 'openAppendOpfs':
+        const openAppendOpfsResult = await openAppendOpfs(
+          payload.destOpfsPath,
+          payload.sourceFile,
+          payload.structureBytes,
+          payload.sourceFilename
+        );
+        respond(id, openAppendOpfsResult);
         break;
 
       case 'updateLabelsInPlace':
@@ -763,6 +777,55 @@ async function openWriteOpfs(opfsPath, destSize) {
   currentDestFile = new h5wasm.File(destMountPath + '/' + dstFname, size ? 'a' : 'w');
 
   return { success: true, destKeys: currentDestFile.keys() };
+}
+
+// DUAL OPFS append (browser re-save / Save As of an already-embedded pkg.slp, no
+// SAB): read the SOURCE (the file the user opened) on-demand via WORKERFS, and
+// write the DEST straight to an OPFS file via the sync-handle device. The dest is
+// SEEDED with the caller's small structure bytes (labels/metadata, NO embedded
+// images) and opened append-mode ('a'); a following appendEmbeddedVideos() copies
+// the big image datasets SOURCE -> DEST in bounded windows. Both files live in this
+// one Worker and read/write synchronously, so nothing needs SharedArrayBuffer /
+// cross-origin isolation. Reuses the dest globals so closeFile -> closeAppendFiles
+// tears everything down (unmounting WORKERFS + flush/closing the OPFS handle).
+async function openAppendOpfs(destOpfsPath, sourceFile, structureBytes, sourceFilename) {
+  if (!h5wasmModule) throw new Error('h5wasm not initialized');
+  closeFile();
+
+  // SOURCE: the user's opened file, read-only via WORKERFS (on-demand sync reads).
+  var srcFname = (sourceFile && sourceFile.name) || sourceFilename || 'source.slp';
+  srcFname = (((srcFname).split('/').pop() || '').split('\\\\').pop()) || 'source.slp';
+  sourceMountPath = '/opfs-append-src-' + Date.now();
+  sourceMountFilename = srcFname;
+  sourceMountIsWorkerfs = true;
+  FS.mkdir(sourceMountPath);
+  FS.mount(FS.filesystems.WORKERFS, { files: [sourceFile] }, sourceMountPath);
+  currentSourceFile = new h5wasm.File(sourceMountPath + '/' + srcFname, 'r');
+
+  // DEST: seed the OPFS file with the structure bytes, then open it append-mode
+  // over the OPFS write device.
+  var handle = await openOpfsSyncHandle(destOpfsPath, true);
+  currentOpfsHandle = handle;
+  handle.truncate(0);
+  var u8 = structureBytes instanceof Uint8Array
+    ? structureBytes
+    : new Uint8Array(structureBytes || 0);
+  if (u8.length > 0) handle.write(u8, { at: 0 });
+  handle.flush();
+  var size = u8.length;
+
+  var dstFname = (((destOpfsPath || 'dest.slp').split('/').pop() || '').split('\\\\').pop()) || 'dest.slp';
+  destMountPath = '/opfs-append-dst-' + Date.now();
+  destMountFilename = dstFname;
+  FS.mkdir(destMountPath);
+  createWriteOpfsFile(destMountPath, dstFname, size, handle);
+  currentDestFile = new h5wasm.File(destMountPath + '/' + dstFname, 'a');
+
+  return {
+    success: true,
+    sourceKeys: currentSourceFile.keys(),
+    destKeys: currentDestFile.keys()
+  };
 }
 
 // Per-window byte budget for appendEmbeddedVideos' streamed raw blob copy, and
@@ -1388,11 +1451,18 @@ function closeAppendFiles() {
     currentOpfsHandle = null;
   }
   if (sourceMountPath && FS) {
-    var srcPath = sourceMountPath + '/' + sourceMountFilename;
-    try { FS.unlink(srcPath); } catch (e) { warnCleanup('unlink', srcPath, e); }
-    try { FS.rmdir(sourceMountPath); } catch (e) { warnCleanup('rmdir', sourceMountPath, e); }
+    if (sourceMountIsWorkerfs) {
+      // WORKERFS source (openAppendOpfs): unmount before rmdir (unlink would fail).
+      try { FS.unmount(sourceMountPath); } catch (e) { warnCleanup('unmount', sourceMountPath, e); }
+      try { FS.rmdir(sourceMountPath); } catch (e) { warnCleanup('rmdir', sourceMountPath, e); }
+    } else {
+      var srcPath = sourceMountPath + '/' + sourceMountFilename;
+      try { FS.unlink(srcPath); } catch (e) { warnCleanup('unlink', srcPath, e); }
+      try { FS.rmdir(sourceMountPath); } catch (e) { warnCleanup('rmdir', sourceMountPath, e); }
+    }
     sourceMountPath = null;
     sourceMountFilename = null;
+    sourceMountIsWorkerfs = false;
   }
   if (destMountPath && FS) {
     var dstPath = destMountPath + '/' + destMountFilename;
@@ -1474,6 +1544,7 @@ export type H5WorkerMessageType =
   | "appendEmbeddedVideos"
   | "openWrite"
   | "openWriteOpfs"
+  | "openAppendOpfs"
   | "updateLabelsInPlace"
   | "getKeys"
   | "getAttr"

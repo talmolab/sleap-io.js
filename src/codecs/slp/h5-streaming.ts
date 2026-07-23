@@ -962,6 +962,38 @@ export class StreamingH5Writer {
   }
 
   /**
+   * DUAL OPFS append (browser re-save / Save As of an already-embedded pkg.slp).
+   * Reads the SOURCE `sourceFile` (the file the user opened) on-demand via WORKERFS
+   * and writes the DEST straight to the OPFS file at `destOpfsPath` via the
+   * sync-handle device — both in-Worker, so NO SharedArrayBuffer / cross-origin
+   * isolation. The dest is seeded with `structureBytes` (the small labels/metadata
+   * structure from {@link saveSlpStructureToBytes}, WITHOUT embedded images) and
+   * opened append-mode; call {@link appendEmbeddedVideos} afterwards to copy the
+   * big `video{i}/video` datasets from source to dest, then {@link close}.
+   */
+  async openAppendOpfs(
+    destOpfsPath: string,
+    sourceFile: File,
+    structureBytes: Uint8Array,
+    sourceFilename?: string,
+    h5wasmUrl?: string,
+  ): Promise<void> {
+    await this.init(h5wasmUrl);
+    // No bridge: source is WORKERFS (sync, in-Worker), dest is the OPFS sync-handle
+    // device — nothing to wire on the main thread.
+    this.destSink = undefined;
+    this.sourceReader = undefined;
+    this.control = undefined;
+    this.data = undefined;
+    await this.send("openAppendOpfs", {
+      destOpfsPath,
+      sourceFile,
+      structureBytes,
+      sourceFilename,
+    });
+  }
+
+  /**
    * Close the file and terminate the worker. Best-effort: if the worker-side
    * close fails, the worker is still terminated so no handle is leaked.
    */
