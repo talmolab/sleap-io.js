@@ -634,6 +634,12 @@ export class StreamingH5Writer {
     }
   >();
 
+  // Progress callback for the in-flight appendEmbeddedVideos copy: the Worker
+  // posts un-id'd `{type:'progress'}` notifications as it streams image blobs;
+  // handleMessage forwards (done,total) frame counts here. Set for the duration
+  // of one appendEmbeddedVideos call.
+  private appendProgressCb?: (done: number, total: number) => void;
+
   // Write B-seam bridge (set by openAppend): the app-provided dest sink plus
   // the SharedArrayBuffer views the Worker blocks on. See handleMessage.
   // Every write/truncate, and every 'dest'-tagged range (read) request, routes
@@ -689,6 +695,12 @@ export class StreamingH5Writer {
           msg.length ?? 0,
         );
       }
+      return;
+    }
+    // Un-id'd progress notification from appendEmbeddedVideos' copy loop.
+    if (msg && msg.type === "progress") {
+      const p = e.data as { done?: number; total?: number };
+      this.appendProgressCb?.(p.done ?? 0, p.total ?? 0);
       return;
     }
     if (msg && msg.type === "writeRequest") {
@@ -831,8 +843,14 @@ export class StreamingH5Writer {
    */
   async appendEmbeddedVideos(
     entries: SerializableEmbedEntry[],
+    onProgress?: (done: number, total: number) => void,
   ): Promise<H5WorkerResponse> {
-    return this.send("appendEmbeddedVideos", { entries });
+    this.appendProgressCb = onProgress;
+    try {
+      return await this.send("appendEmbeddedVideos", { entries });
+    } finally {
+      this.appendProgressCb = undefined;
+    }
   }
 
   /**

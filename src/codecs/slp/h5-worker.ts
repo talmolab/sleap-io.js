@@ -1008,6 +1008,14 @@ function appendEmbeddedVideos(entries) {
   if (!currentSourceFile) throw new Error('appendEmbeddedVideos: no source file open (call openAppend first)');
   if (!currentDestFile) throw new Error('appendEmbeddedVideos: no dest file open (call openAppend first)');
 
+  // Progress: total frames to copy across all videos, reported (throttled to
+  // once per integer percent) as an un-id'd {type:'progress'} notification the
+  // main thread forwards to appendEmbeddedVideos' onProgress callback.
+  var totalFrames = 0;
+  for (var t = 0; t < entries.length; t++) totalFrames += entries[t].frameNumbers.length;
+  var doneFrames = 0;
+  var lastPct = -1;
+
   var perVideo = [];
   for (var e = 0; e < entries.length; e++) {
     var entry = entries[e];
@@ -1047,12 +1055,21 @@ function appendEmbeddedVideos(entries) {
 
     for (var i = 0; i < entry.frameNumbers.length; i++) {
       var blob = readSourceBlob(entry.sourceGroup, i);
-      if (!blob || blob.length === 0) continue;
-      win.push(blob);
-      winBytes += blob.length;
-      sizes.push(blob.length);
-      writtenFns.push(entry.frameNumbers[i]);
-      if (winBytes >= EMBED_WRITE_WINDOW_BYTES) flush();
+      if (blob && blob.length > 0) {
+        win.push(blob);
+        winBytes += blob.length;
+        sizes.push(blob.length);
+        writtenFns.push(entry.frameNumbers[i]);
+        if (winBytes >= EMBED_WRITE_WINDOW_BYTES) flush();
+      }
+      doneFrames++;
+      if (totalFrames > 0) {
+        var pct = Math.floor((doneFrames / totalFrames) * 100);
+        if (pct !== lastPct) {
+          lastPct = pct;
+          self.postMessage({ type: 'progress', done: doneFrames, total: totalFrames });
+        }
+      }
     }
     flush();
 
