@@ -896,6 +896,7 @@ declare class StreamingH5Writer {
     private worker;
     private messageId;
     private pendingMessages;
+    private appendProgressCb?;
     private destSink?;
     private sourceReader?;
     private control?;
@@ -941,7 +942,7 @@ declare class StreamingH5Writer {
      * the Worker's `close` message, tearing down both the source and dest
      * mounts via `closeAppendFiles`).
      */
-    appendEmbeddedVideos(entries: SerializableEmbedEntry[]): Promise<H5WorkerResponse>;
+    appendEmbeddedVideos(entries: SerializableEmbedEntry[], onProgress?: (done: number, total: number) => void): Promise<H5WorkerResponse>;
     /**
      * SINGLE-file write B-seam for the in-place label save: open ONLY the DEST
      * file (`destPath`, backed by `destSink`) in h5wasm append mode `"a"` (no
@@ -964,6 +965,30 @@ declare class StreamingH5Writer {
      * `update.metadataJson` is set. Never touches any `video{i}/video` group.
      */
     updateLabelsInPlace(update: LabelTableUpdate): Promise<H5WorkerResponse>;
+    /**
+     * SINGLE-file OPFS write B-seam (Scenario A — browser large save). Opens a DEST
+     * file backed by an OPFS `FileSystemSyncAccessHandle` that the WORKER owns and
+     * writes to synchronously. Unlike {@link openWrite}/{@link openAppend}, this
+     * needs NO SharedArrayBuffer, NO Atomics bridge, and NO cross-origin isolation
+     * (COOP/COEP) — the whole read/write/truncate loop runs in-thread against the
+     * sync handle — so it works on plain static hosting (e.g. GitHub Pages).
+     *
+     * `destSize` 0 (default) creates a FRESH file; a non-zero size opens an existing
+     * OPFS file non-truncating (append mode, for later re-embed). The caller drives
+     * the SLP write against the opened dest file, then calls {@link close}.
+     */
+    openWriteOpfs(opfsPath: string, destSize?: number, h5wasmUrl?: string): Promise<void>;
+    /**
+     * DUAL OPFS append (browser re-save / Save As of an already-embedded pkg.slp).
+     * Reads the SOURCE `sourceFile` (the file the user opened) on-demand via WORKERFS
+     * and writes the DEST straight to the OPFS file at `destOpfsPath` via the
+     * sync-handle device — both in-Worker, so NO SharedArrayBuffer / cross-origin
+     * isolation. The dest is seeded with `structureBytes` (the small labels/metadata
+     * structure from {@link saveSlpStructureToBytes}, WITHOUT embedded images) and
+     * opened append-mode; call {@link appendEmbeddedVideos} afterwards to copy the
+     * big `video{i}/video` datasets from source to dest, then {@link close}.
+     */
+    openAppendOpfs(destOpfsPath: string, sourceFile: File, structureBytes: Uint8Array, sourceFilename?: string, h5wasmUrl?: string): Promise<void>;
     /**
      * Close the file and terminate the worker. Best-effort: if the worker-side
      * close fails, the worker is still terminated so no handle is leaked.
