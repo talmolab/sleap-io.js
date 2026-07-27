@@ -634,6 +634,12 @@ export class StreamingH5Writer {
     }
   >();
 
+  // Progress callback for the in-flight appendEmbeddedVideos copy: the Worker
+  // posts un-id'd `{type:'progress'}` notifications as it streams image blobs;
+  // handleMessage forwards (done,total) frame counts here. Set for the duration
+  // of one appendEmbeddedVideos call.
+  private appendProgressCb?: (done: number, total: number) => void;
+
   // Write B-seam bridge (set by openAppend): the app-provided dest sink plus
   // the SharedArrayBuffer views the Worker blocks on. See handleMessage.
   // Every write/truncate, and every 'dest'-tagged range (read) request, routes
@@ -689,6 +695,12 @@ export class StreamingH5Writer {
           msg.length ?? 0,
         );
       }
+      return;
+    }
+    // Un-id'd progress notification from appendEmbeddedVideos' copy loop.
+    if (msg && msg.type === "progress") {
+      const p = e.data as { done?: number; total?: number };
+      this.appendProgressCb?.(p.done ?? 0, p.total ?? 0);
       return;
     }
     if (msg && msg.type === "writeRequest") {
@@ -831,8 +843,14 @@ export class StreamingH5Writer {
    */
   async appendEmbeddedVideos(
     entries: SerializableEmbedEntry[],
+    onProgress?: (done: number, total: number) => void,
   ): Promise<H5WorkerResponse> {
-    return this.send("appendEmbeddedVideos", { entries });
+    this.appendProgressCb = onProgress;
+    try {
+      return await this.send("appendEmbeddedVideos", { entries });
+    } finally {
+      this.appendProgressCb = undefined;
+    }
   }
 
   /**
@@ -931,6 +949,66 @@ export class StreamingH5Writer {
       { tables, metadataJson: update.metadataJson ?? null },
       transfer,
     );
+  }
+
+  /**
+   * SINGLE-file OPFS write B-seam (Scenario A — browser large save). Opens a DEST
+   * file backed by an OPFS `FileSystemSyncAccessHandle` that the WORKER owns and
+   * writes to synchronously. Unlike {@link openWrite}/{@link openAppend}, this
+   * needs NO SharedArrayBuffer, NO Atomics bridge, and NO cross-origin isolation
+   * (COOP/COEP) — the whole read/write/truncate loop runs in-thread against the
+   * sync handle — so it works on plain static hosting (e.g. GitHub Pages).
+   *
+   * `destSize` 0 (default) creates a FRESH file; a non-zero size opens an existing
+   * OPFS file non-truncating (append mode, for later re-embed). The caller drives
+   * the SLP write against the opened dest file, then calls {@link close}.
+   */
+  async openWriteOpfs(
+    opfsPath: string,
+    destSize = 0,
+    h5wasmUrl?: string,
+  ): Promise<void> {
+    await this.init(h5wasmUrl);
+    // No bridge: the Worker services its own device via the OPFS sync handle, so
+    // there is nothing to wire on the main thread (no destSink/control/data) and
+    // handleMessage never receives write/range/truncate requests for this path.
+    this.destSink = undefined;
+    this.sourceReader = undefined;
+    this.control = undefined;
+    this.data = undefined;
+    await this.send("openWriteOpfs", { opfsPath, destSize });
+  }
+
+  /**
+   * DUAL OPFS append (browser re-save / Save As of an already-embedded pkg.slp).
+   * Reads the SOURCE `sourceFile` (the file the user opened) on-demand via WORKERFS
+   * and writes the DEST straight to the OPFS file at `destOpfsPath` via the
+   * sync-handle device — both in-Worker, so NO SharedArrayBuffer / cross-origin
+   * isolation. The dest is seeded with `structureBytes` (the small labels/metadata
+   * structure from {@link saveSlpStructureToBytes}, WITHOUT embedded images) and
+   * opened append-mode; call {@link appendEmbeddedVideos} afterwards to copy the
+   * big `video{i}/video` datasets from source to dest, then {@link close}.
+   */
+  async openAppendOpfs(
+    destOpfsPath: string,
+    sourceFile: File,
+    structureBytes: Uint8Array,
+    sourceFilename?: string,
+    h5wasmUrl?: string,
+  ): Promise<void> {
+    await this.init(h5wasmUrl);
+    // No bridge: source is WORKERFS (sync, in-Worker), dest is the OPFS sync-handle
+    // device — nothing to wire on the main thread.
+    this.destSink = undefined;
+    this.sourceReader = undefined;
+    this.control = undefined;
+    this.data = undefined;
+    await this.send("openAppendOpfs", {
+      destOpfsPath,
+      sourceFile,
+      structureBytes,
+      sourceFilename,
+    });
   }
 
   /**
