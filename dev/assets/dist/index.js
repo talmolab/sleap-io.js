@@ -84,6 +84,7 @@ import {
   _resolveMergedIsNegative,
   anchorCandidate,
   applyPrefixSwap,
+  attachConfigSkeleton,
   buildExpectedSidecars,
   buildLabelTableRows,
   buildLabelTableUpdate,
@@ -110,6 +111,7 @@ import {
   decodeYamlSkeleton,
   derivePrefixSwap,
   determineColorScheme,
+  discoverConfig,
   drawCircle,
   drawCross,
   drawDiamond,
@@ -121,7 +123,9 @@ import {
   encodeRle,
   encodeWkb,
   encodeYamlSkeleton,
+  extractFrameIndex,
   fetchRemoteSlpBytes,
+  findProjectCsvs,
   formatPath,
   fromDict,
   fromNumpy,
@@ -132,6 +136,8 @@ import {
   groupRingsIntoPolygons,
   isAnalysisH5File,
   isCocoData,
+  isDlcData,
+  isDlcProjectPath,
   isRangeSource,
   isStreamingSupported,
   isTrainingConfig,
@@ -142,6 +148,7 @@ import {
   loadSlp,
   loadSlpSet,
   loadVideo,
+  looksLikeDlcConfig,
   nTrailPaletteColors,
   nodeFileExists,
   normalizeCentroidSource,
@@ -152,6 +159,7 @@ import {
   openSlpWriter,
   openStreamingH5,
   parseCocoJson,
+  parseDlcCrop,
   parsePath,
   pickColor,
   posixBasename,
@@ -160,6 +168,10 @@ import {
   rasterizeGeometry,
   readCoco,
   readCocoSet,
+  readDlc,
+  readDlcConfig,
+  readDlcDataframe,
+  readDlcProject,
   readGeoJSON,
   readSkeletonJson,
   readSlpStreaming,
@@ -167,8 +179,10 @@ import {
   readTrainingConfigSkeletons,
   resizeNearest,
   resolveColor,
+  resolveConfig,
   resolveCropRect,
   resolveFirstExisting,
+  resolveProjectConfigPath,
   resolveTrailNode,
   resolveVideoSource,
   rgbToCSS,
@@ -192,15 +206,18 @@ import {
   setImageBytesReader,
   setLabelImageFileReader,
   setSeqFileByteSourceFactory,
+  setSourceVideo,
   toDict,
   toNumpy,
   traceMaskContours,
   uncropPoints,
   videoPathCandidates,
+  videoSetsStemMap,
+  warn,
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-PR7OHZPA.js";
+} from "./chunk-R56ADDOB.js";
 import {
   Camera,
   CameraGroup,
@@ -1834,575 +1851,60 @@ async function loadJabs(labelsPath, options) {
   }
 }
 
-// src/io/dlc.ts
+// src/io/dlc-node.ts
 import * as fs8 from "fs";
 import * as path4 from "path";
-import YAML2 from "yaml";
-function warn(msg) {
-  console.warn(msg);
-}
-function isDlcFile(filename) {
-  try {
-    const lines = fs8.readFileSync(filename, "utf-8").split(/\r?\n/).slice(0, 4).map((l) => l.trim());
-    const content = lines.join("\n").toLowerCase();
-    const hasScorer = content.includes("scorer");
-    const hasCoords = content.includes("coords");
-    const hasXy = content.includes("x") && content.includes("y");
-    const hasBodyparts = content.includes("bodyparts") || content.includes("animal") || content.includes("individual");
-    return hasScorer && hasCoords && hasXy && hasBodyparts;
-  } catch {
-    return false;
-  }
-}
-var DLC_CONFIG_KEYS = [
-  "video_sets",
-  "bodyparts",
-  "scorer",
-  "Task",
-  "skeleton",
-  "individuals"
-];
-function isDlcProjectPath(filename) {
-  let stat;
-  try {
-    stat = fs8.statSync(filename);
-  } catch {
-    return false;
-  }
-  if (stat.isDirectory()) {
-    return fs8.existsSync(path4.join(filename, "config.yaml")) && fs8.existsSync(path4.join(filename, "labeled-data"));
-  }
-  if (path4.basename(filename) === "config.yaml" && stat.isFile()) {
-    const cfg = readDlcConfig(filename);
-    return cfg !== null && looksLikeDlcConfig(cfg);
-  }
-  return false;
-}
-function readDlcConfig(p) {
-  if (!fs8.existsSync(p) || !fs8.statSync(p).isFile()) {
-    warn(`DLC config file not found: ${p}`);
-    return null;
-  }
-  let cfg;
-  try {
-    cfg = YAML2.parse(fs8.readFileSync(p, "utf-8"));
-  } catch (e) {
-    warn(`Failed to parse DLC config ${p}: ${e}`);
-    return null;
-  }
-  if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
-    warn(`DLC config ${p} did not parse to a mapping.`);
-    return null;
-  }
-  return cfg;
-}
-function looksLikeDlcConfig(cfg) {
-  if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
-    return false;
-  }
-  const obj = cfg;
-  return DLC_CONFIG_KEYS.filter((k) => Object.hasOwn(obj, k)).length >= 2;
-}
-function discoverConfig(csvPath, maxLevels = 3) {
-  const start = path4.dirname(path4.resolve(csvPath));
-  const dirs = [start];
-  let cur = start;
-  for (let i = 0; i < maxLevels; i += 1) {
-    const parent = path4.dirname(cur);
-    if (parent === cur) break;
-    dirs.push(parent);
-    cur = parent;
-  }
-  for (const d of dirs) {
-    const candidate = path4.join(d, "config.yaml");
-    if (fs8.existsSync(candidate) && fs8.statSync(candidate).isFile()) {
-      const cfg = readDlcConfig(candidate);
-      if (cfg !== null && looksLikeDlcConfig(cfg)) return candidate;
+var nodeDlcFileSystem = {
+  exists: (p) => fs8.existsSync(p),
+  isFile: (p) => {
+    try {
+      return fs8.statSync(p).isFile();
+    } catch {
+      return false;
     }
-  }
-  return null;
-}
-function resolveConfig(csvPath, config) {
-  if (config === false) return null;
-  if (config == null) {
-    const discovered = discoverConfig(csvPath);
-    return discovered !== null ? readDlcConfig(discovered) : null;
-  }
-  return readDlcConfig(config);
-}
-function attachConfigSkeleton(skeleton, cfg) {
-  const task = cfg.Task;
-  if (task && skeleton.name == null) {
-    skeleton.name = String(task);
-  }
-  const rawEdges = cfg.skeleton ?? [];
-  const nodeNames = new Set(skeleton.nodeNames);
-  const valid = [];
-  const dropped = [];
-  for (const entry of rawEdges) {
-    if (!Array.isArray(entry) || entry.length !== 2) {
-      dropped.push(entry);
-      continue;
+  },
+  isDirectory: (p) => {
+    try {
+      return fs8.statSync(p).isDirectory();
+    } catch {
+      return false;
     }
-    const src = String(entry[0]);
-    const dst = String(entry[1]);
-    if (nodeNames.has(src) && nodeNames.has(dst)) {
-      valid.push([src, dst]);
-    } else {
-      dropped.push([src, dst]);
-    }
-  }
-  for (const [src, dst] of valid) {
-    skeleton.addEdge(src, dst);
-  }
-  if (dropped.length) {
-    warn(
-      `Dropped ${dropped.length} DLC skeleton edge(s) referencing bodyparts not present in the labeled data: ${JSON.stringify(dropped)}`
-    );
-  }
-}
-function parseDlcCrop(crop) {
-  if (crop == null) return null;
-  let parts;
-  if (typeof crop === "string") {
-    parts = crop.split(",").map((s) => s.trim()).filter((s) => s !== "");
-  } else if (Array.isArray(crop)) {
-    parts = [...crop];
-  } else {
-    return null;
-  }
-  if (parts.length !== 4) return null;
-  const nums = [];
-  for (const p of parts) {
-    if (typeof p === "number") {
-      if (!Number.isFinite(p)) return null;
-      nums.push(Math.trunc(p));
-      continue;
-    }
-    const s = String(p).trim();
-    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return null;
-    const v = Number(s);
-    if (!Number.isFinite(v)) return null;
-    nums.push(Math.trunc(v));
-  }
-  const [x1, x2, y1, y2] = nums;
-  if (x2 <= x1 || y2 <= y1) {
-    warn(
-      `Ignoring inverted DLC crop ${JSON.stringify(crop)}: expected x1 < x2 and y1 < y2 (width-range-first 'x1, x2, y1, y2').`
-    );
-    return null;
-  }
-  if (x1 === 0 && y1 === 0) return null;
-  return [x1, y1, x2, y2];
-}
-function videoSetsStemMap(cfg) {
-  const out = /* @__PURE__ */ new Map();
-  const videoSets = cfg.video_sets ?? {};
-  for (const [key, value] of Object.entries(videoSets)) {
-    const keyStr = String(key);
-    if (keyStr.includes("WILL BE AUTOMATICALLY UPDATED")) continue;
-    const name = keyStr.replace(/\\/g, "/").split("/").pop() ?? "";
-    const stem = name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : name;
-    if (stem) {
-      const crop = value && typeof value === "object" ? value.crop : null;
-      out.set(stem, { original: keyStr, rect: parseDlcCrop(crop) });
-    }
-  }
-  return out;
-}
-function setSourceVideo(video, folderName, stemMap, searchPaths) {
-  const entry = stemMap.get(folderName);
-  if (entry === void 0) return null;
-  const { original, rect } = entry;
-  let resolvedPath = original;
-  if (searchPaths?.length) {
-    const basename5 = original.replace(/\\/g, "/").split("/").pop() ?? original;
-    for (const dir of searchPaths) {
-      const candidate = path4.join(dir, basename5);
-      if (fs8.existsSync(candidate)) {
-        resolvedPath = candidate;
-        break;
-      }
-    }
-  }
-  video.sourceVideo = new Video({ filename: resolvedPath, openBackend: false });
-  return { path: resolvedPath, rect };
-}
-function readDlcDataframe(filename) {
-  const raw = fs8.readFileSync(filename, "utf-8").split(/\r?\n/);
-  if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
-  const cells = raw.map((line) => line.split(","));
-  let isMultianimal = false;
-  let isMultiindex = false;
-  try {
-    if (cells.length < 5) throw new Error("too few rows to peek");
-    isMultianimal = cells[1][0] === "individuals";
-    isMultiindex = cells[4][0] === "labeled-data";
-  } catch {
-    isMultianimal = false;
-    isMultiindex = false;
-  }
-  const headerRowIdxs = isMultianimal ? [1, 2, 3] : [0, 1, 2];
-  const dataStartRow = isMultianimal ? 4 : 3;
-  const indexColCount = isMultiindex ? 3 : 1;
-  const columns = [];
-  const headerRow0 = cells[headerRowIdxs[0]] ?? [];
-  const ncols = headerRow0.length;
-  for (let j = indexColCount; j < ncols; j += 1) {
-    columns.push([
-      cells[headerRowIdxs[0]]?.[j] ?? "",
-      cells[headerRowIdxs[1]]?.[j] ?? "",
-      cells[headerRowIdxs[2]]?.[j] ?? ""
-    ]);
-  }
-  const index = [];
-  const rows = [];
-  for (let r = dataStartRow; r < cells.length; r += 1) {
-    const row = cells[r];
-    if (!row) continue;
-    if (row.every((c) => c === "")) continue;
-    let idxStr;
-    if (isMultiindex) {
-      idxStr = [row[0] ?? "", row[1] ?? "", row[2] ?? ""].join("/");
-    } else {
-      idxStr = row[0] ?? "";
-    }
-    index.push(idxStr);
-    const values = [];
-    for (let j = indexColCount; j < ncols; j += 1) {
-      const cell = row[j];
-      if (cell === void 0 || cell === "") {
-        values.push(null);
-      } else {
-        const v = parseFloat(cell);
-        values.push(Number.isNaN(v) ? null : v);
-      }
-    }
-    rows.push(values);
-  }
-  return { index, columns, rows, isMultianimal };
-}
-function parseSingleAnimalStructure(df) {
-  const collected = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const [, bodypart, coord] of df.columns) {
-    if (coord === "x" && bodypart !== "" && bodypart != null) {
-      if (!seen.has(bodypart)) {
-        seen.add(bodypart);
-        collected.push(bodypart);
-      }
-    }
-  }
-  const nodeNames = [...new Set(collected)].sort();
-  return new Skeleton({ nodes: nodeNames.map((n) => new Node(n)) });
-}
-function parseMultiAnimalStructure(df) {
-  const trackMap = /* @__PURE__ */ new Map();
-  const collected = [];
-  const seen = /* @__PURE__ */ new Set();
-  for (const [individual, bodypart, coord] of df.columns) {
-    if (coord !== "x") continue;
-    if (individual !== "" && individual != null && individual !== "individuals" && !trackMap.has(individual)) {
-      trackMap.set(individual, new Track(individual));
-    }
-    if (bodypart !== "" && bodypart != null && bodypart !== "bodyparts" && !seen.has(bodypart)) {
-      seen.add(bodypart);
-      collected.push(bodypart);
-    }
-  }
-  const nodeNames = [...new Set(collected)].sort();
-  const skeleton = new Skeleton({ nodes: nodeNames.map((n) => new Node(n)) });
-  const tracks = [...trackMap.values()];
-  return { skeleton, tracks };
-}
-function parseSingleAnimalRow(columns, values, skeleton) {
-  const bodypartsData = /* @__PURE__ */ new Map();
-  for (let c = 0; c < columns.length; c += 1) {
-    const [, bodypart, coord] = columns[c];
-    if (bodypart && bodypart !== "") {
-      let bp = bodypartsData.get(bodypart);
-      if (!bp) {
-        bp = {};
-        bodypartsData.set(bodypart, bp);
-      }
-      if (coord === "x") bp.x = values[c];
-      else if (coord === "y") bp.y = values[c];
-    }
-  }
-  let hasValidPoints = false;
-  const pointsData = skeleton.nodeNames.map((name) => {
-    const bp = bodypartsData.get(name);
-    const x = bp?.x;
-    const y = bp?.y;
-    if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
-      hasValidPoints = true;
-      return [Number(x), Number(y)];
-    }
-    return [Number.NaN, Number.NaN];
-  });
-  if (hasValidPoints) {
-    return [Instance.fromNumpy({ pointsData, skeleton })];
-  }
-  return [];
-}
-function parseMultiAnimalRow(columns, values, skeleton, tracks) {
-  const instancesDict = /* @__PURE__ */ new Map();
-  for (let c = 0; c < columns.length; c += 1) {
-    const [individual, bodypart, coord] = columns[c];
-    if (!individual || individual === "" || individual === "individuals") {
-      continue;
-    }
-    let bps = instancesDict.get(individual);
-    if (!bps) {
-      bps = /* @__PURE__ */ new Map();
-      instancesDict.set(individual, bps);
-    }
-    if (bodypart && bodypart !== "") {
-      let bp = bps.get(bodypart);
-      if (!bp) {
-        bp = {};
-        bps.set(bodypart, bp);
-      }
-      if (coord === "x") bp.x = values[c];
-      else if (coord === "y") bp.y = values[c];
-    }
-  }
-  const instances = [];
-  for (const [individual, bodypartsData] of instancesDict) {
-    const track = tracks.find((t) => t.name === individual) ?? null;
-    let hasValidPoints = false;
-    const pointsData = skeleton.nodeNames.map((name) => {
-      const bp = bodypartsData.get(name);
-      const x = bp?.x;
-      const y = bp?.y;
-      if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
-        hasValidPoints = true;
-        return [Number(x), Number(y)];
-      }
-      return [Number.NaN, Number.NaN];
-    });
-    if (hasValidPoints) {
-      instances.push(Instance.fromNumpy({ pointsData, skeleton, track }));
-    }
-  }
-  return instances;
-}
-function extractFrameIndex(imgPath) {
-  const base = path4.basename(imgPath);
-  const stem = base.replace(/\.[^.]*$/, "");
-  const matches = stem.match(/\d+/g);
-  return matches ? parseInt(matches[matches.length - 1], 10) : 0;
-}
-function videoNameFor(imgPath) {
-  const parts = imgPath.split("/");
-  if (parts.length >= 2 && parts[0] === "labeled-data") {
-    return parts[1];
-  }
-  return path4.basename(path4.dirname(imgPath)) || "default";
-}
+  },
+  readTextFile: (p) => fs8.readFileSync(p, "utf-8"),
+  readDir: (p) => fs8.readdirSync(p)
+};
 function loadDlc(filename, options) {
-  const cfg = resolveConfig(filename, options?.config ?? null);
-  return loadDlcCsv(filename, {
-    config: cfg,
+  return readDlc(path4.resolve(filename), {
+    fs: nodeDlcFileSystem,
+    videoSearchPaths: options?.videoSearchPaths,
+    config: options?.config ?? null
+  });
+}
+function loadDlcProject(config, options) {
+  return readDlcProject(path4.resolve(config), {
+    fs: nodeDlcFileSystem,
     videoSearchPaths: options?.videoSearchPaths
   });
 }
-function loadDlcCsv(filename, opts) {
-  const df = readDlcDataframe(filename);
-  const { isMultianimal } = df;
-  let skeleton;
-  let tracks;
-  if (opts.skeleton) {
-    skeleton = opts.skeleton;
-    tracks = opts.tracks ?? [];
-  } else {
-    if (isMultianimal) {
-      const parsed = parseMultiAnimalStructure(df);
-      skeleton = parsed.skeleton;
-      tracks = parsed.tracks;
-    } else {
-      skeleton = parseSingleAnimalStructure(df);
-      tracks = [];
-    }
-    if (opts.config != null) {
-      attachConfigSkeleton(skeleton, opts.config);
-    }
-  }
-  const videoImagePaths = /* @__PURE__ */ new Map();
-  const frameMap = /* @__PURE__ */ new Map();
-  for (const imgPath of df.index) {
-    frameMap.set(imgPath, extractFrameIndex(imgPath));
-    const videoName = videoNameFor(imgPath);
-    if (!videoImagePaths.has(videoName)) videoImagePaths.set(videoName, []);
-    videoImagePaths.get(videoName).push(imgPath);
-  }
-  const csvDir = path4.dirname(path4.resolve(filename));
-  const videos = /* @__PURE__ */ new Map();
-  const sortedVideoPaths = /* @__PURE__ */ new Map();
-  for (const [videoName, imgPaths] of videoImagePaths) {
-    const sortedImgPaths = [...imgPaths].sort(
-      (a, b) => (frameMap.get(a) ?? 0) - (frameMap.get(b) ?? 0)
-    );
-    const actualImageFiles = [];
-    for (const imgPath of sortedImgPaths) {
-      const candidates = [
-        path4.join(csvDir, imgPath),
-        path4.join(csvDir, path4.basename(imgPath)),
-        path4.join(path4.dirname(csvDir), imgPath)
-      ];
-      const found = candidates.find((c) => fs8.existsSync(c));
-      if (found) actualImageFiles.push(found);
-    }
-    if (actualImageFiles.length > 0) {
-      videos.set(
-        videoName,
-        new Video({ filename: actualImageFiles, openBackend: false })
-      );
-      sortedVideoPaths.set(videoName, sortedImgPaths);
-    }
-  }
-  const dlcCrops = {};
-  if (opts.config != null && videos.size > 0) {
-    const stemMap = videoSetsStemMap(opts.config);
-    for (const [videoName, video] of videos) {
-      const result = setSourceVideo(
-        video,
-        videoName,
-        stemMap,
-        opts.videoSearchPaths
-      );
-      if (result != null && result.rect != null) {
-        dlcCrops[result.path] = [...result.rect];
-      }
-    }
-  }
-  const allFrames = [];
-  for (let r = 0; r < df.index.length; r += 1) {
-    const imgPath = df.index[r];
-    const videoName = videoNameFor(imgPath);
-    if (!videos.has(videoName)) continue;
-    const video = videos.get(videoName);
-    const sortedPaths = sortedVideoPaths.get(videoName);
-    const videoFrameIdx = sortedPaths.indexOf(imgPath);
-    const instances = isMultianimal ? parseMultiAnimalRow(df.columns, df.rows[r], skeleton, tracks) : parseSingleAnimalRow(df.columns, df.rows[r], skeleton);
-    allFrames.push(
-      new LabeledFrame({ video, frameIdx: videoFrameIdx, instances })
-    );
-  }
-  const labels = new Labels({
-    labeledFrames: allFrames,
-    videos: [...videos.values()],
-    tracks,
-    skeletons: skeleton.nodes.length ? [skeleton] : []
-  });
-  if (Object.keys(dlcCrops).length) {
-    labels.provenance.dlc_crops = dlcCrops;
-  }
-  return labels;
-}
-function resolveProjectConfigPath(config) {
-  let stat = null;
+function isDlcFile(filename) {
   try {
-    stat = fs8.statSync(config);
+    return isDlcData(fs8.readFileSync(filename, "utf-8"));
   } catch {
-    stat = null;
+    return false;
   }
-  if (stat?.isDirectory()) {
-    const candidate = path4.join(config, "config.yaml");
-    if (fs8.existsSync(candidate) && fs8.statSync(candidate).isFile()) {
-      return candidate;
-    }
-    throw new Error(`No config.yaml found in DLC project directory: ${config}`);
-  }
-  return config;
 }
-function findProjectCsvs(projectDir, scorer) {
-  const labeledDir = path4.join(projectDir, "labeled-data");
-  const folders = [];
-  if (!fs8.existsSync(labeledDir) || !fs8.statSync(labeledDir).isDirectory()) {
-    return folders;
-  }
-  const subs = fs8.readdirSync(labeledDir).sort();
-  for (const sub of subs) {
-    const subDir = path4.join(labeledDir, sub);
-    if (!fs8.statSync(subDir).isDirectory()) continue;
-    let csv = path4.join(subDir, `CollectedData_${scorer}.csv`);
-    if (!fs8.existsSync(csv) || !fs8.statSync(csv).isFile()) {
-      const candidates = fs8.readdirSync(subDir).filter((f) => f.endsWith(".csv")).sort().map((f) => path4.join(subDir, f)).filter((c) => isDlcFile(c));
-      if (candidates.length === 0) continue;
-      csv = candidates[0];
-    }
-    folders.push([sub, csv]);
-  }
-  return folders;
+function readDlcConfig2(p) {
+  return readDlcConfig(p, nodeDlcFileSystem);
 }
-function loadDlcProject(config, options) {
-  const videoSearchPaths = options?.videoSearchPaths;
-  const configPath = resolveProjectConfigPath(config);
-  const cfg = readDlcConfig(configPath);
-  if (cfg === null) {
-    throw new Error(`Could not read DLC config: ${configPath}`);
-  }
-  const projectDir = path4.dirname(configPath);
-  const scorer = cfg.scorer ?? null;
-  const folders = findProjectCsvs(projectDir, scorer);
-  if (folders.length === 0) {
-    throw new Error(
-      `No DLC annotation CSVs found under ${path4.join(projectDir, "labeled-data")}`
-    );
-  }
-  const nodeNames = [];
-  const trackNames = [];
-  for (const [, csv] of folders) {
-    const df = readDlcDataframe(csv);
-    if (df.isMultianimal) {
-      const { skeleton: folderSkeleton, tracks: folderTracks } = parseMultiAnimalStructure(df);
-      for (const track of folderTracks) {
-        if (!trackNames.includes(track.name)) trackNames.push(track.name);
-      }
-      for (const name of folderSkeleton.nodeNames) {
-        if (!nodeNames.includes(name)) nodeNames.push(name);
-      }
-    } else {
-      const folderSkeleton = parseSingleAnimalStructure(df);
-      for (const name of folderSkeleton.nodeNames) {
-        if (!nodeNames.includes(name)) nodeNames.push(name);
-      }
-    }
-  }
-  const sharedSkeleton = new Skeleton({
-    nodes: [...new Set(nodeNames)].sort().map((n) => new Node(n))
-  });
-  attachConfigSkeleton(sharedSkeleton, cfg);
-  const sharedTracks = trackNames.map((n) => new Track(n));
-  const allFrames = [];
-  const allVideos = [];
-  const dlcCrops = {};
-  for (const [, csv] of folders) {
-    const folderLabels = loadDlcCsv(csv, {
-      config: cfg,
-      videoSearchPaths,
-      skeleton: sharedSkeleton,
-      tracks: sharedTracks
-    });
-    allFrames.push(...folderLabels.labeledFrames);
-    allVideos.push(...folderLabels.videos);
-    const crops = folderLabels.provenance.dlc_crops;
-    if (crops) Object.assign(dlcCrops, crops);
-  }
-  const labels = new Labels({
-    labeledFrames: allFrames,
-    videos: allVideos,
-    tracks: sharedTracks,
-    skeletons: sharedSkeleton.nodes.length ? [sharedSkeleton] : []
-  });
-  labels.provenance.dlc_project = String(configPath);
-  labels.provenance.dlc_scorer = scorer;
-  labels.provenance.dlc_task = cfg.Task ?? null;
-  if (Object.keys(dlcCrops).length) {
-    labels.provenance.dlc_crops = dlcCrops;
-  }
-  return labels;
+function discoverConfig2(csvPath, maxLevels = 3) {
+  return discoverConfig(
+    path4.resolve(csvPath),
+    nodeDlcFileSystem,
+    maxLevels
+  );
+}
+function isDlcProjectPath2(filename) {
+  return isDlcProjectPath(filename, nodeDlcFileSystem);
 }
 function getTrainingSetFolder(projectDir, cfg, iteration) {
   const it = iteration == null ? cfg.iteration ?? 0 : iteration;
@@ -2518,13 +2020,17 @@ function dlcMergedOrder(projectDir, cfg) {
     included.push([stem, csv]);
   }
   if (included.length === 0) {
-    for (const [folder, csv] of findProjectCsvs(projectDir, scorer)) {
+    for (const [folder, csv] of findProjectCsvs(
+      projectDir,
+      scorer,
+      nodeDlcFileSystem
+    )) {
       included.push([folder, csv]);
     }
   }
   const merged = [];
   for (const [, csv] of included) {
-    const df = readDlcDataframe(csv);
+    const df = readDlcDataframe(csv, nodeDlcFileSystem);
     for (const idx of df.index) {
       merged.push([path4.basename(path4.dirname(idx)), path4.basename(idx)]);
     }
@@ -2570,13 +2076,17 @@ function warnIfNonlexicographic(merged) {
   }
 }
 function loadDlcSplits(config, options) {
-  const configPath = resolveProjectConfigPath(config);
-  const cfg = readDlcConfig(configPath);
+  const configPath = resolveProjectConfigPath(
+    path4.resolve(config),
+    nodeDlcFileSystem
+  );
+  const cfg = readDlcConfig(configPath, nodeDlcFileSystem);
   if (cfg === null) {
     throw new Error(`Could not read DLC config: ${configPath}`);
   }
   const projectDir = path4.dirname(configPath);
-  const labels = loadDlcProject(configPath, {
+  const labels = readDlcProject(configPath, {
+    fs: nodeDlcFileSystem,
     videoSearchPaths: options?.videoSearchPaths
   });
   const merged = dlcMergedOrder(projectDir, cfg);
@@ -2592,7 +2102,7 @@ function loadDlcSplits(config, options) {
     iteration: options?.iteration
   });
   const [trainIdx, testIdx] = readDlcSplit(picklePath);
-  const SEP = "\0";
+  const SEP = " ";
   const lfLookup = /* @__PURE__ */ new Map();
   for (let g = 0; g < labels.labeledFrames.length; g += 1) {
     const lf = labels.labeledFrames[g];
@@ -4098,7 +3608,7 @@ export {
   derivePrefixSwap,
   detectLineFormat,
   determineColorScheme,
-  discoverConfig,
+  discoverConfig2 as discoverConfig,
   dlcMergedOrder,
   drawBboxes,
   drawCentroids,
@@ -4117,6 +3627,7 @@ export {
   encodeYamlSkeleton,
   extractFrameIndex,
   fetchRetrying,
+  findProjectCsvs,
   formatPath,
   fromDict,
   fromNumpy,
@@ -4130,8 +3641,9 @@ export {
   injectSessionFrameResolver,
   isAnalysisH5File,
   isCocoData,
+  isDlcData,
   isDlcFile,
-  isDlcProjectPath,
+  isDlcProjectPath2 as isDlcProjectPath,
   isGdriveUrl,
   isRangeSource,
   isStreamingSupported,
@@ -4158,6 +3670,7 @@ export {
   makeJabsDefaultSkeleton,
   makeSimpleSkeleton,
   nTrailPaletteColors,
+  nodeDlcFileSystem,
   normalizeCentroidSource,
   normalizeCoordinates,
   normalizeLabelIds,
@@ -4189,8 +3702,10 @@ export {
   readCoco,
   readCocoSet,
   readCsvScorer,
-  readDlcConfig,
+  readDlc,
+  readDlcConfig2 as readDlcConfig,
   readDlcDataframe,
+  readDlcProject,
   readDlcSplit,
   readGeoJSON,
   readLabels,
@@ -4210,6 +3725,7 @@ export {
   resolveConfig,
   resolveCropRect,
   resolveFirstExisting,
+  resolveProjectConfigPath,
   resolveTrailNode,
   resolveUrl,
   resolveVideoSource,

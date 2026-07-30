@@ -2372,6 +2372,226 @@ declare function readCoco(jsonOrObject: string | CocoJson, options?: ReadCocoOpt
 declare function readCocoSet(splits: Record<string, string | CocoJson>, options?: ReadCocoOptions): Record<string, Labels>;
 
 /**
+ * DeepLabCut (DLC) format I/O — browser-safe read core.
+ *
+ * TypeScript port of `sleap_io/io/dlc.py` (READ path only), adapted to the
+ * JS/Node data model and runtime.
+ *
+ * In addition to reading a single DLC annotation CSV ({@link readDlc}), this
+ * module can import an entire DLC *project* from its `config.yaml`
+ * ({@link readDlcProject}). Recovering the train/test splits stored by
+ * `create_training_dataset` (`loadDlcSplits`) lives in the Node-only
+ * `dlc-node.ts` wrapper, because it decodes a Python pickle via `Buffer`.
+ *
+ * ## Format overview
+ *
+ * - **Single-animal (SADLC)** CSV: 3 header rows (`scorer` / `bodyparts` /
+ *   `coords`) followed by one row per labeled image; each bodypart contributes
+ *   an `x` and a `y` column.
+ * - **Multi-animal (maDLC / MAUDLC)** CSV: 4 header rows (a leading `scorer`
+ *   row, then `individuals` / `bodyparts` / `coords`); the `individuals` level
+ *   names the animal each column belongs to. MAUDLC adds a `single` individual
+ *   carrying unique (single-animal) bodyparts.
+ * - Image paths appear either as a single column
+ *   (`labeled-data/video/img000.png`) or split across three index columns
+ *   (`labeled-data`, `video`, `img000.png`); the latter is joined with `/`.
+ * - A project `config.yaml` supplies skeleton edges (the `skeleton:` list),
+ *   the `scorer`/`Task`/`date`, and `video_sets` (source-video links + crops).
+ *
+ * When a config is available, the returned `Labels` gains skeleton edges and
+ * per-video `Video.sourceVideo` links that link each `labeled-data/<video>/`
+ * image folder back to its original video file (matched by filename stem).
+ * DLC's `video_sets[...].crop` is a virtual read-time crop; its rect (DLC's
+ * width-range-first `x1, x2, y1, y2` reordered to the sleap rect
+ * `(x1, y1, x2, y2)`) is recorded under `provenance["dlc_crops"]`, keyed by
+ * source-video path. No offset is ever applied to point coordinates.
+ *
+ * ## Browser-safe by construction
+ *
+ * DLC datasets are directory trees of many files (a project dir, per-image
+ * folders). Rather than read them through the Node `fs`/`path` APIs directly
+ * (which would pull `node:fs` into the browser bundle), this core takes an
+ * injected {@link DlcFileSystem} — a small synchronous view over an already
+ * enumerated directory tree — and uses an internal POSIX path helper. The
+ * Node file-path wrappers (`loadDlc`/`loadDlcProject`/`loadDlcSplits` + the
+ * pickle reader) live in `dlc-node.ts`, which supplies a real-`fs` adapter and
+ * is exported only from the Node entry point. Mirrors the `coco.ts` /
+ * `coco-node.ts` split.
+ *
+ * ## Divergences from Python `dlc.py`
+ *
+ * 1. **No crop view.** The JS `Video` has no `from_crop` / `is_cropped` /
+ *    `crop_rect` / `to_source_coords`. Python links a `Video.from_crop` view
+ *    when a non-identity crop's source video exists on disk; JS cannot, so
+ *    `sourceVideo` is **always** a closed `Video` ({@link Video} with
+ *    `openBackend: false`) and the crop lives only in
+ *    `provenance["dlc_crops"]`. Point coordinates are unaffected either way.
+ * 2. **Errors.** Python's `ValueError` / `FileNotFoundError` distinction
+ *    collapses to a single `Error` with the same message text.
+ * 3. **Warnings** are emitted via `console.warn` (vs Python `warnings.warn`);
+ *    message text is preserved so callers / tests can match on substrings.
+ * 4. **No `addEdges`.** Edges are added one pair at a time via
+ *    `Skeleton.addEdge`, after validating both endpoints exist.
+ * 5. **`**kwargs` ignored.** Python's forwarded loader kwargs (PR #488/#492) are
+ *    modeled as an index signature on the options objects and ignored.
+ */
+
+/** Emit a warning. Centralized so messages can later be routed. */
+declare function warn(msg: string): void;
+/**
+ * A minimal, **synchronous** view over an already-materialized directory tree.
+ *
+ * The DLC read core never touches a real filesystem: the caller supplies this
+ * seam. In Node, `dlc-node.ts` backs it with `fs`; in the browser/Tauri, the
+ * app pre-enumerates the picked directory and pre-reads the small text files
+ * (config.yaml + CSVs) into an in-memory map, exposing image paths only through
+ * {@link DlcFileSystem.exists} (their pixels are read lazily by the video
+ * backend, never here). All paths are treated as POSIX-ish strings; the app is
+ * responsible for rooting them consistently.
+ */
+interface DlcFileSystem {
+    /** Whether a file or directory exists at `p`. */
+    exists(p: string): boolean;
+    /** Whether `p` exists and is a regular file. */
+    isFile(p: string): boolean;
+    /** Whether `p` exists and is a directory. */
+    isDirectory(p: string): boolean;
+    /** Read a text file (UTF-8). Only called for config.yaml + CSVs. */
+    readTextFile(p: string): string;
+    /** List the immediate entry names (not full paths) of directory `p`. */
+    readDir(p: string): string[];
+}
+/**
+ * Check whether raw CSV text looks like a DLC annotation CSV.
+ *
+ * Inspects the first four lines for DLC's characteristic header tokens. This is
+ * the content-based sniff; the Node wrapper `isDlcFile(path)` reads a file and
+ * delegates here.
+ */
+declare function isDlcData(text: string): boolean;
+/**
+ * Return whether a path refers to a DLC project (directory containing both
+ * `config.yaml` and `labeled-data/`, or a `config.yaml` file validating as a
+ * DLC project config).
+ */
+declare function isDlcProjectPath(filename: string, fsys: DlcFileSystem): boolean;
+type Config = Record<string, unknown>;
+/**
+ * Read a DLC project `config.yaml` into a dictionary, or `null` if the file is
+ * missing or does not parse to a mapping. A warning is emitted on failure so a
+ * malformed/foreign config never breaks plain CSV loading.
+ */
+declare function readDlcConfig(p: string, fsys: DlcFileSystem): Config | null;
+/** Return whether a parsed mapping looks like a DLC project config (>=2 keys). */
+declare function looksLikeDlcConfig(cfg: unknown): boolean;
+/**
+ * Search upward from a CSV for a DLC project `config.yaml` (up to `maxLevels`
+ * parent directories). Returns the path to a validated config, or `null`.
+ */
+declare function discoverConfig(csvPath: string, fsys: DlcFileSystem, maxLevels?: number): string | null;
+/**
+ * Resolve the `config` argument of {@link readDlc} to a parsed config dict.
+ *
+ * - `false` disables config entirely (strict legacy output).
+ * - `null`/`undefined` auto-discovers `config.yaml` by walking up from the CSV.
+ * - a string forces a specific config path.
+ */
+declare function resolveConfig(csvPath: string, config: string | false | null, fsys: DlcFileSystem): Config | null;
+/**
+ * Attach skeleton edges (and name) from a DLC config to a `Skeleton` in place.
+ * Edges referencing bodyparts not present in the skeleton are dropped with a
+ * warning. Resolution is strictly name-based.
+ */
+declare function attachConfigSkeleton(skeleton: Skeleton, cfg: Config): void;
+/**
+ * Parse a DLC `video_sets[...].crop` value into a sleap crop rect.
+ *
+ * DLC stores the crop width-range-first as `x1, x2, y1, y2` (string or list);
+ * this is reordered to `(x1, y1, x2, y2)` with x2/y2 exclusive, 0-indexed.
+ * Returns `null` when missing/empty/unparsable, wrong arity, inverted (warns),
+ * or an identity crop at origin `(0, 0)`.
+ */
+declare function parseDlcCrop(crop: unknown): [number, number, number, number] | null;
+type StemEntry = {
+    original: string;
+    rect: [number, number, number, number] | null;
+};
+/**
+ * Map video filename stems to original paths and crop rects from config.
+ * Windows backslash separators are normalized; placeholder entries are skipped.
+ * Preserves config (object key) order.
+ */
+declare function videoSetsStemMap(cfg: Config): Map<string, StemEntry>;
+/**
+ * Link an image-folder `Video` back to its original source video. Returns
+ * `{ path, rect }` for the linked source, or `null` on a stem mismatch.
+ *
+ * JS divergence: `video.sourceVideo` is always a closed `Video`
+ * (`openBackend: false`); there is no crop view (see module banner).
+ */
+declare function setSourceVideo(video: Video, folderName: string, stemMap: Map<string, StemEntry>, fsys: DlcFileSystem, searchPaths?: string[]): {
+    path: string;
+    rect: [number, number, number, number] | null;
+} | null;
+type ColumnTuple = [string, string, string];
+interface DlcDataframe {
+    index: string[];
+    columns: ColumnTuple[];
+    /** rows[r][c] aligns to columns[c]; `null` means missing/NaN. */
+    rows: Array<Array<number | null>>;
+    isMultianimal: boolean;
+}
+/**
+ * Read a DLC annotation CSV into a flattened-index multi-column table,
+ * emulating pandas `read_csv` with multi-row headers.
+ */
+declare function readDlcDataframe(filename: string, fsys: DlcFileSystem): DlcDataframe;
+/** Extract the last numeric run from an image filename stem (for sorting). */
+declare function extractFrameIndex(imgPath: string): number;
+interface ReadDlcOptions {
+    /** The injected filesystem seam (required). */
+    fs: DlcFileSystem;
+    videoSearchPaths?: string[];
+    /**
+     * `null`/`undefined` = auto-discover `config.yaml` walking up from the CSV;
+     * `false` = disable config entirely (legacy output, no edges/links/crops);
+     * string = force this config path.
+     */
+    config?: string | false | null;
+    /** Accepted-and-ignored (PR #488 parity): openVideos, lazy, etc. */
+    [key: string]: unknown;
+}
+/**
+ * Load DeepLabCut annotations from a single CSV file, reading through an
+ * injected {@link DlcFileSystem}.
+ *
+ * @param filename Path to a DLC CSV file (within `options.fs`).
+ * @param options Loader options ({@link ReadDlcOptions}); `fs` is required.
+ * @returns A {@link Labels} object with the loaded data.
+ */
+declare function readDlc(filename: string, options: ReadDlcOptions): Labels;
+interface ReadDlcProjectOptions {
+    /** The injected filesystem seam (required). */
+    fs: DlcFileSystem;
+    videoSearchPaths?: string[];
+    /** Accepted-and-ignored (PR #488 parity). */
+    [key: string]: unknown;
+}
+/** Resolve a project argument to a `config.yaml` path. */
+declare function resolveProjectConfigPath(config: string, fsys: DlcFileSystem): string;
+/** Find per-video annotation CSVs under `labeled-data/`. */
+declare function findProjectCsvs(projectDir: string, scorer: string | null, fsys: DlcFileSystem): Array<[string, string]>;
+/**
+ * Load an entire DeepLabCut project from its `config.yaml`, reading through an
+ * injected {@link DlcFileSystem}.
+ *
+ * @param config Path to a `config.yaml`, or to a project directory with one.
+ * @param options Loader options ({@link ReadDlcProjectOptions}); `fs` required.
+ * @returns A {@link Labels} object with frames from every labeled video.
+ */
+declare function readDlcProject(config: string, options: ReadDlcProjectOptions): Labels;
+
+/**
  * Convert labels to a dense `[frames, tracks, nodes, coords]` array.
  *
  * @param options.numFrames Optional explicit length of the output's frame
@@ -2963,4 +3183,4 @@ interface StreamingSlpOptions {
 }
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { MediaBunnyVideoBackend as $, urlFromConfirmation as A, BlobByteSource as B, CropVideoBackend as C, checkDownloadHost as D, openGdrive as E, DEFAULT_MAX_BYTES as F, StreamingH5File as G, StreamingH5Writer as H, type ImageBytesReader as I, openStreamingH5 as J, openH5Worker as K, isStreamingSupported as L, isRangeSource as M, serviceRangeBridge as N, serviceWriteBridge as O, type PaletteName as P, serviceTruncateBridge as Q, type ReadCocoOptions as R, SeqVideoBackend as S, type StreamingH5Source as T, UnsupportedVideoFormatError as U, type VideoOptions as V, type RangeSource as W, type RangeSink as X, readSlpStreaming as Y, Mp4BoxVideoBackend as Z, type MediaBunnyOptions as _, type RenderOptions as a, RemoteIOError as a$, StreamingHdf5VideoBackend as a0, type ImageVideoOptions as a1, computePrefetchWindow as a2, ImageVideoBackend as a3, loadSlp as a4, saveSlp as a5, loadAnalysisH5 as a6, saveAnalysisH5 as a7, saveAnalysisH5ToBytes as a8, loadSlpSet as a9, buildExpectedSidecars as aA, checkInPlaceWritable as aB, onDiskTableFromMeta as aC, writeLabelTablesInPlace as aD, type LabelTable as aE, type LabelTableRows as aF, type LabelTableUpdate as aG, type OnDiskMember as aH, type OnDiskTable as aI, type OnDiskTables as aJ, type OnDiskSidecars as aK, type InPlaceWritable as aL, type DatasetMetaLike as aM, isAnalysisH5File as aN, labelsToCsv as aO, saveLabelsCsv as aP, type CsvExportOptions as aQ, URL_SCHEMES as aR, CLOUD_SCHEMES as aS, GDRIVE_HOSTS as aT, SENSITIVE_HEADERS as aU, SENSITIVE_QUERY_PARAMS as aV, RETRYABLE_STATUSES as aW, isUrl as aX, isGdriveUrl as aY, redactUrl as aZ, redactedCauseSummary as a_, saveSlpSet as aa, loadVideo as ab, loadLabelImages as ac, setLabelImageFileReader as ad, type PagesAs as ae, type LoadLabelImagesOptions as af, type LabelImageFileReader as ag, saveSlpToBytes as ah, saveSlpStructureToBytes as ai, openSlpWriter as aj, SlpStreamWriter as ak, saveSlpMergedFromStores as al, saveSlpMergedToSink as am, type SlpWriteHeader as an, type AppendStoreOptions as ao, type SlpWriteSink as ap, type MergeStoresOptions as aq, buildSerializableEmbedPlan as ar, type SerializableEmbedEntry as as, type SerializableEmbedPlan as at, buildLabelTableRows as au, buildLabelTableUpdate as av, buildMetadataJson as aw, buildTracksJson as ax, buildSuggestionsJson as ay, buildVideoSignatures as az, type RGB as b, computeTrails as b$, type ResolvedUrl as b0, resolveUrl as b1, statusToMessage as b2, raiseRemote as b3, identityHeaders as b4, stripCrossOriginHeaders as b5, withRetries as b6, parseRetryAfterMs as b7, fetchRetrying as b8, headOrRangeProbe as b9, readSkeletonJson as bA, writeSkeletonJson as bB, readTrainingConfigSkeletons as bC, readTrainingConfigSkeleton as bD, isTrainingConfig as bE, type RGBA as bF, type ColorSpec as bG, type ColorScheme as bH, type MarkerShape as bI, type Overlay as bJ, type VideoOverlay as bK, NAMED_COLORS as bL, PALETTES as bM, getPalette as bN, resolveColor as bO, rgbToCSS as bP, determineColorScheme as bQ, drawCircle as bR, drawSquare as bS, drawDiamond as bT, drawTriangle as bU, drawCross as bV, drawTrails as bW, getMarkerFunction as bX, MARKER_FUNCTIONS as bY, type DrawTrailsOptions as bZ, resolveTrailNode as b_, type GeoJSONFeature as ba, type GeoJSONFeatureCollection as bb, roisToGeoJSON as bc, roisFromGeoJSON as bd, writeGeoJSON as be, readGeoJSON as bf, type CocoCategory as bg, type CocoImage as bh, type CocoRle as bi, type CocoSegmentation as bj, type CocoAnnotation as bk, type CocoJson as bl, isCocoData as bm, parseCocoJson as bn, createSkeletonFromCategory as bo, decodeKeypoints as bp, decodeCompressedRleCounts as bq, decodeCocoRle as br, decodeSegmentation as bs, readCoco as bt, readCocoSet as bu, toNumpy as bv, fromNumpy as bw, labelsFromNumpy as bx, decodeYamlSkeleton as by, encodeYamlSkeleton as bz, type RawLabelImage as c, nTrailPaletteColors as c0, collectTracks as c1, type TrailTarget as c2, type Trail as c3, RenderContext as c4, InstanceContext as c5, drawMasks as c6, drawLabelImage as c7, clampAlpha as c8, pickColor as c9, anchorCandidate as d, derivePrefixSwap as e, applyPrefixSwap as f, getImageBytesReader as g, resolveFirstExisting as h, formatPath as i, posixDirname as j, posixBasename as k, posixJoin as l, type PosixPath as m, type PrefixSwap as n, type ResolvedVideoSource as o, parsePath as p, SeqHeader as q, resolveVideoSource as r, setImageBytesReader as s, SeqIndex as t, type ByteSource as u, videoPathCandidates as v, createVideoBackend as w, type VideoBackendType as x, type CropWrapOptions as y, parseGdrive as z };
+export { Mp4BoxVideoBackend as $, parseGdrive as A, BlobByteSource as B, type Config as C, type DlcFileSystem as D, urlFromConfirmation as E, checkDownloadHost as F, openGdrive as G, DEFAULT_MAX_BYTES as H, type ImageBytesReader as I, StreamingH5File as J, StreamingH5Writer as K, openStreamingH5 as L, openH5Worker as M, isStreamingSupported as N, isRangeSource as O, type PaletteName as P, serviceRangeBridge as Q, type ReadCocoOptions as R, SeqVideoBackend as S, serviceWriteBridge as T, UnsupportedVideoFormatError as U, type VideoOptions as V, serviceTruncateBridge as W, type StreamingH5Source as X, type RangeSource as Y, type RangeSink as Z, readSlpStreaming as _, type RenderOptions as a, redactUrl as a$, type MediaBunnyOptions as a0, MediaBunnyVideoBackend as a1, StreamingHdf5VideoBackend as a2, type ImageVideoOptions as a3, computePrefetchWindow as a4, ImageVideoBackend as a5, loadSlp as a6, saveSlp as a7, loadAnalysisH5 as a8, saveAnalysisH5 as a9, buildSuggestionsJson as aA, buildVideoSignatures as aB, buildExpectedSidecars as aC, checkInPlaceWritable as aD, onDiskTableFromMeta as aE, writeLabelTablesInPlace as aF, type LabelTable as aG, type LabelTableRows as aH, type LabelTableUpdate as aI, type OnDiskMember as aJ, type OnDiskTable as aK, type OnDiskTables as aL, type OnDiskSidecars as aM, type InPlaceWritable as aN, type DatasetMetaLike as aO, isAnalysisH5File as aP, labelsToCsv as aQ, saveLabelsCsv as aR, type CsvExportOptions as aS, URL_SCHEMES as aT, CLOUD_SCHEMES as aU, GDRIVE_HOSTS as aV, SENSITIVE_HEADERS as aW, SENSITIVE_QUERY_PARAMS as aX, RETRYABLE_STATUSES as aY, isUrl as aZ, isGdriveUrl as a_, saveAnalysisH5ToBytes as aa, loadSlpSet as ab, saveSlpSet as ac, loadVideo as ad, loadLabelImages as ae, setLabelImageFileReader as af, type PagesAs as ag, type LoadLabelImagesOptions as ah, type LabelImageFileReader as ai, saveSlpToBytes as aj, saveSlpStructureToBytes as ak, openSlpWriter as al, SlpStreamWriter as am, saveSlpMergedFromStores as an, saveSlpMergedToSink as ao, type SlpWriteHeader as ap, type AppendStoreOptions as aq, type SlpWriteSink as ar, type MergeStoresOptions as as, buildSerializableEmbedPlan as at, type SerializableEmbedEntry as au, type SerializableEmbedPlan as av, buildLabelTableRows as aw, buildLabelTableUpdate as ax, buildMetadataJson as ay, buildTracksJson as az, type RGB as b, type Overlay as b$, redactedCauseSummary as b0, RemoteIOError as b1, type ResolvedUrl as b2, resolveUrl as b3, statusToMessage as b4, raiseRemote as b5, identityHeaders as b6, stripCrossOriginHeaders as b7, withRetries as b8, parseRetryAfterMs as b9, parseDlcCrop as bA, looksLikeDlcConfig as bB, attachConfigSkeleton as bC, videoSetsStemMap as bD, extractFrameIndex as bE, resolveConfig as bF, setSourceVideo as bG, findProjectCsvs as bH, resolveProjectConfigPath as bI, readDlcDataframe as bJ, type ReadDlcOptions as bK, type ReadDlcProjectOptions as bL, type DlcDataframe as bM, toNumpy as bN, fromNumpy as bO, labelsFromNumpy as bP, decodeYamlSkeleton as bQ, encodeYamlSkeleton as bR, readSkeletonJson as bS, writeSkeletonJson as bT, readTrainingConfigSkeletons as bU, readTrainingConfigSkeleton as bV, isTrainingConfig as bW, type RGBA as bX, type ColorSpec as bY, type ColorScheme as bZ, type MarkerShape as b_, fetchRetrying as ba, headOrRangeProbe as bb, type GeoJSONFeature as bc, type GeoJSONFeatureCollection as bd, roisToGeoJSON as be, roisFromGeoJSON as bf, writeGeoJSON as bg, readGeoJSON as bh, type CocoCategory as bi, type CocoImage as bj, type CocoRle as bk, type CocoSegmentation as bl, type CocoAnnotation as bm, type CocoJson as bn, isCocoData as bo, parseCocoJson as bp, createSkeletonFromCategory as bq, decodeKeypoints as br, decodeCompressedRleCounts as bs, decodeCocoRle as bt, decodeSegmentation as bu, readCoco as bv, readCocoSet as bw, readDlc as bx, readDlcProject as by, isDlcData as bz, type RawLabelImage as c, type VideoOverlay as c0, NAMED_COLORS as c1, PALETTES as c2, getPalette as c3, resolveColor as c4, rgbToCSS as c5, determineColorScheme as c6, drawCircle as c7, drawSquare as c8, drawDiamond as c9, drawTriangle as ca, drawCross as cb, drawTrails as cc, getMarkerFunction as cd, MARKER_FUNCTIONS as ce, type DrawTrailsOptions as cf, resolveTrailNode as cg, computeTrails as ch, nTrailPaletteColors as ci, collectTracks as cj, type TrailTarget as ck, type Trail as cl, RenderContext as cm, InstanceContext as cn, drawMasks as co, drawLabelImage as cp, warn as cq, isDlcProjectPath as cr, readDlcConfig as cs, discoverConfig as ct, clampAlpha as cu, pickColor as cv, anchorCandidate as d, derivePrefixSwap as e, applyPrefixSwap as f, getImageBytesReader as g, resolveFirstExisting as h, formatPath as i, posixDirname as j, posixBasename as k, posixJoin as l, type PosixPath as m, type PrefixSwap as n, type ResolvedVideoSource as o, parsePath as p, SeqHeader as q, resolveVideoSource as r, setImageBytesReader as s, SeqIndex as t, type ByteSource as u, videoPathCandidates as v, createVideoBackend as w, type VideoBackendType as x, CropVideoBackend as y, type CropWrapOptions as z };

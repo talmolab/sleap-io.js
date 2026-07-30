@@ -1,7 +1,7 @@
 import { V as Video, L as Labels, I as Instance, R as ROI, B as BoundingBox, S as Skeleton, b as LabeledFrame, c as LabelsSet, T as Track, P as PredictedInstance, U as UserROI, C as Centroid, d as LabelImage, e as SegmentationMask } from './dictionary-BA-2We_n.js';
 export { A as AUTO_VIDEO_MATCHER, aB as AnnotationType, H as BASENAME_VIDEO_MATCHER, aR as BoundingBoxOptions, aW as CENTROID_SKELETON, an as Camera, ao as CameraGroup, aX as CentroidOptions, p as ConflictResolution, ah as CropOptions, bb as CropRect, D as DUPLICATE_MATCHER, ag as EXISTS_TTL_MS, E as Edge, av as Embedding, k as ErrorMode, bh as Fill, bc as FlatPoints, F as FrameGroup, bf as FrameLike, j as FrameStrategy, W as FsResolver, aC as Geometry, b4 as GetFrameOptions, x as IDENTITY_INSTANCE_MATCHER, z as IDENTITY_TRACK_MATCHER, J as IMAGE_DEDUP_VIDEO_MATCHER, w as IOU_MATCHER, au as Identity, aw as Instance3D, ap as InstanceGroup, g as InstanceMatchMethod, m as InstanceMatcher, a_ as LabelImageObjectInfo, a$ as LabelImageOptions, b6 as LabelsDict, ay as LazyDataStore, az as LazyFrameList, s as MatchResult, M as MergeError, t as MergeProgressBar, r as MergeResult, X as MergeStrategy, y as NAME_TRACK_MATCHER, N as Node, af as NodeOrIndex, O as OVERLAP_SKELETON_MATCHER, G as PATH_VIDEO_MATCHER, a2 as Point, a6 as PointColumns, bd as PointPairs, ac as PointView, a4 as PointsArray, aT as PredictedBoundingBox, aZ as PredictedCentroid, ax as PredictedInstance3D, b1 as PredictedLabelImage, a3 as PredictedPoint, a5 as PredictedPointsArray, aH as PredictedROI, aQ as PredictedSegmentationMask, aD as ROIOptions, bg as RawFrame, aq as RecordingSession, K as SHAPE_VIDEO_MATCHER, u as STRUCTURE_SKELETON_MATCHER, v as SUBSET_SKELETON_MATCHER, aN as SegmentationMaskOptions, f as SkeletonMatchMethod, l as SkeletonMatcher, q as SkeletonMismatchError, al as SuggestionFrame, a as Symmetry, h as TrackMatchMethod, n as TrackMatcher, aS as UserBoundingBox, aY as UserCentroid, b0 as UserLabelImage, aP as UserSegmentationMask, aO as UserSegmentationMaskOptions, b5 as VideoBackend, ak as VideoBackendError, aj as VideoBackendErrorKind, b3 as VideoFrame, i as VideoMatchMethod, o as VideoMatcher, Y as _annotationCentroidXy, $ as _findAnnotationLinkMatches, Z as _findAnnotationMatches, a1 as _registerCentroidFactory, aA as _registerMaskFactory, _ as _relinkFromPredicted, a0 as _resolveMergedIsNegative, a9 as clonePoint, as as cloneRecordingSession, be as cropFrame, b9 as cropPoints, aJ as decodeRle, aG as decodeWkb, aI as encodeRle, aF as encodeWkb, b8 as fromDict, aV as getCentroidSkeleton, aM as groupRingsIntoPolygons, ar as injectSessionFrameResolver, at as makeCameraFromDict, aU as normalizeCentroidSource, b2 as normalizeLabelIds, a7 as pointsEmpty, aa as pointsFromArray, ad as pointsFromDict, a8 as predictedPointsEmpty, ab as predictedPointsFromArray, ae as predictedPointsFromDict, aE as rasterizeGeometry, aK as resizeNearest, ai as resolveCropRect, am as rodriguesTransformation, Q as setFsResolver, b7 as toDict, aL as traceMaskContours, ba as uncropPoints } from './dictionary-BA-2We_n.js';
-import { R as ReadCocoOptions, a as RenderOptions, V as VideoOptions, b as RGB, c as RawLabelImage, P as PaletteName } from './index.browser-xBZj-CgS.js';
-export { ao as AppendStoreOptions, B as BlobByteSource, u as ByteSource, aS as CLOUD_SCHEMES, bk as CocoAnnotation, bg as CocoCategory, bh as CocoImage, bl as CocoJson, bi as CocoRle, bj as CocoSegmentation, bH as ColorScheme, bG as ColorSpec, C as CropVideoBackend, y as CropWrapOptions, aQ as CsvExportOptions, F as DEFAULT_MAX_BYTES, aM as DatasetMetaLike, bZ as DrawTrailsOptions, aT as GDRIVE_HOSTS, ba as GeoJSONFeature, bb as GeoJSONFeatureCollection, I as ImageBytesReader, a3 as ImageVideoBackend, a1 as ImageVideoOptions, aL as InPlaceWritable, c5 as InstanceContext, ag as LabelImageFileReader, aE as LabelTable, aF as LabelTableRows, aG as LabelTableUpdate, af as LoadLabelImagesOptions, bY as MARKER_FUNCTIONS, bI as MarkerShape, _ as MediaBunnyOptions, $ as MediaBunnyVideoBackend, aq as MergeStoresOptions, Z as Mp4BoxVideoBackend, bL as NAMED_COLORS, aH as OnDiskMember, aK as OnDiskSidecars, aI as OnDiskTable, aJ as OnDiskTables, bJ as Overlay, bM as PALETTES, ae as PagesAs, m as PosixPath, n as PrefixSwap, aW as RETRYABLE_STATUSES, bF as RGBA, X as RangeSink, W as RangeSource, a$ as RemoteIOError, c4 as RenderContext, b0 as ResolvedUrl, o as ResolvedVideoSource, aU as SENSITIVE_HEADERS, aV as SENSITIVE_QUERY_PARAMS, q as SeqHeader, t as SeqIndex, S as SeqVideoBackend, as as SerializableEmbedEntry, at as SerializableEmbedPlan, ak as SlpStreamWriter, an as SlpWriteHeader, ap as SlpWriteSink, G as StreamingH5File, T as StreamingH5Source, H as StreamingH5Writer, a0 as StreamingHdf5VideoBackend, c3 as Trail, c2 as TrailTarget, aR as URL_SCHEMES, U as UnsupportedVideoFormatError, x as VideoBackendType, bK as VideoOverlay, d as anchorCandidate, f as applyPrefixSwap, aA as buildExpectedSidecars, au as buildLabelTableRows, av as buildLabelTableUpdate, aw as buildMetadataJson, ar as buildSerializableEmbedPlan, ay as buildSuggestionsJson, ax as buildTracksJson, az as buildVideoSignatures, D as checkDownloadHost, aB as checkInPlaceWritable, c1 as collectTracks, a2 as computePrefetchWindow, b$ as computeTrails, bo as createSkeletonFromCategory, w as createVideoBackend, br as decodeCocoRle, bq as decodeCompressedRleCounts, bp as decodeKeypoints, bs as decodeSegmentation, by as decodeYamlSkeleton, e as derivePrefixSwap, bQ as determineColorScheme, bR as drawCircle, bV as drawCross, bT as drawDiamond, c7 as drawLabelImage, c6 as drawMasks, bS as drawSquare, bW as drawTrails, bU as drawTriangle, bz as encodeYamlSkeleton, b8 as fetchRetrying, i as formatPath, bw as fromNumpy, g as getImageBytesReader, bX as getMarkerFunction, bN as getPalette, b9 as headOrRangeProbe, b4 as identityHeaders, aN as isAnalysisH5File, bm as isCocoData, aY as isGdriveUrl, M as isRangeSource, L as isStreamingSupported, bE as isTrainingConfig, aX as isUrl, bx as labelsFromNumpy, aO as labelsToCsv, a6 as loadAnalysisH5, ac as loadLabelImages, a4 as loadSlp, a9 as loadSlpSet, ab as loadVideo, c0 as nTrailPaletteColors, aC as onDiskTableFromMeta, E as openGdrive, K as openH5Worker, aj as openSlpWriter, J as openStreamingH5, bn as parseCocoJson, z as parseGdrive, p as parsePath, b7 as parseRetryAfterMs, k as posixBasename, j as posixDirname, l as posixJoin, b3 as raiseRemote, bt as readCoco, bu as readCocoSet, bf as readGeoJSON, bA as readSkeletonJson, Y as readSlpStreaming, bD as readTrainingConfigSkeleton, bC as readTrainingConfigSkeletons, aZ as redactUrl, a_ as redactedCauseSummary, bO as resolveColor, h as resolveFirstExisting, b_ as resolveTrailNode, b1 as resolveUrl, r as resolveVideoSource, bP as rgbToCSS, bd as roisFromGeoJSON, bc as roisToGeoJSON, a7 as saveAnalysisH5, a8 as saveAnalysisH5ToBytes, aP as saveLabelsCsv, a5 as saveSlp, al as saveSlpMergedFromStores, am as saveSlpMergedToSink, aa as saveSlpSet, ai as saveSlpStructureToBytes, ah as saveSlpToBytes, N as serviceRangeBridge, Q as serviceTruncateBridge, O as serviceWriteBridge, s as setImageBytesReader, ad as setLabelImageFileReader, b2 as statusToMessage, b5 as stripCrossOriginHeaders, bv as toNumpy, A as urlFromConfirmation, v as videoPathCandidates, b6 as withRetries, be as writeGeoJSON, aD as writeLabelTablesInPlace, bB as writeSkeletonJson } from './index.browser-xBZj-CgS.js';
+import { R as ReadCocoOptions, D as DlcFileSystem, C as Config, a as RenderOptions, V as VideoOptions, b as RGB, c as RawLabelImage, P as PaletteName } from './index.browser-CjdzjAxP.js';
+export { aq as AppendStoreOptions, B as BlobByteSource, u as ByteSource, aU as CLOUD_SCHEMES, bm as CocoAnnotation, bi as CocoCategory, bj as CocoImage, bn as CocoJson, bk as CocoRle, bl as CocoSegmentation, bZ as ColorScheme, bY as ColorSpec, y as CropVideoBackend, z as CropWrapOptions, aS as CsvExportOptions, H as DEFAULT_MAX_BYTES, aO as DatasetMetaLike, bM as DlcDataframe, cf as DrawTrailsOptions, aV as GDRIVE_HOSTS, bc as GeoJSONFeature, bd as GeoJSONFeatureCollection, I as ImageBytesReader, a5 as ImageVideoBackend, a3 as ImageVideoOptions, aN as InPlaceWritable, cn as InstanceContext, ai as LabelImageFileReader, aG as LabelTable, aH as LabelTableRows, aI as LabelTableUpdate, ah as LoadLabelImagesOptions, ce as MARKER_FUNCTIONS, b_ as MarkerShape, a0 as MediaBunnyOptions, a1 as MediaBunnyVideoBackend, as as MergeStoresOptions, $ as Mp4BoxVideoBackend, c1 as NAMED_COLORS, aJ as OnDiskMember, aM as OnDiskSidecars, aK as OnDiskTable, aL as OnDiskTables, b$ as Overlay, c2 as PALETTES, ag as PagesAs, m as PosixPath, n as PrefixSwap, aY as RETRYABLE_STATUSES, bX as RGBA, Z as RangeSink, Y as RangeSource, bK as ReadDlcOptions, bL as ReadDlcProjectOptions, b1 as RemoteIOError, cm as RenderContext, b2 as ResolvedUrl, o as ResolvedVideoSource, aW as SENSITIVE_HEADERS, aX as SENSITIVE_QUERY_PARAMS, q as SeqHeader, t as SeqIndex, S as SeqVideoBackend, au as SerializableEmbedEntry, av as SerializableEmbedPlan, am as SlpStreamWriter, ap as SlpWriteHeader, ar as SlpWriteSink, J as StreamingH5File, X as StreamingH5Source, K as StreamingH5Writer, a2 as StreamingHdf5VideoBackend, cl as Trail, ck as TrailTarget, aT as URL_SCHEMES, U as UnsupportedVideoFormatError, x as VideoBackendType, c0 as VideoOverlay, d as anchorCandidate, f as applyPrefixSwap, bC as attachConfigSkeleton, aC as buildExpectedSidecars, aw as buildLabelTableRows, ax as buildLabelTableUpdate, ay as buildMetadataJson, at as buildSerializableEmbedPlan, aA as buildSuggestionsJson, az as buildTracksJson, aB as buildVideoSignatures, F as checkDownloadHost, aD as checkInPlaceWritable, cj as collectTracks, a4 as computePrefetchWindow, ch as computeTrails, bq as createSkeletonFromCategory, w as createVideoBackend, bt as decodeCocoRle, bs as decodeCompressedRleCounts, br as decodeKeypoints, bu as decodeSegmentation, bQ as decodeYamlSkeleton, e as derivePrefixSwap, c6 as determineColorScheme, c7 as drawCircle, cb as drawCross, c9 as drawDiamond, cp as drawLabelImage, co as drawMasks, c8 as drawSquare, cc as drawTrails, ca as drawTriangle, bR as encodeYamlSkeleton, bE as extractFrameIndex, ba as fetchRetrying, bH as findProjectCsvs, i as formatPath, bO as fromNumpy, g as getImageBytesReader, cd as getMarkerFunction, c3 as getPalette, bb as headOrRangeProbe, b6 as identityHeaders, aP as isAnalysisH5File, bo as isCocoData, bz as isDlcData, a_ as isGdriveUrl, O as isRangeSource, N as isStreamingSupported, bW as isTrainingConfig, aZ as isUrl, bP as labelsFromNumpy, aQ as labelsToCsv, a8 as loadAnalysisH5, ae as loadLabelImages, a6 as loadSlp, ab as loadSlpSet, ad as loadVideo, bB as looksLikeDlcConfig, ci as nTrailPaletteColors, aE as onDiskTableFromMeta, G as openGdrive, M as openH5Worker, al as openSlpWriter, L as openStreamingH5, bp as parseCocoJson, bA as parseDlcCrop, A as parseGdrive, p as parsePath, b9 as parseRetryAfterMs, k as posixBasename, j as posixDirname, l as posixJoin, b5 as raiseRemote, bv as readCoco, bw as readCocoSet, bx as readDlc, bJ as readDlcDataframe, by as readDlcProject, bh as readGeoJSON, bS as readSkeletonJson, _ as readSlpStreaming, bV as readTrainingConfigSkeleton, bU as readTrainingConfigSkeletons, a$ as redactUrl, b0 as redactedCauseSummary, c4 as resolveColor, bF as resolveConfig, h as resolveFirstExisting, bI as resolveProjectConfigPath, cg as resolveTrailNode, b3 as resolveUrl, r as resolveVideoSource, c5 as rgbToCSS, bf as roisFromGeoJSON, be as roisToGeoJSON, a9 as saveAnalysisH5, aa as saveAnalysisH5ToBytes, aR as saveLabelsCsv, a7 as saveSlp, an as saveSlpMergedFromStores, ao as saveSlpMergedToSink, ac as saveSlpSet, ak as saveSlpStructureToBytes, aj as saveSlpToBytes, Q as serviceRangeBridge, W as serviceTruncateBridge, T as serviceWriteBridge, s as setImageBytesReader, af as setLabelImageFileReader, bG as setSourceVideo, b4 as statusToMessage, b7 as stripCrossOriginHeaders, bN as toNumpy, E as urlFromConfirmation, v as videoPathCandidates, bD as videoSetsStemMap, b8 as withRetries, bg as writeGeoJSON, aF as writeLabelTablesInPlace, bT as writeSkeletonJson } from './index.browser-CjdzjAxP.js';
 
 /**
  * Read TrackMate CSV exports into sleap-io data structures.
@@ -440,191 +440,52 @@ interface LoadJabsOptions {
 declare function loadJabs(labelsPath: string, options?: LoadJabsOptions): Promise<Labels>;
 
 /**
- * DeepLabCut (DLC) format I/O (read path).
+ * DeepLabCut (DLC) format I/O — Node file-path wrappers + train/test splits.
  *
- * TypeScript port of `sleap_io/io/dlc.py` (READ path only), adapted to the
- * JS/Node data model and runtime.
+ * Node-only companion to the browser-safe `dlc.ts` core (mirrors the
+ * `coco.ts` / `coco-node.ts` split). This module:
  *
- * In addition to reading a single DLC annotation CSV ({@link loadDlc}), this
- * module can import an entire DLC *project* from its `config.yaml`
- * ({@link loadDlcProject}) and recover the train/test splits stored by
- * `create_training_dataset` ({@link loadDlcSplits}).
+ * - supplies a real-`fs` {@link DlcFileSystem} adapter and re-exposes the core
+ *   readers as path-based `loadDlc` / `loadDlcProject` (plus fs-backed
+ *   `isDlcFile` / `readDlcConfig` / `discoverConfig` / `isDlcProjectPath`);
+ * - implements `loadDlcSplits`, which recovers a DLC project's train/test
+ *   partition from its `Documentation_data-*.pickle` — this needs a Python
+ *   pickle decoder built on `Buffer`, so it lives here and never enters the
+ *   browser bundle.
  *
- * ## Format overview
- *
- * - **Single-animal (SADLC)** CSV: 3 header rows (`scorer` / `bodyparts` /
- *   `coords`) followed by one row per labeled image; each bodypart contributes
- *   an `x` and a `y` column.
- * - **Multi-animal (maDLC / MAUDLC)** CSV: 4 header rows (a leading `scorer`
- *   row, then `individuals` / `bodyparts` / `coords`); the `individuals` level
- *   names the animal each column belongs to. MAUDLC adds a `single` individual
- *   carrying unique (single-animal) bodyparts.
- * - Image paths appear either as a single column
- *   (`labeled-data/video/img000.png`) or split across three index columns
- *   (`labeled-data`, `video`, `img000.png`); the latter is joined with `/`.
- * - A project `config.yaml` supplies skeleton edges (the `skeleton:` list),
- *   the `scorer`/`Task`/`date`, and `video_sets` (source-video links + crops).
- *
- * When a config is available, the returned `Labels` gains skeleton edges and
- * per-video `Video.sourceVideo` links that link each `labeled-data/<video>/`
- * image folder back to its original video file (matched by filename stem).
- * DLC's `video_sets[...].crop` is a virtual read-time crop; its rect (DLC's
- * width-range-first `x1, x2, y1, y2` reordered to the sleap rect
- * `(x1, y1, x2, y2)`) is recorded under `provenance["dlc_crops"]`, keyed by
- * source-video path. No offset is ever applied to point coordinates.
- *
- * ## Node-only
- *
- * DLC datasets are directory trees of many files (a project dir, per-image
- * folders), so this module reads through the Node `fs`/`path` APIs (like
- * `io/ultralytics.ts` / `io/jabs.ts` / `io/trackmate.ts`) and is exported only
- * from the Node entry point (`src/index.ts`), never the browser bundle.
- *
- * ## Divergences from Python `dlc.py`
- *
- * 1. **No crop view.** The JS `Video` has no `from_crop` / `is_cropped` /
- *    `crop_rect` / `to_source_coords`. Python links a `Video.from_crop` view
- *    when a non-identity crop's source video exists on disk; JS cannot, so
- *    `sourceVideo` is **always** a closed `Video` ({@link Video} with
- *    `openBackend: false`) and the crop lives only in
- *    `provenance["dlc_crops"]`. Point coordinates are unaffected either way.
- * 2. **Errors.** Python's `ValueError` / `FileNotFoundError` distinction
- *    collapses to a single `Error` with the same message text.
- * 3. **Warnings** are emitted via `console.warn` (vs Python `warnings.warn`);
- *    message text is preserved so callers / tests can match on substrings.
- * 4. **No `addEdges`.** Edges are added one pair at a time via
- *    `Skeleton.addEdge`, after validating both endpoints exist.
- * 5. **Pickle decoding.** `loadDlcSplits` requires reading a Python pickle
- *    (the DLC `Documentation_data-*.pickle`); a minimal protocol 2-5 opcode
- *    interpreter is implemented here ({@link readPickle}) since the repo has no
- *    pickle dependency. It decodes the train/test index arrays whether they are
- *    plain Python `list[int]` or **numpy integer ndarrays** — the latter being
- *    what real DeepLabCut writes (`SplitTrials` slices `np.random.permutation`
- *    and `save_metadata` pickles the resulting `np.ndarray`s directly). Both
- *    the modern `_frombuffer`/`BYTEARRAY8` and the older `_reconstruct`+`BUILD`
- *    numpy encodings are handled. `loadDlc` / `loadDlcProject` need no pickle.
- * 6. **`**kwargs` ignored.** Python's forwarded loader kwargs (PR #488/#492) are
- *    modeled as an index signature on the options objects and ignored.
+ * Exported only from the Node entry point (`src/index.ts`), never the browser
+ * bundle (`src/index.browser.ts` exports the `dlc.ts` core).
  */
 
-/**
- * Check if a file appears to be a DLC annotation CSV.
- *
- * Reads the first four lines as raw text and looks for DLC's characteristic
- * header tokens. Any read error (missing/empty file) yields `false`.
- */
-declare function isDlcFile(filename: string): boolean;
-/**
- * Return whether a path refers to a DLC project (directory containing both
- * `config.yaml` and `labeled-data/`, or a `config.yaml` file validating as a
- * DLC project config).
- */
-declare function isDlcProjectPath(filename: string): boolean;
-type Config = Record<string, unknown>;
-/**
- * Read a DLC project `config.yaml` into a dictionary, or `null` if the file is
- * missing or does not parse to a mapping. A warning is emitted on failure so a
- * malformed/foreign config never breaks plain CSV loading.
- */
-declare function readDlcConfig(p: string): Config | null;
-/** Return whether a parsed mapping looks like a DLC project config (>=2 keys). */
-declare function looksLikeDlcConfig(cfg: unknown): boolean;
-/**
- * Search upward from a CSV for a DLC project `config.yaml` (up to `maxLevels`
- * parent directories). Returns the path to a validated config, or `null`.
- */
-declare function discoverConfig(csvPath: string, maxLevels?: number): string | null;
-/**
- * Resolve the `config` argument of {@link loadDlc} to a parsed config dict.
- *
- * - `false` disables config entirely (strict legacy output).
- * - `null`/`undefined` auto-discovers `config.yaml` by walking up from the CSV.
- * - a string forces a specific config path.
- */
-declare function resolveConfig(csvPath: string, config: string | false | null): Config | null;
-/**
- * Attach skeleton edges (and name) from a DLC config to a `Skeleton` in place.
- * Edges referencing bodyparts not present in the skeleton are dropped with a
- * warning. Resolution is strictly name-based.
- */
-declare function attachConfigSkeleton(skeleton: Skeleton, cfg: Config): void;
-/**
- * Parse a DLC `video_sets[...].crop` value into a sleap crop rect.
- *
- * DLC stores the crop width-range-first as `x1, x2, y1, y2` (string or list);
- * this is reordered to `(x1, y1, x2, y2)` with x2/y2 exclusive, 0-indexed.
- * Returns `null` when missing/empty/unparsable, wrong arity, inverted (warns),
- * or an identity crop at origin `(0, 0)`.
- */
-declare function parseDlcCrop(crop: unknown): [number, number, number, number] | null;
-type StemEntry = {
-    original: string;
-    rect: [number, number, number, number] | null;
-};
-/**
- * Map video filename stems to original paths and crop rects from config.
- * Windows backslash separators are normalized; placeholder entries are skipped.
- * Preserves config (object key) order.
- */
-declare function videoSetsStemMap(cfg: Config): Map<string, StemEntry>;
-/**
- * Link an image-folder `Video` back to its original source video. Returns
- * `{ path, rect }` for the linked source, or `null` on a stem mismatch.
- *
- * JS divergence: `video.sourceVideo` is always a closed `Video`
- * (`openBackend: false`); there is no crop view (see module banner).
- */
-declare function setSourceVideo(video: Video, folderName: string, stemMap: Map<string, StemEntry>, searchPaths?: string[]): {
-    path: string;
-    rect: [number, number, number, number] | null;
-} | null;
-type ColumnTuple = [string, string, string];
-interface DlcDataframe {
-    index: string[];
-    columns: ColumnTuple[];
-    /** rows[r][c] aligns to columns[c]; `null` means missing/NaN. */
-    rows: Array<Array<number | null>>;
-    isMultianimal: boolean;
-}
-/**
- * Read a DLC annotation CSV into a flattened-index multi-column table,
- * emulating pandas `read_csv` with multi-row headers.
- */
-declare function readDlcDataframe(filename: string): DlcDataframe;
-/** Extract the last numeric run from an image filename stem (for sorting). */
-declare function extractFrameIndex(imgPath: string): number;
+/** A {@link DlcFileSystem} backed by the Node `fs` module. */
+declare const nodeDlcFileSystem: DlcFileSystem;
 interface LoadDlcOptions {
     videoSearchPaths?: string[];
-    /**
-     * `null`/`undefined` = auto-discover `config.yaml` walking up from the CSV;
-     * `false` = disable config entirely (legacy output, no edges/links/crops);
-     * string = force this config path.
-     */
     config?: string | false | null;
     /** Accepted-and-ignored (PR #488 parity): openVideos, lazy, etc. */
     [key: string]: unknown;
 }
-/**
- * Load DeepLabCut annotations from a single CSV file.
- *
- * @param filename Path to a DLC CSV file.
- * @param options Loader options ({@link LoadDlcOptions}).
- * @returns A {@link Labels} object with the loaded data.
- */
+/** Load DeepLabCut annotations from a single CSV file on disk. */
 declare function loadDlc(filename: string, options?: LoadDlcOptions): Labels;
 interface LoadDlcProjectOptions {
     videoSearchPaths?: string[];
     /** Accepted-and-ignored (PR #488 parity). */
     [key: string]: unknown;
 }
-/**
- * Load an entire DeepLabCut project from its `config.yaml`.
- *
- * @param config Path to a `config.yaml`, or to a project directory with one.
- * @param options Loader options ({@link LoadDlcProjectOptions}).
- * @returns A {@link Labels} object with frames from every labeled video.
- */
+/** Load an entire DeepLabCut project from its `config.yaml` on disk. */
 declare function loadDlcProject(config: string, options?: LoadDlcProjectOptions): Labels;
+/**
+ * Check if a file on disk appears to be a DLC annotation CSV. Reads the file
+ * and delegates the header sniff to {@link isDlcData}; any read error (missing/
+ * empty file) yields `false`.
+ */
+declare function isDlcFile(filename: string): boolean;
+/** Read a DLC project `config.yaml` on disk into a dictionary (or `null`). */
+declare function readDlcConfig(p: string): Config | null;
+/** Search upward from a CSV on disk for a DLC project `config.yaml`. */
+declare function discoverConfig(csvPath: string, maxLevels?: number): string | null;
+/** Whether a path on disk refers to a DLC project directory or `config.yaml`. */
+declare function isDlcProjectPath(filename: string): boolean;
 /**
  * Read train/test positional indices from a DLC Documentation pickle.
  *
@@ -813,4 +674,4 @@ declare function applyOverlay(image: ImageData, overlay: LabelImage | RawLabelIm
     colors?: RGB[] | null;
 }): ImageData;
 
-export { BoundingBox, Centroid, type CreateDataYamlOptions, type ImageShape, Instance, JABS_DEFAULT_EDGE_INDICES, JABS_DEFAULT_KEYPOINT_NAMES, JABS_DEFAULT_SKELETON, JABS_DEFAULT_SYMMETRY_INDICES, LabelImage, LabeledFrame, Labels, LabelsSet, type LineFormat, type LoadDlcOptions, type LoadDlcProjectOptions, type LoadDlcSplitsOptions, type LoadJabsOptions, PaletteName, type ParseLabelFileOptions, type ParsedLabelFile, PredictedInstance, RGB, ROI, RawLabelImage, ReadCocoOptions, type ReadLabelsOptions, type ReadLabelsSetOptions, RenderOptions, SegmentationMask, Skeleton, Track, type TrackMateOptions, UserROI, Video, VideoOptions, type WriteLabelsOptions, applyOverlay, attachConfigSkeleton, buildClassNamesFromBboxes, buildClassNamesFromRois, checkFfmpeg, classNamesFromConfig, createDataYaml, createSkeletonFromConfig, createSplitsFromLabels, denormalizeCoordinates, detectLineFormat, discoverConfig, dlcMergedOrder, drawBboxes, drawCentroids, drawRois, encodePng, extractFrameIndex, isDlcFile, isDlcProjectPath, isTrackMateFile, loadCoco, loadCocoSet, loadDlc, loadDlcProject, loadDlcSplits, loadJabs, loadTrackMate, loadUltralytics, looksLikeDlcConfig, makeJabsDefaultSkeleton, makeSimpleSkeleton, normalizeCoordinates, parseDataYaml, parseDlcCrop, parseLabelFile, predictionToInstance, probeImageSize, readCsvScorer, readDlcConfig, readDlcDataframe, readDlcSplit, readLabels, readLabelsSet, readPickle, readTrackMateCsv, renderImage, renderVideo, resolveConfig, saveImage, saveUltralytics, setSourceVideo, staticObjectToRoi, toDataURL, toJPEG, toPNG, videoSetsStemMap, warnIfNonlexicographic, writeBboxLabelFile, writeLabelFile, writeLabels, writeRoiLabelFile };
+export { BoundingBox, Centroid, Config, type CreateDataYamlOptions, DlcFileSystem, type ImageShape, Instance, JABS_DEFAULT_EDGE_INDICES, JABS_DEFAULT_KEYPOINT_NAMES, JABS_DEFAULT_SKELETON, JABS_DEFAULT_SYMMETRY_INDICES, LabelImage, LabeledFrame, Labels, LabelsSet, type LineFormat, type LoadDlcOptions, type LoadDlcProjectOptions, type LoadDlcSplitsOptions, type LoadJabsOptions, PaletteName, type ParseLabelFileOptions, type ParsedLabelFile, PredictedInstance, RGB, ROI, RawLabelImage, ReadCocoOptions, type ReadLabelsOptions, type ReadLabelsSetOptions, RenderOptions, SegmentationMask, Skeleton, Track, type TrackMateOptions, UserROI, Video, VideoOptions, type WriteLabelsOptions, applyOverlay, buildClassNamesFromBboxes, buildClassNamesFromRois, checkFfmpeg, classNamesFromConfig, createDataYaml, createSkeletonFromConfig, createSplitsFromLabels, denormalizeCoordinates, detectLineFormat, discoverConfig, dlcMergedOrder, drawBboxes, drawCentroids, drawRois, encodePng, isDlcFile, isDlcProjectPath, isTrackMateFile, loadCoco, loadCocoSet, loadDlc, loadDlcProject, loadDlcSplits, loadJabs, loadTrackMate, loadUltralytics, makeJabsDefaultSkeleton, makeSimpleSkeleton, nodeDlcFileSystem, normalizeCoordinates, parseDataYaml, parseLabelFile, predictionToInstance, probeImageSize, readCsvScorer, readDlcConfig, readDlcSplit, readLabels, readLabelsSet, readPickle, readTrackMateCsv, renderImage, renderVideo, saveImage, saveUltralytics, staticObjectToRoi, toDataURL, toJPEG, toPNG, warnIfNonlexicographic, writeBboxLabelFile, writeLabelFile, writeLabels, writeRoiLabelFile };

@@ -21239,8 +21239,625 @@ function readCocoSet(splits, options = {}) {
   return result;
 }
 
-// src/codecs/skeleton-yaml.ts
+// src/io/dlc.ts
 import YAML from "yaml";
+function warn(msg) {
+  console.warn(msg);
+}
+var posix = {
+  _sep(parts) {
+    const first = parts.find((p) => p !== "" && p != null);
+    if (first != null && (/^[A-Za-z]:/.test(first) || first.includes("\\") && !first.includes("/"))) {
+      return "\\";
+    }
+    return "/";
+  },
+  join(...parts) {
+    const sep = this._sep(parts);
+    const first = parts.find((p) => p !== "" && p != null);
+    const absolute = first != null && /^[/\\]/.test(first);
+    let drive = "";
+    const segs = [];
+    for (const part of parts) {
+      if (!part) continue;
+      let s = part;
+      const m = /^([A-Za-z]:)/.exec(s);
+      if (m && !drive && segs.length === 0) {
+        drive = m[1];
+        s = s.slice(2);
+      }
+      for (const seg of s.split(/[/\\]+/)) {
+        if (seg) segs.push(seg);
+      }
+    }
+    const body = segs.join(sep);
+    if (drive) return `${drive}${sep}${body}`;
+    return absolute ? `${sep}${body}` : body;
+  },
+  dirname(p) {
+    const sep = this._sep([p]);
+    const norm = p.replace(/[/\\]+$/, "");
+    const idx = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
+    if (idx < 0) return ".";
+    const head = norm.slice(0, idx);
+    if (/^[A-Za-z]:$/.test(head)) return head + sep;
+    if (head === "") return sep;
+    return head;
+  },
+  basename(p) {
+    const norm = p.replace(/[/\\]+$/, "");
+    const idx = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
+    return idx < 0 ? norm : norm.slice(idx + 1);
+  },
+  resolve(p) {
+    return p;
+  }
+};
+function isDlcData(text) {
+  const lines = text.split(/\r?\n/).slice(0, 4).map((l) => l.trim());
+  const content = lines.join("\n").toLowerCase();
+  if (content.trim() === "") return false;
+  const hasScorer = content.includes("scorer");
+  const hasCoords = content.includes("coords");
+  const hasXy = content.includes("x") && content.includes("y");
+  const hasBodyparts = content.includes("bodyparts") || content.includes("animal") || content.includes("individual");
+  return hasScorer && hasCoords && hasXy && hasBodyparts;
+}
+function isDlcFileFs(filename, fsys) {
+  try {
+    return isDlcData(fsys.readTextFile(filename));
+  } catch {
+    return false;
+  }
+}
+var DLC_CONFIG_KEYS = [
+  "video_sets",
+  "bodyparts",
+  "scorer",
+  "Task",
+  "skeleton",
+  "individuals"
+];
+function isDlcProjectPath(filename, fsys) {
+  if (!fsys.exists(filename)) return false;
+  if (fsys.isDirectory(filename)) {
+    return fsys.exists(posix.join(filename, "config.yaml")) && fsys.exists(posix.join(filename, "labeled-data"));
+  }
+  if (posix.basename(filename) === "config.yaml" && fsys.isFile(filename)) {
+    const cfg = readDlcConfig(filename, fsys);
+    return cfg !== null && looksLikeDlcConfig(cfg);
+  }
+  return false;
+}
+function readDlcConfig(p, fsys) {
+  if (!fsys.exists(p) || !fsys.isFile(p)) {
+    warn(`DLC config file not found: ${p}`);
+    return null;
+  }
+  let cfg;
+  try {
+    cfg = YAML.parse(fsys.readTextFile(p));
+  } catch (e) {
+    warn(`Failed to parse DLC config ${p}: ${e}`);
+    return null;
+  }
+  if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+    warn(`DLC config ${p} did not parse to a mapping.`);
+    return null;
+  }
+  return cfg;
+}
+function looksLikeDlcConfig(cfg) {
+  if (cfg === null || typeof cfg !== "object" || Array.isArray(cfg)) {
+    return false;
+  }
+  const obj = cfg;
+  return DLC_CONFIG_KEYS.filter((k) => Object.hasOwn(obj, k)).length >= 2;
+}
+function discoverConfig(csvPath, fsys, maxLevels = 3) {
+  const start = posix.dirname(posix.resolve(csvPath));
+  const dirs = [start];
+  let cur = start;
+  for (let i = 0; i < maxLevels; i += 1) {
+    const parent = posix.dirname(cur);
+    if (parent === cur) break;
+    dirs.push(parent);
+    cur = parent;
+  }
+  for (const d of dirs) {
+    const candidate = posix.join(d, "config.yaml");
+    if (fsys.exists(candidate) && fsys.isFile(candidate)) {
+      const cfg = readDlcConfig(candidate, fsys);
+      if (cfg !== null && looksLikeDlcConfig(cfg)) return candidate;
+    }
+  }
+  return null;
+}
+function resolveConfig(csvPath, config, fsys) {
+  if (config === false) return null;
+  if (config == null) {
+    const discovered = discoverConfig(csvPath, fsys);
+    return discovered !== null ? readDlcConfig(discovered, fsys) : null;
+  }
+  return readDlcConfig(config, fsys);
+}
+function attachConfigSkeleton(skeleton, cfg) {
+  const task = cfg.Task;
+  if (task && skeleton.name == null) {
+    skeleton.name = String(task);
+  }
+  const rawEdges = cfg.skeleton ?? [];
+  const nodeNames = new Set(skeleton.nodeNames);
+  const valid = [];
+  const dropped = [];
+  for (const entry of rawEdges) {
+    if (!Array.isArray(entry) || entry.length !== 2) {
+      dropped.push(entry);
+      continue;
+    }
+    const src = String(entry[0]);
+    const dst = String(entry[1]);
+    if (nodeNames.has(src) && nodeNames.has(dst)) {
+      valid.push([src, dst]);
+    } else {
+      dropped.push([src, dst]);
+    }
+  }
+  for (const [src, dst] of valid) {
+    skeleton.addEdge(src, dst);
+  }
+  if (dropped.length) {
+    warn(
+      `Dropped ${dropped.length} DLC skeleton edge(s) referencing bodyparts not present in the labeled data: ${JSON.stringify(dropped)}`
+    );
+  }
+}
+function parseDlcCrop(crop) {
+  if (crop == null) return null;
+  let parts;
+  if (typeof crop === "string") {
+    parts = crop.split(",").map((s) => s.trim()).filter((s) => s !== "");
+  } else if (Array.isArray(crop)) {
+    parts = [...crop];
+  } else {
+    return null;
+  }
+  if (parts.length !== 4) return null;
+  const nums = [];
+  for (const p of parts) {
+    if (typeof p === "number") {
+      if (!Number.isFinite(p)) return null;
+      nums.push(Math.trunc(p));
+      continue;
+    }
+    const s = String(p).trim();
+    if (!/^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$/.test(s)) return null;
+    const v = Number(s);
+    if (!Number.isFinite(v)) return null;
+    nums.push(Math.trunc(v));
+  }
+  const [x1, x2, y1, y2] = nums;
+  if (x2 <= x1 || y2 <= y1) {
+    warn(
+      `Ignoring inverted DLC crop ${JSON.stringify(crop)}: expected x1 < x2 and y1 < y2 (width-range-first 'x1, x2, y1, y2').`
+    );
+    return null;
+  }
+  if (x1 === 0 && y1 === 0) return null;
+  return [x1, y1, x2, y2];
+}
+function videoSetsStemMap(cfg) {
+  const out = /* @__PURE__ */ new Map();
+  const videoSets = cfg.video_sets ?? {};
+  for (const [key, value] of Object.entries(videoSets)) {
+    const keyStr = String(key);
+    if (keyStr.includes("WILL BE AUTOMATICALLY UPDATED")) continue;
+    const name = keyStr.replace(/\\/g, "/").split("/").pop() ?? "";
+    const stem = name.includes(".") ? name.slice(0, name.lastIndexOf(".")) : name;
+    if (stem) {
+      const crop = value && typeof value === "object" ? value.crop : null;
+      out.set(stem, { original: keyStr, rect: parseDlcCrop(crop) });
+    }
+  }
+  return out;
+}
+function setSourceVideo(video, folderName, stemMap, fsys, searchPaths) {
+  const entry = stemMap.get(folderName);
+  if (entry === void 0) return null;
+  const { original, rect } = entry;
+  let resolvedPath = original;
+  if (searchPaths?.length) {
+    const basename3 = original.replace(/\\/g, "/").split("/").pop() ?? original;
+    for (const dir of searchPaths) {
+      const candidate = posix.join(dir, basename3);
+      if (fsys.exists(candidate)) {
+        resolvedPath = candidate;
+        break;
+      }
+    }
+  }
+  video.sourceVideo = new Video({ filename: resolvedPath, openBackend: false });
+  return { path: resolvedPath, rect };
+}
+function readDlcDataframe(filename, fsys) {
+  const raw = fsys.readTextFile(filename).split(/\r?\n/);
+  if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
+  const cells = raw.map((line) => line.split(","));
+  let isMultianimal = false;
+  let isMultiindex = false;
+  try {
+    if (cells.length < 5) throw new Error("too few rows to peek");
+    isMultianimal = cells[1][0] === "individuals";
+    isMultiindex = cells[4][0] === "labeled-data";
+  } catch {
+    isMultianimal = false;
+    isMultiindex = false;
+  }
+  const headerRowIdxs = isMultianimal ? [1, 2, 3] : [0, 1, 2];
+  const dataStartRow = isMultianimal ? 4 : 3;
+  const indexColCount = isMultiindex ? 3 : 1;
+  const columns = [];
+  const headerRow0 = cells[headerRowIdxs[0]] ?? [];
+  const ncols = headerRow0.length;
+  for (let j = indexColCount; j < ncols; j += 1) {
+    columns.push([
+      cells[headerRowIdxs[0]]?.[j] ?? "",
+      cells[headerRowIdxs[1]]?.[j] ?? "",
+      cells[headerRowIdxs[2]]?.[j] ?? ""
+    ]);
+  }
+  const index = [];
+  const rows = [];
+  for (let r = dataStartRow; r < cells.length; r += 1) {
+    const row = cells[r];
+    if (!row) continue;
+    if (row.every((c) => c === "")) continue;
+    let idxStr;
+    if (isMultiindex) {
+      idxStr = [row[0] ?? "", row[1] ?? "", row[2] ?? ""].join("/");
+    } else {
+      idxStr = row[0] ?? "";
+    }
+    index.push(idxStr);
+    const values = [];
+    for (let j = indexColCount; j < ncols; j += 1) {
+      const cell = row[j];
+      if (cell === void 0 || cell === "") {
+        values.push(null);
+      } else {
+        const v = parseFloat(cell);
+        values.push(Number.isNaN(v) ? null : v);
+      }
+    }
+    rows.push(values);
+  }
+  return { index, columns, rows, isMultianimal };
+}
+function parseSingleAnimalStructure(df) {
+  const collected = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const [, bodypart, coord] of df.columns) {
+    if (coord === "x" && bodypart !== "" && bodypart != null) {
+      if (!seen.has(bodypart)) {
+        seen.add(bodypart);
+        collected.push(bodypart);
+      }
+    }
+  }
+  const nodeNames = [...new Set(collected)].sort();
+  return new Skeleton({ nodes: nodeNames.map((n) => new Node(n)) });
+}
+function parseMultiAnimalStructure(df) {
+  const trackMap = /* @__PURE__ */ new Map();
+  const collected = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const [individual, bodypart, coord] of df.columns) {
+    if (coord !== "x") continue;
+    if (individual !== "" && individual != null && individual !== "individuals" && !trackMap.has(individual)) {
+      trackMap.set(individual, new Track(individual));
+    }
+    if (bodypart !== "" && bodypart != null && bodypart !== "bodyparts" && !seen.has(bodypart)) {
+      seen.add(bodypart);
+      collected.push(bodypart);
+    }
+  }
+  const nodeNames = [...new Set(collected)].sort();
+  const skeleton = new Skeleton({ nodes: nodeNames.map((n) => new Node(n)) });
+  const tracks = [...trackMap.values()];
+  return { skeleton, tracks };
+}
+function parseSingleAnimalRow(columns, values, skeleton) {
+  const bodypartsData = /* @__PURE__ */ new Map();
+  for (let c = 0; c < columns.length; c += 1) {
+    const [, bodypart, coord] = columns[c];
+    if (bodypart && bodypart !== "") {
+      let bp = bodypartsData.get(bodypart);
+      if (!bp) {
+        bp = {};
+        bodypartsData.set(bodypart, bp);
+      }
+      if (coord === "x") bp.x = values[c];
+      else if (coord === "y") bp.y = values[c];
+    }
+  }
+  let hasValidPoints = false;
+  const pointsData = skeleton.nodeNames.map((name) => {
+    const bp = bodypartsData.get(name);
+    const x = bp?.x;
+    const y = bp?.y;
+    if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
+      hasValidPoints = true;
+      return [Number(x), Number(y)];
+    }
+    return [Number.NaN, Number.NaN];
+  });
+  if (hasValidPoints) {
+    return [Instance.fromNumpy({ pointsData, skeleton })];
+  }
+  return [];
+}
+function parseMultiAnimalRow(columns, values, skeleton, tracks) {
+  const instancesDict = /* @__PURE__ */ new Map();
+  for (let c = 0; c < columns.length; c += 1) {
+    const [individual, bodypart, coord] = columns[c];
+    if (!individual || individual === "" || individual === "individuals") {
+      continue;
+    }
+    let bps = instancesDict.get(individual);
+    if (!bps) {
+      bps = /* @__PURE__ */ new Map();
+      instancesDict.set(individual, bps);
+    }
+    if (bodypart && bodypart !== "") {
+      let bp = bps.get(bodypart);
+      if (!bp) {
+        bp = {};
+        bps.set(bodypart, bp);
+      }
+      if (coord === "x") bp.x = values[c];
+      else if (coord === "y") bp.y = values[c];
+    }
+  }
+  const instances = [];
+  for (const [individual, bodypartsData] of instancesDict) {
+    const track = tracks.find((t) => t.name === individual) ?? null;
+    let hasValidPoints = false;
+    const pointsData = skeleton.nodeNames.map((name) => {
+      const bp = bodypartsData.get(name);
+      const x = bp?.x;
+      const y = bp?.y;
+      if (x != null && y != null && !Number.isNaN(x) && !Number.isNaN(y)) {
+        hasValidPoints = true;
+        return [Number(x), Number(y)];
+      }
+      return [Number.NaN, Number.NaN];
+    });
+    if (hasValidPoints) {
+      instances.push(Instance.fromNumpy({ pointsData, skeleton, track }));
+    }
+  }
+  return instances;
+}
+function extractFrameIndex(imgPath) {
+  const base = posix.basename(imgPath);
+  const stem = base.replace(/\.[^.]*$/, "");
+  const matches = stem.match(/\d+/g);
+  return matches ? parseInt(matches[matches.length - 1], 10) : 0;
+}
+function videoNameFor(imgPath) {
+  const parts = imgPath.split("/");
+  if (parts.length >= 2 && parts[0] === "labeled-data") {
+    return parts[1];
+  }
+  return posix.basename(posix.dirname(imgPath)) || "default";
+}
+function readDlc(filename, options) {
+  const fsys = options.fs;
+  const cfg = resolveConfig(filename, options.config ?? null, fsys);
+  return loadDlcCsv(filename, {
+    fs: fsys,
+    config: cfg,
+    videoSearchPaths: options.videoSearchPaths
+  });
+}
+function loadDlcCsv(filename, opts) {
+  const fsys = opts.fs;
+  const df = readDlcDataframe(filename, fsys);
+  const { isMultianimal } = df;
+  let skeleton;
+  let tracks;
+  if (opts.skeleton) {
+    skeleton = opts.skeleton;
+    tracks = opts.tracks ?? [];
+  } else {
+    if (isMultianimal) {
+      const parsed = parseMultiAnimalStructure(df);
+      skeleton = parsed.skeleton;
+      tracks = parsed.tracks;
+    } else {
+      skeleton = parseSingleAnimalStructure(df);
+      tracks = [];
+    }
+    if (opts.config != null) {
+      attachConfigSkeleton(skeleton, opts.config);
+    }
+  }
+  const videoImagePaths = /* @__PURE__ */ new Map();
+  const frameMap = /* @__PURE__ */ new Map();
+  for (const imgPath of df.index) {
+    frameMap.set(imgPath, extractFrameIndex(imgPath));
+    const videoName = videoNameFor(imgPath);
+    if (!videoImagePaths.has(videoName)) videoImagePaths.set(videoName, []);
+    videoImagePaths.get(videoName).push(imgPath);
+  }
+  const csvDir = posix.dirname(posix.resolve(filename));
+  const videos = /* @__PURE__ */ new Map();
+  const sortedVideoPaths = /* @__PURE__ */ new Map();
+  for (const [videoName, imgPaths] of videoImagePaths) {
+    const sortedImgPaths = [...imgPaths].sort(
+      (a, b) => (frameMap.get(a) ?? 0) - (frameMap.get(b) ?? 0)
+    );
+    const actualImageFiles = [];
+    for (const imgPath of sortedImgPaths) {
+      const candidates = [
+        posix.join(csvDir, imgPath),
+        posix.join(csvDir, posix.basename(imgPath)),
+        posix.join(posix.dirname(csvDir), imgPath)
+      ];
+      const found = candidates.find((c) => fsys.exists(c));
+      if (found) actualImageFiles.push(found);
+    }
+    if (actualImageFiles.length > 0) {
+      videos.set(
+        videoName,
+        new Video({ filename: actualImageFiles, openBackend: false })
+      );
+      sortedVideoPaths.set(videoName, sortedImgPaths);
+    }
+  }
+  const dlcCrops = {};
+  if (opts.config != null && videos.size > 0) {
+    const stemMap = videoSetsStemMap(opts.config);
+    for (const [videoName, video] of videos) {
+      const result = setSourceVideo(
+        video,
+        videoName,
+        stemMap,
+        fsys,
+        opts.videoSearchPaths
+      );
+      if (result != null && result.rect != null) {
+        dlcCrops[result.path] = [...result.rect];
+      }
+    }
+  }
+  const allFrames = [];
+  for (let r = 0; r < df.index.length; r += 1) {
+    const imgPath = df.index[r];
+    const videoName = videoNameFor(imgPath);
+    if (!videos.has(videoName)) continue;
+    const video = videos.get(videoName);
+    const sortedPaths = sortedVideoPaths.get(videoName);
+    const videoFrameIdx = sortedPaths.indexOf(imgPath);
+    const instances = isMultianimal ? parseMultiAnimalRow(df.columns, df.rows[r], skeleton, tracks) : parseSingleAnimalRow(df.columns, df.rows[r], skeleton);
+    allFrames.push(
+      new LabeledFrame({ video, frameIdx: videoFrameIdx, instances })
+    );
+  }
+  const labels = new Labels({
+    labeledFrames: allFrames,
+    videos: [...videos.values()],
+    tracks,
+    skeletons: skeleton.nodes.length ? [skeleton] : []
+  });
+  if (Object.keys(dlcCrops).length) {
+    labels.provenance.dlc_crops = dlcCrops;
+  }
+  return labels;
+}
+function resolveProjectConfigPath(config, fsys) {
+  if (fsys.exists(config) && fsys.isDirectory(config)) {
+    const candidate = posix.join(config, "config.yaml");
+    if (fsys.exists(candidate) && fsys.isFile(candidate)) {
+      return candidate;
+    }
+    throw new Error(`No config.yaml found in DLC project directory: ${config}`);
+  }
+  return config;
+}
+function findProjectCsvs(projectDir, scorer, fsys) {
+  const labeledDir = posix.join(projectDir, "labeled-data");
+  const folders = [];
+  if (!fsys.exists(labeledDir) || !fsys.isDirectory(labeledDir)) {
+    return folders;
+  }
+  const subs = fsys.readDir(labeledDir).sort();
+  for (const sub of subs) {
+    const subDir = posix.join(labeledDir, sub);
+    if (!fsys.isDirectory(subDir)) continue;
+    let csv = posix.join(subDir, `CollectedData_${scorer}.csv`);
+    if (!fsys.exists(csv) || !fsys.isFile(csv)) {
+      const candidates = fsys.readDir(subDir).filter((f) => f.endsWith(".csv")).sort().map((f) => posix.join(subDir, f)).filter((c) => isDlcFileFs(c, fsys));
+      if (candidates.length === 0) continue;
+      csv = candidates[0];
+    }
+    folders.push([sub, csv]);
+  }
+  return folders;
+}
+function readDlcProject(config, options) {
+  const fsys = options.fs;
+  const videoSearchPaths = options.videoSearchPaths;
+  const configPath = resolveProjectConfigPath(config, fsys);
+  const cfg = readDlcConfig(configPath, fsys);
+  if (cfg === null) {
+    throw new Error(`Could not read DLC config: ${configPath}`);
+  }
+  const projectDir = posix.dirname(configPath);
+  const scorer = cfg.scorer ?? null;
+  const folders = findProjectCsvs(projectDir, scorer, fsys);
+  if (folders.length === 0) {
+    throw new Error(
+      `No DLC annotation CSVs found under ${posix.join(projectDir, "labeled-data")}`
+    );
+  }
+  const nodeNames = [];
+  const trackNames = [];
+  for (const [, csv] of folders) {
+    const df = readDlcDataframe(csv, fsys);
+    if (df.isMultianimal) {
+      const { skeleton: folderSkeleton, tracks: folderTracks } = parseMultiAnimalStructure(df);
+      for (const track of folderTracks) {
+        if (!trackNames.includes(track.name)) trackNames.push(track.name);
+      }
+      for (const name of folderSkeleton.nodeNames) {
+        if (!nodeNames.includes(name)) nodeNames.push(name);
+      }
+    } else {
+      const folderSkeleton = parseSingleAnimalStructure(df);
+      for (const name of folderSkeleton.nodeNames) {
+        if (!nodeNames.includes(name)) nodeNames.push(name);
+      }
+    }
+  }
+  const sharedSkeleton = new Skeleton({
+    nodes: [...new Set(nodeNames)].sort().map((n) => new Node(n))
+  });
+  attachConfigSkeleton(sharedSkeleton, cfg);
+  const sharedTracks = trackNames.map((n) => new Track(n));
+  const allFrames = [];
+  const allVideos = [];
+  const dlcCrops = {};
+  for (const [, csv] of folders) {
+    const folderLabels = loadDlcCsv(csv, {
+      fs: fsys,
+      config: cfg,
+      videoSearchPaths,
+      skeleton: sharedSkeleton,
+      tracks: sharedTracks
+    });
+    allFrames.push(...folderLabels.labeledFrames);
+    allVideos.push(...folderLabels.videos);
+    const crops = folderLabels.provenance.dlc_crops;
+    if (crops) Object.assign(dlcCrops, crops);
+  }
+  const labels = new Labels({
+    labeledFrames: allFrames,
+    videos: allVideos,
+    tracks: sharedTracks,
+    skeletons: sharedSkeleton.nodes.length ? [sharedSkeleton] : []
+  });
+  labels.provenance.dlc_project = String(configPath);
+  labels.provenance.dlc_scorer = scorer;
+  labels.provenance.dlc_task = cfg.Task ?? null;
+  if (Object.keys(dlcCrops).length) {
+    labels.provenance.dlc_crops = dlcCrops;
+  }
+  return labels;
+}
+
+// src/codecs/skeleton-yaml.ts
+import YAML2 from "yaml";
 function getNodeName(entry) {
   if (typeof entry === "string") return entry;
   if (entry && typeof entry.name === "string") return entry.name;
@@ -21287,7 +21904,7 @@ function decodeSkeleton(data, fallbackName) {
   });
 }
 function decodeYamlSkeleton(yamlData) {
-  const parsed = YAML.parse(yamlData);
+  const parsed = YAML2.parse(yamlData);
   if (!parsed) throw new Error("Empty skeleton YAML.");
   if (Object.prototype.hasOwnProperty.call(parsed, "nodes")) {
     return decodeSkeleton(parsed);
@@ -21312,7 +21929,7 @@ function encodeYamlSkeleton(skeletons) {
     });
     payload[name] = { nodes, edges, symmetries };
   });
-  return YAML.stringify(payload);
+  return YAML2.stringify(payload);
 }
 
 // src/codecs/skeleton-json.ts
@@ -22487,6 +23104,23 @@ export {
   decodeSegmentation,
   readCoco,
   readCocoSet,
+  warn,
+  isDlcData,
+  isDlcProjectPath,
+  readDlcConfig,
+  looksLikeDlcConfig,
+  discoverConfig,
+  resolveConfig,
+  attachConfigSkeleton,
+  parseDlcCrop,
+  videoSetsStemMap,
+  setSourceVideo,
+  readDlcDataframe,
+  extractFrameIndex,
+  readDlc,
+  resolveProjectConfigPath,
+  findProjectCsvs,
+  readDlcProject,
   decodeYamlSkeleton,
   encodeYamlSkeleton,
   readSkeletonJson,
