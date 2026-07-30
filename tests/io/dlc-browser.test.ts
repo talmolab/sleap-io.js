@@ -16,6 +16,12 @@ import {
 // path prefixes of every entry.
 // ---------------------------------------------------------------------------
 
+// Separator-agnostic so it can model both POSIX and Windows-style trees (the
+// core's path helper preserves the input separator, so Windows inputs must
+// round-trip with backslashes).
+const sepOf = (p: string): "/" | "\\" =>
+  p.includes("\\") && !p.includes("/") ? "\\" : "/";
+
 function makeMemFs(
   textFiles: Record<string, string>,
   binaryPaths: string[] = [],
@@ -23,9 +29,10 @@ function makeMemFs(
   const files = new Set<string>([...Object.keys(textFiles), ...binaryPaths]);
   const dirs = new Set<string>();
   for (const f of files) {
-    const parts = f.split("/");
+    const sep = sepOf(f);
+    const parts = f.split(/[/\\]/);
     for (let i = 1; i < parts.length; i += 1) {
-      const d = parts.slice(0, i).join("/");
+      const d = parts.slice(0, i).join(sep);
       if (d !== "") dirs.add(d);
     }
   }
@@ -39,12 +46,11 @@ function makeMemFs(
       return t;
     },
     readDir: (p) => {
-      const prefix = `${p}/`;
+      const prefix = `${p}${sepOf(p)}`;
       const names = new Set<string>();
       for (const entry of [...files, ...dirs]) {
         if (entry.startsWith(prefix)) {
-          const rest = entry.slice(prefix.length);
-          const name = rest.split("/")[0];
+          const name = entry.slice(prefix.length).split(/[/\\]/)[0];
           if (name) names.add(name);
         }
       }
@@ -133,5 +139,27 @@ describe("browser-safe DLC core (in-memory DlcFileSystem)", () => {
     expect(isDlcData(CSV)).toBe(true);
     expect(isDlcData("col1,col2,col3\n1,2,3\n")).toBe(false);
     expect(isDlcData("")).toBe(false);
+  });
+
+  it("preserves native Windows separators for backslash-rooted inputs", () => {
+    // The path helper mirrors path.win32 for Windows-style inputs — this runs on
+    // any OS and guards the Node/Windows round-tripping (regression: a POSIX-only
+    // shim emitted forward slashes here, breaking Windows CI).
+    const winFs = makeMemFs(
+      {
+        "C:\\proj\\config.yaml": CONFIG,
+        "C:\\proj\\labeled-data\\vid1\\CollectedData_LM.csv": CSV,
+      },
+      [
+        "C:\\proj\\labeled-data\\vid1\\img000.png",
+        "C:\\proj\\labeled-data\\vid1\\img001.png",
+      ],
+    );
+    const labels = readDlcProject("C:\\proj\\config.yaml", { fs: winFs });
+    expect(labels.skeletons[0].nodeNames).toEqual(["A", "B", "C"]);
+    expect(labels.labeledFrames.length).toBe(2);
+    const fn = labels.videos[0].filename;
+    const first = Array.isArray(fn) ? fn[0] : fn;
+    expect(first).toBe("C:\\proj\\labeled-data\\vid1\\img000.png");
   });
 });

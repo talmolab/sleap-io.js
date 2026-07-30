@@ -105,40 +105,66 @@ export interface DlcFileSystem {
 }
 
 /**
- * Pure POSIX-style path helpers. No `node:path`, no cwd. Callers pass
- * already-absolute/rooted paths (the Node wrappers `path.resolve(...)` inputs
- * at the boundary), so `resolve` only normalizes separators. Backslashes are
- * accepted on input and normalized to `/`.
+ * Pure path helpers that mirror Node's per-platform separator WITHOUT importing
+ * `node:path`, so the browser core stays dependency-free. The separator is
+ * chosen from the input: a Windows-rooted (`C:`) or backslash path uses `\`
+ * (like `path.win32`); everything else uses `/` (like `path.posix`). This keeps
+ * path round-tripping correct on both platforms — the app always feeds POSIX
+ * paths, while io's Node wrappers feed native ones. Callers pass already-
+ * absolute/rooted paths (the Node wrappers `path.resolve(...)` at the boundary).
  */
 const posix = {
+  _sep(parts: string[]): "/" | "\\" {
+    const first = parts.find((p) => p !== "" && p != null);
+    if (
+      first != null &&
+      (/^[A-Za-z]:/.test(first) ||
+        (first.includes("\\") && !first.includes("/")))
+    ) {
+      return "\\";
+    }
+    return "/";
+  },
   join(...parts: string[]): string {
+    const sep = this._sep(parts);
     const first = parts.find((p) => p !== "" && p != null);
     const absolute = first != null && /^[/\\]/.test(first);
+    let drive = "";
     const segs: string[] = [];
     for (const part of parts) {
       if (!part) continue;
-      for (const seg of part.split(/[/\\]+/)) {
+      let s = part;
+      const m = /^([A-Za-z]:)/.exec(s);
+      if (m && !drive && segs.length === 0) {
+        drive = m[1];
+        s = s.slice(2);
+      }
+      for (const seg of s.split(/[/\\]+/)) {
         if (seg) segs.push(seg);
       }
     }
-    const joined = segs.join("/");
-    return absolute ? `/${joined}` : joined;
+    const body = segs.join(sep);
+    if (drive) return `${drive}${sep}${body}`;
+    return absolute ? `${sep}${body}` : body;
   },
   dirname(p: string): string {
-    const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
-    const idx = norm.lastIndexOf("/");
+    const sep = this._sep([p]);
+    const norm = p.replace(/[/\\]+$/, "");
+    const idx = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
     if (idx < 0) return ".";
-    if (idx === 0) return "/";
-    return norm.slice(0, idx);
+    const head = norm.slice(0, idx);
+    if (/^[A-Za-z]:$/.test(head)) return head + sep;
+    if (head === "") return sep;
+    return head;
   },
   basename(p: string): string {
-    const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
-    const idx = norm.lastIndexOf("/");
+    const norm = p.replace(/[/\\]+$/, "");
+    const idx = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
     return idx < 0 ? norm : norm.slice(idx + 1);
   },
   resolve(p: string): string {
-    // No cwd in the browser; the Node wrappers make inputs absolute first.
-    return p.replace(/\\/g, "/");
+    // Already absolute (Node wrappers resolve at the boundary); keep native seps.
+    return p;
   },
 };
 
