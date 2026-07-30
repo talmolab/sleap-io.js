@@ -19,7 +19,7 @@ import {
   readDlcSplit,
   readPickle,
   warnIfNonlexicographic,
-} from "../../src/io/dlc";
+} from "../../src/io/dlc-node";
 import { LabelsSet } from "../../src/model/labels-set";
 
 const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));

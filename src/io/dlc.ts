@@ -1,13 +1,14 @@
 /**
- * DeepLabCut (DLC) format I/O (read path).
+ * DeepLabCut (DLC) format I/O — browser-safe read core.
  *
  * TypeScript port of `sleap_io/io/dlc.py` (READ path only), adapted to the
  * JS/Node data model and runtime.
  *
- * In addition to reading a single DLC annotation CSV ({@link loadDlc}), this
+ * In addition to reading a single DLC annotation CSV ({@link readDlc}), this
  * module can import an entire DLC *project* from its `config.yaml`
- * ({@link loadDlcProject}) and recover the train/test splits stored by
- * `create_training_dataset` ({@link loadDlcSplits}).
+ * ({@link readDlcProject}). Recovering the train/test splits stored by
+ * `create_training_dataset` (`loadDlcSplits`) lives in the Node-only
+ * `dlc-node.ts` wrapper, because it decodes a Python pickle via `Buffer`.
  *
  * ## Format overview
  *
@@ -32,12 +33,17 @@
  * `(x1, y1, x2, y2)`) is recorded under `provenance["dlc_crops"]`, keyed by
  * source-video path. No offset is ever applied to point coordinates.
  *
- * ## Node-only
+ * ## Browser-safe by construction
  *
  * DLC datasets are directory trees of many files (a project dir, per-image
- * folders), so this module reads through the Node `fs`/`path` APIs (like
- * `io/ultralytics.ts` / `io/jabs.ts` / `io/trackmate.ts`) and is exported only
- * from the Node entry point (`src/index.ts`), never the browser bundle.
+ * folders). Rather than read them through the Node `fs`/`path` APIs directly
+ * (which would pull `node:fs` into the browser bundle), this core takes an
+ * injected {@link DlcFileSystem} — a small synchronous view over an already
+ * enumerated directory tree — and uses an internal POSIX path helper. The
+ * Node file-path wrappers (`loadDlc`/`loadDlcProject`/`loadDlcSplits` + the
+ * pickle reader) live in `dlc-node.ts`, which supplies a real-`fs` adapter and
+ * is exported only from the Node entry point. Mirrors the `coco.ts` /
+ * `coco-node.ts` split.
  *
  * ## Divergences from Python `dlc.py`
  *
@@ -53,61 +59,147 @@
  *    message text is preserved so callers / tests can match on substrings.
  * 4. **No `addEdges`.** Edges are added one pair at a time via
  *    `Skeleton.addEdge`, after validating both endpoints exist.
- * 5. **Pickle decoding.** `loadDlcSplits` requires reading a Python pickle
- *    (the DLC `Documentation_data-*.pickle`); a minimal protocol 2-5 opcode
- *    interpreter is implemented here ({@link readPickle}) since the repo has no
- *    pickle dependency. It decodes the train/test index arrays whether they are
- *    plain Python `list[int]` or **numpy integer ndarrays** — the latter being
- *    what real DeepLabCut writes (`SplitTrials` slices `np.random.permutation`
- *    and `save_metadata` pickles the resulting `np.ndarray`s directly). Both
- *    the modern `_frombuffer`/`BYTEARRAY8` and the older `_reconstruct`+`BUILD`
- *    numpy encodings are handled. `loadDlc` / `loadDlcProject` need no pickle.
- * 6. **`**kwargs` ignored.** Python's forwarded loader kwargs (PR #488/#492) are
+ * 5. **`**kwargs` ignored.** Python's forwarded loader kwargs (PR #488/#492) are
  *    modeled as an index signature on the options objects and ignored.
  */
 
-import * as fs from "fs";
-import * as path from "path";
 import YAML from "yaml";
 
 import { Labels } from "../model/labels.js";
-import { LabelsSet } from "../model/labels-set.js";
 import { LabeledFrame } from "../model/labeled-frame.js";
 import { Instance, Track } from "../model/instance.js";
 import { Skeleton, Node } from "../model/skeleton.js";
 import { Video } from "../model/video.js";
 
 /** Emit a warning. Centralized so messages can later be routed. */
-function warn(msg: string): void {
+export function warn(msg: string): void {
   console.warn(msg);
 }
+
+// -----------------------------------------------------------------------------
+// Injected filesystem seam + POSIX path helper (browser-safe)
+// -----------------------------------------------------------------------------
+
+/**
+ * A minimal, **synchronous** view over an already-materialized directory tree.
+ *
+ * The DLC read core never touches a real filesystem: the caller supplies this
+ * seam. In Node, `dlc-node.ts` backs it with `fs`; in the browser/Tauri, the
+ * app pre-enumerates the picked directory and pre-reads the small text files
+ * (config.yaml + CSVs) into an in-memory map, exposing image paths only through
+ * {@link DlcFileSystem.exists} (their pixels are read lazily by the video
+ * backend, never here). All paths are treated as POSIX-ish strings; the app is
+ * responsible for rooting them consistently.
+ */
+export interface DlcFileSystem {
+  /** Whether a file or directory exists at `p`. */
+  exists(p: string): boolean;
+  /** Whether `p` exists and is a regular file. */
+  isFile(p: string): boolean;
+  /** Whether `p` exists and is a directory. */
+  isDirectory(p: string): boolean;
+  /** Read a text file (UTF-8). Only called for config.yaml + CSVs. */
+  readTextFile(p: string): string;
+  /** List the immediate entry names (not full paths) of directory `p`. */
+  readDir(p: string): string[];
+}
+
+/**
+ * Pure path helpers that mirror Node's per-platform separator WITHOUT importing
+ * `node:path`, so the browser core stays dependency-free. The separator is
+ * chosen from the input: a Windows-rooted (`C:`) or backslash path uses `\`
+ * (like `path.win32`); everything else uses `/` (like `path.posix`). This keeps
+ * path round-tripping correct on both platforms — the app always feeds POSIX
+ * paths, while io's Node wrappers feed native ones. Callers pass already-
+ * absolute/rooted paths (the Node wrappers `path.resolve(...)` at the boundary).
+ */
+const posix = {
+  _sep(parts: string[]): "/" | "\\" {
+    const first = parts.find((p) => p !== "" && p != null);
+    if (
+      first != null &&
+      (/^[A-Za-z]:/.test(first) ||
+        (first.includes("\\") && !first.includes("/")))
+    ) {
+      return "\\";
+    }
+    return "/";
+  },
+  join(...parts: string[]): string {
+    const sep = this._sep(parts);
+    const first = parts.find((p) => p !== "" && p != null);
+    const absolute = first != null && /^[/\\]/.test(first);
+    let drive = "";
+    const segs: string[] = [];
+    for (const part of parts) {
+      if (!part) continue;
+      let s = part;
+      const m = /^([A-Za-z]:)/.exec(s);
+      if (m && !drive && segs.length === 0) {
+        drive = m[1];
+        s = s.slice(2);
+      }
+      for (const seg of s.split(/[/\\]+/)) {
+        if (seg) segs.push(seg);
+      }
+    }
+    const body = segs.join(sep);
+    if (drive) return `${drive}${sep}${body}`;
+    return absolute ? `${sep}${body}` : body;
+  },
+  dirname(p: string): string {
+    const sep = this._sep([p]);
+    const norm = p.replace(/[/\\]+$/, "");
+    const idx = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
+    if (idx < 0) return ".";
+    const head = norm.slice(0, idx);
+    if (/^[A-Za-z]:$/.test(head)) return head + sep;
+    if (head === "") return sep;
+    return head;
+  },
+  basename(p: string): string {
+    const norm = p.replace(/[/\\]+$/, "");
+    const idx = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
+    return idx < 0 ? norm : norm.slice(idx + 1);
+  },
+  resolve(p: string): string {
+    // Already absolute (Node wrappers resolve at the boundary); keep native seps.
+    return p;
+  },
+};
 
 // -----------------------------------------------------------------------------
 // File / project detection
 // -----------------------------------------------------------------------------
 
 /**
- * Check if a file appears to be a DLC annotation CSV.
+ * Check whether raw CSV text looks like a DLC annotation CSV.
  *
- * Reads the first four lines as raw text and looks for DLC's characteristic
- * header tokens. Any read error (missing/empty file) yields `false`.
+ * Inspects the first four lines for DLC's characteristic header tokens. This is
+ * the content-based sniff; the Node wrapper `isDlcFile(path)` reads a file and
+ * delegates here.
  */
-export function isDlcFile(filename: string): boolean {
+export function isDlcData(text: string): boolean {
+  const lines = text
+    .split(/\r?\n/)
+    .slice(0, 4)
+    .map((l) => l.trim());
+  const content = lines.join("\n").toLowerCase();
+  if (content.trim() === "") return false;
+  const hasScorer = content.includes("scorer");
+  const hasCoords = content.includes("coords");
+  const hasXy = content.includes("x") && content.includes("y");
+  const hasBodyparts =
+    content.includes("bodyparts") ||
+    content.includes("animal") ||
+    content.includes("individual");
+  return hasScorer && hasCoords && hasXy && hasBodyparts;
+}
+
+/** Read + sniff a CSV through the injected fs; any read error yields `false`. */
+function isDlcFileFs(filename: string, fsys: DlcFileSystem): boolean {
   try {
-    const lines = fs
-      .readFileSync(filename, "utf-8")
-      .split(/\r?\n/)
-      .slice(0, 4)
-      .map((l) => l.trim());
-    const content = lines.join("\n").toLowerCase();
-    const hasScorer = content.includes("scorer");
-    const hasCoords = content.includes("coords");
-    const hasXy = content.includes("x") && content.includes("y");
-    const hasBodyparts =
-      content.includes("bodyparts") ||
-      content.includes("animal") ||
-      content.includes("individual");
-    return hasScorer && hasCoords && hasXy && hasBodyparts;
+    return isDlcData(fsys.readTextFile(filename));
   } catch {
     return false;
   }
@@ -128,21 +220,19 @@ const DLC_CONFIG_KEYS = [
  * `config.yaml` and `labeled-data/`, or a `config.yaml` file validating as a
  * DLC project config).
  */
-export function isDlcProjectPath(filename: string): boolean {
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(filename);
-  } catch {
-    return false;
-  }
-  if (stat.isDirectory()) {
+export function isDlcProjectPath(
+  filename: string,
+  fsys: DlcFileSystem,
+): boolean {
+  if (!fsys.exists(filename)) return false;
+  if (fsys.isDirectory(filename)) {
     return (
-      fs.existsSync(path.join(filename, "config.yaml")) &&
-      fs.existsSync(path.join(filename, "labeled-data"))
+      fsys.exists(posix.join(filename, "config.yaml")) &&
+      fsys.exists(posix.join(filename, "labeled-data"))
     );
   }
-  if (path.basename(filename) === "config.yaml" && stat.isFile()) {
-    const cfg = readDlcConfig(filename);
+  if (posix.basename(filename) === "config.yaml" && fsys.isFile(filename)) {
+    const cfg = readDlcConfig(filename, fsys);
     return cfg !== null && looksLikeDlcConfig(cfg);
   }
   return false;
@@ -152,21 +242,21 @@ export function isDlcProjectPath(filename: string): boolean {
 // Config parsing and discovery
 // -----------------------------------------------------------------------------
 
-type Config = Record<string, unknown>;
+export type Config = Record<string, unknown>;
 
 /**
  * Read a DLC project `config.yaml` into a dictionary, or `null` if the file is
  * missing or does not parse to a mapping. A warning is emitted on failure so a
  * malformed/foreign config never breaks plain CSV loading.
  */
-export function readDlcConfig(p: string): Config | null {
-  if (!fs.existsSync(p) || !fs.statSync(p).isFile()) {
+export function readDlcConfig(p: string, fsys: DlcFileSystem): Config | null {
+  if (!fsys.exists(p) || !fsys.isFile(p)) {
     warn(`DLC config file not found: ${p}`);
     return null;
   }
   let cfg: unknown;
   try {
-    cfg = YAML.parse(fs.readFileSync(p, "utf-8"));
+    cfg = YAML.parse(fsys.readTextFile(p));
   } catch (e) {
     warn(`Failed to parse DLC config ${p}: ${e}`);
     return null;
@@ -191,20 +281,24 @@ export function looksLikeDlcConfig(cfg: unknown): boolean {
  * Search upward from a CSV for a DLC project `config.yaml` (up to `maxLevels`
  * parent directories). Returns the path to a validated config, or `null`.
  */
-export function discoverConfig(csvPath: string, maxLevels = 3): string | null {
-  const start = path.dirname(path.resolve(csvPath));
+export function discoverConfig(
+  csvPath: string,
+  fsys: DlcFileSystem,
+  maxLevels = 3,
+): string | null {
+  const start = posix.dirname(posix.resolve(csvPath));
   const dirs: string[] = [start];
   let cur = start;
   for (let i = 0; i < maxLevels; i += 1) {
-    const parent = path.dirname(cur);
+    const parent = posix.dirname(cur);
     if (parent === cur) break;
     dirs.push(parent);
     cur = parent;
   }
   for (const d of dirs) {
-    const candidate = path.join(d, "config.yaml");
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
-      const cfg = readDlcConfig(candidate);
+    const candidate = posix.join(d, "config.yaml");
+    if (fsys.exists(candidate) && fsys.isFile(candidate)) {
+      const cfg = readDlcConfig(candidate, fsys);
       if (cfg !== null && looksLikeDlcConfig(cfg)) return candidate;
     }
   }
@@ -212,7 +306,7 @@ export function discoverConfig(csvPath: string, maxLevels = 3): string | null {
 }
 
 /**
- * Resolve the `config` argument of {@link loadDlc} to a parsed config dict.
+ * Resolve the `config` argument of {@link readDlc} to a parsed config dict.
  *
  * - `false` disables config entirely (strict legacy output).
  * - `null`/`undefined` auto-discovers `config.yaml` by walking up from the CSV.
@@ -221,13 +315,14 @@ export function discoverConfig(csvPath: string, maxLevels = 3): string | null {
 export function resolveConfig(
   csvPath: string,
   config: string | false | null,
+  fsys: DlcFileSystem,
 ): Config | null {
   if (config === false) return null;
   if (config == null) {
-    const discovered = discoverConfig(csvPath);
-    return discovered !== null ? readDlcConfig(discovered) : null;
+    const discovered = discoverConfig(csvPath, fsys);
+    return discovered !== null ? readDlcConfig(discovered, fsys) : null;
   }
-  return readDlcConfig(config);
+  return readDlcConfig(config, fsys);
 }
 
 /**
@@ -372,6 +467,7 @@ export function setSourceVideo(
   video: Video,
   folderName: string,
   stemMap: Map<string, StemEntry>,
+  fsys: DlcFileSystem,
   searchPaths?: string[],
 ): { path: string; rect: [number, number, number, number] | null } | null {
   const entry = stemMap.get(folderName);
@@ -382,8 +478,8 @@ export function setSourceVideo(
   if (searchPaths?.length) {
     const basename = original.replace(/\\/g, "/").split("/").pop() ?? original;
     for (const dir of searchPaths) {
-      const candidate = path.join(dir, basename);
-      if (fs.existsSync(candidate)) {
+      const candidate = posix.join(dir, basename);
+      if (fsys.exists(candidate)) {
         resolvedPath = candidate;
         break;
       }
@@ -402,7 +498,7 @@ export function setSourceVideo(
 
 type ColumnTuple = [string, string, string];
 
-interface DlcDataframe {
+export interface DlcDataframe {
   index: string[];
   columns: ColumnTuple[];
   /** rows[r][c] aligns to columns[c]; `null` means missing/NaN. */
@@ -414,8 +510,11 @@ interface DlcDataframe {
  * Read a DLC annotation CSV into a flattened-index multi-column table,
  * emulating pandas `read_csv` with multi-row headers.
  */
-export function readDlcDataframe(filename: string): DlcDataframe {
-  const raw = fs.readFileSync(filename, "utf-8").split(/\r?\n/);
+export function readDlcDataframe(
+  filename: string,
+  fsys: DlcFileSystem,
+): DlcDataframe {
+  const raw = fsys.readTextFile(filename).split(/\r?\n/);
   // Strip a single trailing empty line if present.
   if (raw.length > 0 && raw[raw.length - 1] === "") raw.pop();
   const cells = raw.map((line) => line.split(","));
@@ -633,7 +732,7 @@ function parseMultiAnimalRow(
 
 /** Extract the last numeric run from an image filename stem (for sorting). */
 export function extractFrameIndex(imgPath: string): number {
-  const base = path.basename(imgPath);
+  const base = posix.basename(imgPath);
   const stem = base.replace(/\.[^.]*$/, "");
   const matches = stem.match(/\d+/g);
   return matches ? parseInt(matches[matches.length - 1], 10) : 0;
@@ -645,14 +744,16 @@ function videoNameFor(imgPath: string): string {
   if (parts.length >= 2 && parts[0] === "labeled-data") {
     return parts[1];
   }
-  return path.basename(path.dirname(imgPath)) || "default";
+  return posix.basename(posix.dirname(imgPath)) || "default";
 }
 
 // -----------------------------------------------------------------------------
 // Single-CSV loading
 // -----------------------------------------------------------------------------
 
-export interface LoadDlcOptions {
+export interface ReadDlcOptions {
+  /** The injected filesystem seam (required). */
+  fs: DlcFileSystem;
   videoSearchPaths?: string[];
   /**
    * `null`/`undefined` = auto-discover `config.yaml` walking up from the CSV;
@@ -665,21 +766,25 @@ export interface LoadDlcOptions {
 }
 
 /**
- * Load DeepLabCut annotations from a single CSV file.
+ * Load DeepLabCut annotations from a single CSV file, reading through an
+ * injected {@link DlcFileSystem}.
  *
- * @param filename Path to a DLC CSV file.
- * @param options Loader options ({@link LoadDlcOptions}).
+ * @param filename Path to a DLC CSV file (within `options.fs`).
+ * @param options Loader options ({@link ReadDlcOptions}); `fs` is required.
  * @returns A {@link Labels} object with the loaded data.
  */
-export function loadDlc(filename: string, options?: LoadDlcOptions): Labels {
-  const cfg = resolveConfig(filename, options?.config ?? null);
+export function readDlc(filename: string, options: ReadDlcOptions): Labels {
+  const fsys = options.fs;
+  const cfg = resolveConfig(filename, options.config ?? null, fsys);
   return loadDlcCsv(filename, {
+    fs: fsys,
     config: cfg,
-    videoSearchPaths: options?.videoSearchPaths,
+    videoSearchPaths: options.videoSearchPaths,
   });
 }
 
 interface LoadDlcCsvOpts {
+  fs: DlcFileSystem;
   config: Config | null;
   videoSearchPaths?: string[];
   /** Shared skeleton (project load) — skips structure parsing + edge attach. */
@@ -690,7 +795,8 @@ interface LoadDlcCsvOpts {
 
 /** Core single-CSV pipeline. Returns a {@link Labels}. */
 function loadDlcCsv(filename: string, opts: LoadDlcCsvOpts): Labels {
-  const df = readDlcDataframe(filename);
+  const fsys = opts.fs;
+  const df = readDlcDataframe(filename, fsys);
   const { isMultianimal } = df;
 
   // Parse structure (unless a shared skeleton was provided).
@@ -724,7 +830,7 @@ function loadDlcCsv(filename: string, opts: LoadDlcCsvOpts): Labels {
   }
 
   // Create one Video object per video directory.
-  const csvDir = path.dirname(path.resolve(filename));
+  const csvDir = posix.dirname(posix.resolve(filename));
   const videos = new Map<string, Video>();
   const sortedVideoPaths = new Map<string, string[]>();
   for (const [videoName, imgPaths] of videoImagePaths) {
@@ -734,11 +840,11 @@ function loadDlcCsv(filename: string, opts: LoadDlcCsvOpts): Labels {
     const actualImageFiles: string[] = [];
     for (const imgPath of sortedImgPaths) {
       const candidates = [
-        path.join(csvDir, imgPath),
-        path.join(csvDir, path.basename(imgPath)),
-        path.join(path.dirname(csvDir), imgPath),
+        posix.join(csvDir, imgPath),
+        posix.join(csvDir, posix.basename(imgPath)),
+        posix.join(posix.dirname(csvDir), imgPath),
       ];
-      const found = candidates.find((c) => fs.existsSync(c));
+      const found = candidates.find((c) => fsys.exists(c));
       if (found) actualImageFiles.push(found);
     }
     if (actualImageFiles.length > 0) {
@@ -759,6 +865,7 @@ function loadDlcCsv(filename: string, opts: LoadDlcCsvOpts): Labels {
         video,
         videoName,
         stemMap,
+        fsys,
         opts.videoSearchPaths,
       );
       if (result != null && result.rect != null) {
@@ -802,23 +909,22 @@ function loadDlcCsv(filename: string, opts: LoadDlcCsvOpts): Labels {
 // Project loading
 // -----------------------------------------------------------------------------
 
-export interface LoadDlcProjectOptions {
+export interface ReadDlcProjectOptions {
+  /** The injected filesystem seam (required). */
+  fs: DlcFileSystem;
   videoSearchPaths?: string[];
   /** Accepted-and-ignored (PR #488 parity). */
   [key: string]: unknown;
 }
 
 /** Resolve a project argument to a `config.yaml` path. */
-function resolveProjectConfigPath(config: string): string {
-  let stat: fs.Stats | null = null;
-  try {
-    stat = fs.statSync(config);
-  } catch {
-    stat = null;
-  }
-  if (stat?.isDirectory()) {
-    const candidate = path.join(config, "config.yaml");
-    if (fs.existsSync(candidate) && fs.statSync(candidate).isFile()) {
+export function resolveProjectConfigPath(
+  config: string,
+  fsys: DlcFileSystem,
+): string {
+  if (fsys.exists(config) && fsys.isDirectory(config)) {
+    const candidate = posix.join(config, "config.yaml");
+    if (fsys.exists(candidate) && fsys.isFile(candidate)) {
       return candidate;
     }
     throw new Error(`No config.yaml found in DLC project directory: ${config}`);
@@ -827,28 +933,29 @@ function resolveProjectConfigPath(config: string): string {
 }
 
 /** Find per-video annotation CSVs under `labeled-data/`. */
-function findProjectCsvs(
+export function findProjectCsvs(
   projectDir: string,
   scorer: string | null,
+  fsys: DlcFileSystem,
 ): Array<[string, string]> {
-  const labeledDir = path.join(projectDir, "labeled-data");
+  const labeledDir = posix.join(projectDir, "labeled-data");
   const folders: Array<[string, string]> = [];
-  if (!fs.existsSync(labeledDir) || !fs.statSync(labeledDir).isDirectory()) {
+  if (!fsys.exists(labeledDir) || !fsys.isDirectory(labeledDir)) {
     return folders;
   }
-  const subs = fs.readdirSync(labeledDir).sort();
+  const subs = fsys.readDir(labeledDir).sort();
   for (const sub of subs) {
-    const subDir = path.join(labeledDir, sub);
-    if (!fs.statSync(subDir).isDirectory()) continue;
-    let csv = path.join(subDir, `CollectedData_${scorer}.csv`);
-    if (!fs.existsSync(csv) || !fs.statSync(csv).isFile()) {
+    const subDir = posix.join(labeledDir, sub);
+    if (!fsys.isDirectory(subDir)) continue;
+    let csv = posix.join(subDir, `CollectedData_${scorer}.csv`);
+    if (!fsys.exists(csv) || !fsys.isFile(csv)) {
       // Fall back to any DLC-looking CSV in the folder (sorted).
-      const candidates = fs
-        .readdirSync(subDir)
+      const candidates = fsys
+        .readDir(subDir)
         .filter((f) => f.endsWith(".csv"))
         .sort()
-        .map((f) => path.join(subDir, f))
-        .filter((c) => isDlcFile(c));
+        .map((f) => posix.join(subDir, f))
+        .filter((c) => isDlcFileFs(c, fsys));
       if (candidates.length === 0) continue;
       csv = candidates[0];
     }
@@ -858,29 +965,31 @@ function findProjectCsvs(
 }
 
 /**
- * Load an entire DeepLabCut project from its `config.yaml`.
+ * Load an entire DeepLabCut project from its `config.yaml`, reading through an
+ * injected {@link DlcFileSystem}.
  *
  * @param config Path to a `config.yaml`, or to a project directory with one.
- * @param options Loader options ({@link LoadDlcProjectOptions}).
+ * @param options Loader options ({@link ReadDlcProjectOptions}); `fs` required.
  * @returns A {@link Labels} object with frames from every labeled video.
  */
-export function loadDlcProject(
+export function readDlcProject(
   config: string,
-  options?: LoadDlcProjectOptions,
+  options: ReadDlcProjectOptions,
 ): Labels {
-  const videoSearchPaths = options?.videoSearchPaths;
-  const configPath = resolveProjectConfigPath(config);
-  const cfg = readDlcConfig(configPath);
+  const fsys = options.fs;
+  const videoSearchPaths = options.videoSearchPaths;
+  const configPath = resolveProjectConfigPath(config, fsys);
+  const cfg = readDlcConfig(configPath, fsys);
   if (cfg === null) {
     throw new Error(`Could not read DLC config: ${configPath}`);
   }
 
-  const projectDir = path.dirname(configPath);
+  const projectDir = posix.dirname(configPath);
   const scorer = (cfg.scorer as string | undefined) ?? null;
-  const folders = findProjectCsvs(projectDir, scorer);
+  const folders = findProjectCsvs(projectDir, scorer, fsys);
   if (folders.length === 0) {
     throw new Error(
-      `No DLC annotation CSVs found under ${path.join(projectDir, "labeled-data")}`,
+      `No DLC annotation CSVs found under ${posix.join(projectDir, "labeled-data")}`,
     );
   }
 
@@ -888,7 +997,7 @@ export function loadDlcProject(
   const nodeNames: string[] = [];
   const trackNames: string[] = [];
   for (const [, csv] of folders) {
-    const df = readDlcDataframe(csv);
+    const df = readDlcDataframe(csv, fsys);
     if (df.isMultianimal) {
       const { skeleton: folderSkeleton, tracks: folderTracks } =
         parseMultiAnimalStructure(df);
@@ -918,6 +1027,7 @@ export function loadDlcProject(
   const dlcCrops: Record<string, number[]> = {};
   for (const [, csv] of folders) {
     const folderLabels = loadDlcCsv(csv, {
+      fs: fsys,
       config: cfg,
       videoSearchPaths,
       skeleton: sharedSkeleton,
@@ -944,879 +1054,4 @@ export function loadDlcProject(
     labels.provenance.dlc_crops = dlcCrops;
   }
   return labels;
-}
-
-// -----------------------------------------------------------------------------
-// Training-set splits
-// -----------------------------------------------------------------------------
-
-/** Return the `UnaugmentedDataSet` folder for a project iteration. */
-function getTrainingSetFolder(
-  projectDir: string,
-  cfg: Config,
-  iteration: number | undefined,
-): string {
-  const it =
-    iteration == null
-      ? ((cfg.iteration as number | undefined) ?? 0)
-      : iteration;
-  const task = (cfg.Task as string | undefined) ?? "";
-  const date = (cfg.date as string | undefined) ?? "";
-  return path.join(
-    projectDir,
-    "training-datasets",
-    `iteration-${it}`,
-    `UnaugmentedDataSet_${task}${date}`,
-  );
-}
-
-/** Locate the `Documentation_data-*.pickle` for the requested split. */
-function selectDocumentationPickle(
-  projectDir: string,
-  cfg: Config,
-  selectors: {
-    shuffle?: number;
-    trainFraction?: number;
-    iteration?: number;
-  },
-): string {
-  const trainsetDir = getTrainingSetFolder(
-    projectDir,
-    cfg,
-    selectors.iteration,
-  );
-  const pickles = (
-    fs.existsSync(trainsetDir) && fs.statSync(trainsetDir).isDirectory()
-      ? fs
-          .readdirSync(trainsetDir)
-          .filter((f) => /^Documentation_data-.*\.pickle$/.test(f))
-      : []
-  ).sort();
-  if (pickles.length === 0) {
-    throw new Error(
-      `No DLC Documentation_data-*.pickle found in ${trainsetDir}. ` +
-        "Run create_training_dataset in DLC to generate splits.",
-    );
-  }
-
-  const pattern = /^Documentation_data-(.+)_(\d+)shuffle(\d+)\.pickle$/;
-  const parsed: Array<{ path: string; fracInt: number; shuffleInt: number }> =
-    [];
-  for (const name of pickles) {
-    const m = pattern.exec(name);
-    if (m) {
-      parsed.push({
-        path: path.join(trainsetDir, name),
-        fracInt: parseInt(m[2], 10),
-        shuffleInt: parseInt(m[3], 10),
-      });
-    }
-  }
-
-  if (parsed.length === 0) {
-    if (pickles.length === 1) return path.join(trainsetDir, pickles[0]);
-    throw new Error(
-      `Could not parse train_fraction/shuffle from pickles in ${trainsetDir}: ` +
-        JSON.stringify(pickles),
-    );
-  }
-
-  let candidates = parsed;
-  if (selectors.trainFraction != null) {
-    const fracInt = Math.round(selectors.trainFraction * 100);
-    candidates = candidates.filter((c) => c.fracInt === fracInt);
-  }
-  if (selectors.shuffle != null) {
-    candidates = candidates.filter((c) => c.shuffleInt === selectors.shuffle);
-  }
-
-  if (candidates.length === 0) {
-    const available = parsed.map((c) => [
-      path.basename(c.path),
-      c.fracInt,
-      c.shuffleInt,
-    ]);
-    throw new Error(
-      `No Documentation pickle matched train_fraction=${selectors.trainFraction}, ` +
-        `shuffle=${selectors.shuffle}. Available: ${JSON.stringify(available)}`,
-    );
-  }
-  if (candidates.length > 1) {
-    const available = candidates.map((c) => [
-      path.basename(c.path),
-      c.fracInt,
-      c.shuffleInt,
-    ]);
-    throw new Error(
-      "Multiple DLC splits found; specify trainFraction and/or shuffle. " +
-        `Available (name, train%, shuffle): ${JSON.stringify(available)}`,
-    );
-  }
-  return candidates[0].path;
-}
-
-/**
- * Read train/test positional indices from a DLC Documentation pickle.
- *
- * The pickle is a 4-element list `[data, trainIndices, testIndices,
- * trainFraction]`. `trainIndices` (`meta[1]`) and `testIndices` (`meta[2]`) are
- * the only elements consumed. Real DeepLabCut writes these as numpy integer
- * ndarrays (decoded by {@link readPickle} into {@link NumpyArray}); a
- * hand-rolled writer may instead emit plain Python `list[int]`. Both are
- * supported here; the `-1` padding sentinel (from `enforce_train_fraction`) is
- * filtered out, mirroring Python `_read_dlc_split`.
- */
-export function readDlcSplit(picklePath: string): [number[], number[]] {
-  const buf = fs.readFileSync(picklePath);
-  const meta = readPickle(buf) as unknown[];
-  return [extractIndexArray(meta[1]), extractIndexArray(meta[2])];
-}
-
-/**
- * Coerce a decoded pickle value (a numpy int {@link NumpyArray} or a plain
- * `number[]`) into a list of positional indices, dropping `-1` sentinels and
- * any non-finite entries.
- */
-function extractIndexArray(value: unknown): number[] {
-  const raw = value instanceof NumpyArray ? value.values : value;
-  if (!Array.isArray(raw)) return [];
-  return raw.map((i) => Number(i)).filter((i) => i !== -1 && !Number.isNaN(i));
-}
-
-/** Read the scorer name from the first row of a DLC CSV. */
-export function readCsvScorer(csv: string): string | null {
-  let first: string;
-  try {
-    const content = fs.readFileSync(csv, "utf-8");
-    first = content.split(/\r?\n/)[0]?.trim() ?? "";
-  } catch {
-    return null;
-  }
-  const parts = first.split(",");
-  return parts.length > 1 ? parts[1] : null;
-}
-
-/** Reconstruct DLC's globally merged frame order as `(folder, filename)`. */
-export function dlcMergedOrder(
-  projectDir: string,
-  cfg: Config,
-): Array<[string, string]> {
-  const scorer = (cfg.scorer as string | undefined) ?? null;
-  const stemMap = videoSetsStemMap(cfg);
-
-  // Determine the included folders, mirroring DLC's merge skip-rules.
-  const included: Array<[string, string]> = [];
-  for (const stem of stemMap.keys()) {
-    const csv = path.join(
-      projectDir,
-      "labeled-data",
-      stem,
-      `CollectedData_${scorer}.csv`,
-    );
-    if (!fs.existsSync(csv) || !fs.statSync(csv).isFile()) continue;
-    const csvScorer = readCsvScorer(csv);
-    if (scorer != null && csvScorer != null && csvScorer !== scorer) {
-      warn(
-        `Skipping ${csv} labeled by '${csvScorer}' (project scorer is ` +
-          `'${scorer}'); this matches DLC's training-set merge behavior.`,
-      );
-      continue;
-    }
-    included.push([stem, csv]);
-  }
-
-  // Fallback: video_sets stems did not match any labeled-data folder.
-  if (included.length === 0) {
-    for (const [folder, csv] of findProjectCsvs(projectDir, scorer)) {
-      included.push([folder, csv]);
-    }
-  }
-
-  const merged: Array<[string, string]> = [];
-  for (const [, csv] of included) {
-    const df = readDlcDataframe(csv);
-    for (const idx of df.index) {
-      merged.push([path.basename(path.dirname(idx)), path.basename(idx)]);
-    }
-  }
-
-  // DLC applies a global lexicographic sort across all merged frames.
-  merged.sort((a, b) => {
-    if (a[0] < b[0]) return -1;
-    if (a[0] > b[0]) return 1;
-    if (a[1] < b[1]) return -1;
-    if (a[1] > b[1]) return 1;
-    return 0;
-  });
-  return merged;
-}
-
-/** Warn if numeric filename order differs from DLC's lexicographic order. */
-export function warnIfNonlexicographic(merged: Array<[string, string]>): void {
-  const lastDigitsRun = (fname: string): number => {
-    const nums = fname.match(/\d+/g);
-    return nums ? parseInt(nums[nums.length - 1], 10) : -1;
-  };
-  const lexCmp = (a: [string, string], b: [string, string]): number => {
-    if (a[0] < b[0]) return -1;
-    if (a[0] > b[0]) return 1;
-    if (a[1] < b[1]) return -1;
-    if (a[1] > b[1]) return 1;
-    return 0;
-  };
-  const numericCmp = (a: [string, string], b: [string, string]): number => {
-    if (a[0] < b[0]) return -1;
-    if (a[0] > b[0]) return 1;
-    const na = lastDigitsRun(a[1]);
-    const nb = lastDigitsRun(b[1]);
-    if (na !== nb) return na - nb;
-    if (a[1] < b[1]) return -1;
-    if (a[1] > b[1]) return 1;
-    return 0;
-  };
-  const lex = [...merged].sort(lexCmp);
-  const num = [...merged].sort(numericCmp);
-  const differ =
-    lex.length !== num.length ||
-    lex.some((m, i) => m[0] !== num[i][0] || m[1] !== num[i][1]);
-  if (differ) {
-    warn(
-      "DLC split import: image filenames are not zero-padded, so DLC's " +
-        "lexicographic ordering differs from numeric order (e.g. 'img10' < " +
-        "'img2'). Train/test assignment follows DLC's lexicographic order; " +
-        "verify the result.",
-    );
-  }
-}
-
-export interface LoadDlcSplitsOptions {
-  shuffle?: number;
-  trainFraction?: number;
-  iteration?: number;
-  videoSearchPaths?: string[];
-  /** Accepted-and-ignored (PR #488/#492 parity). */
-  [key: string]: unknown;
-}
-
-/**
- * Load DeepLabCut train/test splits from a project's Documentation pickle.
- *
- * @param config Path to a DLC project `config.yaml` (or its project directory).
- * @param options Selector + loader options ({@link LoadDlcSplitsOptions}).
- * @returns A {@link LabelsSet} with `"train"` and `"test"` keys.
- */
-export function loadDlcSplits(
-  config: string,
-  options?: LoadDlcSplitsOptions,
-): LabelsSet {
-  const configPath = resolveProjectConfigPath(config);
-  const cfg = readDlcConfig(configPath);
-  if (cfg === null) {
-    throw new Error(`Could not read DLC config: ${configPath}`);
-  }
-  const projectDir = path.dirname(configPath);
-
-  // Load the full project, then partition its frames into train/test.
-  const labels = loadDlcProject(configPath, {
-    videoSearchPaths: options?.videoSearchPaths,
-  });
-
-  const merged = dlcMergedOrder(projectDir, cfg);
-  warnIfNonlexicographic(merged);
-
-  // Splits require labeled images present so each merged frame maps to a frame.
-  if (merged.length && labels.labeledFrames.length === 0) {
-    warn(
-      "DLC split import: the project's labeled images were not found on " +
-        "disk, so no frames could be loaded and the train/test splits will be " +
-        "empty. Restore the referenced images under 'labeled-data/' (or pass " +
-        "videoSearchPaths) and try again.",
-    );
-  }
-
-  const picklePath = selectDocumentationPickle(projectDir, cfg, {
-    shuffle: options?.shuffle,
-    trainFraction: options?.trainFraction,
-    iteration: options?.iteration,
-  });
-  const [trainIdx, testIdx] = readDlcSplit(picklePath);
-
-  // Build a lookup from (folder \0 filename) -> global LabeledFrame index.
-  const SEP = " ";
-  const lfLookup = new Map<string, number>();
-  for (let g = 0; g < labels.labeledFrames.length; g += 1) {
-    const lf = labels.labeledFrames[g];
-    const filename = lf.video.filename;
-    const fname = Array.isArray(filename) ? filename[lf.frameIdx] : filename;
-    const key = `${path.basename(path.dirname(fname))}${SEP}${path.basename(fname)}`;
-    lfLookup.set(key, g);
-  }
-
-  const mapIndices = (indices: number[]): number[] => {
-    const out: number[] = [];
-    for (const i of indices) {
-      if (i >= 0 && i < merged.length) {
-        const [folder, fname] = merged[i];
-        const g = lfLookup.get(`${folder}${SEP}${fname}`);
-        if (g !== undefined) out.push(g);
-      }
-    }
-    return out;
-  };
-
-  const trainGlobal = mapIndices(trainIdx);
-  const testGlobal = mapIndices(testIdx);
-
-  const train = labels.extract(trainGlobal, true);
-  const test = labels.extract(testGlobal, true);
-
-  return new LabelsSet({ train, test });
-}
-
-// -----------------------------------------------------------------------------
-// Minimal Python pickle reader (protocols 2-5), with numpy int-array decoding
-// -----------------------------------------------------------------------------
-
-/** Placeholder for callables/classes reached via GLOBAL/STACK_GLOBAL. */
-class PickleGlobalRef {
-  constructor(
-    public module: string,
-    public name: string,
-  ) {}
-}
-
-/**
- * Decoded `numpy.dtype` descriptor (enough to interpret an int ndarray's raw
- * bytes). Built from the dtype-name string (e.g. `"i8"`, `"<i4"`, `"u2"`) seen
- * in the dtype reduction; `byteorder` may later be refined by the dtype BUILD
- * state (`"<"`, `">"`, `"="`, `"|"`).
- */
-class NumpyDtype {
-  kind: string; // "i" (signed), "u" (unsigned), "f" (float), etc.
-  itemsize: number; // bytes per element
-  littleEndian: boolean;
-
-  constructor(name: string) {
-    // Names look like "i8" / "<i4" / ">u2" / "=f8". A leading byteorder char is
-    // optional; the trailing digits are the itemsize in bytes.
-    let s = name;
-    let little = true;
-    if (
-      s.length > 0 &&
-      (s[0] === "<" || s[0] === ">" || s[0] === "=" || s[0] === "|")
-    ) {
-      little = s[0] !== ">";
-      s = s.slice(1);
-    }
-    this.kind = s.length > 0 ? s[0] : "i";
-    const size = parseInt(s.slice(1), 10);
-    this.itemsize = Number.isNaN(size) ? 8 : size;
-    this.littleEndian = little;
-  }
-}
-
-/**
- * A decoded numpy integer ndarray, reduced to a flat JS `number[]` of its
- * values. DLC's `trainIndices`/`testIndices` are 1-D int arrays, so only the
- * flat values are retained (shape is not needed by the split reader).
- */
-class NumpyArray {
-  constructor(public values: number[]) {}
-}
-
-/** Coerce a value that may be a `Buffer`/bytes/latin1-string into a `Buffer`. */
-function asByteBuffer(raw: unknown): Buffer | null {
-  if (Buffer.isBuffer(raw)) return raw;
-  if (raw instanceof Uint8Array) return Buffer.from(raw);
-  if (typeof raw === "string") return Buffer.from(raw, "latin1");
-  return null;
-}
-
-/**
- * Decode a contiguous little/big-endian integer buffer into a `number[]`
- * according to a numpy dtype. Handles 1/2/4/8-byte signed and unsigned ints
- * (the dtypes numpy uses for DLC split-index arrays across platforms).
- */
-function decodeIntBuffer(buf: Buffer, dtype: NumpyDtype): number[] {
-  const { itemsize, kind, littleEndian } = dtype;
-  const signed = kind === "i";
-  const out: number[] = [];
-  const n = Math.floor(buf.length / itemsize);
-  for (let i = 0; i < n; i += 1) {
-    const off = i * itemsize;
-    let v: number;
-    switch (itemsize) {
-      case 1:
-        v = signed ? buf.readInt8(off) : buf.readUInt8(off);
-        break;
-      case 2:
-        v = littleEndian
-          ? signed
-            ? buf.readInt16LE(off)
-            : buf.readUInt16LE(off)
-          : signed
-            ? buf.readInt16BE(off)
-            : buf.readUInt16BE(off);
-        break;
-      case 4:
-        v = littleEndian
-          ? signed
-            ? buf.readInt32LE(off)
-            : buf.readUInt32LE(off)
-          : signed
-            ? buf.readInt32BE(off)
-            : buf.readUInt32BE(off);
-        break;
-      case 8: {
-        const big = littleEndian
-          ? signed
-            ? buf.readBigInt64LE(off)
-            : buf.readBigUInt64LE(off)
-          : signed
-            ? buf.readBigInt64BE(off)
-            : buf.readBigUInt64BE(off);
-        v = Number(big);
-        break;
-      }
-      default:
-        // Unknown width: cannot decode reliably; bail with what we have.
-        return out;
-    }
-    out.push(v);
-  }
-  return out;
-}
-
-/**
- * Build a {@link NumpyArray} from a numpy `_frombuffer`/`_reconstruct`+state
- * payload: a raw byte buffer plus its dtype. Returns `null` if the dtype is not
- * an integer dtype we can decode (the split reader only needs int arrays).
- */
-function buildNumpyArray(rawdata: unknown, dtype: unknown): NumpyArray | null {
-  if (!(dtype instanceof NumpyDtype)) return null;
-  if (dtype.kind !== "i" && dtype.kind !== "u") return null;
-  const buf = asByteBuffer(rawdata);
-  if (buf === null) return null;
-  return new NumpyArray(decodeIntBuffer(buf, dtype));
-}
-
-/**
- * Decode a Python pickle into JS values, supporting the subset of opcodes
- * needed for DLC's `Documentation_data-*.pickle`: a shallow
- * `[data, trainIndices, testIndices, trainFraction]` list. `trainIndices` /
- * `testIndices` may be plain Python `list[int]` (as a hand-rolled writer emits)
- * **or** numpy integer ndarrays — which is what real DeepLabCut writes, since
- * `SplitTrials` slices `np.random.permutation(...)` and `save_metadata` pickles
- * the resulting `np.ndarray`s without a `list()` conversion.
- *
- * Numpy arrays are decoded via two reductions:
- *   - modern numpy (1.17+/2.x): `numpy[._]core.numeric._frombuffer(rawbytes,
- *     dtype, shape, order)` — a single `REDUCE`, with `rawbytes` carried by a
- *     `BYTEARRAY8` opcode;
- *   - older numpy: `numpy.core.multiarray._reconstruct(...)` + `BUILD` with
- *     state `(version, shape, dtype, fortran_order, rawdata)`, where `rawdata`
- *     is often a `_codecs.encode(latin1str, 'latin1')` bytes reduction.
- * The `numpy.dtype(name, ...)` reduction is decoded to a {@link NumpyDtype} so
- * the raw bytes can be interpreted (int8/16/32/64, signed/unsigned, byteorder).
- *
- * The DLC split reader only consumes `meta[1]` / `meta[2]`; the lossy `data`
- * payload need not be perfectly reconstructed, so any unrecognized reduction is
- * returned as an opaque marker object.
- */
-export function readPickle(buffer: Buffer): unknown {
-  const MARK = Symbol("mark");
-  const stack: unknown[] = [];
-  const memo = new Map<number, unknown>();
-  let pos = 0;
-
-  const popMark = (): unknown[] => {
-    const items: unknown[] = [];
-    while (stack.length > 0) {
-      const top = stack.pop();
-      if (top === MARK) return items.reverse();
-      items.push(top);
-    }
-    throw new Error("pickle: MARK not found on stack");
-  };
-
-  const readLine = (): string => {
-    let end = pos;
-    while (end < buffer.length && buffer[end] !== 0x0a) end += 1;
-    const s = buffer.toString("latin1", pos, end);
-    pos = end + 1;
-    return s;
-  };
-
-  const reduce = (func: unknown, args: unknown[]): unknown => {
-    if (func instanceof PickleGlobalRef) {
-      // numpy.dtype(name, align, copy) -> a decodable dtype descriptor.
-      if (func.module.startsWith("numpy") && func.name === "dtype") {
-        const name = args[0];
-        if (typeof name === "string") return new NumpyDtype(name);
-        return { __reduce__: [func.module, func.name], args };
-      }
-      // Modern numpy: _frombuffer(rawbytes, dtype, shape, order) -> ndarray.
-      if (func.module.startsWith("numpy") && func.name === "_frombuffer") {
-        const arr = buildNumpyArray(args[0], args[1]);
-        if (arr !== null) return arr;
-      }
-      // Older numpy: _reconstruct(cls, shape, prototype) yields a bare ndarray
-      // whose data arrives later via BUILD state; mark it for `build`.
-      if (
-        func.module.startsWith("numpy") &&
-        (func.name === "_reconstruct" || func.name === "ndarray")
-      ) {
-        return { __numpy__: true } as Record<string, unknown>;
-      }
-      // _codecs.encode(latin1str, "latin1") -> raw bytes Buffer.
-      if (func.module === "_codecs" && func.name === "encode") {
-        const buf = asByteBuffer(args[0]);
-        if (buf !== null) return buf;
-      }
-      return { __reduce__: [func.module, func.name], args };
-    }
-    return { __reduce__: func, args };
-  };
-
-  const build = (obj: unknown, state: unknown): unknown => {
-    // numpy.dtype BUILD: state is (endian, ...); refine byteorder if present.
-    if (obj instanceof NumpyDtype) {
-      if (Array.isArray(state) && typeof state[1] === "string") {
-        const bo = state[1];
-        if (bo === ">") obj.littleEndian = false;
-        else if (bo === "<" || bo === "=") obj.littleEndian = true;
-      }
-      return obj;
-    }
-    // ndarray BUILD: state is (version, shape, dtype, fortran_order, rawdata).
-    if (
-      obj &&
-      typeof obj === "object" &&
-      (obj as Record<string, unknown>).__numpy__
-    ) {
-      if (Array.isArray(state)) {
-        const rawdata = state[state.length - 1];
-        const dtype = state.length >= 3 ? state[2] : undefined;
-        const arr = buildNumpyArray(rawdata, dtype);
-        if (arr !== null) return arr;
-        // Couldn't decode (non-int / unknown dtype); keep an opaque marker.
-        (obj as Record<string, unknown>).rawdata = rawdata;
-      }
-      return obj;
-    }
-    return obj;
-  };
-
-  while (pos < buffer.length) {
-    const op = buffer[pos];
-    pos += 1;
-    switch (op) {
-      case 0x80: // PROTO
-        pos += 1;
-        break;
-      case 0x95: // FRAME
-        pos += 8;
-        break;
-      case 0x2e: // STOP "."
-        return stack.pop();
-      case 0x28: // MARK "("
-        stack.push(MARK);
-        break;
-      case 0x4e: // NONE "N"
-        stack.push(null);
-        break;
-      case 0x88: // NEWTRUE
-        stack.push(true);
-        break;
-      case 0x89: // NEWFALSE
-        stack.push(false);
-        break;
-      // ---- ints ----
-      case 0x4b: // BININT1 "K" (1 byte)
-        stack.push(buffer[pos]);
-        pos += 1;
-        break;
-      case 0x4d: // BININT2 "M" (2 bytes LE)
-        stack.push(buffer.readUInt16LE(pos));
-        pos += 2;
-        break;
-      case 0x4a: // BININT "J" (4 bytes signed LE)
-        stack.push(buffer.readInt32LE(pos));
-        pos += 4;
-        break;
-      case 0x49: {
-        // INT "I" (text)
-        const s = readLine();
-        if (s === "00") stack.push(false);
-        else if (s === "01") stack.push(true);
-        else stack.push(parseInt(s, 10));
-        break;
-      }
-      case 0x8a: {
-        // LONG1 (1-byte length, little-endian signed)
-        const n = buffer[pos];
-        pos += 1;
-        let val = 0;
-        for (let i = 0; i < n; i += 1) val += buffer[pos + i] * 2 ** (8 * i);
-        if (n > 0 && buffer[pos + n - 1] & 0x80) val -= 2 ** (8 * n);
-        pos += n;
-        stack.push(val);
-        break;
-      }
-      case 0x8b: {
-        // LONG4 (4-byte length)
-        const n = buffer.readUInt32LE(pos);
-        pos += 4;
-        let val = 0;
-        for (let i = 0; i < n; i += 1) val += buffer[pos + i] * 2 ** (8 * i);
-        if (n > 0 && buffer[pos + n - 1] & 0x80) val -= 2 ** (8 * n);
-        pos += n;
-        stack.push(val);
-        break;
-      }
-      case 0x4c: {
-        // LONG "L" (text, trailing 'L')
-        const s = readLine().replace(/L$/, "");
-        stack.push(parseInt(s, 10));
-        break;
-      }
-      // ---- floats ----
-      case 0x47: // BINFLOAT "G" (8 bytes BE)
-        stack.push(buffer.readDoubleBE(pos));
-        pos += 8;
-        break;
-      case 0x46: // FLOAT "F" (text)
-        stack.push(parseFloat(readLine()));
-        break;
-      // ---- strings / unicode / bytes ----
-      case 0x8c: {
-        // SHORT_BINUNICODE (1-byte length)
-        const len = buffer[pos];
-        pos += 1;
-        stack.push(buffer.toString("utf-8", pos, pos + len));
-        pos += len;
-        break;
-      }
-      case 0x58: {
-        // BINUNICODE "X" (4-byte length)
-        const len = buffer.readUInt32LE(pos);
-        pos += 4;
-        stack.push(buffer.toString("utf-8", pos, pos + len));
-        pos += len;
-        break;
-      }
-      case 0x8d: {
-        // BINUNICODE8 (8-byte length)
-        const len = Number(buffer.readBigUInt64LE(pos));
-        pos += 8;
-        stack.push(buffer.toString("utf-8", pos, pos + len));
-        pos += len;
-        break;
-      }
-      case 0x55: {
-        // SHORT_BINSTRING "U" (1-byte length)
-        const len = buffer[pos];
-        pos += 1;
-        stack.push(buffer.toString("latin1", pos, pos + len));
-        pos += len;
-        break;
-      }
-      case 0x54: {
-        // BINSTRING "T" (4-byte length)
-        const len = buffer.readUInt32LE(pos);
-        pos += 4;
-        stack.push(buffer.toString("latin1", pos, pos + len));
-        pos += len;
-        break;
-      }
-      case 0x43: {
-        // SHORT_BINBYTES "C" (1-byte length)
-        const len = buffer[pos];
-        pos += 1;
-        stack.push(buffer.subarray(pos, pos + len));
-        pos += len;
-        break;
-      }
-      case 0x42: {
-        // BINBYTES "B" (4-byte length)
-        const len = buffer.readUInt32LE(pos);
-        pos += 4;
-        stack.push(buffer.subarray(pos, pos + len));
-        pos += len;
-        break;
-      }
-      case 0x8e: {
-        // BINBYTES8 (8-byte length)
-        const len = Number(buffer.readBigUInt64LE(pos));
-        pos += 8;
-        stack.push(buffer.subarray(pos, pos + len));
-        pos += len;
-        break;
-      }
-      case 0x96: {
-        // BYTEARRAY8 (8-byte length) — protocol 5; numpy's _frombuffer raw data
-        const len = Number(buffer.readBigUInt64LE(pos));
-        pos += 8;
-        stack.push(buffer.subarray(pos, pos + len));
-        pos += len;
-        break;
-      }
-      // ---- lists ----
-      case 0x5d: // EMPTY_LIST "]"
-        stack.push([]);
-        break;
-      case 0x6c: // LIST "l"
-        stack.push(popMark());
-        break;
-      case 0x61: {
-        // APPEND "a"
-        const value = stack.pop();
-        (stack[stack.length - 1] as unknown[]).push(value);
-        break;
-      }
-      case 0x65: {
-        // APPENDS "e"
-        const items = popMark();
-        const list = stack[stack.length - 1] as unknown[];
-        for (const it of items) list.push(it);
-        break;
-      }
-      // ---- dicts ----
-      case 0x7d: // EMPTY_DICT "}"
-        stack.push(new Map<unknown, unknown>());
-        break;
-      case 0x64: {
-        // DICT "d"
-        const items = popMark();
-        const map = new Map<unknown, unknown>();
-        for (let i = 0; i < items.length; i += 2) {
-          map.set(items[i], items[i + 1]);
-        }
-        stack.push(map);
-        break;
-      }
-      case 0x73: {
-        // SETITEM "s"
-        const value = stack.pop();
-        const key = stack.pop();
-        (stack[stack.length - 1] as Map<unknown, unknown>).set(key, value);
-        break;
-      }
-      case 0x75: {
-        // SETITEMS "u"
-        const items = popMark();
-        const map = stack[stack.length - 1] as Map<unknown, unknown>;
-        for (let i = 0; i < items.length; i += 2) {
-          map.set(items[i], items[i + 1]);
-        }
-        break;
-      }
-      // ---- tuples ----
-      case 0x29: // EMPTY_TUPLE ")"
-        stack.push([]);
-        break;
-      case 0x74: // TUPLE "t"
-        stack.push(popMark());
-        break;
-      case 0x85: {
-        // TUPLE1
-        const a = stack.pop();
-        stack.push([a]);
-        break;
-      }
-      case 0x86: {
-        // TUPLE2
-        const b = stack.pop();
-        const a = stack.pop();
-        stack.push([a, b]);
-        break;
-      }
-      case 0x87: {
-        // TUPLE3
-        const c = stack.pop();
-        const b = stack.pop();
-        const a = stack.pop();
-        stack.push([a, b, c]);
-        break;
-      }
-      // ---- memo ----
-      case 0x71: // BINPUT "q"
-        memo.set(buffer[pos], stack[stack.length - 1]);
-        pos += 1;
-        break;
-      case 0x72: // LONG_BINPUT "r"
-        memo.set(buffer.readUInt32LE(pos), stack[stack.length - 1]);
-        pos += 4;
-        break;
-      case 0x94: // MEMOIZE
-        memo.set(memo.size, stack[stack.length - 1]);
-        break;
-      case 0x70: {
-        // PUT "p" (text)
-        const idx = parseInt(readLine(), 10);
-        memo.set(idx, stack[stack.length - 1]);
-        break;
-      }
-      case 0x68: // BINGET "h"
-        stack.push(memo.get(buffer[pos]));
-        pos += 1;
-        break;
-      case 0x6a: // LONG_BINGET "j"
-        stack.push(memo.get(buffer.readUInt32LE(pos)));
-        pos += 4;
-        break;
-      case 0x67: // GET "g" (text)
-        stack.push(memo.get(parseInt(readLine(), 10)));
-        break;
-      // ---- globals / reduce / build / newobj ----
-      case 0x63: {
-        // GLOBAL "c" (module\nname\n)
-        const module = readLine();
-        const name = readLine();
-        stack.push(new PickleGlobalRef(module, name));
-        break;
-      }
-      case 0x93: {
-        // STACK_GLOBAL
-        const name = stack.pop();
-        const module = stack.pop();
-        stack.push(new PickleGlobalRef(String(module), String(name)));
-        break;
-      }
-      case 0x52: {
-        // REDUCE "R"
-        const args = stack.pop();
-        const func = stack.pop();
-        stack.push(reduce(func, args as unknown[]));
-        break;
-      }
-      case 0x62: {
-        // BUILD "b"
-        const state = stack.pop();
-        const obj = stack[stack.length - 1];
-        stack[stack.length - 1] = build(obj, state);
-        break;
-      }
-      case 0x81: {
-        // NEWOBJ
-        const args = stack.pop();
-        const cls = stack.pop();
-        stack.push(reduce(cls, args as unknown[]));
-        break;
-      }
-      case 0x92: {
-        // NEWOBJ_EX
-        stack.pop(); // kwargs
-        const args = stack.pop();
-        const cls = stack.pop();
-        stack.push(reduce(cls, args as unknown[]));
-        break;
-      }
-      default:
-        throw new Error(
-          `pickle: unsupported opcode 0x${op.toString(16)} at offset ${pos - 1}`,
-        );
-    }
-  }
-  throw new Error("pickle: reached end of buffer without STOP");
 }
