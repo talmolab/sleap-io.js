@@ -18,6 +18,10 @@ import {
   EncodedPacketSink,
   ALL_FORMATS,
 } from "mediabunny";
+import {
+  ensureNativeH264Probe,
+  isLibavDecoderConfigured,
+} from "./libav-h264-decoder.js";
 
 export interface MediaBunnyOptions {
   cacheSize?: number;
@@ -104,6 +108,13 @@ export class MediaBunnyVideoBackend implements VideoBackend {
 
   private async initialize(): Promise<void> {
     if (!this.input) throw new Error("Input not set");
+
+    // If the libav H.264 fallback decoder is configured, make sure the native-
+    // capability probe has resolved before the sink lazily creates its decoder —
+    // the custom decoder's sync `supports()` reads that cached result.
+    if (isLibavDecoderConfigured()) {
+      await ensureNativeH264Probe();
+    }
 
     const videoTrack = await this.input.getPrimaryVideoTrack();
     if (!videoTrack) {
