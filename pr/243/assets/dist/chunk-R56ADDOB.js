@@ -21245,33 +21245,52 @@ function warn(msg) {
   console.warn(msg);
 }
 var posix = {
+  _sep(parts) {
+    const first = parts.find((p) => p !== "" && p != null);
+    if (first != null && (/^[A-Za-z]:/.test(first) || first.includes("\\") && !first.includes("/"))) {
+      return "\\";
+    }
+    return "/";
+  },
   join(...parts) {
+    const sep = this._sep(parts);
     const first = parts.find((p) => p !== "" && p != null);
     const absolute = first != null && /^[/\\]/.test(first);
+    let drive = "";
     const segs = [];
     for (const part of parts) {
       if (!part) continue;
-      for (const seg of part.split(/[/\\]+/)) {
+      let s = part;
+      const m = /^([A-Za-z]:)/.exec(s);
+      if (m && !drive && segs.length === 0) {
+        drive = m[1];
+        s = s.slice(2);
+      }
+      for (const seg of s.split(/[/\\]+/)) {
         if (seg) segs.push(seg);
       }
     }
-    const joined = segs.join("/");
-    return absolute ? `/${joined}` : joined;
+    const body = segs.join(sep);
+    if (drive) return `${drive}${sep}${body}`;
+    return absolute ? `${sep}${body}` : body;
   },
   dirname(p) {
-    const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
-    const idx = norm.lastIndexOf("/");
+    const sep = this._sep([p]);
+    const norm = p.replace(/[/\\]+$/, "");
+    const idx = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
     if (idx < 0) return ".";
-    if (idx === 0) return "/";
-    return norm.slice(0, idx);
+    const head = norm.slice(0, idx);
+    if (/^[A-Za-z]:$/.test(head)) return head + sep;
+    if (head === "") return sep;
+    return head;
   },
   basename(p) {
-    const norm = p.replace(/\\/g, "/").replace(/\/+$/, "");
-    const idx = norm.lastIndexOf("/");
+    const norm = p.replace(/[/\\]+$/, "");
+    const idx = Math.max(norm.lastIndexOf("/"), norm.lastIndexOf("\\"));
     return idx < 0 ? norm : norm.slice(idx + 1);
   },
   resolve(p) {
-    return p.replace(/\\/g, "/");
+    return p;
   }
 };
 function isDlcData(text) {
