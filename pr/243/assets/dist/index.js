@@ -1897,7 +1897,11 @@ function readDlcConfig2(p) {
   return readDlcConfig(p, nodeDlcFileSystem);
 }
 function discoverConfig2(csvPath, maxLevels = 3) {
-  return discoverConfig(path4.resolve(csvPath), nodeDlcFileSystem, maxLevels);
+  return discoverConfig(
+    path4.resolve(csvPath),
+    nodeDlcFileSystem,
+    maxLevels
+  );
 }
 function isDlcProjectPath2(filename) {
   return isDlcProjectPath(filename, nodeDlcFileSystem);
