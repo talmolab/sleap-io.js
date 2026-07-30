@@ -74,6 +74,7 @@ export {
 } from "./io/gdrive.js";
 export * from "./io/geojson.js";
 export * from "./io/coco.js";
+export * from "./io/dlc.js";
 export * from "./codecs/dictionary.js";
 export * from "./codecs/numpy.js";
 export * from "./codecs/skeleton-yaml.js";
