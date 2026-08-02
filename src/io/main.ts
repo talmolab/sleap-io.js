@@ -130,7 +130,7 @@ export async function loadSlp(
  * @param labels - Labels object to save
  * @param filename - Output file path
  * @param options - Save options
- * @param options.embed - Embed video frames: true/"all", "user", "suggestions", "user+suggestions"
+ * @param options.embed - Embed video frames: true/"all", "user", "suggestions", "user+suggestions", "all+suggestions"
  * @param options.restoreOriginalVideos - Restore source video paths on save (default: true)
  */
 export async function saveSlp(
