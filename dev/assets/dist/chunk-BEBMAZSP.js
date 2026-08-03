@@ -4160,6 +4160,61 @@ async function rasterizeBitmap(bitmap) {
     );
   }
 }
+function isImageBitmapLike(value) {
+  if (typeof ImageBitmap !== "undefined" && value instanceof ImageBitmap) {
+    return true;
+  }
+  const v = value;
+  return v != null && typeof v.width === "number" && typeof v.height === "number" && typeof v.close === "function" && v.data === void 0;
+}
+function isImageDataLike(value) {
+  const v = value;
+  return v != null && typeof v.width === "number" && typeof v.height === "number" && (v.data instanceof Uint8ClampedArray || v.data instanceof Uint8Array);
+}
+async function encodeImageDataToPng(img) {
+  if (typeof OffscreenCanvas !== "undefined") {
+    const canvas = new OffscreenCanvas(img.width, img.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Failed to get 2D context to encode a frame to PNG");
+    }
+    ctx.putImageData(img, 0, 0);
+    const blob = await canvas.convertToBlob({ type: "image/png" });
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+  try {
+    const sc = await import("skia-canvas");
+    const scMod = sc;
+    const rgba = img.data instanceof Uint8ClampedArray ? img.data : new Uint8ClampedArray(
+      img.data.buffer,
+      img.data.byteOffset,
+      img.data.byteLength
+    );
+    const skiaImg = new scMod.ImageData(rgba, img.width, img.height);
+    const canvas = new scMod.Canvas(img.width, img.height);
+    const ctx = canvas.getContext("2d");
+    ctx.putImageData(skiaImg, 0, 0);
+    return new Uint8Array(await canvas.toBuffer("png"));
+  } catch (err) {
+    throw new Error(
+      `Encoding a raw frame to PNG requires an image encoder (a browser with OffscreenCanvas, or the optional \`skia-canvas\` package on Node). Original error: ${err.message}`
+    );
+  }
+}
+async function encodeBitmapToPng(bitmap) {
+  if (typeof OffscreenCanvas !== "undefined") {
+    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+    const ctx = canvas.getContext("2d");
+    if (!ctx) {
+      throw new Error("Failed to get 2D context to encode a frame to PNG");
+    }
+    ctx.drawImage(bitmap, 0, 0);
+    const blob = await canvas.convertToBlob({ type: "image/png" });
+    return new Uint8Array(await blob.arrayBuffer());
+  }
+  const img = await rasterizeBitmap(bitmap);
+  return encodeImageDataToPng(img);
+}
 async function decodeEncoded(bytes) {
   if (typeof createImageBitmap !== "undefined" && typeof OffscreenCanvas !== "undefined") {
     const safe = new Uint8Array(bytes);
@@ -4196,7 +4251,7 @@ function isImageBitmap2(value) {
   const v = value;
   return v != null && typeof v.width === "number" && typeof v.height === "number" && typeof v.close === "function" && v.data === void 0;
 }
-function isImageDataLike(value) {
+function isImageDataLike2(value) {
   const v = value;
   return v != null && typeof v.width === "number" && typeof v.height === "number" && (v.data instanceof Uint8ClampedArray || v.data instanceof Uint8Array);
 }
@@ -4375,7 +4430,7 @@ var CropVideoBackend = class _CropVideoBackend {
     if (isImageBitmap2(frame)) {
       return rasterizeBitmap(frame);
     }
-    if (isImageDataLike(frame)) {
+    if (isImageDataLike2(frame)) {
       return frame;
     }
     const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
@@ -16668,7 +16723,11 @@ async function planEmbedding(labels, embedMode) {
         channelOrder: video.backend.embeddedChannelOrder ?? "RGB"
       });
     } else if (isRealMode && video.backend) {
-      const frameData = await collectEncodedFrames(labels, vi, embedMode);
+      const { frameData, encodedFormat } = await collectEncodedFrames(
+        labels,
+        vi,
+        embedMode
+      );
       if (frameData.size === 0) continue;
       const frameNumbers = [...frameData.keys()].sort((a, b) => a - b);
       plan.set(vi, {
@@ -16676,7 +16735,7 @@ async function planEmbedding(labels, embedMode) {
         videoIndex: vi,
         video,
         frameNumbers,
-        format: video.backendMetadata?.format ?? "png",
+        format: encodedFormat ?? video.backendMetadata?.format ?? "png",
         channelOrder: video.backendMetadata?.channel_order ?? "RGB",
         frameData
       });
@@ -16715,13 +16774,15 @@ async function buildSerializableEmbedPlan(labels, embedMode, sourcePath) {
 async function collectEncodedFrames(labels, videoIndex, embedMode) {
   const frameData = /* @__PURE__ */ new Map();
   const video = labels.videos[videoIndex];
-  if (!video?.backend) return frameData;
+  if (!video?.backend) return { frameData, encodedFormat: null };
   const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
   const frameIndices = /* @__PURE__ */ new Set();
+  const includeAllLabeled = mode === "all" || mode === "all+suggestions";
+  const includeSuggestions = mode === "suggestions" || mode === "user+suggestions" || mode === "all+suggestions";
   for (const frame of labels.labeledFrames) {
     if (labels.videos.indexOf(frame.video) !== videoIndex) continue;
     let include = false;
-    if (mode === "all") {
+    if (includeAllLabeled) {
       include = true;
     } else if (mode === "user") {
       include = frame.hasUserInstances;
@@ -16730,21 +16791,30 @@ async function collectEncodedFrames(labels, videoIndex, embedMode) {
     }
     if (include) frameIndices.add(frame.frameIdx);
   }
-  if (mode === "suggestions" || mode === "user+suggestions") {
+  if (includeSuggestions) {
     for (const suggestion of labels.suggestions) {
       if (labels.videos.indexOf(suggestion.video) !== videoIndex) continue;
       frameIndices.add(suggestion.frameIdx);
     }
   }
+  let encodedToPng = false;
   const sortedFrames = Array.from(frameIndices).sort((a, b) => a - b);
   for (const frameIdx of sortedFrames) {
     const frame = await video.getFrame(frameIdx);
-    if (frame) {
-      const bytes = frameToBytes(frame);
-      if (bytes) frameData.set(frameIdx, bytes);
+    if (!frame) continue;
+    let bytes = frameToBytes(frame);
+    if (!bytes) {
+      if (isImageBitmapLike(frame)) {
+        bytes = await encodeBitmapToPng(frame);
+        encodedToPng = true;
+      } else if (isImageDataLike(frame)) {
+        bytes = await encodeImageDataToPng(frame);
+        encodedToPng = true;
+      }
     }
+    if (bytes) frameData.set(frameIdx, bytes);
   }
-  return frameData;
+  return { frameData, encodedFormat: encodedToPng ? "png" : null };
 }
 function frameToBytes(frame) {
   if (frame instanceof Uint8Array) return frame;
