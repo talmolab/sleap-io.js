@@ -23,6 +23,16 @@ export * from "./model/label-image.js";
 export * from "./video/backend.js";
 export * from "./video/mp4box-video.js";
 export * from "./video/mediabunny-video.js";
+export {
+  configureLibavDecoder,
+  isLibavDecoderConfigured,
+  registerLibavH264Decoder,
+  ensureNativeH264Probe,
+  nativeH264DecodableSync,
+  overrideNativeH264Decodable,
+  LibavH264Decoder,
+  type LibavDecoderConfig,
+} from "./video/libav-h264-decoder.js";
 export * from "./video/streaming-hdf5-video.js";
 export * from "./video/image-video.js";
 export {

@@ -1,8 +1,12 @@
-import { VideoBackend } from "./backend.js";
+import type { VideoBackend } from "./backend.js";
 import { Hdf5VideoBackend } from "./hdf5-video.js";
 import { MediaVideoBackend } from "./media-video.js";
 import { Mp4BoxVideoBackend } from "./mp4box-video.js";
 import { MediaBunnyVideoBackend } from "./mediabunny-video.js";
+import {
+  ensureNativeH264Probe,
+  isLibavDecoderConfigured,
+} from "./libav-h264-decoder.js";
 import { SeqVideoBackend } from "./seq-video.js";
 import { ImageVideoBackend } from "./image-video.js";
 import { openH5File } from "../codecs/slp/h5.js";
@@ -184,6 +188,21 @@ export async function createVideoBackend(
     typeof window !== "undefined" &&
     typeof window.VideoDecoder !== "undefined" &&
     typeof window.EncodedVideoChunk !== "undefined";
+
+  // MP4 with the libav H.264 fallback configured: Mp4Box (the default MP4 path)
+  // uses a raw WebCodecs VideoDecoder and has NO custom-decoder hook, so when
+  // native H.264 decode is unavailable (e.g. Linux/WebKitGTK without the codec),
+  // route through MediaBunny instead — that's where the registered software
+  // decoder engages. Only diverts when native genuinely can't decode, so the
+  // Mp4Box happy path is untouched on capable machines.
+  if (ext === "mp4" && isLibavDecoderConfigured()) {
+    const nativeOk = await ensureNativeH264Probe();
+    if (!nativeOk) {
+      if (isBlob)
+        return MediaBunnyVideoBackend.fromBlob(source as Blob, filename);
+      return MediaBunnyVideoBackend.fromUrl(videoUrl, { headers });
+    }
+  }
 
   // MP4: prefer Mp4Box (better sequential performance)
   if (supportsWebCodecs && ext === "mp4") {
