@@ -1,4 +1,5 @@
 import { b5 as VideoBackend, bi as RangeSource$1, b4 as GetFrameOptions, b3 as VideoFrame, L as Labels, S as Skeleton, V as Video, T as Track, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, W as FsResolver, bb as CropRect, bh as Fill, bc as FlatPoints, bd as PointPairs, b0 as UserLabelImage, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-BA-2We_n.js';
+import { CustomVideoDecoder, EncodedPacket } from 'mediabunny';
 
 declare class Mp4BoxVideoBackend implements VideoBackend {
     filename: string;
@@ -99,6 +100,88 @@ declare class MediaBunnyVideoBackend implements VideoBackend {
     close(): void;
     private cacheFrame;
 }
+
+/**
+ * Software H.264 decoder for mediabunny, backed by a libav.js (FFmpeg) WASM build.
+ *
+ * Why: on the Linux desktop build (Tauri → WebKitGTK) many machines cannot decode
+ * H.264 via native WebCodecs (the GStreamer H.264 plugin is omitted for patent
+ * reasons), so MP4 videos render as blank frames. This registers a mediabunny
+ * `CustomVideoDecoder` that decodes H.264 entirely in WASM as a *fallback*.
+ *
+ * ── Zero-regression gate ──────────────────────────────────────────────────────
+ * mediabunny uses a registered custom decoder UNCONDITIONALLY whenever its static
+ * `supports()` returns true — it never falls back to native. So `supports()` gates
+ * on a cached, async native-capability probe (`VideoDecoder.isConfigSupported`):
+ * it returns true ONLY when native H.264 decode is unavailable. On macOS, Windows,
+ * and Linux-with-codec, native works → `supports()` is false → native is used →
+ * no regression. The probe is capability-based, not OS-based (some Linux boxes have
+ * the codec; some browsers lack it).
+ *
+ * ── WASM delivery ─────────────────────────────────────────────────────────────
+ * This module ships no WASM. The embedding app vendors the libav.js build and
+ * points `configureLibavDecoder({ wasmBaseUrl })` at it; the decoder loads the
+ * loader `.mjs` from that base URL at runtime. Keeps an H.264 decoder off npm and
+ * out of everyone's bundle — it loads only when actually needed.
+ *
+ * The decode path (extradata init, AVCC→decode, PTS, B-frame reorder, I420 output)
+ * was validated byte-exact vs native WebCodecs. See docs/plans for the spike.
+ */
+
+interface LibavDecoderConfig {
+    /** Base URL under which the libav.js loader + wasm files are served. */
+    wasmBaseUrl: string;
+    /** Loader entry filename (default: the decoder-h264 variant loader). */
+    loaderFileName?: string;
+}
+/** Configure where the libav.js WASM decoder is loaded from. Call before opening video. */
+declare function configureLibavDecoder(config: LibavDecoderConfig): void;
+/** True once {@link configureLibavDecoder} has been called. */
+declare function isLibavDecoderConfigured(): boolean;
+/**
+ * Test/dev override for the native-H.264 capability the gate sees. Pass `false`
+ * to force the software fallback even on a machine that CAN decode natively
+ * (useful for exercising the decoder end-to-end); `undefined` clears it.
+ */
+declare function overrideNativeH264Decodable(value: boolean | null | undefined): void;
+/**
+ * Resolve (once) whether this environment can decode H.264 via native WebCodecs.
+ * Must complete before the first decode so the sync `supports()` reads a ready
+ * value — {@link MediaBunnyVideoBackend} awaits this in `initialize()`. Returns
+ * the effective capability (honoring {@link overrideNativeH264Decodable}).
+ */
+declare function ensureNativeH264Probe(): Promise<boolean>;
+/**
+ * Synchronous view of the effective capability: `true`/`false` once resolved (or
+ * overridden), `null` before. Used by the routing layer to decide MP4 →
+ * MediaBunny fallback.
+ */
+declare function nativeH264DecodableSync(): boolean | null;
+declare class LibavH264Decoder extends CustomVideoDecoder {
+    private libav;
+    private c;
+    private pkt;
+    private frame;
+    private nalLen;
+    private paramSets;
+    private colorSpace;
+    static supports(codec: string, _config: VideoDecoderConfig): boolean;
+    init(): Promise<void>;
+    decode(packet: EncodedPacket): Promise<void>;
+    flush(): Promise<void>;
+    close(): Promise<void>;
+    private emit;
+    /** Extract the first SPS NAL (Annex-B, without start code) from the avcC. */
+    private spsNal;
+    private parseAvcC;
+    private avccToAnnexB;
+}
+/**
+ * Register the libav H.264 fallback decoder with mediabunny (idempotent) and kick
+ * off the native-capability probe. No-op decode impact on machines with native
+ * H.264 (see the `supports()` gate). Call after {@link configureLibavDecoder}.
+ */
+declare function registerLibavH264Decoder(): Promise<void>;
 
 interface H5WorkerResponse {
     id: number;
@@ -3183,4 +3266,4 @@ interface StreamingSlpOptions {
 }
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { Mp4BoxVideoBackend as $, parseGdrive as A, BlobByteSource as B, type Config as C, type DlcFileSystem as D, urlFromConfirmation as E, checkDownloadHost as F, openGdrive as G, DEFAULT_MAX_BYTES as H, type ImageBytesReader as I, StreamingH5File as J, StreamingH5Writer as K, openStreamingH5 as L, openH5Worker as M, isStreamingSupported as N, isRangeSource as O, type PaletteName as P, serviceRangeBridge as Q, type ReadCocoOptions as R, SeqVideoBackend as S, serviceWriteBridge as T, UnsupportedVideoFormatError as U, type VideoOptions as V, serviceTruncateBridge as W, type StreamingH5Source as X, type RangeSource as Y, type RangeSink as Z, readSlpStreaming as _, type RenderOptions as a, redactUrl as a$, type MediaBunnyOptions as a0, MediaBunnyVideoBackend as a1, StreamingHdf5VideoBackend as a2, type ImageVideoOptions as a3, computePrefetchWindow as a4, ImageVideoBackend as a5, loadSlp as a6, saveSlp as a7, loadAnalysisH5 as a8, saveAnalysisH5 as a9, buildSuggestionsJson as aA, buildVideoSignatures as aB, buildExpectedSidecars as aC, checkInPlaceWritable as aD, onDiskTableFromMeta as aE, writeLabelTablesInPlace as aF, type LabelTable as aG, type LabelTableRows as aH, type LabelTableUpdate as aI, type OnDiskMember as aJ, type OnDiskTable as aK, type OnDiskTables as aL, type OnDiskSidecars as aM, type InPlaceWritable as aN, type DatasetMetaLike as aO, isAnalysisH5File as aP, labelsToCsv as aQ, saveLabelsCsv as aR, type CsvExportOptions as aS, URL_SCHEMES as aT, CLOUD_SCHEMES as aU, GDRIVE_HOSTS as aV, SENSITIVE_HEADERS as aW, SENSITIVE_QUERY_PARAMS as aX, RETRYABLE_STATUSES as aY, isUrl as aZ, isGdriveUrl as a_, saveAnalysisH5ToBytes as aa, loadSlpSet as ab, saveSlpSet as ac, loadVideo as ad, loadLabelImages as ae, setLabelImageFileReader as af, type PagesAs as ag, type LoadLabelImagesOptions as ah, type LabelImageFileReader as ai, saveSlpToBytes as aj, saveSlpStructureToBytes as ak, openSlpWriter as al, SlpStreamWriter as am, saveSlpMergedFromStores as an, saveSlpMergedToSink as ao, type SlpWriteHeader as ap, type AppendStoreOptions as aq, type SlpWriteSink as ar, type MergeStoresOptions as as, buildSerializableEmbedPlan as at, type SerializableEmbedEntry as au, type SerializableEmbedPlan as av, buildLabelTableRows as aw, buildLabelTableUpdate as ax, buildMetadataJson as ay, buildTracksJson as az, type RGB as b, type Overlay as b$, redactedCauseSummary as b0, RemoteIOError as b1, type ResolvedUrl as b2, resolveUrl as b3, statusToMessage as b4, raiseRemote as b5, identityHeaders as b6, stripCrossOriginHeaders as b7, withRetries as b8, parseRetryAfterMs as b9, parseDlcCrop as bA, looksLikeDlcConfig as bB, attachConfigSkeleton as bC, videoSetsStemMap as bD, extractFrameIndex as bE, resolveConfig as bF, setSourceVideo as bG, findProjectCsvs as bH, resolveProjectConfigPath as bI, readDlcDataframe as bJ, type ReadDlcOptions as bK, type ReadDlcProjectOptions as bL, type DlcDataframe as bM, toNumpy as bN, fromNumpy as bO, labelsFromNumpy as bP, decodeYamlSkeleton as bQ, encodeYamlSkeleton as bR, readSkeletonJson as bS, writeSkeletonJson as bT, readTrainingConfigSkeletons as bU, readTrainingConfigSkeleton as bV, isTrainingConfig as bW, type RGBA as bX, type ColorSpec as bY, type ColorScheme as bZ, type MarkerShape as b_, fetchRetrying as ba, headOrRangeProbe as bb, type GeoJSONFeature as bc, type GeoJSONFeatureCollection as bd, roisToGeoJSON as be, roisFromGeoJSON as bf, writeGeoJSON as bg, readGeoJSON as bh, type CocoCategory as bi, type CocoImage as bj, type CocoRle as bk, type CocoSegmentation as bl, type CocoAnnotation as bm, type CocoJson as bn, isCocoData as bo, parseCocoJson as bp, createSkeletonFromCategory as bq, decodeKeypoints as br, decodeCompressedRleCounts as bs, decodeCocoRle as bt, decodeSegmentation as bu, readCoco as bv, readCocoSet as bw, readDlc as bx, readDlcProject as by, isDlcData as bz, type RawLabelImage as c, type VideoOverlay as c0, NAMED_COLORS as c1, PALETTES as c2, getPalette as c3, resolveColor as c4, rgbToCSS as c5, determineColorScheme as c6, drawCircle as c7, drawSquare as c8, drawDiamond as c9, drawTriangle as ca, drawCross as cb, drawTrails as cc, getMarkerFunction as cd, MARKER_FUNCTIONS as ce, type DrawTrailsOptions as cf, resolveTrailNode as cg, computeTrails as ch, nTrailPaletteColors as ci, collectTracks as cj, type TrailTarget as ck, type Trail as cl, RenderContext as cm, InstanceContext as cn, drawMasks as co, drawLabelImage as cp, warn as cq, isDlcProjectPath as cr, readDlcConfig as cs, discoverConfig as ct, clampAlpha as cu, pickColor as cv, anchorCandidate as d, derivePrefixSwap as e, applyPrefixSwap as f, getImageBytesReader as g, resolveFirstExisting as h, formatPath as i, posixDirname as j, posixBasename as k, posixJoin as l, type PosixPath as m, type PrefixSwap as n, type ResolvedVideoSource as o, parsePath as p, SeqHeader as q, resolveVideoSource as r, setImageBytesReader as s, SeqIndex as t, type ByteSource as u, videoPathCandidates as v, createVideoBackend as w, type VideoBackendType as x, CropVideoBackend as y, type CropWrapOptions as z };
+export { isRangeSource as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, CropVideoBackend as J, type CropWrapOptions as K, LibavH264Decoder as L, parseGdrive as M, urlFromConfirmation as N, checkDownloadHost as O, type PaletteName as P, openGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, DEFAULT_MAX_BYTES as T, UnsupportedVideoFormatError as U, type VideoOptions as V, StreamingH5File as W, StreamingH5Writer as X, openStreamingH5 as Y, openH5Worker as Z, isStreamingSupported as _, type RenderOptions as a, URL_SCHEMES as a$, serviceRangeBridge as a0, serviceWriteBridge as a1, serviceTruncateBridge as a2, type StreamingH5Source as a3, type RangeSource as a4, type RangeSink as a5, readSlpStreaming as a6, Mp4BoxVideoBackend as a7, type MediaBunnyOptions as a8, MediaBunnyVideoBackend as a9, type MergeStoresOptions as aA, buildSerializableEmbedPlan as aB, type SerializableEmbedEntry as aC, type SerializableEmbedPlan as aD, buildLabelTableRows as aE, buildLabelTableUpdate as aF, buildMetadataJson as aG, buildTracksJson as aH, buildSuggestionsJson as aI, buildVideoSignatures as aJ, buildExpectedSidecars as aK, checkInPlaceWritable as aL, onDiskTableFromMeta as aM, writeLabelTablesInPlace as aN, type LabelTable as aO, type LabelTableRows as aP, type LabelTableUpdate as aQ, type OnDiskMember as aR, type OnDiskTable as aS, type OnDiskTables as aT, type OnDiskSidecars as aU, type InPlaceWritable as aV, type DatasetMetaLike as aW, isAnalysisH5File as aX, labelsToCsv as aY, saveLabelsCsv as aZ, type CsvExportOptions as a_, StreamingHdf5VideoBackend as aa, type ImageVideoOptions as ab, computePrefetchWindow as ac, ImageVideoBackend as ad, loadSlp as ae, saveSlp as af, loadAnalysisH5 as ag, saveAnalysisH5 as ah, saveAnalysisH5ToBytes as ai, loadSlpSet as aj, saveSlpSet as ak, loadVideo as al, loadLabelImages as am, setLabelImageFileReader as an, type PagesAs as ao, type LoadLabelImagesOptions as ap, type LabelImageFileReader as aq, saveSlpToBytes as ar, saveSlpStructureToBytes as as, openSlpWriter as at, SlpStreamWriter as au, saveSlpMergedFromStores as av, saveSlpMergedToSink as aw, type SlpWriteHeader as ax, type AppendStoreOptions as ay, type SlpWriteSink as az, type RGB as b, writeSkeletonJson as b$, CLOUD_SCHEMES as b0, GDRIVE_HOSTS as b1, SENSITIVE_HEADERS as b2, SENSITIVE_QUERY_PARAMS as b3, RETRYABLE_STATUSES as b4, isUrl as b5, isGdriveUrl as b6, redactUrl as b7, redactedCauseSummary as b8, RemoteIOError as b9, decodeCompressedRleCounts as bA, decodeCocoRle as bB, decodeSegmentation as bC, readCoco as bD, readCocoSet as bE, readDlc as bF, readDlcProject as bG, isDlcData as bH, parseDlcCrop as bI, looksLikeDlcConfig as bJ, attachConfigSkeleton as bK, videoSetsStemMap as bL, extractFrameIndex as bM, resolveConfig as bN, setSourceVideo as bO, findProjectCsvs as bP, resolveProjectConfigPath as bQ, readDlcDataframe as bR, type ReadDlcOptions as bS, type ReadDlcProjectOptions as bT, type DlcDataframe as bU, toNumpy as bV, fromNumpy as bW, labelsFromNumpy as bX, decodeYamlSkeleton as bY, encodeYamlSkeleton as bZ, readSkeletonJson as b_, type ResolvedUrl as ba, resolveUrl as bb, statusToMessage as bc, raiseRemote as bd, identityHeaders as be, stripCrossOriginHeaders as bf, withRetries as bg, parseRetryAfterMs as bh, fetchRetrying as bi, headOrRangeProbe as bj, type GeoJSONFeature as bk, type GeoJSONFeatureCollection as bl, roisToGeoJSON as bm, roisFromGeoJSON as bn, writeGeoJSON as bo, readGeoJSON as bp, type CocoCategory as bq, type CocoImage as br, type CocoRle as bs, type CocoSegmentation as bt, type CocoAnnotation as bu, type CocoJson as bv, isCocoData as bw, parseCocoJson as bx, createSkeletonFromCategory as by, decodeKeypoints as bz, type RawLabelImage as c, readTrainingConfigSkeletons as c0, readTrainingConfigSkeleton as c1, isTrainingConfig as c2, type RGBA as c3, type ColorSpec as c4, type ColorScheme as c5, type MarkerShape as c6, type Overlay as c7, type VideoOverlay as c8, NAMED_COLORS as c9, readDlcConfig as cA, discoverConfig as cB, clampAlpha as cC, pickColor as cD, PALETTES as ca, getPalette as cb, resolveColor as cc, rgbToCSS as cd, determineColorScheme as ce, drawCircle as cf, drawSquare as cg, drawDiamond as ch, drawTriangle as ci, drawCross as cj, drawTrails as ck, getMarkerFunction as cl, MARKER_FUNCTIONS as cm, type DrawTrailsOptions as cn, resolveTrailNode as co, computeTrails as cp, nTrailPaletteColors as cq, collectTracks as cr, type TrailTarget as cs, type Trail as ct, RenderContext as cu, InstanceContext as cv, drawMasks as cw, drawLabelImage as cx, warn as cy, isDlcProjectPath as cz, configureLibavDecoder as d, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };

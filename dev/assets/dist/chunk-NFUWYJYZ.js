@@ -5078,6 +5078,449 @@ function backendTypeName(video) {
   return video.backend?.constructor?.name ?? "";
 }
 
+// src/video/libav-h264-decoder.ts
+import {
+  CustomVideoDecoder,
+  registerDecoder,
+  VideoSample
+} from "mediabunny";
+
+// src/video/h264-colorspace.ts
+var BitReader = class {
+  constructor(buf) {
+    this.buf = buf;
+  }
+  pos = 0;
+  bit() {
+    const byte = this.buf[this.pos >> 3] ?? 0;
+    const b = byte >> 7 - (this.pos & 7) & 1;
+    this.pos++;
+    return b;
+  }
+  bits(n) {
+    let v = 0;
+    for (let i = 0; i < n; i++) v = v << 1 | this.bit();
+    return v >>> 0;
+  }
+  /** Unsigned Exp-Golomb. */
+  ue() {
+    let zeros = 0;
+    while (this.pos < this.buf.length * 8 && this.bit() === 0) zeros++;
+    if (zeros === 0) return 0;
+    return (1 << zeros) - 1 + this.bits(zeros);
+  }
+  /** Signed Exp-Golomb. */
+  se() {
+    const k = this.ue();
+    const sign = k & 1 ? 1 : -1;
+    return sign * Math.ceil(k / 2);
+  }
+  hasMore() {
+    return this.pos < this.buf.length * 8;
+  }
+};
+function stripEmulation(nal) {
+  const out = new Uint8Array(nal.length);
+  let o = 0;
+  for (let i = 0; i < nal.length; i++) {
+    if (i >= 2 && nal[i] === 3 && nal[i - 1] === 0 && nal[i - 2] === 0 && i + 1 < nal.length && nal[i + 1] <= 3) {
+      continue;
+    }
+    out[o++] = nal[i];
+  }
+  return out.subarray(0, o);
+}
+var HIGH_PROFILES = /* @__PURE__ */ new Set([
+  100,
+  110,
+  122,
+  244,
+  44,
+  83,
+  86,
+  118,
+  128,
+  138,
+  139,
+  134,
+  135
+]);
+function skipScalingList(br, size) {
+  let lastScale = 8;
+  let nextScale = 8;
+  for (let j = 0; j < size; j++) {
+    if (nextScale !== 0) {
+      const delta = br.se();
+      nextScale = (lastScale + delta + 256) % 256;
+    }
+    if (nextScale !== 0) lastScale = nextScale;
+  }
+}
+function parseSpsColour(nal) {
+  try {
+    if (nal.length < 4) return null;
+    const rbsp = stripEmulation(nal.subarray(1));
+    const br = new BitReader(rbsp);
+    const profileIdc = br.bits(8);
+    br.bits(8);
+    br.bits(8);
+    br.ue();
+    let chromaFormatIdc = 1;
+    if (HIGH_PROFILES.has(profileIdc)) {
+      chromaFormatIdc = br.ue();
+      if (chromaFormatIdc === 3) br.bit();
+      br.ue();
+      br.ue();
+      br.bit();
+      if (br.bit()) {
+        const count = chromaFormatIdc !== 3 ? 8 : 12;
+        for (let i = 0; i < count; i++) {
+          if (br.bit()) skipScalingList(br, i < 6 ? 16 : 64);
+        }
+      }
+    }
+    br.ue();
+    const pocType = br.ue();
+    if (pocType === 0) {
+      br.ue();
+    } else if (pocType === 1) {
+      br.bit();
+      br.se();
+      br.se();
+      const n = br.ue();
+      for (let i = 0; i < n; i++) br.se();
+    }
+    br.ue();
+    br.bit();
+    br.ue();
+    br.ue();
+    const frameMbsOnly = br.bit();
+    if (!frameMbsOnly) br.bit();
+    br.bit();
+    if (br.bit()) {
+      br.ue();
+      br.ue();
+      br.ue();
+      br.ue();
+    }
+    const vuiPresent = br.bit();
+    if (!vuiPresent) return { fullRange: false };
+    if (br.bit()) {
+      const idc = br.bits(8);
+      if (idc === 255) {
+        br.bits(16);
+        br.bits(16);
+      }
+    }
+    if (br.bit()) br.bit();
+    if (br.bit()) {
+      br.bits(3);
+      const fullRange = br.bit() === 1;
+      if (br.bit()) {
+        const primaries = br.bits(8);
+        const transfer = br.bits(8);
+        const matrix = br.bits(8);
+        return { fullRange, primaries, transfer, matrix };
+      }
+      return { fullRange };
+    }
+    return { fullRange: false };
+  } catch {
+    return null;
+  }
+}
+function mapPrimaries(v) {
+  switch (v) {
+    case 1:
+      return "bt709";
+    case 5:
+      return "bt470bg";
+    case 6:
+    case 7:
+      return "smpte170m";
+    default:
+      return void 0;
+  }
+}
+function mapTransfer(v) {
+  switch (v) {
+    case 1:
+    case 6:
+    case 14:
+    case 15:
+      return "bt709";
+    case 13:
+      return "iec61966-2-1";
+    default:
+      return void 0;
+  }
+}
+function mapMatrix(v) {
+  switch (v) {
+    case 0:
+      return "rgb";
+    case 1:
+      return "bt709";
+    case 5:
+      return "bt470bg";
+    case 6:
+    case 7:
+      return "smpte170m";
+    default:
+      return void 0;
+  }
+}
+function colorSpaceFromSps(nal, config) {
+  const colour = nal ? parseSpsColour(nal) : null;
+  const height = config.codedHeight ?? 720;
+  const sd = height <= 576;
+  const defaultName = sd ? "smpte170m" : "bt709";
+  return {
+    primaries: mapPrimaries(colour?.primaries) ?? defaultName,
+    transfer: mapTransfer(colour?.transfer) ?? (sd ? "smpte170m" : "bt709"),
+    matrix: mapMatrix(colour?.matrix) ?? defaultName,
+    fullRange: colour?.fullRange ?? false
+  };
+}
+
+// src/video/libav-h264-decoder.ts
+var decoderConfig = null;
+function configureLibavDecoder(config) {
+  decoderConfig = {
+    wasmBaseUrl: config.wasmBaseUrl.replace(/\/$/, ""),
+    loaderFileName: config.loaderFileName ?? "libav-6.9.8.1-decoder-h264.mjs"
+  };
+}
+function isLibavDecoderConfigured() {
+  return decoderConfig !== null;
+}
+var nativeProbe = null;
+var nativeCanDecodeH264 = null;
+var nativeOverride;
+function overrideNativeH264Decodable(value) {
+  nativeOverride = value;
+}
+function effectiveNativeH264() {
+  return nativeOverride !== void 0 ? nativeOverride : nativeCanDecodeH264;
+}
+async function ensureNativeH264Probe() {
+  if (nativeProbe === null) {
+    nativeProbe = (async () => {
+      if (typeof VideoDecoder === "undefined") {
+        nativeCanDecodeH264 = false;
+        return;
+      }
+      const codecs = ["avc1.640028", "avc1.4D401E", "avc1.42E01E"];
+      for (const codec of codecs) {
+        try {
+          const support = await VideoDecoder.isConfigSupported({ codec });
+          if (support?.supported) {
+            nativeCanDecodeH264 = true;
+            return;
+          }
+        } catch {
+        }
+      }
+      nativeCanDecodeH264 = false;
+    })();
+  }
+  await nativeProbe;
+  return effectiveNativeH264() === true;
+}
+function nativeH264DecodableSync() {
+  return effectiveNativeH264();
+}
+function shouldUseLibavH264(codec, configured, nativeCanDecode) {
+  return codec === "avc" && configured && nativeCanDecode === false;
+}
+var libavPromise = null;
+async function getLibAV() {
+  if (!decoderConfig) {
+    throw new Error(
+      "libav H.264 decoder used before configureLibavDecoder() was called"
+    );
+  }
+  if (!libavPromise) {
+    const { wasmBaseUrl, loaderFileName } = decoderConfig;
+    libavPromise = (async () => {
+      const url = `${wasmBaseUrl}/${loaderFileName}`;
+      const mod = await import(
+        /* @vite-ignore */
+        /* webpackIgnore: true */
+        url
+      );
+      const factory = mod.default;
+      factory.base = wasmBaseUrl;
+      return factory.LibAV({ noworker: true, nothreads: true });
+    })();
+  }
+  return libavPromise;
+}
+var AV_CODEC_ID_H264 = 27;
+var PTS_TB = 1e6;
+var START_CODE = new Uint8Array([0, 0, 0, 1]);
+var LibavH264Decoder = class extends CustomVideoDecoder {
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  libav = null;
+  c = -1;
+  pkt = -1;
+  frame = -1;
+  nalLen = 4;
+  paramSets = new Uint8Array(0);
+  colorSpace;
+  static supports(codec, _config) {
+    return shouldUseLibavH264(
+      codec,
+      decoderConfig !== null,
+      effectiveNativeH264()
+    );
+  }
+  async init() {
+    this.libav = await getLibAV();
+    const desc = this.config.description ? toU8(this.config.description) : void 0;
+    if (desc) {
+      this.parseAvcC(desc);
+      this.colorSpace = colorSpaceFromSps(this.spsNal(desc), this.config);
+    }
+    const byName = await this.libav.avcodec_find_decoder_by_name("h264");
+    [, this.c, this.pkt, this.frame] = await this.libav.ff_init_decoder(
+      byName ? "h264" : AV_CODEC_ID_H264
+    );
+  }
+  async decode(packet) {
+    const isKey = packet.type === "key";
+    const annexb = this.avccToAnnexB(toU8(packet.data), isKey);
+    const pts = Math.round(packet.timestamp * PTS_TB);
+    const frames = await this.libav.ff_decode_multi(
+      this.c,
+      this.pkt,
+      this.frame,
+      [
+        {
+          data: annexb,
+          pts,
+          ptshi: 0,
+          dts: pts,
+          dtshi: 0,
+          stream_index: 0,
+          flags: isKey ? 1 : 0
+        }
+      ],
+      { fin: false, copyoutFrame: "video_packed" }
+    );
+    for (const f of frames) this.emit(f);
+  }
+  async flush() {
+    if (!this.libav || this.c < 0) return;
+    const frames = await this.libav.ff_decode_multi(
+      this.c,
+      this.pkt,
+      this.frame,
+      [],
+      { fin: true, copyoutFrame: "video_packed" }
+    );
+    for (const f of frames) this.emit(f);
+  }
+  async close() {
+    if (this.libav && this.c >= 0) {
+      try {
+        await this.libav.ff_free_decoder(this.c, this.pkt, this.frame);
+      } catch {
+      }
+    }
+    this.c = this.pkt = this.frame = -1;
+  }
+  emit(f) {
+    const width = f.width;
+    const height = f.height;
+    const ptsMicros = f.pts ?? 0;
+    let displayWidth = width;
+    let displayHeight = height;
+    const sar = f.sample_aspect_ratio;
+    if (sar && sar[0] > 0 && sar[1] > 0 && sar[0] !== sar[1]) {
+      if (sar[0] > sar[1]) displayWidth = Math.round(width * sar[0] / sar[1]);
+      else displayHeight = Math.round(height * sar[1] / sar[0]);
+    }
+    const vf = new VideoFrame(f.data, {
+      format: "I420",
+      codedWidth: width,
+      codedHeight: height,
+      timestamp: ptsMicros,
+      displayWidth,
+      displayHeight,
+      colorSpace: this.colorSpace
+    });
+    this.onSample(new VideoSample(vf, { timestamp: ptsMicros / PTS_TB }));
+  }
+  /** Extract the first SPS NAL (Annex-B, without start code) from the avcC. */
+  spsNal(d) {
+    if (d.length < 8) return null;
+    const numSps = d[5] & 31;
+    if (numSps < 1) return null;
+    const len = d[6] << 8 | d[7];
+    if (8 + len > d.length) return null;
+    return d.subarray(8, 8 + len);
+  }
+  parseAvcC(d) {
+    this.nalLen = (d[4] & 3) + 1;
+    const parts = [];
+    let off = 5;
+    const numSps = d[off++] & 31;
+    for (let i = 0; i < numSps; i++) {
+      const len = d[off] << 8 | d[off + 1];
+      off += 2;
+      parts.push(START_CODE, d.subarray(off, off + len));
+      off += len;
+    }
+    const numPps = d[off++];
+    for (let i = 0; i < numPps; i++) {
+      const len = d[off] << 8 | d[off + 1];
+      off += 2;
+      parts.push(START_CODE, d.subarray(off, off + len));
+      off += len;
+    }
+    this.paramSets = concatBytes(parts);
+  }
+  avccToAnnexB(data, includeParams) {
+    const parts = [];
+    if (includeParams && this.paramSets.length) parts.push(this.paramSets);
+    let off = 0;
+    while (off + this.nalLen <= data.length) {
+      let len = 0;
+      for (let i = 0; i < this.nalLen; i++) len = len << 8 | data[off + i];
+      off += this.nalLen;
+      if (len <= 0 || off + len > data.length) break;
+      parts.push(START_CODE, data.subarray(off, off + len));
+      off += len;
+    }
+    return concatBytes(parts);
+  }
+};
+var registered = false;
+async function registerLibavH264Decoder() {
+  if (!registered) {
+    registered = true;
+    registerDecoder(LibavH264Decoder);
+  }
+  await ensureNativeH264Probe();
+}
+function toU8(buf) {
+  if (buf instanceof Uint8Array) return buf;
+  if (buf instanceof ArrayBuffer) return new Uint8Array(buf);
+  return new Uint8Array(buf.buffer);
+}
+function concatBytes(parts) {
+  let total = 0;
+  for (const p of parts) total += p.length;
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const p of parts) {
+    out.set(p, off);
+    off += p.length;
+  }
+  return out;
+}
+
 // src/video/mediabunny-video.ts
 import {
   Input,
@@ -5147,6 +5590,9 @@ var MediaBunnyVideoBackend = class _MediaBunnyVideoBackend {
   }
   async initialize() {
     if (!this.input) throw new Error("Input not set");
+    if (isLibavDecoderConfigured()) {
+      await ensureNativeH264Probe();
+    }
     const videoTrack = await this.input.getPrimaryVideoTrack();
     if (!videoTrack) {
       throw new Error("No video track found in file");
@@ -13170,6 +13616,14 @@ async function createVideoBackend(source, options) {
     throw new UnsupportedVideoFormatError(ext);
   }
   const supportsWebCodecs = typeof window !== "undefined" && typeof window.VideoDecoder !== "undefined" && typeof window.EncodedVideoChunk !== "undefined";
+  if (ext === "mp4" && isLibavDecoderConfigured()) {
+    const nativeOk = await ensureNativeH264Probe();
+    if (!nativeOk) {
+      if (isBlob)
+        return MediaBunnyVideoBackend.fromBlob(source, filename);
+      return MediaBunnyVideoBackend.fromUrl(videoUrl, { headers });
+    }
+  }
   if (supportsWebCodecs && ext === "mp4") {
     if (isBlob) return new Mp4BoxVideoBackend(source);
     return new Mp4BoxVideoBackend(videoUrl, { headers });
@@ -23078,6 +23532,13 @@ export {
   EXISTS_TTL_MS,
   resolveCropRect,
   Video,
+  configureLibavDecoder,
+  isLibavDecoderConfigured,
+  overrideNativeH264Decodable,
+  ensureNativeH264Probe,
+  nativeH264DecodableSync,
+  LibavH264Decoder,
+  registerLibavH264Decoder,
   MediaBunnyVideoBackend,
   toDict,
   fromDict,
