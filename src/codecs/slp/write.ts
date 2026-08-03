@@ -12,6 +12,12 @@ import type { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import type { Video } from "../../model/video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
+import {
+  encodeBitmapToPng,
+  encodeImageDataToPng,
+  isImageBitmapLike,
+  isImageDataLike,
+} from "../../video/image-decode.js";
 import { getH5Module, getH5FileSystem, ensureH5StagingDir } from "./h5.js";
 import { type ROI, type PredictedROI, encodeWkb } from "../../model/roi.js";
 import type {
@@ -86,9 +92,12 @@ export type SlpWriteOptions = {
  *
  * `kind: "raw"` copies an already-embedded video's stored encoded blobs verbatim
  * via `getFrameBuffer` (no decode / re-encode) — the fast, lossless path that
- * mirrors Python's re-save of a `.pkg.slp`. `kind: "encode"` is the legacy
- * new-embed of a continuous video (read + `getFrame` + `frameToBytes`), kept for
- * Node compatibility.
+ * mirrors Python's re-save of a `.pkg.slp`. `kind: "encode"` is the new-embed
+ * of a continuous video: read each selected frame via `getFrame`, then store its
+ * bytes directly (`frameToBytes`) when the backend already returns encoded bytes,
+ * or PNG-encode it when the backend returns raw pixels (an `ImageBitmap` /
+ * `ImageData` — the MediaBunny / Mp4Box mp4 case). Works in both browser and
+ * Node.
  */
 type EmbedPlanEntry = {
   kind: "raw" | "encode";
@@ -547,6 +556,7 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
  * - `"user"` - Embed only frames with user instances
  * - `"suggestions"` - Embed only suggestion frames
  * - `"user+suggestions"` - Embed user instance frames and suggestion frames
+ * - `"all+suggestions"` - Embed all labeled frames AND all suggestion frames
  * - `"source"` - Restore original video paths (no embedding)
  *
  * ALREADY-EMBEDDED videos (a `.pkg.slp` loaded with open backends) are ALWAYS
@@ -3640,9 +3650,17 @@ async function planEmbedding(
         channelOrder: video.backend!.embeddedChannelOrder ?? "RGB",
       });
     } else if (isRealMode && video.backend) {
-      // New-embed of a continuous video: legacy getFrame+encode path (kept for
-      // Node compat; browser-broken — a separate deferred follow-up).
-      const frameData = await collectEncodedFrames(labels, vi, embedMode);
+      // New-embed of a continuous video: legacy getFrame+encode path. Frames a
+      // backend returns as raw pixels (ImageBitmap/ImageData — the MediaBunny/
+      // Mp4Box mp4 case) are PNG-encoded by collectEncodedFrames; when that
+      // happens the stored `format` MUST be "png" (the encoded bytes ARE PNG),
+      // overriding any codec-ish `backendMetadata.format`, or the reader would
+      // mis-decode.
+      const { frameData, encodedFormat } = await collectEncodedFrames(
+        labels,
+        vi,
+        embedMode,
+      );
       if (frameData.size === 0) continue;
       const frameNumbers = [...frameData.keys()].sort((a, b) => a - b);
       plan.set(vi, {
@@ -3650,7 +3668,8 @@ async function planEmbedding(
         videoIndex: vi,
         video,
         frameNumbers,
-        format: (video.backendMetadata?.format as string) ?? "png",
+        format:
+          encodedFormat ?? (video.backendMetadata?.format as string) ?? "png",
         channelOrder: (video.backendMetadata?.channel_order as string) ?? "RGB",
         frameData,
       });
@@ -3811,18 +3830,28 @@ async function collectEncodedFrames(
   labels: Labels,
   videoIndex: number,
   embedMode: boolean | string,
-): Promise<Map<number, Uint8Array>> {
+): Promise<{
+  frameData: Map<number, Uint8Array>;
+  encodedFormat: string | null;
+}> {
   const frameData = new Map<number, Uint8Array>();
   const video = labels.videos[videoIndex];
-  if (!video?.backend) return frameData;
+  if (!video?.backend) return { frameData, encodedFormat: null };
 
   const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
   const frameIndices = new Set<number>();
+  // "all" and "all+suggestions" both include every labeled frame; the latter
+  // ALSO includes suggestion-only frames (added in the suggestion loop below).
+  const includeAllLabeled = mode === "all" || mode === "all+suggestions";
+  const includeSuggestions =
+    mode === "suggestions" ||
+    mode === "user+suggestions" ||
+    mode === "all+suggestions";
 
   for (const frame of labels.labeledFrames) {
     if (labels.videos.indexOf(frame.video) !== videoIndex) continue;
     let include = false;
-    if (mode === "all") {
+    if (includeAllLabeled) {
       include = true;
     } else if (mode === "user") {
       include = frame.hasUserInstances;
@@ -3832,22 +3861,38 @@ async function collectEncodedFrames(
     if (include) frameIndices.add(frame.frameIdx);
   }
 
-  if (mode === "suggestions" || mode === "user+suggestions") {
+  if (includeSuggestions) {
     for (const suggestion of labels.suggestions) {
       if (labels.videos.indexOf(suggestion.video) !== videoIndex) continue;
       frameIndices.add(suggestion.frameIdx);
     }
   }
 
+  // True once any frame was re-encoded from raw pixels (an ImageBitmap or
+  // ImageData) — those bytes are PNG, so the recorded `format` MUST be "png".
+  // A frame returned as ready-made encoded bytes (e.g. an already-embedded
+  // source) is stored verbatim and does NOT flip this.
+  let encodedToPng = false;
   const sortedFrames = Array.from(frameIndices).sort((a, b) => a - b);
   for (const frameIdx of sortedFrames) {
     const frame = await video.getFrame(frameIdx);
-    if (frame) {
-      const bytes = frameToBytes(frame);
-      if (bytes) frameData.set(frameIdx, bytes);
+    if (!frame) continue;
+    let bytes = frameToBytes(frame);
+    if (!bytes) {
+      // The MediaBunny/Mp4Box (and image/seq) backends return raw pixels
+      // (ImageBitmap / ImageData) rather than encoded bytes; PNG-encode them
+      // so the frame is actually embedded instead of silently dropped.
+      if (isImageBitmapLike(frame)) {
+        bytes = await encodeBitmapToPng(frame as ImageBitmap);
+        encodedToPng = true;
+      } else if (isImageDataLike(frame)) {
+        bytes = await encodeImageDataToPng(frame);
+        encodedToPng = true;
+      }
     }
+    if (bytes) frameData.set(frameIdx, bytes);
   }
-  return frameData;
+  return { frameData, encodedFormat: encodedToPng ? "png" : null };
 }
 
 /**
