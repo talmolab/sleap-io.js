@@ -134,27 +134,53 @@ export function parseTrackName(containerName: string): string | null {
 }
 
 /**
- * Recover integer frame indices for one PoseEstimationSeries.
+ * Raw per-sample times for one PoseEstimationSeries (NOT yet frame indices).
  *
- * When `timestamps` is present (even if empty), each is rounded to the nearest
- * integer frame (SLEAP encodes frame numbers as integer timestamps). Otherwise
- * frames are consecutive from `startingTime`: `round(startingTime) + i` for
- * `i` in `0..count-1` (rate is effectively 0/absent for SLEAP).
+ * NWB records a TIME per sample, not a frame number. When `timestamps` is
+ * present, those are the times as-is; otherwise samples are consecutive from
+ * `startingTime` (`startingTime + i`), since SLEAP writes contiguous frames as
+ * `starting_time` + implicit step. The times are resolved to frame indices at
+ * the TRACK level (see {@link resolveTrackFrameIndices}) so a whole track shares
+ * one canonical timeline.
  *
  * @internal Exported for unit testing.
  */
-export function recoverFrameIndices(
+export function seriesSampleTimes(
   timestamps: ArrayLike<number> | null | undefined,
   startingTime: number | undefined,
   count: number,
 ): number[] {
-  if (timestamps != null) {
-    return Array.from(timestamps, (t) => Math.round(Number(t)));
-  }
-  const base = Math.round(startingTime ?? 0);
+  if (timestamps != null) return Array.from(timestamps, (t) => Number(t));
+  const base = startingTime ?? 0;
   const out: number[] = [];
   for (let i = 0; i < count; i++) out.push(base + i);
   return out;
+}
+
+/**
+ * Resolve a track's sorted-unique sample times to integer frame indices.
+ *
+ * Two regimes, chosen so a frame is never silently lost:
+ *  - **Integer-preserving (default):** if rounding the times yields all-distinct
+ *    values, use `round(time)` directly. This keeps the REAL frame numbers,
+ *    gaps and all (times `1, 60` → frames `1, 60`) — strictly better than the
+ *    reference reader, which collapses sparsity to `0, 1`.
+ *  - **Positional fallback (collision guard):** if rounding maps two distinct
+ *    times onto the SAME frame (e.g. seconds-unit times `0.0, 0.3` → `0, 0`),
+ *    the timing is in non-frame units we can't recover, so assign dense
+ *    positional indices `0..n-1` — matching sleap-io's `union1d`+`searchsorted`
+ *    behavior — rather than stacking two instances on one frame.
+ *
+ * `uniqueSortedTimes` must be the sorted, de-duplicated times of the track.
+ *
+ * @internal Exported for unit testing.
+ */
+export function resolveTrackFrameIndices(
+  uniqueSortedTimes: number[],
+): number[] {
+  const rounded = uniqueSortedTimes.map((t) => Math.round(t));
+  const noCollision = new Set(rounded).size === uniqueSortedTimes.length;
+  return noCollision ? rounded : uniqueSortedTimes.map((_, i) => i);
 }
 
 // =============================================================================
@@ -332,8 +358,17 @@ export async function readNwbPredictions(
         }
       }
 
-      // frameIdx -> per-node [x, y, score] rows (NaN default) for this track.
-      const trackFrames = new Map<number, number[][]>();
+      // PASS 1: collect each node-series' raw sample times + point rows. NWB
+      // stores a TIME per sample, so frame indices are resolved at the TRACK
+      // level (below) over the union of all series' times — this shared
+      // timeline is what lets the collision guard place samples consistently.
+      interface SeriesSamples {
+        ni: number;
+        times: number[];
+        data: number[]; // flat [x0,y0, x1,y1, ...]
+        conf: number[] | null;
+      }
+      const seriesList: SeriesSamples[] = [];
 
       for (const seriesKey of poseGroup.keys()) {
         const seriesPath = `${posePath}/${seriesKey}`;
@@ -349,12 +384,6 @@ export async function readNwbPredictions(
         const dataShape = shapeToNumbers(dataEntity.shape);
         const T = dataShape.length ? dataShape[0] : 0;
         if (T === 0) continue; // empty series → all-NaN node, no samples.
-        const dataFlat = toNumberArray(dataEntity.value);
-
-        const confEntity = root.get(`${seriesPath}/confidence`);
-        const conf = isDataset(confEntity)
-          ? toNumberArray(confEntity.value)
-          : null;
 
         const tsEntity = root.get(`${seriesPath}/timestamps`);
         const timestamps = isDataset(tsEntity)
@@ -363,10 +392,32 @@ export async function readNwbPredictions(
         const startingTime = readScalarNumber(
           root.get(`${seriesPath}/starting_time`),
         );
-        const frameIdxs = recoverFrameIndices(timestamps, startingTime, T);
+        const confEntity = root.get(`${seriesPath}/confidence`);
 
-        for (let i = 0; i < T; i++) {
-          const fidx = frameIdxs[i];
+        seriesList.push({
+          ni,
+          times: seriesSampleTimes(timestamps, startingTime, T),
+          data: toNumberArray(dataEntity.value),
+          conf: isDataset(confEntity) ? toNumberArray(confEntity.value) : null,
+        });
+      }
+
+      // Build the track's canonical time → frameIdx map (collision-guarded).
+      const uniqueTimes = Array.from(
+        new Set(seriesList.flatMap((s) => s.times)),
+      ).sort((a, b) => a - b);
+      const frameForUnique = resolveTrackFrameIndices(uniqueTimes);
+      const timeToFrame = new Map<number, number>();
+      for (let i = 0; i < uniqueTimes.length; i++) {
+        timeToFrame.set(uniqueTimes[i], frameForUnique[i]);
+      }
+
+      // PASS 2: scatter each series' samples into per-frame node rows.
+      // frameIdx -> per-node [x, y, score] rows (NaN default) for this track.
+      const trackFrames = new Map<number, number[][]>();
+      for (const s of seriesList) {
+        for (let i = 0; i < s.times.length; i++) {
+          const fidx = timeToFrame.get(s.times[i]);
           if (fidx === undefined) continue;
           let rows = trackFrames.get(fidx);
           if (!rows) {
@@ -377,9 +428,9 @@ export async function readNwbPredictions(
             ]);
             trackFrames.set(fidx, rows);
           }
-          rows[ni][0] = dataFlat[i * 2];
-          rows[ni][1] = dataFlat[i * 2 + 1];
-          rows[ni][2] = conf ? (conf[i] ?? Number.NaN) : Number.NaN;
+          rows[s.ni][0] = s.data[i * 2];
+          rows[s.ni][1] = s.data[i * 2 + 1];
+          rows[s.ni][2] = s.conf ? (s.conf[i] ?? Number.NaN) : Number.NaN;
         }
       }
 

@@ -20,7 +20,8 @@ import fs from "node:fs";
 import { loadNwb, readNwb, isNwbFile } from "../../src/io/main.js";
 import {
   parseTrackName,
-  recoverFrameIndices,
+  seriesSampleTimes,
+  resolveTrackFrameIndices,
 } from "../../src/io/nwb-predictions.js";
 
 const fixtureRoot = fileURLToPath(new URL("../data", import.meta.url));
@@ -55,25 +56,49 @@ describe("NWB predictions import — pure helpers", () => {
     });
   });
 
-  describe("recoverFrameIndices", () => {
-    it("uses integer-rounded timestamps when present", () => {
-      expect(recoverFrameIndices([0, 2, 3], undefined, 3)).toEqual([0, 2, 3]);
-    });
-    it("rounds float timestamps to the nearest integer frame", () => {
-      expect(recoverFrameIndices([0.9, 1.1, 4.4], undefined, 3)).toEqual([
-        1, 1, 4,
+  describe("seriesSampleTimes", () => {
+    it("uses timestamps as-is (raw times, not yet frame indices)", () => {
+      expect(seriesSampleTimes([0, 2.67, 5.33], undefined, 3)).toEqual([
+        0, 2.67, 5.33,
       ]);
     });
     it("falls back to starting_time + i when no timestamps", () => {
-      expect(recoverFrameIndices(null, 0, 3)).toEqual([0, 1, 2]);
-      expect(recoverFrameIndices(undefined, 5, 2)).toEqual([5, 6]);
+      expect(seriesSampleTimes(null, 0, 3)).toEqual([0, 1, 2]);
+      expect(seriesSampleTimes(undefined, 5, 2)).toEqual([5, 6]);
     });
     it("defaults starting_time to 0 when absent", () => {
-      expect(recoverFrameIndices(null, undefined, 3)).toEqual([0, 1, 2]);
+      expect(seriesSampleTimes(null, undefined, 3)).toEqual([0, 1, 2]);
     });
     it("returns [] for an empty series", () => {
-      expect(recoverFrameIndices([], undefined, 0)).toEqual([]);
-      expect(recoverFrameIndices(null, 0, 0)).toEqual([]);
+      expect(seriesSampleTimes([], undefined, 0)).toEqual([]);
+      expect(seriesSampleTimes(null, 0, 0)).toEqual([]);
+    });
+  });
+
+  describe("resolveTrackFrameIndices", () => {
+    it("preserves real integer frame numbers, gaps and all", () => {
+      // times ARE frame indices → keep them (better than positional 0,1,2).
+      expect(resolveTrackFrameIndices([0, 1, 2])).toEqual([0, 1, 2]);
+      expect(resolveTrackFrameIndices([1, 60])).toEqual([1, 60]);
+      expect(resolveTrackFrameIndices([0, 40, 80])).toEqual([0, 40, 80]);
+    });
+    it("rounds near-integer times to their frame", () => {
+      expect(resolveTrackFrameIndices([0.9, 4.1])).toEqual([1, 4]);
+    });
+    it("falls back to positional indices when rounding collides", () => {
+      // sub-frame seconds (0.0, 0.3 both round to 0) → don't stack; go positional.
+      expect(resolveTrackFrameIndices([0, 0.3])).toEqual([0, 1]);
+      expect(resolveTrackFrameIndices([0, 0.3, 0.6, 0.9])).toEqual([
+        0, 1, 2, 3,
+      ]);
+    });
+    it("keeps distinct-after-rounding seconds without collapsing", () => {
+      // 0, 2.67, 5.33 round to 0,3,5 (distinct) → kept, not positional.
+      expect(resolveTrackFrameIndices([0, 2.67, 5.33])).toEqual([0, 3, 5]);
+    });
+    it("handles empty + single", () => {
+      expect(resolveTrackFrameIndices([])).toEqual([]);
+      expect(resolveTrackFrameIndices([7])).toEqual([7]);
     });
   });
 });
