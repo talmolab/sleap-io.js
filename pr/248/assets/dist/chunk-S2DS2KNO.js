@@ -19021,7 +19021,9 @@ async function readNwbPredictions(file, options) {
       ).sort((a, b) => a - b);
       const frameForUnique = resolveTrackFrameIndices(uniqueTimes);
       const timeToFrame = /* @__PURE__ */ new Map();
-      uniqueTimes.forEach((t, i) => timeToFrame.set(t, frameForUnique[i]));
+      for (let i = 0; i < uniqueTimes.length; i++) {
+        timeToFrame.set(uniqueTimes[i], frameForUnique[i]);
+      }
       const trackFrames = /* @__PURE__ */ new Map();
       for (const s of seriesList) {
         for (let i = 0; i < s.times.length; i++) {
