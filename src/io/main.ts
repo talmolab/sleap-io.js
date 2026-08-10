@@ -16,6 +16,7 @@ import {
   writeLabels as writeAnalysisH5,
   writeLabelsToBytes as writeAnalysisH5ToBytes,
 } from "./analysis-h5.js";
+import { readNwb } from "./nwb.js";
 
 // TIFF label-image reader (browser-safe core; Node path reading is registered
 // via the side-effect import of ./label-images-node.js in the Node entry).
@@ -316,6 +317,26 @@ export async function saveAnalysisH5ToBytes(
 
 /** Re-export the Analysis HDF5 format detector for public use. */
 export { isAnalysisH5File } from "./analysis-h5.js";
+
+/** NWB (ndx-pose) predictions reader + format detector. */
+export { readNwb, isNwbFile } from "./nwb.js";
+
+/**
+ * Load an NWB (ndx-pose) predictions file into a {@link Labels} object.
+ *
+ * Mirrors {@link loadAnalysisH5}: bytes-accepting public wrapper over
+ * {@link readNwb}. Reads an ndx-pose `PoseEstimation` file, recovering track
+ * identity (from the `track={name}` container names) and integer frame indices
+ * (from each series' timestamps / `starting_time`). Annotations (`PoseTraining`)
+ * are not yet supported.
+ *
+ * @param filename - Path or bytes accepted by `openH5File`.
+ */
+export async function loadNwb(
+  filename: string | ArrayBuffer | Uint8Array,
+): Promise<Labels> {
+  return readNwb(filename);
+}
 
 /** SLEAP Analysis CSV export (browser-safe string + Node file write). */
 export {

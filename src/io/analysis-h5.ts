@@ -42,6 +42,15 @@ import {
   nodeFileExists,
   nodeReadPackageVersion,
 } from "../codecs/slp/h5.js";
+import {
+  getDs,
+  decodeStringElement,
+  decodeStringArray,
+  decodeScalarString,
+  unwrapAttr,
+  readStringAttr,
+  type H5ReadFile,
+} from "./h5-read-utils.js";
 
 // =============================================================================
 // Preset definitions (port of PRESETS / _get_axis_order / _get_transpose_axes /
@@ -258,94 +267,11 @@ function renumberOrder(order: AxisOrder, keep: string[]): AxisOrder {
 // HDF5 read helpers (string / scalar / attr decoding)
 // =============================================================================
 
+// The string / scalar / attribute decode primitives and the `getDs` dataset
+// fetch are shared with the other HDF5-backed readers; they are imported from
+// ./h5-read-utils.js at the top of this module. A module-local TextDecoder
+// remains for readDimsAttr's JSON-string decode path below.
 const textDecoder = new TextDecoder();
-
-/** Minimal h5wasm dataset surface used by the reader. */
-interface H5ReadDataset {
-  value: unknown;
-  shape?: ArrayLike<number | bigint>;
-  attrs?: Record<string, unknown>;
-}
-
-/** Minimal h5wasm file surface used by the reader. */
-interface H5ReadFile {
-  get(name: string): unknown;
-  attrs?: Record<string, unknown>;
-}
-
-/**
- * Fetch a dataset by name as a typed {@link H5ReadDataset}.
- *
- * `openH5File`'s `file.get` is typed to return the broad `Entity` union; the
- * datasets in this format are always plain numeric/string datasets, so we cast
- * to the minimal value/shape/attrs surface we actually use. Returns null when
- * absent or when the entity carries no `value` (e.g. a group).
- */
-function getDs(file: H5ReadFile, name: string): H5ReadDataset | null {
-  const item = file.get(name) as H5ReadDataset | null | undefined;
-  if (item == null) return null;
-  if (!("value" in item)) return null;
-  return item;
-}
-
-/** Decode a single h5wasm string element (string | Uint8Array | number[]). */
-function decodeStringElement(v: unknown): string {
-  if (typeof v === "string") return v;
-  if (v instanceof Uint8Array) return textDecoder.decode(v);
-  if (Array.isArray(v))
-    return textDecoder.decode(Uint8Array.from(v as number[]));
-  return String(v);
-}
-
-/** Decode an h5wasm string dataset `.value` into a string[]. */
-function decodeStringArray(value: unknown): string[] {
-  if (value == null) return [];
-  if (typeof value === "string") return [value];
-  if (value instanceof Uint8Array) return [textDecoder.decode(value)];
-  if (Array.isArray(value))
-    return (value as unknown[]).map(decodeStringElement);
-  if (typeof (value as { length?: number }).length === "number") {
-    return Array.from(value as ArrayLike<unknown>).map(decodeStringElement);
-  }
-  return [decodeStringElement(value)];
-}
-
-/** Decode an h5wasm scalar string dataset `.value` into a string. */
-function decodeScalarString(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (value instanceof Uint8Array) return textDecoder.decode(value);
-  if (Array.isArray(value)) {
-    if (value.length === 0) return "";
-    return decodeStringElement(value[0]);
-  }
-  return decodeStringElement(value);
-}
-
-/** Unwrap an attribute value that may be wrapped as `{ value }`. */
-function unwrapAttr(attr: unknown): unknown {
-  if (attr != null && typeof attr === "object" && "value" in (attr as object)) {
-    return (attr as { value: unknown }).value;
-  }
-  return attr;
-}
-
-/** Read a string attribute, decoding bytes if needed. Returns undefined if absent. */
-function readStringAttr(
-  attrs: Record<string, unknown> | undefined,
-  name: string,
-): string | undefined {
-  if (!attrs || !(name in attrs)) return undefined;
-  const raw = unwrapAttr(attrs[name]);
-  if (raw == null) return undefined;
-  if (typeof raw === "string") return raw;
-  if (raw instanceof Uint8Array) return textDecoder.decode(raw);
-  if (Array.isArray(raw)) {
-    if (raw.length === 0) return "";
-    return decodeStringElement(raw[0]);
-  }
-  return String(raw);
-}
 
 /**
  * Read a `dims` attribute as a string[].
