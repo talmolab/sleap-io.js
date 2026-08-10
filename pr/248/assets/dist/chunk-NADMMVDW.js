@@ -18872,14 +18872,17 @@ function parseTrackName(containerName) {
   if (name === "untracked" || name.length === 0) return null;
   return name;
 }
-function recoverFrameIndices(timestamps, startingTime, count) {
-  if (timestamps != null) {
-    return Array.from(timestamps, (t) => Math.round(Number(t)));
-  }
-  const base = Math.round(startingTime ?? 0);
+function seriesSampleTimes(timestamps, startingTime, count) {
+  if (timestamps != null) return Array.from(timestamps, (t) => Number(t));
+  const base = startingTime ?? 0;
   const out = [];
   for (let i = 0; i < count; i++) out.push(base + i);
   return out;
+}
+function resolveTrackFrameIndices(uniqueSortedTimes) {
+  const rounded = uniqueSortedTimes.map((t) => Math.round(t));
+  const noCollision = new Set(rounded).size === uniqueSortedTimes.length;
+  return noCollision ? rounded : uniqueSortedTimes.map((_, i) => i);
 }
 function readSkeletonAt(root, basePath, name) {
   const nodesEntity = root.get(`${basePath}/nodes`);
@@ -18988,7 +18991,7 @@ async function readNwbPredictions(file, options) {
           tracksByName.set(trackName, track);
         }
       }
-      const trackFrames = /* @__PURE__ */ new Map();
+      const seriesList = [];
       for (const seriesKey of poseGroup.keys()) {
         const seriesPath = `${posePath}/${seriesKey}`;
         const seriesGroup = root.get(seriesPath);
@@ -19000,17 +19003,29 @@ async function readNwbPredictions(file, options) {
         const dataShape = shapeToNumbers(dataEntity.shape);
         const T = dataShape.length ? dataShape[0] : 0;
         if (T === 0) continue;
-        const dataFlat = toNumberArray2(dataEntity.value);
-        const confEntity = root.get(`${seriesPath}/confidence`);
-        const conf = isDataset(confEntity) ? toNumberArray2(confEntity.value) : null;
         const tsEntity = root.get(`${seriesPath}/timestamps`);
         const timestamps = isDataset(tsEntity) ? toNumberArray2(tsEntity.value) : null;
         const startingTime = readScalarNumber(
           root.get(`${seriesPath}/starting_time`)
         );
-        const frameIdxs = recoverFrameIndices(timestamps, startingTime, T);
-        for (let i = 0; i < T; i++) {
-          const fidx = frameIdxs[i];
+        const confEntity = root.get(`${seriesPath}/confidence`);
+        seriesList.push({
+          ni,
+          times: seriesSampleTimes(timestamps, startingTime, T),
+          data: toNumberArray2(dataEntity.value),
+          conf: isDataset(confEntity) ? toNumberArray2(confEntity.value) : null
+        });
+      }
+      const uniqueTimes = Array.from(
+        new Set(seriesList.flatMap((s) => s.times))
+      ).sort((a, b) => a - b);
+      const frameForUnique = resolveTrackFrameIndices(uniqueTimes);
+      const timeToFrame = /* @__PURE__ */ new Map();
+      uniqueTimes.forEach((t, i) => timeToFrame.set(t, frameForUnique[i]));
+      const trackFrames = /* @__PURE__ */ new Map();
+      for (const s of seriesList) {
+        for (let i = 0; i < s.times.length; i++) {
+          const fidx = timeToFrame.get(s.times[i]);
           if (fidx === void 0) continue;
           let rows = trackFrames.get(fidx);
           if (!rows) {
@@ -19021,9 +19036,9 @@ async function readNwbPredictions(file, options) {
             ]);
             trackFrames.set(fidx, rows);
           }
-          rows[ni][0] = dataFlat[i * 2];
-          rows[ni][1] = dataFlat[i * 2 + 1];
-          rows[ni][2] = conf ? conf[i] ?? Number.NaN : Number.NaN;
+          rows[s.ni][0] = s.data[i * 2];
+          rows[s.ni][1] = s.data[i * 2 + 1];
+          rows[s.ni][2] = s.conf ? s.conf[i] ?? Number.NaN : Number.NaN;
         }
       }
       for (const [fidx, rows] of trackFrames) {
