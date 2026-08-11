@@ -85,6 +85,32 @@ export function unwrapAttr(attr: unknown): unknown {
 }
 
 /**
+ * Read a numeric attribute, unwrapping a `{ value }` wrapper, taking the first
+ * element of an array/typed-array-wrapped scalar, and coercing bigint. Returns
+ * undefined when absent or not coercible to a finite number (e.g. a string).
+ *
+ * Used for integer NWB attrs like `TrainingFrame.source_video_frame_index` and
+ * `SkeletonInstance.id`, which providers may report as a number, a bigint, a
+ * `{ value }` wrapper, or a length-1 (typed) array.
+ */
+export function readNumberAttr(
+  attrs: Record<string, unknown> | undefined,
+  name: string,
+): number | undefined {
+  if (!attrs || !(name in attrs)) return undefined;
+  let raw: unknown = unwrapAttr(attrs[name]);
+  if (raw != null && ArrayBuffer.isView(raw) && !(raw instanceof DataView)) {
+    const av = raw as unknown as ArrayLike<number | bigint>;
+    raw = av.length ? av[0] : undefined;
+  } else if (Array.isArray(raw)) {
+    raw = raw.length ? raw[0] : undefined;
+  }
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : undefined;
+  if (typeof raw === "bigint") return Number(raw);
+  return undefined;
+}
+
+/**
  * Read a string attribute, decoding bytes if needed. Returns undefined if
  * absent.
  */

@@ -1,13 +1,13 @@
-import { Labels } from "../model/labels.js";
+import type { Labels } from "../model/labels.js";
 import { LabelsSet } from "../model/labels-set.js";
 import { Video } from "../model/video.js";
 import { readSlp, readSlpLazy } from "../codecs/slp/read.js";
 import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
 import { writeSlp, saveSlpToBytes } from "../codecs/slp/write.js";
-import { createVideoBackend, VideoBackendType } from "../video/factory.js";
+import { createVideoBackend, type VideoBackendType } from "../video/factory.js";
 import {
-  OpenH5Options,
-  SlpSource,
+  type OpenH5Options,
+  type SlpSource,
   isStreamingSupported,
 } from "../codecs/slp/h5.js";
 import { redactedCauseSummary } from "./remote.js";
@@ -322,13 +322,14 @@ export { isAnalysisH5File } from "./analysis-h5.js";
 export { readNwb, isNwbFile } from "./nwb.js";
 
 /**
- * Load an NWB (ndx-pose) predictions file into a {@link Labels} object.
+ * Load an NWB (ndx-pose) file into a {@link Labels} object.
  *
  * Mirrors {@link loadAnalysisH5}: bytes-accepting public wrapper over
- * {@link readNwb}. Reads an ndx-pose `PoseEstimation` file, recovering track
- * identity (from the `track={name}` container names) and integer frame indices
- * (from each series' timestamps / `starting_time`). Annotations (`PoseTraining`)
- * are not yet supported.
+ * {@link readNwb}. Reads both ndx-pose flavors — `PoseEstimation` (predictions),
+ * recovering track identity (from the `track={name}` container names) and integer
+ * frame indices (from each series' timestamps / `starting_time`); and
+ * `PoseTraining` (user annotations), reading the explicit
+ * `source_video_frame_index` and per-instance track `id`.
  *
  * @param filename - Path or bytes accepted by `openH5File`.
  */

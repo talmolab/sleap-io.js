@@ -4,7 +4,7 @@
  * - {@link isNwbFile} sniffs whether a source opens as an NWB HDF5 file.
  * - {@link readNwb} opens the file, detects predictions (`PoseEstimation`) vs
  *   annotations (`PoseTraining`), and delegates. Predictions →
- *   {@link readNwbPredictions}; annotations → throws (M2, not yet supported);
+ *   {@link readNwbPredictions}; annotations → {@link readNwbAnnotations};
  *   neither → throws.
  *
  * Mirrors the structure of `analysis-h5.ts` (`isAnalysisH5File` + `readLabels`).
@@ -15,6 +15,7 @@ import type { Labels } from "../model/labels.js";
 import { openH5File, nodeFileExists } from "../codecs/slp/h5.js";
 import { readStringAttr } from "./h5-read-utils.js";
 import { readNwbPredictions } from "./nwb-predictions.js";
+import { readNwbAnnotations } from "./nwb-annotations.js";
 
 /** Source types accepted by the NWB readers (subset of `openH5File`). */
 export type NwbSource = string | ArrayBuffer | Uint8Array;
@@ -104,8 +105,8 @@ export async function isNwbFile(source: NwbSource): Promise<boolean> {
  *
  * Detects predictions (`PoseEstimation`) vs annotations (`PoseTraining`) by
  * walking `/processing/*`. Predictions are delegated to
- * {@link readNwbPredictions}. Annotations are not yet supported (M2). A file
- * with neither throws.
+ * {@link readNwbPredictions}, annotations to {@link readNwbAnnotations}. A file
+ * with neither throws. A file with both prefers predictions.
  *
  * @param source - Path/bytes accepted by `openH5File`.
  */
@@ -136,9 +137,9 @@ export async function readNwb(source: NwbSource): Promise<Labels> {
       });
     }
     if (hasAnnotations) {
-      throw new Error(
-        "NWB annotations (PoseTraining) import is not yet supported.",
-      );
+      return await readNwbAnnotations(file, {
+        filename: typeof source === "string" ? source : undefined,
+      });
     }
     throw new Error(
       "NWB file does not contain recognized pose data " +
