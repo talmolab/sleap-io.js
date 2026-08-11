@@ -1,13 +1,13 @@
-import { Labels } from "../model/labels.js";
+import type { Labels } from "../model/labels.js";
 import { LabelsSet } from "../model/labels-set.js";
 import { Video } from "../model/video.js";
 import { readSlp, readSlpLazy } from "../codecs/slp/read.js";
 import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
 import { writeSlp, saveSlpToBytes } from "../codecs/slp/write.js";
-import { createVideoBackend, VideoBackendType } from "../video/factory.js";
+import { createVideoBackend, type VideoBackendType } from "../video/factory.js";
 import {
-  OpenH5Options,
-  SlpSource,
+  type OpenH5Options,
+  type SlpSource,
   isStreamingSupported,
 } from "../codecs/slp/h5.js";
 import { redactedCauseSummary } from "./remote.js";
@@ -16,6 +16,7 @@ import {
   writeLabels as writeAnalysisH5,
   writeLabelsToBytes as writeAnalysisH5ToBytes,
 } from "./analysis-h5.js";
+import { readNwb } from "./nwb.js";
 
 // TIFF label-image reader (browser-safe core; Node path reading is registered
 // via the side-effect import of ./label-images-node.js in the Node entry).
@@ -316,6 +317,27 @@ export async function saveAnalysisH5ToBytes(
 
 /** Re-export the Analysis HDF5 format detector for public use. */
 export { isAnalysisH5File } from "./analysis-h5.js";
+
+/** NWB (ndx-pose) predictions reader + format detector. */
+export { readNwb, isNwbFile } from "./nwb.js";
+
+/**
+ * Load an NWB (ndx-pose) file into a {@link Labels} object.
+ *
+ * Mirrors {@link loadAnalysisH5}: bytes-accepting public wrapper over
+ * {@link readNwb}. Reads both ndx-pose flavors — `PoseEstimation` (predictions),
+ * recovering track identity (from the `track={name}` container names) and integer
+ * frame indices (from each series' timestamps / `starting_time`); and
+ * `PoseTraining` (user annotations), reading the explicit
+ * `source_video_frame_index` and per-instance track `id`.
+ *
+ * @param filename - Path or bytes accepted by `openH5File`.
+ */
+export async function loadNwb(
+  filename: string | ArrayBuffer | Uint8Array,
+): Promise<Labels> {
+  return readNwb(filename);
+}
 
 /** SLEAP Analysis CSV export (browser-safe string + Node file write). */
 export {
