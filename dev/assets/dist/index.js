@@ -142,6 +142,7 @@ import {
   isDlcData,
   isDlcProjectPath,
   isLibavDecoderConfigured,
+  isNwbFile,
   isRangeSource,
   isStreamingSupported,
   isTrainingConfig,
@@ -149,6 +150,7 @@ import {
   labelsToCsv,
   loadAnalysisH5,
   loadLabelImages,
+  loadNwb,
   loadSlp,
   loadSlpSet,
   loadVideo,
@@ -179,6 +181,7 @@ import {
   readDlcDataframe,
   readDlcProject,
   readGeoJSON,
+  readNwb,
   readSkeletonJson,
   readSlpStreaming,
   readTrainingConfigSkeleton,
@@ -224,7 +227,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-NFUWYJYZ.js";
+} from "./chunk-FTGKTTND.js";
 import {
   Camera,
   CameraGroup,
@@ -3656,6 +3659,7 @@ export {
   isDlcProjectPath2 as isDlcProjectPath,
   isGdriveUrl,
   isLibavDecoderConfigured,
+  isNwbFile,
   isRangeSource,
   isStreamingSupported,
   isTrackMateFile,
@@ -3671,6 +3675,7 @@ export {
   loadDlcSplits,
   loadJabs,
   loadLabelImages,
+  loadNwb,
   loadSlp,
   loadSlpSet,
   loadTrackMate,
@@ -3723,6 +3728,7 @@ export {
   readGeoJSON,
   readLabels,
   readLabelsSet,
+  readNwb,
   readPickle,
   readSkeletonJson,
   readSlpStreaming,

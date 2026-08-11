@@ -1814,6 +1814,43 @@ declare function loadLabelImages(source: string | File | Blob, options?: LoadLab
 declare function isAnalysisH5File(source: string | ArrayBuffer | Uint8Array): Promise<boolean>;
 
 /**
+ * NWB (Neurodata Without Borders / ndx-pose) top-level dispatcher.
+ *
+ * - {@link isNwbFile} sniffs whether a source opens as an NWB HDF5 file.
+ * - {@link readNwb} opens the file, detects predictions (`PoseEstimation`) vs
+ *   annotations (`PoseTraining`), and delegates. Predictions →
+ *   {@link readNwbPredictions}; annotations → {@link readNwbAnnotations};
+ *   neither → throws.
+ *
+ * Mirrors the structure of `analysis-h5.ts` (`isAnalysisH5File` + `readLabels`).
+ * Browser-safe: no Node-only imports.
+ */
+
+/** Source types accepted by the NWB readers (subset of `openH5File`). */
+type NwbSource = string | ArrayBuffer | Uint8Array;
+/**
+ * Check whether a source is an NWB file.
+ *
+ * True iff it opens as HDF5 and looks like NWB: the root carries a
+ * `neurodata_type`/`nwb_version` attribute, or contains a `general` or
+ * `specifications` group, or any top-level group carries a `neurodata_type`
+ * attribute. Lenient enough for cross-writer files, but not a false positive on
+ * an arbitrary (non-NWB) HDF5 file. Returns false on any error.
+ */
+declare function isNwbFile(source: NwbSource): Promise<boolean>;
+/**
+ * Load an NWB (ndx-pose) file into a {@link Labels} object.
+ *
+ * Detects predictions (`PoseEstimation`) vs annotations (`PoseTraining`) by
+ * walking `/processing/*`. Predictions are delegated to
+ * {@link readNwbPredictions}, annotations to {@link readNwbAnnotations}. A file
+ * with neither throws. A file with both prefers predictions.
+ *
+ * @param source - Path/bytes accepted by `openH5File`.
+ */
+declare function readNwb(source: NwbSource): Promise<Labels>;
+
+/**
  * SLEAP Analysis CSV export.
  *
  * Writes `Labels` to the "SLEAP Analysis" CSV format — one row per instance per
@@ -1978,6 +2015,20 @@ declare function saveAnalysisH5ToBytes(labels: Labels, options?: {
     xyDim?: number;
     saveMetadata?: boolean;
 }): Promise<Uint8Array>;
+
+/**
+ * Load an NWB (ndx-pose) file into a {@link Labels} object.
+ *
+ * Mirrors {@link loadAnalysisH5}: bytes-accepting public wrapper over
+ * {@link readNwb}. Reads both ndx-pose flavors — `PoseEstimation` (predictions),
+ * recovering track identity (from the `track={name}` container names) and integer
+ * frame indices (from each series' timestamps / `starting_time`); and
+ * `PoseTraining` (user annotations), reading the explicit
+ * `source_video_frame_index` and per-instance track `id`.
+ *
+ * @param filename - Path or bytes accepted by `openH5File`.
+ */
+declare function loadNwb(filename: string | ArrayBuffer | Uint8Array): Promise<Labels>;
 
 /**
  * Load multiple SLP files in parallel.
@@ -3266,4 +3317,4 @@ interface StreamingSlpOptions {
 }
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { isRangeSource as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, CropVideoBackend as J, type CropWrapOptions as K, LibavH264Decoder as L, parseGdrive as M, urlFromConfirmation as N, checkDownloadHost as O, type PaletteName as P, openGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, DEFAULT_MAX_BYTES as T, UnsupportedVideoFormatError as U, type VideoOptions as V, StreamingH5File as W, StreamingH5Writer as X, openStreamingH5 as Y, openH5Worker as Z, isStreamingSupported as _, type RenderOptions as a, URL_SCHEMES as a$, serviceRangeBridge as a0, serviceWriteBridge as a1, serviceTruncateBridge as a2, type StreamingH5Source as a3, type RangeSource as a4, type RangeSink as a5, readSlpStreaming as a6, Mp4BoxVideoBackend as a7, type MediaBunnyOptions as a8, MediaBunnyVideoBackend as a9, type MergeStoresOptions as aA, buildSerializableEmbedPlan as aB, type SerializableEmbedEntry as aC, type SerializableEmbedPlan as aD, buildLabelTableRows as aE, buildLabelTableUpdate as aF, buildMetadataJson as aG, buildTracksJson as aH, buildSuggestionsJson as aI, buildVideoSignatures as aJ, buildExpectedSidecars as aK, checkInPlaceWritable as aL, onDiskTableFromMeta as aM, writeLabelTablesInPlace as aN, type LabelTable as aO, type LabelTableRows as aP, type LabelTableUpdate as aQ, type OnDiskMember as aR, type OnDiskTable as aS, type OnDiskTables as aT, type OnDiskSidecars as aU, type InPlaceWritable as aV, type DatasetMetaLike as aW, isAnalysisH5File as aX, labelsToCsv as aY, saveLabelsCsv as aZ, type CsvExportOptions as a_, StreamingHdf5VideoBackend as aa, type ImageVideoOptions as ab, computePrefetchWindow as ac, ImageVideoBackend as ad, loadSlp as ae, saveSlp as af, loadAnalysisH5 as ag, saveAnalysisH5 as ah, saveAnalysisH5ToBytes as ai, loadSlpSet as aj, saveSlpSet as ak, loadVideo as al, loadLabelImages as am, setLabelImageFileReader as an, type PagesAs as ao, type LoadLabelImagesOptions as ap, type LabelImageFileReader as aq, saveSlpToBytes as ar, saveSlpStructureToBytes as as, openSlpWriter as at, SlpStreamWriter as au, saveSlpMergedFromStores as av, saveSlpMergedToSink as aw, type SlpWriteHeader as ax, type AppendStoreOptions as ay, type SlpWriteSink as az, type RGB as b, writeSkeletonJson as b$, CLOUD_SCHEMES as b0, GDRIVE_HOSTS as b1, SENSITIVE_HEADERS as b2, SENSITIVE_QUERY_PARAMS as b3, RETRYABLE_STATUSES as b4, isUrl as b5, isGdriveUrl as b6, redactUrl as b7, redactedCauseSummary as b8, RemoteIOError as b9, decodeCompressedRleCounts as bA, decodeCocoRle as bB, decodeSegmentation as bC, readCoco as bD, readCocoSet as bE, readDlc as bF, readDlcProject as bG, isDlcData as bH, parseDlcCrop as bI, looksLikeDlcConfig as bJ, attachConfigSkeleton as bK, videoSetsStemMap as bL, extractFrameIndex as bM, resolveConfig as bN, setSourceVideo as bO, findProjectCsvs as bP, resolveProjectConfigPath as bQ, readDlcDataframe as bR, type ReadDlcOptions as bS, type ReadDlcProjectOptions as bT, type DlcDataframe as bU, toNumpy as bV, fromNumpy as bW, labelsFromNumpy as bX, decodeYamlSkeleton as bY, encodeYamlSkeleton as bZ, readSkeletonJson as b_, type ResolvedUrl as ba, resolveUrl as bb, statusToMessage as bc, raiseRemote as bd, identityHeaders as be, stripCrossOriginHeaders as bf, withRetries as bg, parseRetryAfterMs as bh, fetchRetrying as bi, headOrRangeProbe as bj, type GeoJSONFeature as bk, type GeoJSONFeatureCollection as bl, roisToGeoJSON as bm, roisFromGeoJSON as bn, writeGeoJSON as bo, readGeoJSON as bp, type CocoCategory as bq, type CocoImage as br, type CocoRle as bs, type CocoSegmentation as bt, type CocoAnnotation as bu, type CocoJson as bv, isCocoData as bw, parseCocoJson as bx, createSkeletonFromCategory as by, decodeKeypoints as bz, type RawLabelImage as c, readTrainingConfigSkeletons as c0, readTrainingConfigSkeleton as c1, isTrainingConfig as c2, type RGBA as c3, type ColorSpec as c4, type ColorScheme as c5, type MarkerShape as c6, type Overlay as c7, type VideoOverlay as c8, NAMED_COLORS as c9, readDlcConfig as cA, discoverConfig as cB, clampAlpha as cC, pickColor as cD, PALETTES as ca, getPalette as cb, resolveColor as cc, rgbToCSS as cd, determineColorScheme as ce, drawCircle as cf, drawSquare as cg, drawDiamond as ch, drawTriangle as ci, drawCross as cj, drawTrails as ck, getMarkerFunction as cl, MARKER_FUNCTIONS as cm, type DrawTrailsOptions as cn, resolveTrailNode as co, computeTrails as cp, nTrailPaletteColors as cq, collectTracks as cr, type TrailTarget as cs, type Trail as ct, RenderContext as cu, InstanceContext as cv, drawMasks as cw, drawLabelImage as cx, warn as cy, isDlcProjectPath as cz, configureLibavDecoder as d, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };
+export { isRangeSource as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, CropVideoBackend as J, type CropWrapOptions as K, LibavH264Decoder as L, parseGdrive as M, urlFromConfirmation as N, checkDownloadHost as O, type PaletteName as P, openGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, DEFAULT_MAX_BYTES as T, UnsupportedVideoFormatError as U, type VideoOptions as V, StreamingH5File as W, StreamingH5Writer as X, openStreamingH5 as Y, openH5Worker as Z, isStreamingSupported as _, type RenderOptions as a, labelsToCsv as a$, serviceRangeBridge as a0, serviceWriteBridge as a1, serviceTruncateBridge as a2, type StreamingH5Source as a3, type RangeSource as a4, type RangeSink as a5, readSlpStreaming as a6, Mp4BoxVideoBackend as a7, type MediaBunnyOptions as a8, MediaBunnyVideoBackend as a9, type SlpWriteSink as aA, type MergeStoresOptions as aB, buildSerializableEmbedPlan as aC, type SerializableEmbedEntry as aD, type SerializableEmbedPlan as aE, buildLabelTableRows as aF, buildLabelTableUpdate as aG, buildMetadataJson as aH, buildTracksJson as aI, buildSuggestionsJson as aJ, buildVideoSignatures as aK, buildExpectedSidecars as aL, checkInPlaceWritable as aM, onDiskTableFromMeta as aN, writeLabelTablesInPlace as aO, type LabelTable as aP, type LabelTableRows as aQ, type LabelTableUpdate as aR, type OnDiskMember as aS, type OnDiskTable as aT, type OnDiskTables as aU, type OnDiskSidecars as aV, type InPlaceWritable as aW, type DatasetMetaLike as aX, isAnalysisH5File as aY, readNwb as aZ, isNwbFile as a_, StreamingHdf5VideoBackend as aa, type ImageVideoOptions as ab, computePrefetchWindow as ac, ImageVideoBackend as ad, loadSlp as ae, saveSlp as af, loadAnalysisH5 as ag, saveAnalysisH5 as ah, saveAnalysisH5ToBytes as ai, loadNwb as aj, loadSlpSet as ak, saveSlpSet as al, loadVideo as am, loadLabelImages as an, setLabelImageFileReader as ao, type PagesAs as ap, type LoadLabelImagesOptions as aq, type LabelImageFileReader as ar, saveSlpToBytes as as, saveSlpStructureToBytes as at, openSlpWriter as au, SlpStreamWriter as av, saveSlpMergedFromStores as aw, saveSlpMergedToSink as ax, type SlpWriteHeader as ay, type AppendStoreOptions as az, type RGB as b, decodeYamlSkeleton as b$, saveLabelsCsv as b0, type CsvExportOptions as b1, URL_SCHEMES as b2, CLOUD_SCHEMES as b3, GDRIVE_HOSTS as b4, SENSITIVE_HEADERS as b5, SENSITIVE_QUERY_PARAMS as b6, RETRYABLE_STATUSES as b7, isUrl as b8, isGdriveUrl as b9, parseCocoJson as bA, createSkeletonFromCategory as bB, decodeKeypoints as bC, decodeCompressedRleCounts as bD, decodeCocoRle as bE, decodeSegmentation as bF, readCoco as bG, readCocoSet as bH, readDlc as bI, readDlcProject as bJ, isDlcData as bK, parseDlcCrop as bL, looksLikeDlcConfig as bM, attachConfigSkeleton as bN, videoSetsStemMap as bO, extractFrameIndex as bP, resolveConfig as bQ, setSourceVideo as bR, findProjectCsvs as bS, resolveProjectConfigPath as bT, readDlcDataframe as bU, type ReadDlcOptions as bV, type ReadDlcProjectOptions as bW, type DlcDataframe as bX, toNumpy as bY, fromNumpy as bZ, labelsFromNumpy as b_, redactUrl as ba, redactedCauseSummary as bb, RemoteIOError as bc, type ResolvedUrl as bd, resolveUrl as be, statusToMessage as bf, raiseRemote as bg, identityHeaders as bh, stripCrossOriginHeaders as bi, withRetries as bj, parseRetryAfterMs as bk, fetchRetrying as bl, headOrRangeProbe as bm, type GeoJSONFeature as bn, type GeoJSONFeatureCollection as bo, roisToGeoJSON as bp, roisFromGeoJSON as bq, writeGeoJSON as br, readGeoJSON as bs, type CocoCategory as bt, type CocoImage as bu, type CocoRle as bv, type CocoSegmentation as bw, type CocoAnnotation as bx, type CocoJson as by, isCocoData as bz, type RawLabelImage as c, encodeYamlSkeleton as c0, readSkeletonJson as c1, writeSkeletonJson as c2, readTrainingConfigSkeletons as c3, readTrainingConfigSkeleton as c4, isTrainingConfig as c5, type RGBA as c6, type ColorSpec as c7, type ColorScheme as c8, type MarkerShape as c9, drawLabelImage as cA, warn as cB, isDlcProjectPath as cC, readDlcConfig as cD, discoverConfig as cE, clampAlpha as cF, pickColor as cG, type Overlay as ca, type VideoOverlay as cb, NAMED_COLORS as cc, PALETTES as cd, getPalette as ce, resolveColor as cf, rgbToCSS as cg, determineColorScheme as ch, drawCircle as ci, drawSquare as cj, drawDiamond as ck, drawTriangle as cl, drawCross as cm, drawTrails as cn, getMarkerFunction as co, MARKER_FUNCTIONS as cp, type DrawTrailsOptions as cq, resolveTrailNode as cr, computeTrails as cs, nTrailPaletteColors as ct, collectTracks as cu, type TrailTarget as cv, type Trail as cw, RenderContext as cx, InstanceContext as cy, drawMasks as cz, configureLibavDecoder as d, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };
