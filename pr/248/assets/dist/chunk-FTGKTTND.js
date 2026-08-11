@@ -18064,6 +18064,19 @@ function unwrapAttr(attr) {
   }
   return attr;
 }
+function readNumberAttr(attrs, name) {
+  if (!attrs || !(name in attrs)) return void 0;
+  let raw = unwrapAttr(attrs[name]);
+  if (raw != null && ArrayBuffer.isView(raw) && !(raw instanceof DataView)) {
+    const av = raw;
+    raw = av.length ? av[0] : void 0;
+  } else if (Array.isArray(raw)) {
+    raw = raw.length ? raw[0] : void 0;
+  }
+  if (typeof raw === "number") return Number.isFinite(raw) ? raw : void 0;
+  if (typeof raw === "bigint") return Number(raw);
+  return void 0;
+}
 function readStringAttr(attrs, name) {
   if (!attrs || !(name in attrs)) return void 0;
   const raw = unwrapAttr(attrs[name]);
@@ -19084,11 +19097,248 @@ async function readNwbPredictions(file, options) {
   return labels;
 }
 
-// src/io/nwb.ts
+// src/io/nwb-annotations.ts
 function isGroup2(o) {
   return o != null && typeof o === "object" && typeof o.keys === "function";
 }
+function isDataset2(o) {
+  return o != null && typeof o === "object" && "value" in o;
+}
 function neurodataType2(entity) {
+  const attrs = entity?.attrs;
+  return readStringAttr(attrs, "neurodata_type");
+}
+function toNumberArray3(value) {
+  if (value == null) return [];
+  if (typeof value === "number") return [value];
+  if (typeof value === "bigint") return [Number(value)];
+  if (typeof value === "boolean") return [value ? 1 : 0];
+  if (ArrayBuffer.isView(value) && !(value instanceof DataView)) {
+    return Array.from(value, (v) => Number(v));
+  }
+  if (Array.isArray(value)) return value.map((v) => Number(v));
+  return [];
+}
+function shapeToNumbers2(shape) {
+  if (shape == null) return [];
+  return Array.from(shape, (s) => Number(s));
+}
+function readScalarNumber2(entity) {
+  if (!isDataset2(entity)) return void 0;
+  const v = entity.value;
+  if (typeof v === "number") return v;
+  if (typeof v === "bigint") return Number(v);
+  const arr = toNumberArray3(v);
+  return arr.length ? arr[0] : void 0;
+}
+function trackNameForId(id) {
+  return `track_${id}`;
+}
+function annotationPointRows(locations, visibility, nNodes) {
+  const rows = [];
+  for (let i = 0; i < nNodes; i++) {
+    const x = locations[i * 2] ?? Number.NaN;
+    const y = locations[i * 2 + 1] ?? Number.NaN;
+    if (visibility != null) rows.push([x, y, visibility[i] ? 1 : 0]);
+    else rows.push([x, y]);
+  }
+  return rows;
+}
+function readSkeletonFromGroup(root, basePath, name) {
+  const nodesEntity = root.get(`${basePath}/nodes`);
+  if (!isDataset2(nodesEntity)) return null;
+  const nodeNames = decodeStringArray(nodesEntity.value);
+  if (!nodeNames.length) return null;
+  const edges = [];
+  const edgesEntity = root.get(`${basePath}/edges`);
+  if (isDataset2(edgesEntity) && edgesEntity.value != null) {
+    const shape = shapeToNumbers2(edgesEntity.shape);
+    const nEdges = shape.length ? shape[0] : 0;
+    const flat = toNumberArray3(edgesEntity.value);
+    for (let i = 0; i < nEdges; i++) {
+      const sn = nodeNames[flat[i * 2]];
+      const dn = nodeNames[flat[i * 2 + 1]];
+      if (sn != null && dn != null) edges.push([sn, dn]);
+    }
+  }
+  return new Skeleton({ nodes: nodeNames, edges, name });
+}
+function readSkeletonInInstance(root, instPath) {
+  const inst = root.get(instPath);
+  if (!isGroup2(inst)) return null;
+  for (const k of inst.keys()) {
+    if (k === "node_locations" || k === "node_visibility") continue;
+    const subPath = `${instPath}/${k}`;
+    const sub = root.get(subPath);
+    if (neurodataType2(sub) === "Skeleton" || isDataset2(root.get(`${subPath}/nodes`))) {
+      const s = readSkeletonFromGroup(root, subPath, k);
+      if (s) return s;
+    }
+  }
+  return null;
+}
+function externalFilePath(root, imageSeriesPath) {
+  const ef = root.get(`${imageSeriesPath}/external_file`);
+  if (isDataset2(ef)) {
+    const arr = decodeStringArray(ef.value);
+    if (arr.length) return arr[0];
+  }
+  return "";
+}
+function readImageSeriesVideo(root, svPath) {
+  const video = new Video({ filename: externalFilePath(root, svPath) });
+  const nSamples = readScalarNumber2(root.get(`${svPath}/num_samples`));
+  const dimEntity = root.get(`${svPath}/dimension`);
+  const dim = isDataset2(dimEntity) ? toNumberArray3(dimEntity.value) : [];
+  const h = dim[0] ?? 0;
+  const w = dim[1] ?? 0;
+  if (nSamples != null && nSamples > 0 && h > 0 && w > 0) {
+    video.shape = [nSamples, h, w, 1];
+  }
+  return video;
+}
+function findPoseTrainingPath(root) {
+  const processing = root.get("processing");
+  if (!isGroup2(processing)) return null;
+  for (const modKey of processing.keys()) {
+    const mod = root.get(`processing/${modKey}`);
+    if (!isGroup2(mod)) continue;
+    for (const childKey of mod.keys()) {
+      const child = root.get(`processing/${modKey}/${childKey}`);
+      if (neurodataType2(child) === "PoseTraining") {
+        return `processing/${modKey}/${childKey}`;
+      }
+    }
+  }
+  return null;
+}
+async function readNwbAnnotations(file, options) {
+  const root = file;
+  const ptPath = findPoseTrainingPath(root);
+  if (!ptPath) {
+    throw new Error(
+      "NWB file does not contain any PoseTraining (annotations) data."
+    );
+  }
+  const framesGroup = root.get(`${ptPath}/training_frames`);
+  if (!isGroup2(framesGroup)) {
+    throw new Error("NWB PoseTraining has no training_frames group.");
+  }
+  const frameKeys = framesGroup.keys();
+  let skeleton = null;
+  for (const fk of frameKeys) {
+    const si = root.get(`${ptPath}/training_frames/${fk}/skeleton_instances`);
+    if (!isGroup2(si)) continue;
+    for (const ik of si.keys()) {
+      skeleton = readSkeletonInInstance(
+        root,
+        `${ptPath}/training_frames/${fk}/skeleton_instances/${ik}`
+      );
+      if (skeleton) break;
+    }
+    if (skeleton) break;
+  }
+  if (!skeleton) {
+    throw new Error("NWB PoseTraining has no readable skeleton (nodes/edges).");
+  }
+  const nNodes = skeleton.nodeNames.length;
+  const videos = [];
+  const videosByPath = /* @__PURE__ */ new Map();
+  const svContainer = root.get(`${ptPath}/source_videos`);
+  if (isGroup2(svContainer)) {
+    for (const vk of svContainer.keys()) {
+      const svPath = `${ptPath}/source_videos/${vk}`;
+      if (neurodataType2(root.get(svPath)) !== "ImageSeries") continue;
+      const video = readImageSeriesVideo(root, svPath);
+      videos.push(video);
+      videosByPath.set(String(video.filename), video);
+    }
+  }
+  const videoForFrame = (framePath) => {
+    const p = externalFilePath(root, `${framePath}/source_video`);
+    if (p) {
+      const existing = videosByPath.get(p);
+      if (existing) return existing;
+      const created = new Video({ filename: p });
+      videos.push(created);
+      videosByPath.set(p, created);
+      return created;
+    }
+    if (videos.length) return videos[0];
+    const fallback = new Video({ filename: "" });
+    videos.push(fallback);
+    return fallback;
+  };
+  const tracksById = /* @__PURE__ */ new Map();
+  const trackForId = (id) => {
+    let t = tracksById.get(id);
+    if (!t) {
+      t = new Track(trackNameForId(id));
+      tracksById.set(id, t);
+    }
+    return t;
+  };
+  const labeledFrames = [];
+  for (const fk of frameKeys) {
+    const framePath = `${ptPath}/training_frames/${fk}`;
+    const frameGroup = root.get(framePath);
+    if (neurodataType2(frameGroup) !== "TrainingFrame") continue;
+    const frameIdx = readNumberAttr(
+      frameGroup.attrs,
+      "source_video_frame_index"
+    ) ?? 0;
+    const video = videoForFrame(framePath);
+    const siGroup = root.get(`${framePath}/skeleton_instances`);
+    const instances = [];
+    if (isGroup2(siGroup)) {
+      for (const ik of siGroup.keys()) {
+        const instPath = `${framePath}/skeleton_instances/${ik}`;
+        const instGroup = root.get(instPath);
+        if (neurodataType2(instGroup) !== "SkeletonInstance") continue;
+        const id = readNumberAttr(
+          instGroup.attrs,
+          "id"
+        );
+        const track = id != null ? trackForId(id) : null;
+        const locEntity = root.get(`${instPath}/node_locations`);
+        if (!isDataset2(locEntity)) continue;
+        const locations = toNumberArray3(locEntity.value);
+        const visEntity = root.get(`${instPath}/node_visibility`);
+        const visibility = isDataset2(visEntity) ? toNumberArray3(visEntity.value) : null;
+        const inst = Instance.fromNumpy({
+          pointsData: annotationPointRows(locations, visibility, nNodes),
+          skeleton,
+          track
+        });
+        instances.push(inst);
+      }
+    }
+    if (instances.length) {
+      labeledFrames.push(new LabeledFrame({ video, frameIdx, instances }));
+    }
+  }
+  labeledFrames.sort((a, b) => {
+    const va = videos.indexOf(a.video);
+    const vb = videos.indexOf(b.video);
+    return va !== vb ? va - vb : a.frameIdx - b.frameIdx;
+  });
+  const labels = new Labels({
+    videos,
+    skeletons: [skeleton],
+    tracks: Array.from(tracksById.values()),
+    labeledFrames
+  });
+  if (options?.filename) {
+    labels.provenance.filename = String(options.filename);
+  }
+  return labels;
+}
+
+// src/io/nwb.ts
+function isGroup3(o) {
+  return o != null && typeof o === "object" && typeof o.keys === "function";
+}
+function neurodataType3(entity) {
   const attrs = entity?.attrs;
   return readStringAttr(attrs, "neurodata_type");
 }
@@ -19115,7 +19365,7 @@ async function isNwbFile(source) {
       }
       for (const key of rootKeys) {
         const child = root.get(key);
-        if (isGroup2(child) && neurodataType2(child) != null) return true;
+        if (isGroup3(child) && neurodataType3(child) != null) return true;
       }
       return false;
     } finally {
@@ -19132,13 +19382,13 @@ async function readNwb(source) {
     const processing = root.get("processing");
     let hasPredictions = false;
     let hasAnnotations = false;
-    if (isGroup2(processing)) {
+    if (isGroup3(processing)) {
       for (const modKey of processing.keys()) {
         const mod = root.get(`processing/${modKey}`);
-        if (!isGroup2(mod)) continue;
+        if (!isGroup3(mod)) continue;
         for (const childKey of mod.keys()) {
           const child = root.get(`processing/${modKey}/${childKey}`);
-          const ndt = neurodataType2(child);
+          const ndt = neurodataType3(child);
           if (ndt === "PoseEstimation") hasPredictions = true;
           else if (ndt === "PoseTraining") hasAnnotations = true;
         }
@@ -19150,9 +19400,9 @@ async function readNwb(source) {
       });
     }
     if (hasAnnotations) {
-      throw new Error(
-        "NWB annotations (PoseTraining) import is not yet supported."
-      );
+      return await readNwbAnnotations(file, {
+        filename: typeof source === "string" ? source : void 0
+      });
     }
     throw new Error(
       "NWB file does not contain recognized pose data (no PoseEstimation or PoseTraining found)."

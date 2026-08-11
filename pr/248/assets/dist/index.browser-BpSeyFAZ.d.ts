@@ -1819,7 +1819,7 @@ declare function isAnalysisH5File(source: string | ArrayBuffer | Uint8Array): Pr
  * - {@link isNwbFile} sniffs whether a source opens as an NWB HDF5 file.
  * - {@link readNwb} opens the file, detects predictions (`PoseEstimation`) vs
  *   annotations (`PoseTraining`), and delegates. Predictions →
- *   {@link readNwbPredictions}; annotations → throws (M2, not yet supported);
+ *   {@link readNwbPredictions}; annotations → {@link readNwbAnnotations};
  *   neither → throws.
  *
  * Mirrors the structure of `analysis-h5.ts` (`isAnalysisH5File` + `readLabels`).
@@ -1843,8 +1843,8 @@ declare function isNwbFile(source: NwbSource): Promise<boolean>;
  *
  * Detects predictions (`PoseEstimation`) vs annotations (`PoseTraining`) by
  * walking `/processing/*`. Predictions are delegated to
- * {@link readNwbPredictions}. Annotations are not yet supported (M2). A file
- * with neither throws.
+ * {@link readNwbPredictions}, annotations to {@link readNwbAnnotations}. A file
+ * with neither throws. A file with both prefers predictions.
  *
  * @param source - Path/bytes accepted by `openH5File`.
  */
@@ -2017,13 +2017,14 @@ declare function saveAnalysisH5ToBytes(labels: Labels, options?: {
 }): Promise<Uint8Array>;
 
 /**
- * Load an NWB (ndx-pose) predictions file into a {@link Labels} object.
+ * Load an NWB (ndx-pose) file into a {@link Labels} object.
  *
  * Mirrors {@link loadAnalysisH5}: bytes-accepting public wrapper over
- * {@link readNwb}. Reads an ndx-pose `PoseEstimation` file, recovering track
- * identity (from the `track={name}` container names) and integer frame indices
- * (from each series' timestamps / `starting_time`). Annotations (`PoseTraining`)
- * are not yet supported.
+ * {@link readNwb}. Reads both ndx-pose flavors — `PoseEstimation` (predictions),
+ * recovering track identity (from the `track={name}` container names) and integer
+ * frame indices (from each series' timestamps / `starting_time`); and
+ * `PoseTraining` (user annotations), reading the explicit
+ * `source_video_frame_index` and per-instance track `id`.
  *
  * @param filename - Path or bytes accepted by `openH5File`.
  */
