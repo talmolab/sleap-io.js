@@ -902,10 +902,14 @@ function hasOwn(obj: Record<string, unknown>, key: string): boolean {
  * persisted `backendMetadata.dataset`.
  */
 function hdf5Dataset(video: Video): string | null {
+  // A non-HDF5 backend (e.g. MediaVideo from a `.slp`) carries an EMPTY dataset
+  // placeholder (`""`). Treat empty as "no dataset" so such videos are not
+  // misclassified as HDF5 and then matched to one another on equal-empty
+  // datasets (`"" === ""`) — which made any two plain `.mp4` videos "match".
   const fromBackend = video.backend?.dataset;
-  if (fromBackend != null) return fromBackend;
+  if (typeof fromBackend === "string" && fromBackend !== "") return fromBackend;
   const fromMeta = video.backendMetadata.dataset;
-  return typeof fromMeta === "string" ? fromMeta : null;
+  return typeof fromMeta === "string" && fromMeta !== "" ? fromMeta : null;
 }
 
 /**
