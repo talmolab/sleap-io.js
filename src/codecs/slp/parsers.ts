@@ -6,7 +6,7 @@
 import { Skeleton, Node } from "../../model/skeleton.js";
 import { Track } from "../../model/instance.js";
 import { Camera, FrameGroup, InstanceGroup } from "../../model/camera.js";
-import { Identity } from "../../model/identity.js";
+import type { Identity } from "../../model/identity.js";
 import { Instance3D, PredictedInstance3D } from "../../model/instance3d.js";
 
 const textDecoder = new TextDecoder();
@@ -341,7 +341,19 @@ export function parseSkeletons(metadataJson: unknown): Skeleton[] {
     const typeCache = new Map<number, number>();
     const typeState = { nextId: 1 };
 
-    const entryNodes = (entry.nodes as Array<{ id?: number } | number>) ?? [];
+    // Classic PyQt-SLEAP jsonpickles each skeleton and wraps its networkx
+    // node-link graph under `nx_graph`; modern sleap-io writes the node-link
+    // dict FLAT on the entry. Read nodes/links/graph from whichever is present —
+    // otherwise a classic entry has no `entry.nodes`, and the empty-node
+    // fallback below wrongly adopts the ENTIRE global node list (e.g.
+    // clip.2node.slp's 2-node skeleton decoding to the parent 13-node fly).
+    const graphSrc =
+      entry.nx_graph && typeof entry.nx_graph === "object"
+        ? (entry.nx_graph as Record<string, unknown>)
+        : entry;
+
+    const entryNodes =
+      (graphSrc.nodes as Array<{ id?: number } | number>) ?? [];
     const skeletonNodeIds = entryNodes.map((node) =>
       Number(typeof node === "object" ? (node.id ?? 0) : node),
     );
@@ -360,7 +372,7 @@ export function parseSkeletons(metadataJson: unknown): Skeleton[] {
     });
 
     const links =
-      (entry.links as Array<{
+      (graphSrc.links as Array<{
         source: number;
         target: number;
         type?: unknown;
@@ -398,7 +410,7 @@ export function parseSkeletons(metadataJson: unknown): Skeleton[] {
         return true;
       });
 
-    const graph = entry.graph as { name?: string } | undefined;
+    const graph = graphSrc.graph as { name?: string } | undefined;
     const skeleton = new Skeleton({
       nodes,
       edges: mappedEdges,
