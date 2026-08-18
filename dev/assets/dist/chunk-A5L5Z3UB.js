@@ -36,7 +36,7 @@ import {
   resolveIdentity,
   resolveVideoFilename,
   sessionsReadError
-} from "./chunk-GH7XGRS3.js";
+} from "./chunk-BJKWMW53.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -5063,9 +5063,9 @@ function hasOwn(obj, key) {
 }
 function hdf5Dataset(video) {
   const fromBackend = video.backend?.dataset;
-  if (fromBackend != null) return fromBackend;
+  if (typeof fromBackend === "string" && fromBackend !== "") return fromBackend;
   const fromMeta = video.backendMetadata.dataset;
-  return typeof fromMeta === "string" ? fromMeta : null;
+  return typeof fromMeta === "string" && fromMeta !== "" ? fromMeta : null;
 }
 function isHdf5Video(video) {
   return hdf5Dataset(video) !== null;

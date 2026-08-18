@@ -613,16 +613,16 @@
 <li>You need <strong>quick validation</strong> of SLP files</li>
 </ul>
 <h2 id="installation">Installation<a class="headerlink" href="#installation" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlpMetadata</span><span class="p">,</span><span class="w"> </span><span class="nx">validateSlpBuffer</span><span class="p">,</span><span class="w"> </span><span class="nx">isHdf5Buffer</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js/lite&quot;</span><span class="p">;</span>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlpMetadata</span><span class="p">,</span><span class="w"> </span><span class="nx">validateSlpBuffer</span><span class="p">,</span><span class="w"> </span><span class="nx">isHdf5Buffer</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js/lite"</span><span class="p">;</span>
 </code></pre></div>
 <h2 id="api-reference">API Reference<a class="headerlink" href="#api-reference" title="Permanent link">&para;</a></h2>
 <h3 id="loadslpmetadatasource-options"><code>loadSlpMetadata(source, options?)</code><a class="headerlink" href="#loadslpmetadatasource-options" title="Permanent link">&para;</a></h3>
 <p>Extract metadata from an SLP file without loading pose coordinates.</p>
-<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">fetch</span><span class="p">(</span><span class="s2">&quot;https://example.com/file.slp&quot;</span><span class="p">);</span>
+<div class="highlight"><pre><span></span><code><span class="kd">const</span><span class="w"> </span><span class="nx">response</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">fetch</span><span class="p">(</span><span class="s2">"https://example.com/file.slp"</span><span class="p">);</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">buffer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">response</span><span class="p">.</span><span class="nx">arrayBuffer</span><span class="p">();</span>
 <span class="kd">const</span><span class="w"> </span><span class="nx">metadata</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlpMetadata</span><span class="p">(</span><span class="nx">buffer</span><span class="p">);</span>
 
-<span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">metadata</span><span class="p">.</span><span class="nx">version</span><span class="p">);</span><span class="w">      </span><span class="c1">// &quot;1.3.4&quot;</span>
+<span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">metadata</span><span class="p">.</span><span class="nx">version</span><span class="p">);</span><span class="w">      </span><span class="c1">// "1.3.4"</span>
 <span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">metadata</span><span class="p">.</span><span class="nx">skeletons</span><span class="p">);</span><span class="w">    </span><span class="c1">// Full skeleton definitions</span>
 <span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">metadata</span><span class="p">.</span><span class="nx">tracks</span><span class="p">);</span><span class="w">       </span><span class="c1">// Track names</span>
 <span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">metadata</span><span class="p">.</span><span class="nx">videos</span><span class="p">);</span><span class="w">       </span><span class="c1">// Video metadata</span>
@@ -639,9 +639,9 @@
 <p>Quick structural validation of an SLP file.</p>
 <div class="highlight"><pre><span></span><code><span class="k">try</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="nx">validateSlpBuffer</span><span class="p">(</span><span class="nx">buffer</span><span class="p">);</span>
-<span class="w">  </span><span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="s2">&quot;Valid SLP file&quot;</span><span class="p">);</span>
+<span class="w">  </span><span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="s2">"Valid SLP file"</span><span class="p">);</span>
 <span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="nx">console</span><span class="p">.</span><span class="nx">error</span><span class="p">(</span><span class="s2">&quot;Invalid:&quot;</span><span class="p">,</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">message</span><span class="p">);</span>
+<span class="w">  </span><span class="nx">console</span><span class="p">.</span><span class="nx">error</span><span class="p">(</span><span class="s2">"Invalid:"</span><span class="p">,</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">message</span><span class="p">);</span>
 <span class="p">}</span>
 </code></pre></div>
 <p><strong>Parameters:</strong></p>
@@ -664,7 +664,7 @@
 <h2 id="types">Types<a class="headerlink" href="#types" title="Permanent link">&para;</a></h2>
 <h3 id="slpmetadata"><code>SlpMetadata</code><a class="headerlink" href="#slpmetadata" title="Permanent link">&para;</a></h3>
 <div class="highlight"><pre><span></span><code><span class="kd">interface</span><span class="w"> </span><span class="nx">SlpMetadata</span><span class="w"> </span><span class="p">{</span>
-<span class="w">  </span><span class="cm">/** SLEAP version that created this file (e.g., &quot;1.3.4&quot;) */</span>
+<span class="w">  </span><span class="cm">/** SLEAP version that created this file (e.g., "1.3.4") */</span>
 <span class="w">  </span><span class="nx">version</span><span class="o">:</span><span class="w"> </span><span class="kt">string</span><span class="p">;</span>
 
 <span class="w">  </span><span class="cm">/** HDF5 format ID (e.g., 1.2) */</span>
@@ -838,14 +838,14 @@
 <p><strong>Dependencies:</strong> The full entry point pulls in <code>pako</code> (^2.1.0) for label image zlib compression, but lite mode does not import it — the <code>/lite</code> bundle stays free of <code>pako</code> and <code>h5wasm</code>.</p>
 </blockquote>
 <h2 id="example-file-upload-validation">Example: File Upload Validation<a class="headerlink" href="#example-file-upload-validation" title="Permanent link">&para;</a></h2>
-<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlpMetadata</span><span class="p">,</span><span class="w"> </span><span class="nx">validateSlpBuffer</span><span class="p">,</span><span class="w"> </span><span class="nx">isHdf5Buffer</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">&quot;@talmolab/sleap-io.js/lite&quot;</span><span class="p">;</span>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlpMetadata</span><span class="p">,</span><span class="w"> </span><span class="nx">validateSlpBuffer</span><span class="p">,</span><span class="w"> </span><span class="nx">isHdf5Buffer</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js/lite"</span><span class="p">;</span>
 
 <span class="k">async</span><span class="w"> </span><span class="kd">function</span><span class="w"> </span><span class="nx">handleUpload</span><span class="p">(</span><span class="nx">file</span><span class="o">:</span><span class="w"> </span><span class="kt">File</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">buffer</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">file</span><span class="p">.</span><span class="nx">arrayBuffer</span><span class="p">();</span>
 
 <span class="w">  </span><span class="c1">// Quick check</span>
 <span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="nx">isHdf5Buffer</span><span class="p">(</span><span class="nx">buffer</span><span class="p">))</span><span class="w"> </span><span class="p">{</span>
-<span class="w">    </span><span class="k">throw</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="ne">Error</span><span class="p">(</span><span class="s2">&quot;Not an HDF5 file&quot;</span><span class="p">);</span>
+<span class="w">    </span><span class="k">throw</span><span class="w"> </span><span class="ow">new</span><span class="w"> </span><span class="ne">Error</span><span class="p">(</span><span class="s2">"Not an HDF5 file"</span><span class="p">);</span>
 <span class="w">  </span><span class="p">}</span>
 
 <span class="w">  </span><span class="c1">// Validate structure</span>

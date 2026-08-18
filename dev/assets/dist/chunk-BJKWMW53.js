@@ -1480,7 +1480,8 @@ function parseSkeletons(metadataJson) {
     const symmetries = [];
     const typeCache = /* @__PURE__ */ new Map();
     const typeState = { nextId: 1 };
-    const entryNodes = entry.nodes ?? [];
+    const graphSrc = entry.nx_graph && typeof entry.nx_graph === "object" ? entry.nx_graph : entry;
+    const entryNodes = graphSrc.nodes ?? [];
     const skeletonNodeIds = entryNodes.map(
       (node) => Number(typeof node === "object" ? node.id ?? 0 : node)
     );
@@ -1490,7 +1491,7 @@ function parseSkeletons(metadataJson) {
     nodeOrder.forEach((nodeId, index) => {
       nodeIndexById.set(Number(nodeId), index);
     });
-    const links = entry.links ?? [];
+    const links = graphSrc.links ?? [];
     for (const link of links) {
       const source = Number(link.source);
       const target = Number(link.target);
@@ -1515,7 +1516,7 @@ function parseSkeletons(metadataJson) {
       seenSymmetries.add(key);
       return true;
     });
-    const graph = entry.graph;
+    const graph = graphSrc.graph;
     const skeleton = new Skeleton({
       nodes,
       edges: mappedEdges,
