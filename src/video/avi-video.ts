@@ -166,10 +166,18 @@ export class AviVideoBackend implements VideoBackend {
       parseFrameRate(stream.r_frame_rate) ||
       0;
 
-    this.frameCount = Number.parseInt(stream.nb_frames, 10) || 0;
-    if (!this.frameCount && this.fps > 0 && stream.duration > 0) {
-      this.frameCount = Math.round(stream.duration * this.fps);
-    }
+    // AVI/ASF `nb_frames` is frequently inflated — the container index gets
+    // padded, so it advertises MORE frames than actually decode (a 10-frame
+    // MJPEG/Xvid AVI reports 12). This backend already treats the stream as
+    // constant-frame-rate (getFrame maps index→time as i/fps), so derive the
+    // count the same way: duration × fps is the reliable signal. Fall back to the
+    // metadata count only when duration is unavailable (some ASF/WMV streams).
+    const metaCount = Number.parseInt(stream.nb_frames, 10) || 0;
+    const durationCount =
+      this.fps > 0 && stream.duration > 0
+        ? Math.round(stream.duration * this.fps)
+        : 0;
+    this.frameCount = durationCount || metaCount;
 
     const codec = (stream.codec_name ?? "").toLowerCase();
     if (MJPEG_CODECS.has(codec)) {

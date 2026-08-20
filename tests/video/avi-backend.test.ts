@@ -132,6 +132,18 @@ describe("AviVideoBackend", () => {
     backend.close();
   });
 
+  it("derives frame count from duration×fps, not the (often-wrong) AVI nb_frames", async () => {
+    // AVI containers frequently report an inflated nb_frames (the index gets
+    // padded), so a 10-frame file advertises 12. duration (0.4s) × fps (25) = 10
+    // is the truth; trusting nb_frames yields 2 phantom frames.
+    mockStream.nb_frames = "12";
+    const { AviVideoBackend } = await loadBackend();
+    const backend = await AviVideoBackend.fromBlob(new Blob(["x"]), "clip.avi");
+    expect(backend.numFrames).toBe(10);
+    expect(backend.shape).toEqual([10, 384, 384, 3]);
+    backend.close();
+  });
+
   it("decodes a WebCodecs frame frame-accurately (maps timestamp→index)", async () => {
     const { AviVideoBackend } = await loadBackend();
     const backend = await AviVideoBackend.fromBlob(new Blob(["x"]), "clip.avi");
