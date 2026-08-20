@@ -23,6 +23,7 @@ export * from "./model/label-image.js";
 export * from "./video/backend.js";
 export * from "./video/mp4box-video.js";
 export * from "./video/mediabunny-video.js";
+export * from "./video/avi-video.js";
 export {
   configureLibavDecoder,
   isLibavDecoderConfigured,
