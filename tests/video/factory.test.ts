@@ -18,6 +18,23 @@ vi.mock("mediabunny", () => ({
   ALL_FORMATS: [],
 }));
 
+// Mock web-demuxer so we can detect routing to AviVideoBackend: `load` throws a
+// recognizable error (no real wasm/worker in Node).
+vi.mock("web-demuxer", () => ({
+  WebDemuxer: class MockWebDemuxer {
+    async load() {
+      throw new Error("web-demuxer: mock routed");
+    }
+    destroy() {}
+  },
+  AVSeekFlag: {
+    AVSEEK_FLAG_BACKWARD: 1,
+    AVSEEK_FLAG_BYTE: 2,
+    AVSEEK_FLAG_ANY: 4,
+    AVSEEK_FLAG_FRAME: 8,
+  },
+}));
+
 describe("createVideoBackend", () => {
   beforeEach(() => {
     // Mock browser globals for WebCodecs detection
@@ -87,10 +104,10 @@ describe("createVideoBackend", () => {
     await expect(createVideoBackend("stream.ts")).rejects.toThrow(/MediaBunny/);
   });
 
-  // .avi and MPEG program streams (.mpeg/.mpg) have no web decode path: reject
-  // them with a clean, catchable error instead of silently routing to MediaBunny
-  // (which has no AVI/MPEG-PS demuxer and would fail opaquely mid-decode).
-  for (const ext of ["avi", "mpeg", "mpg"]) {
+  // MPEG program streams (.mpeg/.mpg) have no web decode path: reject them with
+  // a clean, catchable error. (.avi is now handled by AviVideoBackend — see the
+  // routing tests below.)
+  for (const ext of ["mpeg", "mpg"]) {
     it(`rejects .${ext} with a catchable UnsupportedVideoFormatError`, async () => {
       const { createVideoBackend, UnsupportedVideoFormatError } = await import(
         "../../src/video/factory.js"
@@ -111,22 +128,39 @@ describe("createVideoBackend", () => {
     });
   }
 
-  it("rejects a Blob/File with an .avi filename", async () => {
-    const { createVideoBackend, UnsupportedVideoFormatError } = await import(
-      "../../src/video/factory.js"
-    );
-    const file = new File([new Blob(["fake"])], "clip.avi");
-    await expect(createVideoBackend(file)).rejects.toThrow(
-      UnsupportedVideoFormatError,
-    );
-  });
+  // .avi / .wmv now route to AviVideoBackend (web-demuxer). The mocked demuxer's
+  // `load` throws /web-demuxer/, proving the route (vs the /MediaBunny/ mock or
+  // the UnsupportedVideoFormatError path).
+  for (const ext of ["avi", "wmv"]) {
+    it(`routes .${ext} to AviVideoBackend (web-demuxer)`, async () => {
+      const { createVideoBackend } = await import("../../src/video/factory.js");
+      const { configureWebDemuxer } = await import(
+        "../../src/video/avi-video.js"
+      );
+      configureWebDemuxer({ wasmFilePath: "http://test/web-demuxer.wasm" });
+      await expect(createVideoBackend(`clip.${ext}`)).rejects.toThrow(
+        /web-demuxer/,
+      );
+    });
+
+    it(`routes a Blob/File with a .${ext} filename to AviVideoBackend`, async () => {
+      const { createVideoBackend } = await import("../../src/video/factory.js");
+      const { configureWebDemuxer } = await import(
+        "../../src/video/avi-video.js"
+      );
+      configureWebDemuxer({ wasmFilePath: "http://test/web-demuxer.wasm" });
+      const file = new File([new Blob(["fake"])], `clip.${ext}`);
+      await expect(createVideoBackend(file)).rejects.toThrow(/web-demuxer/);
+    });
+  }
 
   it("honors an explicit backend override for unsupported extensions (escape hatch)", async () => {
     const { createVideoBackend } = await import("../../src/video/factory.js");
-    // Forcing a backend bypasses the unsupported-format guard, so this attempts
-    // MediaBunny (mock throws /MediaBunny/) rather than UnsupportedVideoFormatError.
+    // Forcing a backend bypasses the auto-routing, so forcing mediabunny on an
+    // .mpeg attempts MediaBunny (mock throws /MediaBunny/) rather than the
+    // UnsupportedVideoFormatError.
     await expect(
-      createVideoBackend("clip.avi", { backend: "mediabunny" }),
+      createVideoBackend("clip.mpeg", { backend: "mediabunny" }),
     ).rejects.toThrow(/MediaBunny/);
   });
 });
