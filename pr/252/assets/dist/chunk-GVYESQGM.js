@@ -9699,10 +9699,9 @@ var AviVideoBackend = class _AviVideoBackend {
     const width = stream.width;
     const height = stream.height;
     this.fps = parseFrameRate(stream.avg_frame_rate) || parseFrameRate(stream.r_frame_rate) || 0;
-    this.frameCount = Number.parseInt(stream.nb_frames, 10) || 0;
-    if (!this.frameCount && this.fps > 0 && stream.duration > 0) {
-      this.frameCount = Math.round(stream.duration * this.fps);
-    }
+    const metaCount = Number.parseInt(stream.nb_frames, 10) || 0;
+    const durationCount = this.fps > 0 && stream.duration > 0 ? Math.round(stream.duration * this.fps) : 0;
+    this.frameCount = durationCount || metaCount;
     const codec = (stream.codec_name ?? "").toLowerCase();
     if (MJPEG_CODECS.has(codec)) {
       this.mode = "mjpeg";
