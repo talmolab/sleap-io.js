@@ -218,3 +218,76 @@ export function cropFrame(
   }
   return { data: out, width: cropW, height: cropH, channels };
 }
+
+/**
+ * Detect whether a decoded frame is grayscale by comparing its first and last
+ * color channel for exact equality across every pixel — parity with Python
+ * `VideoBackend.detect_grayscale` (`test_img[..., 0] == test_img[..., -1]`).
+ *
+ * For an `ImageData` input (always 4-channel RGBA with an always-opaque alpha
+ * lane), the comparison skips alpha and compares R (channel 0) against B
+ * (channel 2) — the last COLOR channel — mirroring the existing convention in
+ * `image-video.ts`'s `isGrayscale`. For a {@link RawFrame}, channels are
+ * compared literally (channel 0 vs. `channels - 1`), matching Python's raw
+ * numpy-array semantics exactly. A single-channel frame is trivially
+ * grayscale.
+ *
+ * @param frame Decoded source frame (`ImageData` RGBA or a {@link RawFrame}).
+ *   A raw `ImageBitmap` is rejected — rasterize it first.
+ */
+export function detectGrayscale(frame: FrameLike): boolean {
+  if (isImageBitmap(frame)) {
+    throw new Error(
+      "detectGrayscale cannot inspect a raw ImageBitmap: its pixels are not " +
+        "synchronously readable. Rasterize it to an ImageData first.",
+    );
+  }
+  const { data, channels } = frameInfo(frame);
+  if (channels <= 1) return true;
+  const lastColorChannel = isImageData(frame) ? 2 : channels - 1;
+  for (let i = 0; i < data.length; i += channels) {
+    if (data[i] !== data[i + lastColorChannel]) return false;
+  }
+  return true;
+}
+
+/**
+ * Collapse a decoded frame to a single channel by taking channel 0 of every
+ * pixel — parity with Python's `img[..., [0]]` slice, applied by
+ * `VideoBackend.get_frame`/`get_frames` when `grayscale` is (or resolves to)
+ * `true`. Always returns a {@link RawFrame} with `channels: 1`: a browser
+ * `ImageData` is hard-coded 4-channel RGBA and cannot represent a single
+ * channel, so the result is never re-wrapped as `ImageData` — mirrors how
+ * {@link cropFrame} already returns a differently-shaped `RawFrame` for
+ * non-`ImageData` input.
+ *
+ * @param frame Decoded source frame (`ImageData` RGBA or a {@link RawFrame}).
+ *   A raw `ImageBitmap` is rejected — rasterize it first (same contract as
+ *   {@link cropFrame}).
+ */
+export function grayscaleFrame(frame: FrameLike): RawFrame {
+  if (isImageBitmap(frame)) {
+    throw new Error(
+      "grayscaleFrame cannot collapse a raw ImageBitmap: its pixels are not " +
+        "synchronously readable. Rasterize it to an ImageData first.",
+    );
+  }
+  const { data, width, height, channels } = frameInfo(frame);
+  if (channels === 1) {
+    // Already 1-channel: return a defensive copy for output-ownership
+    // consistency with the multi-channel branch below.
+    const copy =
+      data instanceof Uint8ClampedArray
+        ? new Uint8ClampedArray(data)
+        : new Uint8Array(data);
+    return { data: copy, width, height, channels: 1 };
+  }
+  const out =
+    data instanceof Uint8ClampedArray
+      ? new Uint8ClampedArray(width * height)
+      : new Uint8Array(width * height);
+  for (let i = 0, p = 0; p < out.length; i += channels, p++) {
+    out[p] = data[i];
+  }
+  return { data: out, width, height, channels: 1 };
+}

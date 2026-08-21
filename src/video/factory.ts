@@ -1,4 +1,5 @@
 import type { VideoBackend } from "./backend.js";
+import { GrayscaleVideoBackend } from "./grayscale-backend.js";
 import { Hdf5VideoBackend } from "./hdf5-video.js";
 import { MediaVideoBackend } from "./media-video.js";
 import { Mp4BoxVideoBackend } from "./mp4box-video.js";
@@ -77,26 +78,61 @@ export class UnsupportedVideoFormatError extends Error {
   }
 }
 
+export interface CreateVideoBackendOptions {
+  dataset?: string;
+  embedded?: boolean;
+  frameNumbers?: number[];
+  frameSizes?: number[];
+  format?: string;
+  channelOrder?: string;
+  shape?: [number, number, number, number];
+  fps?: number;
+  backend?: VideoBackendType;
+  /**
+   * Extra HTTP request headers (e.g. `{ Authorization: "Bearer …" }`) applied
+   * to remote video byte fetches. Forwarded to {@link Mp4BoxVideoBackend} and
+   * {@link MediaBunnyVideoBackend.fromUrl}. URL filenames are run through
+   * {@link resolveUrl} (rejecting `s3://`/`az://`/`abfs://`).
+   */
+  headers?: Record<string, string>;
+  /**
+   * Whether to force (or autodetect) grayscale. Mirrors Python
+   * `Video.from_filename(..., grayscale)`: `true` forces every frame to 1
+   * channel, `false` forces the source's native channel count (never
+   * collapses), `null` autodetects on the first frame read. Omitting this
+   * option entirely (`undefined`) skips grayscale-wrapping altogether — the
+   * returned backend reports whatever channel count it naturally decodes,
+   * exactly as before this option existed.
+   *
+   * When set, the backend built below is wrapped in a
+   * {@link GrayscaleVideoBackend}; see that class for the wrapping contract.
+   */
+  grayscale?: boolean | null;
+}
+
+/**
+ * Build a {@link VideoBackend} for `source`, auto-selecting the concrete
+ * backend by file extension/environment (see the branches below), then
+ * optionally wrapping it in a {@link GrayscaleVideoBackend} when
+ * `options.grayscale` is given (any value including `null` — `undefined`
+ * skips wrapping).
+ */
 export async function createVideoBackend(
   source: string | string[] | File | Blob,
-  options?: {
-    dataset?: string;
-    embedded?: boolean;
-    frameNumbers?: number[];
-    frameSizes?: number[];
-    format?: string;
-    channelOrder?: string;
-    shape?: [number, number, number, number];
-    fps?: number;
-    backend?: VideoBackendType;
-    /**
-     * Extra HTTP request headers (e.g. `{ Authorization: "Bearer …" }`) applied
-     * to remote video byte fetches. Forwarded to {@link Mp4BoxVideoBackend} and
-     * {@link MediaBunnyVideoBackend.fromUrl}. URL filenames are run through
-     * {@link resolveUrl} (rejecting `s3://`/`az://`/`abfs://`).
-     */
-    headers?: Record<string, string>;
-  },
+  options?: CreateVideoBackendOptions,
+): Promise<VideoBackend> {
+  const backend = await createConcreteVideoBackend(source, options);
+  if (options?.grayscale === undefined) return backend;
+  return GrayscaleVideoBackend.wrap({
+    inner: backend,
+    grayscale: options.grayscale,
+  });
+}
+
+/** The original `createVideoBackend` body, before grayscale-wrapping. */
+async function createConcreteVideoBackend(
+  source: string | string[] | File | Blob,
+  options?: CreateVideoBackendOptions,
 ): Promise<VideoBackend> {
   // Image-sequence video (Python `ImageVideo`): `source` is a LIST of image
   // paths, one image per frame. Route to ImageVideoBackend before the single-
