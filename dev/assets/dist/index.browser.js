@@ -13,6 +13,7 @@ import {
   Embedding,
   ErrorMode,
   FrameStrategy,
+  GrayscaleVideoBackend,
   IDENTITY_INSTANCE_MATCHER,
   IDENTITY_TRACK_MATCHER,
   IMAGE_DEDUP_VIDEO_MATCHER,
@@ -109,6 +110,7 @@ import {
   decodeWkb,
   decodeYamlSkeleton,
   derivePrefixSwap,
+  detectGrayscale,
   determineColorScheme,
   discoverConfig,
   drawCircle,
@@ -132,6 +134,7 @@ import {
   getImageBytesReader,
   getMarkerFunction,
   getPalette,
+  grayscaleFrame,
   groupRingsIntoPolygons,
   isAnalysisH5File,
   isCocoData,
@@ -218,7 +221,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-A5L5Z3UB.js";
+} from "./chunk-56N5Y6QY.js";
 import {
   Camera,
   CameraGroup,
@@ -297,6 +300,7 @@ export {
   FrameGroup,
   FrameStrategy,
   GDRIVE_HOSTS,
+  GrayscaleVideoBackend,
   IDENTITY_INSTANCE_MATCHER,
   IDENTITY_TRACK_MATCHER,
   IMAGE_DEDUP_VIDEO_MATCHER,
@@ -413,6 +417,7 @@ export {
   decodeWkb,
   decodeYamlSkeleton,
   derivePrefixSwap,
+  detectGrayscale,
   determineColorScheme,
   discoverConfig,
   drawCircle,
@@ -437,6 +442,7 @@ export {
   getImageBytesReader,
   getMarkerFunction,
   getPalette,
+  grayscaleFrame,
   groupRingsIntoPolygons,
   headOrRangeProbe,
   identityHeaders,

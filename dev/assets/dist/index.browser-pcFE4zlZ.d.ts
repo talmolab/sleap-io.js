@@ -1,4 +1,4 @@
-import { b5 as VideoBackend, bi as RangeSource$1, b4 as GetFrameOptions, b3 as VideoFrame, L as Labels, S as Skeleton, V as Video, T as Track, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, W as FsResolver, bb as CropRect, bh as Fill, bc as FlatPoints, bd as PointPairs, b0 as UserLabelImage, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-BA-2We_n.js';
+import { b5 as VideoBackend, bk as RangeSource$1, b4 as GetFrameOptions, b3 as VideoFrame, L as Labels, S as Skeleton, V as Video, T as Track, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, W as FsResolver, bb as CropRect, bj as Fill, bc as FlatPoints, bd as PointPairs, b0 as UserLabelImage, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-CADvJMiJ.js';
 import { CustomVideoDecoder, EncodedPacket } from 'mediabunny';
 
 declare class Mp4BoxVideoBackend implements VideoBackend {
@@ -1525,7 +1525,7 @@ declare class UnsupportedVideoFormatError extends Error {
     readonly extension: string;
     constructor(extension: string);
 }
-declare function createVideoBackend(source: string | string[] | File | Blob, options?: {
+interface CreateVideoBackendOptions {
     dataset?: string;
     embedded?: boolean;
     frameNumbers?: number[];
@@ -1542,7 +1542,28 @@ declare function createVideoBackend(source: string | string[] | File | Blob, opt
      * {@link resolveUrl} (rejecting `s3://`/`az://`/`abfs://`).
      */
     headers?: Record<string, string>;
-}): Promise<VideoBackend>;
+    /**
+     * Whether to force (or autodetect) grayscale. Mirrors Python
+     * `Video.from_filename(..., grayscale)`: `true` forces every frame to 1
+     * channel, `false` forces the source's native channel count (never
+     * collapses), `null` autodetects on the first frame read. Omitting this
+     * option entirely (`undefined`) skips grayscale-wrapping altogether — the
+     * returned backend reports whatever channel count it naturally decodes,
+     * exactly as before this option existed.
+     *
+     * When set, the backend built below is wrapped in a
+     * {@link GrayscaleVideoBackend}; see that class for the wrapping contract.
+     */
+    grayscale?: boolean | null;
+}
+/**
+ * Build a {@link VideoBackend} for `source`, auto-selecting the concrete
+ * backend by file extension/environment (see the branches below), then
+ * optionally wrapping it in a {@link GrayscaleVideoBackend} when
+ * `options.grayscale` is given (any value including `null` — `undefined`
+ * skips wrapping).
+ */
+declare function createVideoBackend(source: string | string[] | File | Blob, options?: CreateVideoBackendOptions): Promise<VideoBackend>;
 
 /** Options for {@link CropVideoBackend.wrap}. */
 interface CropWrapOptions {
@@ -1694,6 +1715,153 @@ declare class CropVideoBackend implements VideoBackend {
      * Cascades to `inner.close()` only when {@link ownsInner} (a shared-decode
      * mosaic tile leaves the shared inner open for its siblings).
      */
+    close(): void;
+}
+
+/** Options for {@link GrayscaleVideoBackend.wrap}. */
+interface GrayscaleWrapOptions {
+    /**
+     * The backend to wrap (may itself be a `CropVideoBackend`; never itself a
+     * `GrayscaleVideoBackend` — {@link GrayscaleVideoBackend.wrap} unwraps and
+     * replaces an existing grayscale layer instead of nesting).
+     */
+    inner: VideoBackend;
+    /**
+     * `true` forces every frame to 1 channel; `false` forces the inner's native
+     * channel count (never collapses, even if the source is genuinely
+     * grayscale); `null` autodetects on the first `getFrame` call and caches the
+     * resolved value on {@link GrayscaleVideoBackend.grayscale}. Tri-state,
+     * matching Python's `grayscale: bool | None` exactly.
+     */
+    grayscale: boolean | null;
+}
+/**
+ * Virtual, on-read grayscale-forcing view of an inner {@link VideoBackend}.
+ *
+ * Implements the {@link VideoBackend} interface, reporting a channel-forced
+ * `[F, H, W, 1]` shape once `grayscale` has resolved `true`: {@link getFrame}
+ * decodes the inner frame, normalizes it to readable pixels via
+ * {@link toReadableFrame} (rasterizing an opaque `ImageBitmap` / decoding
+ * undecoded encoded bytes as needed — the same normalization
+ * {@link "./crop-backend.js".CropVideoBackend} performs before cropping),
+ * autodetects on first read when unresolved, then applies the pure
+ * {@link grayscaleFrame} slice. The frame count and spatial dimensions are
+ * unchanged (grayscale-forcing is a channel operation, not spatial or
+ * temporal).
+ *
+ * Always construct via {@link GrayscaleVideoBackend.wrap} (never the raw
+ * constructor) so the "inner is never a GrayscaleVideoBackend" invariant holds
+ * by construction.
+ *
+ * Note on `grayscale: null` (autodetect): because `shape` is a synchronous
+ * getter and JS has no equivalent of Python's blocking `img_shape` property
+ * (which decodes a test frame inline), the autodetect resolution only happens
+ * on the first `getFrame()` call — `shape`/`grayscale` read as "unresolved"
+ * (the inner's native channel count) until then. This is the same general
+ * async-vs-sync characteristic already present elsewhere in this port (e.g.
+ * `ImageVideoBackend.create()` decodes frame 0 up front precisely so `shape`
+ * is resolved by construction time when no `shape` is supplied).
+ */
+declare class GrayscaleVideoBackend implements VideoBackend {
+    /** Derived from `inner.filename`. */
+    filename: string | string[];
+    /**
+     * The wrapped source backend. Decodes full frames; this wrapper collapses
+     * their channels. Invariant: `inner` is never itself a
+     * `GrayscaleVideoBackend` (enforced by {@link wrap}).
+     */
+    readonly inner: VideoBackend;
+    /**
+     * Resolved/requested grayscale state. `true`/`false` are fixed at
+     * construction; `null` (autodetect) is mutated in place to the resolved
+     * value by the first {@link getFrame} call — mirrors Python's
+     * `self.grayscale` being written by `detect_grayscale()`.
+     */
+    grayscale: boolean | null;
+    /**
+     * Private-by-convention constructor: prefer {@link GrayscaleVideoBackend.wrap},
+     * which enforces the "inner is never a GrayscaleVideoBackend" invariant.
+     */
+    private constructor();
+    /**
+     * Wrap `inner` in a grayscale-forcing view.
+     *
+     * If `inner` is already a `GrayscaleVideoBackend`, it is unwrapped first —
+     * the new `grayscale` setting replaces the old one outright (any previously
+     * resolved autodetect result is intentionally dropped in favor of the new
+     * request), so wrapping never nests and always reflects the latest call.
+     */
+    static wrap(options: GrayscaleWrapOptions): GrayscaleVideoBackend;
+    /** Inner backend's dataset name (delegated; a grayscale wrapper is channel-only). */
+    get dataset(): string | null | undefined;
+    /** Inner backend's frame rate (delegated). */
+    get fps(): number | undefined;
+    /** Inner backend's embedded frame numbers (delegated; channel-forcing is frame-preserving). */
+    get frameNumbers(): number[] | undefined;
+    /** Inner backend's embedded blob format (delegated). */
+    get embeddedFormat(): string | undefined;
+    /** Inner backend's embedded blob channel order (delegated). */
+    get embeddedChannelOrder(): string | undefined;
+    /**
+     * Raw stored blob for `frameNumber`, delegated to the inner backend
+     * verbatim. The stored blob is the inner's un-collapsed encoding; a raw byte
+     * consumer (e.g. re-embedding) is expected to decode it itself, same as for
+     * an unwrapped backend.
+     */
+    getFrameBuffer(frameNumber: number): Promise<Uint8Array | null>;
+    /** Deferred-metadata load, delegated to the inner backend (no-op if absent). */
+    ensureLoaded(): Promise<void>;
+    /** Inner backend's per-frame presentation times (delegated; channel-only wrapper). */
+    getFrameTimes(): Promise<number[] | null>;
+    /** Inner backend's first-frame liveness probe (delegated; defaults to `true` if absent). */
+    probeFirstFrame(): Promise<boolean>;
+    /**
+     * Channel-forced shape `[F, H, W, C]`: `C` is `1` once `grayscale` has
+     * resolved `true`, `3` when explicitly `false`, and the inner's own
+     * declared channel count when unresolved (`null` — see the class-level note
+     * on autodetect timing).
+     *
+     * Mirrors Python `VideoBackend.img_shape`, which unconditionally sets
+     * `channels = 1` for `grayscale is True` and `channels = 3` for
+     * `grayscale is False` — NOT the inner's own declared count in either case.
+     * This matters because `false` must positively override an inner that
+     * independently declares itself 1-channel (e.g. `ImageVideoBackend`'s own
+     * construction-time autodetection): `Video.grayscale`'s getter is
+     * shape-driven (`shape[-1] === 1`), so without this override, setting
+     * `grayscale = false` on such a video would still read back as grayscale.
+     *
+     * Returns `undefined` only when the inner has no resolved shape.
+     */
+    get shape(): [number, number, number, number] | undefined;
+    /**
+     * Read a single frame, forcing or autodetecting grayscale.
+     *
+     * - `grayscale === false`: never collapse — the inner frame is returned
+     *   untouched (no decode/normalize overhead).
+     * - `grayscale === true`: always collapse to 1 channel via
+     *   {@link grayscaleFrame}.
+     * - `grayscale === null`: autodetect via {@link resolveAutodetect}, CACHE
+     *   the resolved value onto `this.grayscale`, then collapse only if it
+     *   resolved `true` — mirrors Python's `get_frame`:
+     *   `if self.grayscale is None: self.detect_grayscale(img)`.
+     *
+     * Returns `null` when the inner returns `null` (no such frame).
+     */
+    getFrame(frameIndex: number, opts?: GetFrameOptions): Promise<VideoFrame | null>;
+    /**
+     * Resolve the `null` (autodetect) case for frame `frameIndex`.
+     *
+     * When `inner` is a {@link CropVideoBackend}, detection is run on the
+     * FULL, UNCROPPED first frame (`inner.inner`, not `inner` itself) — a
+     * degenerate or unusual crop region (e.g. a 1px-wide slice, or a region
+     * that happens to look grayscale in isolation on an otherwise-color source)
+     * must never skew the result. This mirrors Python's
+     * `CropVideoBackend.detect_grayscale`, which explicitly "resolves grayscale
+     * from the inner, ignoring any passed cropped image." For any other inner,
+     * detection runs on `frameSrc` (already decoded by the caller) directly.
+     */
+    private resolveAutodetect;
+    /** Release this wrapper's handle by releasing the inner's (always cascades). */
     close(): void;
 }
 
@@ -3317,4 +3485,4 @@ interface StreamingSlpOptions {
 }
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { isRangeSource as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, CropVideoBackend as J, type CropWrapOptions as K, LibavH264Decoder as L, parseGdrive as M, urlFromConfirmation as N, checkDownloadHost as O, type PaletteName as P, openGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, DEFAULT_MAX_BYTES as T, UnsupportedVideoFormatError as U, type VideoOptions as V, StreamingH5File as W, StreamingH5Writer as X, openStreamingH5 as Y, openH5Worker as Z, isStreamingSupported as _, type RenderOptions as a, labelsToCsv as a$, serviceRangeBridge as a0, serviceWriteBridge as a1, serviceTruncateBridge as a2, type StreamingH5Source as a3, type RangeSource as a4, type RangeSink as a5, readSlpStreaming as a6, Mp4BoxVideoBackend as a7, type MediaBunnyOptions as a8, MediaBunnyVideoBackend as a9, type SlpWriteSink as aA, type MergeStoresOptions as aB, buildSerializableEmbedPlan as aC, type SerializableEmbedEntry as aD, type SerializableEmbedPlan as aE, buildLabelTableRows as aF, buildLabelTableUpdate as aG, buildMetadataJson as aH, buildTracksJson as aI, buildSuggestionsJson as aJ, buildVideoSignatures as aK, buildExpectedSidecars as aL, checkInPlaceWritable as aM, onDiskTableFromMeta as aN, writeLabelTablesInPlace as aO, type LabelTable as aP, type LabelTableRows as aQ, type LabelTableUpdate as aR, type OnDiskMember as aS, type OnDiskTable as aT, type OnDiskTables as aU, type OnDiskSidecars as aV, type InPlaceWritable as aW, type DatasetMetaLike as aX, isAnalysisH5File as aY, readNwb as aZ, isNwbFile as a_, StreamingHdf5VideoBackend as aa, type ImageVideoOptions as ab, computePrefetchWindow as ac, ImageVideoBackend as ad, loadSlp as ae, saveSlp as af, loadAnalysisH5 as ag, saveAnalysisH5 as ah, saveAnalysisH5ToBytes as ai, loadNwb as aj, loadSlpSet as ak, saveSlpSet as al, loadVideo as am, loadLabelImages as an, setLabelImageFileReader as ao, type PagesAs as ap, type LoadLabelImagesOptions as aq, type LabelImageFileReader as ar, saveSlpToBytes as as, saveSlpStructureToBytes as at, openSlpWriter as au, SlpStreamWriter as av, saveSlpMergedFromStores as aw, saveSlpMergedToSink as ax, type SlpWriteHeader as ay, type AppendStoreOptions as az, type RGB as b, decodeYamlSkeleton as b$, saveLabelsCsv as b0, type CsvExportOptions as b1, URL_SCHEMES as b2, CLOUD_SCHEMES as b3, GDRIVE_HOSTS as b4, SENSITIVE_HEADERS as b5, SENSITIVE_QUERY_PARAMS as b6, RETRYABLE_STATUSES as b7, isUrl as b8, isGdriveUrl as b9, parseCocoJson as bA, createSkeletonFromCategory as bB, decodeKeypoints as bC, decodeCompressedRleCounts as bD, decodeCocoRle as bE, decodeSegmentation as bF, readCoco as bG, readCocoSet as bH, readDlc as bI, readDlcProject as bJ, isDlcData as bK, parseDlcCrop as bL, looksLikeDlcConfig as bM, attachConfigSkeleton as bN, videoSetsStemMap as bO, extractFrameIndex as bP, resolveConfig as bQ, setSourceVideo as bR, findProjectCsvs as bS, resolveProjectConfigPath as bT, readDlcDataframe as bU, type ReadDlcOptions as bV, type ReadDlcProjectOptions as bW, type DlcDataframe as bX, toNumpy as bY, fromNumpy as bZ, labelsFromNumpy as b_, redactUrl as ba, redactedCauseSummary as bb, RemoteIOError as bc, type ResolvedUrl as bd, resolveUrl as be, statusToMessage as bf, raiseRemote as bg, identityHeaders as bh, stripCrossOriginHeaders as bi, withRetries as bj, parseRetryAfterMs as bk, fetchRetrying as bl, headOrRangeProbe as bm, type GeoJSONFeature as bn, type GeoJSONFeatureCollection as bo, roisToGeoJSON as bp, roisFromGeoJSON as bq, writeGeoJSON as br, readGeoJSON as bs, type CocoCategory as bt, type CocoImage as bu, type CocoRle as bv, type CocoSegmentation as bw, type CocoAnnotation as bx, type CocoJson as by, isCocoData as bz, type RawLabelImage as c, encodeYamlSkeleton as c0, readSkeletonJson as c1, writeSkeletonJson as c2, readTrainingConfigSkeletons as c3, readTrainingConfigSkeleton as c4, isTrainingConfig as c5, type RGBA as c6, type ColorSpec as c7, type ColorScheme as c8, type MarkerShape as c9, drawLabelImage as cA, warn as cB, isDlcProjectPath as cC, readDlcConfig as cD, discoverConfig as cE, clampAlpha as cF, pickColor as cG, type Overlay as ca, type VideoOverlay as cb, NAMED_COLORS as cc, PALETTES as cd, getPalette as ce, resolveColor as cf, rgbToCSS as cg, determineColorScheme as ch, drawCircle as ci, drawSquare as cj, drawDiamond as ck, drawTriangle as cl, drawCross as cm, drawTrails as cn, getMarkerFunction as co, MARKER_FUNCTIONS as cp, type DrawTrailsOptions as cq, resolveTrailNode as cr, computeTrails as cs, nTrailPaletteColors as ct, collectTracks as cu, type TrailTarget as cv, type Trail as cw, RenderContext as cx, InstanceContext as cy, drawMasks as cz, configureLibavDecoder as d, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };
+export { openStreamingH5 as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, type CreateVideoBackendOptions as J, CropVideoBackend as K, LibavH264Decoder as L, type CropWrapOptions as M, GrayscaleVideoBackend as N, type GrayscaleWrapOptions as O, type PaletteName as P, parseGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, urlFromConfirmation as T, UnsupportedVideoFormatError as U, type VideoOptions as V, checkDownloadHost as W, openGdrive as X, DEFAULT_MAX_BYTES as Y, StreamingH5File as Z, StreamingH5Writer as _, type RenderOptions as a, isAnalysisH5File as a$, openH5Worker as a0, isStreamingSupported as a1, isRangeSource as a2, serviceRangeBridge as a3, serviceWriteBridge as a4, serviceTruncateBridge as a5, type StreamingH5Source as a6, type RangeSource as a7, type RangeSink as a8, readSlpStreaming as a9, saveSlpMergedToSink as aA, type SlpWriteHeader as aB, type AppendStoreOptions as aC, type SlpWriteSink as aD, type MergeStoresOptions as aE, buildSerializableEmbedPlan as aF, type SerializableEmbedEntry as aG, type SerializableEmbedPlan as aH, buildLabelTableRows as aI, buildLabelTableUpdate as aJ, buildMetadataJson as aK, buildTracksJson as aL, buildSuggestionsJson as aM, buildVideoSignatures as aN, buildExpectedSidecars as aO, checkInPlaceWritable as aP, onDiskTableFromMeta as aQ, writeLabelTablesInPlace as aR, type LabelTable as aS, type LabelTableRows as aT, type LabelTableUpdate as aU, type OnDiskMember as aV, type OnDiskTable as aW, type OnDiskTables as aX, type OnDiskSidecars as aY, type InPlaceWritable as aZ, type DatasetMetaLike as a_, Mp4BoxVideoBackend as aa, type MediaBunnyOptions as ab, MediaBunnyVideoBackend as ac, StreamingHdf5VideoBackend as ad, type ImageVideoOptions as ae, computePrefetchWindow as af, ImageVideoBackend as ag, loadSlp as ah, saveSlp as ai, loadAnalysisH5 as aj, saveAnalysisH5 as ak, saveAnalysisH5ToBytes as al, loadNwb as am, loadSlpSet as an, saveSlpSet as ao, loadVideo as ap, loadLabelImages as aq, setLabelImageFileReader as ar, type PagesAs as as, type LoadLabelImagesOptions as at, type LabelImageFileReader as au, saveSlpToBytes as av, saveSlpStructureToBytes as aw, openSlpWriter as ax, SlpStreamWriter as ay, saveSlpMergedFromStores as az, type RGB as b, toNumpy as b$, readNwb as b0, isNwbFile as b1, labelsToCsv as b2, saveLabelsCsv as b3, type CsvExportOptions as b4, URL_SCHEMES as b5, CLOUD_SCHEMES as b6, GDRIVE_HOSTS as b7, SENSITIVE_HEADERS as b8, SENSITIVE_QUERY_PARAMS as b9, type CocoAnnotation as bA, type CocoJson as bB, isCocoData as bC, parseCocoJson as bD, createSkeletonFromCategory as bE, decodeKeypoints as bF, decodeCompressedRleCounts as bG, decodeCocoRle as bH, decodeSegmentation as bI, readCoco as bJ, readCocoSet as bK, readDlc as bL, readDlcProject as bM, isDlcData as bN, parseDlcCrop as bO, looksLikeDlcConfig as bP, attachConfigSkeleton as bQ, videoSetsStemMap as bR, extractFrameIndex as bS, resolveConfig as bT, setSourceVideo as bU, findProjectCsvs as bV, resolveProjectConfigPath as bW, readDlcDataframe as bX, type ReadDlcOptions as bY, type ReadDlcProjectOptions as bZ, type DlcDataframe as b_, RETRYABLE_STATUSES as ba, isUrl as bb, isGdriveUrl as bc, redactUrl as bd, redactedCauseSummary as be, RemoteIOError as bf, type ResolvedUrl as bg, resolveUrl as bh, statusToMessage as bi, raiseRemote as bj, identityHeaders as bk, stripCrossOriginHeaders as bl, withRetries as bm, parseRetryAfterMs as bn, fetchRetrying as bo, headOrRangeProbe as bp, type GeoJSONFeature as bq, type GeoJSONFeatureCollection as br, roisToGeoJSON as bs, roisFromGeoJSON as bt, writeGeoJSON as bu, readGeoJSON as bv, type CocoCategory as bw, type CocoImage as bx, type CocoRle as by, type CocoSegmentation as bz, type RawLabelImage as c, fromNumpy as c0, labelsFromNumpy as c1, decodeYamlSkeleton as c2, encodeYamlSkeleton as c3, readSkeletonJson as c4, writeSkeletonJson as c5, readTrainingConfigSkeletons as c6, readTrainingConfigSkeleton as c7, isTrainingConfig as c8, type RGBA as c9, RenderContext as cA, InstanceContext as cB, drawMasks as cC, drawLabelImage as cD, warn as cE, isDlcProjectPath as cF, readDlcConfig as cG, discoverConfig as cH, clampAlpha as cI, pickColor as cJ, type ColorSpec as ca, type ColorScheme as cb, type MarkerShape as cc, type Overlay as cd, type VideoOverlay as ce, NAMED_COLORS as cf, PALETTES as cg, getPalette as ch, resolveColor as ci, rgbToCSS as cj, determineColorScheme as ck, drawCircle as cl, drawSquare as cm, drawDiamond as cn, drawTriangle as co, drawCross as cp, drawTrails as cq, getMarkerFunction as cr, MARKER_FUNCTIONS as cs, type DrawTrailsOptions as ct, resolveTrailNode as cu, computeTrails as cv, nTrailPaletteColors as cw, collectTracks as cx, type TrailTarget as cy, type Trail as cz, configureLibavDecoder as d, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };
