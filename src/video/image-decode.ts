@@ -1,13 +1,17 @@
 // src/video/image-decode.ts
 //
-// Shared image decode/rasterize helpers, used by both `CropVideoBackend` (to
-// rasterize/decode inner frames before cropping) and `ImageVideoBackend` (to
-// decode each image-sequence frame).
+// Shared image decode/rasterize helpers, used by `CropVideoBackend` (to
+// rasterize/decode inner frames before cropping), `GrayscaleVideoBackend` (to
+// normalize inner frames before collapsing channels), and `ImageVideoBackend`
+// (to decode each image-sequence frame).
 //
 // Browser-safe: this module never statically imports a Node-only decoder.
 // Decoding/rasterizing uses `createImageBitmap` + `OffscreenCanvas` when
 // available (browser) else a lazy dynamic `import("skia-canvas")` (Node),
 // exactly like `seq-video.ts`. Bundlers must keep `skia-canvas` external.
+
+import type { VideoFrame } from "./backend.js";
+import type { RawFrame } from "../transform/frame.js";
 
 /** Rasterize an opaque `ImageBitmap` to RGBA `ImageData` (OffscreenCanvas / skia). */
 export async function rasterizeBitmap(bitmap: ImageBitmap): Promise<ImageData> {
@@ -171,6 +175,61 @@ export async function encodeBitmapToPng(
   // Node: rasterize (skia drawImage) to ImageData, then PNG-encode it.
   const img = await rasterizeBitmap(bitmap);
   return encodeImageDataToPng(img);
+}
+
+/** PNG / JPEG magic-byte sniff for undecoded encoded frame bytes. */
+export function isEncodedBytes(bytes: Uint8Array): boolean {
+  if (bytes.length < 4) return false;
+  // JPEG: FF D8 FF; PNG: 89 50 4E 47.
+  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
+  const png =
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47;
+  return jpeg || png;
+}
+
+/**
+ * Normalize any {@link VideoFrame} into something a pure/sync pixel transform
+ * (e.g. `cropFrame`, `grayscaleFrame`) can read pixels from: an `ImageData` or
+ * a {@link RawFrame}.
+ *
+ * - `ImageData`-shaped: returned as-is.
+ * - `ImageBitmap`: rasterized to `ImageData` (OffscreenCanvas / skia-canvas).
+ * - Encoded bytes (PNG/JPEG): decoded to `ImageData`.
+ * - Raw pixel bytes: wrapped as a {@link RawFrame} using `rawShape`'s
+ *   width/height/channels (the `[frames, height, width, channels]` shape of
+ *   the backend that produced `frame`).
+ *
+ * @throws Error If `frame` is raw pixel bytes and no `rawShape` is given to
+ *   interpret them.
+ */
+export async function toReadableFrame(
+  frame: VideoFrame,
+  rawShape?: [number, number, number, number],
+): Promise<ImageData | RawFrame> {
+  if (isImageBitmapLike(frame)) {
+    return rasterizeBitmap(frame as ImageBitmap);
+  }
+  if (isImageDataLike(frame)) {
+    return frame as unknown as ImageData;
+  }
+  const bytes =
+    frame instanceof ArrayBuffer
+      ? new Uint8Array(frame)
+      : (frame as Uint8Array);
+  if (isEncodedBytes(bytes)) {
+    return decodeEncoded(bytes);
+  }
+  if (!rawShape) {
+    throw new Error(
+      "toReadableFrame received raw pixel bytes but no shape was given to " +
+        "interpret them. Provide the producing backend's resolved shape.",
+    );
+  }
+  const [, height, width, channels] = rawShape;
+  return { data: bytes, width, height, channels };
 }
 
 /** Decode encoded (PNG/JPEG/…) image bytes to RGBA `ImageData` (browser / skia). */

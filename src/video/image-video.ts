@@ -15,6 +15,7 @@ import { VideoBackend, VideoFrame, GetFrameOptions } from "./backend.js";
 import { decodeEncoded } from "./image-decode.js";
 import { getImageBytesReader, type ImageBytesReader } from "./image-source.js";
 import { LruCache } from "./lru-cache.js";
+import { detectGrayscale } from "../transform/frame.js";
 
 export interface ImageVideoOptions {
   /** Image paths, one per frame. */
@@ -149,7 +150,7 @@ export class ImageVideoBackend implements VideoBackend {
       seedFrame = await decodeEncoded(seedBytes);
       height = seedFrame.height;
       width = seedFrame.width;
-      channels = isGrayscale(seedFrame) ? 1 : 3;
+      channels = detectGrayscale(seedFrame) ? 1 : 3;
     }
 
     const be = new ImageVideoBackend(
@@ -280,17 +281,4 @@ export class ImageVideoBackend implements VideoBackend {
     this.decodedCache.clear();
     this.inflight.clear();
   }
-}
-
-/**
- * Grayscale iff the first and last colour channels (R vs B in RGBA) are equal
- * for every pixel — parity with Python `VideoBackend.detect_grayscale`, which
- * compares `test_img[..., 0]` against `test_img[..., -1]`.
- */
-function isGrayscale(img: ImageData): boolean {
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    if (d[i] !== d[i + 2]) return false;
-  }
-  return true;
 }

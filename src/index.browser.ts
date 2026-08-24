@@ -68,12 +68,17 @@ export {
   createVideoBackend,
   UnsupportedVideoFormatError,
   type VideoBackendType,
+  type CreateVideoBackendOptions,
 } from "./video/factory.js";
 // CropRect is re-exported transitively via ./transform/index.js (single source).
 export {
   CropVideoBackend,
   type CropWrapOptions,
 } from "./video/crop-backend.js";
+export {
+  GrayscaleVideoBackend,
+  type GrayscaleWrapOptions,
+} from "./video/grayscale-backend.js";
 export * from "./io/main.js";
 export * from "./io/remote.js";
 export {

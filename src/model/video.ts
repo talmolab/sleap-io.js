@@ -4,6 +4,7 @@ import type {
   GetFrameOptions,
 } from "../video/backend.js";
 import { CropVideoBackend } from "../video/crop-backend.js";
+import { GrayscaleVideoBackend } from "../video/grayscale-backend.js";
 import {
   cropPoints,
   uncropPoints,
@@ -369,19 +370,35 @@ export class Video {
     }
     const fill: Fill = opts.fill ?? 0;
     const shareDecode = opts.shareDecode ?? true;
-    const inner = this.backend;
+
+    // Canonical wrap order is Grayscale(Crop(rawInner)): if this video's
+    // backend is already grayscale-wrapped, unwrap it, crop the TRUE inner,
+    // then re-wrap grayscale on the outside. Cropping is spatial and
+    // grayscale-forcing is channel-only — the two operations commute — but a
+    // single canonical order avoids ever nesting Crop(Grayscale(...)), which
+    // would otherwise let the two wrappers be composed in either order
+    // depending on call sequence.
+    const grayscaleLayer =
+      this.backend instanceof GrayscaleVideoBackend ? this.backend : null;
+    const inner = grayscaleLayer ? grayscaleLayer.inner : this.backend;
     const croppedBackend = CropVideoBackend.wrap({
       inner,
       crop: rect,
       fill,
       ownsInner: !shareDecode,
     });
+    const finalBackend = grayscaleLayer
+      ? GrayscaleVideoBackend.wrap({
+          inner: croppedBackend,
+          grayscale: grayscaleLayer.grayscale,
+        })
+      : croppedBackend;
 
     const [x1, y1, x2, y2] = croppedBackend.crop;
     const srcShape = this.shape;
     const cropped = new Video({
       filename: this.filename,
-      backend: croppedBackend,
+      backend: finalBackend,
       sourceVideo: this,
       openBackend: this.openBackend,
     });
@@ -709,6 +726,56 @@ export class Video {
       return (this.backendMetadata.grayscale as boolean | null) ?? null;
     }
     return null;
+  }
+
+  /**
+   * Force (or release the forcing of) this video's grayscale state.
+   *
+   * Port of Python `Video.grayscale` setter (video.py): rebuilds the backend
+   * as a {@link GrayscaleVideoBackend} wrapping the current TRUE inner (any
+   * existing grayscale layer is unwrapped and replaced, never nested — see
+   * {@link GrayscaleVideoBackend.wrap}), and persists the value into
+   * {@link backendMetadata} so a closed/reopened video (which reads
+   * `backendMetadata.shape`/`backendMetadata.grayscale` rather than a live
+   * backend) still reports it — the same persistence pattern {@link crop}
+   * already uses for `crop`/`crop_fill`/`shape`.
+   *
+   * Matches Python's setter signature (`bool`, not the tri-state
+   * `bool | null` the constructor/{@link createVideoBackend} accept):
+   * autodetection is a construction-time choice, not something re-requested
+   * through this property.
+   *
+   * @throws Error If this video has no open backend (mirrors {@link crop},
+   *   which has the same requirement — the JS port has no filesystem
+   *   auto-open to fall back to).
+   */
+  set grayscale(value: boolean) {
+    if (this.backend == null) {
+      throw new Error(
+        "Cannot set grayscale on a video with no open backend. Provide a " +
+          "backend (the JS port has no filesystem auto-open) before setting " +
+          "grayscale.",
+      );
+    }
+    const inner =
+      this.backend instanceof GrayscaleVideoBackend
+        ? this.backend.inner
+        : this.backend;
+    this.backend = GrayscaleVideoBackend.wrap({ inner, grayscale: value });
+    this.backendMetadata = { ...this.backendMetadata, grayscale: value };
+    if (hasOwn(this.backendMetadata, "shape")) {
+      const shape = this.backendMetadata.shape as
+        | [number, number, number, number]
+        | null;
+      if (shape != null) {
+        this.backendMetadata.shape = [
+          shape[0],
+          shape[1],
+          shape[2],
+          value ? 1 : (inner.shape?.[3] ?? shape[3]),
+        ];
+      }
+    }
   }
 
   /**
