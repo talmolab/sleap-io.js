@@ -4,6 +4,7 @@ import { Hdf5VideoBackend } from "./hdf5-video.js";
 import { MediaVideoBackend } from "./media-video.js";
 import { Mp4BoxVideoBackend } from "./mp4box-video.js";
 import { MediaBunnyVideoBackend } from "./mediabunny-video.js";
+import { AviVideoBackend } from "./avi-video.js";
 import {
   ensureNativeH264Probe,
   isLibavDecoderConfigured,
@@ -14,7 +15,7 @@ import { openH5File } from "../codecs/slp/h5.js";
 import { RemoteIOError, isUrl, redactUrl, resolveUrl } from "../io/remote.js";
 
 /** Supported video backend identifiers for user selection. */
-export type VideoBackendType = "mp4box" | "mediabunny" | "media";
+export type VideoBackendType = "mp4box" | "mediabunny" | "media" | "avi";
 
 /**
  * File extensions that MediaBunny handles (non-MP4 formats). `ts` is MPEG-TS,
@@ -25,14 +26,21 @@ export type VideoBackendType = "mp4box" | "mediabunny" | "media";
 const MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "ts"];
 
 /**
- * File extensions no web video backend can decode. AVI has no demuxer in
- * MediaBunny, and AVI/MPEG payloads (MJPEG, Xvid/DivX, MPEG-1/2) are not
- * WebCodecs-decodable; routing them anywhere produces an opaque mid-decode
- * failure, so we reject them up front instead. Real support would need an
- * ffmpeg-class path (ffmpeg.wasm in the browser, or a native ffmpeg sidecar on
- * desktop) — tracked separately. Transcode to MP4 (H.264) as a workaround.
+ * Containers handled by {@link AviVideoBackend}: demuxed with web-demuxer
+ * (ffmpeg-wasm), then decoded by the platform — H.264/H.265/VP8/VP9/AV1 via
+ * WebCodecs, MJPEG via `ImageDecoder`. `.wmv` (ASF) demuxes here too, though its
+ * usual WMV3/VC-1 payload is not WebCodecs-decodable and falls to the transcode
+ * message (see {@link AviVideoBackend.initialize}).
  */
-const UNSUPPORTED_EXTENSIONS = ["avi", "mpeg", "mpg"];
+const AVI_EXTENSIONS = ["avi", "wmv"];
+
+/**
+ * File extensions no web video backend can decode. MPEG program streams have a
+ * demuxer but an MPEG-1/2 payload WebCodecs can't decode, so we reject them up
+ * front rather than fail opaquely mid-decode. (`.avi` is now handled by
+ * {@link AviVideoBackend}.) Transcode to MP4 (H.264) as a workaround.
+ */
+const UNSUPPORTED_EXTENSIONS = ["mpeg", "mpg"];
 
 /**
  * Image-sequence frame extensions (parity with Python `ImageVideo.EXTS`): one
@@ -66,7 +74,7 @@ export class UnsupportedVideoFormatError extends Error {
 
   constructor(extension: string) {
     super(
-      `Unsupported video format ".${extension}". AVI and MPEG program streams ` +
+      `Unsupported video format ".${extension}". MPEG program streams ` +
         `cannot be decoded in the browser or desktop app. Transcode to MP4 (H.264) ` +
         `first, e.g. \`ffmpeg -i input.${extension} -c:v libx264 output.mp4\`.`,
     );
@@ -211,6 +219,10 @@ async function createConcreteVideoBackend(
       return new MediaVideoBackend(URL.createObjectURL(source as Blob));
     return new MediaVideoBackend(videoUrl);
   }
+  if (options?.backend === "avi") {
+    if (isBlob) return AviVideoBackend.fromBlob(source as Blob, filename);
+    return AviVideoBackend.fromUrl(videoUrl);
+  }
 
   // Formats no web backend can decode: fail loudly with a clean, catchable
   // error rather than silently routing them to a backend that chokes mid-decode.
@@ -251,6 +263,14 @@ async function createConcreteVideoBackend(
     if (isBlob)
       return MediaBunnyVideoBackend.fromBlob(source as Blob, filename);
     return MediaBunnyVideoBackend.fromUrl(videoUrl, { headers });
+  }
+
+  // AVI/WMV: demux with web-demuxer, decode via WebCodecs (H.264/…) or
+  // ImageDecoder (MJPEG). Requires WebCodecs; undecodable payloads (Xvid/DivX,
+  // WMV3/VC-1) throw a transcode message from the backend's initialize().
+  if (supportsWebCodecs && AVI_EXTENSIONS.includes(ext)) {
+    if (isBlob) return AviVideoBackend.fromBlob(source as Blob, filename);
+    return AviVideoBackend.fromUrl(videoUrl);
   }
 
   // Fallback: HTML5 video element
