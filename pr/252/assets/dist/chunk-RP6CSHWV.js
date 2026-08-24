@@ -4096,6 +4096,37 @@ function cropFrame(frame, crop, fill = 0) {
   }
   return { data: out, width: cropW, height: cropH, channels };
 }
+function detectGrayscale(frame) {
+  if (isImageBitmap(frame)) {
+    throw new Error(
+      "detectGrayscale cannot inspect a raw ImageBitmap: its pixels are not synchronously readable. Rasterize it to an ImageData first."
+    );
+  }
+  const { data, channels } = frameInfo(frame);
+  if (channels <= 1) return true;
+  const lastColorChannel = isImageData(frame) ? 2 : channels - 1;
+  for (let i = 0; i < data.length; i += channels) {
+    if (data[i] !== data[i + lastColorChannel]) return false;
+  }
+  return true;
+}
+function grayscaleFrame(frame) {
+  if (isImageBitmap(frame)) {
+    throw new Error(
+      "grayscaleFrame cannot collapse a raw ImageBitmap: its pixels are not synchronously readable. Rasterize it to an ImageData first."
+    );
+  }
+  const { data, width, height, channels } = frameInfo(frame);
+  if (channels === 1) {
+    const copy = data instanceof Uint8ClampedArray ? new Uint8ClampedArray(data) : new Uint8Array(data);
+    return { data: copy, width, height, channels: 1 };
+  }
+  const out = data instanceof Uint8ClampedArray ? new Uint8ClampedArray(width * height) : new Uint8Array(width * height);
+  for (let i = 0, p = 0; p < out.length; i += channels, p++) {
+    out[p] = data[i];
+  }
+  return { data: out, width, height, channels: 1 };
+}
 
 // src/transform/points.ts
 function offsetFlat(points, dx, dy) {
@@ -4215,6 +4246,31 @@ async function encodeBitmapToPng(bitmap) {
   const img = await rasterizeBitmap(bitmap);
   return encodeImageDataToPng(img);
 }
+function isEncodedBytes(bytes) {
+  if (bytes.length < 4) return false;
+  const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+  const png = bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
+  return jpeg || png;
+}
+async function toReadableFrame(frame, rawShape) {
+  if (isImageBitmapLike(frame)) {
+    return rasterizeBitmap(frame);
+  }
+  if (isImageDataLike(frame)) {
+    return frame;
+  }
+  const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
+  if (isEncodedBytes(bytes)) {
+    return decodeEncoded(bytes);
+  }
+  if (!rawShape) {
+    throw new Error(
+      "toReadableFrame received raw pixel bytes but no shape was given to interpret them. Provide the producing backend's resolved shape."
+    );
+  }
+  const [, height, width, channels] = rawShape;
+  return { data: bytes, width, height, channels };
+}
 async function decodeEncoded(bytes) {
   if (typeof createImageBitmap !== "undefined" && typeof OffscreenCanvas !== "undefined") {
     const safe = new Uint8Array(bytes);
@@ -4255,7 +4311,7 @@ function isImageDataLike2(value) {
   const v = value;
   return v != null && typeof v.width === "number" && typeof v.height === "number" && (v.data instanceof Uint8ClampedArray || v.data instanceof Uint8Array);
 }
-function isEncodedBytes(bytes) {
+function isEncodedBytes2(bytes) {
   if (bytes.length < 4) return false;
   const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
   const png = bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
@@ -4434,7 +4490,7 @@ var CropVideoBackend = class _CropVideoBackend {
       return frame;
     }
     const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
-    if (isEncodedBytes(bytes)) {
+    if (isEncodedBytes2(bytes)) {
       return decodeEncoded(bytes);
     }
     const innerShape = this.inner.shape;
@@ -4475,6 +4531,176 @@ var CropVideoBackend = class _CropVideoBackend {
     if (this.ownsInner) {
       this.inner.close();
     }
+  }
+};
+
+// src/video/grayscale-backend.ts
+var GrayscaleVideoBackend = class _GrayscaleVideoBackend {
+  /** Derived from `inner.filename`. */
+  filename;
+  /**
+   * The wrapped source backend. Decodes full frames; this wrapper collapses
+   * their channels. Invariant: `inner` is never itself a
+   * `GrayscaleVideoBackend` (enforced by {@link wrap}).
+   */
+  inner;
+  /**
+   * Resolved/requested grayscale state. `true`/`false` are fixed at
+   * construction; `null` (autodetect) is mutated in place to the resolved
+   * value by the first {@link getFrame} call — mirrors Python's
+   * `self.grayscale` being written by `detect_grayscale()`.
+   */
+  grayscale;
+  /**
+   * Private-by-convention constructor: prefer {@link GrayscaleVideoBackend.wrap},
+   * which enforces the "inner is never a GrayscaleVideoBackend" invariant.
+   */
+  constructor(inner, grayscale) {
+    this.inner = inner;
+    this.grayscale = grayscale;
+    this.filename = inner.filename;
+  }
+  /**
+   * Wrap `inner` in a grayscale-forcing view.
+   *
+   * If `inner` is already a `GrayscaleVideoBackend`, it is unwrapped first —
+   * the new `grayscale` setting replaces the old one outright (any previously
+   * resolved autodetect result is intentionally dropped in favor of the new
+   * request), so wrapping never nests and always reflects the latest call.
+   */
+  static wrap(options) {
+    const inner = options.inner instanceof _GrayscaleVideoBackend ? options.inner.inner : options.inner;
+    return new _GrayscaleVideoBackend(inner, options.grayscale);
+  }
+  /** Inner backend's dataset name (delegated; a grayscale wrapper is channel-only). */
+  get dataset() {
+    return this.inner.dataset;
+  }
+  /** Inner backend's frame rate (delegated). */
+  get fps() {
+    return this.inner.fps;
+  }
+  /** Inner backend's embedded frame numbers (delegated; channel-forcing is frame-preserving). */
+  get frameNumbers() {
+    return this.inner.frameNumbers;
+  }
+  /** Inner backend's embedded blob format (delegated). */
+  get embeddedFormat() {
+    return this.inner.embeddedFormat;
+  }
+  /** Inner backend's embedded blob channel order (delegated). */
+  get embeddedChannelOrder() {
+    return this.inner.embeddedChannelOrder;
+  }
+  /**
+   * Raw stored blob for `frameNumber`, delegated to the inner backend
+   * verbatim. The stored blob is the inner's un-collapsed encoding; a raw byte
+   * consumer (e.g. re-embedding) is expected to decode it itself, same as for
+   * an unwrapped backend.
+   */
+  getFrameBuffer(frameNumber) {
+    return this.inner.getFrameBuffer ? this.inner.getFrameBuffer(frameNumber) : Promise.resolve(null);
+  }
+  /** Deferred-metadata load, delegated to the inner backend (no-op if absent). */
+  ensureLoaded() {
+    return this.inner.ensureLoaded?.() ?? Promise.resolve();
+  }
+  /** Inner backend's per-frame presentation times (delegated; channel-only wrapper). */
+  async getFrameTimes() {
+    if (typeof this.inner.getFrameTimes === "function") {
+      return this.inner.getFrameTimes();
+    }
+    return null;
+  }
+  /** Inner backend's first-frame liveness probe (delegated; defaults to `true` if absent). */
+  async probeFirstFrame() {
+    if (typeof this.inner.probeFirstFrame === "function") {
+      return this.inner.probeFirstFrame();
+    }
+    return true;
+  }
+  /**
+   * Channel-forced shape `[F, H, W, C]`: `C` is `1` once `grayscale` has
+   * resolved `true`, `3` when explicitly `false`, and the inner's own
+   * declared channel count when unresolved (`null` — see the class-level note
+   * on autodetect timing).
+   *
+   * Mirrors Python `VideoBackend.img_shape`, which unconditionally sets
+   * `channels = 1` for `grayscale is True` and `channels = 3` for
+   * `grayscale is False` — NOT the inner's own declared count in either case.
+   * This matters because `false` must positively override an inner that
+   * independently declares itself 1-channel (e.g. `ImageVideoBackend`'s own
+   * construction-time autodetection): `Video.grayscale`'s getter is
+   * shape-driven (`shape[-1] === 1`), so without this override, setting
+   * `grayscale = false` on such a video would still read back as grayscale.
+   *
+   * Returns `undefined` only when the inner has no resolved shape.
+   */
+  get shape() {
+    const innerShape = this.inner.shape;
+    if (!innerShape) return void 0;
+    if (this.grayscale === true) {
+      return [innerShape[0], innerShape[1], innerShape[2], 1];
+    }
+    if (this.grayscale === false) {
+      return [innerShape[0], innerShape[1], innerShape[2], 3];
+    }
+    return innerShape;
+  }
+  /**
+   * Read a single frame, forcing or autodetecting grayscale.
+   *
+   * - `grayscale === false`: never collapse — the inner frame is returned
+   *   untouched (no decode/normalize overhead).
+   * - `grayscale === true`: always collapse to 1 channel via
+   *   {@link grayscaleFrame}.
+   * - `grayscale === null`: autodetect via {@link resolveAutodetect}, CACHE
+   *   the resolved value onto `this.grayscale`, then collapse only if it
+   *   resolved `true` — mirrors Python's `get_frame`:
+   *   `if self.grayscale is None: self.detect_grayscale(img)`.
+   *
+   * Returns `null` when the inner returns `null` (no such frame).
+   */
+  async getFrame(frameIndex, opts) {
+    const src = await this.inner.getFrame(frameIndex, opts);
+    if (src == null) return null;
+    if (this.grayscale === false) return src;
+    if (this.grayscale === null) {
+      this.grayscale = await this.resolveAutodetect(frameIndex, opts, src);
+    }
+    if (!this.grayscale) return src;
+    const readable = await toReadableFrame(src, this.inner.shape);
+    return grayscaleFrame(readable);
+  }
+  /**
+   * Resolve the `null` (autodetect) case for frame `frameIndex`.
+   *
+   * When `inner` is a {@link CropVideoBackend}, detection is run on the
+   * FULL, UNCROPPED first frame (`inner.inner`, not `inner` itself) — a
+   * degenerate or unusual crop region (e.g. a 1px-wide slice, or a region
+   * that happens to look grayscale in isolation on an otherwise-color source)
+   * must never skew the result. This mirrors Python's
+   * `CropVideoBackend.detect_grayscale`, which explicitly "resolves grayscale
+   * from the inner, ignoring any passed cropped image." For any other inner,
+   * detection runs on `frameSrc` (already decoded by the caller) directly.
+   */
+  async resolveAutodetect(frameIndex, opts, frameSrc) {
+    if (this.inner instanceof CropVideoBackend) {
+      const fullSrc = await this.inner.inner.getFrame(frameIndex, opts);
+      if (fullSrc != null) {
+        const fullReadable = await toReadableFrame(
+          fullSrc,
+          this.inner.inner.shape
+        );
+        return detectGrayscale(fullReadable);
+      }
+    }
+    const readable = await toReadableFrame(frameSrc, this.inner.shape);
+    return detectGrayscale(readable);
+  }
+  /** Release this wrapper's handle by releasing the inner's (always cascades). */
+  close() {
+    this.inner.close();
   }
 };
 
@@ -4694,18 +4920,23 @@ var Video = class _Video {
     }
     const fill = opts.fill ?? 0;
     const shareDecode = opts.shareDecode ?? true;
-    const inner = this.backend;
+    const grayscaleLayer = this.backend instanceof GrayscaleVideoBackend ? this.backend : null;
+    const inner = grayscaleLayer ? grayscaleLayer.inner : this.backend;
     const croppedBackend = CropVideoBackend.wrap({
       inner,
       crop: rect,
       fill,
       ownsInner: !shareDecode
     });
+    const finalBackend = grayscaleLayer ? GrayscaleVideoBackend.wrap({
+      inner: croppedBackend,
+      grayscale: grayscaleLayer.grayscale
+    }) : croppedBackend;
     const [x1, y1, x2, y2] = croppedBackend.crop;
     const srcShape = this.shape;
     const cropped = new _Video({
       filename: this.filename,
-      backend: croppedBackend,
+      backend: finalBackend,
       sourceVideo: this,
       openBackend: this.openBackend
     });
@@ -4934,6 +5165,48 @@ var Video = class _Video {
       return this.backendMetadata.grayscale ?? null;
     }
     return null;
+  }
+  /**
+   * Force (or release the forcing of) this video's grayscale state.
+   *
+   * Port of Python `Video.grayscale` setter (video.py): rebuilds the backend
+   * as a {@link GrayscaleVideoBackend} wrapping the current TRUE inner (any
+   * existing grayscale layer is unwrapped and replaced, never nested — see
+   * {@link GrayscaleVideoBackend.wrap}), and persists the value into
+   * {@link backendMetadata} so a closed/reopened video (which reads
+   * `backendMetadata.shape`/`backendMetadata.grayscale` rather than a live
+   * backend) still reports it — the same persistence pattern {@link crop}
+   * already uses for `crop`/`crop_fill`/`shape`.
+   *
+   * Matches Python's setter signature (`bool`, not the tri-state
+   * `bool | null` the constructor/{@link createVideoBackend} accept):
+   * autodetection is a construction-time choice, not something re-requested
+   * through this property.
+   *
+   * @throws Error If this video has no open backend (mirrors {@link crop},
+   *   which has the same requirement — the JS port has no filesystem
+   *   auto-open to fall back to).
+   */
+  set grayscale(value) {
+    if (this.backend == null) {
+      throw new Error(
+        "Cannot set grayscale on a video with no open backend. Provide a backend (the JS port has no filesystem auto-open) before setting grayscale."
+      );
+    }
+    const inner = this.backend instanceof GrayscaleVideoBackend ? this.backend.inner : this.backend;
+    this.backend = GrayscaleVideoBackend.wrap({ inner, grayscale: value });
+    this.backendMetadata = { ...this.backendMetadata, grayscale: value };
+    if (hasOwn(this.backendMetadata, "shape")) {
+      const shape = this.backendMetadata.shape;
+      if (shape != null) {
+        this.backendMetadata.shape = [
+          shape[0],
+          shape[1],
+          shape[2],
+          value ? 1 : inner.shape?.[3] ?? shape[3]
+        ];
+      }
+    }
   }
   /**
    * Create a new video with duplicate images removed.
@@ -10473,7 +10746,7 @@ var ImageVideoBackend = class _ImageVideoBackend {
       seedFrame = await decodeEncoded(seedBytes);
       height = seedFrame.height;
       width = seedFrame.width;
-      channels = isGrayscale(seedFrame) ? 1 : 3;
+      channels = detectGrayscale(seedFrame) ? 1 : 3;
     }
     const be = new _ImageVideoBackend(
       opts.filename,
@@ -10589,13 +10862,6 @@ var ImageVideoBackend = class _ImageVideoBackend {
     this.inflight.clear();
   }
 };
-function isGrayscale(img) {
-  const d = img.data;
-  for (let i = 0; i < d.length; i += 4) {
-    if (d[i] !== d[i + 2]) return false;
-  }
-  return true;
-}
 
 // src/video/path-resolve.ts
 var DEFAULT_MAX_TAIL_DEPTH = 16;
@@ -13788,6 +14054,14 @@ var UnsupportedVideoFormatError = class extends Error {
   }
 };
 async function createVideoBackend(source, options) {
+  const backend = await createConcreteVideoBackend(source, options);
+  if (options?.grayscale === void 0) return backend;
+  return GrayscaleVideoBackend.wrap({
+    inner: backend,
+    grayscale: options.grayscale
+  });
+}
+async function createConcreteVideoBackend(source, options) {
   if (Array.isArray(source)) {
     return ImageVideoBackend.create({
       filename: source,
@@ -24348,9 +24622,12 @@ export {
   LabeledFrame,
   SuggestionFrame,
   cropFrame,
+  detectGrayscale,
+  grayscaleFrame,
   cropPoints,
   uncropPoints,
   CropVideoBackend,
+  GrayscaleVideoBackend,
   EXISTS_TTL_MS,
   resolveCropRect,
   Video,

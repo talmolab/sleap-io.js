@@ -474,6 +474,38 @@ type Fill = number | number[];
  */
 declare function cropFrame(frame: ImageData, crop: CropRect, fill?: Fill): ImageData;
 declare function cropFrame(frame: RawFrame, crop: CropRect, fill?: Fill): RawFrame;
+/**
+ * Detect whether a decoded frame is grayscale by comparing its first and last
+ * color channel for exact equality across every pixel — parity with Python
+ * `VideoBackend.detect_grayscale` (`test_img[..., 0] == test_img[..., -1]`).
+ *
+ * For an `ImageData` input (always 4-channel RGBA with an always-opaque alpha
+ * lane), the comparison skips alpha and compares R (channel 0) against B
+ * (channel 2) — the last COLOR channel — mirroring the existing convention in
+ * `image-video.ts`'s `isGrayscale`. For a {@link RawFrame}, channels are
+ * compared literally (channel 0 vs. `channels - 1`), matching Python's raw
+ * numpy-array semantics exactly. A single-channel frame is trivially
+ * grayscale.
+ *
+ * @param frame Decoded source frame (`ImageData` RGBA or a {@link RawFrame}).
+ *   A raw `ImageBitmap` is rejected — rasterize it first.
+ */
+declare function detectGrayscale(frame: FrameLike): boolean;
+/**
+ * Collapse a decoded frame to a single channel by taking channel 0 of every
+ * pixel — parity with Python's `img[..., [0]]` slice, applied by
+ * `VideoBackend.get_frame`/`get_frames` when `grayscale` is (or resolves to)
+ * `true`. Always returns a {@link RawFrame} with `channels: 1`: a browser
+ * `ImageData` is hard-coded 4-channel RGBA and cannot represent a single
+ * channel, so the result is never re-wrapped as `ImageData` — mirrors how
+ * {@link cropFrame} already returns a differently-shaped `RawFrame` for
+ * non-`ImageData` input.
+ *
+ * @param frame Decoded source frame (`ImageData` RGBA or a {@link RawFrame}).
+ *   A raw `ImageBitmap` is rejected — rasterize it first (same contract as
+ *   {@link cropFrame}).
+ */
+declare function grayscaleFrame(frame: FrameLike): RawFrame;
 
 type VideoFrame = ImageData | ImageBitmap | Uint8Array | ArrayBuffer;
 /** Per-call options for {@link VideoBackend.getFrame}. */
@@ -853,6 +885,28 @@ declare class Video {
      * carry the grayscale hint onto the newly created video.
      */
     get grayscale(): boolean | null;
+    /**
+     * Force (or release the forcing of) this video's grayscale state.
+     *
+     * Port of Python `Video.grayscale` setter (video.py): rebuilds the backend
+     * as a {@link GrayscaleVideoBackend} wrapping the current TRUE inner (any
+     * existing grayscale layer is unwrapped and replaced, never nested — see
+     * {@link GrayscaleVideoBackend.wrap}), and persists the value into
+     * {@link backendMetadata} so a closed/reopened video (which reads
+     * `backendMetadata.shape`/`backendMetadata.grayscale` rather than a live
+     * backend) still reports it — the same persistence pattern {@link crop}
+     * already uses for `crop`/`crop_fill`/`shape`.
+     *
+     * Matches Python's setter signature (`bool`, not the tri-state
+     * `bool | null` the constructor/{@link createVideoBackend} accept):
+     * autodetection is a construction-time choice, not something re-requested
+     * through this property.
+     *
+     * @throws Error If this video has no open backend (mirrors {@link crop},
+     *   which has the same requirement — the JS port has no filesystem
+     *   auto-open to fall back to).
+     */
+    set grayscale(value: boolean);
     /**
      * Create a new video with duplicate images removed.
      *
@@ -3316,4 +3370,4 @@ declare function toDict(labels: Labels, options?: {
 }): LabelsDict;
 declare function fromDict(data: LabelsDict): Labels;
 
-export { _findAnnotationLinkMatches as $, AUTO_VIDEO_MATCHER as A, BoundingBox as B, Centroid as C, DUPLICATE_MATCHER as D, Edge as E, FrameGroup as F, PATH_VIDEO_MATCHER as G, BASENAME_VIDEO_MATCHER as H, Instance as I, IMAGE_DEDUP_VIDEO_MATCHER as J, SHAPE_VIDEO_MATCHER as K, Labels as L, MergeError as M, Node as N, OVERLAP_SKELETON_MATCHER as O, PredictedInstance as P, setFsResolver as Q, ROI as R, Skeleton as S, Track as T, UserROI as U, Video as V, type FsResolver as W, type MergeStrategy as X, _annotationCentroidXy as Y, _findAnnotationMatches as Z, _relinkFromPredicted as _, Symmetry as a, type LabelImageOptions as a$, _resolveMergedIsNegative as a0, _registerCentroidFactory as a1, type Point as a2, type PredictedPoint as a3, type PointsArray as a4, type PredictedPointsArray as a5, type PointColumns as a6, pointsEmpty as a7, predictedPointsEmpty as a8, clonePoint as a9, _registerMaskFactory as aA, AnnotationType as aB, type Geometry as aC, type ROIOptions as aD, rasterizeGeometry as aE, encodeWkb as aF, decodeWkb as aG, PredictedROI as aH, encodeRle as aI, decodeRle as aJ, resizeNearest as aK, traceMaskContours as aL, groupRingsIntoPolygons as aM, type SegmentationMaskOptions as aN, type UserSegmentationMaskOptions as aO, UserSegmentationMask as aP, PredictedSegmentationMask as aQ, type BoundingBoxOptions as aR, UserBoundingBox as aS, PredictedBoundingBox as aT, normalizeCentroidSource as aU, getCentroidSkeleton as aV, CENTROID_SKELETON as aW, type CentroidOptions as aX, UserCentroid as aY, PredictedCentroid as aZ, type LabelImageObjectInfo as a_, pointsFromArray as aa, predictedPointsFromArray as ab, PointView as ac, pointsFromDict as ad, predictedPointsFromDict as ae, type NodeOrIndex as af, EXISTS_TTL_MS as ag, type CropOptions as ah, resolveCropRect as ai, type VideoBackendErrorKind as aj, type VideoBackendError as ak, SuggestionFrame as al, rodriguesTransformation as am, Camera as an, CameraGroup as ao, InstanceGroup as ap, RecordingSession as aq, injectSessionFrameResolver as ar, cloneRecordingSession as as, makeCameraFromDict as at, Identity as au, Embedding as av, Instance3D as aw, PredictedInstance3D as ax, LazyDataStore as ay, LazyFrameList as az, LabeledFrame as b, UserLabelImage as b0, PredictedLabelImage as b1, normalizeLabelIds as b2, type VideoFrame as b3, type GetFrameOptions as b4, type VideoBackend as b5, type LabelsDict as b6, toDict as b7, fromDict as b8, cropPoints as b9, uncropPoints as ba, type CropRect as bb, type FlatPoints as bc, type PointPairs as bd, cropFrame as be, type FrameLike as bf, type RawFrame as bg, type Fill as bh, type RangeSource as bi, LabelsSet as c, LabelImage as d, SegmentationMask as e, SkeletonMatchMethod as f, InstanceMatchMethod as g, TrackMatchMethod as h, VideoMatchMethod as i, FrameStrategy as j, ErrorMode as k, SkeletonMatcher as l, InstanceMatcher as m, TrackMatcher as n, VideoMatcher as o, ConflictResolution as p, SkeletonMismatchError as q, MergeResult as r, MatchResult as s, MergeProgressBar as t, STRUCTURE_SKELETON_MATCHER as u, SUBSET_SKELETON_MATCHER as v, IOU_MATCHER as w, IDENTITY_INSTANCE_MATCHER as x, NAME_TRACK_MATCHER as y, IDENTITY_TRACK_MATCHER as z };
+export { _findAnnotationLinkMatches as $, AUTO_VIDEO_MATCHER as A, BoundingBox as B, Centroid as C, DUPLICATE_MATCHER as D, Edge as E, FrameGroup as F, PATH_VIDEO_MATCHER as G, BASENAME_VIDEO_MATCHER as H, Instance as I, IMAGE_DEDUP_VIDEO_MATCHER as J, SHAPE_VIDEO_MATCHER as K, Labels as L, MergeError as M, Node as N, OVERLAP_SKELETON_MATCHER as O, PredictedInstance as P, setFsResolver as Q, ROI as R, Skeleton as S, Track as T, UserROI as U, Video as V, type FsResolver as W, type MergeStrategy as X, _annotationCentroidXy as Y, _findAnnotationMatches as Z, _relinkFromPredicted as _, Symmetry as a, type LabelImageOptions as a$, _resolveMergedIsNegative as a0, _registerCentroidFactory as a1, type Point as a2, type PredictedPoint as a3, type PointsArray as a4, type PredictedPointsArray as a5, type PointColumns as a6, pointsEmpty as a7, predictedPointsEmpty as a8, clonePoint as a9, _registerMaskFactory as aA, AnnotationType as aB, type Geometry as aC, type ROIOptions as aD, rasterizeGeometry as aE, encodeWkb as aF, decodeWkb as aG, PredictedROI as aH, encodeRle as aI, decodeRle as aJ, resizeNearest as aK, traceMaskContours as aL, groupRingsIntoPolygons as aM, type SegmentationMaskOptions as aN, type UserSegmentationMaskOptions as aO, UserSegmentationMask as aP, PredictedSegmentationMask as aQ, type BoundingBoxOptions as aR, UserBoundingBox as aS, PredictedBoundingBox as aT, normalizeCentroidSource as aU, getCentroidSkeleton as aV, CENTROID_SKELETON as aW, type CentroidOptions as aX, UserCentroid as aY, PredictedCentroid as aZ, type LabelImageObjectInfo as a_, pointsFromArray as aa, predictedPointsFromArray as ab, PointView as ac, pointsFromDict as ad, predictedPointsFromDict as ae, type NodeOrIndex as af, EXISTS_TTL_MS as ag, type CropOptions as ah, resolveCropRect as ai, type VideoBackendErrorKind as aj, type VideoBackendError as ak, SuggestionFrame as al, rodriguesTransformation as am, Camera as an, CameraGroup as ao, InstanceGroup as ap, RecordingSession as aq, injectSessionFrameResolver as ar, cloneRecordingSession as as, makeCameraFromDict as at, Identity as au, Embedding as av, Instance3D as aw, PredictedInstance3D as ax, LazyDataStore as ay, LazyFrameList as az, LabeledFrame as b, UserLabelImage as b0, PredictedLabelImage as b1, normalizeLabelIds as b2, type VideoFrame as b3, type GetFrameOptions as b4, type VideoBackend as b5, type LabelsDict as b6, toDict as b7, fromDict as b8, cropPoints as b9, uncropPoints as ba, type CropRect as bb, type FlatPoints as bc, type PointPairs as bd, cropFrame as be, detectGrayscale as bf, grayscaleFrame as bg, type FrameLike as bh, type RawFrame as bi, type Fill as bj, type RangeSource as bk, LabelsSet as c, LabelImage as d, SegmentationMask as e, SkeletonMatchMethod as f, InstanceMatchMethod as g, TrackMatchMethod as h, VideoMatchMethod as i, FrameStrategy as j, ErrorMode as k, SkeletonMatcher as l, InstanceMatcher as m, TrackMatcher as n, VideoMatcher as o, ConflictResolution as p, SkeletonMismatchError as q, MergeResult as r, MatchResult as s, MergeProgressBar as t, STRUCTURE_SKELETON_MATCHER as u, SUBSET_SKELETON_MATCHER as v, IOU_MATCHER as w, IDENTITY_INSTANCE_MATCHER as x, NAME_TRACK_MATCHER as y, IDENTITY_TRACK_MATCHER as z };
