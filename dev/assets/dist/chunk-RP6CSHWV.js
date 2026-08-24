@@ -9890,6 +9890,233 @@ var Mp4BoxVideoBackend = class {
   }
 };
 
+// src/video/avi-video.ts
+import { WebDemuxer, AVSeekFlag } from "web-demuxer";
+var webDemuxerConfig = null;
+function configureWebDemuxer(config) {
+  webDemuxerConfig = { wasmFilePath: config.wasmFilePath };
+}
+function isWebDemuxerConfigured() {
+  return webDemuxerConfig !== null;
+}
+function isBrowser3() {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
+function hasWebCodecs2() {
+  return typeof VideoDecoder !== "undefined" && typeof EncodedVideoChunk !== "undefined";
+}
+var MJPEG_CODECS = /* @__PURE__ */ new Set(["mjpeg", "mjpg", "jpeg"]);
+var FORWARD_PREFETCH = 8;
+var AviVideoBackend = class _AviVideoBackend {
+  filename;
+  shape;
+  fps;
+  dataset = null;
+  demuxer = null;
+  mode = "webcodecs";
+  decoderConfig = null;
+  cache = /* @__PURE__ */ new Map();
+  cacheSize;
+  frameCount = 0;
+  /** Serializes decodes so we never run two `VideoDecoder`s at once. */
+  decodeQueue = Promise.resolve();
+  /** Newest requested frame — lets an in-flight decode bail during a scrub. */
+  latestRequested = -1;
+  constructor(filename, options = {}) {
+    this.filename = filename;
+    this.cacheSize = options.cacheSize ?? 120;
+  }
+  static async fromBlob(blob, filename, options) {
+    const backend = new _AviVideoBackend(filename, options);
+    const file = typeof File !== "undefined" && blob instanceof File ? blob : new File([blob], filename);
+    await backend.initialize(file);
+    return backend;
+  }
+  static async fromUrl(url, options) {
+    const backend = new _AviVideoBackend(url, options);
+    await backend.initialize(url);
+    return backend;
+  }
+  /**
+   * Build from a lazy {@link RangeSource} (desktop). web-demuxer 4.x's `load()`
+   * accepts only a `File`/URL (no custom lazy source), so we materialize the
+   * bytes into a `File`. AVIs are typically modest; true byte-range streaming for
+   * multi-GB AVIs is a follow-up (needs a web-demuxer source hook).
+   */
+  static async fromRangeSource(rangeSource, filename, options) {
+    const backend = new _AviVideoBackend(filename, options);
+    const bytes = await rangeSource.readRange(0, rangeSource.size);
+    await backend.initialize(new File([bytes], filename));
+    return backend;
+  }
+  async initialize(source) {
+    if (!isBrowser3() || !hasWebCodecs2()) {
+      throw new Error(
+        "AviVideoBackend requires a browser environment with WebCodecs"
+      );
+    }
+    if (!webDemuxerConfig) {
+      throw new Error(
+        "AviVideoBackend used before configureWebDemuxer({ wasmFilePath }) was called"
+      );
+    }
+    const demuxer = new WebDemuxer({
+      wasmFilePath: webDemuxerConfig.wasmFilePath
+    });
+    this.demuxer = demuxer;
+    await demuxer.load(source);
+    const stream = await demuxer.getAVStream();
+    if (!stream || stream.width <= 0 || stream.height <= 0) {
+      throw new Error("No decodable video stream found in AVI");
+    }
+    const width = stream.width;
+    const height = stream.height;
+    this.fps = parseFrameRate(stream.avg_frame_rate) || parseFrameRate(stream.r_frame_rate) || 0;
+    const metaCount = Number.parseInt(stream.nb_frames, 10) || 0;
+    const durationCount = this.fps > 0 && stream.duration > 0 ? Math.round(stream.duration * this.fps) : 0;
+    this.frameCount = durationCount || metaCount;
+    const codec = (stream.codec_name ?? "").toLowerCase();
+    if (MJPEG_CODECS.has(codec)) {
+      this.mode = "mjpeg";
+    } else {
+      const config = await demuxer.getDecoderConfig("video");
+      const support = await VideoDecoder.isConfigSupported({
+        codec: config.codec,
+        codedWidth: config.codedWidth ?? width,
+        codedHeight: config.codedHeight ?? height,
+        description: config.description
+      });
+      if (!support?.supported) {
+        throw new Error(
+          `AVI video codec "${codec}" is not decodable in this environment; transcode to H.264 (MP4) first`
+        );
+      }
+      this.decoderConfig = config;
+      this.mode = "webcodecs";
+    }
+    if (!this.frameCount || this.frameCount <= 0) {
+      throw new Error("Could not determine AVI frame count");
+    }
+    this.shape = [this.frameCount, height, width, 3];
+  }
+  async getFrame(frameIndex, opts) {
+    if (frameIndex < 0 || frameIndex >= this.frameCount) return null;
+    const cached = this.cache.get(frameIndex);
+    if (cached) {
+      this.cache.delete(frameIndex);
+      this.cache.set(frameIndex, cached);
+      return cached;
+    }
+    this.latestRequested = frameIndex;
+    if (this.mode === "mjpeg") {
+      return this.enqueue(
+        () => this.decodeMjpegFrame(frameIndex, opts?.signal)
+      );
+    }
+    return this.enqueue(
+      () => this.decodeWebCodecsFrame(frameIndex, opts?.signal)
+    );
+  }
+  /** Serialize decodes: one `VideoDecoder`/packet-read at a time. */
+  enqueue(run) {
+    const next = this.decodeQueue.then(run, run);
+    this.decodeQueue = next.catch(() => void 0);
+    return next;
+  }
+  // ── MJPEG: each frame is an independent JPEG ────────────────────────────────
+  async decodeMjpegFrame(frameIndex, signal) {
+    if (!this.demuxer) throw new Error("Backend not initialized");
+    if (signal?.aborted) return null;
+    if (this.cache.has(frameIndex)) return this.cache.get(frameIndex) ?? null;
+    const time = (frameIndex + 0.5) / (this.fps || 1);
+    const packet = await this.demuxer.getAVPacket(time);
+    if (!packet?.data?.length) return null;
+    const blob = new Blob([packet.data], { type: "image/jpeg" });
+    const bitmap = await createImageBitmap(blob);
+    this.cacheFrame(frameIndex, bitmap);
+    return bitmap;
+  }
+  // ── WebCodecs: seek to keyframe ≤ target, decode GOP forward ─────────────────
+  async decodeWebCodecsFrame(target, signal) {
+    if (!this.demuxer || !this.decoderConfig) {
+      throw new Error("Backend not initialized");
+    }
+    if (this.cache.has(target)) return this.cache.get(target) ?? null;
+    if (signal?.aborted) return null;
+    const fps = this.fps || 1;
+    const startTime = target / fps;
+    const endIndex = Math.min(this.frameCount - 1, target + FORWARD_PREFETCH);
+    const endTime = (endIndex + 0.5) / fps;
+    const bitmapJobs = [];
+    const decoder = new VideoDecoder({
+      output: (frame) => {
+        const idx = Math.round(frame.timestamp / 1e6 * fps);
+        if (idx >= target && idx <= endIndex && !this.cache.has(idx)) {
+          bitmapJobs.push(
+            createImageBitmap(frame).then((bmp) => {
+              this.cacheFrame(idx, bmp);
+            }).finally(() => frame.close())
+          );
+        } else {
+          frame.close();
+        }
+      },
+      error: () => {
+      }
+    });
+    decoder.configure(this.decoderConfig);
+    try {
+      const reader = this.demuxer.read("video", startTime, endTime, AVSeekFlag.AVSEEK_FLAG_BACKWARD).getReader();
+      for (; ; ) {
+        if (signal?.aborted || this.latestRequested !== target) break;
+        const { done, value } = await reader.read();
+        if (done) break;
+        decoder.decode(value);
+      }
+      await decoder.flush();
+    } catch {
+    } finally {
+      try {
+        decoder.close();
+      } catch {
+      }
+    }
+    await Promise.all(bitmapJobs);
+    return this.cache.get(target) ?? null;
+  }
+  get numFrames() {
+    return this.frameCount;
+  }
+  close() {
+    this.cache.forEach((bitmap) => {
+      bitmap.close();
+    });
+    this.cache.clear();
+    this.demuxer?.destroy();
+    this.demuxer = null;
+    this.decoderConfig = null;
+    this.frameCount = 0;
+  }
+  cacheFrame(frameIndex, bitmap) {
+    if (this.cache.size >= this.cacheSize) {
+      const oldestKey = this.cache.keys().next().value;
+      if (oldestKey !== void 0) {
+        this.cache.get(oldestKey)?.close();
+        this.cache.delete(oldestKey);
+      }
+    }
+    this.cache.set(frameIndex, bitmap);
+  }
+};
+function parseFrameRate(rate) {
+  if (!rate) return 0;
+  const [num, den] = rate.split("/");
+  const n = Number(num);
+  const d = den === void 0 ? 1 : Number(den);
+  if (!Number.isFinite(n) || !Number.isFinite(d) || d === 0) return 0;
+  return n / d;
+}
+
 // src/video/embedded-frame.ts
 var PNG_MAGIC = new Uint8Array([
   137,
@@ -10081,7 +10308,7 @@ async function readEmbeddedFrameBytes(reader, index) {
 }
 
 // src/video/streaming-hdf5-video.ts
-var isBrowser3 = typeof window !== "undefined" && typeof document !== "undefined";
+var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
 var StreamingHdf5VideoBackend = class {
   filename;
   dataset;
@@ -10320,7 +10547,7 @@ function attrToNum(attr) {
   return Number.isFinite(n) && n > 0 ? n : void 0;
 }
 async function decodeImageBytes(bytes, format, channelOrder) {
-  if (!isBrowser3 || typeof createImageBitmap === "undefined") return null;
+  if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
   const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
   const safeBytes = new Uint8Array(bytes);
   const blob = new Blob([safeBytes.buffer], { type: mime });
@@ -10344,7 +10571,7 @@ async function decodeImageBytes(bytes, format, channelOrder) {
   return imageData;
 }
 function decodeRawFrame(bytes, shape, channelOrder) {
-  if (!isBrowser3 || !shape) return null;
+  if (!isBrowser4 || !shape) return null;
   const [, height, width, channels] = shape;
   if (!height || !width || !channels) return null;
   const expectedLength = height * width * channels;
@@ -13647,7 +13874,7 @@ function ensureH5StagingDir(module) {
 }
 
 // src/video/hdf5-video.ts
-var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
+var isBrowser5 = typeof window !== "undefined" && typeof document !== "undefined";
 var Hdf5VideoBackend = class {
   filename;
   dataset;
@@ -13758,7 +13985,7 @@ var Hdf5VideoBackend = class {
   }
 };
 async function decodeImageBytes2(bytes, format, channelOrder) {
-  if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
+  if (!isBrowser5 || typeof createImageBitmap === "undefined") return null;
   const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
   const safeBytes = new Uint8Array(bytes);
   const blob = new Blob([safeBytes.buffer], { type: mime });
@@ -13782,7 +14009,7 @@ async function decodeImageBytes2(bytes, format, channelOrder) {
   return imageData;
 }
 function decodeRawFrame2(bytes, shape, channelOrder) {
-  if (!isBrowser4 || !shape) return null;
+  if (!isBrowser5 || !shape) return null;
   const [, height, width, channels] = shape;
   if (!height || !width || !channels) return null;
   const expectedLength = height * width * channels;
@@ -13806,7 +14033,8 @@ function decodeRawFrame2(bytes, shape, channelOrder) {
 
 // src/video/factory.ts
 var MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "ts"];
-var UNSUPPORTED_EXTENSIONS = ["avi", "mpeg", "mpg"];
+var AVI_EXTENSIONS = ["avi", "wmv"];
+var UNSUPPORTED_EXTENSIONS = ["mpeg", "mpg"];
 var IMAGE_EXTENSIONS = ["png", "jpg", "jpeg", "tif", "tiff", "bmp"];
 function isImageSource(source) {
   if (Array.isArray(source)) return true;
@@ -13818,7 +14046,7 @@ var UnsupportedVideoFormatError = class extends Error {
   extension;
   constructor(extension) {
     super(
-      `Unsupported video format ".${extension}". AVI and MPEG program streams cannot be decoded in the browser or desktop app. Transcode to MP4 (H.264) first, e.g. \`ffmpeg -i input.${extension} -c:v libx264 output.mp4\`.`
+      `Unsupported video format ".${extension}". MPEG program streams cannot be decoded in the browser or desktop app. Transcode to MP4 (H.264) first, e.g. \`ffmpeg -i input.${extension} -c:v libx264 output.mp4\`.`
     );
     this.name = "UnsupportedVideoFormatError";
     this.extension = extension;
@@ -13886,6 +14114,10 @@ async function createConcreteVideoBackend(source, options) {
       return new MediaVideoBackend(URL.createObjectURL(source));
     return new MediaVideoBackend(videoUrl);
   }
+  if (options?.backend === "avi") {
+    if (isBlob) return AviVideoBackend.fromBlob(source, filename);
+    return AviVideoBackend.fromUrl(videoUrl);
+  }
   if (UNSUPPORTED_EXTENSIONS.includes(ext)) {
     throw new UnsupportedVideoFormatError(ext);
   }
@@ -13906,6 +14138,10 @@ async function createConcreteVideoBackend(source, options) {
     if (isBlob)
       return MediaBunnyVideoBackend.fromBlob(source, filename);
     return MediaBunnyVideoBackend.fromUrl(videoUrl, { headers });
+  }
+  if (supportsWebCodecs && AVI_EXTENSIONS.includes(ext)) {
+    if (isBlob) return AviVideoBackend.fromBlob(source, filename);
+    return AviVideoBackend.fromUrl(videoUrl);
   }
   if (isBlob) return new MediaVideoBackend(URL.createObjectURL(source));
   return new MediaVideoBackend(videoUrl);
@@ -24415,6 +24651,9 @@ export {
   Identity,
   Embedding,
   Mp4BoxVideoBackend,
+  configureWebDemuxer,
+  isWebDemuxerConfigured,
+  AviVideoBackend,
   StreamingHdf5VideoBackend,
   setImageBytesReader,
   setDefaultImageBytesReader,

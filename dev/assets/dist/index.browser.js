@@ -1,6 +1,7 @@
 import {
   AUTO_VIDEO_MATCHER,
   AnnotationType,
+  AviVideoBackend,
   BASENAME_VIDEO_MATCHER,
   BlobByteSource,
   BoundingBox,
@@ -98,6 +99,7 @@ import {
   computePrefetchWindow,
   computeTrails,
   configureLibavDecoder,
+  configureWebDemuxer,
   createSkeletonFromCategory,
   createVideoBackend,
   cropFrame,
@@ -145,6 +147,7 @@ import {
   isRangeSource,
   isStreamingSupported,
   isTrainingConfig,
+  isWebDemuxerConfigured,
   labelsFromNumpy,
   labelsToCsv,
   loadAnalysisH5,
@@ -221,7 +224,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-56N5Y6QY.js";
+} from "./chunk-RP6CSHWV.js";
 import {
   Camera,
   CameraGroup,
@@ -281,6 +284,7 @@ import {
 export {
   AUTO_VIDEO_MATCHER,
   AnnotationType,
+  AviVideoBackend,
   BASENAME_VIDEO_MATCHER,
   BlobByteSource,
   BoundingBox,
@@ -405,6 +409,7 @@ export {
   computePrefetchWindow,
   computeTrails,
   configureLibavDecoder,
+  configureWebDemuxer,
   createSkeletonFromCategory,
   createVideoBackend,
   cropFrame,
@@ -458,6 +463,7 @@ export {
   isStreamingSupported,
   isTrainingConfig,
   isUrl,
+  isWebDemuxerConfigured,
   labelsFromNumpy,
   labelsToCsv,
   loadAnalysisH5,
