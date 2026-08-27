@@ -735,6 +735,7 @@ async function readVideosStreaming(
               shape,
               fps: meta.fps,
               channel_order: channelOrder,
+              grayscale: meta.grayscale,
             },
             sourceVideo,
             openBackend: false,
@@ -862,6 +863,7 @@ async function readVideosStreaming(
         shape,
         fps: meta.fps,
         channel_order: channelOrder,
+        grayscale: meta.grayscale,
       };
 
       // Crop reconstruction (SLP 2.3): wrap the uncropped inner backend and seed
