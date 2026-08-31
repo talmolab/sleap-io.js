@@ -36,7 +36,7 @@ import {
   resolveIdentity,
   resolveVideoFilename,
   sessionsReadError
-} from "./chunk-BJKWMW53.js";
+} from "./chunk-U5RJ2ZA2.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -14645,7 +14645,8 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
               format: meta.format,
               shape: shape2,
               fps: meta.fps,
-              channel_order: channelOrder2
+              channel_order: channelOrder2,
+              grayscale: meta.grayscale
             },
             sourceVideo: sourceVideo2,
             openBackend: false,
@@ -14723,7 +14724,8 @@ async function readVideosStreaming(file, labelsPath, openVideos = false, formatI
         format,
         shape,
         fps: meta.fps,
-        channel_order: channelOrder
+        channel_order: channelOrder,
+        grayscale: meta.grayscale
       };
       const cropEntry = videoCrops?.get(videoIndex);
       if (cropEntry) {

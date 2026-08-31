@@ -1592,6 +1592,7 @@ function parseVideosMetadata(values, labelsPath) {
       frameCount: shape?.[0],
       fps: backendMeta.fps,
       channelOrder: backendMeta.channel_order,
+      grayscale: backendMeta.grayscale,
       embedded,
       sourceVideo: parsed.source_video
     });
