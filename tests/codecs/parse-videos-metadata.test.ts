@@ -61,4 +61,40 @@ describe("parseVideosMetadata", () => {
     expect(meta.filename).toBe("/projects/labels.slp");
     expect(meta.embedded).toBe(true);
   });
+
+  it("surfaces the persisted grayscale flag (regression: streaming reader silently dropped it)", () => {
+    // A MediaVideo imported as grayscale (#308 parity) persists
+    // `backend.grayscale: true` alongside a shape whose channel count already
+    // reflects that (1, not the source codec's native 3). Losing this flag
+    // meant the desktop app's lazily-opened playback backend fell back to the
+    // raw decoder's channel count instead of the intended forced-grayscale one.
+    const entry = JSON.stringify({
+      backend: {
+        type: "MediaVideo",
+        filename: "movie.mp4",
+        shape: [100, 480, 640, 1],
+        grayscale: true,
+        bgr: true,
+      },
+    });
+
+    const [meta] = parseVideosMetadata([entry]);
+
+    expect(meta.grayscale).toBe(true);
+    expect(meta.channels).toBe(1);
+  });
+
+  it("leaves grayscale undefined when the source never recorded it", () => {
+    const entry = JSON.stringify({
+      backend: {
+        type: "MediaVideo",
+        filename: "movie.mp4",
+        shape: [100, 480, 640, 3],
+      },
+    });
+
+    const [meta] = parseVideosMetadata([entry]);
+
+    expect(meta.grayscale).toBeUndefined();
+  });
 });

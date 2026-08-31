@@ -481,6 +481,18 @@ export interface VideoMetadata {
   frameCount?: number;
   /** Channel order (e.g., "RGB", "BGR") */
   channelOrder?: string;
+  /**
+   * Persisted "force grayscale" intent (Python `MediaVideo`/`Video.grayscale`):
+   * `true`/`false` force 1/3 channels regardless of the underlying decoder's
+   * native channel count; `undefined`/`null` means unset (autodetect, or N/A
+   * for backends where it was never recorded). Must survive the streaming
+   * reader same as the eager one (read.ts) — see resolveVideos.ts's
+   * `probeAndAssignBackend`, which reads this back to decide whether to wrap
+   * the real playback backend in `GrayscaleVideoBackend`. Losing it here means
+   * a grayscale-imported MP4's lazily-opened backend reports the raw
+   * decoder's native channel count (3) instead of the intended 1.
+   */
+  grayscale?: boolean | null;
   /** Whether video is embedded in the SLP file */
   embedded: boolean;
   /**
@@ -564,6 +576,7 @@ export function parseVideosMetadata(
       frameCount: shape?.[0],
       fps: backendMeta.fps as number | undefined,
       channelOrder: backendMeta.channel_order as string | undefined,
+      grayscale: backendMeta.grayscale as boolean | null | undefined,
       embedded,
       sourceVideo: parsed.source_video as Record<string, unknown> | undefined,
     });
