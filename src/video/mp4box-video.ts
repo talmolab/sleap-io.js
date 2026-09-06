@@ -60,6 +60,10 @@ async function loadMp4box(): Promise<any> {
 const DEFAULT_CACHE_SIZE = 120;
 const DEFAULT_LOOKAHEAD = 60;
 const PARSE_CHUNK_SIZE = 1024 * 1024;
+// Decode-ahead trigger distance: while playing, if the frame this many steps
+// ahead of the playhead isn't cached yet, schedule more decode-ahead work so
+// the runway never runs dry between the periodic keyframe→+lookahead decodes.
+const DECODE_AHEAD_MARGIN = 30;
 
 type Sample = {
   offset: number;
@@ -99,6 +103,14 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   private rangeSource: RangeSource | null;
   private decodeQueue: Promise<void>;
   private latestRequestedFrame: number | null;
+  /**
+   * AbortController for the current speculative decode-ahead task. A demand
+   * {@link getFrame} miss aborts it so the demand read never waits behind
+   * speculative ahead-work (which bails between decode batches on the signal).
+   */
+  private aheadAbort: AbortController | null;
+  /** True while a decode-ahead task is queued/running, to coalesce calls. */
+  private aheadScheduled: boolean;
   /** Extra HTTP headers (e.g. Authorization) applied to every byte fetch. */
   private headers: Record<string, string>;
 
@@ -139,6 +151,8 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     this.rangeSource = null;
     this.decodeQueue = Promise.resolve();
     this.latestRequestedFrame = null;
+    this.aheadAbort = null;
+    this.aheadScheduled = false;
 
     if (asRange) {
       // Lazy on-disk source: we already know the size; readChunk pulls ranges.
@@ -170,6 +184,10 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     }
 
     this.latestRequestedFrame = frameIndex;
+    // A demand read always wins over speculative decode-ahead: abort any
+    // in-flight ahead-work so this frame isn't stuck behind it (the running
+    // batch bails on the signal between decode batches).
+    this.aheadAbort?.abort();
 
     this.decodeQueue = this.decodeQueue.then(async () => {
       if (this.latestRequestedFrame !== frameIndex) return;
@@ -180,11 +198,57 @@ export class Mp4BoxVideoBackend implements VideoBackend {
         frameIndex + this.lookahead,
         this.samples.length - 1,
       );
-      await this.decodeRange(keyframe, end, frameIndex);
+      await this.decodeRange(keyframe, end, frameIndex, {
+        signal: opts?.signal,
+      });
     });
     await this.decodeQueue;
 
     return this.cache.get(frameIndex) ?? null;
+  }
+
+  /**
+   * Proactively decode a run of frames AHEAD of `fromFrame` into the cache so
+   * sequential playback finds cache hits instead of blocking on the periodic
+   * keyframe→+lookahead decode (the ~2 s play-freeze). Fire-and-forget: returns
+   * immediately, scheduling one background {@link decodeRange} on the shared
+   * decode queue. No-ops when the runway is already cached, near the end, or an
+   * ahead task is already in flight (coalesced). A demand {@link getFrame} miss
+   * aborts the in-flight ahead-work. The app drives this once per painted frame
+   * while playing (and stops on seek/pause), so ahead-work never fights a seek.
+   */
+  decodeAhead(fromFrame: number, opts?: GetFrameOptions): void {
+    if (!this.samples.length) return;
+    if (opts?.signal?.aborted) return;
+    // Coalesce: one ahead task at a time. Repeat calls during playback no-op
+    // until the current one finishes (which re-checks coverage next call).
+    if (this.aheadScheduled) return;
+    const probe = fromFrame + DECODE_AHEAD_MARGIN;
+    if (probe >= this.samples.length) return; // near the end
+    if (this.cache.has(probe)) return; // runway already decoded
+
+    this.aheadScheduled = true;
+    const controller = new AbortController();
+    this.aheadAbort = controller;
+    const signal = controller.signal;
+
+    this.decodeQueue = this.decodeQueue.then(async () => {
+      try {
+        if (signal.aborted || opts?.signal?.aborted) return;
+        // Start at the first not-yet-cached frame at/after the playhead so we
+        // extend the runway rather than re-decoding what's already cached.
+        let start = fromFrame;
+        while (start < this.samples.length && this.cache.has(start)) {
+          start += 1;
+        }
+        if (start >= this.samples.length) return;
+        const keyframe = this.findKeyframeBefore(start);
+        const end = Math.min(start + this.lookahead, this.samples.length - 1);
+        await this.decodeRange(keyframe, end, start, { signal });
+      } finally {
+        this.aheadScheduled = false;
+      }
+    });
   }
 
   async getFrameTimes(): Promise<number[] | null> {
@@ -440,6 +504,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     start: number,
     end: number,
     target: number,
+    opts?: { signal?: AbortSignal },
   ): Promise<void> {
     if (!this.config) throw new Error("Decoder not configured");
 
@@ -552,6 +617,17 @@ export class Mp4BoxVideoBackend implements VideoBackend {
       }
       if (i + BATCH_SIZE < toFeed.length) {
         await new Promise((resolve) => setTimeout(resolve, 0));
+        // Preempted mid-decode (a demand read aborted speculative ahead-work,
+        // or the caller cancelled): stop feeding and abandon the rest so the
+        // next queued decode — the one the user is waiting on — starts sooner.
+        if (opts?.signal?.aborted) {
+          try {
+            this.decoder.close();
+          } catch {
+            // ignore
+          }
+          return;
+        }
       }
     }
 

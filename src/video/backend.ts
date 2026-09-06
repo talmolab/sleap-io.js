@@ -118,5 +118,14 @@ export interface VideoBackend {
    * omitted when everything is already loaded.
    */
   ensureLoaded?(): Promise<void>;
+  /**
+   * Optional playback helper: proactively decode a run of frames AHEAD of
+   * `fromFrame` into the backend's cache so sequential playback finds cache hits
+   * instead of blocking on a decode. Fire-and-forget (returns immediately);
+   * no-ops when the runway is already decoded or ahead-work is already in flight.
+   * A demand {@link getFrame} always preempts it. Backends without an internal
+   * decode cache (or that decode synchronously) omit this. See scrub-proxy v2.
+   */
+  decodeAhead?(fromFrame: number, opts?: GetFrameOptions): void;
   close(): void;
 }
