@@ -47,6 +47,21 @@ export interface SerializableDecoderConfig {
   description?: Uint8Array;
 }
 
+/**
+ * Everything the off-main worker backend needs from parsing the mp4 ONCE on the
+ * main thread — the sample table, keyframe indices, decoder config, and derived
+ * shape/fps/size. Produced by {@link Mp4BoxVideoBackend.getParseResult} and handed
+ * to {@link WorkerMp4BoxBackend}, so the worker never touches mp4box.
+ */
+export interface Mp4ParseResult {
+  samples: Mp4Sample[];
+  keyframeIndices: number[];
+  config: SerializableDecoderConfig;
+  shape: [number, number, number, number];
+  fps?: number;
+  fileSize: number;
+}
+
 /** One decode-order sample plus its PRESENTATION index (position in `samples`). */
 export interface FeedEntry {
   presentationIndex: number;

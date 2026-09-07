@@ -11,6 +11,7 @@ import {
   identityHeaders,
   statusToMessage,
 } from "../io/remote.js";
+import type { Mp4ParseResult } from "./mp4-decode-core.js";
 
 // Environment/capability probes, evaluated at call time rather than captured in
 // module-level consts. A module-level capture is frozen at first import, which
@@ -255,6 +256,38 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   async getFrameTimes(): Promise<number[] | null> {
     await this.ready;
     return this.samples.map((sample) => sample.timestamp / 1e6);
+  }
+
+  /**
+   * The parse result (sample table, keyframe indices, decoder config, shape/fps)
+   * from this main-thread parse, so an off-main {@link WorkerMp4BoxBackend} can
+   * decode WITHOUT re-parsing or loading mp4box in the worker. Call after the
+   * backend is ready. See the off-main-decode design (scrub-proxy v2 follow-up).
+   */
+  async getParseResult(): Promise<Mp4ParseResult> {
+    await this.ready;
+    if (!this.config || !this.shape) {
+      throw new Error("getParseResult: backend not initialized");
+    }
+    const description =
+      this.config.description instanceof Uint8Array
+        ? this.config.description
+        : this.config.description
+          ? new Uint8Array(this.config.description as ArrayBuffer)
+          : undefined;
+    return {
+      samples: this.samples,
+      keyframeIndices: this.keyframeIndices,
+      config: {
+        codec: this.config.codec,
+        codedWidth: this.config.codedWidth ?? this.shape[2],
+        codedHeight: this.config.codedHeight ?? this.shape[1],
+        description,
+      },
+      shape: this.shape,
+      fps: this.fps,
+      fileSize: this.fileSize,
+    };
   }
 
   /**
