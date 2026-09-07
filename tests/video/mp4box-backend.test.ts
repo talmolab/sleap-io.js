@@ -553,6 +553,41 @@ describe("Mp4BoxVideoBackend", () => {
     backend.close();
   });
 
+  it("getFrame with { scrub: true } decodes only keyframe→target (no lookahead)", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    // Scrub read for frame 50 (keyframe 45 with gop 15): caches 45..50 only.
+    await backend.getFrame(50, { scrub: true });
+
+    expect((backend as any).cache.has(50)).toBe(true); // the target
+    expect((backend as any).cache.has(45)).toBe(true); // its keyframe
+    // The +60 lookahead is skipped, so a frame past the target is NOT cached
+    // (it WOULD be without scrub).
+    expect((backend as any).cache.has(60)).toBe(false);
+    backend.close();
+  });
+
+  it("nearestKeyframe returns the keyframe at or before a frame", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    // gop 15 → keyframes at 0, 15, 30, 45, 60, …
+    expect(backend.nearestKeyframe(50)).toBe(45);
+    expect(backend.nearestKeyframe(45)).toBe(45);
+    expect(backend.nearestKeyframe(7)).toBe(0);
+    expect(backend.nearestKeyframe(0)).toBe(0);
+    backend.close();
+  });
+
   it("decodeRange bails mid-decode when its signal aborts", async () => {
     (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
     const controller = new AbortController();

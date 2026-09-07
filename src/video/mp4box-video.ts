@@ -194,10 +194,11 @@ export class Mp4BoxVideoBackend implements VideoBackend {
       if (opts?.signal?.aborted) return;
 
       const keyframe = this.findKeyframeBefore(frameIndex);
-      const end = Math.min(
-        frameIndex + this.lookahead,
-        this.samples.length - 1,
-      );
+      // Scrub mode decodes only keyframe→target (no forward lookahead); the
+      // dragged-past lookahead frames are never seen and just slow the read.
+      const end = opts?.scrub
+        ? frameIndex
+        : Math.min(frameIndex + this.lookahead, this.samples.length - 1);
       await this.decodeRange(keyframe, end, frameIndex, {
         signal: opts?.signal,
       });
@@ -254,6 +255,17 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   async getFrameTimes(): Promise<number[] | null> {
     await this.ready;
     return this.samples.map((sample) => sample.timestamp / 1e6);
+  }
+
+  /**
+   * The keyframe index at or before `frameIndex` — the cheapest frame to show
+   * near it (a lone I-frame decode). The scrub UI snaps to this on a fast drag.
+   * Clamps to the valid range; returns 0 before samples are parsed.
+   */
+  nearestKeyframe(frameIndex: number): number {
+    if (!this.samples.length) return 0;
+    const clamped = Math.max(0, Math.min(frameIndex, this.samples.length - 1));
+    return this.findKeyframeBefore(clamped);
   }
 
   close(): void {

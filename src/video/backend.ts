@@ -17,6 +17,13 @@ export interface GetFrameOptions {
    * MP4 backend) bail early when it aborts; backends that don't ignore it.
    */
   signal?: AbortSignal;
+  /**
+   * Scrub mode: decode only what's needed to show THIS frame (keyframe→target),
+   * skipping the forward read-ahead/lookahead window. During a seekbar drag the
+   * lookahead frames are dragged past and never seen, so decoding them just slows
+   * the frame the user is actually on. Backends without a lookahead ignore it.
+   */
+  scrub?: boolean;
 }
 
 /**
@@ -127,5 +134,13 @@ export interface VideoBackend {
    * decode cache (or that decode synchronously) omit this. See scrub-proxy v2.
    */
   decodeAhead?(fromFrame: number, opts?: GetFrameOptions): void;
+  /**
+   * Optional: the frame index of the keyframe at or before `frameIndex` — the
+   * cheapest frame to show near it (a lone I-frame decode, no delta chain). The
+   * scrub UI snaps to this during a fast drag so the preview keeps up. Backends
+   * without keyframes (image sequences, where every frame is independent) omit
+   * this. See scrub-proxy v2 keyframe-preview.
+   */
+  nearestKeyframe?(frameIndex: number): number;
   close(): void;
 }
