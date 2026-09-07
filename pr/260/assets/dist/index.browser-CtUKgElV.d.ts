@@ -1,4 +1,4 @@
-import { V as VideoBackend, bk as RangeSource$1, G as GetFrameOptions, b as VideoFrame, L as Labels, S as Skeleton, c as Video, T as Track, ao as SuggestionFrame, ax as Identity, at as RecordingSession, aB as LazyDataStore, d as LabeledFrame, Z as FsResolver, bb as CropRect, bj as Fill, bc as FlatPoints, bd as PointPairs, b3 as UserLabelImage, e as LabelsSet, aF as Geometry, R as ROI, I as Instance, g as SegmentationMask, P as PredictedInstance, f as LabelImage, B as BoundingBox } from './dictionary-CTac_neq.js';
+import { b5 as VideoBackend, bk as RangeSource$1, b4 as GetFrameOptions, b3 as VideoFrame, L as Labels, S as Skeleton, V as Video, T as Track, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, W as FsResolver, bb as CropRect, bj as Fill, bc as FlatPoints, bd as PointPairs, b0 as UserLabelImage, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-wyceshgf.js';
 import { CustomVideoDecoder, EncodedPacket } from 'mediabunny';
 
 /**
@@ -218,6 +218,185 @@ declare class Mp4BoxVideoBackend implements VideoBackend {
     private readSampleDataByDecodeOrder;
     private decodeRange;
     private addToCache;
+}
+
+/**
+ * Off-main mp4 decode worker (scrub-proxy v2 → off-main-thread decode).
+ *
+ * The main thread parses the mp4 once (mp4box) and sends this worker the sample
+ * table + decoder config + a serializable byte-source descriptor. The worker then
+ * owns the per-seek heavy work that used to block the UI: reading sample bytes
+ * (`readRange`), feeding `VideoDecoder`, and `createImageBitmap`. It streams each
+ * decoded frame back to the main thread as a Transferable `ImageBitmap` (zero
+ * copy); the main-thread proxy caches + blits. The worker needs NO mp4box — only
+ * `VideoDecoder`/`EncodedVideoChunk`/`createImageBitmap` + a byte source, all of
+ * which exist in a Worker (verified by the 2026-09-07 spike on macOS + Windows).
+ *
+ * Packaging follows the io idiom (`h5-worker.ts`): the worker is an inline
+ * template-string turned into a Blob URL, so it bundles with the library without
+ * separate file hosting and needs no bundler cooperation. The WebCodecs-free
+ * helpers below are COPIES of `mp4-decode-core.ts` and MUST be kept in lockstep
+ * with it (that module is the tested source of truth; this string can't import).
+ *
+ * @module
+ */
+
+/**
+ * A structured-cloneable byte source the worker reconstructs into a `readRange`.
+ * Closures can't cross `postMessage`, so desktop (Tauri) must be described by
+ * primitives (the app captures the invoke key + IPC url); browser passes the Blob
+ * or a ranged URL directly.
+ */
+type ByteSourceDescriptor = {
+    /** Desktop: POST to the Tauri custom-protocol IPC url with the invoke key. */
+    kind: "tauri";
+    /** `convertFileSrc("plugin:sleap|read_range","ipc")` (mac ipc://, win http://ipc.localhost). */
+    url: string;
+    /** Includes `Tauri-Invoke-Key` (+ dummy `Tauri-Callback`/`Tauri-Error`, Content-Type). */
+    headers: Record<string, string>;
+    /** Absolute file path passed to `read_range`. */
+    path: string;
+    size: number;
+} | {
+    kind: "blob";
+    blob: Blob;
+    size: number;
+} | {
+    kind: "url";
+    url: string;
+    headers: Record<string, string>;
+    size: number;
+};
+/** main → worker. */
+type WorkerInMessage = {
+    type: "init";
+    samples: Mp4Sample[];
+    config: SerializableDecoderConfig;
+    byteSource: ByteSourceDescriptor;
+} | {
+    type: "decode";
+    reqId: number;
+    start: number;
+    end: number;
+    target: number;
+    cacheStart: number;
+    cacheEnd: number;
+} | {
+    type: "abort";
+    reqId: number;
+} | {
+    type: "close";
+};
+/** worker → main. */
+type WorkerOutMessage = {
+    type: "ready";
+} | {
+    type: "unsupported";
+    reason: string;
+} | {
+    type: "bitmap";
+    reqId: number;
+    frame: number;
+    bitmap: ImageBitmap;
+} | {
+    type: "decodeDone";
+    reqId: number;
+    aborted: boolean;
+} | {
+    type: "decodeError";
+    reqId: number;
+    message: string;
+};
+/**
+ * The worker source. No `${}` interpolation or nested backticks so the outer
+ * template literal passes it through verbatim. Helpers mirror `mp4-decode-core.ts`
+ * (KEEP IN LOCKSTEP); the WebCodecs feed loop mirrors
+ * `Mp4BoxVideoBackend.decodeRange`.
+ */
+declare const MP4_DECODE_WORKER_CODE = "\n\"use strict\";\n\nvar SAMPLES = null;\nvar CONFIG = null;\nvar readRange = null;\nvar decoder = null;\n// reqIds the main thread has aborted (checked between decode batches + in output).\nvar abortedReqs = new Set();\n// Serialize decode work: one VideoDecoder at a time, like the on-main decodeQueue.\nvar queue = Promise.resolve();\n\n// --- byte source (reconstructed from the descriptor) ---\nfunction buildReadRange(bs) {\n  if (bs.kind === \"blob\") {\n    return function (offset, length) {\n      return bs.blob.slice(offset, offset + length).arrayBuffer().then(function (b) {\n        return new Uint8Array(b);\n      });\n    };\n  }\n  if (bs.kind === \"tauri\") {\n    return function (offset, length) {\n      return fetch(bs.url, {\n        method: \"POST\",\n        headers: bs.headers,\n        body: JSON.stringify({ path: bs.path, offset: offset, length: length }),\n      }).then(function (resp) {\n        if (resp.headers.get(\"Tauri-Response\") === \"error\") {\n          return resp.text().then(function (t) { throw new Error(\"read_range: \" + t); });\n        }\n        return resp.arrayBuffer().then(function (b) { return new Uint8Array(b); });\n      });\n    };\n  }\n  // ranged URL\n  return function (offset, length) {\n    var headers = Object.assign({}, bs.headers || {});\n    headers.Range = \"bytes=\" + offset + \"-\" + (offset + length - 1);\n    return fetch(bs.url, { headers: headers }).then(function (resp) {\n      return resp.arrayBuffer().then(function (b) { return new Uint8Array(b); });\n    });\n  };\n}\n\n// --- decode-core copies (KEEP IN LOCKSTEP with mp4-decode-core.ts) ---\nfunction selectFeedSamples(samples, start, end) {\n  var minDI = Infinity, maxDI = -Infinity;\n  for (var i = start; i <= end; i += 1) {\n    if (samples[i].decodeIndex < minDI) minDI = samples[i].decodeIndex;\n    if (samples[i].decodeIndex > maxDI) maxDI = samples[i].decodeIndex;\n  }\n  var toFeed = [];\n  for (var k = 0; k < samples.length; k += 1) {\n    var s = samples[k];\n    if (s.decodeIndex >= minDI && s.decodeIndex <= maxDI) {\n      toFeed.push({ presentationIndex: k, sample: s });\n    }\n  }\n  toFeed.sort(function (a, b) { return a.sample.decodeIndex - b.sample.decodeIndex; });\n  return toFeed;\n}\n\nfunction planReadRegions(toFeed) {\n  var regions = [];\n  var i = 0;\n  while (i < toFeed.length) {\n    var first = toFeed[i].sample;\n    var regionEnd = i;\n    var regionBytes = first.size;\n    while (regionEnd < toFeed.length - 1) {\n      var cur = toFeed[regionEnd].sample;\n      var next = toFeed[regionEnd + 1].sample;\n      if (next.offset === cur.offset + cur.size) {\n        regionEnd += 1;\n        regionBytes += next.size;\n      } else {\n        break;\n      }\n    }\n    var members = [];\n    for (var j = i; j <= regionEnd; j += 1) {\n      members.push({ decodeIndex: toFeed[j].sample.decodeIndex, size: toFeed[j].sample.size });\n    }\n    regions.push({ offset: first.offset, length: regionBytes, members: members });\n    i = regionEnd + 1;\n  }\n  return regions;\n}\n\nfunction readSamplesByDecodeOrder(toFeed) {\n  var regions = planReadRegions(toFeed);\n  var results = new Map();\n  var idx = 0;\n  function step() {\n    if (idx >= regions.length) return Promise.resolve(results);\n    var region = regions[idx];\n    idx += 1;\n    return readRange(region.offset, region.length).then(function (buffer) {\n      var view = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);\n      var off = 0;\n      for (var m = 0; m < region.members.length; m += 1) {\n        var member = region.members[m];\n        results.set(member.decodeIndex, view.slice(off, off + member.size));\n        off += member.size;\n      }\n      return step();\n    });\n  }\n  return step();\n}\n\n// --- decode one range (mirrors Mp4BoxVideoBackend.decodeRange) ---\nfunction handleDecode(msg) {\n  var reqId = msg.reqId;\n  if (abortedReqs.has(reqId)) {\n    self.postMessage({ type: \"decodeDone\", reqId: reqId, aborted: true });\n    abortedReqs.delete(reqId);\n    return Promise.resolve();\n  }\n  var toFeed = selectFeedSamples(SAMPLES, msg.start, msg.end);\n  return readSamplesByDecodeOrder(toFeed).then(function (dataMap) {\n    if (abortedReqs.has(reqId)) {\n      self.postMessage({ type: \"decodeDone\", reqId: reqId, aborted: true });\n      return;\n    }\n    var timestampMap = new Map();\n    for (var t = 0; t < toFeed.length; t += 1) {\n      timestampMap.set(Math.round(toFeed[t].sample.timestamp), toFeed[t].presentationIndex);\n    }\n\n    if (decoder) { try { decoder.close(); } catch (e) {} }\n\n    var decodedCount = 0;\n    var resolveComplete, rejectComplete;\n    var completion = new Promise(function (res, rej) { resolveComplete = res; rejectComplete = rej; });\n\n    decoder = new VideoDecoder({\n      output: function (frame) {\n        var rounded = Math.round(frame.timestamp);\n        var fi = timestampMap.get(rounded);\n        if (fi === undefined) {\n          var best = Infinity;\n          timestampMap.forEach(function (idx, ts) {\n            var d = Math.abs(ts - frame.timestamp);\n            if (d < best) { best = d; fi = idx; }\n          });\n        }\n        var done = function () {\n          try { frame.close(); } catch (e) {}\n          decodedCount += 1;\n          if (decodedCount >= toFeed.length) resolveComplete();\n        };\n        if (fi !== undefined && fi >= msg.cacheStart && fi <= msg.cacheEnd && !abortedReqs.has(reqId)) {\n          var frameIdx = fi;\n          createImageBitmap(frame).then(function (bmp) {\n            self.postMessage({ type: \"bitmap\", reqId: reqId, frame: frameIdx, bitmap: bmp }, [bmp]);\n            done();\n          }).catch(done);\n        } else {\n          done();\n        }\n      },\n      error: function (e) {\n        if (e && e.name === \"AbortError\") resolveComplete();\n        else rejectComplete(e);\n      },\n    });\n    decoder.configure(CONFIG);\n\n    var BATCH = 15;\n    var i = 0;\n    function feedBatch() {\n      if (i >= toFeed.length) return Promise.resolve();\n      var slice = toFeed.slice(i, i + BATCH);\n      for (var b = 0; b < slice.length; b += 1) {\n        var fe = slice[b];\n        var data = dataMap.get(fe.sample.decodeIndex);\n        if (!data) continue;\n        decoder.decode(new EncodedVideoChunk({\n          type: fe.sample.isKeyframe ? \"key\" : \"delta\",\n          timestamp: fe.sample.timestamp,\n          duration: fe.sample.duration,\n          data: data,\n        }));\n      }\n      i += BATCH;\n      if (i < toFeed.length) {\n        return new Promise(function (r) { setTimeout(r, 0); }).then(function () {\n          if (abortedReqs.has(reqId)) {\n            try { decoder.close(); } catch (e) {}\n            return \"aborted\";\n          }\n          return feedBatch();\n        });\n      }\n      return Promise.resolve();\n    }\n\n    return feedBatch().then(function (result) {\n      if (result === \"aborted\") {\n        self.postMessage({ type: \"decodeDone\", reqId: reqId, aborted: true });\n        return;\n      }\n      return decoder.flush().then(function () {\n        return completion;\n      }).then(function () {\n        self.postMessage({ type: \"decodeDone\", reqId: reqId, aborted: abortedReqs.has(reqId) });\n      });\n    });\n  }).catch(function (e) {\n    self.postMessage({ type: \"decodeError\", reqId: reqId, message: String((e && e.message) || e) });\n  }).then(function () {\n    abortedReqs.delete(reqId);\n  });\n}\n\nfunction handleInit(msg) {\n  SAMPLES = msg.samples;\n  CONFIG = msg.config;\n  if (typeof VideoDecoder === \"undefined\" || typeof EncodedVideoChunk === \"undefined\" || typeof createImageBitmap === \"undefined\") {\n    self.postMessage({ type: \"unsupported\", reason: \"no WebCodecs in worker\" });\n    return;\n  }\n  try {\n    readRange = buildReadRange(msg.byteSource);\n  } catch (e) {\n    self.postMessage({ type: \"unsupported\", reason: \"byte source: \" + String((e && e.message) || e) });\n    return;\n  }\n  var probeLen = Math.min(8, msg.byteSource.size || 8);\n  Promise.resolve()\n    .then(function () { return readRange(0, probeLen); })\n    .then(function () { return VideoDecoder.isConfigSupported(CONFIG); })\n    .then(function (support) {\n      if (!support || !support.supported) {\n        self.postMessage({ type: \"unsupported\", reason: \"codec unsupported in worker\" });\n        return;\n      }\n      self.postMessage({ type: \"ready\" });\n    })\n    .catch(function (e) {\n      self.postMessage({ type: \"unsupported\", reason: String((e && e.message) || e) });\n    });\n}\n\nself.onmessage = function (ev) {\n  var msg = ev.data;\n  if (!msg) return;\n  if (msg.type === \"init\") {\n    handleInit(msg);\n  } else if (msg.type === \"decode\") {\n    queue = queue.then(function () { return handleDecode(msg); });\n  } else if (msg.type === \"abort\") {\n    // Handled OUTSIDE the queue so it preempts a running decode immediately.\n    abortedReqs.add(msg.reqId);\n  } else if (msg.type === \"close\") {\n    try { if (decoder) decoder.close(); } catch (e) {}\n    decoder = null;\n    self.close();\n  }\n};\n";
+/** Create the decode worker from the inline blob (io idiom). */
+declare function createDecodeWorker(): Worker;
+
+/**
+ * Off-main mp4 backend: the main-thread half of the split (scrub-proxy v2 →
+ * off-main-thread decode).
+ *
+ * Implements the SAME {@link VideoBackend} interface as {@link Mp4BoxVideoBackend}
+ * so it is a drop-in replacement, but does no decoding itself. The mp4 is parsed
+ * once on the main thread (reusing `Mp4BoxVideoBackend.getParseResult`); this proxy
+ * then forwards each read to the decode worker (`mp4box-decode-worker.ts`) and
+ * receives finished frames back as Transferable `ImageBitmap`s. It owns the LRU
+ * cache (so cache hits are instant, main-only) and answers `nearestKeyframe`
+ * synchronously from the keyframe table it already holds. See the design doc
+ * `docs/plans/2026-09-07-offmain-decode-design.md`.
+ *
+ * @module
+ */
+
+/**
+ * Cheap main-thread pre-check: can a Web Worker even be constructed here? The real
+ * capability gate is the worker's own self-test (VideoDecoder-in-worker + a
+ * readable byte source), which surfaces as {@link WorkerMp4BoxBackend.create}
+ * rejecting — the caller then keeps the on-main {@link Mp4BoxVideoBackend}.
+ */
+declare function isWorkerDecodeAvailable(): boolean;
+/** The subset of `Worker` this backend uses — injectable so tests pass a fake. */
+interface WorkerLike {
+    postMessage(message: unknown, transfer?: Transferable[]): void;
+    terminate(): void;
+    onmessage: ((ev: {
+        data: unknown;
+    }) => void) | null;
+    onerror?: ((ev: unknown) => void) | null;
+}
+interface WorkerBackendParams {
+    /** Main-thread parse result (from `Mp4BoxVideoBackend.getParseResult()`). */
+    parseResult: Mp4ParseResult;
+    /** Serializable byte source the WORKER reconstructs into `readRange`. */
+    byteSource: ByteSourceDescriptor;
+    filename: string;
+    cacheSize?: number;
+    lookahead?: number;
+    /** Injectable worker factory (defaults to the real blob worker). For tests. */
+    createWorker?: () => WorkerLike;
+}
+declare class WorkerMp4BoxBackend implements VideoBackend {
+    filename: string;
+    shape?: [number, number, number, number];
+    fps?: number;
+    dataset?: string | null;
+    private worker;
+    private samples;
+    private keyframeIndices;
+    private samplesLength;
+    private cache;
+    private cacheSize;
+    private lookahead;
+    private reqCounter;
+    private pending;
+    private aheadReqId;
+    private aheadInFlight;
+    private closed;
+    /** Resolves once the worker reports `ready`; rejects on `unsupported`. */
+    readonly ready: Promise<void>;
+    private resolveReady;
+    private rejectReady;
+    constructor(params: WorkerBackendParams);
+    /**
+     * Build a worker backend and wait for its self-test. Rejects (worker
+     * `unsupported`: no WebCodecs-in-worker / unreadable source / codec) so the
+     * caller can keep the on-main {@link Mp4BoxVideoBackend} fallback.
+     */
+    static create(params: WorkerBackendParams): Promise<WorkerMp4BoxBackend>;
+    private handleMessage;
+    private onBitmap;
+    private onDecodeSettled;
+    getFrame(frameIndex: number, opts?: GetFrameOptions): Promise<VideoFrame | null>;
+    decodeAhead(fromFrame: number, opts?: GetFrameOptions): void;
+    nearestKeyframe(frameIndex: number): number;
+    getFrameTimes(): Promise<number[] | null>;
+    private addToCache;
+    close(): void;
 }
 
 /**
@@ -3734,4 +3913,4 @@ interface StreamingSlpOptions {
 }
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { DEFAULT_MAX_BYTES as $, type ResolvedVideoSource as A, SeqVideoBackend as B, type Config as C, type DlcFileSystem as D, SeqHeader as E, SeqIndex as F, BlobByteSource as G, type ByteSource as H, type ImageBytesReader as I, createVideoBackend as J, type VideoBackendType as K, LibavH264Decoder as L, type Mp4Sample as M, type CreateVideoBackendOptions as N, CropVideoBackend as O, type PaletteName as P, type CropWrapOptions as Q, type ReadCocoOptions as R, type SerializableDecoderConfig as S, GrayscaleVideoBackend as T, UnsupportedVideoFormatError as U, type VideoOptions as V, type GrayscaleWrapOptions as W, parseGdrive as X, urlFromConfirmation as Y, checkDownloadHost as Z, openGdrive as _, type Mp4ParseResult as a, buildLabelTableUpdate as a$, StreamingH5File as a0, StreamingH5Writer as a1, openStreamingH5 as a2, openH5Worker as a3, isStreamingSupported as a4, isRangeSource as a5, serviceRangeBridge as a6, serviceWriteBridge as a7, serviceTruncateBridge as a8, type StreamingH5Source as a9, saveSlp as aA, loadAnalysisH5 as aB, saveAnalysisH5 as aC, saveAnalysisH5ToBytes as aD, loadNwb as aE, loadSlpSet as aF, saveSlpSet as aG, loadVideo as aH, loadLabelImages as aI, setLabelImageFileReader as aJ, type PagesAs as aK, type LoadLabelImagesOptions as aL, type LabelImageFileReader as aM, saveSlpToBytes as aN, saveSlpStructureToBytes as aO, openSlpWriter as aP, SlpStreamWriter as aQ, saveSlpMergedFromStores as aR, saveSlpMergedToSink as aS, type SlpWriteHeader as aT, type AppendStoreOptions as aU, type SlpWriteSink as aV, type MergeStoresOptions as aW, buildSerializableEmbedPlan as aX, type SerializableEmbedEntry as aY, type SerializableEmbedPlan as aZ, buildLabelTableRows as a_, type RangeSource as aa, type RangeSink as ab, readSlpStreaming as ac, Mp4BoxVideoBackend as ad, type FeedEntry as ae, type ReadRegion as af, findKeyframeBefore as ag, planDecodeRange as ah, computeCacheWindow as ai, selectFeedSamples as aj, planReadRegions as ak, readSamplesByDecodeOrder as al, nextUncached as am, shouldDecodeAhead as an, type MediaBunnyOptions as ao, MediaBunnyVideoBackend as ap, type WebDemuxerConfig as aq, configureWebDemuxer as ar, isWebDemuxerConfigured as as, type AviVideoOptions as at, AviVideoBackend as au, StreamingHdf5VideoBackend as av, type ImageVideoOptions as aw, computePrefetchWindow as ax, ImageVideoBackend as ay, loadSlp as az, type RenderOptions as b, readCoco as b$, buildMetadataJson as b0, buildTracksJson as b1, buildSuggestionsJson as b2, buildVideoSignatures as b3, buildExpectedSidecars as b4, checkInPlaceWritable as b5, onDiskTableFromMeta as b6, writeLabelTablesInPlace as b7, type LabelTable as b8, type LabelTableRows as b9, statusToMessage as bA, raiseRemote as bB, identityHeaders as bC, stripCrossOriginHeaders as bD, withRetries as bE, parseRetryAfterMs as bF, fetchRetrying as bG, headOrRangeProbe as bH, type GeoJSONFeature as bI, type GeoJSONFeatureCollection as bJ, roisToGeoJSON as bK, roisFromGeoJSON as bL, writeGeoJSON as bM, readGeoJSON as bN, type CocoCategory as bO, type CocoImage as bP, type CocoRle as bQ, type CocoSegmentation as bR, type CocoAnnotation as bS, type CocoJson as bT, isCocoData as bU, parseCocoJson as bV, createSkeletonFromCategory as bW, decodeKeypoints as bX, decodeCompressedRleCounts as bY, decodeCocoRle as bZ, decodeSegmentation as b_, type LabelTableUpdate as ba, type OnDiskMember as bb, type OnDiskTable as bc, type OnDiskTables as bd, type OnDiskSidecars as be, type InPlaceWritable as bf, type DatasetMetaLike as bg, isAnalysisH5File as bh, readNwb as bi, isNwbFile as bj, labelsToCsv as bk, saveLabelsCsv as bl, type CsvExportOptions as bm, URL_SCHEMES as bn, CLOUD_SCHEMES as bo, GDRIVE_HOSTS as bp, SENSITIVE_HEADERS as bq, SENSITIVE_QUERY_PARAMS as br, RETRYABLE_STATUSES as bs, isUrl as bt, isGdriveUrl as bu, redactUrl as bv, redactedCauseSummary as bw, RemoteIOError as bx, type ResolvedUrl as by, resolveUrl as bz, type RGB as c, pickColor as c$, readCocoSet as c0, readDlc as c1, readDlcProject as c2, isDlcData as c3, parseDlcCrop as c4, looksLikeDlcConfig as c5, attachConfigSkeleton as c6, videoSetsStemMap as c7, extractFrameIndex as c8, resolveConfig as c9, resolveColor as cA, rgbToCSS as cB, determineColorScheme as cC, drawCircle as cD, drawSquare as cE, drawDiamond as cF, drawTriangle as cG, drawCross as cH, drawTrails as cI, getMarkerFunction as cJ, MARKER_FUNCTIONS as cK, type DrawTrailsOptions as cL, resolveTrailNode as cM, computeTrails as cN, nTrailPaletteColors as cO, collectTracks as cP, type TrailTarget as cQ, type Trail as cR, RenderContext as cS, InstanceContext as cT, drawMasks as cU, drawLabelImage as cV, warn as cW, isDlcProjectPath as cX, readDlcConfig as cY, discoverConfig as cZ, clampAlpha as c_, setSourceVideo as ca, findProjectCsvs as cb, resolveProjectConfigPath as cc, readDlcDataframe as cd, type ReadDlcOptions as ce, type ReadDlcProjectOptions as cf, type DlcDataframe as cg, toNumpy as ch, fromNumpy as ci, labelsFromNumpy as cj, decodeYamlSkeleton as ck, encodeYamlSkeleton as cl, readSkeletonJson as cm, writeSkeletonJson as cn, readTrainingConfigSkeletons as co, readTrainingConfigSkeleton as cp, isTrainingConfig as cq, type RGBA as cr, type ColorSpec as cs, type ColorScheme as ct, type MarkerShape as cu, type Overlay as cv, type VideoOverlay as cw, NAMED_COLORS as cx, PALETTES as cy, getPalette as cz, type RawLabelImage as d, configureLibavDecoder as e, ensureNativeH264Probe as f, type LibavDecoderConfig as g, getImageBytesReader as h, isLibavDecoderConfigured as i, resolveVideoSource as j, anchorCandidate as k, derivePrefixSwap as l, applyPrefixSwap as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, resolveFirstExisting as p, parsePath as q, registerLibavH264Decoder as r, setImageBytesReader as s, formatPath as t, posixDirname as u, videoPathCandidates as v, posixBasename as w, posixJoin as x, type PosixPath as y, type PrefixSwap as z };
+export { openStreamingH5 as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, type CreateVideoBackendOptions as J, CropVideoBackend as K, LibavH264Decoder as L, type CropWrapOptions as M, GrayscaleVideoBackend as N, type GrayscaleWrapOptions as O, type PaletteName as P, parseGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, urlFromConfirmation as T, UnsupportedVideoFormatError as U, type VideoOptions as V, checkDownloadHost as W, openGdrive as X, DEFAULT_MAX_BYTES as Y, StreamingH5File as Z, StreamingH5Writer as _, type RenderOptions as a, saveSlpMergedToSink as a$, openH5Worker as a0, isStreamingSupported as a1, isRangeSource as a2, serviceRangeBridge as a3, serviceWriteBridge as a4, serviceTruncateBridge as a5, type StreamingH5Source as a6, type RangeSource as a7, type RangeSink as a8, readSlpStreaming as a9, configureWebDemuxer as aA, isWebDemuxerConfigured as aB, type AviVideoOptions as aC, AviVideoBackend as aD, StreamingHdf5VideoBackend as aE, type ImageVideoOptions as aF, computePrefetchWindow as aG, ImageVideoBackend as aH, loadSlp as aI, saveSlp as aJ, loadAnalysisH5 as aK, saveAnalysisH5 as aL, saveAnalysisH5ToBytes as aM, loadNwb as aN, loadSlpSet as aO, saveSlpSet as aP, loadVideo as aQ, loadLabelImages as aR, setLabelImageFileReader as aS, type PagesAs as aT, type LoadLabelImagesOptions as aU, type LabelImageFileReader as aV, saveSlpToBytes as aW, saveSlpStructureToBytes as aX, openSlpWriter as aY, SlpStreamWriter as aZ, saveSlpMergedFromStores as a_, Mp4BoxVideoBackend as aa, type Mp4Sample as ab, type SerializableDecoderConfig as ac, type Mp4ParseResult as ad, type FeedEntry as ae, type ReadRegion as af, findKeyframeBefore as ag, planDecodeRange as ah, computeCacheWindow as ai, selectFeedSamples as aj, planReadRegions as ak, readSamplesByDecodeOrder as al, nextUncached as am, shouldDecodeAhead as an, type ByteSourceDescriptor as ao, type WorkerInMessage as ap, type WorkerOutMessage as aq, MP4_DECODE_WORKER_CODE as ar, createDecodeWorker as as, isWorkerDecodeAvailable as at, type WorkerLike as au, type WorkerBackendParams as av, WorkerMp4BoxBackend as aw, type MediaBunnyOptions as ax, MediaBunnyVideoBackend as ay, type WebDemuxerConfig as az, type RGB as b, type CocoAnnotation as b$, type SlpWriteHeader as b0, type AppendStoreOptions as b1, type SlpWriteSink as b2, type MergeStoresOptions as b3, buildSerializableEmbedPlan as b4, type SerializableEmbedEntry as b5, type SerializableEmbedPlan as b6, buildLabelTableRows as b7, buildLabelTableUpdate as b8, buildMetadataJson as b9, SENSITIVE_QUERY_PARAMS as bA, RETRYABLE_STATUSES as bB, isUrl as bC, isGdriveUrl as bD, redactUrl as bE, redactedCauseSummary as bF, RemoteIOError as bG, type ResolvedUrl as bH, resolveUrl as bI, statusToMessage as bJ, raiseRemote as bK, identityHeaders as bL, stripCrossOriginHeaders as bM, withRetries as bN, parseRetryAfterMs as bO, fetchRetrying as bP, headOrRangeProbe as bQ, type GeoJSONFeature as bR, type GeoJSONFeatureCollection as bS, roisToGeoJSON as bT, roisFromGeoJSON as bU, writeGeoJSON as bV, readGeoJSON as bW, type CocoCategory as bX, type CocoImage as bY, type CocoRle as bZ, type CocoSegmentation as b_, buildTracksJson as ba, buildSuggestionsJson as bb, buildVideoSignatures as bc, buildExpectedSidecars as bd, checkInPlaceWritable as be, onDiskTableFromMeta as bf, writeLabelTablesInPlace as bg, type LabelTable as bh, type LabelTableRows as bi, type LabelTableUpdate as bj, type OnDiskMember as bk, type OnDiskTable as bl, type OnDiskTables as bm, type OnDiskSidecars as bn, type InPlaceWritable as bo, type DatasetMetaLike as bp, isAnalysisH5File as bq, readNwb as br, isNwbFile as bs, labelsToCsv as bt, saveLabelsCsv as bu, type CsvExportOptions as bv, URL_SCHEMES as bw, CLOUD_SCHEMES as bx, GDRIVE_HOSTS as by, SENSITIVE_HEADERS as bz, type RawLabelImage as c, RenderContext as c$, type CocoJson as c0, isCocoData as c1, parseCocoJson as c2, createSkeletonFromCategory as c3, decodeKeypoints as c4, decodeCompressedRleCounts as c5, decodeCocoRle as c6, decodeSegmentation as c7, readCoco as c8, readCocoSet as c9, type RGBA as cA, type ColorSpec as cB, type ColorScheme as cC, type MarkerShape as cD, type Overlay as cE, type VideoOverlay as cF, NAMED_COLORS as cG, PALETTES as cH, getPalette as cI, resolveColor as cJ, rgbToCSS as cK, determineColorScheme as cL, drawCircle as cM, drawSquare as cN, drawDiamond as cO, drawTriangle as cP, drawCross as cQ, drawTrails as cR, getMarkerFunction as cS, MARKER_FUNCTIONS as cT, type DrawTrailsOptions as cU, resolveTrailNode as cV, computeTrails as cW, nTrailPaletteColors as cX, collectTracks as cY, type TrailTarget as cZ, type Trail as c_, readDlc as ca, readDlcProject as cb, isDlcData as cc, parseDlcCrop as cd, looksLikeDlcConfig as ce, attachConfigSkeleton as cf, videoSetsStemMap as cg, extractFrameIndex as ch, resolveConfig as ci, setSourceVideo as cj, findProjectCsvs as ck, resolveProjectConfigPath as cl, readDlcDataframe as cm, type ReadDlcOptions as cn, type ReadDlcProjectOptions as co, type DlcDataframe as cp, toNumpy as cq, fromNumpy as cr, labelsFromNumpy as cs, decodeYamlSkeleton as ct, encodeYamlSkeleton as cu, readSkeletonJson as cv, writeSkeletonJson as cw, readTrainingConfigSkeletons as cx, readTrainingConfigSkeleton as cy, isTrainingConfig as cz, configureLibavDecoder as d, InstanceContext as d0, drawMasks as d1, drawLabelImage as d2, warn as d3, isDlcProjectPath as d4, readDlcConfig as d5, discoverConfig as d6, clampAlpha as d7, pickColor as d8, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };
