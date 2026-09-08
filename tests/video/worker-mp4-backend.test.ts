@@ -201,7 +201,12 @@ describe("WorkerMp4BoxBackend getFrame", () => {
     expect(decode?.target).toBe(500);
     expect(decode?.reqId).not.toBe(reqId1);
     const bmp = fakeBitmap("f500");
-    fake.emit({ type: "bitmap", reqId: decode?.reqId, frame: 500, bitmap: bmp });
+    fake.emit({
+      type: "bitmap",
+      reqId: decode?.reqId,
+      frame: 500,
+      bitmap: bmp,
+    });
     await expect(gp2).resolves.toBe(bmp);
   });
 });
