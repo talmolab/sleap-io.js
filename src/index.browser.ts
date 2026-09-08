@@ -22,6 +22,9 @@ export * from "./model/centroid.js";
 export * from "./model/label-image.js";
 export * from "./video/backend.js";
 export * from "./video/mp4box-video.js";
+export * from "./video/mp4-decode-core.js";
+export * from "./video/mp4box-decode-worker.js";
+export * from "./video/worker-mp4-backend.js";
 export * from "./video/mediabunny-video.js";
 export * from "./video/avi-video.js";
 export {

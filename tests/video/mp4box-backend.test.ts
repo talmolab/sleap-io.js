@@ -64,6 +64,60 @@ function createMp4BoxMock() {
   };
 }
 
+// Build N synthetic samples with a keyframe every `gop` frames (matches the
+// short-GOP scrub proxy). cts increases with index so sorted order == index
+// order, keeping decodeIndex == frame index for straightforward assertions.
+function makeSamples(n: number, gop = 15) {
+  return Array.from({ length: n }, (_, i) => ({
+    offset: i,
+    size: 1,
+    cts: i * 1000,
+    duration: 1000,
+    is_sync: i % gop === 0,
+  }));
+}
+
+// Like createMp4BoxMock but with a caller-supplied sample table, so decode-ahead
+// tests can exercise a video long enough to have a real "runway" ahead.
+function createMp4BoxMockWithSamples(samples: ReturnType<typeof makeSamples>) {
+  return {
+    createFile() {
+      const file: any = {
+        _ready: false,
+        onReady: null,
+        onError: null,
+        appendBuffer(buffer: ArrayBuffer) {
+          if (!file._ready) {
+            file._ready = true;
+            file.onReady?.({
+              videoTracks: [
+                {
+                  id: 1,
+                  codec: "avc1.42E01E",
+                  video: { width: 1024, height: 1024 },
+                  duration: samples.length * 1000,
+                  timescale: 1000,
+                },
+              ],
+            });
+          }
+          const start = (buffer as any).fileStart ?? 0;
+          return start + buffer.byteLength;
+        },
+        getTrackSamplesInfo() {
+          return samples;
+        },
+        getTrackById() {
+          return {
+            mdia: { minf: { stbl: { stsd: { entries: [] } } } },
+          };
+        },
+      };
+      return file;
+    },
+  };
+}
+
 function createFetchMock(supportsRange = true) {
   return vi.fn(
     async (
@@ -403,5 +457,175 @@ describe("Mp4BoxVideoBackend", () => {
       ).toBe(true);
       backend.close();
     }
+  });
+
+  // --- Thread A: proactive decode-ahead during playback (v2) ---
+
+  it("decodeAhead decodes frames ahead of the playhead into the cache", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    // Nothing cached yet: decode-ahead from frame 10 must fill a forward runway.
+    backend.decodeAhead(10);
+    await (backend as any).decodeQueue;
+
+    expect((backend as any).cache.has(11)).toBe(true);
+    expect((backend as any).cache.has(40)).toBe(true);
+    backend.close();
+  });
+
+  it("decodeAhead is a no-op when the runway ahead is already cached", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    // Pre-fill a dense runway ahead of the playhead.
+    for (let i = 10; i <= 85; i += 1) {
+      (backend as any).cache.set(i, { close() {} });
+    }
+
+    let decodeRangeCalls = 0;
+    const orig = (backend as any).decodeRange.bind(backend);
+    (backend as any).decodeRange = async (...args: any[]) => {
+      decodeRangeCalls += 1;
+      return orig(...args);
+    };
+
+    backend.decodeAhead(10);
+    await (backend as any).decodeQueue;
+
+    expect(decodeRangeCalls).toBe(0);
+    backend.close();
+  });
+
+  it("decodeAhead coalesces overlapping calls into a single decode", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    let decodeRangeCalls = 0;
+    const orig = (backend as any).decodeRange.bind(backend);
+    (backend as any).decodeRange = async (...args: any[]) => {
+      decodeRangeCalls += 1;
+      return orig(...args);
+    };
+
+    backend.decodeAhead(10);
+    backend.decodeAhead(10);
+    backend.decodeAhead(11);
+    await (backend as any).decodeQueue;
+
+    expect(decodeRangeCalls).toBe(1);
+    backend.close();
+  });
+
+  it("a demand getFrame miss aborts in-flight decode-ahead work", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    backend.decodeAhead(10);
+    const aheadAbort = (backend as any).aheadAbort as AbortController;
+    // A real demand read for a far frame must win: it aborts the speculative
+    // ahead-work, which is cut short, while the demand target gets decoded.
+    await backend.getFrame(80);
+
+    // The demand read aborted the speculative ahead controller...
+    expect(aheadAbort.signal.aborted).toBe(true);
+    // ...was itself served (its target got decoded)...
+    expect((backend as any).cache.has(80)).toBe(true);
+    // ...and the ahead-work never filled its runway (frame 70 was to be cached
+    // by the aborted ahead task; the demand only covers ~75+).
+    expect((backend as any).cache.has(70)).toBe(false);
+    backend.close();
+  });
+
+  it("getFrame with { scrub: true } decodes only keyframe→target (no lookahead)", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    // Scrub read for frame 50 (keyframe 45 with gop 15): caches 45..50 only.
+    await backend.getFrame(50, { scrub: true });
+
+    expect((backend as any).cache.has(50)).toBe(true); // the target
+    expect((backend as any).cache.has(45)).toBe(true); // its keyframe
+    // The +60 lookahead is skipped, so a frame past the target is NOT cached
+    // (it WOULD be without scrub).
+    expect((backend as any).cache.has(60)).toBe(false);
+    backend.close();
+  });
+
+  it("nearestKeyframe returns the keyframe at or before a frame", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    // gop 15 → keyframes at 0, 15, 30, 45, 60, …
+    expect(backend.nearestKeyframe(50)).toBe(45);
+    expect(backend.nearestKeyframe(45)).toBe(45);
+    expect(backend.nearestKeyframe(7)).toBe(0);
+    expect(backend.nearestKeyframe(0)).toBe(0);
+    backend.close();
+  });
+
+  it("decodeRange bails mid-decode when its signal aborts", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
+    const controller = new AbortController();
+    let decodeCalls = 0;
+    class CountingDecoder {
+      static async isConfigSupported() {
+        return { supported: true };
+      }
+      private outputCb: ((frame: any) => void) | null = null;
+      constructor(options: any) {
+        this.outputCb = options?.output ?? null;
+      }
+      configure() {}
+      decode(chunk: any) {
+        decodeCalls += 1;
+        if (decodeCalls === 20) controller.abort();
+        this.outputCb?.({ timestamp: chunk?.timestamp ?? 0, close() {} });
+      }
+      flush() {
+        return Promise.resolve();
+      }
+      close() {}
+    }
+    globalThis.VideoDecoder = CountingDecoder as any;
+
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    // Decode the whole 100-frame span; the signal aborts after 20 feeds, so the
+    // batch loop must stop early instead of feeding all 100 samples.
+    await (backend as any).decodeRange(0, 99, 50, {
+      signal: controller.signal,
+    });
+
+    expect(decodeCalls).toBeLessThan(100);
+    backend.close();
   });
 });
