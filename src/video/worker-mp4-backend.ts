@@ -233,6 +233,23 @@ export class WorkerMp4BoxBackend implements VideoBackend {
       this.worker.postMessage({ type: "abort", reqId: this.aheadReqId });
     }
 
+    // Drop-stale: a newer demand read supersedes any older in-flight demand
+    // reads. Abort them in the worker so its SERIAL decode queue can't back up —
+    // otherwise a fast scrub piles up hundreds of decodes that each resolve
+    // seconds later against a long-moved playhead (the frame shown then mismatches
+    // the labels). Settle their promises now with whatever's cached. This mirrors
+    // the on-main backend's `latestRequestedFrame` drop-stale.
+    if (this.pending.size > 0) {
+      for (const [staleId, stale] of this.pending) {
+        this.worker.postMessage({ type: "abort", reqId: staleId });
+        if (!stale.settled) {
+          stale.settled = true;
+          stale.resolve(this.cache.get(stale.target) ?? null);
+        }
+      }
+      this.pending.clear();
+    }
+
     this.reqCounter += 1;
     const reqId = this.reqCounter;
     const { start, end } = planDecodeRange(

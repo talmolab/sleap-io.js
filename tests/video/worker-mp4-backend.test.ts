@@ -178,6 +178,32 @@ describe("WorkerMp4BoxBackend getFrame", () => {
     fake.emit({ type: "decodeDone", reqId, aborted: false });
     await expect(gp).resolves.toBeNull();
   });
+
+  it("drop-stale: a newer demand aborts older in-flight demands + settles them", async () => {
+    const { fake, backend } = await makeReadyBackend();
+    const gp1 = backend.getFrame(50);
+    await tick();
+    const reqId1 = fake.lastOfType("decode")?.reqId as number;
+
+    // A newer demand supersedes the first (fast-scrub case).
+    const gp2 = backend.getFrame(500);
+    await tick();
+
+    // The stale request was aborted in the worker so its serial queue can't back up,
+    const abort = fake.lastOfType("abort");
+    expect(abort).toMatchObject({ type: "abort", reqId: reqId1 });
+    // ...and its promise settled NOW (null — nothing cached) instead of hanging
+    // until the worker eventually decodes a long-superseded frame.
+    await expect(gp1).resolves.toBeNull();
+
+    // The new demand gets its own decode and resolves normally.
+    const decode = fake.lastOfType("decode");
+    expect(decode?.target).toBe(500);
+    expect(decode?.reqId).not.toBe(reqId1);
+    const bmp = fakeBitmap("f500");
+    fake.emit({ type: "bitmap", reqId: decode?.reqId, frame: 500, bitmap: bmp });
+    await expect(gp2).resolves.toBe(bmp);
+  });
 });
 
 describe("WorkerMp4BoxBackend abort", () => {
