@@ -1,5 +1,5 @@
-import { F as FrameGroup, S as Skeleton, T as Track } from './dictionary-CADvJMiJ.js';
-export { E as Edge, N as Node, a as Symmetry } from './dictionary-CADvJMiJ.js';
+import { F as FrameGroup, S as Skeleton, T as Track } from './dictionary-wyceshgf.js';
+export { E as Edge, N as Node, a as Symmetry } from './dictionary-wyceshgf.js';
 
 /**
  * jsfive-based HDF5 file interface.
