@@ -10489,6 +10489,16 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
     if (this.aheadInFlight && this.aheadReqId != null) {
       this.worker.postMessage({ type: "abort", reqId: this.aheadReqId });
     }
+    if (this.pending.size > 0) {
+      for (const [staleId, stale] of this.pending) {
+        this.worker.postMessage({ type: "abort", reqId: staleId });
+        if (!stale.settled) {
+          stale.settled = true;
+          stale.resolve(this.cache.get(stale.target) ?? null);
+        }
+      }
+      this.pending.clear();
+    }
     this.reqCounter += 1;
     const reqId = this.reqCounter;
     const { start, end } = planDecodeRange(
