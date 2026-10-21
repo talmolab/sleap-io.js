@@ -553,9 +553,10 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
  *
  * Supported embed modes:
  * - `true` or `"all"` - Embed all labeled frames
- * - `"user"` - Embed only frames with user instances
+ * - `"user"` - Embed only user-labeled frames ({@link Labels.userLabeledFrames}:
+ *   user instances, negative frames, user centroids/boxes/masks/ROIs)
  * - `"suggestions"` - Embed only suggestion frames
- * - `"user+suggestions"` - Embed user instance frames and suggestion frames
+ * - `"user+suggestions"` - Embed user-labeled frames and suggestion frames
  * - `"all+suggestions"` - Embed all labeled frames AND all suggestion frames
  * - `"source"` - Restore original video paths (no embedding)
  *
@@ -3853,10 +3854,10 @@ async function collectEncodedFrames(
     let include = false;
     if (includeAllLabeled) {
       include = true;
-    } else if (mode === "user") {
-      include = frame.hasUserInstances;
-    } else if (mode === "user+suggestions") {
-      include = frame.hasUserInstances;
+    } else if (mode === "user" || mode === "user+suggestions") {
+      // Any user labeling — instances, negative flag, user centroids/boxes/
+      // masks/ROIs — as sleap-io's `user_labeled_frames` (slp.py embed).
+      include = frame.isUserLabeled;
     } // "suggestions": added below
     if (include) frameIndices.add(frame.frameIdx);
   }
