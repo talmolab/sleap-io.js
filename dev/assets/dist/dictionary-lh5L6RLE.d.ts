@@ -529,6 +529,14 @@ interface GetFrameOptions {
      * the frame the user is actually on. Backends without a lookahead ignore it.
      */
     scrub?: boolean;
+    /**
+     * Pinned read: never superseded. Backends that drop stale reads when a newer
+     * one arrives (the mp4/AVI decoders keep only the newest read so scrubbing
+     * stays responsive) neither cancel this read for a newer one nor let it
+     * cancel older ones. For batch readers that need every frame, e.g. embedding
+     * frames into a `.pkg.slp` while the app keeps showing other frames.
+     */
+    pinned?: boolean;
 }
 /**
  * A lazy, seekable byte source for a video file — the video counterpart of the
@@ -2866,6 +2874,12 @@ declare class Labels {
      * No-op if already eager.
      */
     materialize(): void;
+    /**
+     * Frames with any user labeling: user instances, a negative (background)
+     * flag, or user centroids / boxes / masks / ROIs / label images. sleap-io's
+     * `user_labeled_frames` — what `embed: "user"` embeds.
+     */
+    get userLabeledFrames(): LabeledFrame[];
     get negativeFrames(): LabeledFrame[];
     get video(): Video;
     get length(): number;

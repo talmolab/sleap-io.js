@@ -6386,8 +6386,7 @@ var LazyDataStore = class _LazyDataStore {
       labelImages,
       rois
     });
-    const negKey = annKey;
-    if (this.negativeFrames.has(negKey)) {
+    if (this.negativeFrames.has(`${rawVideoId}:${frameIndex}`)) {
       frame.isNegative = true;
     }
     return frame;
@@ -7162,6 +7161,15 @@ To use, first materialize:
     if (store) {
       this._staticRois = store._undistributedRois;
     }
+  }
+  /**
+   * Frames with any user labeling: user instances, a negative (background)
+   * flag, or user centroids / boxes / masks / ROIs / label images. sleap-io's
+   * `user_labeled_frames` — what `embed: "user"` embeds.
+   */
+  get userLabeledFrames() {
+    if (this._lazyFrameList) this.materialize();
+    return this.labeledFrames.filter((f) => f.isUserLabeled);
   }
   get negativeFrames() {
     if (this._lazyFrameList) this.materialize();
@@ -9580,10 +9588,10 @@ var Mp4BoxVideoBackend = class {
       }
       return bitmap;
     }
-    this.latestRequestedFrame = frameIndex;
+    if (!opts?.pinned) this.latestRequestedFrame = frameIndex;
     this.aheadAbort?.abort();
     this.decodeQueue = this.decodeQueue.then(async () => {
-      if (this.latestRequestedFrame !== frameIndex) return;
+      if (!opts?.pinned && this.latestRequestedFrame !== frameIndex) return;
       if (opts?.signal?.aborted) return;
       const keyframe = this.findKeyframeBefore(frameIndex);
       const end = opts?.scrub ? frameIndex : Math.min(frameIndex + this.lookahead, this.samples.length - 1);
@@ -10489,15 +10497,16 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
     if (this.aheadInFlight && this.aheadReqId != null) {
       this.worker.postMessage({ type: "abort", reqId: this.aheadReqId });
     }
-    if (this.pending.size > 0) {
+    if (!opts?.pinned && this.pending.size > 0) {
       for (const [staleId, stale] of this.pending) {
+        if (stale.pinned) continue;
         this.worker.postMessage({ type: "abort", reqId: staleId });
         if (!stale.settled) {
           stale.settled = true;
           stale.resolve(this.cache.get(stale.target) ?? null);
         }
+        this.pending.delete(staleId);
       }
-      this.pending.clear();
     }
     this.reqCounter += 1;
     const reqId = this.reqCounter;
@@ -10517,7 +10526,12 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
       return this.cache.get(frameIndex) ?? null;
     }
     const promise = new Promise((resolve) => {
-      this.pending.set(reqId, { target: frameIndex, resolve, settled: false });
+      this.pending.set(reqId, {
+        target: frameIndex,
+        resolve,
+        settled: false,
+        pinned: opts?.pinned === true
+      });
     });
     if (opts?.signal) {
       opts.signal.addEventListener(
@@ -10763,14 +10777,14 @@ var AviVideoBackend = class _AviVideoBackend {
       this.cache.set(frameIndex, cached);
       return cached;
     }
-    this.latestRequested = frameIndex;
+    if (!opts?.pinned) this.latestRequested = frameIndex;
     if (this.mode === "mjpeg") {
       return this.enqueue(
         () => this.decodeMjpegFrame(frameIndex, opts?.signal)
       );
     }
     return this.enqueue(
-      () => this.decodeWebCodecsFrame(frameIndex, opts?.signal)
+      () => this.decodeWebCodecsFrame(frameIndex, opts?.signal, opts?.pinned)
     );
   }
   /** Serialize decodes: one `VideoDecoder`/packet-read at a time. */
@@ -10793,7 +10807,7 @@ var AviVideoBackend = class _AviVideoBackend {
     return bitmap;
   }
   // ── WebCodecs: seek to keyframe ≤ target, decode GOP forward ─────────────────
-  async decodeWebCodecsFrame(target, signal) {
+  async decodeWebCodecsFrame(target, signal, pinned = false) {
     if (!this.demuxer || !this.decoderConfig) {
       throw new Error("Backend not initialized");
     }
@@ -10824,7 +10838,8 @@ var AviVideoBackend = class _AviVideoBackend {
     try {
       const reader = this.demuxer.read("video", startTime, endTime, AVSeekFlag.AVSEEK_FLAG_BACKWARD).getReader();
       for (; ; ) {
-        if (signal?.aborted || this.latestRequested !== target) break;
+        if (signal?.aborted || !pinned && this.latestRequested !== target)
+          break;
         const { done, value } = await reader.read();
         if (done) break;
         decoder.decode(value);
@@ -14993,6 +15008,31 @@ function buildCentroidTuples(data, categories, names, sources, tracks) {
   return centroids;
 }
 
+// src/model/negative-frames.ts
+function negativeFrameKeys(columns) {
+  const videoIds = columns.video_id ?? columns.video ?? [];
+  const frameIdxs = columns.frame_idx ?? [];
+  const keys = /* @__PURE__ */ new Set();
+  for (let i = 0; i < frameIdxs.length; i++) {
+    keys.add(`${Number(videoIds[i])}:${Number(frameIdxs[i])}`);
+  }
+  return keys;
+}
+function markNegativeFrames(labeledFrames, rawKeys, framesData, videos) {
+  if (rawKeys.size === 0) return;
+  const videoIdToIndex = buildVideoIdMap(framesData, videos);
+  const byIndex = /* @__PURE__ */ new Set();
+  for (const key of rawKeys) {
+    const [rawVideoId, frameIdx] = key.split(":").map(Number);
+    byIndex.add(`${videoIdToIndex.get(rawVideoId) ?? rawVideoId}:${frameIdx}`);
+  }
+  for (const frame of labeledFrames) {
+    if (byIndex.has(`${videos.indexOf(frame.video)}:${frame.frameIdx}`)) {
+      frame.isNegative = true;
+    }
+  }
+}
+
 // src/codecs/slp/frame-count.ts
 function resolveSourceFrameCount(opts) {
   const { framesAttr, jsonFrameCount, frameNumbers } = opts;
@@ -15148,6 +15188,9 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   report(6);
   const pointsData = await readStructDatasetStreaming(file, "points");
   const predPointsData = await readStructDatasetStreaming(file, "pred_points");
+  const negativeFrames = negativeFrameKeys(
+    await readStructDatasetStreaming(file, "negative_frames")
+  );
   report(7);
   const lazyStore = lazy ? new LazyDataStore({
     framesData,
@@ -15157,9 +15200,8 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     skeletons,
     tracks,
     videos,
-    formatId
-    // The streaming reader reads no negative_frames — leave empty (matches
-    // the eager streaming build, which never sets isNegative either).
+    formatId,
+    negativeFrames
   }) : void 0;
   const labeledFrames = lazyStore ? void 0 : buildLabeledFrames({
     framesData,
@@ -15171,6 +15213,9 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     videos,
     formatId
   });
+  if (labeledFrames) {
+    markNegativeFrames(labeledFrames, negativeFrames, framesData, videos);
+  }
   report(8);
   const identities = await readIdentitiesStreaming(file);
   if (labeledFrames || lazyStore) {
@@ -17391,7 +17436,7 @@ async function writeSlpBytes(labels, options, { includeEmbeddedData }) {
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
-  const plan = doEmbed ? await planEmbedding(labels, embedMode) : null;
+  const plan = doEmbed ? await planEmbedding(labels, embedMode, options?.onProgress) : null;
   const fs = getH5FileSystem(module);
   const file = new module.File(memPath, "w");
   try {
@@ -18427,9 +18472,17 @@ function writeLabelTablesInPlace(file, update) {
     }
   }
 }
-async function planEmbedding(labels, embedMode) {
+async function planEmbedding(labels, embedMode, onProgress) {
   const plan = /* @__PURE__ */ new Map();
   const isRealMode = embedMode !== false && embedMode !== "source";
+  const toEncode = labels.videos.map(
+    (video, vi) => isRealMode && video.backend && !isRawCopyable(video) ? selectEmbedFrames(labels, vi, embedMode) : []
+  );
+  const progress = {
+    done: 0,
+    total: toEncode.reduce((n, frames) => n + frames.length, 0),
+    report: onProgress
+  };
   for (let vi = 0; vi < labels.videos.length; vi++) {
     const video = labels.videos[vi];
     if (isRawCopyable(video)) {
@@ -18446,9 +18499,9 @@ async function planEmbedding(labels, embedMode) {
       });
     } else if (isRealMode && video.backend) {
       const { frameData, encodedFormat } = await collectEncodedFrames(
-        labels,
-        vi,
-        embedMode
+        video,
+        toEncode[vi],
+        progress
       );
       if (frameData.size === 0) continue;
       const frameNumbers = [...frameData.keys()].sort((a, b) => a - b);
@@ -18493,10 +18546,7 @@ async function buildSerializableEmbedPlan(labels, embedMode, sourcePath) {
   }
   return { sourcePath, entries };
 }
-async function collectEncodedFrames(labels, videoIndex, embedMode) {
-  const frameData = /* @__PURE__ */ new Map();
-  const video = labels.videos[videoIndex];
-  if (!video?.backend) return { frameData, encodedFormat: null };
+function selectEmbedFrames(labels, videoIndex, embedMode) {
   const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
   const frameIndices = /* @__PURE__ */ new Set();
   const includeAllLabeled = mode === "all" || mode === "all+suggestions";
@@ -18506,10 +18556,8 @@ async function collectEncodedFrames(labels, videoIndex, embedMode) {
     let include = false;
     if (includeAllLabeled) {
       include = true;
-    } else if (mode === "user") {
-      include = frame.hasUserInstances;
-    } else if (mode === "user+suggestions") {
-      include = frame.hasUserInstances;
+    } else if (mode === "user" || mode === "user+suggestions") {
+      include = frame.isUserLabeled;
     }
     if (include) frameIndices.add(frame.frameIdx);
   }
@@ -18519,11 +18567,27 @@ async function collectEncodedFrames(labels, videoIndex, embedMode) {
       frameIndices.add(suggestion.frameIdx);
     }
   }
+  return Array.from(frameIndices).sort((a, b) => a - b);
+}
+var EMBED_READ_ATTEMPTS = 3;
+async function collectEncodedFrames(video, sortedFrames, progress) {
+  const frameData = /* @__PURE__ */ new Map();
+  if (!video?.backend) return { frameData, encodedFormat: null };
   let encodedToPng = false;
-  const sortedFrames = Array.from(frameIndices).sort((a, b) => a - b);
+  const frameCount = video.shape?.[0];
+  const unreadable = [];
   for (const frameIdx of sortedFrames) {
-    const frame = await video.getFrame(frameIdx);
-    if (!frame) continue;
+    let frame = null;
+    for (let attempt = 0; attempt < EMBED_READ_ATTEMPTS && !frame; attempt++) {
+      frame = await video.getFrame(frameIdx, { pinned: true, prefetch: false });
+    }
+    progress.done += 1;
+    progress.report?.(progress.done, progress.total, "Embedding frames");
+    if (!frame) {
+      if (frameCount == null || frameIdx < frameCount)
+        unreadable.push(frameIdx);
+      continue;
+    }
     let bytes = frameToBytes(frame);
     if (!bytes) {
       if (isImageBitmapLike(frame)) {
@@ -18535,6 +18599,13 @@ async function collectEncodedFrames(labels, videoIndex, embedMode) {
       }
     }
     if (bytes) frameData.set(frameIdx, bytes);
+  }
+  if (unreadable.length > 0) {
+    const name = Array.isArray(video.filename) ? video.filename[0] : video.filename;
+    const list = unreadable.slice(0, 10).join(", ") + (unreadable.length > 10 ? ", \u2026" : "");
+    throw new Error(
+      `Couldn't read ${unreadable.length} frame image(s) from "${name}" to embed (frame ${list}). The package was not written.`
+    );
   }
   return { frameData, encodedFormat: encodedToPng ? "png" : null };
 }
@@ -21208,19 +21279,12 @@ async function readSlp(source, options) {
     });
     const negativeFramesDs = file.get("negative_frames");
     if (negativeFramesDs) {
-      const negData = normalizeStructDataset(negativeFramesDs);
-      const videoIds = negData.video_id ?? negData.video ?? [];
-      const frameIdxs = negData.frame_idx ?? [];
-      const negativeSet = /* @__PURE__ */ new Set();
-      for (let i = 0; i < frameIdxs.length; i++) {
-        negativeSet.add(`${Number(videoIds[i])}:${Number(frameIdxs[i])}`);
-      }
-      for (const frame of labeledFrames) {
-        const videoIndex = Math.max(0, videos.indexOf(frame.video));
-        if (negativeSet.has(`${videoIndex}:${frame.frameIdx}`)) {
-          frame.isNegative = true;
-        }
-      }
+      markNegativeFrames(
+        labeledFrames,
+        negativeFrameKeys(normalizeStructDataset(negativeFramesDs)),
+        framesData,
+        videos
+      );
     }
     report(5);
     const identities = readIdentityCatalog(file);
@@ -21414,16 +21478,8 @@ async function readSlpLazy(source, options) {
       file.get("pred_points"),
       emscripten
     );
-    const negativeFrames = /* @__PURE__ */ new Set();
     const negativeFramesDs = file.get("negative_frames");
-    if (negativeFramesDs) {
-      const negData = normalizeStructDataset(negativeFramesDs);
-      const videoIds = negData.video_id ?? negData.video ?? [];
-      const frameIdxs = negData.frame_idx ?? [];
-      for (let i = 0; i < frameIdxs.length; i++) {
-        negativeFrames.add(`${Number(videoIds[i])}:${Number(frameIdxs[i])}`);
-      }
-    }
+    const negativeFrames = negativeFramesDs ? negativeFrameKeys(normalizeStructDataset(negativeFramesDs)) : /* @__PURE__ */ new Set();
     const store = new LazyDataStore({
       framesData,
       instancesData,
