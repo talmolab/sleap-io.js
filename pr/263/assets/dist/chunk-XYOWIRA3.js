@@ -9588,10 +9588,10 @@ var Mp4BoxVideoBackend = class {
       }
       return bitmap;
     }
-    this.latestRequestedFrame = frameIndex;
+    if (!opts?.pinned) this.latestRequestedFrame = frameIndex;
     this.aheadAbort?.abort();
     this.decodeQueue = this.decodeQueue.then(async () => {
-      if (this.latestRequestedFrame !== frameIndex) return;
+      if (!opts?.pinned && this.latestRequestedFrame !== frameIndex) return;
       if (opts?.signal?.aborted) return;
       const keyframe = this.findKeyframeBefore(frameIndex);
       const end = opts?.scrub ? frameIndex : Math.min(frameIndex + this.lookahead, this.samples.length - 1);
@@ -10497,15 +10497,16 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
     if (this.aheadInFlight && this.aheadReqId != null) {
       this.worker.postMessage({ type: "abort", reqId: this.aheadReqId });
     }
-    if (this.pending.size > 0) {
+    if (!opts?.pinned && this.pending.size > 0) {
       for (const [staleId, stale] of this.pending) {
+        if (stale.pinned) continue;
         this.worker.postMessage({ type: "abort", reqId: staleId });
         if (!stale.settled) {
           stale.settled = true;
           stale.resolve(this.cache.get(stale.target) ?? null);
         }
+        this.pending.delete(staleId);
       }
-      this.pending.clear();
     }
     this.reqCounter += 1;
     const reqId = this.reqCounter;
@@ -10525,7 +10526,12 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
       return this.cache.get(frameIndex) ?? null;
     }
     const promise = new Promise((resolve) => {
-      this.pending.set(reqId, { target: frameIndex, resolve, settled: false });
+      this.pending.set(reqId, {
+        target: frameIndex,
+        resolve,
+        settled: false,
+        pinned: opts?.pinned === true
+      });
     });
     if (opts?.signal) {
       opts.signal.addEventListener(
@@ -10771,14 +10777,14 @@ var AviVideoBackend = class _AviVideoBackend {
       this.cache.set(frameIndex, cached);
       return cached;
     }
-    this.latestRequested = frameIndex;
+    if (!opts?.pinned) this.latestRequested = frameIndex;
     if (this.mode === "mjpeg") {
       return this.enqueue(
         () => this.decodeMjpegFrame(frameIndex, opts?.signal)
       );
     }
     return this.enqueue(
-      () => this.decodeWebCodecsFrame(frameIndex, opts?.signal)
+      () => this.decodeWebCodecsFrame(frameIndex, opts?.signal, opts?.pinned)
     );
   }
   /** Serialize decodes: one `VideoDecoder`/packet-read at a time. */
@@ -10801,7 +10807,7 @@ var AviVideoBackend = class _AviVideoBackend {
     return bitmap;
   }
   // ── WebCodecs: seek to keyframe ≤ target, decode GOP forward ─────────────────
-  async decodeWebCodecsFrame(target, signal) {
+  async decodeWebCodecsFrame(target, signal, pinned = false) {
     if (!this.demuxer || !this.decoderConfig) {
       throw new Error("Backend not initialized");
     }
@@ -10832,7 +10838,8 @@ var AviVideoBackend = class _AviVideoBackend {
     try {
       const reader = this.demuxer.read("video", startTime, endTime, AVSeekFlag.AVSEEK_FLAG_BACKWARD).getReader();
       for (; ; ) {
-        if (signal?.aborted || this.latestRequested !== target) break;
+        if (signal?.aborted || !pinned && this.latestRequested !== target)
+          break;
         const { done, value } = await reader.read();
         if (done) break;
         decoder.decode(value);
@@ -17429,7 +17436,7 @@ async function writeSlpBytes(labels, options, { includeEmbeddedData }) {
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
-  const plan = doEmbed ? await planEmbedding(labels, embedMode) : null;
+  const plan = doEmbed ? await planEmbedding(labels, embedMode, options?.onProgress) : null;
   const fs = getH5FileSystem(module);
   const file = new module.File(memPath, "w");
   try {
@@ -18465,9 +18472,17 @@ function writeLabelTablesInPlace(file, update) {
     }
   }
 }
-async function planEmbedding(labels, embedMode) {
+async function planEmbedding(labels, embedMode, onProgress) {
   const plan = /* @__PURE__ */ new Map();
   const isRealMode = embedMode !== false && embedMode !== "source";
+  const toEncode = labels.videos.map(
+    (video, vi) => isRealMode && video.backend && !isRawCopyable(video) ? selectEmbedFrames(labels, vi, embedMode) : []
+  );
+  const progress = {
+    done: 0,
+    total: toEncode.reduce((n, frames) => n + frames.length, 0),
+    report: onProgress
+  };
   for (let vi = 0; vi < labels.videos.length; vi++) {
     const video = labels.videos[vi];
     if (isRawCopyable(video)) {
@@ -18484,9 +18499,9 @@ async function planEmbedding(labels, embedMode) {
       });
     } else if (isRealMode && video.backend) {
       const { frameData, encodedFormat } = await collectEncodedFrames(
-        labels,
-        vi,
-        embedMode
+        video,
+        toEncode[vi],
+        progress
       );
       if (frameData.size === 0) continue;
       const frameNumbers = [...frameData.keys()].sort((a, b) => a - b);
@@ -18531,10 +18546,7 @@ async function buildSerializableEmbedPlan(labels, embedMode, sourcePath) {
   }
   return { sourcePath, entries };
 }
-async function collectEncodedFrames(labels, videoIndex, embedMode) {
-  const frameData = /* @__PURE__ */ new Map();
-  const video = labels.videos[videoIndex];
-  if (!video?.backend) return { frameData, encodedFormat: null };
+function selectEmbedFrames(labels, videoIndex, embedMode) {
   const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
   const frameIndices = /* @__PURE__ */ new Set();
   const includeAllLabeled = mode === "all" || mode === "all+suggestions";
@@ -18555,11 +18567,27 @@ async function collectEncodedFrames(labels, videoIndex, embedMode) {
       frameIndices.add(suggestion.frameIdx);
     }
   }
+  return Array.from(frameIndices).sort((a, b) => a - b);
+}
+var EMBED_READ_ATTEMPTS = 3;
+async function collectEncodedFrames(video, sortedFrames, progress) {
+  const frameData = /* @__PURE__ */ new Map();
+  if (!video?.backend) return { frameData, encodedFormat: null };
   let encodedToPng = false;
-  const sortedFrames = Array.from(frameIndices).sort((a, b) => a - b);
+  const frameCount = video.shape?.[0];
+  const unreadable = [];
   for (const frameIdx of sortedFrames) {
-    const frame = await video.getFrame(frameIdx);
-    if (!frame) continue;
+    let frame = null;
+    for (let attempt = 0; attempt < EMBED_READ_ATTEMPTS && !frame; attempt++) {
+      frame = await video.getFrame(frameIdx, { pinned: true, prefetch: false });
+    }
+    progress.done += 1;
+    progress.report?.(progress.done, progress.total, "Embedding frames");
+    if (!frame) {
+      if (frameCount == null || frameIdx < frameCount)
+        unreadable.push(frameIdx);
+      continue;
+    }
     let bytes = frameToBytes(frame);
     if (!bytes) {
       if (isImageBitmapLike(frame)) {
@@ -18571,6 +18599,13 @@ async function collectEncodedFrames(labels, videoIndex, embedMode) {
       }
     }
     if (bytes) frameData.set(frameIdx, bytes);
+  }
+  if (unreadable.length > 0) {
+    const name = Array.isArray(video.filename) ? video.filename[0] : video.filename;
+    const list = unreadable.slice(0, 10).join(", ") + (unreadable.length > 10 ? ", \u2026" : "");
+    throw new Error(
+      `Couldn't read ${unreadable.length} frame image(s) from "${name}" to embed (frame ${list}). The package was not written.`
+    );
   }
   return { frameData, encodedFormat: encodedToPng ? "png" : null };
 }

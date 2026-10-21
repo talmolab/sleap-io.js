@@ -1,4 +1,4 @@
-import { b5 as VideoBackend, bk as RangeSource$1, b4 as GetFrameOptions, b3 as VideoFrame, L as Labels, S as Skeleton, V as Video, T as Track, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, W as FsResolver, bb as CropRect, bj as Fill, bc as FlatPoints, bd as PointPairs, b0 as UserLabelImage, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-BURkk1mj.js';
+import { b5 as VideoBackend, bk as RangeSource$1, b4 as GetFrameOptions, b3 as VideoFrame, L as Labels, S as Skeleton, V as Video, T as Track, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, W as FsResolver, bb as CropRect, bj as Fill, bc as FlatPoints, bd as PointPairs, b0 as UserLabelImage, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-lh5L6RLE.js';
 import { CustomVideoDecoder, EncodedPacket } from 'mediabunny';
 
 /**
@@ -519,6 +519,7 @@ declare class AviVideoBackend implements VideoBackend {
     private initialize;
     getFrame(frameIndex: number, opts?: {
         signal?: AbortSignal;
+        pinned?: boolean;
     }): Promise<VideoFrame | null>;
     /** Serialize decodes: one `VideoDecoder`/packet-read at a time. */
     private enqueue;
@@ -621,6 +622,12 @@ interface H5WorkerResponse {
 type SlpWriteOptions = {
     embed?: boolean | string;
     restoreOriginalVideos?: boolean;
+    /**
+     * Called as frame images are read and encoded for embedding from a
+     * continuous video (`current` of `total` frames). Already-embedded videos
+     * copy their stored images in one go and don't report.
+     */
+    onProgress?: (current: number, total: number, message?: string) => void;
 };
 /** Static header (everything except the pose frames) for {@link openSlpWriter}. */
 interface SlpWriteHeader {
