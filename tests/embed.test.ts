@@ -11,6 +11,10 @@ import {
   SuggestionFrame,
 } from "../src/index.js";
 import { decodeEncoded } from "../src/video/image-decode.js";
+import {
+  ExportCancelled,
+  type SlpWriteOptions,
+} from "../src/codecs/slp/write.js";
 import { GrayscaleVideoBackend } from "../src/video/grayscale-backend.js";
 import type { VideoBackend, VideoFrame } from "../src/video/backend.js";
 import { fileURLToPath } from "node:url";
@@ -398,7 +402,7 @@ describe("Embedding a continuous (mp4-style) backend that returns raw pixels", (
     expect(buf![0]).toBe(0x89); // PNG magic — bytes really are PNG
   });
 
-  it("'all+suggestions' embeds suggestion-only frames that 'all' skips", async () => {
+  it("'all' embeds suggestion-only frames too, as Python sleap-io; 'all+suggestions' is an alias", async () => {
     const build = () => {
       const video = new Video({
         filename: "external.mp4",
@@ -420,15 +424,13 @@ describe("Embedding a continuous (mp4-style) backend that returns raw pixels", (
       return labels;
     };
 
-    // "all" embeds only the labeled frame (0), NOT the suggestion-only frame (7).
+    // Python's embed_videos: "all" = every labeled frame + every suggestion.
     const allReload = await saveReload(build(), "all", "allmode");
-    expect(allReload.videos[0].embeddedFrameIndices).toEqual([0]);
+    expect(allReload.videos[0].embeddedFrameIndices).toEqual([0, 7]);
 
-    // "all+suggestions" embeds BOTH the labeled frame and the suggestion frame.
+    // "all+suggestions" (sleap-io.js's earlier name for this) is the same.
     const bothReload = await saveReload(build(), "all+suggestions", "allsugg");
-    const idxs = bothReload.videos[0].embeddedFrameIndices ?? [];
-    expect(idxs).toContain(0);
-    expect(idxs).toContain(7);
+    expect(bothReload.videos[0].embeddedFrameIndices).toEqual([0, 7]);
   });
 });
 
@@ -524,5 +526,153 @@ describe("Embedding reads every frame (pinned, retried, never silently dropped)"
     expect(seen.map(([c]) => c)).toEqual(
       [...seen.map(([c]) => c)].sort((a, b) => a - b),
     );
+  });
+});
+
+/**
+ * Embedding options matching Python sleap-io's `save_slp`: an explicit
+ * `[video, frameIdx]` list for `embed`, `embedAllVideos` (`embed_all_videos`),
+ * and cancelling through the progress callback (`ExportCancelled`).
+ */
+describe("Embedding options (Python sleap-io parity)", () => {
+  function rawBackend(name: string, nFrames = 20): VideoBackend {
+    return {
+      filename: name,
+      shape: [nFrames, 4, 6, 3],
+      fps: 30,
+      async getFrame(idx: number): Promise<VideoFrame | null> {
+        if (idx < 0 || idx >= nFrames) return null;
+        const data = new Uint8ClampedArray(6 * 4 * 4).fill(idx);
+        return { data, width: 6, height: 4 } as unknown as VideoFrame;
+      },
+    } as unknown as VideoBackend;
+  }
+
+  /** Two videos, each with one labeled frame (0). */
+  function twoVideoLabels(): { labels: Labels; a: Video; b: Video } {
+    const a = new Video({ filename: "a.mp4", backend: rawBackend("a.mp4") });
+    const b = new Video({ filename: "b.mp4", backend: rawBackend("b.mp4") });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const lf = (video: Video) =>
+      new LabeledFrame({
+        video,
+        frameIdx: 0,
+        instances: [new Instance({ points: { A: [1, 2] }, skeleton })],
+      });
+    const labels = new Labels({
+      labeledFrames: [lf(a), lf(b)],
+      videos: [a, b],
+      skeletons: [skeleton],
+    });
+    return { labels, a, b };
+  }
+
+  async function saveReloadWith(
+    labels: Labels,
+    options: SlpWriteOptions,
+    tag: string,
+  ): Promise<Labels> {
+    const fs = await import("node:fs");
+    const os = await import("node:os");
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), `sleap-${tag}-`));
+    const file = path.join(dir, "out.pkg.slp");
+    fs.writeFileSync(file, await saveSlpToBytes(labels, options));
+    return readSlp(file, { openVideos: true });
+  }
+
+  it("embeds exactly the listed [video, frameIdx] frames, labeled or not", async () => {
+    const { labels, b } = twoVideoLabels();
+    const r = await saveReloadWith(
+      labels,
+      {
+        embed: [
+          [b, 3],
+          [b, 5],
+          [b, 3],
+        ],
+      },
+      "embedlist",
+    );
+    expect(r.videos[1].embeddedFrameIndices).toEqual([3, 5]);
+  });
+
+  it("rejects a listed frame of a video that isn't in the labels", async () => {
+    const { labels } = twoVideoLabels();
+    const stranger = new Video({
+      filename: "x.mp4",
+      backend: rawBackend("x.mp4"),
+    });
+    await expect(
+      saveSlpToBytes(labels, { embed: [[stranger, 0]] }),
+    ).rejects.toThrow("isn't in these labels");
+  });
+
+  it("embedAllVideos (default): a video with no frames to embed becomes an empty embedded video", async () => {
+    const { labels, b } = twoVideoLabels();
+    const r = await saveReloadWith(labels, { embed: [[b, 0]] }, "embedall");
+    const a = r.videos[0];
+    // Points at the package, not the external a.mp4, with no stored images...
+    expect(a.hasEmbeddedImages).toBe(true);
+    expect(a.embeddedFrameIndices ?? []).toEqual([]);
+    // ...but keeps its source's shape and its lineage back to a.mp4.
+    expect(a.shape).toEqual([20, 4, 6, 3]);
+    expect(a.sourceVideo?.filename).toBe("a.mp4");
+  });
+
+  it("embedAllVideos: false leaves a video with no frames to embed external", async () => {
+    const { labels, b } = twoVideoLabels();
+    const r = await saveReloadWith(
+      labels,
+      { embed: [[b, 0]], embedAllVideos: false },
+      "embednotall",
+    );
+    expect(r.videos[0].hasEmbeddedImages).toBe(false);
+    expect(r.videos[0].filename).toBe("a.mp4");
+    expect(r.videos[1].embeddedFrameIndices).toEqual([0]);
+  });
+
+  it("keeps a video whose selected frames couldn't be read external, not empty-embedded", async () => {
+    // No backend: its labeled frame is selected but has no image to read. Making
+    // it "embedded" would hide that the package lacks its images.
+    const a = new Video({ filename: "a.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video: a,
+          frameIdx: 0,
+          instances: [new Instance({ points: { A: [1, 2] }, skeleton })],
+        }),
+      ],
+      videos: [a],
+      skeletons: [skeleton],
+    });
+    const r = await saveReloadWith(labels, { embed: "user" }, "unreadable");
+    expect(r.videos[0].hasEmbeddedImages).toBe(false);
+    expect(r.videos[0].filename).toBe("a.mp4");
+  });
+
+  it("reports reading then writing, and cancels when onProgress returns false", async () => {
+    const { labels } = twoVideoLabels();
+    const messages = new Set<string>();
+    await saveSlpToBytes(labels, {
+      embed: "user",
+      onProgress: (_c, _t, m) => {
+        if (m) messages.add(m);
+      },
+    });
+    expect([...messages]).toEqual(["Embedding frames", "Writing frames"]);
+
+    let calls = 0;
+    await expect(
+      saveSlpToBytes(twoVideoLabels().labels, {
+        embed: "user",
+        onProgress: () => {
+          calls += 1;
+          return false;
+        },
+      }),
+    ).rejects.toBeInstanceOf(ExportCancelled);
+    expect(calls).toBe(1);
   });
 });

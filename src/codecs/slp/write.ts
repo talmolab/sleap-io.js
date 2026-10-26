@@ -82,16 +82,57 @@ function writeStringDataset(file: any, name: string, values: string[]): void {
 
 const SPAWNED_ON = 0;
 
+/**
+ * Which frame images `saveSlp` / `saveSlpToBytes` embed, as Python sleap-io's
+ * `embed`: `true`/`"all"` (all labeled frames and suggestions), `"user"`,
+ * `"suggestions"`, `"user+suggestions"`, `"source"` (no images; restore the
+ * source video), `false` (no embedding), or an explicit list of
+ * `[video, frameIdx]` pairs. `"all+suggestions"` is kept as an alias of
+ * `"all"`.
+ */
+export type EmbedOption = boolean | string | Array<[Video, number]>;
+
+/**
+ * Thrown when an `onProgress` callback returns `false` during an embedding
+ * save, as Python sleap-io's `ExportCancelled`. Nothing is written.
+ */
+export class ExportCancelled extends Error {
+  constructor(message = "Export cancelled") {
+    super(message);
+    this.name = "ExportCancelled";
+  }
+}
+
 export type SlpWriteOptions = {
-  embed?: boolean | string;
+  embed?: EmbedOption;
   restoreOriginalVideos?: boolean;
   /**
-   * Called as frame images are read and encoded for embedding from a
-   * continuous video (`current` of `total` frames). Already-embedded videos
-   * copy their stored images in one go and don't report.
+   * When embedding, also turn videos with no frames to embed into (empty)
+   * embedded videos that reference the package, so it doesn't point at source
+   * files that may not travel with it. Default `true`, as Python sleap-io's
+   * `embed_all_videos`. `false` leaves those videos as external references.
    */
-  onProgress?: (current: number, total: number, message?: string) => void;
+  embedAllVideos?: boolean;
+  /**
+   * Called as frame images are read and encoded for embedding from a
+   * continuous video (`message` "Embedding frames"), then as embedded images
+   * are written (`message` "Writing frames"), with `current` of `total`.
+   * Already-embedded videos copy their stored images in one go and don't
+   * report reading. Return `false` to cancel: the save throws
+   * {@link ExportCancelled}, as Python's `progress_callback`.
+   */
+  onProgress?: (current: number, total: number, message?: string) => unknown;
 };
+
+/** Report progress; throw {@link ExportCancelled} if the callback says stop. */
+function reportProgress(
+  report: SlpWriteOptions["onProgress"],
+  current: number,
+  total: number,
+  message: string,
+): void {
+  if (report?.(current, total, message) === false) throw new ExportCancelled();
+}
 
 /**
  * A planned embedded video output: copy raw blobs, or (legacy) encode.
@@ -1825,7 +1866,12 @@ async function writeSlpBytes(
   // The plan reads raw blobs from `labels.videos` (the ORIGINAL videos), not the
   // source-mode `writeLabels` copy — but source mode never embeds (plan is null).
   const plan = doEmbed
-    ? await planEmbedding(labels, embedMode, options?.onProgress)
+    ? await planEmbedding(
+        labels,
+        embedMode,
+        options?.onProgress,
+        options?.embedAllVideos ?? true,
+      )
     : null;
 
   const fs = getH5FileSystem(module);
@@ -1834,7 +1880,7 @@ async function writeSlpBytes(
     try {
       writeSlpToFile(file, writeLabels, plan);
       if (includeEmbeddedData && plan && plan.size > 0) {
-        await writeEmbeddedVideoData(file, labels, plan);
+        await writeEmbeddedVideoData(file, labels, plan, options?.onProgress);
       }
     } finally {
       file.close();
@@ -3639,11 +3685,21 @@ export function writeLabelTablesInPlace(
  */
 async function planEmbedding(
   labels: Labels,
-  embedMode: boolean | string,
+  embedMode: EmbedOption,
   onProgress?: SlpWriteOptions["onProgress"],
+  embedAllVideos = true,
 ): Promise<EmbedPlan> {
   const plan: EmbedPlan = new Map();
   const isRealMode = embedMode !== false && embedMode !== "source";
+  if (Array.isArray(embedMode)) {
+    for (const [video] of embedMode) {
+      if (!labels.videos.includes(video)) {
+        throw new Error(
+          `embed lists a frame of a video that isn't in these labels: ${video.filename}`,
+        );
+      }
+    }
+  }
   // Progress spans every frame read from a continuous video, across videos.
   const toEncode = labels.videos.map((video, vi) =>
     isRealMode && video.backend && !isRawCopyable(video)
@@ -3695,6 +3751,25 @@ async function planEmbedding(
         frameData,
       });
     }
+  }
+  // Python's embed_all_videos: a video with NO frames selected still becomes an
+  // embedded (empty) reference to the package. One whose selected frames
+  // couldn't be read (e.g. no open backend) stays external on purpose: making
+  // it "embedded" would hide that its images are missing.
+  if (isRealMode && embedAllVideos) {
+    labels.videos.forEach((video, vi) => {
+      if (plan.has(vi) || isRawCopyable(video)) return;
+      if (selectEmbedFrames(labels, vi, embedMode).length > 0) return;
+      plan.set(vi, {
+        kind: "encode",
+        videoIndex: vi,
+        video,
+        frameNumbers: [],
+        format: "png",
+        channelOrder: (video.backendMetadata?.channel_order as string) ?? "RGB",
+        frameData: new Map(),
+      });
+    });
   }
   return plan;
 }
@@ -3801,10 +3876,11 @@ export type SerializableEmbedPlan = {
  */
 export async function buildSerializableEmbedPlan(
   labels: Labels,
-  embedMode: boolean | string,
+  embedMode: EmbedOption,
   sourcePath: string,
 ): Promise<SerializableEmbedPlan> {
-  const plan = await planEmbedding(labels, embedMode);
+  // Raw-copy only: no empty embedded videos (embedAllVideos) on this path.
+  const plan = await planEmbedding(labels, embedMode, undefined, false);
   const entries: SerializableEmbedEntry[] = [];
   for (const entry of plan.values()) {
     if (entry.kind !== "raw") {
@@ -3851,16 +3927,24 @@ export async function buildSerializableEmbedPlan(
 function selectEmbedFrames(
   labels: Labels,
   videoIndex: number,
-  embedMode: boolean | string,
+  embedMode: EmbedOption,
 ): number[] {
-  const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
   const frameIndices = new Set<number>();
-  // "all" and "all+suggestions" both include every labeled frame; the latter
-  // ALSO includes suggestion-only frames (added in the suggestion loop below).
+  if (Array.isArray(embedMode)) {
+    const video = labels.videos[videoIndex];
+    for (const [v, frameIdx] of embedMode) {
+      if (v === video) frameIndices.add(frameIdx);
+    }
+    return Array.from(frameIndices).sort((a, b) => a - b);
+  }
+  const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
+  // "all" is every labeled frame AND every suggestion, as Python sleap-io
+  // (`embed_videos`); "all+suggestions" is kept as an alias of it.
   const includeAllLabeled = mode === "all" || mode === "all+suggestions";
   const includeSuggestions =
     mode === "suggestions" ||
     mode === "user+suggestions" ||
+    mode === "all" ||
     mode === "all+suggestions";
 
   for (const frame of labels.labeledFrames) {
@@ -3925,7 +4009,12 @@ async function collectEncodedFrames(
       frame = await video.getFrame(frameIdx, { pinned: true, prefetch: false });
     }
     progress.done += 1;
-    progress.report?.(progress.done, progress.total, "Embedding frames");
+    reportProgress(
+      progress.report,
+      progress.done,
+      progress.total,
+      "Embedding frames",
+    );
     if (!frame) {
       // A frame past the video's end has no image to embed; one inside it
       // should — writing the package without it would silently lose it.
@@ -4051,7 +4140,13 @@ async function writeEmbeddedVideoData(
   file: any,
   labels: Labels,
   plan: EmbedPlan,
+  onProgress?: SlpWriteOptions["onProgress"],
 ): Promise<void> {
+  const totalFrames = [...plan.values()].reduce(
+    (n, e) => n + e.frameNumbers.length,
+    0,
+  );
+  let framesWritten = 0;
   for (const entry of plan.values()) {
     const group = `video${entry.videoIndex}`;
     file.create_group(group);
@@ -4090,6 +4185,23 @@ async function writeEmbeddedVideoData(
     if (ds) {
       setStringAttr(ds, "format", entry.format);
       setStringAttr(ds, "channel_order", entry.channelOrder);
+      if (entry.frameNumbers.length === 0) {
+        // An empty embedded video (embedAllVideos) keeps its source's shape and
+        // fps on the dataset, as Python sleap-io's _create_empty_embedded_video.
+        const video = labels.videos[entry.videoIndex];
+        const shape = video.shape;
+        if (shape) {
+          ds.create_attribute("frames", shape[0]);
+          ds.create_attribute("height", shape[1]);
+          ds.create_attribute("width", shape[2]);
+          ds.create_attribute("channels", shape[3]);
+        }
+        if (video.fps != null) ds.create_attribute("fps", video.fps);
+      }
+    }
+    if (totalFrames > 0 && writtenFns.length > 0) {
+      framesWritten += writtenFns.length;
+      reportProgress(onProgress, framesWritten, totalFrames, "Writing frames");
     }
     file.create_dataset({
       name: `${group}/frame_numbers`,

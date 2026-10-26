@@ -149,6 +149,8 @@ export async function saveSlp(
 }
 
 export { saveSlpToBytes } from "../codecs/slp/write.js";
+export { ExportCancelled } from "../codecs/slp/write.js";
+export type { EmbedOption, SlpWriteOptions } from "../codecs/slp/write.js";
 // Main-thread half of the streaming pkg.slp writer (Phase 2 / Task 2.1):
 // write the small label/metadata structure only, skipping the big
 // `video{i}/video` embedded-image datasets — a Web Worker adds those later by
