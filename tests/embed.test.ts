@@ -11,6 +11,7 @@ import {
   SuggestionFrame,
 } from "../src/index.js";
 import { decodeEncoded } from "../src/video/image-decode.js";
+import { GrayscaleVideoBackend } from "../src/video/grayscale-backend.js";
 import type { VideoBackend, VideoFrame } from "../src/video/backend.js";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -345,6 +346,36 @@ describe("Embedding a continuous (mp4-style) backend that returns raw pixels", (
     const decoded = await decodeEncoded(buf!);
     expect(decoded.width).toBe(w);
     expect(decoded.height).toBe(h);
+  });
+
+  it("embeds a grayscale video's 1-channel frames as grayscale PNG", async () => {
+    // GrayscaleVideoBackend returns a 1-channel RawFrame (a plain object, not
+    // an ImageData). The PNG encoder handed it to canvas putImageData, which
+    // only accepts a real RGBA ImageData, so exporting a package of any
+    // grayscale video failed. It's now encoded as a 1-channel PNG, as Python
+    // sleap-io writes.
+    const w = 8;
+    const h = 6;
+    const video = new Video({
+      filename: "gray.mp4",
+      backend: GrayscaleVideoBackend.wrap({
+        inner: rawPixelBackend(w, h, "gray.mp4"),
+        grayscale: true,
+      }),
+    });
+    const labels = makeLabels(video, 3);
+
+    const reloaded = await saveReload(labels, "all", "grayembed");
+    const rv = reloaded.videos[0];
+    expect(rv.hasEmbeddedImages).toBe(true);
+    const buf = await rv.getFrameBuffer(3);
+    expect(buf).not.toBeNull();
+    // IHDR color type 0: a grayscale PNG, not RGBA.
+    expect(buf![25]).toBe(0);
+    // Frame 3's pixels: channel 0 of the source, (3 * 25) % 256 = 75.
+    const decoded = await decodeEncoded(buf!);
+    expect([decoded.width, decoded.height]).toEqual([w, h]);
+    expect((decoded.data as Uint8ClampedArray)[0]).toBe(75);
   });
 
   it("records format='png' even when backendMetadata.format is a codec string", async () => {
