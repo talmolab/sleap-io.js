@@ -16349,6 +16349,15 @@ function writeStringDataset(file, name, values) {
   setStringAttr(ds, "json", json);
 }
 var SPAWNED_ON = 0;
+var ExportCancelled = class extends Error {
+  constructor(message = "Export cancelled") {
+    super(message);
+    this.name = "ExportCancelled";
+  }
+};
+function reportProgress(report, current, total, message) {
+  if (report?.(current, total, message) === false) throw new ExportCancelled();
+}
 function isRawCopyable(video) {
   return !!(video.hasEmbeddedImages && video.backend?.getFrameBuffer);
 }
@@ -17519,14 +17528,19 @@ async function writeSlpBytes(labels, options, { includeEmbeddedData }) {
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
-  const plan = doEmbed ? await planEmbedding(labels, embedMode, options?.onProgress) : null;
+  const plan = doEmbed ? await planEmbedding(
+    labels,
+    embedMode,
+    options?.onProgress,
+    options?.embedAllVideos ?? true
+  ) : null;
   const fs = getH5FileSystem(module);
   const file = new module.File(memPath, "w");
   try {
     try {
       writeSlpToFile(file, writeLabels2, plan);
       if (includeEmbeddedData && plan && plan.size > 0) {
-        await writeEmbeddedVideoData(file, labels, plan);
+        await writeEmbeddedVideoData(file, labels, plan, options?.onProgress);
       }
     } finally {
       file.close();
@@ -18555,9 +18569,18 @@ function writeLabelTablesInPlace(file, update) {
     }
   }
 }
-async function planEmbedding(labels, embedMode, onProgress) {
+async function planEmbedding(labels, embedMode, onProgress, embedAllVideos = true) {
   const plan = /* @__PURE__ */ new Map();
   const isRealMode = embedMode !== false && embedMode !== "source";
+  if (Array.isArray(embedMode)) {
+    for (const [video] of embedMode) {
+      if (!labels.videos.includes(video)) {
+        throw new Error(
+          `embed lists a frame of a video that isn't in these labels: ${video.filename}`
+        );
+      }
+    }
+  }
   const toEncode = labels.videos.map(
     (video, vi) => isRealMode && video.backend && !isRawCopyable(video) ? selectEmbedFrames(labels, vi, embedMode) : []
   );
@@ -18599,10 +18622,25 @@ async function planEmbedding(labels, embedMode, onProgress) {
       });
     }
   }
+  if (isRealMode && embedAllVideos) {
+    labels.videos.forEach((video, vi) => {
+      if (plan.has(vi) || isRawCopyable(video)) return;
+      if (selectEmbedFrames(labels, vi, embedMode).length > 0) return;
+      plan.set(vi, {
+        kind: "encode",
+        videoIndex: vi,
+        video,
+        frameNumbers: [],
+        format: "png",
+        channelOrder: video.backendMetadata?.channel_order ?? "RGB",
+        frameData: /* @__PURE__ */ new Map()
+      });
+    });
+  }
   return plan;
 }
 async function buildSerializableEmbedPlan(labels, embedMode, sourcePath) {
-  const plan = await planEmbedding(labels, embedMode);
+  const plan = await planEmbedding(labels, embedMode, void 0, false);
   const entries = [];
   for (const entry of plan.values()) {
     if (entry.kind !== "raw") {
@@ -18630,10 +18668,17 @@ async function buildSerializableEmbedPlan(labels, embedMode, sourcePath) {
   return { sourcePath, entries };
 }
 function selectEmbedFrames(labels, videoIndex, embedMode) {
-  const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
   const frameIndices = /* @__PURE__ */ new Set();
+  if (Array.isArray(embedMode)) {
+    const video = labels.videos[videoIndex];
+    for (const [v, frameIdx] of embedMode) {
+      if (v === video) frameIndices.add(frameIdx);
+    }
+    return Array.from(frameIndices).sort((a, b) => a - b);
+  }
+  const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
   const includeAllLabeled = mode === "all" || mode === "all+suggestions";
-  const includeSuggestions = mode === "suggestions" || mode === "user+suggestions" || mode === "all+suggestions";
+  const includeSuggestions = mode === "suggestions" || mode === "user+suggestions" || mode === "all" || mode === "all+suggestions";
   for (const frame of labels.labeledFrames) {
     if (labels.videos.indexOf(frame.video) !== videoIndex) continue;
     let include = false;
@@ -18665,7 +18710,12 @@ async function collectEncodedFrames(video, sortedFrames, progress) {
       frame = await video.getFrame(frameIdx, { pinned: true, prefetch: false });
     }
     progress.done += 1;
-    progress.report?.(progress.done, progress.total, "Embedding frames");
+    reportProgress(
+      progress.report,
+      progress.done,
+      progress.total,
+      "Embedding frames"
+    );
     if (!frame) {
       if (frameCount == null || frameIdx < frameCount)
         unreadable.push(frameIdx);
@@ -18727,7 +18777,12 @@ function writeEmbeddedVideosJson(file, labels, plan) {
   });
   file.create_dataset({ name: "videos_json", data: payload });
 }
-async function writeEmbeddedVideoData(file, labels, plan) {
+async function writeEmbeddedVideoData(file, labels, plan, onProgress) {
+  const totalFrames = [...plan.values()].reduce(
+    (n, e) => n + e.frameNumbers.length,
+    0
+  );
+  let framesWritten = 0;
   for (const entry of plan.values()) {
     const group = `video${entry.videoIndex}`;
     file.create_group(group);
@@ -18743,6 +18798,21 @@ async function writeEmbeddedVideoData(file, labels, plan) {
     if (ds) {
       setStringAttr(ds, "format", entry.format);
       setStringAttr(ds, "channel_order", entry.channelOrder);
+      if (entry.frameNumbers.length === 0) {
+        const video = labels.videos[entry.videoIndex];
+        const shape = video.shape;
+        if (shape) {
+          ds.create_attribute("frames", shape[0]);
+          ds.create_attribute("height", shape[1]);
+          ds.create_attribute("width", shape[2]);
+          ds.create_attribute("channels", shape[3]);
+        }
+        if (video.fps != null) ds.create_attribute("fps", video.fps);
+      }
+    }
+    if (totalFrames > 0 && writtenFns.length > 0) {
+      framesWritten += writtenFns.length;
+      reportProgress(onProgress, framesWritten, totalFrames, "Writing frames");
     }
     file.create_dataset({
       name: `${group}/frame_numbers`,
@@ -25604,6 +25674,7 @@ export {
   createVideoBackend,
   readSlpStreaming,
   _registerFileWriter,
+  ExportCancelled,
   SlpStreamWriter,
   openSlpWriter,
   saveSlpMergedFromStores,

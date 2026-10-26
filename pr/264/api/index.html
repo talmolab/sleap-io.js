@@ -854,7 +854,15 @@
 <span class="p">});</span>
 </code></pre></div>
 <ul>
-<li><code>options.embed</code>: embed frames (<code>true</code>/<code>"all"</code>, <code>"user"</code>, <code>"suggestions"</code>, <code>"user+suggestions"</code>, or <code>"source"</code> to restore source video paths before writing).</li>
+<li><code>options.embed</code>: which frame images to embed, as Python sleap-io's <code>embed</code>:</li>
+<li><code>true</code> / <code>"all"</code>: every labeled frame and every suggestion (<code>"all+suggestions"</code> is an alias)</li>
+<li><code>"user"</code>: user-labeled frames (user instances, negative frames, user centroids/boxes/masks/ROIs)</li>
+<li><code>"suggestions"</code> / <code>"user+suggestions"</code></li>
+<li>an explicit list of <code>[video, frameIdx]</code> pairs: exactly those frames</li>
+<li><code>"source"</code>: no images; restore source video paths before writing</li>
+<li><code>false</code> (default): no embedding (already-embedded images are still kept)</li>
+<li><code>options.embedAllVideos</code> (default <code>true</code>, as Python's <code>embed_all_videos</code>): when embedding, a video with no frames to embed becomes an empty embedded video referencing the package (keeping its shape and source video), so the package is portable. <code>false</code> leaves such videos as external references.</li>
+<li><code>options.onProgress(current, total, message)</code>: called as frames are read (<code>"Embedding frames"</code>) and written (<code>"Writing frames"</code>). Return <code>false</code> to cancel: the save throws <code>ExportCancelled</code>.</li>
 <li><code>options.restoreOriginalVideos</code> (default <code>true</code>): keep original video paths.</li>
 </ul>
 <h3 id="saveslptobyteslabels-options"><code>saveSlpToBytes(labels, options)</code><a class="headerlink" href="#saveslptobyteslabels-options" title="Permanent link">&para;</a></h3>
@@ -863,7 +871,7 @@
 </code></pre></div>
 <ul>
 <li><code>labels</code>: <code>Labels</code> object to serialize.</li>
-<li><code>options.embed</code>: embed frames (<code>true</code>, <code>false</code>, or dataset name).</li>
+<li><code>options</code>: the same <code>embed</code>, <code>embedAllVideos</code>, <code>onProgress</code> and <code>restoreOriginalVideos</code> options as <code>saveSlp</code>.</li>
 <li>Returns <code>Promise&lt;Uint8Array&gt;</code>.</li>
 </ul>
 <h3 id="loadvideosource-options"><code>loadVideo(source, options)</code><a class="headerlink" href="#loadvideosource-options" title="Permanent link">&para;</a></h3>
