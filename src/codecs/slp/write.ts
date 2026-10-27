@@ -1751,7 +1751,10 @@ export async function saveSlpToBytes(
  * Shares its setup (embed-mode resolution, lazy materialization, the
  * `embed:"source"` rebuild, and embedding plan computation) with
  * `saveSlpToBytes` via the private `writeSlpBytes` helper — the two functions
- * differ only in whether `writeEmbeddedVideoData` runs afterward.
+ * differ only in whether `writeEmbeddedVideoData` runs afterward, and in that
+ * this one plans a new embed of a continuous video WITHOUT reading its frames
+ * (the worker encodes and appends them; see `appendEncodedVideos` in
+ * stream-embed.ts).
  *
  * @returns SLP bytes containing the structure only. NOT a directly-loadable
  *   embedded pkg.slp on its own if the plan embeds anything (the videos_json
@@ -1865,12 +1868,15 @@ async function writeSlpBytes(
   // Plan which videos to embed (raw-copy preserved ones + any new-embed target).
   // The plan reads raw blobs from `labels.videos` (the ORIGINAL videos), not the
   // source-mode `writeLabels` copy — but source mode never embeds (plan is null).
+  // A structure-only save never writes the images, so it plans without reading
+  // them; the streaming writer embeds them afterwards.
   const plan = doEmbed
     ? await planEmbedding(
         labels,
         embedMode,
         options?.onProgress,
         options?.embedAllVideos ?? true,
+        { readFrames: includeEmbeddedData },
       )
     : null;
 
@@ -3688,6 +3694,7 @@ async function planEmbedding(
   embedMode: EmbedOption,
   onProgress?: SlpWriteOptions["onProgress"],
   embedAllVideos = true,
+  { readFrames = true }: { readFrames?: boolean } = {},
 ): Promise<EmbedPlan> {
   const plan: EmbedPlan = new Map();
   const isRealMode = embedMode !== false && embedMode !== "source";
@@ -3725,6 +3732,24 @@ async function planEmbedding(
         frameNumbers,
         format: video.backend!.embeddedFormat ?? "png",
         channelOrder: video.backend!.embeddedChannelOrder ?? "RGB",
+      });
+    } else if (isRealMode && video.backend && !readFrames) {
+      // Plan only (the streaming writer reads and encodes later, in a worker):
+      // every selected frame inside the video, as PNG — what reading would
+      // produce, since frames past the end are skipped and any other frame
+      // that can't be read fails the save.
+      const frameCount = video.shape?.[0];
+      const frameNumbers = toEncode[vi].filter(
+        (f) => frameCount == null || f < frameCount,
+      );
+      if (frameNumbers.length === 0) continue;
+      plan.set(vi, {
+        kind: "encode",
+        videoIndex: vi,
+        video,
+        frameNumbers,
+        format: "png",
+        channelOrder: (video.backendMetadata?.channel_order as string) ?? "RGB",
       });
     } else if (isRealMode && video.backend) {
       // New-embed of a continuous video: legacy getFrame+encode path. Frames a
@@ -3836,9 +3861,40 @@ export type SerializableEmbedEntry = {
 };
 
 /**
+ * Serializable projection of one NEW-embed ("encode") {@link EmbedPlanEntry}:
+ * a continuous video (e.g. an mp4) whose frames are read on the main thread
+ * and PNG-encoded + appended by the streaming writer's worker (see
+ * {@link appendEncodedVideos}). Only returned when
+ * {@link buildSerializableEmbedPlan} is called with `allowEncode`.
+ */
+export type SerializableEncodeEntry = {
+  /** This video's position in `labels.videos` (and its `video{i}` group). */
+  videoIndex: number;
+  /** Source frame numbers to embed, sorted. Empty for an empty embedded video. */
+  frameNumbers: number[];
+  /** Always "png": every frame is stored as a PNG. */
+  format: string;
+  /** Channel order recorded for the stored images, e.g. "RGB". */
+  channelOrder: string;
+  /** Plain-object `source_video` lineage, or `null` (see the raw entry). */
+  sourceVideoJson: Record<string, unknown> | null;
+  /**
+   * For an empty embedded video (`embedAllVideos`), the source's shape and
+   * fps to record on the dataset, as the in-memory writer does; else `null`.
+   */
+  emptyAttrs: {
+    frames: number;
+    height: number;
+    width: number;
+    channels: number;
+    fps: number | null;
+  } | null;
+};
+
+/**
  * Fully `structuredClone`-safe embed plan handed to the streaming writer's Web
- * Worker (Task 1.1). Scope is a straight RE-SAVE of an already-embedded
- * `pkg.slp` via the raw-copy path ONLY — see
+ * Worker (Task 1.1): raw-copy `entries` for already-embedded videos, plus
+ * (opt-in) `encodeEntries` for new embeds of continuous videos — see
  * {@link buildSerializableEmbedPlan}.
  */
 export type SerializableEmbedPlan = {
@@ -3851,38 +3907,84 @@ export type SerializableEmbedPlan = {
    */
   sourcePath: string;
   entries: SerializableEmbedEntry[];
+  /**
+   * New embeds of continuous videos, written by `appendEncodedVideos`.
+   * Always empty unless {@link buildSerializableEmbedPlan} was called with
+   * `allowEncode`.
+   */
+  encodeEntries: SerializableEncodeEntry[];
 };
 
 /**
  * Project a `planEmbedding` result into a worker-transportable
- * {@link SerializableEmbedPlan}, for the RE-SAVE/raw-copy path ONLY (Task 1.1
- * of the streaming pkg.slp writer). Reuses `planEmbedding` for video
+ * {@link SerializableEmbedPlan} (Task 1.1 of the streaming pkg.slp writer).
+ * Reuses `planEmbedding` for video
  * selection/frameNumbers (no re-derivation of that logic), then strips each
  * raw entry down to plain data a worker can act on without the live `Labels`/
  * `Video`/backend objects.
  *
- * Throws if `planEmbedding` selected a `kind: "encode"` (new-embed of a
- * continuous video) entry for any video — the streaming writer's worker half
- * only knows how to copy an already-embedded video's stored blobs; new-embed
- * is a deferred follow-up (see the {@link EmbedPlanEntry} doc).
+ * By default, throws if `planEmbedding` selected a `kind: "encode"` (new-embed
+ * of a continuous video) entry for any video. With `allowEncode`, those are
+ * returned as `encodeEntries` instead (planned without reading any frame), for
+ * `appendEncodedVideos` (stream-embed.ts) to read, encode and append.
  *
  * @param labels Labels to save (already-open embedded video backends).
  * @param embedMode Same `embed` option as `saveSlpToBytes`/`planEmbedding`.
  * @param sourcePath On-disk path of the SOURCE pkg.slp; the worker opens it
- *   via its own read bridge to copy the embedded groups from.
+ *   via its own read bridge to copy the embedded groups from. Unused when
+ *   there are no raw entries.
  * @throws Error if any selected video would use the new-embed ("encode")
- *   path, or a raw-copyable video's backend exposes no `dataset` to locate
- *   its source embedded group by.
+ *   path without `allowEncode`, or a raw-copyable video's backend exposes no
+ *   `dataset` to locate its source embedded group by.
  */
 export async function buildSerializableEmbedPlan(
   labels: Labels,
   embedMode: EmbedOption,
   sourcePath: string,
+  options: {
+    /**
+     * Also plan new embeds of continuous videos (`encodeEntries`) instead of
+     * throwing, without reading their frames. Use with the same `embed` and
+     * `embedAllVideos` as the structure write, so the two agree.
+     */
+    allowEncode?: boolean;
+    /** As {@link SlpWriteOptions.embedAllVideos}; only with `allowEncode`. */
+    embedAllVideos?: boolean;
+  } = {},
 ): Promise<SerializableEmbedPlan> {
-  // Raw-copy only: no empty embedded videos (embedAllVideos) on this path.
-  const plan = await planEmbedding(labels, embedMode, undefined, false);
+  // Raw-copy only (the default): no empty embedded videos on this path.
+  const plan = await planEmbedding(
+    labels,
+    embedMode,
+    undefined,
+    options.allowEncode ? (options.embedAllVideos ?? true) : false,
+    { readFrames: false },
+  );
   const entries: SerializableEmbedEntry[] = [];
+  const encodeEntries: SerializableEncodeEntry[] = [];
   for (const entry of plan.values()) {
+    if (entry.kind === "encode" && options.allowEncode) {
+      const video = labels.videos[entry.videoIndex];
+      const shape = video.shape;
+      encodeEntries.push({
+        videoIndex: entry.videoIndex,
+        frameNumbers: [...entry.frameNumbers],
+        format: entry.format,
+        channelOrder: entry.channelOrder,
+        sourceVideoJson: sourceVideoDict(video),
+        emptyAttrs:
+          entry.frameNumbers.length === 0 && shape
+            ? {
+                frames: shape[0],
+                height: shape[1],
+                width: shape[2],
+                channels: shape[3],
+                fps: video.fps ?? null,
+              }
+            : null,
+      });
+      continue;
+    }
     if (entry.kind !== "raw") {
       throw new Error(
         `buildSerializableEmbedPlan: video${entry.videoIndex} would use the ` +
@@ -3915,7 +4017,7 @@ export async function buildSerializableEmbedPlan(
       sourceVideoJson: sourceVideoDict(entry.video),
     });
   }
-  return { sourcePath, entries };
+  return { sourcePath, entries, encodeEntries };
 }
 
 /**

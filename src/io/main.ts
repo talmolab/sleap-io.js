@@ -171,14 +171,23 @@ export type {
   MergeStoresOptions,
 } from "../codecs/slp/write.js";
 // Serializable embed plan for the streaming pkg.slp writer's Web Worker half
-// (Task 1.1, re-save/raw-copy path only) — the app needs this to build a
-// structuredClone-safe description of what to embed before handing off to the
-// worker.
+// (Task 1.1: raw copies, plus new embeds with `allowEncode`) — the app needs
+// this to build a structuredClone-safe description of what to embed before
+// handing off to the worker.
 export { buildSerializableEmbedPlan } from "../codecs/slp/write.js";
 export type {
   SerializableEmbedEntry,
+  SerializableEncodeEntry,
   SerializableEmbedPlan,
 } from "../codecs/slp/write.js";
+// Streaming new-embed: read each frame of a continuous video and let the
+// writer's worker PNG-encode and append it straight to disk.
+export { appendEncodedVideos } from "../codecs/slp/stream-embed.js";
+export type {
+  AppendEncodedVideosOptions,
+  EncodeFramePayload,
+  EncodedVideoSink,
+} from "../codecs/slp/stream-embed.js";
 // Fast in-place label save (edit re-save): patch ONLY the small label tables +
 // the /metadata json attr of an existing .pkg.slp, never touching the multi-GB
 // embedded `video{i}/video` groups — ~100x faster edit-saves on network shares.

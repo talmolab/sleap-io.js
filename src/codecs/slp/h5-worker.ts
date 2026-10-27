@@ -8,6 +8,8 @@
  * @module
  */
 
+import { EMBED_ENCODE_WORKER_CODE } from "./embed-encode-worker.js";
+
 /**
  * Worker code as a string for inline blob creation.
  * This allows the worker to be bundled with the library without requiring
@@ -184,6 +186,37 @@ self.onmessage = async function(e) {
         respond(id, appendResult);
         break;
 
+      // Streaming new-embed (embed-encode-worker.ts): one video at a time,
+      // begin -> appendEncodedFrame per frame -> end. Queued so frames are
+      // encoded and appended strictly in arrival order even though encoding
+      // awaits (this handler is async, so messages would otherwise interleave).
+      case 'beginEncodedVideo':
+        queueEncode(id, function() {
+          if (!currentDestFile) throw new Error('beginEncodedVideo: no dest file open (call openWrite or openAppend first)');
+          encodeState = beginEncodedVideoEnc(currentDestFile, payload.entry);
+          encodeState.collapseToGray = !!payload.collapseToGray;
+          return { success: true };
+        });
+        break;
+
+      case 'appendEncodedFrame':
+        queueEncode(id, async function() {
+          if (!encodeState) throw new Error('appendEncodedFrame: no video begun (call beginEncodedVideo first)');
+          var bytes = await encodeFrameEnc(payload.frame, encodeState.collapseToGray);
+          appendEncodedBytesEnc(encodeState, payload.frameIdx, bytes);
+          return { success: true };
+        });
+        break;
+
+      case 'endEncodedVideo':
+        queueEncode(id, function() {
+          if (!encodeState) throw new Error('endEncodedVideo: no video begun (call beginEncodedVideo first)');
+          var endResult = endEncodedVideoEnc(currentDestFile, encodeState);
+          encodeState = null;
+          return { success: true, framesWritten: endResult.framesWritten };
+        });
+        break;
+
       case 'openWrite':
         const openWriteResult = openWrite(
           payload.sab,
@@ -261,6 +294,20 @@ self.onmessage = async function(e) {
     respond(id, { success: false, error: errorMessage });
   }
 };
+
+// Streaming new-embed state: the video being written, and the chain that
+// serializes its queued messages.
+let encodeState = null;
+let encodeChain = Promise.resolve();
+
+function queueEncode(id, fn) {
+  encodeChain = encodeChain.then(fn).then(
+    function(result) { respond(id, result); },
+    function(error) {
+      respond(id, { success: false, error: (error && error.message) || String(error) });
+    }
+  );
+}
 
 function respond(id, data, transferables) {
   if (transferables) {
@@ -1103,6 +1150,8 @@ function appendEmbeddedVideos(entries) {
   return { success: true, perVideo: perVideo };
 }
 
+${EMBED_ENCODE_WORKER_CODE}
+
 // HDF5 datatype class ids used by the in-place writer port (H5Tget_class).
 var H5T_ENUM_CLASS = 8;
 var H5T_FLOAT_CLASS = 1;
@@ -1452,6 +1501,7 @@ function warnCleanup(op, path, e) {
 // second openAppend without an intervening close doesn't leak the first pair of
 // MEMFS mounts.
 function closeAppendFiles() {
+  encodeState = null;
   if (currentSourceFile) {
     try { currentSourceFile.close(); } catch (e) {}
     currentSourceFile = null;
@@ -1559,6 +1609,9 @@ export type H5WorkerMessageType =
   | "openRange"
   | "openAppend"
   | "appendEmbeddedVideos"
+  | "beginEncodedVideo"
+  | "appendEncodedFrame"
+  | "endEncodedVideo"
   | "openWrite"
   | "openWriteOpfs"
   | "openAppendOpfs"
