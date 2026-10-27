@@ -849,7 +849,10 @@ declare function saveSlpToBytes(labels: Labels, options?: SlpWriteOptions): Prom
  * Shares its setup (embed-mode resolution, lazy materialization, the
  * `embed:"source"` rebuild, and embedding plan computation) with
  * `saveSlpToBytes` via the private `writeSlpBytes` helper — the two functions
- * differ only in whether `writeEmbeddedVideoData` runs afterward.
+ * differ only in whether `writeEmbeddedVideoData` runs afterward, and in that
+ * this one plans a new embed of a continuous video WITHOUT reading its frames
+ * (the worker encodes and appends them; see `appendEncodedVideos` in
+ * stream-embed.ts).
  *
  * @returns SLP bytes containing the structure only. NOT a directly-loadable
  *   embedded pkg.slp on its own if the plan embeds anything (the videos_json
@@ -1158,9 +1161,39 @@ type SerializableEmbedEntry = {
     sourceVideoJson: Record<string, unknown> | null;
 };
 /**
+ * Serializable projection of one NEW-embed ("encode") {@link EmbedPlanEntry}:
+ * a continuous video (e.g. an mp4) whose frames are read on the main thread
+ * and PNG-encoded + appended by the streaming writer's worker (see
+ * {@link appendEncodedVideos}). Only returned when
+ * {@link buildSerializableEmbedPlan} is called with `allowEncode`.
+ */
+type SerializableEncodeEntry = {
+    /** This video's position in `labels.videos` (and its `video{i}` group). */
+    videoIndex: number;
+    /** Source frame numbers to embed, sorted. Empty for an empty embedded video. */
+    frameNumbers: number[];
+    /** Always "png": every frame is stored as a PNG. */
+    format: string;
+    /** Channel order recorded for the stored images, e.g. "RGB". */
+    channelOrder: string;
+    /** Plain-object `source_video` lineage, or `null` (see the raw entry). */
+    sourceVideoJson: Record<string, unknown> | null;
+    /**
+     * For an empty embedded video (`embedAllVideos`), the source's shape and
+     * fps to record on the dataset, as the in-memory writer does; else `null`.
+     */
+    emptyAttrs: {
+        frames: number;
+        height: number;
+        width: number;
+        channels: number;
+        fps: number | null;
+    } | null;
+};
+/**
  * Fully `structuredClone`-safe embed plan handed to the streaming writer's Web
- * Worker (Task 1.1). Scope is a straight RE-SAVE of an already-embedded
- * `pkg.slp` via the raw-copy path ONLY — see
+ * Worker (Task 1.1): raw-copy `entries` for already-embedded videos, plus
+ * (opt-in) `encodeEntries` for new embeds of continuous videos — see
  * {@link buildSerializableEmbedPlan}.
  */
 type SerializableEmbedPlan = {
@@ -1173,29 +1206,103 @@ type SerializableEmbedPlan = {
      */
     sourcePath: string;
     entries: SerializableEmbedEntry[];
+    /**
+     * New embeds of continuous videos, written by `appendEncodedVideos`.
+     * Always empty unless {@link buildSerializableEmbedPlan} was called with
+     * `allowEncode`.
+     */
+    encodeEntries: SerializableEncodeEntry[];
 };
 /**
  * Project a `planEmbedding` result into a worker-transportable
- * {@link SerializableEmbedPlan}, for the RE-SAVE/raw-copy path ONLY (Task 1.1
- * of the streaming pkg.slp writer). Reuses `planEmbedding` for video
+ * {@link SerializableEmbedPlan} (Task 1.1 of the streaming pkg.slp writer).
+ * Reuses `planEmbedding` for video
  * selection/frameNumbers (no re-derivation of that logic), then strips each
  * raw entry down to plain data a worker can act on without the live `Labels`/
  * `Video`/backend objects.
  *
- * Throws if `planEmbedding` selected a `kind: "encode"` (new-embed of a
- * continuous video) entry for any video — the streaming writer's worker half
- * only knows how to copy an already-embedded video's stored blobs; new-embed
- * is a deferred follow-up (see the {@link EmbedPlanEntry} doc).
+ * By default, throws if `planEmbedding` selected a `kind: "encode"` (new-embed
+ * of a continuous video) entry for any video. With `allowEncode`, those are
+ * returned as `encodeEntries` instead (planned without reading any frame), for
+ * `appendEncodedVideos` (stream-embed.ts) to read, encode and append.
  *
  * @param labels Labels to save (already-open embedded video backends).
  * @param embedMode Same `embed` option as `saveSlpToBytes`/`planEmbedding`.
  * @param sourcePath On-disk path of the SOURCE pkg.slp; the worker opens it
- *   via its own read bridge to copy the embedded groups from.
+ *   via its own read bridge to copy the embedded groups from. Unused when
+ *   there are no raw entries.
  * @throws Error if any selected video would use the new-embed ("encode")
- *   path, or a raw-copyable video's backend exposes no `dataset` to locate
- *   its source embedded group by.
+ *   path without `allowEncode`, or a raw-copyable video's backend exposes no
+ *   `dataset` to locate its source embedded group by.
  */
-declare function buildSerializableEmbedPlan(labels: Labels, embedMode: EmbedOption, sourcePath: string): Promise<SerializableEmbedPlan>;
+declare function buildSerializableEmbedPlan(labels: Labels, embedMode: EmbedOption, sourcePath: string, options?: {
+    /**
+     * Also plan new embeds of continuous videos (`encodeEntries`) instead of
+     * throwing, without reading their frames. Use with the same `embed` and
+     * `embedAllVideos` as the structure write, so the two agree.
+     */
+    allowEncode?: boolean;
+    /** As {@link SlpWriteOptions.embedAllVideos}; only with `allowEncode`. */
+    embedAllVideos?: boolean;
+}): Promise<SerializableEmbedPlan>;
+
+/**
+ * Main-thread half of the streaming NEW-embed: read each frame a
+ * {@link SerializableEncodeEntry} embeds and hand it to the streaming writer's
+ * worker, which PNG-encodes it and appends it straight to the destination file
+ * (`embed-encode-worker.ts`). The UI thread only reads frames (an mp4 already
+ * decodes in its own worker) and passes them on, so a long export never holds
+ * it, and only a few frames are ever in memory at once.
+ *
+ * Order of use: write the structure with `saveSlpStructureToBytes`, open the
+ * written file with `StreamingH5Writer.openWrite` (or `openAppend` when raw
+ * entries need copying too), then call {@link appendEncodedVideos} with the
+ * `encodeEntries` of `buildSerializableEmbedPlan(..., { allowEncode: true })`.
+ *
+ * @module
+ */
+
+/** One frame handed to the worker. Its buffer or bitmap is transferred. */
+type EncodeFramePayload = {
+    kind: "bitmap";
+    bitmap: ImageBitmap;
+} | {
+    kind: "pixels";
+    data: Uint8Array;
+    width: number;
+    height: number;
+    channels: number;
+    /** RGBA by construction (an `ImageData`): the worker drops the alpha. */
+    rgba: boolean;
+} | {
+    kind: "png";
+    bytes: Uint8Array;
+};
+/** Where encoded videos are written; `StreamingH5Writer` implements it. */
+interface EncodedVideoSink {
+    beginEncodedVideo(entry: SerializableEncodeEntry, collapseToGray: boolean): Promise<void>;
+    appendEncodedFrame(frameIdx: number, frame: EncodeFramePayload): Promise<void>;
+    endEncodedVideo(): Promise<{
+        framesWritten: number;
+    }>;
+}
+type AppendEncodedVideosOptions = {
+    /**
+     * As {@link SlpWriteOptions.onProgress}: called with frames done of all
+     * frames (`message` "Embedding frames"); return `false` to cancel, which
+     * throws {@link ExportCancelled}.
+     */
+    onProgress?: SlpWriteOptions["onProgress"];
+    /** Frames handed to the worker but not yet written (default 4). */
+    maxInFlight?: number;
+};
+/**
+ * Read, hand over and append every frame of each new-embed entry, one video at
+ * a time, through `sink` (an open `StreamingH5Writer`). Throws if any frame
+ * can't be read or written (the caller discards the partial file), and
+ * {@link ExportCancelled} when `onProgress` returns `false`.
+ */
+declare function appendEncodedVideos(sink: EncodedVideoSink, labels: Labels, entries: SerializableEncodeEntry[], options?: AppendEncodedVideosOptions): Promise<void>;
 
 /**
  * Streaming HDF5 file access via Web Worker.
@@ -1487,6 +1594,22 @@ declare class StreamingH5Writer {
      * mounts via `closeAppendFiles`).
      */
     appendEmbeddedVideos(entries: SerializableEmbedEntry[], onProgress?: (done: number, total: number) => void): Promise<H5WorkerResponse>;
+    /**
+     * Streaming new-embed (see `appendEncodedVideos`): start writing
+     * `entry`'s `video{i}` group in the open DEST file. `collapseToGray` makes
+     * the worker keep one channel of each frame, as a grayscale video's reads.
+     */
+    beginEncodedVideo(entry: SerializableEncodeEntry, collapseToGray: boolean): Promise<void>;
+    /**
+     * PNG-encode (in the worker) and append one frame of the video begun with
+     * {@link beginEncodedVideo}. The frame's bitmap or buffer is transferred, so
+     * the caller must not use it afterwards.
+     */
+    appendEncodedFrame(frameIdx: number, frame: EncodeFramePayload): Promise<void>;
+    /** Finish the begun video: its frame index datasets and attributes. */
+    endEncodedVideo(): Promise<{
+        framesWritten: number;
+    }>;
     /**
      * SINGLE-file write B-seam for the in-place label save: open ONLY the DEST
      * file (`destPath`, backed by `destSink`) in h5wasm append mode `"a"` (no
@@ -3946,4 +4069,4 @@ interface StreamingSlpOptions {
 }
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { openStreamingH5 as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, type CreateVideoBackendOptions as J, CropVideoBackend as K, LibavH264Decoder as L, type CropWrapOptions as M, GrayscaleVideoBackend as N, type GrayscaleWrapOptions as O, type PaletteName as P, parseGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, urlFromConfirmation as T, UnsupportedVideoFormatError as U, type VideoOptions as V, checkDownloadHost as W, openGdrive as X, DEFAULT_MAX_BYTES as Y, StreamingH5File as Z, StreamingH5Writer as _, type RenderOptions as a, openSlpWriter as a$, openH5Worker as a0, isStreamingSupported as a1, isRangeSource as a2, serviceRangeBridge as a3, serviceWriteBridge as a4, serviceTruncateBridge as a5, type StreamingH5Source as a6, type RangeSource as a7, type RangeSink as a8, readSlpStreaming as a9, configureWebDemuxer as aA, isWebDemuxerConfigured as aB, type AviVideoOptions as aC, AviVideoBackend as aD, StreamingHdf5VideoBackend as aE, type ImageVideoOptions as aF, computePrefetchWindow as aG, ImageVideoBackend as aH, loadSlp as aI, saveSlp as aJ, loadAnalysisH5 as aK, saveAnalysisH5 as aL, saveAnalysisH5ToBytes as aM, loadNwb as aN, loadSlpSet as aO, saveSlpSet as aP, loadVideo as aQ, loadLabelImages as aR, setLabelImageFileReader as aS, type PagesAs as aT, type LoadLabelImagesOptions as aU, type LabelImageFileReader as aV, saveSlpToBytes as aW, ExportCancelled as aX, type EmbedOption as aY, type SlpWriteOptions as aZ, saveSlpStructureToBytes as a_, Mp4BoxVideoBackend as aa, type Mp4Sample as ab, type SerializableDecoderConfig as ac, type Mp4ParseResult as ad, type FeedEntry as ae, type ReadRegion as af, findKeyframeBefore as ag, planDecodeRange as ah, computeCacheWindow as ai, selectFeedSamples as aj, planReadRegions as ak, readSamplesByDecodeOrder as al, nextUncached as am, shouldDecodeAhead as an, type ByteSourceDescriptor as ao, type WorkerInMessage as ap, type WorkerOutMessage as aq, MP4_DECODE_WORKER_CODE as ar, createDecodeWorker as as, isWorkerDecodeAvailable as at, type WorkerLike as au, type WorkerBackendParams as av, WorkerMp4BoxBackend as aw, type MediaBunnyOptions as ax, MediaBunnyVideoBackend as ay, type WebDemuxerConfig as az, type RGB as b, type CocoImage as b$, SlpStreamWriter as b0, saveSlpMergedFromStores as b1, saveSlpMergedToSink as b2, type SlpWriteHeader as b3, type AppendStoreOptions as b4, type SlpWriteSink as b5, type MergeStoresOptions as b6, buildSerializableEmbedPlan as b7, type SerializableEmbedEntry as b8, type SerializableEmbedPlan as b9, CLOUD_SCHEMES as bA, GDRIVE_HOSTS as bB, SENSITIVE_HEADERS as bC, SENSITIVE_QUERY_PARAMS as bD, RETRYABLE_STATUSES as bE, isUrl as bF, isGdriveUrl as bG, redactUrl as bH, redactedCauseSummary as bI, RemoteIOError as bJ, type ResolvedUrl as bK, resolveUrl as bL, statusToMessage as bM, raiseRemote as bN, identityHeaders as bO, stripCrossOriginHeaders as bP, withRetries as bQ, parseRetryAfterMs as bR, fetchRetrying as bS, headOrRangeProbe as bT, type GeoJSONFeature as bU, type GeoJSONFeatureCollection as bV, roisToGeoJSON as bW, roisFromGeoJSON as bX, writeGeoJSON as bY, readGeoJSON as bZ, type CocoCategory as b_, buildLabelTableRows as ba, buildLabelTableUpdate as bb, buildMetadataJson as bc, buildTracksJson as bd, buildSuggestionsJson as be, buildVideoSignatures as bf, buildExpectedSidecars as bg, checkInPlaceWritable as bh, onDiskTableFromMeta as bi, writeLabelTablesInPlace as bj, type LabelTable as bk, type LabelTableRows as bl, type LabelTableUpdate as bm, type OnDiskMember as bn, type OnDiskTable as bo, type OnDiskTables as bp, type OnDiskSidecars as bq, type InPlaceWritable as br, type DatasetMetaLike as bs, isAnalysisH5File as bt, readNwb as bu, isNwbFile as bv, labelsToCsv as bw, saveLabelsCsv as bx, type CsvExportOptions as by, URL_SCHEMES as bz, type RawLabelImage as c, collectTracks as c$, type CocoRle as c0, type CocoSegmentation as c1, type CocoAnnotation as c2, type CocoJson as c3, isCocoData as c4, parseCocoJson as c5, createSkeletonFromCategory as c6, decodeKeypoints as c7, decodeCompressedRleCounts as c8, decodeCocoRle as c9, readTrainingConfigSkeletons as cA, readTrainingConfigSkeleton as cB, isTrainingConfig as cC, type RGBA as cD, type ColorSpec as cE, type ColorScheme as cF, type MarkerShape as cG, type Overlay as cH, type VideoOverlay as cI, NAMED_COLORS as cJ, PALETTES as cK, getPalette as cL, resolveColor as cM, rgbToCSS as cN, determineColorScheme as cO, drawCircle as cP, drawSquare as cQ, drawDiamond as cR, drawTriangle as cS, drawCross as cT, drawTrails as cU, getMarkerFunction as cV, MARKER_FUNCTIONS as cW, type DrawTrailsOptions as cX, resolveTrailNode as cY, computeTrails as cZ, nTrailPaletteColors as c_, decodeSegmentation as ca, readCoco as cb, readCocoSet as cc, readDlc as cd, readDlcProject as ce, isDlcData as cf, parseDlcCrop as cg, looksLikeDlcConfig as ch, attachConfigSkeleton as ci, videoSetsStemMap as cj, extractFrameIndex as ck, resolveConfig as cl, setSourceVideo as cm, findProjectCsvs as cn, resolveProjectConfigPath as co, readDlcDataframe as cp, type ReadDlcOptions as cq, type ReadDlcProjectOptions as cr, type DlcDataframe as cs, toNumpy as ct, fromNumpy as cu, labelsFromNumpy as cv, decodeYamlSkeleton as cw, encodeYamlSkeleton as cx, readSkeletonJson as cy, writeSkeletonJson as cz, configureLibavDecoder as d, type TrailTarget as d0, type Trail as d1, RenderContext as d2, InstanceContext as d3, drawMasks as d4, drawLabelImage as d5, warn as d6, isDlcProjectPath as d7, readDlcConfig as d8, discoverConfig as d9, clampAlpha as da, pickColor as db, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };
+export { openStreamingH5 as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, type CreateVideoBackendOptions as J, CropVideoBackend as K, LibavH264Decoder as L, type CropWrapOptions as M, GrayscaleVideoBackend as N, type GrayscaleWrapOptions as O, type PaletteName as P, parseGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, urlFromConfirmation as T, UnsupportedVideoFormatError as U, type VideoOptions as V, checkDownloadHost as W, openGdrive as X, DEFAULT_MAX_BYTES as Y, StreamingH5File as Z, StreamingH5Writer as _, type RenderOptions as a, openSlpWriter as a$, openH5Worker as a0, isStreamingSupported as a1, isRangeSource as a2, serviceRangeBridge as a3, serviceWriteBridge as a4, serviceTruncateBridge as a5, type StreamingH5Source as a6, type RangeSource as a7, type RangeSink as a8, readSlpStreaming as a9, configureWebDemuxer as aA, isWebDemuxerConfigured as aB, type AviVideoOptions as aC, AviVideoBackend as aD, StreamingHdf5VideoBackend as aE, type ImageVideoOptions as aF, computePrefetchWindow as aG, ImageVideoBackend as aH, loadSlp as aI, saveSlp as aJ, loadAnalysisH5 as aK, saveAnalysisH5 as aL, saveAnalysisH5ToBytes as aM, loadNwb as aN, loadSlpSet as aO, saveSlpSet as aP, loadVideo as aQ, loadLabelImages as aR, setLabelImageFileReader as aS, type PagesAs as aT, type LoadLabelImagesOptions as aU, type LabelImageFileReader as aV, saveSlpToBytes as aW, ExportCancelled as aX, type EmbedOption as aY, type SlpWriteOptions as aZ, saveSlpStructureToBytes as a_, Mp4BoxVideoBackend as aa, type Mp4Sample as ab, type SerializableDecoderConfig as ac, type Mp4ParseResult as ad, type FeedEntry as ae, type ReadRegion as af, findKeyframeBefore as ag, planDecodeRange as ah, computeCacheWindow as ai, selectFeedSamples as aj, planReadRegions as ak, readSamplesByDecodeOrder as al, nextUncached as am, shouldDecodeAhead as an, type ByteSourceDescriptor as ao, type WorkerInMessage as ap, type WorkerOutMessage as aq, MP4_DECODE_WORKER_CODE as ar, createDecodeWorker as as, isWorkerDecodeAvailable as at, type WorkerLike as au, type WorkerBackendParams as av, WorkerMp4BoxBackend as aw, type MediaBunnyOptions as ax, MediaBunnyVideoBackend as ay, type WebDemuxerConfig as az, type RGB as b, roisToGeoJSON as b$, SlpStreamWriter as b0, saveSlpMergedFromStores as b1, saveSlpMergedToSink as b2, type SlpWriteHeader as b3, type AppendStoreOptions as b4, type SlpWriteSink as b5, type MergeStoresOptions as b6, buildSerializableEmbedPlan as b7, type SerializableEmbedEntry as b8, type SerializableEncodeEntry as b9, isNwbFile as bA, labelsToCsv as bB, saveLabelsCsv as bC, type CsvExportOptions as bD, URL_SCHEMES as bE, CLOUD_SCHEMES as bF, GDRIVE_HOSTS as bG, SENSITIVE_HEADERS as bH, SENSITIVE_QUERY_PARAMS as bI, RETRYABLE_STATUSES as bJ, isUrl as bK, isGdriveUrl as bL, redactUrl as bM, redactedCauseSummary as bN, RemoteIOError as bO, type ResolvedUrl as bP, resolveUrl as bQ, statusToMessage as bR, raiseRemote as bS, identityHeaders as bT, stripCrossOriginHeaders as bU, withRetries as bV, parseRetryAfterMs as bW, fetchRetrying as bX, headOrRangeProbe as bY, type GeoJSONFeature as bZ, type GeoJSONFeatureCollection as b_, type SerializableEmbedPlan as ba, appendEncodedVideos as bb, type AppendEncodedVideosOptions as bc, type EncodeFramePayload as bd, type EncodedVideoSink as be, buildLabelTableRows as bf, buildLabelTableUpdate as bg, buildMetadataJson as bh, buildTracksJson as bi, buildSuggestionsJson as bj, buildVideoSignatures as bk, buildExpectedSidecars as bl, checkInPlaceWritable as bm, onDiskTableFromMeta as bn, writeLabelTablesInPlace as bo, type LabelTable as bp, type LabelTableRows as bq, type LabelTableUpdate as br, type OnDiskMember as bs, type OnDiskTable as bt, type OnDiskTables as bu, type OnDiskSidecars as bv, type InPlaceWritable as bw, type DatasetMetaLike as bx, isAnalysisH5File as by, readNwb as bz, type RawLabelImage as c, MARKER_FUNCTIONS as c$, roisFromGeoJSON as c0, writeGeoJSON as c1, readGeoJSON as c2, type CocoCategory as c3, type CocoImage as c4, type CocoRle as c5, type CocoSegmentation as c6, type CocoAnnotation as c7, type CocoJson as c8, isCocoData as c9, labelsFromNumpy as cA, decodeYamlSkeleton as cB, encodeYamlSkeleton as cC, readSkeletonJson as cD, writeSkeletonJson as cE, readTrainingConfigSkeletons as cF, readTrainingConfigSkeleton as cG, isTrainingConfig as cH, type RGBA as cI, type ColorSpec as cJ, type ColorScheme as cK, type MarkerShape as cL, type Overlay as cM, type VideoOverlay as cN, NAMED_COLORS as cO, PALETTES as cP, getPalette as cQ, resolveColor as cR, rgbToCSS as cS, determineColorScheme as cT, drawCircle as cU, drawSquare as cV, drawDiamond as cW, drawTriangle as cX, drawCross as cY, drawTrails as cZ, getMarkerFunction as c_, parseCocoJson as ca, createSkeletonFromCategory as cb, decodeKeypoints as cc, decodeCompressedRleCounts as cd, decodeCocoRle as ce, decodeSegmentation as cf, readCoco as cg, readCocoSet as ch, readDlc as ci, readDlcProject as cj, isDlcData as ck, parseDlcCrop as cl, looksLikeDlcConfig as cm, attachConfigSkeleton as cn, videoSetsStemMap as co, extractFrameIndex as cp, resolveConfig as cq, setSourceVideo as cr, findProjectCsvs as cs, resolveProjectConfigPath as ct, readDlcDataframe as cu, type ReadDlcOptions as cv, type ReadDlcProjectOptions as cw, type DlcDataframe as cx, toNumpy as cy, fromNumpy as cz, configureLibavDecoder as d, type DrawTrailsOptions as d0, resolveTrailNode as d1, computeTrails as d2, nTrailPaletteColors as d3, collectTracks as d4, type TrailTarget as d5, type Trail as d6, RenderContext as d7, InstanceContext as d8, drawMasks as d9, drawLabelImage as da, warn as db, isDlcProjectPath as dc, readDlcConfig as dd, discoverConfig as de, clampAlpha as df, pickColor as dg, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };

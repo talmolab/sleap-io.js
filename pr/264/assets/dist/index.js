@@ -89,6 +89,7 @@ import {
   _relinkFromPredicted,
   _resolveMergedIsNegative,
   anchorCandidate,
+  appendEncodedVideos,
   applyPrefixSwap,
   attachConfigSkeleton,
   buildExpectedSidecars,
@@ -247,7 +248,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-NHDXUJWI.js";
+} from "./chunk-2CIP6QQ3.js";
 import {
   Camera,
   CameraGroup,
@@ -3522,6 +3523,7 @@ export {
   _relinkFromPredicted,
   _resolveMergedIsNegative,
   anchorCandidate,
+  appendEncodedVideos,
   applyOverlay,
   applyPrefixSwap,
   attachConfigSkeleton,
