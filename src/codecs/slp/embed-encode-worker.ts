@@ -86,45 +86,20 @@ async function zlibDeflateEnc(raw) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-// libpng's adaptive row filtering (KEEP IN LOCKSTEP with png-encode.ts's
-// filterScanlines).
-function filterScanlinesEnc(pixels, width, height, channels) {
+// Every row Sub-filtered, as OpenCV (KEEP IN LOCKSTEP with png-encode.ts's
+// subFilterScanlines). Compression is CompressionStream's zlib, whose level
+// can't be set (the main thread's pako encoder uses OpenCV's level 1 + RLE).
+function subFilterScanlinesEnc(pixels, width, height, channels) {
   var stride = width * channels;
   var out = new Uint8Array((stride + 1) * height);
-  var zero = new Uint8Array(stride);
-  var trial = new Uint8Array(stride);
   for (var y = 0; y < height; y++) {
-    var cur = pixels.subarray(y * stride, y * stride + stride);
-    var prev = y > 0 ? pixels.subarray((y - 1) * stride, y * stride) : zero;
-    var rowStart = y * (stride + 1);
-    var bestFilter = 0;
-    var bestSum = Infinity;
-    for (var f = 0; f < 5; f++) {
-      var sum = 0;
-      for (var i = 0; i < stride; i++) {
-        var a = i >= channels ? cur[i - channels] : 0;
-        var b = prev[i];
-        var c = i >= channels ? prev[i - channels] : 0;
-        var pred = 0;
-        if (f === 1) pred = a;
-        else if (f === 2) pred = b;
-        else if (f === 3) pred = (a + b) >> 1;
-        else if (f === 4) {
-          var p = a + b - c;
-          var pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
-          pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-        }
-        var v = (cur[i] - pred) & 0xff;
-        trial[i] = v;
-        sum += v < 128 ? v : 256 - v;
-      }
-      if (sum < bestSum) {
-        bestSum = sum;
-        bestFilter = f;
-        out.set(trial, rowStart + 1);
-      }
+    var o = y * (stride + 1);
+    var r = y * stride;
+    out[o] = 1;
+    for (var c = 0; c < channels; c++) out[o + 1 + c] = pixels[r + c];
+    for (var i = channels; i < stride; i++) {
+      out[o + 1 + i] = (pixels[r + i] - pixels[r + i - channels]) & 0xff;
     }
-    out[rowStart] = bestFilter;
   }
   return out;
 }
@@ -141,7 +116,7 @@ async function encodePngEnc(pixels, width, height, channels) {
       ' channel(s): expected ' + stride * height + ' bytes, got ' + pixels.length + '.'
     );
   }
-  var raw = filterScanlinesEnc(pixels, width, height, channels);
+  var raw = subFilterScanlinesEnc(pixels, width, height, channels);
   var ihdr = new Uint8Array(13);
   var dv = new DataView(ihdr.buffer);
   dv.setUint32(0, width);

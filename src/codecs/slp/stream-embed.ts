@@ -65,7 +65,25 @@ export type AppendEncodedVideosOptions = {
   onProgress?: SlpWriteOptions["onProgress"];
   /** Frames handed to the worker but not yet written (default 4). */
   maxInFlight?: number;
+  /**
+   * Supply a video's frames yourself — e.g. PNGs a native tool (ffmpeg) is
+   * writing — instead of decoding them from its backend. Called once per video
+   * with the frame numbers it will embed, in order; return a reader for them,
+   * or null to decode from the backend. Encoded PNG bytes are stored as-is.
+   */
+  frameReader?: (
+    video: Video,
+    frameNumbers: readonly number[],
+  ) => Promise<ExternalFrameReader | null>;
 };
+
+/** Frames of one video from outside its backend (see `frameReader`). */
+export interface ExternalFrameReader {
+  /** The frame (e.g. PNG bytes), asked for in the order announced. */
+  read(frameIdx: number): Promise<VideoFrame | null>;
+  /** Called when the video is done, or the export fails or is cancelled. */
+  close(): Promise<void> | void;
+}
 
 // As write.ts's EMBED_READ_ATTEMPTS: a pinned read can still come back empty
 // once while another read of the same decoder is cancelled.
@@ -204,9 +222,25 @@ export async function appendEncodedVideos(
 
   for (const entry of entries) {
     const video = labels.videos[entry.videoIndex];
+    const external =
+      video && entry.frameNumbers.length > 0
+        ? ((await options.frameReader?.(video, entry.frameNumbers)) ?? null)
+        : null;
+    try {
+      await appendOneVideo(entry, video, external);
+    } finally {
+      await external?.close();
+    }
+  }
+
+  async function appendOneVideo(
+    entry: SerializableEncodeEntry,
+    video: Video | undefined,
+    external: ExternalFrameReader | null,
+  ): Promise<void> {
     let source: VideoBackend | null = null;
     let collapseToGray = false;
-    if (entry.frameNumbers.length > 0) {
+    if (entry.frameNumbers.length > 0 && !external) {
       if (!video?.backend) {
         throw new Error(
           `Can't embed frames from "${video ? videoName(video) : `video ${entry.videoIndex}`}": its video isn't open.`,
@@ -228,10 +262,18 @@ export async function appendEncodedVideos(
       }
     };
     for (const frameIdx of entry.frameNumbers) {
-      const frame = await readFrame(video, source!, frameIdx);
+      const frame = external
+        ? await external.read(frameIdx)
+        : await readFrame(video!, source!, frameIdx);
+      if (!frame) {
+        throw new Error(
+          `Couldn't read frame ${frameIdx} from "${video ? videoName(video) : `video ${entry.videoIndex}`}" to embed. ` +
+            "The package was not written.",
+        );
+      }
       const pending = sink.appendEncodedFrame(
         frameIdx,
-        await toEncodeFramePayload(frame, source!.shape),
+        await toEncodeFramePayload(frame, source?.shape),
       );
       // Awaited in order below; this only keeps a failure that lands while an
       // earlier frame is awaited from surfacing as an unhandled rejection.

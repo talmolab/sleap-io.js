@@ -5,7 +5,15 @@
 // write RGBA, this keeps the pixels' own channel count, so a grayscale frame
 // becomes a 1-channel (grayscale) PNG, as Python sleap-io writes when it embeds
 // one.
+//
+// By default it encodes the way OpenCV does (what PyQt SLEAP's Python sleap-io
+// uses when OpenCV is installed): every row Sub-filtered, zlib at its fastest
+// level with the run-length strategy. On video frames that's ~3x faster than
+// adaptive filtering at zlib 6 and gives smaller files (a 1024x1024 grayscale
+// frame: 13 ms / 393 KB vs 40 ms / 408 KB; OpenCV writes 394 KB).
 import { deflate } from "pako";
+
+type ZlibLevel = 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9;
 
 /** PNG color type for each channel count: gray, gray+alpha, RGB, RGBA. */
 const COLOR_TYPE: Record<number, number> = { 1: 0, 2: 4, 3: 2, 4: 6 };
@@ -17,7 +25,8 @@ const COLOR_TYPE: Record<number, number> = { 1: 0, 2: 4, 3: 2, 4: 6 };
  * @param width - Image width in pixels.
  * @param height - Image height in pixels.
  * @param channels - 1 (gray), 2 (gray+alpha), 3 (RGB) or 4 (RGBA).
- * @param compressLevel - zlib compression level 0–9 (default 6).
+ * @param compressLevel - zlib compression level 0–9. Default: OpenCV's
+ *   settings (level 1, run-length strategy).
  */
 export function encodePngPixels(
   pixels: Uint8Array | Uint8ClampedArray,
@@ -39,13 +48,16 @@ export function encodePngPixels(
         `channel(s): expected ${stride * height} bytes, got ${pixels.length}.`,
     );
   }
-  const level =
-    compressLevel == null ? 6 : Math.min(9, Math.max(0, compressLevel));
 
-  const raw = filterScanlines(pixels, width, height, channels);
-  const compressed = deflate(raw, {
-    level: level as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
-  });
+  const raw = subFilterScanlines(pixels, width, height, channels);
+  const compressed = deflate(
+    raw,
+    compressLevel == null
+      ? { level: 1, strategy: Z_RLE }
+      : {
+          level: Math.min(9, Math.max(0, compressLevel)) as ZlibLevel,
+        },
+  );
 
   const ihdr = new Uint8Array(13);
   const dv = new DataView(ihdr.buffer);
@@ -77,14 +89,15 @@ export function encodePngPixels(
   return out;
 }
 
+/** zlib's run-length strategy (`Z_RLE`), OpenCV's default for PNG. */
+const Z_RLE = 3;
+
 /**
- * PNG scanlines with libpng's adaptive filtering (what Python sleap-io's
- * encoders, OpenCV and Pillow, use by default): each row gets the filter —
- * None, Sub, Up, Average or Paeth — whose output has the smallest sum of
- * absolute values (bytes read as signed), ties going to the earlier filter.
- * Smaller after deflate than unfiltered rows, and lossless either way.
+ * PNG scanlines with every row Sub-filtered (each byte minus the byte one
+ * pixel to its left), as OpenCV writes them. Lossless; cheap to compute and,
+ * on video frames, compresses as well as adaptive filtering.
  */
-export function filterScanlines(
+export function subFilterScanlines(
   pixels: Uint8Array | Uint8ClampedArray,
   width: number,
   height: number,
@@ -92,42 +105,14 @@ export function filterScanlines(
 ): Uint8Array {
   const stride = width * channels;
   const out = new Uint8Array((stride + 1) * height);
-  const zero = new Uint8Array(stride);
-  const trial = new Uint8Array(stride);
   for (let y = 0; y < height; y++) {
-    const cur = pixels.subarray(y * stride, y * stride + stride);
-    const prev = y > 0 ? pixels.subarray((y - 1) * stride, y * stride) : zero;
-    const rowStart = y * (stride + 1);
-    let bestFilter = 0;
-    let bestSum = Number.POSITIVE_INFINITY;
-    for (let f = 0; f < 5; f++) {
-      let sum = 0;
-      for (let i = 0; i < stride; i++) {
-        const a = i >= channels ? cur[i - channels] : 0;
-        const b = prev[i];
-        const c = i >= channels ? prev[i - channels] : 0;
-        let pred = 0;
-        if (f === 1) pred = a;
-        else if (f === 2) pred = b;
-        else if (f === 3) pred = (a + b) >> 1;
-        else if (f === 4) {
-          const p = a + b - c;
-          const pa = Math.abs(p - a);
-          const pb = Math.abs(p - b);
-          const pc = Math.abs(p - c);
-          pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-        }
-        const v = (cur[i] - pred) & 0xff;
-        trial[i] = v;
-        sum += v < 128 ? v : 256 - v;
-      }
-      if (sum < bestSum) {
-        bestSum = sum;
-        bestFilter = f;
-        out.set(trial, rowStart + 1);
-      }
+    const o = y * (stride + 1);
+    const r = y * stride;
+    out[o] = 1; // filter type Sub
+    for (let i = 0; i < channels; i++) out[o + 1 + i] = pixels[r + i];
+    for (let i = channels; i < stride; i++) {
+      out[o + 1 + i] = (pixels[r + i] - pixels[r + i - channels]) & 0xff;
     }
-    out[rowStart] = bestFilter;
   }
   return out;
 }

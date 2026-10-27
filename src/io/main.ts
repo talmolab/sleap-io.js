@@ -188,6 +188,7 @@ export type {
   AppendEncodedVideosOptions,
   EncodeFramePayload,
   EncodedVideoSink,
+  ExternalFrameReader,
 } from "../codecs/slp/stream-embed.js";
 // Fast in-place label save (edit re-save): patch ONLY the small label tables +
 // the /metadata json attr of an existing .pkg.slp, never touching the multi-GB

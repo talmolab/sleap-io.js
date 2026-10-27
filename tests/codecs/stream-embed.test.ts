@@ -32,7 +32,7 @@ import {
 } from "../../src/codecs/slp/stream-embed.js";
 import { EMBED_ENCODE_WORKER_CODE } from "../../src/codecs/slp/embed-encode-worker.js";
 import { H5_WORKER_CODE } from "../../src/codecs/slp/h5-worker.js";
-import { filterScanlines } from "../../src/video/png-encode.js";
+import { subFilterScanlines } from "../../src/video/png-encode.js";
 import { GrayscaleVideoBackend } from "../../src/video/grayscale-backend.js";
 import { Labels } from "../../src/model/labels.js";
 import { Video } from "../../src/model/video.js";
@@ -42,7 +42,7 @@ import { Instance } from "../../src/model/instance.js";
 import type { VideoBackend, VideoFrame } from "../../src/video/backend.js";
 
 type Helpers = {
-  filterScanlinesEnc: (
+  subFilterScanlinesEnc: (
     pixels: Uint8Array,
     w: number,
     h: number,
@@ -99,7 +99,7 @@ function loadHelpers({
   const make = new Function(
     "writeSourceVideoJsonWorker",
     "CompressionStream",
-    `${EMBED_ENCODE_WORKER_CODE}\nreturn { encodePngEnc, encodeFrameEnc, filterScanlinesEnc, beginEncodedVideoEnc, appendEncodedBytesEnc, endEncodedVideoEnc };`,
+    `${EMBED_ENCODE_WORKER_CODE}\nreturn { encodePngEnc, encodeFrameEnc, subFilterScanlinesEnc, beginEncodedVideoEnc, appendEncodedBytesEnc, endEncodedVideoEnc };`,
   );
   return make(writeSourceVideoJsonWorker, compressionStream) as Helpers;
 }
@@ -267,12 +267,14 @@ describe("appendEncodedVideos — streaming new-embed to disk", () => {
                   const row = new Uint8Array(ds.slice([[r, r + 1], []]).buffer);
                   let end = row.length;
                   while (end > 0 && row[end - 1] === 0) end--;
-                  return [...row.subarray(0, end)];
+                  // Same pixels; the PNG bytes may differ (the worker's zlib
+                  // can't use OpenCV's level/strategy like the main thread's).
+                  return [...readPng(row.subarray(0, end)).pixels];
                 })
               : [];
           return {
             dtype: ds.dtype,
-            width: ds.shape[1] ?? null,
+            rank: ds.shape.length,
             rows,
             attrs: Object.fromEntries(
               Object.entries(ds.attrs).map(([k, v]: [string, any]) => [
@@ -296,9 +298,7 @@ describe("appendEncodedVideos — streaming new-embed to disk", () => {
     const inMemory = dump(memFile);
     expect(streamed).toEqual(inMemory);
     expect(streamed[0].dtype).toBe("<b");
-    expect(streamed[0].width).toBe(
-      Math.max(...streamed[0].rows.map((r) => r.length)),
-    );
+
     expect(streamed[0].frameNumbers).toEqual(["<q", [0, 4, 9]]);
     expect(streamed[0].sizes).toBe("absent");
     expect(Object.keys(streamed[0].attrs).sort()).toEqual([
@@ -311,7 +311,7 @@ describe("appendEncodedVideos — streaming new-embed to disk", () => {
       "width",
     ]);
     // An empty embedded video: Python's 1-D empty dataset, float64 frame numbers.
-    expect(streamed[1].width).toBeNull();
+    expect(streamed[1].rank).toBe(1);
     expect(streamed[1].frameNumbers).toEqual(["<d", []]);
   });
 
@@ -467,25 +467,24 @@ describe("worker frame encoding", () => {
     expect([...png.pixels]).toEqual([...pixels]);
   });
 
-  it("filters rows exactly as the main-thread encoder (libpng's adaptive choice)", () => {
+  it("Sub-filters every row exactly as the main-thread encoder (OpenCV's choice)", () => {
     const helpers = loadHelpers();
     for (const channels of [1, 3]) {
       const w = 37;
       const h = 23;
-      // Smooth gradients plus noise, so each filter type wins somewhere.
-      const px = Uint8Array.from({ length: w * h * channels }, (_, i) => {
-        const x = Math.floor(i / channels) % w;
-        const y = Math.floor(i / channels / w);
-        return (x * 3 + y * 5 + ((i * 2654435761) >>> 28)) & 0xff;
-      });
-      const main = filterScanlines(px, w, h, channels);
-      expect([...helpers.filterScanlinesEnc(px, w, h, channels)]).toEqual([
+      const px = Uint8Array.from(
+        { length: w * h * channels },
+        (_, i) => (i * 2654435761) >>> 24,
+      );
+      const main = subFilterScanlines(px, w, h, channels);
+      expect([...helpers.subFilterScanlinesEnc(px, w, h, channels)]).toEqual([
         ...main,
       ]);
-      const used = new Set(
-        Array.from({ length: h }, (_, y) => main[y * (w * channels + 1)]),
+      const filters = Array.from(
+        { length: h },
+        (_, y) => main[y * (w * channels + 1)],
       );
-      expect(used.size).toBeGreaterThan(1);
+      expect(new Set(filters)).toEqual(new Set([1]));
     }
   });
 
@@ -607,5 +606,96 @@ describe("worker raw copy (re-saving a pkg.slp) — Python's layout", () => {
         labels.videos[0].embeddedFrameIndices![0],
       ))!,
     ]);
+  });
+});
+
+describe("appendEncodedVideos frameReader (frames from outside the backend, e.g. ffmpeg)", () => {
+  it("stores the reader's PNG bytes as-is, never decodes the backend, and closes the reader", async () => {
+    const { backend, reads } = rgbaBackend("ff.mp4");
+    const labels = labelsOn(
+      [new Video({ filename: "ff.mp4", backend })],
+      [2, 5],
+    );
+    const helpers = loadHelpers();
+    const pngFor = async (f: number) =>
+      helpers.encodePngEnc(
+        Uint8Array.from({ length: 4 }, () => f),
+        2,
+        2,
+        1,
+      );
+    const asked: number[] = [];
+    let announced: readonly number[] = [];
+    let closed = 0;
+    const file = tmpFile("reader");
+    fs.writeFileSync(
+      file,
+      await saveSlpStructureToBytes(labels, { embed: "user" }),
+    );
+    const plan = await buildSerializableEmbedPlan(labels, "user", "", {
+      allowEncode: true,
+    });
+    await ready;
+    const h5 = new H5File(file, "a");
+    const { sink } = fileSink(h5, helpers);
+    try {
+      await appendEncodedVideos(sink, labels, plan.encodeEntries, {
+        frameReader: async (_video, frameNumbers) => {
+          announced = frameNumbers;
+          return {
+            read: async (f) => {
+              asked.push(f);
+              return (await pngFor(f)) as never;
+            },
+            close: () => void closed++,
+          };
+        },
+      });
+    } finally {
+      h5.close();
+    }
+    expect(announced).toEqual([2, 5]);
+    expect(asked).toEqual([2, 5]);
+    expect(reads).toEqual([]);
+    expect(closed).toBe(1);
+    const r = await readSlp(file, { openVideos: true });
+    expect([...(await r.videos[0].getFrameBuffer(5))!]).toEqual([
+      ...(await pngFor(5)),
+    ]);
+  });
+
+  it("closes the reader when the export is cancelled or a frame is missing", async () => {
+    const labels = labelsOn(
+      [new Video({ filename: "x.mp4", backend: rgbaBackend("x.mp4").backend })],
+      [0, 1, 2],
+    );
+    const plan = await buildSerializableEmbedPlan(labels, "user", "", {
+      allowEncode: true,
+    });
+    const noopSink = {
+      beginEncodedVideo: async () => {},
+      appendEncodedFrame: async () => {},
+      endEncodedVideo: async () => ({ framesWritten: 3 }),
+    };
+    let closed = 0;
+    const reader = (missing: number) => async () => ({
+      read: async (f: number) =>
+        f === missing
+          ? null
+          : (Uint8Array.from([0x89, 0x50, 0x4e, 0x47, 0]) as never),
+      close: () => void closed++,
+    });
+    await expect(
+      appendEncodedVideos(noopSink, labels, plan.encodeEntries, {
+        frameReader: reader(-1),
+        onProgress: () => false,
+      }),
+    ).rejects.toBeInstanceOf(ExportCancelled);
+    await expect(
+      appendEncodedVideos(noopSink, labels, plan.encodeEntries, {
+        frameReader: reader(1),
+      }),
+    ).rejects.toThrow("Couldn't read frame 1");
+    expect(closed).toBe(2);
   });
 });
