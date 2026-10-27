@@ -4183,11 +4183,13 @@ function encodePngPixels(pixels, width, height, channels, compressLevel = null) 
       `Cannot PNG-encode a ${width}x${height} frame with ${channels} channel(s): expected ${stride * height} bytes, got ${pixels.length}.`
     );
   }
-  const level = compressLevel == null ? 6 : Math.min(9, Math.max(0, compressLevel));
-  const raw = filterScanlines(pixels, width, height, channels);
-  const compressed = deflate(raw, {
-    level
-  });
+  const raw = subFilterScanlines(pixels, width, height, channels);
+  const compressed = deflate(
+    raw,
+    compressLevel == null ? { level: 1, strategy: Z_RLE } : {
+      level: Math.min(9, Math.max(0, compressLevel))
+    }
+  );
   const ihdr = new Uint8Array(13);
   const dv = new DataView(ihdr.buffer);
   dv.setUint32(0, width);
@@ -4222,45 +4224,18 @@ function encodePngPixels(pixels, width, height, channels, compressLevel = null) 
   }
   return out;
 }
-function filterScanlines(pixels, width, height, channels) {
+var Z_RLE = 3;
+function subFilterScanlines(pixels, width, height, channels) {
   const stride = width * channels;
   const out = new Uint8Array((stride + 1) * height);
-  const zero = new Uint8Array(stride);
-  const trial = new Uint8Array(stride);
   for (let y = 0; y < height; y++) {
-    const cur = pixels.subarray(y * stride, y * stride + stride);
-    const prev = y > 0 ? pixels.subarray((y - 1) * stride, y * stride) : zero;
-    const rowStart = y * (stride + 1);
-    let bestFilter = 0;
-    let bestSum = Number.POSITIVE_INFINITY;
-    for (let f = 0; f < 5; f++) {
-      let sum = 0;
-      for (let i = 0; i < stride; i++) {
-        const a = i >= channels ? cur[i - channels] : 0;
-        const b = prev[i];
-        const c = i >= channels ? prev[i - channels] : 0;
-        let pred = 0;
-        if (f === 1) pred = a;
-        else if (f === 2) pred = b;
-        else if (f === 3) pred = a + b >> 1;
-        else if (f === 4) {
-          const p = a + b - c;
-          const pa = Math.abs(p - a);
-          const pb = Math.abs(p - b);
-          const pc = Math.abs(p - c);
-          pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-        }
-        const v = cur[i] - pred & 255;
-        trial[i] = v;
-        sum += v < 128 ? v : 256 - v;
-      }
-      if (sum < bestSum) {
-        bestSum = sum;
-        bestFilter = f;
-        out.set(trial, rowStart + 1);
-      }
+    const o = y * (stride + 1);
+    const r = y * stride;
+    out[o] = 1;
+    for (let i = 0; i < channels; i++) out[o + 1 + i] = pixels[r + i];
+    for (let i = channels; i < stride; i++) {
+      out[o + 1 + i] = pixels[r + i] - pixels[r + i - channels] & 255;
     }
-    out[rowStart] = bestFilter;
   }
   return out;
 }
@@ -12441,45 +12416,20 @@ async function zlibDeflateEnc(raw) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
-// libpng's adaptive row filtering (KEEP IN LOCKSTEP with png-encode.ts's
-// filterScanlines).
-function filterScanlinesEnc(pixels, width, height, channels) {
+// Every row Sub-filtered, as OpenCV (KEEP IN LOCKSTEP with png-encode.ts's
+// subFilterScanlines). Compression is CompressionStream's zlib, whose level
+// can't be set (the main thread's pako encoder uses OpenCV's level 1 + RLE).
+function subFilterScanlinesEnc(pixels, width, height, channels) {
   var stride = width * channels;
   var out = new Uint8Array((stride + 1) * height);
-  var zero = new Uint8Array(stride);
-  var trial = new Uint8Array(stride);
   for (var y = 0; y < height; y++) {
-    var cur = pixels.subarray(y * stride, y * stride + stride);
-    var prev = y > 0 ? pixels.subarray((y - 1) * stride, y * stride) : zero;
-    var rowStart = y * (stride + 1);
-    var bestFilter = 0;
-    var bestSum = Infinity;
-    for (var f = 0; f < 5; f++) {
-      var sum = 0;
-      for (var i = 0; i < stride; i++) {
-        var a = i >= channels ? cur[i - channels] : 0;
-        var b = prev[i];
-        var c = i >= channels ? prev[i - channels] : 0;
-        var pred = 0;
-        if (f === 1) pred = a;
-        else if (f === 2) pred = b;
-        else if (f === 3) pred = (a + b) >> 1;
-        else if (f === 4) {
-          var p = a + b - c;
-          var pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
-          pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
-        }
-        var v = (cur[i] - pred) & 0xff;
-        trial[i] = v;
-        sum += v < 128 ? v : 256 - v;
-      }
-      if (sum < bestSum) {
-        bestSum = sum;
-        bestFilter = f;
-        out.set(trial, rowStart + 1);
-      }
+    var o = y * (stride + 1);
+    var r = y * stride;
+    out[o] = 1;
+    for (var c = 0; c < channels; c++) out[o + 1 + c] = pixels[r + c];
+    for (var i = channels; i < stride; i++) {
+      out[o + 1 + i] = (pixels[r + i] - pixels[r + i - channels]) & 0xff;
     }
-    out[rowStart] = bestFilter;
   }
   return out;
 }
@@ -12496,7 +12446,7 @@ async function encodePngEnc(pixels, width, height, channels) {
       ' channel(s): expected ' + stride * height + ' bytes, got ' + pixels.length + '.'
     );
   }
-  var raw = filterScanlinesEnc(pixels, width, height, channels);
+  var raw = subFilterScanlinesEnc(pixels, width, height, channels);
   var ihdr = new Uint8Array(13);
   var dv = new DataView(ihdr.buffer);
   dv.setUint32(0, width);
@@ -21663,9 +21613,17 @@ async function appendEncodedVideos(sink, labels, entries, options = {}) {
   let done = 0;
   for (const entry of entries) {
     const video = labels.videos[entry.videoIndex];
+    const external = video && entry.frameNumbers.length > 0 ? await options.frameReader?.(video, entry.frameNumbers) ?? null : null;
+    try {
+      await appendOneVideo(entry, video, external);
+    } finally {
+      await external?.close();
+    }
+  }
+  async function appendOneVideo(entry, video, external) {
     let source = null;
     let collapseToGray = false;
-    if (entry.frameNumbers.length > 0) {
+    if (entry.frameNumbers.length > 0 && !external) {
       if (!video?.backend) {
         throw new Error(
           `Can't embed frames from "${video ? videoName(video) : `video ${entry.videoIndex}`}": its video isn't open.`
@@ -21686,10 +21644,15 @@ async function appendEncodedVideos(sink, labels, entries, options = {}) {
       }
     };
     for (const frameIdx of entry.frameNumbers) {
-      const frame = await readFrame(video, source, frameIdx);
+      const frame = external ? await external.read(frameIdx) : await readFrame(video, source, frameIdx);
+      if (!frame) {
+        throw new Error(
+          `Couldn't read frame ${frameIdx} from "${video ? videoName(video) : `video ${entry.videoIndex}`}" to embed. The package was not written.`
+        );
+      }
       const pending = sink.appendEncodedFrame(
         frameIdx,
-        await toEncodeFramePayload(frame, source.shape)
+        await toEncodeFramePayload(frame, source?.shape)
       );
       pending.catch(() => {
       });
