@@ -42,15 +42,7 @@ export function encodePngPixels(
   const level =
     compressLevel == null ? 6 : Math.min(9, Math.max(0, compressLevel));
 
-  // Filtered raw scanlines: each row prefixed with filter-type byte 0 (None).
-  const raw = new Uint8Array((stride + 1) * height);
-  for (let y = 0; y < height; y++) {
-    raw[y * (stride + 1)] = 0;
-    raw.set(
-      pixels.subarray(y * stride, y * stride + stride),
-      y * (stride + 1) + 1,
-    );
-  }
+  const raw = filterScanlines(pixels, width, height, channels);
   const compressed = deflate(raw, {
     level: level as 0 | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9,
   });
@@ -81,6 +73,61 @@ export function encodePngPixels(
   for (const c of chunks) {
     out.set(c, off);
     off += c.length;
+  }
+  return out;
+}
+
+/**
+ * PNG scanlines with libpng's adaptive filtering (what Python sleap-io's
+ * encoders, OpenCV and Pillow, use by default): each row gets the filter —
+ * None, Sub, Up, Average or Paeth — whose output has the smallest sum of
+ * absolute values (bytes read as signed), ties going to the earlier filter.
+ * Smaller after deflate than unfiltered rows, and lossless either way.
+ */
+export function filterScanlines(
+  pixels: Uint8Array | Uint8ClampedArray,
+  width: number,
+  height: number,
+  channels: number,
+): Uint8Array {
+  const stride = width * channels;
+  const out = new Uint8Array((stride + 1) * height);
+  const zero = new Uint8Array(stride);
+  const trial = new Uint8Array(stride);
+  for (let y = 0; y < height; y++) {
+    const cur = pixels.subarray(y * stride, y * stride + stride);
+    const prev = y > 0 ? pixels.subarray((y - 1) * stride, y * stride) : zero;
+    const rowStart = y * (stride + 1);
+    let bestFilter = 0;
+    let bestSum = Number.POSITIVE_INFINITY;
+    for (let f = 0; f < 5; f++) {
+      let sum = 0;
+      for (let i = 0; i < stride; i++) {
+        const a = i >= channels ? cur[i - channels] : 0;
+        const b = prev[i];
+        const c = i >= channels ? prev[i - channels] : 0;
+        let pred = 0;
+        if (f === 1) pred = a;
+        else if (f === 2) pred = b;
+        else if (f === 3) pred = (a + b) >> 1;
+        else if (f === 4) {
+          const p = a + b - c;
+          const pa = Math.abs(p - a);
+          const pb = Math.abs(p - b);
+          const pc = Math.abs(p - c);
+          pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+        }
+        const v = (cur[i] - pred) & 0xff;
+        trial[i] = v;
+        sum += v < 128 ? v : 256 - v;
+      }
+      if (sum < bestSum) {
+        bestSum = sum;
+        bestFilter = f;
+        out.set(trial, rowStart + 1);
+      }
+    }
+    out[rowStart] = bestFilter;
   }
   return out;
 }

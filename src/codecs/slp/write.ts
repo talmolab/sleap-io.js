@@ -638,14 +638,6 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
 const DEFAULT_WRITE_WINDOW_FRAMES = 5000;
 /** HDF5 chunk row count for the appendable pose datasets. */
 const WRITE_CHUNK_ROWS = 8192;
-/**
- * Per-window byte budget for the streamed raw embedded-blob copy: blobs
- * accumulate up to this many bytes before one `resize` + `write_slice` flush,
- * bounding peak JS memory to ~one window instead of the whole concatenation.
- */
-const EMBED_WRITE_WINDOW_BYTES = 32 * 1024 * 1024;
-/** HDF5 chunk length (elements) for the 1-D embedded video byte dataset. */
-const EMBED_VIDEO_CHUNK_BYTES = 1 << 20;
 
 const FRAMES_FIELDS = [
   "frame_id",
@@ -2229,10 +2221,11 @@ const SOURCE_VIDEO_ATTR_LIMIT = 64000;
 
 /**
  * Write a source video's metadata JSON into its `{group}/source_video` HDF5
- * group, the authoritative location an embedded video's source is read from
- * (Python `_write_source_video_json`). Normally a `json` string *attribute*;
- * if the blob would exceed the 64 KB attribute ceiling it goes to a `json`
- * *dataset* in the same group instead (readers check the dataset first).
+ * group, the authoritative location an embedded video's source is read from,
+ * exactly as Python `_write_source_video_json`: normally a `json` variable-
+ * length string *attribute*; if the blob would exceed the 64 KB attribute
+ * ceiling, a scalar fixed-length bytes `json` *dataset* in the same group
+ * instead (Python's `np.bytes_`; readers check the dataset first).
  */
 function writeSourceVideoJson(
   file: any,
@@ -2241,11 +2234,17 @@ function writeSourceVideoJson(
 ): void {
   const blob = JSON.stringify(sourceDict);
   file.create_group(`${groupPath}/source_video`);
-  if (new TextEncoder().encode(blob).length <= SOURCE_VIDEO_ATTR_LIMIT) {
-    setStringAttr(file.get(`${groupPath}/source_video`), "json", blob);
+  const byteLength = new TextEncoder().encode(blob).length;
+  if (byteLength <= SOURCE_VIDEO_ATTR_LIMIT) {
+    file.get(`${groupPath}/source_video`).create_attribute("json", blob);
     return;
   }
-  file.create_dataset({ name: `${groupPath}/source_video/json`, data: [blob] });
+  file.create_dataset({
+    name: `${groupPath}/source_video/json`,
+    data: blob,
+    shape: [],
+    dtype: `S${byteLength}`,
+  });
 }
 
 /**
@@ -3749,7 +3748,7 @@ async function planEmbedding(
         video,
         frameNumbers,
         format: "png",
-        channelOrder: (video.backendMetadata?.channel_order as string) ?? "RGB",
+        channelOrder: "RGB",
       });
     } else if (isRealMode && video.backend) {
       // New-embed of a continuous video: legacy getFrame+encode path. Frames a
@@ -3757,7 +3756,8 @@ async function planEmbedding(
       // Mp4Box mp4 case) are PNG-encoded by collectEncodedFrames; when that
       // happens the stored `format` MUST be "png" (the encoded bytes ARE PNG),
       // overriding any codec-ish `backendMetadata.format`, or the reader would
-      // mis-decode.
+      // mis-decode. Their channel order is RGB (decoded pixels, or copied image
+      // bytes), which is what Python records for both.
       const { frameData, encodedFormat } = await collectEncodedFrames(
         video,
         toEncode[vi],
@@ -3772,7 +3772,7 @@ async function planEmbedding(
         frameNumbers,
         format:
           encodedFormat ?? (video.backendMetadata?.format as string) ?? "png",
-        channelOrder: (video.backendMetadata?.channel_order as string) ?? "RGB",
+        channelOrder: "RGB",
         frameData,
       });
     }
@@ -3791,7 +3791,7 @@ async function planEmbedding(
         video,
         frameNumbers: [],
         format: "png",
-        channelOrder: (video.backendMetadata?.channel_order as string) ?? "RGB",
+        channelOrder: "RGB",
         frameData: new Map(),
       });
     });
@@ -3858,6 +3858,12 @@ export type SerializableEmbedEntry = {
    * needing the live `Labels`/`Video` object.
    */
   sourceVideoJson: Record<string, unknown> | null;
+  /**
+   * The source dimensions to record on the copied dataset, as Python (see
+   * {@link EmbeddedVideoAttrs}). Optional: an older plan without it writes no
+   * dimension attributes.
+   */
+  videoAttrs?: EmbeddedVideoAttrs;
 };
 
 /**
@@ -3878,17 +3884,8 @@ export type SerializableEncodeEntry = {
   channelOrder: string;
   /** Plain-object `source_video` lineage, or `null` (see the raw entry). */
   sourceVideoJson: Record<string, unknown> | null;
-  /**
-   * For an empty embedded video (`embedAllVideos`), the source's shape and
-   * fps to record on the dataset, as the in-memory writer does; else `null`.
-   */
-  emptyAttrs: {
-    frames: number;
-    height: number;
-    width: number;
-    channels: number;
-    fps: number | null;
-  } | null;
+  /** The source dimensions to record on the dataset, as Python. */
+  videoAttrs: EmbeddedVideoAttrs;
 };
 
 /**
@@ -3965,23 +3962,13 @@ export async function buildSerializableEmbedPlan(
   for (const entry of plan.values()) {
     if (entry.kind === "encode" && options.allowEncode) {
       const video = labels.videos[entry.videoIndex];
-      const shape = video.shape;
       encodeEntries.push({
         videoIndex: entry.videoIndex,
         frameNumbers: [...entry.frameNumbers],
         format: entry.format,
         channelOrder: entry.channelOrder,
         sourceVideoJson: sourceVideoDict(video),
-        emptyAttrs:
-          entry.frameNumbers.length === 0 && shape
-            ? {
-                frames: shape[0],
-                height: shape[1],
-                width: shape[2],
-                channels: shape[3],
-                fps: video.fps ?? null,
-              }
-            : null,
+        videoAttrs: embeddedVideoAttrs(video),
       });
       continue;
     }
@@ -4015,6 +4002,7 @@ export async function buildSerializableEmbedPlan(
       channelOrder: entry.channelOrder,
       frameNumbers: [...entry.frameNumbers],
       sourceVideoJson: sourceVideoDict(entry.video),
+      videoAttrs: embeddedVideoAttrs(entry.video),
     });
   }
   return { sourcePath, entries, encodeEntries };
@@ -4168,11 +4156,45 @@ function frameToBytes(frame: unknown): Uint8Array | null {
 }
 
 /**
+ * The source video's dimensions recorded on an embedded video dataset, as
+ * Python sleap-io's `frames`/`height`/`width`/`channels`/`fps` attributes: the
+ * UNCROPPED frame for a cropped video (the embedded pixels are the full source
+ * frame), and the channel-forced shape for a grayscale one. `null` when the
+ * shape isn't known.
+ */
+export type EmbeddedVideoAttrs = {
+  frames: number;
+  height: number;
+  width: number;
+  channels: number;
+  fps: number | null;
+} | null;
+
+function embeddedVideoAttrs(video: Video): EmbeddedVideoAttrs {
+  const inner =
+    video.backend instanceof CropVideoBackend ? video.backend.inner : null;
+  const shape =
+    (inner ? inner.shape : video.shape) ??
+    (video.backendMetadata?.source_shape as number[] | undefined);
+  if (!shape) return null;
+  const fps = (inner ? inner.fps : video.fps) ?? null;
+  return {
+    frames: shape[0],
+    height: shape[1],
+    width: shape[2],
+    channels: shape[3],
+    fps,
+  };
+}
+
+/**
  * Write ONLY the `videos_json` dataset for a plan-driven embed: each planned
- * video gets an embedded-pointer entry (`filename:"."`, backend pointing at
- * `video{vi}/video` with the planned format/channel_order + crop-aware inner
- * shape/fps + source_video lineage); every other video is serialized normally.
- * The per-group image datasets are written separately by
+ * video gets the entry Python sleap-io writes for an embedded video (an
+ * `HDF5Video` over `video{vi}/video`, whose shape counts the EMBEDDED frames,
+ * plus the source_video lineage); every other video is serialized normally.
+ * The top-level `filename` is "." (Python writes the package's own path, which
+ * a byte-producing save doesn't know; both readers resolve either to the
+ * package). The per-group image datasets are written separately by
  * {@link writeEmbeddedVideoData}.
  */
 function writeEmbeddedVideosJson(
@@ -4183,29 +4205,29 @@ function writeEmbeddedVideosJson(
   const payload = labels.videos.map((video, videoIndex) => {
     const entry = plan.get(videoIndex);
     if (entry) {
-      // This video is being embedded - update metadata
-      const backend: Record<string, unknown> = {
-        filename: ".",
-        dataset: `video${videoIndex}/video`,
-        format: entry.format,
-        channel_order: entry.channelOrder,
-      };
       // For a cropped video, videos_json must describe the UNCROPPED inner frame
-      // (the crop rides /video_crops and is re-applied once on read); read the
-      // shape/fps from the inner backend, not the cropped facade.
-      const inner =
-        video.backend instanceof CropVideoBackend
-          ? video.backend.inner
-          : video.backend;
-      const innerShape =
-        inner?.shape ??
-        (video.backendMetadata?.source_shape as number[] | undefined);
-      if (innerShape) backend.shape = innerShape;
-      if (inner?.fps != null) backend.fps = inner.fps;
-
+      // (the crop rides /video_crops and is re-applied once on read).
+      const attrs = embeddedVideoAttrs(video);
       const outEntry: Record<string, unknown> = {
         filename: ".",
-        backend,
+        backend: {
+          type: "HDF5Video",
+          shape: attrs
+            ? [
+                entry.frameNumbers.length,
+                attrs.height,
+                attrs.width,
+                attrs.channels,
+              ]
+            : null,
+          filename: ".",
+          dataset: `video${videoIndex}/video`,
+          input_format: "channels_last",
+          convert_range: false,
+          has_embedded_images: true,
+          grayscale: attrs ? attrs.channels === 1 : null,
+          fps: attrs?.fps ?? null,
+        },
       };
       // Preserve the full source_video lineage (filename + backend incl. shape
       // + deeper chain), mirroring newer Python which nests it in videos_json as
@@ -4220,19 +4242,89 @@ function writeEmbeddedVideosJson(
 }
 
 /**
- * Write the per-video embedded image datasets (`video{vi}/video`,
- * `frame_numbers`, `frame_sizes`, `source_video`) for each planned video. Raw
- * entries copy the stored encoded blobs verbatim via `getFrameBuffer` (no
- * decode/re-encode); encode entries write the pre-collected bytes.
+ * HDF5 chunk width for a padded embedded video dataset written row by row
+ * (when the widest frame isn't known up front). Each written row allocates
+ * whole chunks, so this bounds the per-frame overhead to ~1/8 of the first
+ * frame's size while keeping chunk counts modest.
+ */
+export function paddedChunkWidth(firstFrameBytes: number): number {
+  let width = 4096;
+  while (width < firstFrameBytes / 8 && width < 262144) width *= 2;
+  return width;
+}
+
+/** View encoded bytes as the `int8` Python stores them as (no copy). */
+function asInt8(bytes: Uint8Array): Int8Array {
+  return new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+
+/**
+ * Write an embedded video dataset's attributes exactly as Python sleap-io:
+ * `format` and `channel_order` as variable-length UTF-8 strings, the source
+ * dimensions as int64 and `fps` as float64.
+ */
+function writeEmbeddedVideoAttrs(
+  ds: any,
+  format: string,
+  channelOrder: string,
+  attrs: EmbeddedVideoAttrs,
+): void {
+  ds.create_attribute("format", format);
+  ds.create_attribute("channel_order", channelOrder);
+  if (!attrs) return;
+  for (const key of ["frames", "height", "width", "channels"] as const) {
+    ds.create_attribute(
+      key,
+      BigInt64Array.from([BigInt(attrs[key])]),
+      [],
+      "<q",
+    );
+  }
+  if (attrs.fps != null) ds.create_attribute("fps", attrs.fps, [], "<d");
+}
+
+/**
+ * `{group}/frame_numbers` as Python sleap-io writes it: int64, or (for an
+ * empty embedded video, written from an empty list) an empty float64 array.
+ */
+function writeFrameNumbers(
+  file: any,
+  group: string,
+  frameNumbers: number[],
+): void {
+  file.create_dataset(
+    frameNumbers.length > 0
+      ? {
+          name: `${group}/frame_numbers`,
+          data: BigInt64Array.from(frameNumbers, (f) => BigInt(f)),
+          shape: [frameNumbers.length],
+          dtype: "<q",
+        }
+      : {
+          name: `${group}/frame_numbers`,
+          data: new Float64Array(0),
+          shape: [0],
+          dtype: "<d",
+        },
+  );
+}
+
+/**
+ * Write the per-video embedded image datasets for each planned video, in
+ * Python sleap-io's layout: `{group}/video` is a 2-D `int8` dataset with one
+ * encoded image per row, zero-padded to the widest image (Python's
+ * `fixed_length` default), with `format`, `channel_order` and the source's
+ * `frames`/`height`/`width`/`channels`/`fps` attributes; `frame_numbers` lists
+ * the source frame of each row; `source_video` records the lineage. A video
+ * with no frames is written as Python's empty embedded video (a 1-D empty
+ * dataset). Raw entries copy the stored encoded blobs verbatim via
+ * `getFrameBuffer`; encode entries write the pre-collected bytes.
  *
- * Peak memory: the raw path STREAMS stored blobs into a resizable 1-D `<B`
- * dataset in bounded byte windows (peak ~= 2x one window during a flush — the
- * window's blobs plus their concatenated buffer — plus the h5wasm MEMFS copy),
- * rather than holding every blob plus a full concatenated buffer at once. The
- * encode path keeps accumulate-then-write — its bytes are already fully in JS
- * memory (`frameData`), so there is nothing to stream. Either way the on-disk
- * `{group}/video` layout is byte-identical to a single concatenated write; the
- * reader slices it back into frames via `frame_sizes`.
+ * Peak memory: the raw path STREAMS stored blobs one row at a time into a
+ * chunked dataset whose width grows to the widest blob (the widest isn't known
+ * until every blob is read), rather than holding every blob at once. The
+ * encode path's bytes are already in memory, so it writes Python's contiguous
+ * dataset directly. Readers see the same rows either way.
  *
  * Backstop (raw path only): if a video planned N frames but fewer blobs could
  * be read, throw rather than silently write a file with the images stripped —
@@ -4251,19 +4343,10 @@ async function writeEmbeddedVideoData(
   let framesWritten = 0;
   for (const entry of plan.values()) {
     const group = `video${entry.videoIndex}`;
+    const video = labels.videos[entry.videoIndex];
     file.create_group(group);
 
-    // Write the source video lineage into the authoritative
-    // `{group}/source_video` HDF5 group — the location Python reads for an
-    // embedded `.pkg.slp` (it ignores videos_json's source_video for embedded
-    // videos). Mirrors Python `write_videos`' lineage pass. See #160.
-    const srcDict = sourceVideoDict(labels.videos[entry.videoIndex]);
-    if (srcDict) writeSourceVideoJson(file, group, srcDict);
-
-    // Write `{group}/video` and collect the frame numbers/sizes actually
-    // written. Raw entries stream stored blobs (low peak); encode entries write
-    // their pre-collected in-memory bytes in one shot.
-    const { writtenFns, sizes } =
+    const writtenFns =
       entry.kind === "raw"
         ? await writeRawEmbeddedVideo(file, group, entry)
         : writeEncodedEmbeddedVideo(file, group, entry);
@@ -4273,8 +4356,7 @@ async function writeEmbeddedVideoData(
     // read is anomalous data loss. Refuse to write a stripped file rather than
     // silently drop images (the #213 data-loss this fix prevents). Note
     // frameNumbers.length is always > 0 for a raw entry (planEmbedding skips
-    // 0-frame videos). The encode path keeps today's lenient behavior ->
-    // deferred follow-up.
+    // 0-frame videos).
     if (entry.kind === "raw" && writtenFns.length < entry.frameNumbers.length) {
       throw new Error(
         `embedding video${entry.videoIndex}: read ${writtenFns.length} of ` +
@@ -4283,110 +4365,93 @@ async function writeEmbeddedVideoData(
       );
     }
 
-    const ds = file.get(`${group}/video`);
-    if (ds) {
-      setStringAttr(ds, "format", entry.format);
-      setStringAttr(ds, "channel_order", entry.channelOrder);
-      if (entry.frameNumbers.length === 0) {
-        // An empty embedded video (embedAllVideos) keeps its source's shape and
-        // fps on the dataset, as Python sleap-io's _create_empty_embedded_video.
-        const video = labels.videos[entry.videoIndex];
-        const shape = video.shape;
-        if (shape) {
-          ds.create_attribute("frames", shape[0]);
-          ds.create_attribute("height", shape[1]);
-          ds.create_attribute("width", shape[2]);
-          ds.create_attribute("channels", shape[3]);
-        }
-        if (video.fps != null) ds.create_attribute("fps", video.fps);
-      }
-    }
+    writeEmbeddedVideoAttrs(
+      file.get(`${group}/video`),
+      entry.format,
+      entry.channelOrder,
+      embeddedVideoAttrs(video),
+    );
     if (totalFrames > 0 && writtenFns.length > 0) {
       framesWritten += writtenFns.length;
       reportProgress(onProgress, framesWritten, totalFrames, "Writing frames");
     }
-    file.create_dataset({
-      name: `${group}/frame_numbers`,
-      data: writtenFns,
-      shape: [writtenFns.length],
-      dtype: "<i4",
-    });
-    file.create_dataset({
-      name: `${group}/frame_sizes`,
-      data: sizes,
-      shape: [sizes.length],
-      dtype: "<i4",
-    });
+    writeFrameNumbers(file, group, writtenFns);
+
+    // Write the source video lineage into the authoritative
+    // `{group}/source_video` HDF5 group — the location Python reads for an
+    // embedded `.pkg.slp` (it ignores videos_json's source_video for embedded
+    // videos). Mirrors Python `write_videos`' lineage pass. See #160.
+    const srcDict = sourceVideoDict(video);
+    if (srcDict) writeSourceVideoJson(file, group, srcDict);
   }
 }
 
 /**
- * Raw path: stream a video's stored encoded blobs into a resizable 1-D `<B`
- * dataset at `{group}/video`, flushing to the dataset tail in bounded byte
- * windows so peak JS memory is ~2x one window during a flush (the window's blobs
- * plus their concatenated buffer) rather than every blob plus a full
- * concatenated buffer. The on-disk bytes are the in-order concatenation of the
- * blobs — byte-identical to an accumulate-then-write. A blob that reads back
- * null/empty is skipped (the caller's backstop then refuses to write a file
- * with dropped images). Returns the frame numbers/sizes actually written.
+ * Raw path: copy a video's stored encoded blobs, one per row, into a chunked
+ * 2-D `int8` dataset at `{group}/video` whose width grows to the widest blob,
+ * so only one blob is in memory at a time. A blob that reads back null/empty
+ * is skipped (the caller's backstop then refuses to write a file with dropped
+ * images). Returns the frame numbers written, in row order.
  */
 async function writeRawEmbeddedVideo(
   file: any,
   group: string,
   entry: EmbedPlanEntry,
-): Promise<{ writtenFns: number[]; sizes: number[] }> {
-  file.create_dataset({
-    name: `${group}/video`,
-    data: new Uint8Array(0),
-    shape: [0],
-    maxshape: [null],
-    chunks: [EMBED_VIDEO_CHUNK_BYTES],
-    dtype: "<B",
-  });
-  const vds = file.get(`${group}/video`);
-  const sizes: number[] = [];
+): Promise<number[]> {
+  const rows = entry.frameNumbers.length;
   const writtenFns: number[] = [];
-  let total = 0;
-  let win: Uint8Array[] = [];
-  let winBytes = 0;
-  const flush = () => {
-    if (winBytes === 0) return;
-    const buf = new Uint8Array(winBytes);
-    let o = 0;
-    for (const b of win) {
-      buf.set(b, o);
-      o += b.length;
-    }
-    vds.resize([total + winBytes]);
-    vds.write_slice([[total, total + winBytes]], buf);
-    total += winBytes;
-    win = [];
-    winBytes = 0;
-  };
+  let ds: any = null;
+  let width = 0;
   for (const fn of entry.frameNumbers) {
     const blob = await entry.video.getFrameBuffer(fn);
     if (!blob || blob.length === 0) continue;
-    win.push(blob);
-    winBytes += blob.length;
-    sizes.push(blob.length);
+    if (!ds) {
+      file.create_dataset({
+        name: `${group}/video`,
+        data: new Int8Array(0),
+        shape: [rows, 0],
+        maxshape: [rows, null],
+        chunks: [1, paddedChunkWidth(blob.length)],
+        dtype: "<b",
+      });
+      ds = file.get(`${group}/video`);
+    }
+    if (blob.length > width) {
+      width = blob.length;
+      ds.resize([rows, width]);
+    }
+    const row = writtenFns.length;
+    ds.write_slice(
+      [
+        [row, row + 1],
+        [0, blob.length],
+      ],
+      asInt8(blob),
+    );
     writtenFns.push(fn);
-    if (winBytes >= EMBED_WRITE_WINDOW_BYTES) flush();
   }
-  flush();
-  return { writtenFns, sizes };
+  if (!ds) {
+    file.create_dataset({
+      name: `${group}/video`,
+      data: new Int8Array(0),
+      shape: [0],
+      dtype: "<b",
+    });
+  }
+  return writtenFns;
 }
 
 /**
  * Encode path: write a video's pre-collected frame bytes (`entry.frameData`,
- * already fully in memory) as a single concatenated 1-D `<B` dataset at
- * `{group}/video`. Accumulate-then-write is appropriate here — there is nothing
- * to stream. Returns the frame numbers/sizes written.
+ * already fully in memory) exactly as Python sleap-io: a contiguous
+ * `[frames, widest]` `int8` dataset, each row zero-padded; for no frames,
+ * Python's empty `[0]` dataset. Returns the frame numbers written.
  */
 function writeEncodedEmbeddedVideo(
   file: any,
   group: string,
   entry: EmbedPlanEntry,
-): { writtenFns: number[]; sizes: number[] } {
+): number[] {
   const blobs: Uint8Array[] = [];
   const writtenFns: number[] = [];
   for (const fn of entry.frameNumbers) {
@@ -4395,21 +4460,27 @@ function writeEncodedEmbeddedVideo(
     blobs.push(blob);
     writtenFns.push(fn);
   }
-  const total = blobs.reduce((n, b) => n + b.length, 0);
-  const combined = new Uint8Array(total);
-  let off = 0;
-  for (const b of blobs) {
-    combined.set(b, off);
-    off += b.length;
+  if (blobs.length === 0) {
+    file.create_dataset({
+      name: `${group}/video`,
+      data: new Int8Array(0),
+      shape: [0],
+      dtype: "<b",
+    });
+    return writtenFns;
+  }
+  const width = blobs.reduce((w, b) => Math.max(w, b.length), 0);
+  const padded = new Int8Array(blobs.length * width);
+  for (let row = 0; row < blobs.length; row++) {
+    padded.set(asInt8(blobs[row]), row * width);
   }
   file.create_dataset({
     name: `${group}/video`,
-    data: combined,
-    shape: [combined.length],
-    dtype: "<B",
+    data: padded,
+    shape: [blobs.length, width],
+    dtype: "<b",
   });
-  const sizes = blobs.map((b) => b.length);
-  return { writtenFns, sizes };
+  return writtenFns;
 }
 
 /**

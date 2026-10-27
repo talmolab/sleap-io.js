@@ -1,43 +1,10 @@
 import { describe, it, expect, afterEach } from "../bun-test";
-import { inflate } from "pako";
+import { readPng } from "../png-read";
 import { encodePngPixels } from "../../src/video/png-encode.js";
 import {
   decodeEncoded,
   encodeImageDataToPng,
 } from "../../src/video/image-decode.js";
-
-/** Parse a PNG's IHDR color type and its unfiltered pixel bytes. */
-function readPng(png: Uint8Array): {
-  width: number;
-  height: number;
-  colorType: number;
-  pixels: Uint8Array;
-} {
-  const dv = new DataView(png.buffer, png.byteOffset, png.byteLength);
-  const width = dv.getUint32(16);
-  const height = dv.getUint32(20);
-  const colorType = png[25];
-  const idat: Uint8Array[] = [];
-  let off = 8;
-  while (off < png.length) {
-    const len = dv.getUint32(off);
-    const type = String.fromCharCode(...png.subarray(off + 4, off + 8));
-    if (type === "IDAT") idat.push(png.subarray(off + 8, off + 8 + len));
-    off += 12 + len;
-  }
-  const raw = inflate(Uint8Array.from(idat.flatMap((c) => [...c])));
-  const channels = { 0: 1, 4: 2, 2: 3, 6: 4 }[colorType] as number;
-  const stride = width * channels;
-  const pixels = new Uint8Array(stride * height);
-  for (let y = 0; y < height; y++) {
-    expect(raw[y * (stride + 1)]).toBe(0); // filter type None
-    pixels.set(
-      raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)),
-      y * stride,
-    );
-  }
-  return { width, height, colorType, pixels };
-}
 
 function ramp(n: number): Uint8Array {
   return Uint8Array.from({ length: n }, (_, i) => (i * 7) % 256);
@@ -115,7 +82,7 @@ describe("encodeImageDataToPng", () => {
     expect(png.colorType).toBe(2);
   });
 
-  it("never hands a non-ImageData frame to a browser canvas (WebKit rejects it)", async () => {
+  it("never hands a frame to a browser canvas (WebKit rejects non-ImageData)", async () => {
     // A browser-like canvas whose putImageData, like WebKit's, only accepts a
     // real ImageData: "Argument 1 ('imagedata') to
     // OffscreenCanvasRenderingContext2D.putImageData must be an instance of
@@ -129,37 +96,38 @@ describe("encodeImageDataToPng", () => {
     }
     let canvasUsed = false;
     class FakeOffscreenCanvas {
-      constructor(
-        public width: number,
-        public height: number,
-      ) {}
       getContext() {
-        return {
-          putImageData: (img: unknown) => {
-            if (!(img instanceof FakeImageData)) {
-              throw new TypeError(
-                "Argument 1 ('imagedata') to OffscreenCanvasRenderingContext2D.putImageData must be an instance of ImageData",
-              );
-            }
-            canvasUsed = true;
-          },
-        };
-      }
-      async convertToBlob() {
-        return new Blob([new Uint8Array([0x89, 0x50, 0x4e, 0x47])]);
+        canvasUsed = true;
+        return null;
       }
     }
     g.ImageData = FakeImageData;
     g.OffscreenCanvas = FakeOffscreenCanvas;
 
     const gray = { data: new Uint8ClampedArray(4 * 3), width: 4, height: 3 };
-    const png = readPng(await encodeImageDataToPng(gray));
-    expect(png.colorType).toBe(0);
+    expect(readPng(await encodeImageDataToPng(gray)).colorType).toBe(0);
+    const rgba = new FakeImageData(new Uint8ClampedArray(4 * 3 * 4), 4, 3);
+    await encodeImageDataToPng(rgba as unknown as ImageData);
     expect(canvasUsed).toBe(false);
+  });
 
-    // A real ImageData still takes the native canvas encoder.
-    const real = new FakeImageData(new Uint8ClampedArray(4 * 3 * 4), 4, 3);
-    await encodeImageDataToPng(real as unknown as ImageData);
-    expect(canvasUsed).toBe(true);
+  it("stores an RGBA ImageData as an RGB PNG, as Python sleap-io (no alpha)", async () => {
+    const data = Uint8ClampedArray.from({ length: 3 * 2 * 4 }, (_, i) =>
+      i % 4 === 3 ? 255 : i * 5,
+    );
+    const png = readPng(
+      await encodeImageDataToPng({ data, width: 3, height: 2 }),
+    );
+    expect(png.colorType).toBe(2);
+    expect([...png.pixels]).toEqual([...data].filter((_, i) => i % 4 !== 3));
+  });
+
+  it("keeps a RawFrame's explicit channel count, even 4", async () => {
+    const data = Uint8Array.from({ length: 2 * 2 * 4 }, (_, i) => i);
+    const png = readPng(
+      await encodeImageDataToPng({ data, width: 2, height: 2, channels: 4 }),
+    );
+    expect(png.colorType).toBe(6);
+    expect([...png.pixels]).toEqual([...data]);
   });
 });

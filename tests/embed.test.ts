@@ -141,44 +141,54 @@ describe("Frame Embedding", () => {
     expect(reloaded.videos[0].hasEmbeddedImages).toBe(false);
   });
 
-  it("writes frame_sizes dataset and reads frames correctly", async () => {
+  it("writes Python sleap-io's embedded layout and reads frames back", async () => {
     const labels = await loadSlp(
       path.join(fixtureRoot, "slp", "minimal_instance.pkg.slp"),
       { openVideos: true },
     );
+    const blobs = await Promise.all(
+      labels.videos[0].embeddedFrameIndices!.map((f) =>
+        labels.videos[0].getFrameBuffer(f),
+      ),
+    );
 
     const fs = await import("node:fs");
     const os = await import("node:os");
-    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sleap-sizes-"));
-    const tmpFile = path.join(tmpDir, "with_sizes.slp");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "sleap-layout-"));
+    const tmpFile = path.join(tmpDir, "layout.slp");
+    fs.writeFileSync(tmpFile, await saveSlpToBytes(labels, { embed: true }));
 
-    const bytes = await saveSlpToBytes(labels, { embed: true });
-    fs.writeFileSync(tmpFile, bytes);
-
-    // Verify frame_sizes dataset exists in the HDF5 file
     const { openH5File } = await import("../src/codecs/slp/h5.js");
-    const { file } = await openH5File(tmpFile);
-    const frameSizesDs = file.get("video0/frame_sizes");
-    expect(frameSizesDs).not.toBeNull();
-    const frameSizes = Array.from(frameSizesDs.value).map((v: any) =>
-      Number(v),
-    );
-    expect(frameSizes.length).toBeGreaterThan(0);
-    expect(frameSizes.every((s: number) => s > 0)).toBe(true);
+    const { file, close } = await openH5File(tmpFile);
+    try {
+      // One int8 row per frame, zero-padded to the widest (fixed_length), and
+      // no JS-only frame_sizes dataset.
+      const ds = file.get("video0/video");
+      expect(ds.shape).toEqual([
+        blobs.length,
+        Math.max(...blobs.map((b) => b!.length)),
+      ]);
+      expect(ds.dtype).toBe("<b");
+      expect(file.get("video0/frame_sizes")).toBeNull();
+      expect(file.get("video0/frame_numbers").dtype).toBe("<q");
+      expect(ds.attrs.format.value).toBe("png");
+      expect(ds.attrs.channel_order.value).toBe(
+        labels.videos[0].backend!.embeddedChannelOrder ?? "RGB",
+      );
+      for (const key of ["frames", "height", "width", "channels"]) {
+        expect(ds.attrs[key].dtype).toBe("<q");
+      }
+      const row = new Uint8Array(ds.slice([[0, 1], []]).buffer);
+      expect([...row.subarray(0, blobs[0]!.length)]).toEqual([...blobs[0]!]);
+    } finally {
+      close();
+    }
 
-    // Verify total of frame sizes matches the video dataset length
-    const videoDs = file.get("video0/video");
-    const videoData = videoDs.value;
-    const totalSize = frameSizes.reduce((sum: number, s: number) => sum + s, 0);
-    expect(totalSize).toBe(videoData.length);
-
-    // Read back and verify frames are accessible
     const reloaded = await readSlp(tmpFile, { openVideos: true });
     const frame = await reloaded.videos[0].getFrame(
       reloaded.labeledFrames[0].frameIdx,
     );
     expect(frame).not.toBeNull();
-
     fs.rmSync(tmpDir, { recursive: true });
   });
 

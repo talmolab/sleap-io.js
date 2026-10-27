@@ -176,6 +176,7 @@ export type {
 // handing off to the worker.
 export { buildSerializableEmbedPlan } from "../codecs/slp/write.js";
 export type {
+  EmbeddedVideoAttrs,
   SerializableEmbedEntry,
   SerializableEncodeEntry,
   SerializableEmbedPlan,

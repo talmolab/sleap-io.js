@@ -6,15 +6,14 @@
  * mp4 decode worker) and hands it over, transferred where it can be: an
  * `ImageBitmap`, raw pixels, or already-encoded PNG bytes. These helpers turn
  * that into a PNG and append it to the open destination file's
- * `video{i}/video` dataset in bounded windows, so neither the UI thread nor
- * the wasm heap ever holds the whole embedded video. It is the counterpart of
- * the raw-copy `appendEmbeddedVideos` in `h5-worker.ts`, and writes the same
- * on-disk layout as the main-thread `writeEmbeddedVideoData` (write.ts).
+ * `video{i}/video` dataset row by row, so neither the UI thread nor the wasm
+ * heap ever holds the whole embedded video. It writes Python sleap-io's
+ * on-disk layout, as the main-thread `writeEmbeddedVideoData` (write.ts) does.
  *
- * Inlined into `H5_WORKER_CODE`, where `setStringAttrWorker`,
- * `writeSourceVideoJsonWorker`, `EMBED_WRITE_WINDOW_BYTES` and
- * `EMBED_VIDEO_CHUNK_BYTES` come from. Kept as its own string so tests can
- * evaluate it directly (with those four supplied) against h5wasm on Node.
+ * Inlined into `H5_WORKER_CODE`, where `writeSourceVideoJsonWorker` comes
+ * from. Kept as its own string so tests can evaluate it directly (with that
+ * supplied) against h5wasm on Node. The dataset writer here is shared with the
+ * worker's raw-copy `appendEmbeddedVideos`.
  *
  * No backticks or `${` in the code below: it sits inside a template literal.
  *
@@ -87,6 +86,49 @@ async function zlibDeflateEnc(raw) {
   return new Uint8Array(await new Response(stream).arrayBuffer());
 }
 
+// libpng's adaptive row filtering (KEEP IN LOCKSTEP with png-encode.ts's
+// filterScanlines).
+function filterScanlinesEnc(pixels, width, height, channels) {
+  var stride = width * channels;
+  var out = new Uint8Array((stride + 1) * height);
+  var zero = new Uint8Array(stride);
+  var trial = new Uint8Array(stride);
+  for (var y = 0; y < height; y++) {
+    var cur = pixels.subarray(y * stride, y * stride + stride);
+    var prev = y > 0 ? pixels.subarray((y - 1) * stride, y * stride) : zero;
+    var rowStart = y * (stride + 1);
+    var bestFilter = 0;
+    var bestSum = Infinity;
+    for (var f = 0; f < 5; f++) {
+      var sum = 0;
+      for (var i = 0; i < stride; i++) {
+        var a = i >= channels ? cur[i - channels] : 0;
+        var b = prev[i];
+        var c = i >= channels ? prev[i - channels] : 0;
+        var pred = 0;
+        if (f === 1) pred = a;
+        else if (f === 2) pred = b;
+        else if (f === 3) pred = (a + b) >> 1;
+        else if (f === 4) {
+          var p = a + b - c;
+          var pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c);
+          pred = pa <= pb && pa <= pc ? a : pb <= pc ? b : c;
+        }
+        var v = (cur[i] - pred) & 0xff;
+        trial[i] = v;
+        sum += v < 128 ? v : 256 - v;
+      }
+      if (sum < bestSum) {
+        bestSum = sum;
+        bestFilter = f;
+        out.set(trial, rowStart + 1);
+      }
+    }
+    out[rowStart] = bestFilter;
+  }
+  return out;
+}
+
 async function encodePngEnc(pixels, width, height, channels) {
   var colorType = PNG_COLOR_TYPE_ENC[channels];
   if (colorType === undefined) {
@@ -99,10 +141,7 @@ async function encodePngEnc(pixels, width, height, channels) {
       ' channel(s): expected ' + stride * height + ' bytes, got ' + pixels.length + '.'
     );
   }
-  var raw = new Uint8Array((stride + 1) * height);
-  for (var y = 0; y < height; y++) {
-    raw.set(pixels.subarray(y * stride, y * stride + stride), y * (stride + 1) + 1);
-  }
+  var raw = filterScanlinesEnc(pixels, width, height, channels);
   var ihdr = new Uint8Array(13);
   var dv = new DataView(ihdr.buffer);
   dv.setUint32(0, width);
@@ -166,84 +205,107 @@ async function encodeFrameEnc(frame, collapseToGray) {
   return encodePngEnc(px.pixels, px.width, px.height, px.channels);
 }
 
-// --- streaming new-embed: dataset writer (same layout as write.ts's
-// writeEmbeddedVideoData and the raw-copy appendEmbeddedVideos) ---
-function beginEncodedVideoEnc(file, entry) {
-  var group = 'video' + entry.videoIndex;
-  file.create_group(group);
-  if (entry.sourceVideoJson) {
-    writeSourceVideoJsonWorker(file, group, entry.sourceVideoJson);
-  }
-  file.create_dataset({
-    name: group + '/video',
-    data: new Uint8Array(0),
-    shape: [0],
-    maxshape: [null],
-    chunks: [EMBED_VIDEO_CHUNK_BYTES],
-    dtype: '<B'
-  });
-  return {
-    entry: entry,
-    group: group,
-    vds: file.get(group + '/video'),
-    sizes: [],
-    frameNumbers: [],
-    total: 0,
-    win: [],
-    winBytes: 0
-  };
+// --- embedded video dataset writer, in Python sleap-io's layout (KEEP IN
+// LOCKSTEP with write.ts's writeEmbeddedVideoData). Shared by the raw-copy
+// appendEmbeddedVideos and the new-embed messages. '{group}/video' is a 2-D
+// int8 dataset, one encoded image per row, zero-padded; its width grows to the
+// widest image (chunked, since the widest isn't known until the last frame). ---
+
+// KEEP IN LOCKSTEP with write.ts's paddedChunkWidth.
+function paddedChunkWidthEnc(firstFrameBytes) {
+  var width = 4096;
+  while (width < firstFrameBytes / 8 && width < 262144) width *= 2;
+  return width;
 }
 
-function flushEncodedEnc(state) {
-  if (state.winBytes === 0) return;
-  var buf = new Uint8Array(state.winBytes);
-  var o = 0;
-  for (var k = 0; k < state.win.length; k++) { buf.set(state.win[k], o); o += state.win[k].length; }
-  state.vds.resize([state.total + state.winBytes]);
-  state.vds.write_slice([[state.total, state.total + state.winBytes]], buf);
-  state.total += state.winBytes;
-  state.win = [];
-  state.winBytes = 0;
+function beginPaddedVideoEnc(file, group, rows) {
+  file.create_group(group);
+  return { file: file, group: group, rows: rows, ds: null, width: 0, frameNumbers: [] };
+}
+
+function appendPaddedRowEnc(state, frameIdx, bytes) {
+  if (!bytes || bytes.length === 0) {
+    throw new Error(state.group + ': frame ' + frameIdx + ' has no image bytes');
+  }
+  var row = state.frameNumbers.length;
+  if (row >= state.rows) {
+    throw new Error(state.group + ': more frames than the ' + state.rows + ' planned');
+  }
+  if (!state.ds) {
+    state.file.create_dataset({
+      name: state.group + '/video',
+      data: new Int8Array(0),
+      shape: [state.rows, 0],
+      maxshape: [state.rows, null],
+      chunks: [1, paddedChunkWidthEnc(bytes.length)],
+      dtype: '<b'
+    });
+    state.ds = state.file.get(state.group + '/video');
+  }
+  if (bytes.length > state.width) {
+    state.width = bytes.length;
+    state.ds.resize([state.rows, state.width]);
+  }
+  state.ds.write_slice(
+    [[row, row + 1], [0, bytes.length]],
+    new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  );
+  state.frameNumbers.push(frameIdx);
+}
+
+// Attributes exactly as Python sleap-io (KEEP IN LOCKSTEP with write.ts's
+// writeEmbeddedVideoAttrs): variable-length UTF-8 strings, int64 dimensions,
+// float64 fps.
+function writeEmbeddedVideoAttrsEnc(ds, format, channelOrder, attrs) {
+  ds.create_attribute('format', format);
+  ds.create_attribute('channel_order', channelOrder);
+  if (!attrs) return;
+  var keys = ['frames', 'height', 'width', 'channels'];
+  for (var k = 0; k < keys.length; k++) {
+    ds.create_attribute(keys[k], BigInt64Array.from([BigInt(attrs[keys[k]])]), [], '<q');
+  }
+  if (attrs.fps != null) ds.create_attribute('fps', attrs.fps, [], '<d');
+}
+
+// Finish a video: an empty one becomes Python's empty embedded video (a 1-D
+// empty dataset); then attributes, frame_numbers (int64, or Python's empty
+// float64) and the source_video lineage.
+function finishPaddedVideoEnc(state, format, channelOrder, attrs, sourceVideoJson) {
+  var file = state.file;
+  if (!state.ds) {
+    file.create_dataset({ name: state.group + '/video', data: new Int8Array(0), shape: [0], dtype: '<b' });
+    state.ds = file.get(state.group + '/video');
+  }
+  writeEmbeddedVideoAttrsEnc(state.ds, format, channelOrder, attrs);
+  var fns = state.frameNumbers;
+  if (fns.length > 0) {
+    file.create_dataset({
+      name: state.group + '/frame_numbers',
+      data: BigInt64Array.from(fns, function(f) { return BigInt(f); }),
+      shape: [fns.length],
+      dtype: '<q'
+    });
+  } else {
+    file.create_dataset({ name: state.group + '/frame_numbers', data: new Float64Array(0), shape: [0], dtype: '<d' });
+  }
+  if (sourceVideoJson) writeSourceVideoJsonWorker(file, state.group, sourceVideoJson);
+  file.flush();
+  return { framesWritten: fns.length };
+}
+
+// --- streaming new-embed messages ---
+function beginEncodedVideoEnc(file, entry) {
+  var state = beginPaddedVideoEnc(file, 'video' + entry.videoIndex, entry.frameNumbers.length);
+  state.entry = entry;
+  return state;
 }
 
 function appendEncodedBytesEnc(state, frameIdx, bytes) {
-  if (!bytes || bytes.length === 0) {
-    throw new Error('embedding video' + state.entry.videoIndex + ': frame ' + frameIdx + ' encoded to no bytes');
-  }
-  state.win.push(bytes);
-  state.winBytes += bytes.length;
-  state.sizes.push(bytes.length);
-  state.frameNumbers.push(frameIdx);
-  if (state.winBytes >= EMBED_WRITE_WINDOW_BYTES) flushEncodedEnc(state);
+  appendPaddedRowEnc(state, frameIdx, bytes);
 }
 
 function endEncodedVideoEnc(file, state) {
-  flushEncodedEnc(state);
   var entry = state.entry;
-  setStringAttrWorker(state.vds, 'format', entry.format);
-  setStringAttrWorker(state.vds, 'channel_order', entry.channelOrder);
-  if (entry.emptyAttrs) {
-    // An empty embedded video keeps its source's shape and fps on the dataset,
-    // as write.ts (and Python sleap-io's _create_empty_embedded_video).
-    state.vds.create_attribute('frames', entry.emptyAttrs.frames);
-    state.vds.create_attribute('height', entry.emptyAttrs.height);
-    state.vds.create_attribute('width', entry.emptyAttrs.width);
-    state.vds.create_attribute('channels', entry.emptyAttrs.channels);
-    if (entry.emptyAttrs.fps != null) state.vds.create_attribute('fps', entry.emptyAttrs.fps);
-  }
-  file.create_dataset({
-    name: state.group + '/frame_numbers',
-    data: state.frameNumbers,
-    shape: [state.frameNumbers.length],
-    dtype: '<i4'
-  });
-  file.create_dataset({
-    name: state.group + '/frame_sizes',
-    data: state.sizes,
-    shape: [state.sizes.length],
-    dtype: '<i4'
-  });
-  file.flush();
-  return { framesWritten: state.frameNumbers.length };
+  return finishPaddedVideoEnc(state, entry.format, entry.channelOrder, entry.videoAttrs, entry.sourceVideoJson);
 }
 `;

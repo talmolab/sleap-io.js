@@ -93,63 +93,46 @@ export function isImageDataLike(
 }
 
 /**
- * Encode a frame's raw pixels to PNG bytes. Used when embedding a frame that a
- * backend returns as pixels rather than pre-encoded bytes; the stored `format`
- * for such frames MUST be "png". Browser-safe.
+ * Encode a frame's raw pixels to PNG bytes, as Python sleap-io stores an
+ * embedded frame. Used when embedding a frame that a backend returns as pixels
+ * rather than pre-encoded bytes; the stored `format` for such frames MUST be
+ * "png". Browser-safe, pure JS.
  *
- * A real `ImageData` (always RGBA) uses the browser's native encoder
- * (`OffscreenCanvas`). Anything else, such as {@link GrayscaleVideoBackend}'s
- * 1-channel {@link RawFrame}, is encoded in pure JS with its own channel count:
- * canvas `putImageData` only accepts a real `ImageData` and throws on a plain
- * object ("must be an instance of ImageData"), and 1- or 3-channel data isn't
- * RGBA anyway. A grayscale frame therefore becomes a grayscale PNG, as Python
- * sleap-io writes.
+ * An `ImageData` (RGBA by construction, real or a plain RGBA object) is stored
+ * as a 3-channel RGB PNG: video frames have no alpha, and Python reads a PNG
+ * back with exactly the channels it stores, so an RGBA PNG would come back as
+ * a 4-channel image. A {@link RawFrame} keeps its own channel count, so
+ * {@link GrayscaleVideoBackend}'s 1-channel frame becomes a grayscale PNG. (The
+ * browser's canvas encoder isn't used: it can only write RGBA, and its
+ * `putImageData` throws on anything but a real `ImageData`.)
  */
 export async function encodeImageDataToPng(
   img: ImageData | RawFrame,
 ): Promise<Uint8Array> {
-  if (
-    typeof OffscreenCanvas !== "undefined" &&
-    typeof ImageData !== "undefined" &&
-    img instanceof ImageData
-  ) {
-    const canvas = new OffscreenCanvas(img.width, img.height);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      throw new Error("Failed to get 2D context to encode a frame to PNG");
+  const { data, width, height } = img;
+  const explicit = "channels" in img ? img.channels : undefined;
+  const pixels = width * height;
+  if (explicit === undefined && data.length === pixels * 4) {
+    const rgb = new Uint8Array(pixels * 3);
+    for (let p = 0, i = 0, o = 0; p < pixels; p++, i += 4, o += 3) {
+      rgb[o] = data[i];
+      rgb[o + 1] = data[i + 1];
+      rgb[o + 2] = data[i + 2];
     }
-    ctx.putImageData(img, 0, 0);
-    const blob = await canvas.convertToBlob({ type: "image/png" });
-    return new Uint8Array(await blob.arrayBuffer());
+    return encodePngPixels(rgb, width, height, 3);
   }
-  const channels =
-    ("channels" in img ? img.channels : undefined) ??
-    img.data.length / (img.width * img.height);
-  return encodePngPixels(img.data, img.width, img.height, channels);
+  return encodePngPixels(data, width, height, explicit ?? data.length / pixels);
 }
 
 /**
- * Encode an opaque `ImageBitmap` to PNG bytes. Browser: draw straight to an
- * `OffscreenCanvas` and `convertToBlob`. Node: rasterize via {@link
- * rasterizeBitmap} (skia) then {@link encodeImageDataToPng}. Browser-safe.
+ * Encode an opaque `ImageBitmap` to PNG bytes as Python sleap-io stores it (an
+ * RGB PNG; see {@link encodeImageDataToPng}): rasterize it (OffscreenCanvas in
+ * a browser, skia on Node), then encode. Browser-safe.
  */
 export async function encodeBitmapToPng(
   bitmap: ImageBitmap,
 ): Promise<Uint8Array> {
-  // Browser: single OffscreenCanvas — draw the bitmap, then convertToBlob.
-  if (typeof OffscreenCanvas !== "undefined") {
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      throw new Error("Failed to get 2D context to encode a frame to PNG");
-    }
-    ctx.drawImage(bitmap as unknown as CanvasImageSource, 0, 0);
-    const blob = await canvas.convertToBlob({ type: "image/png" });
-    return new Uint8Array(await blob.arrayBuffer());
-  }
-  // Node: rasterize (skia drawImage) to ImageData, then PNG-encode it.
-  const img = await rasterizeBitmap(bitmap);
-  return encodeImageDataToPng(img);
+  return encodeImageDataToPng(await rasterizeBitmap(bitmap));
 }
 
 /** PNG / JPEG magic-byte sniff for undecoded encoded frame bytes. */

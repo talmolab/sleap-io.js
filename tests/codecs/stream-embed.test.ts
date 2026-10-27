@@ -12,9 +12,10 @@ import { describe, it, expect } from "../bun-test";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { inflate } from "pako";
+import { readPng } from "../png-read";
 import { ready, File as H5File } from "h5wasm/node";
 import { readSlp } from "../../src/codecs/slp/read.js";
+import { loadSlp } from "../../src/index.js";
 import {
   buildSerializableEmbedPlan,
   saveSlpStructureToBytes,
@@ -30,6 +31,7 @@ import {
 } from "../../src/codecs/slp/stream-embed.js";
 import { EMBED_ENCODE_WORKER_CODE } from "../../src/codecs/slp/embed-encode-worker.js";
 import { H5_WORKER_CODE } from "../../src/codecs/slp/h5-worker.js";
+import { filterScanlines } from "../../src/video/png-encode.js";
 import { GrayscaleVideoBackend } from "../../src/video/grayscale-backend.js";
 import { Labels } from "../../src/model/labels.js";
 import { Video } from "../../src/model/video.js";
@@ -39,6 +41,12 @@ import { Instance } from "../../src/model/instance.js";
 import type { VideoBackend, VideoFrame } from "../../src/video/backend.js";
 
 type Helpers = {
+  filterScanlinesEnc: (
+    pixels: Uint8Array,
+    w: number,
+    h: number,
+    channels: number,
+  ) => Uint8Array;
   encodePngEnc: (
     pixels: Uint8Array,
     w: number,
@@ -66,24 +74,14 @@ type Helpers = {
   ) => { framesWritten: number };
 };
 
-/** Evaluate the worker helpers with the four names `H5_WORKER_CODE` supplies. */
+/** Evaluate the worker helpers with what `H5_WORKER_CODE` supplies them. */
 function loadHelpers({
-  windowBytes = 32 * 1024 * 1024,
   compressionStream = (globalThis as { CompressionStream?: unknown })
     .CompressionStream,
 }: {
-  windowBytes?: number;
   compressionStream?: unknown;
 } = {}): Helpers {
-  // Same as h5-worker.ts's setStringAttrWorker / writeSourceVideoJsonWorker.
-  const setStringAttrWorker = (
-    target: { create_attribute: (...a: unknown[]) => void },
-    name: string,
-    value: string,
-  ) => {
-    const n = new TextEncoder().encode(value).length;
-    target.create_attribute(name, value, null, `S${n}`);
-  };
+  // Same as h5-worker.ts's writeSourceVideoJsonWorker (for small metadata).
   const writeSourceVideoJsonWorker = (
     file: {
       create_group: (p: string) => void;
@@ -93,28 +91,16 @@ function loadHelpers({
     dict: unknown,
   ) => {
     file.create_group(`${group}/source_video`);
-    setStringAttrWorker(
-      file.get(`${group}/source_video`),
-      "json",
-      JSON.stringify(dict),
-    );
+    file
+      .get(`${group}/source_video`)
+      .create_attribute("json", JSON.stringify(dict));
   };
   const make = new Function(
-    "setStringAttrWorker",
     "writeSourceVideoJsonWorker",
-    "EMBED_WRITE_WINDOW_BYTES",
-    "EMBED_VIDEO_CHUNK_BYTES",
     "CompressionStream",
-    EMBED_ENCODE_WORKER_CODE +
-      "\nreturn { encodePngEnc, encodeFrameEnc, beginEncodedVideoEnc, appendEncodedBytesEnc, endEncodedVideoEnc };",
+    `${EMBED_ENCODE_WORKER_CODE}\nreturn { encodePngEnc, encodeFrameEnc, filterScanlinesEnc, beginEncodedVideoEnc, appendEncodedBytesEnc, endEncodedVideoEnc };`,
   );
-  return make(
-    setStringAttrWorker,
-    writeSourceVideoJsonWorker,
-    windowBytes,
-    1 << 20,
-    compressionStream,
-  ) as Helpers;
+  return make(writeSourceVideoJsonWorker, compressionStream) as Helpers;
 }
 
 /** A sink over an open h5wasm file, serialized like the worker's queue. */
@@ -151,35 +137,6 @@ function fileSink(file: unknown, helpers: Helpers) {
       }),
   };
   return { sink, calls };
-}
-
-/** Parse a PNG's color type and unfiltered pixels. */
-function readPng(png: Uint8Array) {
-  const dv = new DataView(png.buffer, png.byteOffset, png.byteLength);
-  const width = dv.getUint32(16);
-  const height = dv.getUint32(20);
-  const colorType = png[25];
-  const idat: number[] = [];
-  let off = 8;
-  while (off < png.length) {
-    const len = dv.getUint32(off);
-    const type = String.fromCharCode(...png.subarray(off + 4, off + 8));
-    if (type === "IDAT") idat.push(...png.subarray(off + 8, off + 8 + len));
-    off += 12 + len;
-  }
-  const raw = inflate(Uint8Array.from(idat));
-  const channels = ({ 0: 1, 4: 2, 2: 3, 6: 4 } as Record<number, number>)[
-    colorType
-  ];
-  const stride = width * channels;
-  const pixels = new Uint8Array(stride * height);
-  for (let y = 0; y < height; y++) {
-    pixels.set(
-      raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)),
-      y * stride,
-    );
-  }
-  return { width, height, colorType, channels, pixels };
 }
 
 const W = 6;
@@ -232,9 +189,7 @@ async function streamSave(
   labels: Labels,
   embed: "user" | "user+suggestions" | "all",
   tag: string,
-  opts: Parameters<typeof appendEncodedVideos>[3] & {
-    windowBytes?: number;
-  } = {},
+  opts: Parameters<typeof appendEncodedVideos>[3] = {},
 ) {
   const file = tmpFile(tag);
   fs.writeFileSync(file, await saveSlpStructureToBytes(labels, { embed }));
@@ -243,10 +198,7 @@ async function streamSave(
   });
   await ready;
   const h5 = new H5File(file, "a");
-  const { sink, calls } = fileSink(
-    h5,
-    loadHelpers({ windowBytes: opts.windowBytes }),
-  );
+  const { sink, calls } = fileSink(h5, loadHelpers());
   try {
     await appendEncodedVideos(sink, labels, plan.encodeEntries, opts);
   } finally {
@@ -261,10 +213,7 @@ describe("appendEncodedVideos — streaming new-embed to disk", () => {
     const video = new Video({ filename: "clip.mp4", backend });
     const labels = labelsOn([video], [5, 0, 3]);
 
-    // A tiny write window forces several flushes into the resizable dataset.
-    const { file } = await streamSave(labels, "user", "rgb", {
-      windowBytes: 64,
-    });
+    const { file } = await streamSave(labels, "user", "rgb");
     const streamed = await readSlp(file, { openVideos: true });
 
     const memFile = tmpFile("mem");
@@ -287,6 +236,82 @@ describe("appendEncodedVideos — streaming new-embed to disk", () => {
       }
       expect([...png.pixels]).toEqual([...want]);
     }
+  });
+
+  it("writes the same datasets, dtypes and attributes as the in-memory save (Python's layout)", async () => {
+    // Frames of different PNG sizes, so the streamed width has to grow.
+    const a = new Video({
+      filename: "a.mp4",
+      backend: rgbaBackend("a.mp4").backend,
+    });
+    const b = new Video({
+      filename: "b.mp4",
+      backend: rgbaBackend("b.mp4").backend,
+    });
+    const labels = labelsOn([a, b], [0, 9, 4]);
+    const { file } = await streamSave(labels, "user", "layout");
+    const memFile = tmpFile("layout-mem");
+    fs.writeFileSync(memFile, await saveSlpToBytes(labels, { embed: "user" }));
+
+    await ready;
+    const dump = (p: string) => {
+      const f = new H5File(p, "r");
+      try {
+        return ["video0", "video1"].map((g) => {
+          const ds = f.get(`${g}/video`) as any;
+          const fns = f.get(`${g}/frame_numbers`) as any;
+          const rows =
+            ds.shape.length === 2
+              ? Array.from({ length: ds.shape[0] }, (_, r) => {
+                  const row = new Uint8Array(ds.slice([[r, r + 1], []]).buffer);
+                  let end = row.length;
+                  while (end > 0 && row[end - 1] === 0) end--;
+                  return [...row.subarray(0, end)];
+                })
+              : [];
+          return {
+            dtype: ds.dtype,
+            width: ds.shape[1] ?? null,
+            rows,
+            attrs: Object.fromEntries(
+              Object.entries(ds.attrs).map(([k, v]: [string, any]) => [
+                k,
+                [v.dtype, String(v.value)],
+              ]),
+            ),
+            frameNumbers: [
+              fns.dtype,
+              Array.from(fns.value as ArrayLike<bigint | number>, Number),
+            ],
+            sizes: f.get(`${g}/frame_sizes`) ? "present" : "absent",
+            sourceVideo: (f.get(`${g}/source_video`) as any).attrs.json.dtype,
+          };
+        });
+      } finally {
+        f.close();
+      }
+    };
+    const streamed = dump(file);
+    const inMemory = dump(memFile);
+    expect(streamed).toEqual(inMemory);
+    expect(streamed[0].dtype).toBe("<b");
+    expect(streamed[0].width).toBe(
+      Math.max(...streamed[0].rows.map((r) => r.length)),
+    );
+    expect(streamed[0].frameNumbers).toEqual(["<q", [0, 4, 9]]);
+    expect(streamed[0].sizes).toBe("absent");
+    expect(Object.keys(streamed[0].attrs).sort()).toEqual([
+      "channel_order",
+      "channels",
+      "format",
+      "fps",
+      "frames",
+      "height",
+      "width",
+    ]);
+    // An empty embedded video: Python's 1-D empty dataset, float64 frame numbers.
+    expect(streamed[1].width).toBeNull();
+    expect(streamed[1].frameNumbers).toEqual(["<d", []]);
   });
 
   it("reads a grayscale video's inner decoder and collapses to one channel in the worker", async () => {
@@ -324,7 +349,7 @@ describe("appendEncodedVideos — streaming new-embed to disk", () => {
 
     const { file, plan } = await streamSave(labels, "user", "empty");
     expect(plan.encodeEntries.map((e) => e.frameNumbers)).toEqual([[1], []]);
-    expect(plan.encodeEntries[1].emptyAttrs).toEqual({
+    expect(plan.encodeEntries[1].videoAttrs).toEqual({
       frames: 20,
       height: H,
       width: W,
@@ -441,6 +466,28 @@ describe("worker frame encoding", () => {
     expect([...png.pixels]).toEqual([...pixels]);
   });
 
+  it("filters rows exactly as the main-thread encoder (libpng's adaptive choice)", () => {
+    const helpers = loadHelpers();
+    for (const channels of [1, 3]) {
+      const w = 37;
+      const h = 23;
+      // Smooth gradients plus noise, so each filter type wins somewhere.
+      const px = Uint8Array.from({ length: w * h * channels }, (_, i) => {
+        const x = Math.floor(i / channels) % w;
+        const y = Math.floor(i / channels / w);
+        return (x * 3 + y * 5 + ((i * 2654435761) >>> 28)) & 0xff;
+      });
+      const main = filterScanlines(px, w, h, channels);
+      expect([...helpers.filterScanlinesEnc(px, w, h, channels)]).toEqual([
+        ...main,
+      ]);
+      const used = new Set(
+        Array.from({ length: h }, (_, y) => main[y * (w * channels + 1)]),
+      );
+      expect(used.size).toBeGreaterThan(1);
+    }
+  });
+
   it("stores already-encoded PNG bytes verbatim", async () => {
     const helpers = loadHelpers();
     const png = await helpers.encodePngEnc(
@@ -481,5 +528,84 @@ describe("worker frame encoding", () => {
     payload.data.fill(0);
     expect(data[0]).toBe(7);
     expect(payload.rgba).toBe(true);
+  });
+});
+
+describe("worker raw copy (re-saving a pkg.slp) — Python's layout", () => {
+  it("copies stored images into the same datasets and attributes as the in-memory save", async () => {
+    const fixture = path.join(
+      path.dirname(new URL(import.meta.url).pathname),
+      "../data/slp/minimal_instance.pkg.slp",
+    );
+    const labels = await loadSlp(fixture, { openVideos: true });
+
+    // In memory: a plain re-save preserves (raw-copies) the stored images.
+    const memFile = tmpFile("raw-mem");
+    fs.writeFileSync(memFile, await saveSlpToBytes(labels));
+
+    // Worker: structure, then the real worker code's appendEmbeddedVideos.
+    const out = tmpFile("raw-worker");
+    fs.writeFileSync(out, await saveSlpStructureToBytes(labels));
+    const plan = await buildSerializableEmbedPlan(labels, false, fixture);
+    expect(plan.entries.length).toBe(1);
+    await ready;
+    const src = new H5File(fixture, "r");
+    const dest = new H5File(out, "a");
+    try {
+      const run = new Function(
+        "self",
+        `${H5_WORKER_CODE}\nreturn function(s, d, e) { currentSourceFile = s; currentDestFile = d; return appendEmbeddedVideos(e); };`,
+      )({ postMessage() {} });
+      const res = run(src, dest, plan.entries);
+      expect(res.perVideo).toEqual([
+        { videoIndex: 0, framesWritten: plan.entries[0].frameNumbers.length },
+      ]);
+    } finally {
+      dest.close();
+      src.close();
+    }
+
+    const dump = (p: string) => {
+      const f = new H5File(p, "r");
+      try {
+        const ds = f.get("video0/video") as any;
+        const fns = f.get("video0/frame_numbers") as any;
+        return {
+          dtype: ds.dtype,
+          shape: ds.shape,
+          rows: Array.from({ length: ds.shape[0] }, (_, r) => [
+            ...new Uint8Array(ds.slice([[r, r + 1], []]).buffer),
+          ]),
+          attrs: Object.fromEntries(
+            Object.entries(ds.attrs).map(([k, v]: [string, any]) => [
+              k,
+              [v.dtype, String(v.value)],
+            ]),
+          ),
+          frameNumbers: [
+            fns.dtype,
+            Array.from(fns.value as ArrayLike<bigint | number>, Number),
+          ],
+          sizes: f.get("video0/frame_sizes") ? "present" : "absent",
+        };
+      } finally {
+        f.close();
+      }
+    };
+    const worker = dump(out);
+    expect(worker).toEqual(dump(memFile));
+    expect(worker.dtype).toBe("<b");
+    expect(worker.shape.length).toBe(2);
+    expect(worker.sizes).toBe("absent");
+
+    const reloaded = await readSlp(out, { openVideos: true });
+    const frame = await reloaded.videos[0].getFrameBuffer(
+      reloaded.videos[0].embeddedFrameIndices![0],
+    );
+    expect([...frame!]).toEqual([
+      ...(await labels.videos[0].getFrameBuffer(
+        labels.videos[0].embeddedFrameIndices![0],
+      ))!,
+    ]);
   });
 });
