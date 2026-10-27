@@ -10,6 +10,7 @@
  */
 import { describe, it, expect } from "../bun-test";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { readPng } from "../png-read";
@@ -533,9 +534,8 @@ describe("worker frame encoding", () => {
 
 describe("worker raw copy (re-saving a pkg.slp) — Python's layout", () => {
   it("copies stored images into the same datasets and attributes as the in-memory save", async () => {
-    const fixture = path.join(
-      path.dirname(new URL(import.meta.url).pathname),
-      "../data/slp/minimal_instance.pkg.slp",
+    const fixture = fileURLToPath(
+      new URL("../data/slp/minimal_instance.pkg.slp", import.meta.url),
     );
     const labels = await loadSlp(fixture, { openVideos: true });
 
