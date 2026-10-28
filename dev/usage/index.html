@@ -1042,6 +1042,27 @@ changes the loaded <code>Labels</code>.</p>
 
 <span class="c1">// Restore source video references (strip embedded data)</span>
 <span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">"output.slp"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">embed</span><span class="o">:</span><span class="w"> </span><span class="s2">"source"</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Embed exactly these frames (any frames, labeled or not)</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">"output.slp"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">embed</span><span class="o">:</span><span class="w"> </span><span class="p">[</span>
+<span class="w">    </span><span class="p">[</span><span class="nx">labels</span><span class="p">.</span><span class="nx">videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="mf">100</span><span class="p">],</span>
+<span class="w">    </span><span class="p">[</span><span class="nx">labels</span><span class="p">.</span><span class="nx">videos</span><span class="p">[</span><span class="mf">0</span><span class="p">],</span><span class="w"> </span><span class="mf">250</span><span class="p">],</span>
+<span class="w">  </span><span class="p">],</span>
+<span class="p">});</span>
+
+<span class="c1">// Leave videos with no frames to embed as external references</span>
+<span class="c1">// (by default they become empty embedded videos, as in Python sleap-io)</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">"output.slp"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">embed</span><span class="o">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span><span class="w"> </span><span class="nx">embedAllVideos</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Report progress, and cancel by returning false (throws ExportCancelled)</span>
+<span class="k">await</span><span class="w"> </span><span class="nx">saveSlp</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">"output.slp"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">embed</span><span class="o">:</span><span class="w"> </span><span class="s2">"user"</span><span class="p">,</span>
+<span class="w">  </span><span class="nx">onProgress</span><span class="o">:</span><span class="w"> </span><span class="p">(</span><span class="nx">current</span><span class="p">,</span><span class="w"> </span><span class="nx">total</span><span class="p">,</span><span class="w"> </span><span class="nx">message</span><span class="p">)</span><span class="w"> </span><span class="p">=&gt;</span><span class="w"> </span><span class="p">{</span>
+<span class="w">    </span><span class="nx">console</span><span class="p">.</span><span class="nx">log</span><span class="p">(</span><span class="nx">message</span><span class="p">,</span><span class="w"> </span><span class="nx">current</span><span class="p">,</span><span class="w"> </span><span class="nx">total</span><span class="p">);</span>
+<span class="w">    </span><span class="k">return</span><span class="w"> </span><span class="o">!</span><span class="nx">userClickedCancel</span><span class="p">;</span>
+<span class="w">  </span><span class="p">},</span>
+<span class="p">});</span>
 </code></pre></div>
 <h2 id="multi-file-loading">Multi-File Loading<a class="headerlink" href="#multi-file-loading" title="Permanent link">&para;</a></h2>
 <p>Load and save multiple SLP files in parallel:</p>

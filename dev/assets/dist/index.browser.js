@@ -13,6 +13,7 @@ import {
   EXISTS_TTL_MS,
   Embedding,
   ErrorMode,
+  ExportCancelled,
   FrameStrategy,
   GrayscaleVideoBackend,
   IDENTITY_INSTANCE_MATCHER,
@@ -85,6 +86,7 @@ import {
   _relinkFromPredicted,
   _resolveMergedIsNegative,
   anchorCandidate,
+  appendEncodedVideos,
   applyPrefixSwap,
   attachConfigSkeleton,
   buildExpectedSidecars,
@@ -236,7 +238,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-XYOWIRA3.js";
+} from "./chunk-BIXXY54I.js";
 import {
   Camera,
   CameraGroup,
@@ -313,6 +315,7 @@ export {
   Edge,
   Embedding,
   ErrorMode,
+  ExportCancelled,
   FrameGroup,
   FrameStrategy,
   GDRIVE_HOSTS,
@@ -404,6 +407,7 @@ export {
   _relinkFromPredicted,
   _resolveMergedIsNegative,
   anchorCandidate,
+  appendEncodedVideos,
   applyPrefixSwap,
   attachConfigSkeleton,
   buildExpectedSidecars,

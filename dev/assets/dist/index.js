@@ -13,6 +13,7 @@ import {
   EXISTS_TTL_MS,
   Embedding,
   ErrorMode,
+  ExportCancelled,
   FrameStrategy,
   GrayscaleVideoBackend,
   IDENTITY_INSTANCE_MATCHER,
@@ -88,6 +89,7 @@ import {
   _relinkFromPredicted,
   _resolveMergedIsNegative,
   anchorCandidate,
+  appendEncodedVideos,
   applyPrefixSwap,
   attachConfigSkeleton,
   buildExpectedSidecars,
@@ -130,6 +132,7 @@ import {
   drawSquare,
   drawTrails,
   drawTriangle,
+  encodePngPixels,
   encodeRle,
   encodeWkb,
   encodeYamlSkeleton,
@@ -245,7 +248,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-XYOWIRA3.js";
+} from "./chunk-BIXXY54I.js";
 import {
   Camera,
   CameraGroup,
@@ -635,7 +638,6 @@ function loadTrackMate(filename, options) {
 import * as fs6 from "fs";
 import * as path2 from "path";
 import YAML from "yaml";
-import { deflate } from "pako";
 var READ_IMAGE_EXTENSIONS = [".jpg", ".jpeg", ".png", ".tiff", ".bmp"];
 var IMAGE_EXTENSIONS = [
   ".jpg",
@@ -1442,88 +1444,7 @@ function isImageData(img) {
   return !!img && typeof img === "object" && typeof img.width === "number" && typeof img.height === "number" && !!img.data && typeof img.data.length === "number";
 }
 function encodePng(rgba, width, height, compressLevel = null) {
-  const level = compressLevel == null ? 6 : Math.min(9, Math.max(0, compressLevel));
-  const stride = width * 4;
-  const raw = new Uint8Array((stride + 1) * height);
-  for (let y = 0; y < height; y++) {
-    raw[y * (stride + 1)] = 0;
-    raw.set(
-      rgba.subarray(y * stride, y * stride + stride),
-      y * (stride + 1) + 1
-    );
-  }
-  const compressed = deflate(raw, {
-    level
-  });
-  const ihdr = new Uint8Array(13);
-  const dv = new DataView(ihdr.buffer);
-  dv.setUint32(0, width);
-  dv.setUint32(4, height);
-  ihdr[8] = 8;
-  ihdr[9] = 6;
-  ihdr[10] = 0;
-  ihdr[11] = 0;
-  ihdr[12] = 0;
-  const signature = new Uint8Array([
-    137,
-    80,
-    78,
-    71,
-    13,
-    10,
-    26,
-    10
-  ]);
-  const chunks = [
-    signature,
-    pngChunk("IHDR", ihdr),
-    pngChunk("IDAT", compressed),
-    pngChunk("IEND", new Uint8Array(0))
-  ];
-  const total = chunks.reduce((sum, c) => sum + c.length, 0);
-  const out = new Uint8Array(total);
-  let off = 0;
-  for (const c of chunks) {
-    out.set(c, off);
-    off += c.length;
-  }
-  return out;
-}
-function pngChunk(type, data) {
-  const typeBytes = new Uint8Array([
-    type.charCodeAt(0),
-    type.charCodeAt(1),
-    type.charCodeAt(2),
-    type.charCodeAt(3)
-  ]);
-  const out = new Uint8Array(12 + data.length);
-  const dv = new DataView(out.buffer);
-  dv.setUint32(0, data.length);
-  out.set(typeBytes, 4);
-  out.set(data, 8);
-  const crcInput = new Uint8Array(4 + data.length);
-  crcInput.set(typeBytes, 0);
-  crcInput.set(data, 4);
-  dv.setUint32(8 + data.length, crc32(crcInput));
-  return out;
-}
-var CRC_TABLE = null;
-function crc32(bytes) {
-  if (CRC_TABLE === null) {
-    CRC_TABLE = new Uint32Array(256);
-    for (let n = 0; n < 256; n++) {
-      let c = n;
-      for (let k = 0; k < 8; k++) {
-        c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
-      }
-      CRC_TABLE[n] = c >>> 0;
-    }
-  }
-  let crc = 4294967295;
-  for (let i = 0; i < bytes.length; i++) {
-    crc = CRC_TABLE[(crc ^ bytes[i]) & 255] ^ crc >>> 8;
-  }
-  return (crc ^ 4294967295) >>> 0;
+  return encodePngPixels(rgba, width, height, 4, compressLevel);
 }
 function fmt6(x) {
   return x.toFixed(6);
@@ -3506,6 +3427,7 @@ export {
   Edge,
   Embedding,
   ErrorMode,
+  ExportCancelled,
   FrameGroup,
   FrameStrategy,
   GDRIVE_HOSTS,
@@ -3601,6 +3523,7 @@ export {
   _relinkFromPredicted,
   _resolveMergedIsNegative,
   anchorCandidate,
+  appendEncodedVideos,
   applyOverlay,
   applyPrefixSwap,
   attachConfigSkeleton,

@@ -4167,6 +4167,115 @@ function isPairs(points) {
   return Array.isArray(points) && points.length > 0 && Array.isArray(points[0]);
 }
 
+// src/video/png-encode.ts
+import { deflate } from "pako";
+var COLOR_TYPE = { 1: 0, 2: 4, 3: 2, 4: 6 };
+function encodePngPixels(pixels, width, height, channels, compressLevel = null) {
+  const colorType = COLOR_TYPE[channels];
+  if (colorType === void 0) {
+    throw new Error(
+      `Cannot PNG-encode a frame with ${channels} channels (expected 1\u20134).`
+    );
+  }
+  const stride = width * channels;
+  if (pixels.length !== stride * height) {
+    throw new Error(
+      `Cannot PNG-encode a ${width}x${height} frame with ${channels} channel(s): expected ${stride * height} bytes, got ${pixels.length}.`
+    );
+  }
+  const raw = subFilterScanlines(pixels, width, height, channels);
+  const compressed = deflate(
+    raw,
+    compressLevel == null ? { level: 1, strategy: Z_RLE } : {
+      level: Math.min(9, Math.max(0, compressLevel))
+    }
+  );
+  const ihdr = new Uint8Array(13);
+  const dv = new DataView(ihdr.buffer);
+  dv.setUint32(0, width);
+  dv.setUint32(4, height);
+  ihdr[8] = 8;
+  ihdr[9] = colorType;
+  ihdr[10] = 0;
+  ihdr[11] = 0;
+  ihdr[12] = 0;
+  const signature = new Uint8Array([
+    137,
+    80,
+    78,
+    71,
+    13,
+    10,
+    26,
+    10
+  ]);
+  const chunks = [
+    signature,
+    pngChunk("IHDR", ihdr),
+    pngChunk("IDAT", compressed),
+    pngChunk("IEND", new Uint8Array(0))
+  ];
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const out = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) {
+    out.set(c, off);
+    off += c.length;
+  }
+  return out;
+}
+var Z_RLE = 3;
+function subFilterScanlines(pixels, width, height, channels) {
+  const stride = width * channels;
+  const out = new Uint8Array((stride + 1) * height);
+  for (let y = 0; y < height; y++) {
+    const o = y * (stride + 1);
+    const r = y * stride;
+    out[o] = 1;
+    for (let i = 0; i < channels; i++) out[o + 1 + i] = pixels[r + i];
+    for (let i = channels; i < stride; i++) {
+      out[o + 1 + i] = pixels[r + i] - pixels[r + i - channels] & 255;
+    }
+  }
+  return out;
+}
+function pngChunk(type, data) {
+  const typeBytes = new Uint8Array([
+    type.charCodeAt(0),
+    type.charCodeAt(1),
+    type.charCodeAt(2),
+    type.charCodeAt(3)
+  ]);
+  const out = new Uint8Array(12 + data.length);
+  const dv = new DataView(out.buffer);
+  dv.setUint32(0, data.length);
+  out.set(typeBytes, 4);
+  out.set(data, 8);
+  const crcInput = new Uint8Array(4 + data.length);
+  crcInput.set(typeBytes, 0);
+  crcInput.set(data, 4);
+  dv.setUint32(8 + data.length, crc32(crcInput));
+  return out;
+}
+var CRC_TABLE = null;
+function crc32(bytes) {
+  if (CRC_TABLE === null) {
+    CRC_TABLE = new Uint32Array(256);
+    for (let n = 0; n < 256; n++) {
+      let c = n;
+      for (let k = 0; k < 8; k++) {
+        c = c & 1 ? 3988292384 ^ c >>> 1 : c >>> 1;
+      }
+      CRC_TABLE[n] = c >>> 0;
+    }
+  }
+  let crc = 4294967295;
+  for (let i = 0; i < bytes.length; i++) {
+    crc = CRC_TABLE[(crc ^ bytes[i]) & 255] ^ crc >>> 8;
+  }
+  return (crc ^ 4294967295) >>> 0;
+}
+
 // src/video/image-decode.ts
 async function rasterizeBitmap(bitmap) {
   if (typeof OffscreenCanvas !== "undefined") {
@@ -4203,48 +4312,22 @@ function isImageDataLike(value) {
   return v != null && typeof v.width === "number" && typeof v.height === "number" && (v.data instanceof Uint8ClampedArray || v.data instanceof Uint8Array);
 }
 async function encodeImageDataToPng(img) {
-  if (typeof OffscreenCanvas !== "undefined") {
-    const canvas = new OffscreenCanvas(img.width, img.height);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      throw new Error("Failed to get 2D context to encode a frame to PNG");
+  const { data, width, height } = img;
+  const explicit = "channels" in img ? img.channels : void 0;
+  const pixels = width * height;
+  if (explicit === void 0 && data.length === pixels * 4) {
+    const rgb = new Uint8Array(pixels * 3);
+    for (let p = 0, i = 0, o = 0; p < pixels; p++, i += 4, o += 3) {
+      rgb[o] = data[i];
+      rgb[o + 1] = data[i + 1];
+      rgb[o + 2] = data[i + 2];
     }
-    ctx.putImageData(img, 0, 0);
-    const blob = await canvas.convertToBlob({ type: "image/png" });
-    return new Uint8Array(await blob.arrayBuffer());
+    return encodePngPixels(rgb, width, height, 3);
   }
-  try {
-    const sc = await import("skia-canvas");
-    const scMod = sc;
-    const rgba = img.data instanceof Uint8ClampedArray ? img.data : new Uint8ClampedArray(
-      img.data.buffer,
-      img.data.byteOffset,
-      img.data.byteLength
-    );
-    const skiaImg = new scMod.ImageData(rgba, img.width, img.height);
-    const canvas = new scMod.Canvas(img.width, img.height);
-    const ctx = canvas.getContext("2d");
-    ctx.putImageData(skiaImg, 0, 0);
-    return new Uint8Array(await canvas.toBuffer("png"));
-  } catch (err) {
-    throw new Error(
-      `Encoding a raw frame to PNG requires an image encoder (a browser with OffscreenCanvas, or the optional \`skia-canvas\` package on Node). Original error: ${err.message}`
-    );
-  }
+  return encodePngPixels(data, width, height, explicit ?? data.length / pixels);
 }
 async function encodeBitmapToPng(bitmap) {
-  if (typeof OffscreenCanvas !== "undefined") {
-    const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-    const ctx = canvas.getContext("2d");
-    if (!ctx) {
-      throw new Error("Failed to get 2D context to encode a frame to PNG");
-    }
-    ctx.drawImage(bitmap, 0, 0);
-    const blob = await canvas.convertToBlob({ type: "image/png" });
-    return new Uint8Array(await blob.arrayBuffer());
-  }
-  const img = await rasterizeBitmap(bitmap);
-  return encodeImageDataToPng(img);
+  return encodeImageDataToPng(await rasterizeBitmap(bitmap));
 }
 function isEncodedBytes(bytes) {
   if (bytes.length < 4) return false;
@@ -12265,6 +12348,273 @@ function medianOf(values) {
   return sorted.length % 2 === 0 ? (sorted[mid - 1] + sorted[mid]) / 2 : sorted[mid];
 }
 
+// src/codecs/slp/embed-encode-worker.ts
+var EMBED_ENCODE_WORKER_CODE = `
+// --- streaming new-embed: PNG encode (KEEP IN LOCKSTEP with
+// ../../video/png-encode.ts, which the main-thread embed path uses) ---
+var PNG_COLOR_TYPE_ENC = { 1: 0, 2: 4, 3: 2, 4: 6 };
+var CRC_TABLE_ENC = null;
+
+function crc32Enc(bytes) {
+  if (CRC_TABLE_ENC === null) {
+    CRC_TABLE_ENC = new Uint32Array(256);
+    for (var n = 0; n < 256; n++) {
+      var c = n;
+      for (var k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+      CRC_TABLE_ENC[n] = c >>> 0;
+    }
+  }
+  var crc = 0xffffffff;
+  for (var i = 0; i < bytes.length; i++) {
+    crc = CRC_TABLE_ENC[(crc ^ bytes[i]) & 0xff] ^ (crc >>> 8);
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunkEnc(type, data) {
+  var out = new Uint8Array(12 + data.length);
+  var dv = new DataView(out.buffer);
+  dv.setUint32(0, data.length);
+  for (var i = 0; i < 4; i++) out[4 + i] = type.charCodeAt(i);
+  out.set(data, 8);
+  dv.setUint32(8 + data.length, crc32Enc(out.subarray(4, 8 + data.length)));
+  return out;
+}
+
+// A zlib stream of STORED (uncompressed) deflate blocks: a valid PNG IDAT
+// where CompressionStream is unavailable. Bigger files, same pixels.
+function zlibStoredEnc(raw) {
+  var MAX = 65535;
+  var blocks = Math.max(1, Math.ceil(raw.length / MAX));
+  var out = new Uint8Array(2 + raw.length + blocks * 5 + 4);
+  out[0] = 0x78;
+  out[1] = 0x01;
+  var o = 2;
+  for (var b = 0; b < blocks; b++) {
+    var start = b * MAX;
+    var len = Math.min(MAX, raw.length - start);
+    out[o++] = b === blocks - 1 ? 1 : 0;
+    out[o++] = len & 0xff;
+    out[o++] = (len >>> 8) & 0xff;
+    out[o++] = ~len & 0xff;
+    out[o++] = (~len >>> 8) & 0xff;
+    out.set(raw.subarray(start, start + len), o);
+    o += len;
+  }
+  var a = 1, s = 0;
+  for (var i = 0; i < raw.length; i++) {
+    a = (a + raw[i]) % 65521;
+    s = (s + a) % 65521;
+  }
+  new DataView(out.buffer).setUint32(o, ((s << 16) | a) >>> 0);
+  return out;
+}
+
+async function zlibDeflateEnc(raw) {
+  if (typeof CompressionStream === 'undefined') return zlibStoredEnc(raw);
+  var stream = new Blob([raw]).stream().pipeThrough(new CompressionStream('deflate'));
+  return new Uint8Array(await new Response(stream).arrayBuffer());
+}
+
+// Every row Sub-filtered, as OpenCV (KEEP IN LOCKSTEP with png-encode.ts's
+// subFilterScanlines). Compression is CompressionStream's zlib, whose level
+// can't be set (the main thread's pako encoder uses OpenCV's level 1 + RLE).
+function subFilterScanlinesEnc(pixels, width, height, channels) {
+  var stride = width * channels;
+  var out = new Uint8Array((stride + 1) * height);
+  for (var y = 0; y < height; y++) {
+    var o = y * (stride + 1);
+    var r = y * stride;
+    out[o] = 1;
+    for (var c = 0; c < channels; c++) out[o + 1 + c] = pixels[r + c];
+    for (var i = channels; i < stride; i++) {
+      out[o + 1 + i] = (pixels[r + i] - pixels[r + i - channels]) & 0xff;
+    }
+  }
+  return out;
+}
+
+async function encodePngEnc(pixels, width, height, channels) {
+  var colorType = PNG_COLOR_TYPE_ENC[channels];
+  if (colorType === undefined) {
+    throw new Error('Cannot PNG-encode a frame with ' + channels + ' channels (expected 1-4).');
+  }
+  var stride = width * channels;
+  if (pixels.length !== stride * height) {
+    throw new Error(
+      'Cannot PNG-encode a ' + width + 'x' + height + ' frame with ' + channels +
+      ' channel(s): expected ' + stride * height + ' bytes, got ' + pixels.length + '.'
+    );
+  }
+  var raw = subFilterScanlinesEnc(pixels, width, height, channels);
+  var ihdr = new Uint8Array(13);
+  var dv = new DataView(ihdr.buffer);
+  dv.setUint32(0, width);
+  dv.setUint32(4, height);
+  ihdr[8] = 8;
+  ihdr[9] = colorType;
+  var chunks = [
+    new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunkEnc('IHDR', ihdr),
+    pngChunkEnc('IDAT', await zlibDeflateEnc(raw)),
+    pngChunkEnc('IEND', new Uint8Array(0))
+  ];
+  var total = 0;
+  for (var c = 0; c < chunks.length; c++) total += chunks[c].length;
+  var out = new Uint8Array(total);
+  var off = 0;
+  for (var d = 0; d < chunks.length; d++) { out.set(chunks[d], off); off += chunks[d].length; }
+  return out;
+}
+
+// Pixels of a transferred frame, ready to encode. A bitmap (or a pixels payload
+// flagged rgba, e.g. an ImageData) is RGBA by construction: its alpha is
+// dropped, as video frames have none. collapseToGray keeps channel 0 only,
+// exactly as grayscaleFrame (../../transform/frame.ts) - KEEP IN LOCKSTEP.
+function framePixelsEnc(frame, collapseToGray) {
+  var data, width, height, channels, rgba;
+  if (frame.kind === 'bitmap') {
+    var bmp = frame.bitmap;
+    width = bmp.width;
+    height = bmp.height;
+    var ctx = new OffscreenCanvas(width, height).getContext('2d');
+    if (!ctx) throw new Error('Failed to get a 2D context to read an embedded frame');
+    ctx.drawImage(bmp, 0, 0);
+    try { bmp.close(); } catch (e) {}
+    data = ctx.getImageData(0, 0, width, height).data;
+    channels = 4;
+    rgba = true;
+  } else {
+    data = frame.data;
+    width = frame.width;
+    height = frame.height;
+    channels = frame.channels;
+    rgba = !!frame.rgba;
+  }
+  var outCh = collapseToGray ? 1 : (rgba && channels === 4 ? 3 : channels);
+  if (outCh === channels) {
+    return { pixels: data instanceof Uint8Array ? data : new Uint8Array(data.buffer, data.byteOffset, data.byteLength), width: width, height: height, channels: channels };
+  }
+  var n = width * height;
+  var out = new Uint8Array(n * outCh);
+  for (var p = 0, i = 0, o = 0; p < n; p++, i += channels, o += outCh) {
+    for (var ch = 0; ch < outCh; ch++) out[o + ch] = data[i + ch];
+  }
+  return { pixels: out, width: width, height: height, channels: outCh };
+}
+
+// The bytes to store for one transferred frame.
+async function encodeFrameEnc(frame, collapseToGray) {
+  if (frame.kind === 'png') return frame.bytes;
+  var px = framePixelsEnc(frame, collapseToGray);
+  return encodePngEnc(px.pixels, px.width, px.height, px.channels);
+}
+
+// --- embedded video dataset writer, in Python sleap-io's layout (KEEP IN
+// LOCKSTEP with write.ts's writeEmbeddedVideoData). Shared by the raw-copy
+// appendEmbeddedVideos and the new-embed messages. '{group}/video' is a 2-D
+// int8 dataset, one encoded image per row, zero-padded; its width grows to the
+// widest image (chunked, since the widest isn't known until the last frame). ---
+
+// KEEP IN LOCKSTEP with write.ts's paddedChunkWidth.
+function paddedChunkWidthEnc(firstFrameBytes) {
+  var width = 4096;
+  while (width < firstFrameBytes / 8 && width < 262144) width *= 2;
+  return width;
+}
+
+function beginPaddedVideoEnc(file, group, rows) {
+  file.create_group(group);
+  return { file: file, group: group, rows: rows, ds: null, width: 0, frameNumbers: [] };
+}
+
+function appendPaddedRowEnc(state, frameIdx, bytes) {
+  if (!bytes || bytes.length === 0) {
+    throw new Error(state.group + ': frame ' + frameIdx + ' has no image bytes');
+  }
+  var row = state.frameNumbers.length;
+  if (row >= state.rows) {
+    throw new Error(state.group + ': more frames than the ' + state.rows + ' planned');
+  }
+  if (!state.ds) {
+    state.file.create_dataset({
+      name: state.group + '/video',
+      data: new Int8Array(0),
+      shape: [state.rows, 0],
+      maxshape: [state.rows, null],
+      chunks: [1, paddedChunkWidthEnc(bytes.length)],
+      dtype: '<b'
+    });
+    state.ds = state.file.get(state.group + '/video');
+  }
+  if (bytes.length > state.width) {
+    state.width = bytes.length;
+    state.ds.resize([state.rows, state.width]);
+  }
+  state.ds.write_slice(
+    [[row, row + 1], [0, bytes.length]],
+    new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  );
+  state.frameNumbers.push(frameIdx);
+}
+
+// Attributes exactly as Python sleap-io (KEEP IN LOCKSTEP with write.ts's
+// writeEmbeddedVideoAttrs): variable-length UTF-8 strings, int64 dimensions,
+// float64 fps.
+function writeEmbeddedVideoAttrsEnc(ds, format, channelOrder, attrs) {
+  ds.create_attribute('format', format);
+  ds.create_attribute('channel_order', channelOrder);
+  if (!attrs) return;
+  var keys = ['frames', 'height', 'width', 'channels'];
+  for (var k = 0; k < keys.length; k++) {
+    ds.create_attribute(keys[k], BigInt64Array.from([BigInt(attrs[keys[k]])]), [], '<q');
+  }
+  if (attrs.fps != null) ds.create_attribute('fps', attrs.fps, [], '<d');
+}
+
+// Finish a video: an empty one becomes Python's empty embedded video (a 1-D
+// empty dataset); then attributes, frame_numbers (int64, or Python's empty
+// float64) and the source_video lineage.
+function finishPaddedVideoEnc(state, format, channelOrder, attrs, sourceVideoJson) {
+  var file = state.file;
+  if (!state.ds) {
+    file.create_dataset({ name: state.group + '/video', data: new Int8Array(0), shape: [0], dtype: '<b' });
+    state.ds = file.get(state.group + '/video');
+  }
+  writeEmbeddedVideoAttrsEnc(state.ds, format, channelOrder, attrs);
+  var fns = state.frameNumbers;
+  if (fns.length > 0) {
+    file.create_dataset({
+      name: state.group + '/frame_numbers',
+      data: BigInt64Array.from(fns, function(f) { return BigInt(f); }),
+      shape: [fns.length],
+      dtype: '<q'
+    });
+  } else {
+    file.create_dataset({ name: state.group + '/frame_numbers', data: new Float64Array(0), shape: [0], dtype: '<d' });
+  }
+  if (sourceVideoJson) writeSourceVideoJsonWorker(file, state.group, sourceVideoJson);
+  file.flush();
+  return { framesWritten: fns.length };
+}
+
+// --- streaming new-embed messages ---
+function beginEncodedVideoEnc(file, entry) {
+  var state = beginPaddedVideoEnc(file, 'video' + entry.videoIndex, entry.frameNumbers.length);
+  state.entry = entry;
+  return state;
+}
+
+function appendEncodedBytesEnc(state, frameIdx, bytes) {
+  appendPaddedRowEnc(state, frameIdx, bytes);
+}
+
+function endEncodedVideoEnc(file, state) {
+  var entry = state.entry;
+  return finishPaddedVideoEnc(state, entry.format, entry.channelOrder, entry.videoAttrs, entry.sourceVideoJson);
+}
+`;
+
 // src/codecs/slp/h5-worker.ts
 var H5_WORKER_CODE = `
 // h5wasm streaming worker
@@ -12437,6 +12787,37 @@ self.onmessage = async function(e) {
         respond(id, appendResult);
         break;
 
+      // Streaming new-embed (embed-encode-worker.ts): one video at a time,
+      // begin -> appendEncodedFrame per frame -> end. Queued so frames are
+      // encoded and appended strictly in arrival order even though encoding
+      // awaits (this handler is async, so messages would otherwise interleave).
+      case 'beginEncodedVideo':
+        queueEncode(id, function() {
+          if (!currentDestFile) throw new Error('beginEncodedVideo: no dest file open (call openWrite or openAppend first)');
+          encodeState = beginEncodedVideoEnc(currentDestFile, payload.entry);
+          encodeState.collapseToGray = !!payload.collapseToGray;
+          return { success: true };
+        });
+        break;
+
+      case 'appendEncodedFrame':
+        queueEncode(id, async function() {
+          if (!encodeState) throw new Error('appendEncodedFrame: no video begun (call beginEncodedVideo first)');
+          var bytes = await encodeFrameEnc(payload.frame, encodeState.collapseToGray);
+          appendEncodedBytesEnc(encodeState, payload.frameIdx, bytes);
+          return { success: true };
+        });
+        break;
+
+      case 'endEncodedVideo':
+        queueEncode(id, function() {
+          if (!encodeState) throw new Error('endEncodedVideo: no video begun (call beginEncodedVideo first)');
+          var endResult = endEncodedVideoEnc(currentDestFile, encodeState);
+          encodeState = null;
+          return { success: true, framesWritten: endResult.framesWritten };
+        });
+        break;
+
       case 'openWrite':
         const openWriteResult = openWrite(
           payload.sab,
@@ -12514,6 +12895,20 @@ self.onmessage = async function(e) {
     respond(id, { success: false, error: errorMessage });
   }
 };
+
+// Streaming new-embed state: the video being written, and the chain that
+// serializes its queued messages.
+let encodeState = null;
+let encodeChain = Promise.resolve();
+
+function queueEncode(id, fn) {
+  encodeChain = encodeChain.then(fn).then(
+    function(result) { respond(id, result); },
+    function(error) {
+      respond(id, { success: false, error: (error && error.message) || String(error) });
+    }
+  );
+}
 
 function respond(id, data, transferables) {
   if (transferables) {
@@ -12833,7 +13228,23 @@ function createWriteRangeFile(parent, name, initialSize) {
       stream_ops[k] = function() { FS.forceLoadFile(node); return fn.apply(null, arguments); };
     })(sk, origStreamOps[sk]);
   }
+  // Write-behind: consecutive writes (HDF5 appends chunk after chunk at the
+  // end of the file) gather into one block of up to the bridge's transfer size
+  // and cross the bridge as ONE request, instead of one blocking round-trip per
+  // HDF5 write (a row-per-frame embedded video issues several small chunk
+  // writes per frame). Flushed before any read, truncate or close, so the file
+  // always reads back what was written.
+  var pending = null;
+  var pendingStart = 0;
+  var pendingLen = 0;
+  function flushPending() {
+    if (pendingLen === 0) return;
+    var len = pendingLen;
+    pendingLen = 0;
+    bridgeWrite(pendingStart, pending, 0, len, 'dest');
+  }
   stream_ops.read = function(stream, buffer, offset, length, position) {
+    flushPending();
     if (position >= writeFileSize) return 0;
     var end = position + length;
     if (end > writeFileSize) end = writeFileSize;
@@ -12848,12 +13259,27 @@ function createWriteRangeFile(parent, name, initialSize) {
     return got;
   };
   stream_ops.write = function(stream, buffer, offset, length, position) {
-    bridgeWrite(position, buffer, offset, length, 'dest');
+    if (pending === null) pending = new Uint8Array(rangeMaxChunk);
+    var contiguous = pendingLen > 0 && position === pendingStart + pendingLen;
+    if (!contiguous || pendingLen + length > pending.length) flushPending();
+    if (length >= pending.length) {
+      bridgeWrite(position, buffer, offset, length, 'dest');
+    } else {
+      if (pendingLen === 0) pendingStart = position;
+      pending.set(buffer.subarray(offset, offset + length), pendingLen);
+      pendingLen += length;
+    }
     if (position + length > writeFileSize) writeFileSize = position + length;
     return length;
   };
+  var origClose = stream_ops.close;
+  stream_ops.close = function(stream) {
+    flushPending();
+    if (origClose) return origClose.apply(null, arguments);
+  };
   // llseek: rely on the wrapped default (SEEK_END uses node.usedBytes -> writeFileSize).
   node.stream_ops = stream_ops;
+  node.flushPendingWrites = flushPending;
 
   // node_ops: override setattr so ftruncate is bridged (NOT written into MEMFS contents).
   var node_ops = {};
@@ -12861,6 +13287,7 @@ function createWriteRangeFile(parent, name, initialSize) {
   for (var nk in origNodeOps) node_ops[nk] = origNodeOps[nk];
   node_ops.setattr = function(n, attr) {
     if (attr.size !== undefined && attr.size !== null) {
+      flushPending();
       bridgeTruncate(attr.size, 'dest');
       writeFileSize = attr.size;
     }
@@ -13081,13 +13508,6 @@ async function openAppendOpfs(destOpfsPath, sourceFile, structureBytes, sourceFi
   };
 }
 
-// Per-window byte budget for appendEmbeddedVideos' streamed raw blob copy, and
-// the HDF5 chunk length (elements) for the 1-D embedded video byte dataset.
-// MUST match EMBED_WRITE_WINDOW_BYTES / EMBED_VIDEO_CHUNK_BYTES in write.ts
-// (~line 558) \u2014 keep them in lockstep.
-var EMBED_WRITE_WINDOW_BYTES = 32 * 1024 * 1024;
-var EMBED_VIDEO_CHUNK_BYTES = 1 << 20;
-
 // Reinterpret an h5wasm slice()/value read as a Uint8Array without copying when
 // possible (mirrors asUint8Array in ../../video/embedded-frame.ts \u2014 KEEP IN
 // LOCKSTEP). Crucially this reinterprets an Int8Array's (h5wasm dtype '<b')
@@ -13227,31 +13647,29 @@ function setStringAttrWorker(target, name, value) {
 
 // Worker-side writeSourceVideoJson (mirrors write.ts's writeSourceVideoJson -
 // KEEP IN LOCKSTEP): writes the source video's metadata JSON into
-// '{groupPath}/source_video', normally as a 'json' string attribute, or (only
-// if it would exceed the 64 KB HDF5 attribute ceiling) a 'json' dataset in the
-// same group instead.
+// '{groupPath}/source_video' as Python does, normally as a 'json' variable-
+// length string attribute, or (only if it would exceed the 64 KB HDF5
+// attribute ceiling) a scalar fixed-length bytes 'json' dataset instead.
 function writeSourceVideoJsonWorker(file, groupPath, sourceDict) {
   var blob = JSON.stringify(sourceDict);
   file.create_group(groupPath + '/source_video');
   var byteLength = new TextEncoder().encode(blob).length;
   if (byteLength <= 64000) {
-    setStringAttrWorker(file.get(groupPath + '/source_video'), 'json', blob);
+    file.get(groupPath + '/source_video').create_attribute('json', blob);
     return;
   }
-  file.create_dataset({ name: groupPath + '/source_video/json', data: [blob] });
+  file.create_dataset({ name: groupPath + '/source_video/json', data: blob, shape: [], dtype: 'S' + byteLength });
 }
 
-// Worker port of writeEmbeddedVideoData (write.ts ~2852) for the RAW path ONLY
+// Worker port of writeEmbeddedVideoData (write.ts) for the RAW path ONLY
 // (SerializableEmbedEntry - Task 1.1's re-save/raw-copy embed plan). Requires
 // openAppend to have already opened BOTH currentSourceFile and currentDestFile.
-// For each entry: creates 'video{videoIndex}' in the DEST, writes the
-// source_video lineage (if any), then streams the SOURCE group's stored blobs
-// (via readSourceBlob) into a new resizable 1-D <B 'video{videoIndex}/video'
-// dataset in bounded byte windows (mirrors writeRawEmbeddedVideo's create-empty
-// -> resize -> write_slice window pattern), and finally writes
-// frame_numbers/frame_sizes + format/channel_order attrs. Does NOT close either
-// file (the caller's subsequent 'close' message does that via closeAppendFiles,
-// so more writes could still follow).
+// For each entry: copies the SOURCE group's stored blobs (via readSourceBlob),
+// one per row, into 'video{videoIndex}' in the DEST in Python sleap-io's layout
+// (the shared padded-row writer in embed-encode-worker.ts), then its
+// attributes, frame_numbers and source_video lineage. Does NOT close either
+// file (the caller's subsequent 'close' message does that via
+// closeAppendFiles, so more writes could still follow).
 //
 // Backstop (mirrors the #213 data-loss guard in writeEmbeddedVideoData): an
 // entry's frameNumbers IS the exact stored set, so every stored index must read
@@ -13272,49 +13690,10 @@ function appendEmbeddedVideos(entries) {
   var perVideo = [];
   for (var e = 0; e < entries.length; e++) {
     var entry = entries[e];
-    var group = 'video' + entry.videoIndex;
-    currentDestFile.create_group(group);
-
-    if (entry.sourceVideoJson) {
-      writeSourceVideoJsonWorker(currentDestFile, group, entry.sourceVideoJson);
-    }
-
-    currentDestFile.create_dataset({
-      name: group + '/video',
-      data: new Uint8Array(0),
-      shape: [0],
-      maxshape: [null],
-      chunks: [EMBED_VIDEO_CHUNK_BYTES],
-      dtype: '<B'
-    });
-    var vds = currentDestFile.get(group + '/video'); // re-fetch handle (mirror write.ts pattern)
-
-    var sizes = [];
-    var writtenFns = [];
-    var total = 0;
-    var win = [];
-    var winBytes = 0;
-    var flush = function() {
-      if (winBytes === 0) return;
-      var buf = new Uint8Array(winBytes);
-      var o = 0;
-      for (var k = 0; k < win.length; k++) { buf.set(win[k], o); o += win[k].length; }
-      vds.resize([total + winBytes]);
-      vds.write_slice([[total, total + winBytes]], buf);
-      total += winBytes;
-      win = [];
-      winBytes = 0;
-    };
-
+    var state = beginPaddedVideoEnc(currentDestFile, 'video' + entry.videoIndex, entry.frameNumbers.length);
     for (var i = 0; i < entry.frameNumbers.length; i++) {
       var blob = readSourceBlob(entry.sourceGroup, i);
-      if (blob && blob.length > 0) {
-        win.push(blob);
-        winBytes += blob.length;
-        sizes.push(blob.length);
-        writtenFns.push(entry.frameNumbers[i]);
-        if (winBytes >= EMBED_WRITE_WINDOW_BYTES) flush();
-      }
+      if (blob && blob.length > 0) appendPaddedRowEnc(state, entry.frameNumbers[i], blob);
       doneFrames++;
       if (totalFrames > 0) {
         var pct = Math.floor((doneFrames / totalFrames) * 100);
@@ -13324,37 +13703,24 @@ function appendEmbeddedVideos(entries) {
         }
       }
     }
-    flush();
 
-    if (writtenFns.length < entry.frameNumbers.length) {
+    if (state.frameNumbers.length < entry.frameNumbers.length) {
       throw new Error(
-        'embedding video' + entry.videoIndex + ': read ' + writtenFns.length + ' of ' +
+        'embedding video' + entry.videoIndex + ': read ' + state.frameNumbers.length + ' of ' +
         entry.frameNumbers.length + ' planned frame(s) - refusing to write a file with dropped images.'
       );
     }
-
-    setStringAttrWorker(vds, 'format', entry.format);
-    setStringAttrWorker(vds, 'channel_order', entry.channelOrder);
-
-    currentDestFile.create_dataset({
-      name: group + '/frame_numbers',
-      data: writtenFns,
-      shape: [writtenFns.length],
-      dtype: '<i4'
-    });
-    currentDestFile.create_dataset({
-      name: group + '/frame_sizes',
-      data: sizes,
-      shape: [sizes.length],
-      dtype: '<i4'
-    });
-
-    perVideo.push({ videoIndex: entry.videoIndex, framesWritten: writtenFns.length });
+    var res = finishPaddedVideoEnc(
+      state, entry.format, entry.channelOrder, entry.videoAttrs || null, entry.sourceVideoJson
+    );
+    perVideo.push({ videoIndex: entry.videoIndex, framesWritten: res.framesWritten });
   }
 
   currentDestFile.flush();
   return { success: true, perVideo: perVideo };
 }
+
+${EMBED_ENCODE_WORKER_CODE}
 
 // HDF5 datatype class ids used by the in-place writer port (H5Tget_class).
 var H5T_ENUM_CLASS = 8;
@@ -13705,6 +14071,7 @@ function warnCleanup(op, path, e) {
 // second openAppend without an intervening close doesn't leak the first pair of
 // MEMFS mounts.
 function closeAppendFiles() {
+  encodeState = null;
   if (currentSourceFile) {
     try { currentSourceFile.close(); } catch (e) {}
     currentSourceFile = null;
@@ -14313,6 +14680,30 @@ var StreamingH5Writer = class {
     } finally {
       this.appendProgressCb = void 0;
     }
+  }
+  /**
+   * Streaming new-embed (see `appendEncodedVideos`): start writing
+   * `entry`'s `video{i}` group in the open DEST file. `collapseToGray` makes
+   * the worker keep one channel of each frame, as a grayscale video's reads.
+   */
+  async beginEncodedVideo(entry, collapseToGray) {
+    await this.send("beginEncodedVideo", { entry, collapseToGray });
+  }
+  /**
+   * PNG-encode (in the worker) and append one frame of the video begun with
+   * {@link beginEncodedVideo}. The frame's bitmap or buffer is transferred, so
+   * the caller must not use it afterwards.
+   */
+  async appendEncodedFrame(frameIdx, frame) {
+    const transfer = frame.kind === "bitmap" ? [frame.bitmap] : [
+      (frame.kind === "png" ? frame.bytes : frame.data).buffer
+    ];
+    await this.send("appendEncodedFrame", { frameIdx, frame }, transfer);
+  }
+  /** Finish the begun video: its frame index datasets and attributes. */
+  async endEncodedVideo() {
+    const res = await this.send("endEncodedVideo");
+    return { framesWritten: Number(res.framesWritten ?? 0) };
   }
   /**
    * SINGLE-file write B-seam for the in-place label save: open ONLY the DEST
@@ -16242,7 +16633,7 @@ function buildLabeledFrames(options) {
 }
 
 // src/codecs/slp/write.ts
-import { deflate } from "pako";
+import { deflate as deflate2 } from "pako";
 var _writeToFile = null;
 function _registerFileWriter(writer) {
   _writeToFile = writer;
@@ -16266,6 +16657,15 @@ function writeStringDataset(file, name, values) {
   setStringAttr(ds, "json", json);
 }
 var SPAWNED_ON = 0;
+var ExportCancelled = class extends Error {
+  constructor(message = "Export cancelled") {
+    super(message);
+    this.name = "ExportCancelled";
+  }
+};
+function reportProgress(report, current, total, message) {
+  if (report?.(current, total, message) === false) throw new ExportCancelled();
+}
 function isRawCopyable(video) {
   return !!(video.hasEmbeddedImages && video.backend?.getFrameBuffer);
 }
@@ -16578,8 +16978,6 @@ function writeSlpToFileLazy(file, labels) {
 }
 var DEFAULT_WRITE_WINDOW_FRAMES = 5e3;
 var WRITE_CHUNK_ROWS = 8192;
-var EMBED_WRITE_WINDOW_BYTES = 32 * 1024 * 1024;
-var EMBED_VIDEO_CHUNK_BYTES = 1 << 20;
 var FRAMES_FIELDS = [
   "frame_id",
   "video",
@@ -17436,14 +17834,20 @@ async function writeSlpBytes(labels, options, { includeEmbeddedData }) {
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
-  const plan = doEmbed ? await planEmbedding(labels, embedMode, options?.onProgress) : null;
+  const plan = doEmbed ? await planEmbedding(
+    labels,
+    embedMode,
+    options?.onProgress,
+    options?.embedAllVideos ?? true,
+    { readFrames: includeEmbeddedData }
+  ) : null;
   const fs = getH5FileSystem(module);
   const file = new module.File(memPath, "w");
   try {
     try {
       writeSlpToFile(file, writeLabels2, plan);
       if (includeEmbeddedData && plan && plan.size > 0) {
-        await writeEmbeddedVideoData(file, labels, plan);
+        await writeEmbeddedVideoData(file, labels, plan, options?.onProgress);
       }
     } finally {
       file.close();
@@ -17649,11 +18053,17 @@ var SOURCE_VIDEO_ATTR_LIMIT = 64e3;
 function writeSourceVideoJson(file, groupPath, sourceDict) {
   const blob = JSON.stringify(sourceDict);
   file.create_group(`${groupPath}/source_video`);
-  if (new TextEncoder().encode(blob).length <= SOURCE_VIDEO_ATTR_LIMIT) {
-    setStringAttr(file.get(`${groupPath}/source_video`), "json", blob);
+  const byteLength = new TextEncoder().encode(blob).length;
+  if (byteLength <= SOURCE_VIDEO_ATTR_LIMIT) {
+    file.get(`${groupPath}/source_video`).create_attribute("json", blob);
     return;
   }
-  file.create_dataset({ name: `${groupPath}/source_video/json`, data: [blob] });
+  file.create_dataset({
+    name: `${groupPath}/source_video/json`,
+    data: blob,
+    shape: [],
+    dtype: `S${byteLength}`
+  });
 }
 function writeVideoCrops(file, videos) {
   const crops = [];
@@ -18472,9 +18882,18 @@ function writeLabelTablesInPlace(file, update) {
     }
   }
 }
-async function planEmbedding(labels, embedMode, onProgress) {
+async function planEmbedding(labels, embedMode, onProgress, embedAllVideos = true, { readFrames = true } = {}) {
   const plan = /* @__PURE__ */ new Map();
   const isRealMode = embedMode !== false && embedMode !== "source";
+  if (Array.isArray(embedMode)) {
+    for (const [video] of embedMode) {
+      if (!labels.videos.includes(video)) {
+        throw new Error(
+          `embed lists a frame of a video that isn't in these labels: ${video.filename}`
+        );
+      }
+    }
+  }
   const toEncode = labels.videos.map(
     (video, vi) => isRealMode && video.backend && !isRawCopyable(video) ? selectEmbedFrames(labels, vi, embedMode) : []
   );
@@ -18497,6 +18916,20 @@ async function planEmbedding(labels, embedMode, onProgress) {
         format: video.backend.embeddedFormat ?? "png",
         channelOrder: video.backend.embeddedChannelOrder ?? "RGB"
       });
+    } else if (isRealMode && video.backend && !readFrames) {
+      const frameCount = video.shape?.[0];
+      const frameNumbers = toEncode[vi].filter(
+        (f) => frameCount == null || f < frameCount
+      );
+      if (frameNumbers.length === 0) continue;
+      plan.set(vi, {
+        kind: "encode",
+        videoIndex: vi,
+        video,
+        frameNumbers,
+        format: "png",
+        channelOrder: "RGB"
+      });
     } else if (isRealMode && video.backend) {
       const { frameData, encodedFormat } = await collectEncodedFrames(
         video,
@@ -18511,17 +18944,51 @@ async function planEmbedding(labels, embedMode, onProgress) {
         video,
         frameNumbers,
         format: encodedFormat ?? video.backendMetadata?.format ?? "png",
-        channelOrder: video.backendMetadata?.channel_order ?? "RGB",
+        channelOrder: "RGB",
         frameData
       });
     }
   }
+  if (isRealMode && embedAllVideos) {
+    labels.videos.forEach((video, vi) => {
+      if (plan.has(vi) || isRawCopyable(video)) return;
+      if (selectEmbedFrames(labels, vi, embedMode).length > 0) return;
+      plan.set(vi, {
+        kind: "encode",
+        videoIndex: vi,
+        video,
+        frameNumbers: [],
+        format: "png",
+        channelOrder: "RGB",
+        frameData: /* @__PURE__ */ new Map()
+      });
+    });
+  }
   return plan;
 }
-async function buildSerializableEmbedPlan(labels, embedMode, sourcePath) {
-  const plan = await planEmbedding(labels, embedMode);
+async function buildSerializableEmbedPlan(labels, embedMode, sourcePath, options = {}) {
+  const plan = await planEmbedding(
+    labels,
+    embedMode,
+    void 0,
+    options.allowEncode ? options.embedAllVideos ?? true : false,
+    { readFrames: false }
+  );
   const entries = [];
+  const encodeEntries = [];
   for (const entry of plan.values()) {
+    if (entry.kind === "encode" && options.allowEncode) {
+      const video = labels.videos[entry.videoIndex];
+      encodeEntries.push({
+        videoIndex: entry.videoIndex,
+        frameNumbers: [...entry.frameNumbers],
+        format: entry.format,
+        channelOrder: entry.channelOrder,
+        sourceVideoJson: sourceVideoDict(video),
+        videoAttrs: embeddedVideoAttrs(video)
+      });
+      continue;
+    }
     if (entry.kind !== "raw") {
       throw new Error(
         `buildSerializableEmbedPlan: video${entry.videoIndex} would use the new-embed ("encode") path, which the streaming writer's worker half does not support - this path is re-save/raw-copy of an already-embedded pkg.slp ONLY (new-embed of a continuous video is a deferred follow-up).`
@@ -18541,16 +19008,24 @@ async function buildSerializableEmbedPlan(labels, embedMode, sourcePath) {
       format: entry.format,
       channelOrder: entry.channelOrder,
       frameNumbers: [...entry.frameNumbers],
-      sourceVideoJson: sourceVideoDict(entry.video)
+      sourceVideoJson: sourceVideoDict(entry.video),
+      videoAttrs: embeddedVideoAttrs(entry.video)
     });
   }
-  return { sourcePath, entries };
+  return { sourcePath, entries, encodeEntries };
 }
 function selectEmbedFrames(labels, videoIndex, embedMode) {
-  const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
   const frameIndices = /* @__PURE__ */ new Set();
+  if (Array.isArray(embedMode)) {
+    const video = labels.videos[videoIndex];
+    for (const [v, frameIdx] of embedMode) {
+      if (v === video) frameIndices.add(frameIdx);
+    }
+    return Array.from(frameIndices).sort((a, b) => a - b);
+  }
+  const mode = embedMode === true ? "all" : String(embedMode).toLowerCase();
   const includeAllLabeled = mode === "all" || mode === "all+suggestions";
-  const includeSuggestions = mode === "suggestions" || mode === "user+suggestions" || mode === "all+suggestions";
+  const includeSuggestions = mode === "suggestions" || mode === "user+suggestions" || mode === "all" || mode === "all+suggestions";
   for (const frame of labels.labeledFrames) {
     if (labels.videos.indexOf(frame.video) !== videoIndex) continue;
     let include = false;
@@ -18582,7 +19057,12 @@ async function collectEncodedFrames(video, sortedFrames, progress) {
       frame = await video.getFrame(frameIdx, { pinned: true, prefetch: false });
     }
     progress.done += 1;
-    progress.report?.(progress.done, progress.total, "Embedding frames");
+    reportProgress(
+      progress.report,
+      progress.done,
+      progress.total,
+      "Embedding frames"
+    );
     if (!frame) {
       if (frameCount == null || frameIdx < frameCount)
         unreadable.push(frameIdx);
@@ -18618,23 +19098,42 @@ function frameToBytes(frame) {
   }
   return null;
 }
+function embeddedVideoAttrs(video) {
+  const inner = video.backend instanceof CropVideoBackend ? video.backend.inner : null;
+  const shape = (inner ? inner.shape : video.shape) ?? video.backendMetadata?.source_shape;
+  if (!shape) return null;
+  const fps = (inner ? inner.fps : video.fps) ?? null;
+  return {
+    frames: shape[0],
+    height: shape[1],
+    width: shape[2],
+    channels: shape[3],
+    fps
+  };
+}
 function writeEmbeddedVideosJson(file, labels, plan) {
   const payload = labels.videos.map((video, videoIndex) => {
     const entry = plan.get(videoIndex);
     if (entry) {
-      const backend = {
-        filename: ".",
-        dataset: `video${videoIndex}/video`,
-        format: entry.format,
-        channel_order: entry.channelOrder
-      };
-      const inner = video.backend instanceof CropVideoBackend ? video.backend.inner : video.backend;
-      const innerShape = inner?.shape ?? video.backendMetadata?.source_shape;
-      if (innerShape) backend.shape = innerShape;
-      if (inner?.fps != null) backend.fps = inner.fps;
+      const attrs = embeddedVideoAttrs(video);
       const outEntry = {
         filename: ".",
-        backend
+        backend: {
+          type: "HDF5Video",
+          shape: attrs ? [
+            entry.frameNumbers.length,
+            attrs.height,
+            attrs.width,
+            attrs.channels
+          ] : null,
+          filename: ".",
+          dataset: `video${videoIndex}/video`,
+          input_format: "channels_last",
+          convert_range: false,
+          has_embedded_images: true,
+          grayscale: attrs ? attrs.channels === 1 : null,
+          fps: attrs?.fps ?? null
+        }
       };
       const srcDict = sourceVideoDict(video);
       if (srcDict) outEntry.source_video = srcDict;
@@ -18644,77 +19143,116 @@ function writeEmbeddedVideosJson(file, labels, plan) {
   });
   file.create_dataset({ name: "videos_json", data: payload });
 }
-async function writeEmbeddedVideoData(file, labels, plan) {
+function paddedChunkWidth(firstFrameBytes) {
+  let width = 4096;
+  while (width < firstFrameBytes / 8 && width < 262144) width *= 2;
+  return width;
+}
+function asInt8(bytes) {
+  return new Int8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+}
+function writeEmbeddedVideoAttrs(ds, format, channelOrder, attrs) {
+  ds.create_attribute("format", format);
+  ds.create_attribute("channel_order", channelOrder);
+  if (!attrs) return;
+  for (const key of ["frames", "height", "width", "channels"]) {
+    ds.create_attribute(
+      key,
+      BigInt64Array.from([BigInt(attrs[key])]),
+      [],
+      "<q"
+    );
+  }
+  if (attrs.fps != null) ds.create_attribute("fps", attrs.fps, [], "<d");
+}
+function writeFrameNumbers(file, group, frameNumbers) {
+  file.create_dataset(
+    frameNumbers.length > 0 ? {
+      name: `${group}/frame_numbers`,
+      data: BigInt64Array.from(frameNumbers, (f) => BigInt(f)),
+      shape: [frameNumbers.length],
+      dtype: "<q"
+    } : {
+      name: `${group}/frame_numbers`,
+      data: new Float64Array(0),
+      shape: [0],
+      dtype: "<d"
+    }
+  );
+}
+async function writeEmbeddedVideoData(file, labels, plan, onProgress) {
+  const totalFrames = [...plan.values()].reduce(
+    (n, e) => n + e.frameNumbers.length,
+    0
+  );
+  let framesWritten = 0;
   for (const entry of plan.values()) {
     const group = `video${entry.videoIndex}`;
+    const video = labels.videos[entry.videoIndex];
     file.create_group(group);
-    const srcDict = sourceVideoDict(labels.videos[entry.videoIndex]);
-    if (srcDict) writeSourceVideoJson(file, group, srcDict);
-    const { writtenFns, sizes } = entry.kind === "raw" ? await writeRawEmbeddedVideo(file, group, entry) : writeEncodedEmbeddedVideo(file, group, entry);
+    const writtenFns = entry.kind === "raw" ? await writeRawEmbeddedVideo(file, group, entry) : writeEncodedEmbeddedVideo(file, group, entry);
     if (entry.kind === "raw" && writtenFns.length < entry.frameNumbers.length) {
       throw new Error(
         `embedding video${entry.videoIndex}: read ${writtenFns.length} of ${entry.frameNumbers.length} planned frame(s) - refusing to write a file with dropped images.`
       );
     }
-    const ds = file.get(`${group}/video`);
-    if (ds) {
-      setStringAttr(ds, "format", entry.format);
-      setStringAttr(ds, "channel_order", entry.channelOrder);
+    writeEmbeddedVideoAttrs(
+      file.get(`${group}/video`),
+      entry.format,
+      entry.channelOrder,
+      embeddedVideoAttrs(video)
+    );
+    if (totalFrames > 0 && writtenFns.length > 0) {
+      framesWritten += writtenFns.length;
+      reportProgress(onProgress, framesWritten, totalFrames, "Writing frames");
     }
-    file.create_dataset({
-      name: `${group}/frame_numbers`,
-      data: writtenFns,
-      shape: [writtenFns.length],
-      dtype: "<i4"
-    });
-    file.create_dataset({
-      name: `${group}/frame_sizes`,
-      data: sizes,
-      shape: [sizes.length],
-      dtype: "<i4"
-    });
+    writeFrameNumbers(file, group, writtenFns);
+    const srcDict = sourceVideoDict(video);
+    if (srcDict) writeSourceVideoJson(file, group, srcDict);
   }
 }
 async function writeRawEmbeddedVideo(file, group, entry) {
-  file.create_dataset({
-    name: `${group}/video`,
-    data: new Uint8Array(0),
-    shape: [0],
-    maxshape: [null],
-    chunks: [EMBED_VIDEO_CHUNK_BYTES],
-    dtype: "<B"
-  });
-  const vds = file.get(`${group}/video`);
-  const sizes = [];
+  const rows = entry.frameNumbers.length;
   const writtenFns = [];
-  let total = 0;
-  let win = [];
-  let winBytes = 0;
-  const flush = () => {
-    if (winBytes === 0) return;
-    const buf = new Uint8Array(winBytes);
-    let o = 0;
-    for (const b of win) {
-      buf.set(b, o);
-      o += b.length;
-    }
-    vds.resize([total + winBytes]);
-    vds.write_slice([[total, total + winBytes]], buf);
-    total += winBytes;
-    win = [];
-    winBytes = 0;
-  };
+  let ds = null;
+  let width = 0;
   for (const fn of entry.frameNumbers) {
     const blob = await entry.video.getFrameBuffer(fn);
     if (!blob || blob.length === 0) continue;
-    win.push(blob);
-    winBytes += blob.length;
-    sizes.push(blob.length);
+    if (!ds) {
+      file.create_dataset({
+        name: `${group}/video`,
+        data: new Int8Array(0),
+        shape: [rows, 0],
+        maxshape: [rows, null],
+        chunks: [1, paddedChunkWidth(blob.length)],
+        dtype: "<b"
+      });
+      ds = file.get(`${group}/video`);
+    }
+    if (blob.length > width) {
+      width = blob.length;
+      ds.resize([rows, width]);
+    }
+    const row = writtenFns.length;
+    ds.write_slice(
+      [
+        [row, row + 1],
+        [0, blob.length]
+      ],
+      asInt8(blob)
+    );
     writtenFns.push(fn);
-    if (winBytes >= EMBED_WRITE_WINDOW_BYTES) flush();
   }
-  flush();
-  return { writtenFns, sizes };
+  if (!ds) {
+    file.create_dataset({
+      name: `${group}/video`,
+      data: new Int8Array(0),
+      shape: [0],
+      dtype: "<b"
+    });
+  }
+  return writtenFns;
 }
 function writeEncodedEmbeddedVideo(file, group, entry) {
   const blobs = [];
@@ -18725,21 +19263,27 @@ function writeEncodedEmbeddedVideo(file, group, entry) {
     blobs.push(blob);
     writtenFns.push(fn);
   }
-  const total = blobs.reduce((n, b) => n + b.length, 0);
-  const combined = new Uint8Array(total);
-  let off = 0;
-  for (const b of blobs) {
-    combined.set(b, off);
-    off += b.length;
+  if (blobs.length === 0) {
+    file.create_dataset({
+      name: `${group}/video`,
+      data: new Int8Array(0),
+      shape: [0],
+      dtype: "<b"
+    });
+    return writtenFns;
+  }
+  const width = blobs.reduce((w, b) => Math.max(w, b.length), 0);
+  const padded = new Int8Array(blobs.length * width);
+  for (let row = 0; row < blobs.length; row++) {
+    padded.set(asInt8(blobs[row]), row * width);
   }
   file.create_dataset({
     name: `${group}/video`,
-    data: combined,
-    shape: [combined.length],
-    dtype: "<B"
+    data: padded,
+    shape: [blobs.length, width],
+    dtype: "<b"
   });
-  const sizes = blobs.map((b) => b.length);
-  return { writtenFns, sizes };
+  return writtenFns;
 }
 function createMatrixDataset(file, name, rows, fieldNames, dtype, resizable = false) {
   const rowCount = rows.length;
@@ -18993,7 +19537,7 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
           pm.scoreMap.byteOffset,
           pm.scoreMap.byteLength
         );
-        const compressed = deflate(smBytes);
+        const compressed = deflate2(smBytes);
         const smH = pm.scoreMap.length / mask.width;
         if (!Number.isInteger(smH)) {
           throw new Error(
@@ -19168,7 +19712,7 @@ function writeLabelImages(file, labelImages, _videos, tracks, instances, context
       li.data.byteOffset,
       li.data.byteLength
     );
-    const compressed = deflate(pixelBytes);
+    const compressed = deflate2(pixelBytes);
     const dataStart = dataOffset;
     const dataEnd = dataOffset + compressed.length;
     compressedChunks.push(compressed);
@@ -19223,7 +19767,7 @@ function writeLabelImages(file, labelImages, _videos, tracks, instances, context
           pli.scoreMap.byteOffset,
           pli.scoreMap.byteLength
         );
-        const smCompressed = deflate(smBytes);
+        const smCompressed = deflate2(smBytes);
         const smH = pli.scoreMap.length / li.width;
         if (!Number.isInteger(smH)) {
           throw new Error(
@@ -20985,6 +21529,144 @@ function warnAmbiguous(path, nPages, dtype) {
   if (warnedMessages.has(msg)) return;
   warnedMessages.add(msg);
   console.warn(msg);
+}
+
+// src/codecs/slp/stream-embed.ts
+var READ_ATTEMPTS = 3;
+var READ_OPTS = { pinned: true, prefetch: false };
+function videoName(video) {
+  return Array.isArray(video.filename) ? video.filename[0] ?? "" : video.filename;
+}
+async function frameSource(backend, firstFrame) {
+  if (!(backend instanceof GrayscaleVideoBackend)) {
+    return { source: backend, collapseToGray: false };
+  }
+  if (backend.grayscale === null && firstFrame !== void 0) {
+    await backend.getFrame(firstFrame, READ_OPTS);
+  }
+  return { source: backend.inner, collapseToGray: backend.grayscale === true };
+}
+function isPng(bytes) {
+  return bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
+}
+async function toEncodeFramePayload(frame, rawShape) {
+  if (isImageBitmapLike(frame)) {
+    return {
+      kind: "bitmap",
+      bitmap: await createImageBitmap(frame)
+    };
+  }
+  if (isImageDataLike(frame)) {
+    const f = frame;
+    return {
+      kind: "pixels",
+      data: new Uint8Array(f.data),
+      width: f.width,
+      height: f.height,
+      channels: f.channels ?? f.data.length / (f.width * f.height),
+      rgba: f.channels === void 0
+    };
+  }
+  const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
+  if (isEncodedBytes(bytes)) {
+    if (isPng(bytes)) return { kind: "png", bytes: bytes.slice() };
+    const img = await decodeEncoded(bytes);
+    return {
+      kind: "pixels",
+      data: new Uint8Array(img.data),
+      width: img.width,
+      height: img.height,
+      channels: 4,
+      rgba: true
+    };
+  }
+  if (!rawShape) {
+    throw new Error(
+      "Can't embed raw pixel bytes from a backend with no resolved shape."
+    );
+  }
+  const [, height, width, channels] = rawShape;
+  return {
+    kind: "pixels",
+    data: bytes.slice(),
+    width,
+    height,
+    channels,
+    rgba: false
+  };
+}
+async function readFrame(video, source, frameIdx) {
+  let frame = null;
+  for (let attempt = 0; attempt < READ_ATTEMPTS && !frame; attempt++) {
+    frame = await source.getFrame(frameIdx, READ_OPTS);
+  }
+  if (!frame) {
+    throw new Error(
+      `Couldn't read frame ${frameIdx} from "${videoName(video)}" to embed. The package was not written.`
+    );
+  }
+  return frame;
+}
+async function appendEncodedVideos(sink, labels, entries, options = {}) {
+  const maxInFlight = Math.max(1, options.maxInFlight ?? 4);
+  const total = entries.reduce((n, e) => n + e.frameNumbers.length, 0);
+  let done = 0;
+  for (const entry of entries) {
+    const video = labels.videos[entry.videoIndex];
+    const external = video && entry.frameNumbers.length > 0 ? await options.frameReader?.(video, entry.frameNumbers) ?? null : null;
+    try {
+      await appendOneVideo(entry, video, external);
+    } finally {
+      await external?.close();
+    }
+  }
+  async function appendOneVideo(entry, video, external) {
+    let source = null;
+    let collapseToGray = false;
+    if (entry.frameNumbers.length > 0 && !external) {
+      if (!video?.backend) {
+        throw new Error(
+          `Can't embed frames from "${video ? videoName(video) : `video ${entry.videoIndex}`}": its video isn't open.`
+        );
+      }
+      ({ source, collapseToGray } = await frameSource(
+        video.backend,
+        entry.frameNumbers[0]
+      ));
+    }
+    await sink.beginEncodedVideo(entry, collapseToGray);
+    const inFlight = [];
+    const settleOne = async () => {
+      await inFlight.shift();
+      done += 1;
+      if (options.onProgress?.(done, total, "Embedding frames") === false) {
+        throw new ExportCancelled();
+      }
+    };
+    for (const frameIdx of entry.frameNumbers) {
+      const frame = external ? await external.read(frameIdx) : await readFrame(video, source, frameIdx);
+      if (!frame) {
+        throw new Error(
+          `Couldn't read frame ${frameIdx} from "${video ? videoName(video) : `video ${entry.videoIndex}`}" to embed. The package was not written.`
+        );
+      }
+      const pending = sink.appendEncodedFrame(
+        frameIdx,
+        await toEncodeFramePayload(frame, source?.shape)
+      );
+      pending.catch(() => {
+      });
+      inFlight.push(pending);
+      if (inFlight.length >= maxInFlight) await settleOne();
+    }
+    while (inFlight.length > 0) await settleOne();
+    const { framesWritten } = await sink.endEncodedVideo();
+    if (framesWritten !== entry.frameNumbers.length) {
+      throw new Error(
+        `embedding video${entry.videoIndex}: wrote ${framesWritten} of ${entry.frameNumbers.length} planned frame(s) - refusing to write a file with dropped images.`
+      );
+    }
+  }
 }
 
 // src/io/csv.ts
@@ -24120,14 +24802,14 @@ function loadDlcCsv(filename, opts) {
   const frameMap = /* @__PURE__ */ new Map();
   for (const imgPath of df.index) {
     frameMap.set(imgPath, extractFrameIndex(imgPath));
-    const videoName = videoNameFor(imgPath);
-    if (!videoImagePaths.has(videoName)) videoImagePaths.set(videoName, []);
-    videoImagePaths.get(videoName).push(imgPath);
+    const videoName2 = videoNameFor(imgPath);
+    if (!videoImagePaths.has(videoName2)) videoImagePaths.set(videoName2, []);
+    videoImagePaths.get(videoName2).push(imgPath);
   }
   const csvDir = posix.dirname(posix.resolve(filename));
   const videos = /* @__PURE__ */ new Map();
   const sortedVideoPaths = /* @__PURE__ */ new Map();
-  for (const [videoName, imgPaths] of videoImagePaths) {
+  for (const [videoName2, imgPaths] of videoImagePaths) {
     const sortedImgPaths = [...imgPaths].sort(
       (a, b) => (frameMap.get(a) ?? 0) - (frameMap.get(b) ?? 0)
     );
@@ -24143,19 +24825,19 @@ function loadDlcCsv(filename, opts) {
     }
     if (actualImageFiles.length > 0) {
       videos.set(
-        videoName,
+        videoName2,
         new Video({ filename: actualImageFiles, openBackend: false })
       );
-      sortedVideoPaths.set(videoName, sortedImgPaths);
+      sortedVideoPaths.set(videoName2, sortedImgPaths);
     }
   }
   const dlcCrops = {};
   if (opts.config != null && videos.size > 0) {
     const stemMap = videoSetsStemMap(opts.config);
-    for (const [videoName, video] of videos) {
+    for (const [videoName2, video] of videos) {
       const result = setSourceVideo(
         video,
-        videoName,
+        videoName2,
         stemMap,
         fsys,
         opts.videoSearchPaths
@@ -24168,10 +24850,10 @@ function loadDlcCsv(filename, opts) {
   const allFrames = [];
   for (let r = 0; r < df.index.length; r += 1) {
     const imgPath = df.index[r];
-    const videoName = videoNameFor(imgPath);
-    if (!videos.has(videoName)) continue;
-    const video = videos.get(videoName);
-    const sortedPaths = sortedVideoPaths.get(videoName);
+    const videoName2 = videoNameFor(imgPath);
+    if (!videos.has(videoName2)) continue;
+    const video = videos.get(videoName2);
+    const sortedPaths = sortedVideoPaths.get(videoName2);
     const videoFrameIdx = sortedPaths.indexOf(imgPath);
     const instances = isMultianimal ? parseMultiAnimalRow(df.columns, df.rows[r], skeleton, tracks) : parseSingleAnimalRow(df.columns, df.rows[r], skeleton);
     allFrames.push(
@@ -25440,6 +26122,7 @@ export {
   grayscaleFrame,
   cropPoints,
   uncropPoints,
+  encodePngPixels,
   CropVideoBackend,
   GrayscaleVideoBackend,
   EXISTS_TTL_MS,
@@ -25520,6 +26203,7 @@ export {
   createVideoBackend,
   readSlpStreaming,
   _registerFileWriter,
+  ExportCancelled,
   SlpStreamWriter,
   openSlpWriter,
   saveSlpMergedFromStores,
@@ -25542,6 +26226,7 @@ export {
   readNwb,
   setLabelImageFileReader,
   loadLabelImages,
+  appendEncodedVideos,
   labelsToCsv,
   saveLabelsCsv,
   loadSlp,
