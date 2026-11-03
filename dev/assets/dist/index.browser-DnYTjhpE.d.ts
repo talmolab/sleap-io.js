@@ -4085,6 +4085,18 @@ interface StreamingSlpOptions {
      */
     lazyVideoMetadata?: boolean;
     /**
+     * Read only user (ground-truth) instances. Predicted instances are skipped and
+     * the `pred_points` table is never read: in a predictions file that table is
+     * most of the file, so a caller that only needs the labels (skeleton, videos,
+     * user-labeled frames), reading over a slow link, avoids downloading it.
+     * Frames whose only instances were predictions are dropped; frames that had
+     * no instances to begin with (e.g. negative frames) are kept. A user
+     * instance's `fromPredicted` link is left unset, and recording sessions
+     * (multi-camera groupings) aren't read. Default `false`. Can't be combined
+     * with `lazy`.
+     */
+    userInstancesOnly?: boolean;
+    /**
      * Optional progress callback fired as loading advances through its stages.
      * `current` counts completed stages out of `total`; `message` labels the
      * stage about to run. Matches the (current, total, message?) convention used

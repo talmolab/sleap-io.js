@@ -15508,7 +15508,8 @@ async function readSlpStreaming(source, options) {
       options?.onProgress,
       options?.rawSessions ?? false,
       options?.lazy ?? false,
-      lazyVideoMetadata
+      lazyVideoMetadata,
+      options?.userInstancesOnly ?? false
     );
   } finally {
     if (!openVideos && !lazyVideoMetadata) {
@@ -15516,7 +15517,12 @@ async function readSlpStreaming(source, options) {
     }
   }
 }
-async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false, lazyVideoMetadata = false) {
+async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false, lazyVideoMetadata = false, userInstancesOnly = false) {
+  if (lazy && userInstancesOnly) {
+    throw new Error(
+      "readSlpStreaming: userInstancesOnly can't be combined with lazy"
+    );
+  }
   const STAGES = [
     "Reading metadata",
     // 0
@@ -15578,7 +15584,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   const instancesData = await readStructDatasetStreaming(file, "instances");
   report(6);
   const pointsData = await readStructDatasetStreaming(file, "points");
-  const predPointsData = await readStructDatasetStreaming(file, "pred_points");
+  const predPointsData = userInstancesOnly ? {} : await readStructDatasetStreaming(file, "pred_points");
   const negativeFrames = negativeFrameKeys(
     await readStructDatasetStreaming(file, "negative_frames")
   );
@@ -15594,6 +15600,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     formatId,
     negativeFrames
   }) : void 0;
+  const instanceRows = /* @__PURE__ */ new Map();
   const labeledFrames = lazyStore ? void 0 : buildLabeledFrames({
     framesData,
     instancesData,
@@ -15602,7 +15609,9 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     skeletons,
     tracks,
     videos,
-    formatId
+    formatId,
+    userInstancesOnly,
+    instanceRows
   });
   if (labeledFrames) {
     markNegativeFrames(labeledFrames, negativeFrames, framesData, videos);
@@ -15613,27 +15622,31 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     const { links, embs, catLinks, catEmbs, categoryCatalog } = await readStreamingInstanceIdentity(file);
     if (links.size || embs.size || catLinks.size || catEmbs.size) {
       if (labeledFrames) {
-        const allInstances = labeledFrames.flatMap((f) => f.instances);
+        const allInstances = instanceRowLookup(
+          labeledFrames,
+          instanceRows,
+          userInstancesOnly
+        );
         for (const [ownerId, [idx, score]] of links) {
-          const inst = allInstances[ownerId];
+          const inst = allInstances(ownerId);
           if (inst && idx >= 0 && idx < identities.length) {
             inst.identity = identities[idx];
             inst.identityScore = score;
           }
         }
         for (const [ownerId, emb] of embs) {
-          const inst = allInstances[ownerId];
+          const inst = allInstances(ownerId);
           if (inst) inst.identityEmbedding = emb;
         }
         for (const [ownerId, [idx, score]] of catLinks) {
-          const inst = allInstances[ownerId];
+          const inst = allInstances(ownerId);
           if (inst && idx >= 0 && idx < categoryCatalog.length) {
             inst.category = categoryCatalog[idx];
             inst.categoryScore = score;
           }
         }
         for (const [ownerId, emb] of catEmbs) {
-          const inst = allInstances[ownerId];
+          const inst = allInstances(ownerId);
           if (inst) inst.categoryEmbedding = emb;
         }
       }
@@ -15669,12 +15682,19 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
           getOrCreate(vidIdx, frameIdx).centroids.push(c);
         }
       }
-      const allInst = labeledFrames.flatMap((lf) => lf.instances);
+      const allInst = instanceRowLookup(
+        labeledFrames,
+        instanceRows,
+        userInstancesOnly
+      );
       for (const lf of labeledFrames) {
         for (const c of lf.centroids) {
-          if (c._instanceIdx !== null && c._instanceIdx >= 0 && c._instanceIdx < allInst.length) {
-            c.instance = allInst[c._instanceIdx];
-            c._instanceIdx = null;
+          if (c._instanceIdx !== null && c._instanceIdx >= 0) {
+            const inst = allInst(c._instanceIdx);
+            if (inst) {
+              c.instance = inst;
+              c._instanceIdx = null;
+            }
           }
         }
       }
@@ -15696,7 +15716,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     }
   }
   report(9);
-  const sessions = await readSessionsStreaming(
+  const sessions = userInstancesOnly ? [] : await readSessionsStreaming(
     file,
     videos,
     skeletons,
@@ -16528,6 +16548,11 @@ function normalizeDatasetArray(value) {
   }
   return [];
 }
+function instanceRowLookup(labeledFrames, instanceRows, userInstancesOnly) {
+  if (userInstancesOnly) return (row) => instanceRows.get(row);
+  const all = labeledFrames.flatMap((f) => f.instances);
+  return (row) => all[row];
+}
 function buildLabeledFrames(options) {
   const frames = [];
   const {
@@ -16538,11 +16563,12 @@ function buildLabeledFrames(options) {
     skeletons,
     tracks,
     videos,
-    formatId
+    formatId,
+    userInstancesOnly = false
   } = options;
   const frameIds = framesData.frame_id ?? [];
   const videoIdToIndex = buildVideoIdMap(framesData, videos);
-  const instanceById = /* @__PURE__ */ new Map();
+  const instanceById = options.instanceRows ?? /* @__PURE__ */ new Map();
   const fromPredictedPairs = [];
   for (let frameIdx = 0; frameIdx < frameIds.length; frameIdx += 1) {
     const rawVideoId = Number(framesData.video?.[frameIdx] ?? 0);
@@ -16563,6 +16589,7 @@ function buildLabeledFrames(options) {
       const instanceType = Number(
         instancesData.instance_type?.[instIdx] ?? 0
       );
+      if (userInstancesOnly && instanceType !== 0) continue;
       const skeletonId = Number(
         instancesData.skeleton?.[instIdx] ?? 0
       );
@@ -16620,6 +16647,8 @@ function buildLabeledFrames(options) {
       instanceById.set(instIdx, instance);
       instances.push(instance);
     }
+    if (userInstancesOnly && instEnd > instStart && instances.length === 0)
+      continue;
     frames.push(new LabeledFrame({ video, frameIdx: frameIndex, instances }));
   }
   for (const [instanceId, fromPredictedId] of fromPredictedPairs) {
