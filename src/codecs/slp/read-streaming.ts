@@ -115,6 +115,18 @@ export interface StreamingSlpOptions {
    */
   lazyVideoMetadata?: boolean;
   /**
+   * Read only user (ground-truth) instances. Predicted instances are skipped and
+   * the `pred_points` table is never read: in a predictions file that table is
+   * most of the file, so a caller that only needs the labels (skeleton, videos,
+   * user-labeled frames), reading over a slow link, avoids downloading it.
+   * Frames whose only instances were predictions are dropped; frames that had
+   * no instances to begin with (e.g. negative frames) are kept. A user
+   * instance's `fromPredicted` link is left unset, and recording sessions
+   * (multi-camera groupings) aren't read. Default `false`. Can't be combined
+   * with `lazy`.
+   */
+  userInstancesOnly?: boolean;
+  /**
    * Optional progress callback fired as loading advances through its stages.
    * `current` counts completed stages out of `total`; `message` labels the
    * stage about to run. Matches the (current, total, message?) convention used
@@ -249,6 +261,7 @@ export async function readSlpStreaming(
       options?.rawSessions ?? false,
       options?.lazy ?? false,
       lazyVideoMetadata,
+      options?.userInstancesOnly ?? false,
     );
   } finally {
     // Keep the file open when video backends need it: eager (openVideos) OR
@@ -277,7 +290,13 @@ export async function readFromStreamingFile(
   rawSessions: boolean = false,
   lazy: boolean = false,
   lazyVideoMetadata: boolean = false,
+  userInstancesOnly: boolean = false,
 ): Promise<Labels> {
+  if (lazy && userInstancesOnly) {
+    throw new Error(
+      "readSlpStreaming: userInstancesOnly can't be combined with lazy",
+    );
+  }
   // Stage-level progress. The orchestration in this function runs on the MAIN
   // thread — only the low-level HDF5 byte reads are delegated to the worker via
   // `file` — so each phase can be surfaced as it starts without any cross-worker
@@ -362,7 +381,9 @@ export async function readFromStreamingFile(
   const instancesData = await readStructDatasetStreaming(file, "instances");
   report(6);
   const pointsData = await readStructDatasetStreaming(file, "points");
-  const predPointsData = await readStructDatasetStreaming(file, "pred_points");
+  const predPointsData = userInstancesOnly
+    ? {}
+    : await readStructDatasetStreaming(file, "pred_points");
   const negativeFrames = negativeFrameKeys(
     await readStructDatasetStreaming(file, "negative_frames"),
   );
@@ -383,6 +404,10 @@ export async function readFromStreamingFile(
         negativeFrames,
       })
     : undefined;
+  // Instances by their row in the `instances` table, which is what identity
+  // links and centroid refs point at. Without `userInstancesOnly` that is
+  // simply the frames' instances in order.
+  const instanceRows = new Map<number, Instance | PredictedInstance>();
   const labeledFrames = lazyStore
     ? undefined
     : buildLabeledFrames({
@@ -394,6 +419,8 @@ export async function readFromStreamingFile(
         tracks,
         videos,
         formatId,
+        userInstancesOnly,
+        instanceRows,
       });
   if (labeledFrames) {
     markNegativeFrames(labeledFrames, negativeFrames, framesData, videos);
@@ -411,27 +438,31 @@ export async function readFromStreamingFile(
       await readStreamingInstanceIdentity(file);
     if (links.size || embs.size || catLinks.size || catEmbs.size) {
       if (labeledFrames) {
-        const allInstances = labeledFrames.flatMap((f) => f.instances);
+        const allInstances = instanceRowLookup(
+          labeledFrames,
+          instanceRows,
+          userInstancesOnly,
+        );
         for (const [ownerId, [idx, score]] of links) {
-          const inst = allInstances[ownerId];
+          const inst = allInstances(ownerId);
           if (inst && idx >= 0 && idx < identities.length) {
             inst.identity = identities[idx];
             inst.identityScore = score;
           }
         }
         for (const [ownerId, emb] of embs) {
-          const inst = allInstances[ownerId];
+          const inst = allInstances(ownerId);
           if (inst) inst.identityEmbedding = emb;
         }
         for (const [ownerId, [idx, score]] of catLinks) {
-          const inst = allInstances[ownerId];
+          const inst = allInstances(ownerId);
           if (inst && idx >= 0 && idx < categoryCatalog.length) {
             inst.category = categoryCatalog[idx];
             inst.categoryScore = score;
           }
         }
         for (const [ownerId, emb] of catEmbs) {
-          const inst = allInstances[ownerId];
+          const inst = allInstances(ownerId);
           if (inst) inst.categoryEmbedding = emb;
         }
       }
@@ -472,16 +503,19 @@ export async function readFromStreamingFile(
         }
       }
       // Resolve deferred instance refs (mirrors the eager reader).
-      const allInst = labeledFrames.flatMap((lf) => lf.instances);
+      const allInst = instanceRowLookup(
+        labeledFrames,
+        instanceRows,
+        userInstancesOnly,
+      );
       for (const lf of labeledFrames) {
         for (const c of lf.centroids) {
-          if (
-            c._instanceIdx !== null &&
-            c._instanceIdx >= 0 &&
-            c._instanceIdx < allInst.length
-          ) {
-            c.instance = allInst[c._instanceIdx];
-            c._instanceIdx = null;
+          if (c._instanceIdx !== null && c._instanceIdx >= 0) {
+            const inst = allInst(c._instanceIdx);
+            if (inst) {
+              c.instance = inst;
+              c._instanceIdx = null;
+            }
           }
         }
       }
@@ -504,14 +538,18 @@ export async function readFromStreamingFile(
   }
 
   // Read sessions — grouping captured as index refs (no frame materialization).
+  // (Skipped with userInstancesOnly: their groupings refer to frames and
+  // instances by position, which no longer line up once predictions are dropped.)
   report(9);
-  const sessions = await readSessionsStreaming(
-    file,
-    videos,
-    skeletons,
-    identities,
-    rawSessions,
-  );
+  const sessions = userInstancesOnly
+    ? []
+    : await readSessionsStreaming(
+        file,
+        videos,
+        skeletons,
+        identities,
+        rawSessions,
+      );
 
   onProgress?.(total, total, "Finalizing");
   // In lazy mode omit `labeledFrames` entirely (mirrors readSlpLazy): the Labels
@@ -1784,6 +1822,21 @@ function normalizeDatasetArray(value: unknown): unknown[] {
  * Build LabeledFrame objects from normalized data.
  * (Adapted from read.ts)
  */
+/**
+ * Look up an instance by its row in the `instances` table. Normally the frames'
+ * instances, in order, are exactly those rows; with `userInstancesOnly` some rows
+ * were skipped, so use the row map `buildLabeledFrames` filled in instead.
+ */
+function instanceRowLookup(
+  labeledFrames: LabeledFrame[],
+  instanceRows: Map<number, Instance | PredictedInstance>,
+  userInstancesOnly: boolean,
+): (row: number) => Instance | PredictedInstance | undefined {
+  if (userInstancesOnly) return (row) => instanceRows.get(row);
+  const all = labeledFrames.flatMap((f) => f.instances);
+  return (row) => all[row];
+}
+
 function buildLabeledFrames(options: {
   framesData: Record<string, unknown[]>;
   instancesData: Record<string, unknown[]>;
@@ -1793,6 +1846,10 @@ function buildLabeledFrames(options: {
   tracks: Track[];
   videos: Video[];
   formatId: number;
+  /** Skip predicted instances (and frames left with none); see `StreamingSlpOptions.userInstancesOnly`. */
+  userInstancesOnly?: boolean;
+  /** Filled with each built instance, keyed by its `instances` table row. */
+  instanceRows?: Map<number, Instance | PredictedInstance>;
 }): LabeledFrame[] {
   const frames: LabeledFrame[] = [];
   const {
@@ -1804,10 +1861,12 @@ function buildLabeledFrames(options: {
     tracks,
     videos,
     formatId,
+    userInstancesOnly = false,
   } = options;
   const frameIds = (framesData.frame_id ?? []) as number[];
   const videoIdToIndex = buildVideoIdMap(framesData, videos);
-  const instanceById = new Map<number, Instance | PredictedInstance>();
+  const instanceById =
+    options.instanceRows ?? new Map<number, Instance | PredictedInstance>();
   const fromPredictedPairs: Array<[number, number]> = [];
 
   for (let frameIdx = 0; frameIdx < frameIds.length; frameIdx += 1) {
@@ -1830,6 +1889,7 @@ function buildLabeledFrames(options: {
       const instanceType = Number(
         (instancesData.instance_type as number[])?.[instIdx] ?? 0,
       );
+      if (userInstancesOnly && instanceType !== 0) continue;
       const skeletonId = Number(
         (instancesData.skeleton as number[])?.[instIdx] ?? 0,
       );
@@ -1897,6 +1957,9 @@ function buildLabeledFrames(options: {
       instances.push(instance);
     }
 
+    // A frame that only held predictions has nothing left to keep.
+    if (userInstancesOnly && instEnd > instStart && instances.length === 0)
+      continue;
     frames.push(new LabeledFrame({ video, frameIdx: frameIndex, instances }));
   }
 
