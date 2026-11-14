@@ -24,6 +24,7 @@ import {
   resolveVideoFilename,
 } from "./parsers.js";
 import { buildSourceVideoFromDict } from "./source-video.js";
+import { PROVENANCE_DATASET, resolveProvenance } from "./provenance.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import { Instance, PredictedInstance, Track } from "../../model/instance.js";
@@ -385,7 +386,8 @@ export async function readSlp(
       suggestions,
       sessions,
       identities,
-      provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
+      provenance:
+        resolveProvenance(readProvenanceValue(file), metadataJson) ?? {},
       rois: staticRois,
     });
     // Sessions are read before the frame store exists; wire the lazy frame
@@ -682,7 +684,8 @@ export async function readSlpLazy(
       suggestions,
       sessions,
       identities,
-      provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
+      provenance:
+        resolveProvenance(readProvenanceValue(file), metadataJson) ?? {},
     });
 
     // Replace the eager labeledFrames with lazy proxy
@@ -724,6 +727,20 @@ function readTracks(dataset: any): Track[] {
     }
   }
   return tracks;
+}
+
+/**
+ * Raw value of the top-level `/provenance_json` dataset (h5wasm sync), or
+ * `undefined` when it is absent or unreadable. Decoded by `resolveProvenance`,
+ * which falls back to the `metadata/json` attribute.
+ */
+function readProvenanceValue(file: any): unknown {
+  try {
+    if (!(file.keys?.() ?? []).includes(PROVENANCE_DATASET)) return undefined;
+    return (file.get(PROVENANCE_DATASET) as { value?: unknown } | null)?.value;
+  } catch {
+    return undefined;
+  }
 }
 
 /** A single `/video_crops` entry: the crop rect and OOB fill for one video. */
