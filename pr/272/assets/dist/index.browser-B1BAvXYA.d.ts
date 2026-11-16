@@ -2705,9 +2705,10 @@ declare function loadSlp(source: SlpSource, options?: {
     h5?: OpenH5Options;
     lazy?: boolean;
     /**
-     * Rebuild instance point spans that don't match their skeleton's node
-     * count, when that's provably exact; otherwise the read throws
-     * `SlpPointSpanError`. Default `false`. See `readSlp`.
+     * Recover files whose instance point spans don't match their skeleton's
+     * node count (written by older sleap-io.js versions) instead of throwing
+     * `SlpPointSpanError`, when that's provably safe. Default `false`. See
+     * `readSlp`.
      */
     repairPointSpans?: boolean;
     onProgress?: (current: number, total: number, message?: string) => void;
@@ -4105,9 +4106,11 @@ interface StreamingSlpOptions {
     /**
      * When an instance's point span doesn't match its skeleton's node count,
      * the read throws `SlpPointSpanError` (like Python sleap-io). Set this to
-     * rebuild the spans instead, when that's provably exact: the point rows must
-     * be intact (contiguous, no gaps or overlaps, one row per node). If they
-     * aren't, the read still throws. Default `false`. See issue #230.
+     * recover files older sleap-io.js versions wrote: shifted spans are rebuilt
+     * when that's provably exact (the point rows are intact: no gaps or
+     * overlaps, one row per node), and an instance whose rows are provably its
+     * own but sit under the wrong skeleton is loaded as stored, with a
+     * `console.warn`. Anything else still throws. Default `false`. See #230.
      */
     repairPointSpans?: boolean;
     /**
@@ -4128,15 +4131,23 @@ declare function readSlpStreaming(source: StreamingH5Source, options?: Streaming
  * `pred_points` (predicted instances). Points are positional: row `k` of the
  * slice is node `k` of the instance's skeleton. So a span whose length differs
  * from the skeleton's node count can't be read correctly. Before this check the
- * readers padded or cut each instance to fit, which silently put coordinates on
- * the wrong nodes when a span boundary had shifted (the float32 `instances`
- * table bug, #231, produced exactly that: spans of 16 and 18 for a 17-node
- * skeleton).
+ * readers built such instances anyway, which silently put coordinates on the
+ * wrong nodes.
  *
- * Python sleap-io refuses such files (talmolab/sleap-io#551), so by default we
- * do too — with an error that says which instance, frame and video is wrong.
- * Callers can opt into {@link checkPointSpans}'s `repair`, which rebuilds the
- * spans only when the result is provably exact (see `tryRepair`).
+ * Older sleap-io.js writers produced two kinds of such files:
+ *  - shifted boundaries: spans of 16 and 18 for a 17-node skeleton, with the
+ *    point rows themselves intact. #230 first blamed a ≤0.5.4 span off-by-one;
+ *    #231 traced its example file to the `instances` table being written as
+ *    float32 (point ids above 2^24 rounded to even numbers).
+ *  - an instance whose skeleton wasn't in `labels.skeletons` was saved with
+ *    skeleton id 0, so its own (correct) rows sit under a skeleton with a
+ *    different node count. The writer now refuses to save that.
+ *
+ * Python sleap-io refuses all such files (talmolab/sleap-io#551), so by default
+ * we do too — with an error that says which instance, frame and video is wrong.
+ * With `repair`, {@link checkPointSpans} rebuilds shifted boundaries when that
+ * is provably exact, keeps the stored spans (with a warning) for the
+ * skeleton-id case, and still refuses anything else (see `planRepair`).
  */
 
 /** One instance whose span length differs from its skeleton's node count. */
