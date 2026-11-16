@@ -151,6 +151,52 @@ describe("labelsToCsv — SLEAP Analysis format", () => {
     expect(rows[0][tx]).toBe("1"); // visible thorax
   });
 
+  // A hidden point keeps its old coordinates in memory; the CSV must not show
+  // them as a labeled point (sleap-io #564).
+  it("writes empty x/y for points marked not visible that still have coords", () => {
+    const s = skel();
+    const video = new Video({ filename: "v.mp4" });
+    const user = new Instance({
+      points: { thorax: [1, 2], head: [3, 4] },
+      skeleton: s,
+    });
+    user.points[1].visible = false; // head
+    const pred = PredictedInstance.fromArray(
+      [
+        [5, 6, 0.9],
+        [7, 8, 0.4],
+      ],
+      s,
+      0.8,
+    );
+    pred.points[0].visible = false; // thorax
+    const lf = new LabeledFrame({
+      video,
+      frameIdx: 0,
+      instances: [user, pred],
+    });
+    const labels = new Labels({
+      labeledFrames: [lf],
+      videos: [video],
+      skeletons: [s],
+    });
+    const { header, rows } = parse(
+      labelsToCsv(labels, { preferUserInstances: false }),
+    );
+    const col = (n: string) => header.indexOf(n);
+    expect([rows[0][col("head.x")], rows[0][col("head.y")]]).toEqual(["", ""]);
+    expect([rows[0][col("thorax.x")], rows[0][col("thorax.y")]]).toEqual([
+      "1",
+      "2",
+    ]);
+    expect([rows[1][col("thorax.x")], rows[1][col("thorax.y")]]).toEqual([
+      "",
+      "",
+    ]);
+    // The point score is still written, as in Python.
+    expect(rows[1][col("thorax.score")]).toBe("0.9");
+  });
+
   it("pads empty frames to the full video length under includeEmpty (#480)", () => {
     const s = skel();
     const video = new Video({ filename: "v.mp4" });
@@ -319,5 +365,134 @@ describe("labelsToCsv — SLEAP Analysis format", () => {
     } finally {
       rmSync(path, { force: true });
     }
+  });
+});
+
+// One row per animal per frame (sleap-io #591): a user instance that replaced a
+// prediction must not be written next to that prediction.
+describe("labelsToCsv — one row per animal (preferUserInstances)", () => {
+  const pred = (s: Skeleton, x: number, track: Track | null = null) => {
+    const p = PredictedInstance.fromArray(
+      [
+        [x, x, 0.9],
+        [x + 1, x + 1, 0.9],
+      ],
+      s,
+      0.5,
+    );
+    p.track = track;
+    return p;
+  };
+  const user = (
+    s: Skeleton,
+    x: number,
+    opts: { track?: Track; fromPredicted?: PredictedInstance } = {},
+  ) =>
+    new Instance({
+      points: { thorax: [x, x], head: [x + 1, x + 1] },
+      skeleton: s,
+      track: opts.track ?? null,
+      fromPredicted: opts.fromPredicted ?? null,
+    });
+  const thoraxX = (csv: string) => {
+    const { header, rows } = parse(csv);
+    const i = header.indexOf("thorax.x");
+    return rows.map((r) => `${r[1]}:${r[i]}`);
+  };
+
+  // Two animals per frame, so the multi-instance rules apply.
+  function multiAnimal() {
+    const s = skel();
+    const video = new Video({ filename: "v.mp4" });
+    const a = new Track("a");
+    const b = new Track("b");
+    const p0 = pred(s, 10, a);
+    const p1 = pred(s, 20, b);
+    const p2 = pred(s, 30, a);
+    const p3 = pred(s, 40, b);
+    const p4 = pred(s, 50, b);
+    const frames = [
+      // Accepted prediction: linked by fromPredicted (no track) -> p0 dropped.
+      new LabeledFrame({
+        video,
+        frameIdx: 0,
+        instances: [p0, p1, user(s, 11, { fromPredicted: p0 })],
+      }),
+      // Same track, no link -> p2 dropped.
+      new LabeledFrame({
+        video,
+        frameIdx: 1,
+        instances: [p2, p3, user(s, 31, { track: a })],
+      }),
+      // Unrelated user instance -> prediction kept.
+      new LabeledFrame({ video, frameIdx: 2, instances: [p4, user(s, 61)] }),
+    ];
+    return new Labels({
+      labeledFrames: frames,
+      videos: [video],
+      skeletons: [s],
+      tracks: [a, b],
+    });
+  }
+
+  it("drops predictions replaced by fromPredicted or by track, keeps the rest", () => {
+    expect(thoraxX(labelsToCsv(multiAnimal()))).toEqual([
+      "0:11",
+      "0:20",
+      "1:31",
+      "1:40",
+      "2:61",
+      "2:50",
+    ]);
+  });
+
+  // Opt-out keeps the old every-instance output (users first, then predictions).
+  it("writes every instance with preferUserInstances: false", () => {
+    expect(
+      thoraxX(labelsToCsv(multiAnimal(), { preferUserInstances: false })),
+    ).toEqual(["0:11", "0:10", "0:20", "1:31", "1:30", "1:40", "2:61", "2:50"]);
+  });
+
+  // With at most one animal per frame, any user instance stands for it.
+  it("lets any user instance replace predictions in a single-instance project", () => {
+    const s = skel();
+    const video = new Video({ filename: "v.mp4" });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video,
+          frameIdx: 0,
+          instances: [pred(s, 10), user(s, 11)],
+        }),
+        new LabeledFrame({ video, frameIdx: 1, instances: [pred(s, 20)] }),
+      ],
+      videos: [video],
+      skeletons: [s],
+    });
+    expect(thoraxX(labelsToCsv(labels))).toEqual(["0:11", "1:20"]);
+  });
+
+  // Empty-frame padding still works alongside the selection.
+  it("still pads empty frames under includeEmpty", () => {
+    const s = skel();
+    const video = new Video({ filename: "v.mp4" });
+    video.shape = [3, 4, 4, 1];
+    const p = pred(s, 10);
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video,
+          frameIdx: 1,
+          instances: [p, user(s, 11, { fromPredicted: p })],
+        }),
+      ],
+      videos: [video],
+      skeletons: [s],
+    });
+    expect(thoraxX(labelsToCsv(labels, { includeEmpty: true }))).toEqual([
+      "0:",
+      "1:11",
+      "2:",
+    ]);
   });
 });

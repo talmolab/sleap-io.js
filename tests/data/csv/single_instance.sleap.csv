@@ -1,0 +1,4 @@
+track,frame_idx,instance.score,head.score,head.x,head.y,thorax.score,thorax.x,thorax.y
+,0,,,31.0,41.0,,,
+,1,0.8500000238418579,0.6,32.0,42.0,0.7,12.0,22.0
+,2,,,33.0,43.0,,13.0,23.0

@@ -1071,11 +1071,17 @@ even in lazy mode). The following remain recoverable only via `rawSessions`:
 
 ## SLEAP Analysis CSV export
 
-Export `Labels` to the SLEAP Analysis CSV — one row per instance per frame with
+Export `Labels` to the SLEAP Analysis CSV — one row per animal per frame with
 columns `track, frame_idx, instance.score, {node}.score, {node}.x, {node}.y, …`
-(node columns sorted alphabetically; missing/invisible points and user-instance
-scores are empty cells). `labelsToCsv` is browser-safe (returns the string);
-`saveLabelsCsv` writes to disk (Node).
+(node columns sorted alphabetically; missing points, points marked not visible
+and user-instance scores are empty cells). `labelsToCsv` is browser-safe
+(returns the string); `saveLabelsCsv` writes to disk (Node).
+
+"One row per animal" uses the Analysis HDF5 export's selection, like Python
+`sleap_io.save_csv(..., format="sleap")` (sleap-io PR #591): a prediction is
+skipped when a user instance in the same frame was made from it
+(`fromPredicted`) or is on the same track; in a single-instance project any user
+instance replaces the frame's predictions; other predictions are kept.
 
 ```ts
 import { labelsToCsv, saveLabelsCsv } from "@talmolab/sleap-io.js";
@@ -1086,6 +1092,9 @@ await saveLabelsCsv(labels, "out.csv");        // Node file write
 // Span the whole video: emit NaN rows for unlabeled frames, padded to the video
 // length when known (mirrors the Analysis-HDF5 export; sleap-io PR #480).
 await saveLabelsCsv(labels, "out.csv", { includeEmpty: true });
+
+// Write every user and predicted instance instead of one row per animal.
+labelsToCsv(labels, { preferUserInstances: false });
 
 // Other options: video (Video | index filter), includeScore (default true),
 // startFrame / endFrame (inclusive / exclusive).

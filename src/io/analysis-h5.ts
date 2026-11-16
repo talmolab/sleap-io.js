@@ -34,6 +34,10 @@ import { LabeledFrame } from "../model/labeled-frame.js";
 import { Skeleton } from "../model/skeleton.js";
 import { Video } from "../model/video.js";
 import {
+  maxInstancesPerFrame,
+  untrackedFrameInstances,
+} from "./frame-instances.js";
+import {
   openH5File,
   getH5Module,
   getH5FileSystem,
@@ -679,65 +683,6 @@ interface InstanceLike {
   numpy(opts?: { scores?: boolean }): number[][];
 }
 
-/** Max instances per frame (port of `_max_instances_per_frame`, both types on). */
-function maxInstancesPerFrame(lfs: LabeledFrame[]): number {
-  let nInstances = 0;
-  for (const lf of lfs) {
-    const nUser = (lf.userInstances ?? []).length;
-    const nPredicted = (lf.predictedInstances ?? []).length;
-    // Both instance types are included, so per-frame count is max, not sum.
-    const nFrameInstances = Math.max(nUser, nPredicted);
-    nInstances = Math.max(nInstances, nFrameInstances);
-  }
-  return nInstances;
-}
-
-/** Frame instances without track identity (port of `_untracked_frame_instances`). */
-function untrackedFrameInstances(
-  lf: LabeledFrame,
-  isSingleInstance: boolean,
-): InstanceLike[] {
-  const include: InstanceLike[] = [];
-  const userInsts = (lf.userInstances ?? []) as unknown as InstanceLike[];
-  const predInsts = (lf.predictedInstances ?? []) as unknown as InstanceLike[];
-  const hasUser = userInsts.length > 0;
-
-  if (hasUser) {
-    for (const inst of userInsts) include.push(inst);
-
-    if (isSingleInstance && include.length > 0) {
-      return include;
-    }
-
-    for (const inst of predInsts) {
-      let skip = false;
-      for (const userInst of userInsts) {
-        if (
-          (userInst as { fromPredicted?: unknown }).fromPredicted !==
-            undefined &&
-          (userInst as { fromPredicted?: unknown }).fromPredicted === inst
-        ) {
-          skip = true;
-          break;
-        }
-        if (
-          userInst.track != null &&
-          inst.track != null &&
-          userInst.track === inst.track
-        ) {
-          skip = true;
-          break;
-        }
-      }
-      if (!skip) include.push(inst);
-    }
-  } else {
-    for (const inst of predInsts) include.push(inst);
-  }
-
-  return include;
-}
-
 /** One instance per track (port of `_tracked_frame_instances`). */
 function trackedFrameInstances(lf: LabeledFrame): Map<Track, InstanceLike> {
   const trackToInstance = new Map<Track, InstanceLike>();
@@ -830,7 +775,10 @@ export function toAnalysisArrays(
     // (trackSlot, instance) pairs.
     const slotted: Array<[number, InstanceLike]> = [];
     if (untracked) {
-      const insts = untrackedFrameInstances(lf, isSingleInstance);
+      const insts = untrackedFrameInstances(
+        lf,
+        isSingleInstance,
+      ) as unknown as InstanceLike[];
       insts.forEach((inst, i) => {
         slotted.push([i, inst]);
       });

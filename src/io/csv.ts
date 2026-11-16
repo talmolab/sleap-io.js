@@ -8,6 +8,13 @@
  * (`_write_sleap` + `_transform_to_sleap_format`) over the instances-DataFrame
  * builder in `sleap_io.codecs.dataframe` (`_to_instances_df`).
  *
+ * One row per animal per frame (sleap-io PR #591): a prediction that a user
+ * instance replaced — linked by `fromPredicted`, or on the same track — is not
+ * written, and in a single-instance project any user instance replaces the
+ * frame's predictions. This is the Analysis HDF5 export's selection; see
+ * {@link CsvExportOptions.preferUserInstances}. Points marked not visible are
+ * written as empty x/y cells (sleap-io PR #564).
+ *
  * With `includeEmpty`, frames without instances are emitted as NaN rows and each
  * video's range is padded up to its full length — the fix from sleap-io PR #480
  * (matching the numpy / Analysis-HDF5 export, which already spans the whole
@@ -22,6 +29,10 @@ import type { Labels } from "../model/labels.js";
 import type { Video } from "../model/video.js";
 import { PredictedInstance } from "../model/instance.js";
 import { nodeWriteFile } from "../codecs/slp/h5.js";
+import {
+  maxInstancesPerFrame,
+  untrackedFrameInstances,
+} from "./frame-instances.js";
 
 export interface CsvExportOptions {
   /** Restrict output to one video (a `Video` or its index). Default: all videos. */
@@ -44,6 +55,16 @@ export interface CsvExportOptions {
    * else last labeled frame + 1.
    */
   endFrame?: number | null;
+  /**
+   * Write one row per animal per frame, the way the Analysis HDF5 export does:
+   * skip a predicted instance that a user instance in the same frame replaced
+   * (linked by `fromPredicted`, or on the same track); in a single-instance
+   * project any user instance replaces the frame's predictions. Default `true`,
+   * matching Python `sleap_io.save_csv(..., format="sleap")`, which always turns
+   * on `prefer_user_instances` (sleap-io PR #591). Set `false` to write every
+   * user and predicted instance.
+   */
+  preferUserInstances?: boolean;
 }
 
 /** Best-effort video frame count (matches Python `len(video)`; 0 if unknown). */
@@ -79,6 +100,7 @@ export function labelsToCsv(
   const includeEmpty = options.includeEmpty ?? false;
   const startFrame = options.startFrame ?? null;
   const endFrame = options.endFrame ?? null;
+  const preferUserInstances = options.preferUserInstances ?? true;
 
   // Resolve the video filter.
   let selectedVideos: Video[];
@@ -95,6 +117,10 @@ export function labelsToCsv(
   const videoIndex = new Map(labels.videos.map((v, i) => [v, i]));
 
   const frames = labels.labeledFrames.filter((lf) => videoSet.has(lf.video));
+  // Scanned over the selected videos' frames before the range filter, as in
+  // Python `_to_instances_df`.
+  const isSingleInstance =
+    preferUserInstances && maxInstancesPerFrame(frames) === 1;
 
   const rows: Row[] = [];
   const nodeColSet = new Set<string>();
@@ -111,7 +137,9 @@ export function labelsToCsv(
     if (byVid) byVid.push(lf.frameIdx);
     else seenByVideo.set(lf.video, [lf.frameIdx]);
 
-    const instances = [...lf.userInstances, ...lf.predictedInstances];
+    const instances = preferUserInstances
+      ? untrackedFrameInstances(lf, isSingleInstance)
+      : [...lf.userInstances, ...lf.predictedInstances];
     for (const inst of instances) {
       const predicted = inst instanceof PredictedInstance;
       const cols = new Map<string, number | string | null>();
@@ -127,8 +155,10 @@ export function labelsToCsv(
         const pt = inst.points[i];
         const xKey = `${name}.x`;
         const yKey = `${name}.y`;
-        cols.set(xKey, pt ? pt.xy[0] : Number.NaN);
-        cols.set(yKey, pt ? pt.xy[1] : Number.NaN);
+        // A point marked not visible keeps its last coordinates but has no
+        // location in the frame: write empty x/y (sleap-io PR #564).
+        cols.set(xKey, pt?.visible ? pt.xy[0] : Number.NaN);
+        cols.set(yKey, pt?.visible ? pt.xy[1] : Number.NaN);
         nodeColSet.add(xKey);
         nodeColSet.add(yKey);
         // Per-node scores are emitted only for predicted instances (matching
