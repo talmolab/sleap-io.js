@@ -63,9 +63,10 @@ export async function loadSlp(
     h5?: OpenH5Options;
     lazy?: boolean;
     /**
-     * Rebuild instance point spans that don't match their skeleton's node
-     * count, when that's provably exact; otherwise the read throws
-     * `SlpPointSpanError`. Default `false`. See `readSlp`.
+     * Recover files whose instance point spans don't match their skeleton's
+     * node count (written by older sleap-io.js versions) instead of throwing
+     * `SlpPointSpanError`, when that's provably safe. Default `false`. See
+     * `readSlp`.
      */
     repairPointSpans?: boolean;
     onProgress?: (current: number, total: number, message?: string) => void;

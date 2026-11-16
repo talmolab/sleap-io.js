@@ -2,10 +2,10 @@
  * Builds SLP files whose instance point spans are deliberately wrong, for the
  * read-side span checks (issue #230). Not a test file itself.
  *
- * A file is made by saving clean labels, then rewriting only the
- * `point_id_start`/`point_id_end` columns of the `instances` table in place —
- * the point rows stay exactly as written, which is what the float32
- * `instances` bug (#231) did to real files.
+ * A file is made by saving clean labels, then rewriting columns of the
+ * `instances` table in place (spans, or a skeleton id). The point rows stay
+ * exactly as written, as they did in the real files older sleap-io.js writers
+ * produced (#230; #231 traced one to a float32 `instances` table).
  */
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -66,14 +66,17 @@ export function makeSpanLabels(layout: string[] = ["pp", "pp"]): Labels {
 /** `[point_id_start, point_id_end]` for each `instances` row, in row order. */
 export type Spans = Array<[number, number]>;
 
+/** One `instances` row, by column name (`skeleton`, `point_id_start`, …). */
+export type InstanceRow = Record<string, number>;
+
 /**
- * Save `labels`, then overwrite the instances' point spans with `spans` (rows
- * not listed keep theirs). Returns the bytes and the spans as first written.
+ * Save `labels`, then let `edit` change any `instances` columns and write the
+ * table back in place. Every other table stays exactly as saved.
  */
-export async function writeSlpWithSpans(
+export async function writeSlpWithInstanceEdits(
   labels: Labels,
-  spans: (original: Spans) => Spans,
-): Promise<{ bytes: Uint8Array; original: Spans }> {
+  edit: (rows: InstanceRow[]) => void,
+): Promise<Uint8Array> {
   await ready;
   const file = path.join(
     SCRATCH,
@@ -82,16 +85,12 @@ export async function writeSlpWithSpans(
   writeFileSync(file, await saveSlpToBytes(labels));
 
   const update = buildLabelTableUpdate(labels);
-  const startCol = update.instances.fields.indexOf("point_id_start");
-  const endCol = update.instances.fields.indexOf("point_id_end");
-  const original: Spans = update.instances.rows.map((row) => [
-    Number(row[startCol]),
-    Number(row[endCol]),
-  ]);
-  spans(original.map(([s, e]) => [s, e])).forEach(([start, end], row) => {
-    update.instances.rows[row][startCol] = start;
-    update.instances.rows[row][endCol] = end;
-  });
+  const { fields } = update.instances;
+  const rows = update.instances.rows.map((row) =>
+    Object.fromEntries(fields.map((f, i) => [f, Number(row[i])])),
+  );
+  edit(rows);
+  update.instances.rows = rows.map((row) => fields.map((f) => row[f]));
 
   const h5 = new H5File(file, "a");
   try {
@@ -100,13 +99,69 @@ export async function writeSlpWithSpans(
   } finally {
     h5.close();
   }
-  return { bytes: new Uint8Array(readFileSync(file)), original };
+  return new Uint8Array(readFileSync(file));
+}
+
+/**
+ * Save `labels`, then overwrite the instances' point spans with `spans(original)`.
+ * Returns the bytes and the spans as first written.
+ */
+export async function writeSlpWithSpans(
+  labels: Labels,
+  spans: (original: Spans) => Spans,
+): Promise<{ bytes: Uint8Array; original: Spans }> {
+  let original: Spans = [];
+  const bytes = await writeSlpWithInstanceEdits(labels, (rows) => {
+    original = rows.map((r) => [r.point_id_start, r.point_id_end]);
+    spans(original.map(([s, e]) => [s, e])).forEach(([start, end], i) => {
+      rows[i].point_id_start = start;
+      rows[i].point_id_end = end;
+    });
+  });
+  return { bytes, original };
+}
+
+/**
+ * A file like the ones older sleap-io.js writers produced when an instance's
+ * skeleton wasn't in `labels.skeletons`: they stored it with skeleton id 0.
+ * Instances 0 and 2 use the 2-node skeleton (id 0); instance 1 uses a 3-node
+ * one and its 3 point rows are written, but its row says skeleton 0.
+ * (Unlike the old writer, the 3-node skeleton is still listed in the file's
+ * metadata; nothing refers to it, so reading behaves the same.)
+ */
+export async function writeUnregisteredSkeletonFile(): Promise<Uint8Array> {
+  const pair = new Skeleton({ nodes: ["head", "tail"], name: "pair" });
+  const triple = new Skeleton({
+    nodes: ["head", "thorax", "tail"],
+    name: "triple",
+  });
+  const video = new Video({ filename: "span-test.mp4" });
+  const inst = (i: number, skeleton: Skeleton) =>
+    Instance.fromArray(
+      skeleton.nodes.map((_, node) => spanCoord(i, node)),
+      skeleton,
+    );
+  const labels = new Labels({
+    labeledFrames: [
+      new LabeledFrame({ video, frameIdx: 0, instances: [inst(0, pair)] }),
+      new LabeledFrame({
+        video,
+        frameIdx: 10,
+        instances: [inst(1, triple), inst(2, pair)],
+      }),
+    ],
+    videos: [video],
+    skeletons: [pair, triple],
+  });
+  return writeSlpWithInstanceEdits(labels, (rows) => {
+    rows[1].skeleton = 0;
+  });
 }
 
 /**
  * Shift the boundary between instance rows `row` and `row + 1` by `delta`
- * point rows — the #231 corruption: spans become `n + delta` and `n - delta`
- * while the rows still tile the point table.
+ * point rows — the shifted-boundary corruption (#230/#231): spans become
+ * `n + delta` and `n - delta` while the rows still tile the point table.
  */
 export function shiftBoundary(row: number, delta: number) {
   return (spans: Spans): Spans => {

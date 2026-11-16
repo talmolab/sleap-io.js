@@ -662,6 +662,32 @@ const POINTS_FIELDS = ["x", "y", "visible", "complete"];
 const PRED_POINTS_FIELDS = ["x", "y", "visible", "complete", "score"];
 const NEGATIVE_FRAMES_FIELDS = ["video_id", "frame_idx"];
 
+/**
+ * The `instances.skeleton` id for `instance`: its skeleton's index in the
+ * skeletons being written. Throws when the skeleton isn't among them, like
+ * Python sleap-io's `labels.skeletons.index(inst.skeleton)`. Writing id 0
+ * instead (the old fallback) stored the instance's points against a skeleton
+ * with a different node count — a file whose point spans don't match its
+ * skeletons, which readers refuse (#230).
+ */
+function skeletonIdForWrite(
+  skeletons: Skeleton[],
+  instance: Instance | PredictedInstance,
+  frame: LabeledFrame,
+): number {
+  const id = skeletons.indexOf(instance.skeleton);
+  if (id >= 0) return id;
+  const name = instance.skeleton.name ? ` "${instance.skeleton.name}"` : "";
+  const video = frame.video?.filename;
+  throw new Error(
+    `Can't save: an instance in frame ${frame.frameIdx}` +
+      `${typeof video === "string" ? ` of ${video}` : ""} uses skeleton${name} ` +
+      `(${instance.skeleton.nodes.length} nodes), which isn't in the labels' ` +
+      `skeletons. Add it to labels.skeletons, or add the frame with ` +
+      `labels.append() so it's registered, before saving.`,
+  );
+}
+
 /** Read a numeric column cell with a default (mirrors the lazy reader). */
 function numAt(col: any[] | undefined, i: number, def = 0): number {
   const v = col?.[i];
@@ -1107,7 +1133,7 @@ export class SlpStreamWriter {
         for (const inst of frame.instances) {
           const localInstId = instRows.length;
           localId.set(inst as Instance, localInstId);
-          const skeletonId = Math.max(0, this.skeletons.indexOf(inst.skeleton));
+          const skeletonId = skeletonIdForWrite(this.skeletons, inst, frame);
           const trackId = inst.track ? this.tracks.indexOf(inst.track) : -1;
           const trackingScore = inst.trackingScore ?? 0;
           let type = 0;
@@ -3088,9 +3114,10 @@ export function buildLabelTableRows(labels: Labels): LabelTableRows {
       const instanceId = instances.length;
       instanceIndex.set(instance as Instance, instanceId);
 
-      const skeletonId = Math.max(
-        0,
-        labels.skeletons.indexOf(instance.skeleton),
+      const skeletonId = skeletonIdForWrite(
+        labels.skeletons,
+        instance,
+        labeledFrame,
       );
       const trackId = instance.track
         ? labels.tracks.indexOf(instance.track)

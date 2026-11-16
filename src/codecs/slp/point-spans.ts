@@ -6,15 +6,23 @@
  * `pred_points` (predicted instances). Points are positional: row `k` of the
  * slice is node `k` of the instance's skeleton. So a span whose length differs
  * from the skeleton's node count can't be read correctly. Before this check the
- * readers padded or cut each instance to fit, which silently put coordinates on
- * the wrong nodes when a span boundary had shifted (the float32 `instances`
- * table bug, #231, produced exactly that: spans of 16 and 18 for a 17-node
- * skeleton).
+ * readers built such instances anyway, which silently put coordinates on the
+ * wrong nodes.
  *
- * Python sleap-io refuses such files (talmolab/sleap-io#551), so by default we
- * do too — with an error that says which instance, frame and video is wrong.
- * Callers can opt into {@link checkPointSpans}'s `repair`, which rebuilds the
- * spans only when the result is provably exact (see `tryRepair`).
+ * Older sleap-io.js writers produced two kinds of such files:
+ *  - shifted boundaries: spans of 16 and 18 for a 17-node skeleton, with the
+ *    point rows themselves intact. #230 first blamed a ≤0.5.4 span off-by-one;
+ *    #231 traced its example file to the `instances` table being written as
+ *    float32 (point ids above 2^24 rounded to even numbers).
+ *  - an instance whose skeleton wasn't in `labels.skeletons` was saved with
+ *    skeleton id 0, so its own (correct) rows sit under a skeleton with a
+ *    different node count. The writer now refuses to save that.
+ *
+ * Python sleap-io refuses all such files (talmolab/sleap-io#551), so by default
+ * we do too — with an error that says which instance, frame and video is wrong.
+ * With `repair`, {@link checkPointSpans} rebuilds shifted boundaries when that
+ * is provably exact, keeps the stored spans (with a warning) for the
+ * skeleton-id case, and still refuses anything else (see `planRepair`).
  */
 import type { Skeleton } from "../../model/skeleton.js";
 import type { Video } from "../../model/video.js";
@@ -81,6 +89,12 @@ export class SlpPointSpanError extends Error {
 export interface PointSpanCheckResult {
   /** Instances whose spans were rebuilt (0 unless `repair` was needed). */
   repairedInstances: number;
+  /**
+   * Mismatched instances whose stored spans were kept as they are (0 unless
+   * `repair` was needed); the readers load their points as stored, so their
+   * point count differs from their skeleton's node count.
+   */
+  keptInstances: number;
 }
 
 const TABLE_NAME = { user: "points", predicted: "pred_points" } as const;
@@ -96,11 +110,13 @@ export function columnLength(table: Columns): number {
 /**
  * Check every instance's point span against its skeleton's node count.
  *
- * - All spans match: returns `{ repairedInstances: 0 }` and changes nothing.
+ * - All spans match: returns zero counts and changes nothing.
  * - Some don't and `repair` is off: throws {@link SlpPointSpanError}.
- * - Some don't and `repair` is on: rebuilds the spans of the affected table(s)
- *   in `instancesData` (replacing the `point_id_start`/`point_id_end` columns),
- *   or throws {@link SlpPointSpanError} when the rebuild can't be proven exact.
+ * - Some don't and `repair` is on, per affected table (`points` /
+ *   `pred_points`), see `planRepair`: rebuilds the spans in `instancesData`
+ *   (replacing the `point_id_start`/`point_id_end` columns) when that's exact,
+ *   keeps them when each instance's rows are provably its own, or throws
+ *   {@link SlpPointSpanError}. Rebuilding or keeping logs one `console.warn`.
  *
  * `userInstancesOnly` skips predicted instances (their table isn't read).
  */
@@ -124,7 +140,7 @@ export function checkPointSpans(options: {
   // Tables without span columns (or without a skeleton to compare against)
   // can't be checked; the readers keep their existing behaviour for those.
   if (!starts || !ends || skeletons.length === 0) {
-    return { repairedInstances: 0 };
+    return { repairedInstances: 0, keptInstances: 0 };
   }
   const types = instancesData.instance_type;
   const skeletonIds = instancesData.skeleton;
@@ -140,7 +156,7 @@ export function checkPointSpans(options: {
 
   let mismatchCount = 0;
   let firstRow = -1;
-  const mismatchedTypes = { user: false, predicted: false };
+  const mismatchedTypes = { user: 0, predicted: 0 };
   for (let row = 0; row < instanceCount; row++) {
     const predicted = isPredictedAt(row);
     if (predicted && options.userInstancesOnly) continue;
@@ -148,9 +164,9 @@ export function checkPointSpans(options: {
     if (span === nodeCountAt(row)) continue;
     mismatchCount++;
     if (firstRow < 0) firstRow = row;
-    mismatchedTypes[predicted ? "predicted" : "user"] = true;
+    mismatchedTypes[predicted ? "predicted" : "user"]++;
   }
-  if (mismatchCount === 0) return { repairedInstances: 0 };
+  if (mismatchCount === 0) return { repairedInstances: 0, keptInstances: 0 };
 
   const fail = (repairRefusedReason?: string): never => {
     const first = describeMismatch(options, firstRow, nodeCountAt(firstRow));
@@ -173,7 +189,8 @@ export function checkPointSpans(options: {
 
   // Check every affected table before changing anything, so a refusal leaves
   // `instancesData` untouched.
-  const plans: Array<{ rows: number[] }> = [];
+  const rebuild: number[][] = [];
+  let keptInstances = 0;
   for (const type of ["user", "predicted"] as const) {
     if (!mismatchedTypes[type]) continue;
     const rowCount =
@@ -188,36 +205,66 @@ export function checkPointSpans(options: {
       TABLE_NAME[type],
     );
     if (typeof plan === "string") return fail(plan);
-    plans.push(plan);
+    if (plan.action === "rebuild") rebuild.push(plan.rows);
+    else keptInstances += mismatchedTypes[type];
   }
 
-  const newStarts = Array.from(starts, Number);
-  const newEnds = Array.from(ends, Number);
   let repairedInstances = 0;
-  for (const { rows } of plans) {
-    let next = 0;
-    for (const row of rows) {
-      const start = next;
-      next += nodeCountAt(row);
-      if (newStarts[row] !== start || newEnds[row] !== next) {
-        repairedInstances++;
+  if (rebuild.length > 0) {
+    const newStarts = Array.from(starts, Number);
+    const newEnds = Array.from(ends, Number);
+    for (const rows of rebuild) {
+      let next = 0;
+      for (const row of rows) {
+        const start = next;
+        next += nodeCountAt(row);
+        if (newStarts[row] !== start || newEnds[row] !== next) {
+          repairedInstances++;
+        }
+        newStarts[row] = start;
+        newEnds[row] = next;
       }
-      newStarts[row] = start;
-      newEnds[row] = next;
     }
+    instancesData.point_id_start = newStarts;
+    instancesData.point_id_end = newEnds;
   }
-  instancesData.point_id_start = newStarts;
-  instancesData.point_id_end = newEnds;
-  return { repairedInstances };
+
+  const file = options.labelsPath ?? "SLP file";
+  if (repairedInstances > 0) {
+    console.warn(
+      `[sleap-io] ${file}: rebuilt the point spans of ${repairedInstances} ` +
+        "instances whose boundaries had shifted (the point rows were intact).",
+    );
+  }
+  if (keptInstances > 0) {
+    const first = describeMismatch(options, firstRow, nodeCountAt(firstRow));
+    console.warn(
+      `[sleap-io] ${file}: ${keptInstances} instances have more or fewer ` +
+        "points than their skeleton has nodes (first: " +
+        `${describeLocation(first)}, ${first.span} points vs ` +
+        `${first.nodeCount} nodes). Loaded their points as stored. Older ` +
+        "sleap-io.js versions wrote files like this when an " +
+        "instance's skeleton was missing from the labels; check these " +
+        "instances' nodes.",
+    );
+  }
+  return { repairedInstances, keptInstances };
 }
 
 /**
- * Decide whether one table's spans can be rebuilt exactly. The rows of that
- * type, in table order, must tile the point table with no gap or overlap
- * (each starts where the previous ended, the first at 0, the last ending at
- * the table's last row), and the table must hold exactly one row per node of
- * every instance. Then the only consistent spans are consecutive runs of each
- * instance's node count. Returns the rows to rewrite, or why it can't.
+ * Decide what `repair` does for one table. The rows of that type, in table
+ * order, must tile the point table with no gap or overlap (each starts where
+ * the previous ended, the first at 0, the last ending at the table's last
+ * row); otherwise it returns why it can't repair.
+ *
+ * - `"rebuild"`: the table also holds exactly one row per node of every
+ *   instance. The rows are intact and only the boundaries moved, so the only
+ *   consistent spans are consecutive runs of each instance's node count.
+ * - `"keep"`: the rows tile the table but their total differs from the
+ *   skeletons' node total, so the spans can't have shifted — each instance's
+ *   rows are its own and its skeleton id is what's wrong (the old writer's
+ *   skeleton-0 fallback). Keep the spans; the readers load the points as
+ *   stored, as they did before this check.
  */
 function planRepair(
   instanceCount: number,
@@ -227,7 +274,7 @@ function planRepair(
   nodeCountAt: (row: number) => number,
   tableRowCount: number,
   tableName: string,
-): { rows: number[] } | string {
+): { action: "rebuild" | "keep"; rows: number[] } | string {
   const rows: number[] = [];
   let expectedStart = 0;
   let totalNodes = 0;
@@ -248,10 +295,7 @@ function planRepair(
   if (expectedStart !== tableRowCount) {
     return `the spans cover ${expectedStart} ${tableName} rows, but the table has ${tableRowCount}`;
   }
-  if (totalNodes !== tableRowCount) {
-    return `the ${tableName} table has ${tableRowCount} rows, but its instances' skeletons need ${totalNodes}`;
-  }
-  return { rows };
+  return { action: totalNodes === tableRowCount ? "rebuild" : "keep", rows };
 }
 
 function describeMismatch(
@@ -307,6 +351,19 @@ function describeMismatch(
   return mismatch;
 }
 
+function describeFrame(m: PointSpanMismatch): string {
+  return `frame ${m.frameIdx} of video ${m.videoIndex}${
+    m.videoFilename ? ` (${m.videoFilename})` : ""
+  }`;
+}
+
+/** "instance row R (frame F of video V (file))", for warnings. */
+function describeLocation(m: PointSpanMismatch): string {
+  return `instance row ${m.instanceRow}${
+    m.frameIdx === null ? "" : `, ${describeFrame(m)}`
+  }`;
+}
+
 function buildMessage(options: {
   labelsPath?: string;
   mismatchCount: number;
@@ -316,11 +373,7 @@ function buildMessage(options: {
 }): string {
   const { first, mismatchCount, instanceCount } = options;
   const where =
-    first.frameIdx === null
-      ? "not in any frame"
-      : `frame ${first.frameIdx} of video ${first.videoIndex}${
-          first.videoFilename ? ` (${first.videoFilename})` : ""
-        }`;
+    first.frameIdx === null ? "not in any frame" : describeFrame(first);
   const skeleton = first.skeletonName
     ? `skeleton "${first.skeletonName}"`
     : "its skeleton";
@@ -335,7 +388,7 @@ function buildMessage(options: {
     `${first.nodeCount} nodes.`;
   message += options.repairRefusedReason
     ? ` Repair refused: ${options.repairRefusedReason}.`
-    : " Pass { repairPointSpans: true } to rebuild the spans when the point " +
-      "rows themselves are intact (see sleap-io.js#230).";
+    : " Pass { repairPointSpans: true } to recover the file when its point " +
+      "rows are intact (see sleap-io.js#230).";
   return message;
 }

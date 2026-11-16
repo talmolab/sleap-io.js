@@ -3,15 +3,15 @@
  *
  * Points are positional: row `k` of an instance's `point_id_start:point_id_end`
  * slice is node `k`. When a span's length differs from the skeleton's node
- * count, the readers used to pad/cut each instance and silently put
+ * count, the readers used to build the instance anyway and silently put
  * coordinates on the wrong nodes. They now refuse such files (like Python
  * sleap-io), and `repairPointSpans` rebuilds the spans when that's exact.
  * Files are crafted by tests/slp-point-span-files.ts.
  */
-import { describe, it, expect } from "./bun-test";
+import { describe, it, expect, vi } from "./bun-test";
 import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
 import { readFromStreamingFile } from "../src/codecs/slp/read-streaming.js";
-import { saveSlpToBytes } from "../src/codecs/slp/write.js";
+import { openSlpWriter, saveSlpToBytes } from "../src/codecs/slp/write.js";
 import {
   checkPointSpans,
   SlpPointSpanError,
@@ -20,7 +20,10 @@ import { loadSlp } from "../src/io/main.js";
 import * as nodeIndex from "../src/index.js";
 import * as browserIndex from "../src/index.browser.js";
 import type { StreamingH5File } from "../src/codecs/slp/h5-streaming.js";
-import type { Labels } from "../src/model/labels.js";
+import { Labels } from "../src/model/labels.js";
+import { Instance } from "../src/model/instance.js";
+import { LabeledFrame } from "../src/model/labeled-frame.js";
+import { Video } from "../src/model/video.js";
 import { Skeleton } from "../src/model/skeleton.js";
 import {
   makeSpanLabels,
@@ -29,6 +32,7 @@ import {
   spanCoord,
   SPAN_NODES,
   writeSlpWithSpans,
+  writeUnregisteredSkeletonFile,
 } from "./slp-point-span-files.js";
 
 /** Every instance's points, in file order. */
@@ -305,7 +309,7 @@ describe("checkPointSpans", () => {
         skeletons,
         videos: [],
         pointsRowCount: 0,
-        predPointsRowCount: 5, // 4 rows needed for two 2-node instances
+        predPointsRowCount: 6, // the spans stop at row 5: a gap, so refused
         repair: true,
       }),
     ).toThrow(SlpPointSpanError);
@@ -340,6 +344,149 @@ describe("checkPointSpans", () => {
         pointsRowCount: 0,
         predPointsRowCount: 0,
       }),
-    ).toEqual({ repairedInstances: 0 });
+    ).toEqual({ repairedInstances: 0, keptInstances: 0 });
+  });
+});
+
+// The old writers stored an unregistered skeleton's instance under skeleton 0;
+// they must now refuse, like Python's `labels.skeletons.index(...)`.
+describe("writing an instance whose skeleton isn't registered", () => {
+  const pair = () => new Skeleton({ nodes: ["head", "tail"], name: "pair" });
+  const triple = () =>
+    new Skeleton({ nodes: ["head", "thorax", "tail"], name: "triple" });
+  const inst = (skeleton: Skeleton) =>
+    Instance.fromArray(
+      skeleton.nodes.map((_, k) => [k, k]),
+      skeleton,
+    );
+
+  it("saveSlpToBytes throws instead of writing skeleton 0", async () => {
+    const p = pair();
+    const video = new Video({ filename: "span-test.mp4" });
+    const frame = new LabeledFrame({
+      video,
+      frameIdx: 7,
+      instances: [inst(p)],
+    });
+    const labels = new Labels({
+      labeledFrames: [frame],
+      videos: [video],
+      skeletons: [p],
+    });
+    frame.instances.push(inst(triple())); // added after the Labels was built
+    await expect(saveSlpToBytes(labels)).rejects.toThrow(
+      `Can't save: an instance in frame 7 of span-test.mp4 uses skeleton "triple" (3 nodes), which isn't in the labels' skeletons.`,
+    );
+  });
+
+  it("the streaming writer throws too", async () => {
+    const p = pair();
+    const video = new Video({ filename: "span-test.mp4" });
+    const writer = await openSlpWriter({
+      skeletons: [p],
+      videos: [video],
+      tracks: [],
+    });
+    expect(() =>
+      writer.appendFrames([
+        new LabeledFrame({ video, frameIdx: 0, instances: [inst(triple())] }),
+      ]),
+    ).toThrow(`uses skeleton "triple" (3 nodes)`);
+  });
+
+  it("labels.append() registers the skeleton, so the save reads back strictly", async () => {
+    const p = pair();
+    const t = triple();
+    const video = new Video({ filename: "span-test.mp4" });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 0, instances: [inst(p)] }),
+      ],
+      videos: [video],
+      skeletons: [p],
+    });
+    labels.append(
+      new LabeledFrame({ video, frameIdx: 1, instances: [inst(t)] }),
+    );
+    const read = await readSlp(buf(await saveSlpToBytes(labels)), {
+      openVideos: false,
+    });
+    const last = read.labeledFrames[1].instances[0];
+    expect(last.skeleton.name).toBe("triple");
+    expect(last.points.length).toBe(3);
+  });
+});
+
+// Files those old writers already produced must still open (opt-in, warned).
+describe("files saved with an unregistered skeleton by older versions", () => {
+  /** The file's instances: 0 and 2 on "pair" (2 nodes), 1 on "triple" (3). */
+  const expected = () => [
+    [spanCoord(0, 0), spanCoord(0, 1)],
+    [spanCoord(1, 0), spanCoord(1, 1), spanCoord(1, 2)],
+    [spanCoord(2, 0), spanCoord(2, 1)],
+  ];
+
+  it("are refused by default, like Python sleap-io", async () => {
+    const bytes = await writeUnregisteredSkeletonFile();
+    const err = await spanError(readSlp(buf(bytes), { openVideos: false }));
+    expect(err.mismatchCount).toBe(1);
+    expect(err.first).toMatchObject({
+      instanceRow: 1,
+      instanceType: "user",
+      span: 3,
+      nodeCount: 2,
+      skeletonName: "pair",
+      frameIdx: 10,
+    });
+  });
+
+  for (const reader of ["readSlp", "readSlpLazy", "streaming"] as const) {
+    it(`open with repairPointSpans, points as stored, with a warning (${reader})`, async () => {
+      const bytes = await writeUnregisteredSkeletonFile();
+      const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+      try {
+        let labels: Labels;
+        if (reader === "streaming") {
+          const { file, close } = await makeStreamingFile(bytes);
+          try {
+            labels = await readStreaming(file, { repair: true });
+          } finally {
+            close();
+          }
+        } else {
+          const read = reader === "readSlp" ? readSlp : readSlpLazy;
+          labels = await read(buf(bytes), {
+            openVideos: false,
+            repairPointSpans: true,
+          });
+        }
+        // Same coordinates the old reader returned; nothing shifted.
+        expect(allPoints(labels)).toEqual(expected());
+        expect(warn).toHaveBeenCalledTimes(1);
+        const message = String(warn.mock.calls[0][0]);
+        expect(message).toContain(
+          "1 instances have more or fewer points than their skeleton has nodes",
+        );
+        expect(message).toContain(
+          "instance row 1, frame 10 of video 0 (span-test.mp4), 3 points vs 2 nodes",
+        );
+      } finally {
+        warn.mockRestore();
+      }
+    });
+  }
+
+  it("a shifted-boundary repair warns how many instances it rebuilt", async () => {
+    const { bytes } = await shifted();
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      await readSlp(buf(bytes), { openVideos: false, repairPointSpans: true });
+      expect(warn).toHaveBeenCalledTimes(1);
+      expect(String(warn.mock.calls[0][0])).toContain(
+        "rebuilt the point spans of 2 instances",
+      );
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
