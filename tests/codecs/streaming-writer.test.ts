@@ -325,7 +325,9 @@ describe("SlpStreamWriter.appendFrames — materialized-frame overlay", () => {
     const s = await store(FIX);
 
     const writer = await openSlpWriter({
-      skeletons: s.skeletons,
+      // Register the overlay's 2-node skeleton too: otherwise its instances are
+      // written against the store's skeleton and the read rejects the spans (#230).
+      skeletons: [...s.skeletons, skeleton],
       videos: [...s.videos, video], // store's video(s) + the overlay video
       tracks: [...s.tracks, track],
     });

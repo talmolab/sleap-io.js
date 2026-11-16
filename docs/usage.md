@@ -327,6 +327,35 @@ enabled, the videos stage additionally reports `"Opening videos (i/n)"` as each
 embedded video backend is opened. Reporting is a pure side effect and never
 changes the loaded `Labels`.
 
+### Files with broken point spans
+
+Each instance in an SLP file points at its coordinates with a row range in the
+`points` (or `pred_points`) table, and row `k` of that range is node `k`. If a
+range's length differs from the skeleton's node count, the points can't be put
+on the right nodes, so every reader throws `SlpPointSpanError`, as Python
+sleap-io does. The error names the first bad instance (its row, frame and
+video) and how many instances are affected.
+
+Files written by sleap-io.js before the `instances` table was fixed (#231) can
+have shifted ranges whose point rows are still intact. Pass
+`repairPointSpans: true` to rebuild the ranges; the repair only runs when it's
+provably exact (the ranges tile the point table with no gaps or overlaps, and
+the table has exactly one row per node), and otherwise the read still throws.
+Saving the repaired labels writes a fixed file.
+
+```ts
+import { loadSlp, SlpPointSpanError } from "@talmolab/sleap-io.js";
+
+let labels;
+try {
+  labels = await loadSlp("dataset.slp");
+} catch (e) {
+  if (!(e instanceof SlpPointSpanError)) throw e;
+  console.warn(e.message);
+  labels = await loadSlp("dataset.slp", { repairPointSpans: true });
+}
+```
+
 ## Saving with Embedded Frames
 
 Embed video frames directly into the SLP file:

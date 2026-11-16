@@ -68,6 +68,7 @@ import { Embedding } from "../../model/embedding.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
 import { resolveSourceFrameCount } from "./frame-count.js";
+import { checkPointSpans, columnLength } from "./point-spans.js";
 import type { CropRect } from "../../transform/points.js";
 import type { Fill } from "../../transform/frame.js";
 
@@ -126,6 +127,14 @@ export interface StreamingSlpOptions {
    * with `lazy`.
    */
   userInstancesOnly?: boolean;
+  /**
+   * When an instance's point span doesn't match its skeleton's node count,
+   * the read throws `SlpPointSpanError` (like Python sleap-io). Set this to
+   * rebuild the spans instead, when that's provably exact: the point rows must
+   * be intact (contiguous, no gaps or overlaps, one row per node). If they
+   * aren't, the read still throws. Default `false`. See issue #230.
+   */
+  repairPointSpans?: boolean;
   /**
    * Optional progress callback fired as loading advances through its stages.
    * `current` counts completed stages out of `total`; `message` labels the
@@ -262,6 +271,7 @@ export async function readSlpStreaming(
       options?.lazy ?? false,
       lazyVideoMetadata,
       options?.userInstancesOnly ?? false,
+      options?.repairPointSpans ?? false,
     );
   } finally {
     // Keep the file open when video backends need it: eager (openVideos) OR
@@ -291,6 +301,7 @@ export async function readFromStreamingFile(
   lazy: boolean = false,
   lazyVideoMetadata: boolean = false,
   userInstancesOnly: boolean = false,
+  repairPointSpans: boolean = false,
 ): Promise<Labels> {
   if (lazy && userInstancesOnly) {
     throw new Error(
@@ -387,6 +398,17 @@ export async function readFromStreamingFile(
   const negativeFrames = negativeFrameKeys(
     await readStructDatasetStreaming(file, "negative_frames"),
   );
+  checkPointSpans({
+    framesData,
+    instancesData,
+    skeletons,
+    videos,
+    pointsRowCount: columnLength(pointsData),
+    predPointsRowCount: columnLength(predPointsData),
+    repair: repairPointSpans,
+    userInstancesOnly,
+    labelsPath,
+  });
 
   // Build labeled frames eagerly, or (lazy mode) wrap the columnar tables in a
   // LazyDataStore and defer LabeledFrame/Instance construction to first access.
