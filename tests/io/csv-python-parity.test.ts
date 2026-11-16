@@ -11,9 +11,10 @@ import { labelsToCsv } from "../../src/io/csv.js";
 
 const csvDir = fileURLToPath(new URL("../data/csv", import.meta.url));
 
+// Split on \r?\n: git may check the Python fixtures out with CRLF on Windows.
 function parse(text: string): string[][] {
   return text
-    .split("\n")
+    .split(/\r?\n/)
     .filter((l) => l.length > 0)
     .map((l) => l.split(","));
 }
