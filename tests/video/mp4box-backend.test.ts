@@ -572,6 +572,113 @@ describe("Mp4BoxVideoBackend", () => {
     backend.close();
   });
 
+  // Issue #242: the issue's far-apart jump pool (400, 900, 1500, 2100, 2700)
+  // used to flush the cache on every seek, so going back never hit the cache.
+  it("revisiting earlier jump targets hits the cache (default options)", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(
+      makeSamples(3000, 250),
+    );
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    const pool = [400, 900, 1500, 2100, 2700];
+    for (const t of pool) await backend.getFrame(t);
+
+    let decodes = 0;
+    const orig = (backend as any).decodeRange.bind(backend);
+    (backend as any).decodeRange = async (...args: any[]) => {
+      decodes += 1;
+      return orig(...args);
+    };
+    for (const t of [...pool].reverse()) {
+      expect(await backend.getFrame(t)).not.toBeNull();
+    }
+    expect(decodes).toBe(0);
+    backend.close();
+  });
+
+  // Issue #242: the issue measured `cacheSize: 8, lookahead: 0` as a workaround;
+  // even a small cache must keep more than the latest seek.
+  it("a small cache keeps the previous jump targets", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(
+      makeSamples(3000, 250),
+    );
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]), {
+      cacheSize: 8,
+      lookahead: 0,
+    });
+    await backend.getFrameTimes();
+
+    // None of these is a keyframe, so each decode has frames behind the target.
+    for (const t of [400, 900, 1600]) await backend.getFrame(t);
+    expect((backend as any).cache.has(400)).toBe(true);
+    expect((backend as any).cache.has(900)).toBe(true);
+    expect((backend as any).cache.has(1600)).toBe(true);
+    expect((backend as any).cache.size).toBeLessThanOrEqual(8);
+    backend.close();
+  });
+
+  // Issue #242: retained frames per decode used to be ~cacheSize; it is now the
+  // lookahead plus a short step-back neighbourhood, so a jump makes far fewer
+  // (expensive at 1080p) ImageBitmaps.
+  it("a jump retains only the lookahead plus a short step-back window", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(
+      makeSamples(3000, 250),
+    );
+    let bitmaps = 0;
+    (globalThis as any).createImageBitmap = async () => {
+      bitmaps += 1;
+      return { close() {} };
+    };
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const { CACHE_WINDOW_BEHIND } = await import(
+      "../../src/video/mp4-decode-core.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    await backend.getFrame(400); // keyframe 250, lookahead 60 → decodes 250..460
+    expect(bitmaps).toBe(CACHE_WINDOW_BEHIND + 1 + 60);
+    expect((backend as any).cache.has(400 - CACHE_WINDOW_BEHIND)).toBe(true);
+    expect((backend as any).cache.has(400 - CACHE_WINDOW_BEHIND - 1)).toBe(
+      false,
+    );
+    expect((backend as any).cache.has(460)).toBe(true);
+    backend.close();
+  });
+
+  // Re-decoding a range that overlaps the cache must not re-create (and leak)
+  // bitmaps for frames that are already cached.
+  it("does not re-bitmap frames that are already cached", async () => {
+    (globalThis as any).MP4Box = createMp4BoxMockWithSamples(
+      makeSamples(3000, 250),
+    );
+    let bitmaps = 0;
+    (globalThis as any).createImageBitmap = async () => {
+      bitmaps += 1;
+      return { close() {} };
+    };
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+
+    await backend.getFrame(400); // caches 390..460
+    bitmaps = 0;
+    await backend.getFrame(380); // window 370..440 overlaps 390..440
+    expect(bitmaps).toBe(20); // only 370..389 are new
+    backend.close();
+  });
+
   it("nearestKeyframe returns the keyframe at or before a frame", async () => {
     (globalThis as any).MP4Box = createMp4BoxMockWithSamples(makeSamples(100));
     const { Mp4BoxVideoBackend } = await import(

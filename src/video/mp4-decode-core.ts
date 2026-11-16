@@ -112,9 +112,35 @@ export function planDecodeRange(
 }
 
 /**
+ * How many frames BEFORE the target one decode keeps, so stepping back a few
+ * frames after a jump is still a cache hit. A fixed count, deliberately not
+ * derived from `cacheSize` (issue #242).
+ */
+export const CACHE_WINDOW_BEHIND = 10;
+
+/**
+ * How many recently viewed frames (frames a `getFrame` returned) the cache
+ * protects from eviction: a quarter of the cache. Speculative neighbours from a
+ * decode are evicted before these, so a bigger cache retains more past seeks
+ * (issue #242). The rest of the cache holds the current decode window.
+ */
+export function viewedFrameCapacity(cacheSize: number): number {
+  return Math.max(0, Math.floor(cacheSize / 4));
+}
+
+/**
  * The sub-range of `[start, end]` whose decoded frames are worth keeping in the
- * cache — `target ± cacheSize/2`, clamped to `[start, end]`. Frames decoded only
- * to satisfy the delta chain (outside this window) are discarded, not cached.
+ * cache: up to {@link CACHE_WINDOW_BEHIND} frames before `target`, the target,
+ * and everything decoded after it (the lookahead), clamped to `[start, end]`.
+ * Frames decoded only to satisfy the delta chain (outside this window) are
+ * discarded, not cached.
+ *
+ * The window does NOT grow with `cacheSize` (issue #242: it used to be
+ * `target ± cacheSize/2`, so one decode filled the whole cache and every seek
+ * evicted the previous one). `cacheSize` only caps it: the window never takes
+ * more than `cacheSize - viewedFrameCapacity(cacheSize)` slots, trimming the
+ * frames behind the target first, then the far end of the lookahead. The target
+ * itself is always kept.
  */
 export function computeCacheWindow(
   start: number,
@@ -122,11 +148,51 @@ export function computeCacheWindow(
   target: number,
   cacheSize: number,
 ): { cacheStart: number; cacheEnd: number } {
-  const half = Math.floor(cacheSize / 2);
-  return {
-    cacheStart: Math.max(start, target - half),
-    cacheEnd: Math.min(end, target + half),
-  };
+  const budget = Math.max(1, cacheSize - viewedFrameCapacity(cacheSize));
+  const ahead = Math.max(0, Math.min(end - target, budget - 1));
+  const behind = Math.max(
+    0,
+    Math.min(target - start, CACHE_WINDOW_BEHIND, budget - 1 - ahead),
+  );
+  return { cacheStart: target - behind, cacheEnd: target + ahead };
+}
+
+/**
+ * Record that `frame` was shown to a caller: move it to the newest end of the
+ * `viewed` set (insertion order = least → most recent) and drop the oldest
+ * entries beyond `capacity`. Dropped frames stay cached; they just lose their
+ * protection from eviction.
+ */
+export function markViewed(
+  viewed: Set<number>,
+  frame: number,
+  capacity: number,
+): void {
+  viewed.delete(frame);
+  if (capacity > 0) viewed.add(frame);
+  while (viewed.size > capacity) {
+    const oldest = viewed.values().next();
+    if (oldest.done) break;
+    viewed.delete(oldest.value);
+  }
+}
+
+/**
+ * The cache key to evict when the cache is full: the least recently used frame
+ * that is NOT protected (not in `protectedFrames`), else the least recently used
+ * frame overall. `keysInLruOrder` is the cache `Map`'s keys (oldest first).
+ * Returns `undefined` for an empty cache.
+ */
+export function pickEvictionVictim(
+  keysInLruOrder: Iterable<number>,
+  protectedFrames: ReadonlySet<number>,
+): number | undefined {
+  let fallback: number | undefined;
+  for (const key of keysInLruOrder) {
+    if (!protectedFrames.has(key)) return key;
+    if (fallback === undefined) fallback = key;
+  }
+  return fallback;
 }
 
 /**

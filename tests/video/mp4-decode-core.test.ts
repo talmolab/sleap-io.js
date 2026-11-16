@@ -4,6 +4,10 @@ import {
   findKeyframeBefore,
   planDecodeRange,
   computeCacheWindow,
+  CACHE_WINDOW_BEHIND,
+  viewedFrameCapacity,
+  markViewed,
+  pickEvictionVictim,
   selectFeedSamples,
   planReadRegions,
   readSamplesByDecodeOrder,
@@ -79,19 +83,83 @@ describe("planDecodeRange", () => {
 });
 
 describe("computeCacheWindow", () => {
-  it("keeps target ± half the cache size, clamped to [start,end]", () => {
-    // cacheSize 120 → half 60. target 200, start 180, end 300.
-    expect(computeCacheWindow(180, 300, 200, 120)).toEqual({
-      cacheStart: 180, // max(180, 200-60=140)
-      cacheEnd: 260, // min(300, 200+60)
+  // Issue #242: the window used to be target ± cacheSize/2, so one decode filled
+  // the whole cache. It is now a fixed step-back neighbourhood plus the decoded
+  // lookahead, independent of cacheSize.
+  it("keeps a fixed neighbourhood behind the target plus the lookahead", () => {
+    // cacheSize 120, target 200, start (keyframe) 150, end (target+60) 260.
+    expect(computeCacheWindow(150, 260, 200, 120)).toEqual({
+      cacheStart: 200 - CACHE_WINDOW_BEHIND,
+      cacheEnd: 260,
     });
   });
 
+  // Issue #242: a bigger cache must buy more retained seeks, not a wider window.
+  it("does not widen when cacheSize grows", () => {
+    expect(computeCacheWindow(0, 1060, 1000, 2000)).toEqual(
+      computeCacheWindow(0, 1060, 1000, 120),
+    );
+  });
+
+  // Issue #242: one decode must leave room for the frames other seeks showed, so
+  // the window never exceeds the cache minus the viewed-frame reserve.
+  it("trims the window to leave the viewed-frame reserve free (behind first)", () => {
+    // cacheSize 8 → reserve 2 → window ≤ 6: no frames behind, target + 5 ahead.
+    expect(computeCacheWindow(150, 260, 200, 8)).toEqual({
+      cacheStart: 200,
+      cacheEnd: 205,
+    });
+    // cacheSize 92 → reserve 23 → window ≤ 69 = target + 60 ahead + 8 behind.
+    expect(computeCacheWindow(150, 260, 200, 92)).toEqual({
+      cacheStart: 192,
+      cacheEnd: 260,
+    });
+  });
+
+  // Existing contract: never cache outside what was actually decoded.
   it("does not extend past the decoded range", () => {
     expect(computeCacheWindow(0, 5, 2, 120)).toEqual({
       cacheStart: 0,
       cacheEnd: 5,
     });
+  });
+
+  // A one-frame cache must still be able to hold the target itself.
+  it("always keeps at least the target", () => {
+    expect(computeCacheWindow(0, 60, 30, 1)).toEqual({
+      cacheStart: 30,
+      cacheEnd: 30,
+    });
+  });
+});
+
+describe("viewed-frame protection", () => {
+  // Issue #242: frames a caller was shown should outlive speculative neighbours.
+  it("reserves a quarter of the cache for viewed frames", () => {
+    expect(viewedFrameCapacity(120)).toBe(30);
+    expect(viewedFrameCapacity(8)).toBe(2);
+    expect(viewedFrameCapacity(1)).toBe(0);
+  });
+
+  // markViewed keeps the most recent `capacity` frames, newest last.
+  it("markViewed is an LRU set capped at capacity", () => {
+    const viewed = new Set<number>();
+    markViewed(viewed, 1, 2);
+    markViewed(viewed, 2, 2);
+    markViewed(viewed, 1, 2); // re-view moves 1 to newest
+    markViewed(viewed, 3, 2); // drops the oldest (2)
+    expect([...viewed]).toEqual([1, 3]);
+    markViewed(viewed, 4, 0); // zero capacity protects nothing
+    expect(viewed.size).toBe(0);
+  });
+
+  // Eviction skips protected frames while an unprotected one exists.
+  it("pickEvictionVictim prefers the oldest unprotected frame", () => {
+    expect(pickEvictionVictim([5, 6, 7], new Set([5]))).toBe(6);
+    expect(pickEvictionVictim([5, 6, 7], new Set())).toBe(5);
+    // Everything protected → fall back to plain LRU.
+    expect(pickEvictionVictim([5, 6], new Set([5, 6]))).toBe(5);
+    expect(pickEvictionVictim([], new Set())).toBeUndefined();
   });
 });
 
