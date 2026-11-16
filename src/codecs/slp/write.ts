@@ -4966,68 +4966,75 @@ function writeBboxes(
 ): void {
   if (!bboxes.length) return;
 
-  const rows: number[][] = [];
+  const n = bboxes.length;
+  const x1 = new Float64Array(n);
+  const y1 = new Float64Array(n);
+  const x2 = new Float64Array(n);
+  const y2 = new Float64Array(n);
+  const angle = new Float64Array(n);
+  const video = new Int32Array(n);
+  const frameIdx = new Int32Array(n);
+  const track = new Int32Array(n);
+  const instance = new Int32Array(n);
+  const isPredicted = new Uint8Array(n);
+  const score = new Float64Array(n);
+  const trackingScore = new Float64Array(n);
   const categories: string[] = [];
   const names: string[] = [];
   const sources: string[] = [];
 
-  for (let i = 0; i < bboxes.length; i++) {
+  // Row order is the bbox order passed in: identity/category/embedding links
+  // (OWNER_BBOX) are keyed by this row index, so it must not be reordered.
+  for (let i = 0; i < n; i++) {
     const bbox = bboxes[i];
-    const videoIdx = contexts ? contexts[i][0] : -1;
-    const frameIdx = contexts ? contexts[i][1] : -1;
-    const trackIdx = bbox.track ? tracks.indexOf(bbox.track as any) : -1;
-    const score = bbox.isPredicted
-      ? (bbox as PredictedBoundingBox).score
-      : Number.NaN;
+    x1[i] = bbox.x1;
+    y1[i] = bbox.y1;
+    x2[i] = bbox.x2;
+    y2[i] = bbox.y2;
+    angle[i] = bbox.angle;
+    video[i] = contexts ? contexts[i][0] : -1;
+    frameIdx[i] = contexts ? contexts[i][1] : -1;
+    track[i] = bbox.track ? tracks.indexOf(bbox.track as any) : -1;
     // Fall back to stored _instanceIdx when no live instance link (e.g., lazy mode).
-    const instanceIdx = bbox.instance
+    instance[i] = bbox.instance
       ? instances.indexOf(bbox.instance as Instance)
       : (bbox._instanceIdx ?? -1);
-
-    const trackingScore = bbox.trackingScore ?? Number.NaN;
-
-    rows.push([
-      bbox.x1,
-      bbox.y1,
-      bbox.x2,
-      bbox.y2,
-      bbox.angle,
-      videoIdx,
-      frameIdx,
-      trackIdx,
-      score,
-      instanceIdx,
-      trackingScore,
-    ]);
+    isPredicted[i] = bbox.isPredicted ? 1 : 0;
+    score[i] = bbox.isPredicted
+      ? (bbox as PredictedBoundingBox).score
+      : Number.NaN;
+    trackingScore[i] = bbox.trackingScore ?? Number.NaN;
     categories.push(bbox.category);
     names.push(bbox.name);
     sources.push(bbox.source);
   }
 
-  createMatrixDataset(
-    file,
-    "bboxes",
-    rows,
-    [
-      "x1",
-      "y1",
-      "x2",
-      "y2",
-      "angle",
-      "video",
-      "frame_idx",
-      "track",
-      "score",
-      "instance",
-      "tracking_score",
-    ],
-    "<f8",
-  );
-
-  // Write string metadata as datasets at root level (v1.9+)
-  writeStringDataset(file, "bbox_categories", categories);
-  writeStringDataset(file, "bbox_names", names);
-  writeStringDataset(file, "bbox_sources", sources);
+  // Match Python sleap-io's on-disk layout (SLP 2.0+): a `/bboxes` GROUP with
+  // one named dataset per field (NOT a flat matrix), so Python/PyQt sleap-io can
+  // read JS-written boxes. (Previously JS wrote a 2-D f8 matrix dataset + a
+  // `field_names` attr and root `bbox_categories`/`bbox_names`/`bbox_sources`
+  // JSON datasets; Python treats a non-group `/bboxes` as its legacy compound
+  // table and crashed indexing `row["video"]`.) Dtypes follow Python except
+  // `frame_idx` (i4, as for centroids) and `score`/`tracking_score` (f8, so JS
+  // scores round-trip exactly; Python reads either width).
+  file.create_group("bboxes");
+  const col = (name: string, data: ArrayLike<number>, dtype: string) =>
+    file.create_dataset({ name: `bboxes/${name}`, data, shape: [n], dtype });
+  col("x1", x1, "<d");
+  col("y1", y1, "<d");
+  col("x2", x2, "<d");
+  col("y2", y2, "<d");
+  col("angle", angle, "<d");
+  col("video", video, "<i4");
+  col("frame_idx", frameIdx, "<i4");
+  col("track", track, "<i4");
+  col("instance", instance, "<i4");
+  col("is_predicted", isPredicted, "<B");
+  col("score", score, "<d");
+  col("tracking_score", trackingScore, "<d");
+  file.create_dataset({ name: "bboxes/category", data: categories });
+  file.create_dataset({ name: "bboxes/name", data: names });
+  file.create_dataset({ name: "bboxes/source", data: sources });
 }
 
 function writeLabelImages(

@@ -79,8 +79,9 @@ import {
   UserBoundingBox,
   PredictedBoundingBox,
 } from "../../model/bbox.js";
-import { type Centroid } from "../../model/centroid.js";
+import type { Centroid } from "../../model/centroid.js";
 import { buildCentroidTuples } from "./centroids.js";
+import { BBOX_NUMERIC_COLUMNS, buildBboxTuples } from "./bboxes.js";
 import {
   type LabelImage,
   UserLabelImage,
@@ -1970,105 +1971,57 @@ function readBboxes(
   _videos: Video[],
   tracks: Track[],
 ): [BoundingBox, number, number][] {
-  const bboxesDs = file.get("bboxes");
-  if (!bboxesDs) return [];
-  const bboxesData = normalizeStructDataset(bboxesDs);
+  // Layouts (see bboxes.ts): Python / current JS write a `/bboxes` GROUP with one
+  // child dataset per field; older JS wrote a flat matrix + `field_names` attr
+  // with root `bbox_*` JSON string datasets; pre-2.0 Python wrote a center-based
+  // compound dataset with JSON string attrs.
+  let data: Record<string, ArrayLike<number>>;
+  let categories: string[];
+  let names: string[];
+  let sources: string[];
 
-  // Legacy format: center-based columns (x_center, y_center, width, height)
-  const xCenters = bboxesData.x_center ?? [];
-  const isLegacy = xCenters.length > 0;
-
-  // New format: corner-based columns (x1, y1, x2, y2)
-  const x1s = bboxesData.x1 ?? [];
-  const count = isLegacy ? xCenters.length : x1s.length;
-  if (!count) return [];
-
-  // v1.9+: string datasets at root level; fallback to JSON attrs on dataset
-  const categories = readStringMetadata(
-    file,
-    "bbox_categories",
-    bboxesDs,
-    "categories",
-  );
-  const names = readStringMetadata(file, "bbox_names", bboxesDs, "names");
-  const sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
-
-  const yCenters = bboxesData.y_center ?? [];
-  const widths = bboxesData.width ?? [];
-  const heights = bboxesData.height ?? [];
-  const y1s = bboxesData.y1 ?? [];
-  const x2s = bboxesData.x2 ?? [];
-  const y2s = bboxesData.y2 ?? [];
-  const angles = bboxesData.angle ?? [];
-  const videoIndices = bboxesData.video ?? [];
-  const frameIndices = bboxesData.frame_idx ?? [];
-  const trackIndices = bboxesData.track ?? [];
-  const bboxScores = bboxesData.score ?? [];
-  const instanceIndices = bboxesData.instance ?? [];
-  const trackingScores = bboxesData.tracking_score ?? [];
-
-  const bboxes: [BoundingBox, number, number][] = [];
-  for (let i = 0; i < count; i++) {
-    const videoIdx = Number(videoIndices[i]);
-
-    const frameIdxVal = Number(frameIndices[i]);
-
-    const trackIdx = Number(trackIndices[i]);
-    const track =
-      trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-
-    const scoreVal = Number(bboxScores[i]);
-    const instanceIdx = Number(instanceIndices[i]);
-
-    // Convert legacy center-based to corner-based
-    let bx1: number, by1: number, bx2: number, by2: number;
-    if (isLegacy) {
-      const cx = Number(xCenters[i]);
-      const cy = Number(yCenters[i]);
-      const w = Number(widths[i]);
-      const h = Number(heights[i]);
-      bx1 = cx - w / 2;
-      by1 = cy - h / 2;
-      bx2 = cx + w / 2;
-      by2 = cy + h / 2;
-    } else {
-      bx1 = Number(x1s[i]);
-      by1 = Number(y1s[i]);
-      bx2 = Number(x2s[i]);
-      by2 = Number(y2s[i]);
+  const bboxesNode = file.get("bboxes");
+  if (!bboxesNode) return [];
+  // Check the node type before touching children: h5wasm's `get("bboxes/x1")`
+  // on a legacy *dataset* returns a bogus truthy Group rather than null.
+  if (bboxesNode.type === "Group") {
+    // Group layout (matches Python sleap-io, SLP 2.0+).
+    data = {};
+    for (const name of BBOX_NUMERIC_COLUMNS) {
+      data[name] =
+        (file.get(`bboxes/${name}`)?.value as ArrayLike<number>) ?? [];
     }
-
-    const tsVal =
-      trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
-    const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
-
-    const options = {
-      x1: bx1,
-      y1: by1,
-      x2: bx2,
-      y2: by2,
-      angle: Number(angles[i]),
-      track,
-      trackingScore,
-      category: categories[i] ?? "",
-      name: names[i] ?? "",
-      source: sources[i] ?? "",
+    const strCol = (name: string): string[] => {
+      const ds = file.get(`bboxes/${name}`);
+      if (!ds) return [];
+      try {
+        return ((ds.value as ArrayLike<unknown>) ?? []).length
+          ? Array.from(ds.value as ArrayLike<unknown>, decodeStr)
+          : [];
+      } catch {
+        // Python stores these as vlen-str, which h5wasm can't always read; the
+        // box geometry/type/links still round-trip without them.
+        return [];
+      }
     };
-
-    let bbox: BoundingBox;
-    if (Number.isNaN(scoreVal)) {
-      bbox = new UserBoundingBox(options);
-    } else {
-      bbox = new PredictedBoundingBox({ ...options, score: scoreVal });
-    }
-
-    if (instanceIdx >= 0) {
-      bbox._instanceIdx = instanceIdx;
-    }
-
-    bboxes.push([bbox, videoIdx, frameIdxVal]);
+    categories = strCol("category");
+    names = strCol("name");
+    sources = strCol("source");
+  } else {
+    const bboxesDs = bboxesNode;
+    data = normalizeStructDataset(bboxesDs);
+    // v1.9+ JS: string datasets at root level; fallback to JSON attrs on dataset
+    categories = readStringMetadata(
+      file,
+      "bbox_categories",
+      bboxesDs,
+      "categories",
+    );
+    names = readStringMetadata(file, "bbox_names", bboxesDs, "names");
+    sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
   }
-  return bboxes;
+
+  return buildBboxTuples(data, categories, names, sources, tracks);
 }
 
 /**
