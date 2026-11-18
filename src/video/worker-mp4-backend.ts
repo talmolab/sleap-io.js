@@ -21,7 +21,10 @@ import {
   findKeyframeBefore,
   planDecodeRange,
   computeCacheWindow,
+  markViewed,
   nextUncached,
+  pickEvictionVictim,
+  viewedFrameCapacity,
   shouldDecodeAhead,
 } from "./mp4-decode-core.js";
 import {
@@ -89,6 +92,11 @@ export class WorkerMp4BoxBackend implements VideoBackend {
   private keyframeIndices: number[];
   private samplesLength: number;
   private cache: Map<number, ImageBitmap>;
+  /**
+   * Frames recently returned by {@link getFrame}, protected from eviction (see
+   * {@link viewedFrameCapacity}; issue #242).
+   */
+  private viewed: Set<number>;
   private cacheSize: number;
   private lookahead: number;
   private reqCounter: number;
@@ -113,6 +121,7 @@ export class WorkerMp4BoxBackend implements VideoBackend {
     this.cacheSize = params.cacheSize ?? DEFAULT_CACHE_SIZE;
     this.lookahead = params.lookahead ?? DEFAULT_LOOKAHEAD;
     this.cache = new Map();
+    this.viewed = new Set();
     this.pending = new Map();
     this.reqCounter = 0;
     this.aheadReqId = null;
@@ -222,12 +231,7 @@ export class WorkerMp4BoxBackend implements VideoBackend {
 
     // Cache hit: served entirely on main, no worker round-trip (LRU touch).
     if (this.cache.has(frameIndex)) {
-      const bitmap = this.cache.get(frameIndex) ?? null;
-      if (bitmap) {
-        this.cache.delete(frameIndex);
-        this.cache.set(frameIndex, bitmap);
-      }
-      return bitmap;
+      return this.noteReturned(frameIndex, this.cache.get(frameIndex), opts);
     }
 
     // A demand read preempts speculative decode-ahead (frees the worker queue).
@@ -310,7 +314,33 @@ export class WorkerMp4BoxBackend implements VideoBackend {
       cacheEnd,
     };
     this.worker.postMessage(decode);
-    return promise;
+    return promise.then((frame) => this.noteReturned(frameIndex, frame, opts));
+  }
+
+  /**
+   * Bookkeeping for a frame handed to a caller: if it is (still) the cached
+   * bitmap, touch it as most-recently-used and, for a non-pinned read, mark it
+   * viewed so later decode windows evict speculative neighbours first.
+   */
+  private noteReturned(
+    frameIndex: number,
+    frame: VideoFrame | null | undefined,
+    opts?: GetFrameOptions,
+  ): VideoFrame | null {
+    if (frame == null) return null;
+    const cached = this.cache.get(frameIndex);
+    if (cached === frame) {
+      this.cache.delete(frameIndex);
+      this.cache.set(frameIndex, cached);
+      if (!opts?.pinned) {
+        markViewed(
+          this.viewed,
+          frameIndex,
+          viewedFrameCapacity(this.cacheSize),
+        );
+      }
+    }
+    return frame;
   }
 
   decodeAhead(fromFrame: number, opts?: GetFrameOptions): void {
@@ -381,9 +411,11 @@ export class WorkerMp4BoxBackend implements VideoBackend {
       this.cache.delete(frameIndex);
     }
     if (!this.cache.has(frameIndex) && this.cache.size >= this.cacheSize) {
-      const first = this.cache.keys().next();
-      if (!first.done) {
-        const evicted = this.cache.get(first.value);
+      // Evict the oldest speculative frame first; frames a caller was shown
+      // are evicted only when nothing else is left (issue #242).
+      const victim = pickEvictionVictim(this.cache.keys(), this.viewed);
+      if (victim !== undefined) {
+        const evicted = this.cache.get(victim);
         if (evicted) {
           try {
             evicted.close();
@@ -391,7 +423,8 @@ export class WorkerMp4BoxBackend implements VideoBackend {
             // ignore
           }
         }
-        this.cache.delete(first.value);
+        this.cache.delete(victim);
+        this.viewed.delete(victim);
       }
     }
     this.cache.set(frameIndex, bitmap);
@@ -417,6 +450,7 @@ export class WorkerMp4BoxBackend implements VideoBackend {
       }
     });
     this.cache.clear();
+    this.viewed.clear();
     this.pending.forEach((pending) => {
       if (!pending.settled) {
         pending.settled = true;

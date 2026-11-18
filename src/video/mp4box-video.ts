@@ -11,7 +11,13 @@ import {
   identityHeaders,
   statusToMessage,
 } from "../io/remote.js";
-import type { Mp4ParseResult } from "./mp4-decode-core.js";
+import {
+  type Mp4ParseResult,
+  computeCacheWindow,
+  markViewed,
+  pickEvictionVictim,
+  viewedFrameCapacity,
+} from "./mp4-decode-core.js";
 
 // Environment/capability probes, evaluated at call time rather than captured in
 // module-level consts. A module-level capture is frozen at first import, which
@@ -89,6 +95,12 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   private samples: Sample[];
   private keyframeIndices: number[];
   private cache: Map<number, ImageBitmap>;
+  /**
+   * Frames recently returned by {@link getFrame} (oldest first), capped at
+   * {@link viewedFrameCapacity}. Eviction skips these while it can, so jumping
+   * back to a frame the user already saw stays a cache hit (issue #242).
+   */
+  private viewed: Set<number>;
   private cacheSize: number;
   private lookahead: number;
   private decoder: VideoDecoder | null;
@@ -142,6 +154,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     this.samples = [];
     this.keyframeIndices = [];
     this.cache = new Map();
+    this.viewed = new Set();
     this.cacheSize = options?.cacheSize ?? DEFAULT_CACHE_SIZE;
     this.lookahead = options?.lookahead ?? DEFAULT_LOOKAHEAD;
     this.decoder = null;
@@ -176,12 +189,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     if (frameIndex < 0 || frameIndex >= this.samples.length) return null;
 
     if (this.cache.has(frameIndex)) {
-      const bitmap = this.cache.get(frameIndex) ?? null;
-      if (bitmap) {
-        this.cache.delete(frameIndex);
-        this.cache.set(frameIndex, bitmap);
-      }
-      return bitmap;
+      return this.takeFromCache(frameIndex, opts);
     }
 
     // A pinned read (embedding) neither supersedes the newest demand read nor
@@ -208,7 +216,27 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     });
     await this.decodeQueue;
 
-    return this.cache.get(frameIndex) ?? null;
+    return this.takeFromCache(frameIndex, opts);
+  }
+
+  /**
+   * Return a cached frame to a caller: touch it as most-recently-used and, for
+   * a non-pinned read, mark it viewed so later decode windows don't evict it.
+   * Pinned (batch/embedding) reads are not the user looking at a frame, so they
+   * don't take protection away from frames the user actually saw.
+   */
+  private takeFromCache(
+    frameIndex: number,
+    opts?: GetFrameOptions,
+  ): ImageBitmap | null {
+    const bitmap = this.cache.get(frameIndex);
+    if (!bitmap) return null;
+    this.cache.delete(frameIndex);
+    this.cache.set(frameIndex, bitmap);
+    if (!opts?.pinned) {
+      markViewed(this.viewed, frameIndex, viewedFrameCapacity(this.cacheSize));
+    }
+    return bitmap;
   }
 
   /**
@@ -316,6 +344,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
       bitmap.close();
     });
     this.cache.clear();
+    this.viewed.clear();
     this.fileBlob = null;
     this.rangeSource = null;
   }
@@ -588,9 +617,12 @@ export class Mp4BoxVideoBackend implements VideoBackend {
       timestampMap.set(Math.round(sample.timestamp), pi);
     }
 
-    const halfCache = Math.floor(this.cacheSize / 2);
-    const cacheStart = Math.max(start, target - halfCache);
-    const cacheEnd = Math.min(end, target + halfCache);
+    const { cacheStart, cacheEnd } = computeCacheWindow(
+      start,
+      end,
+      target,
+      this.cacheSize,
+    );
 
     let decodedCount = 0;
     let resolveComplete: () => void;
@@ -621,10 +653,14 @@ export class Mp4BoxVideoBackend implements VideoBackend {
           if (decodedCount >= toFeed.length) resolveComplete();
         };
 
+        // Skip frames already cached (e.g. a step back re-decodes a range
+        // that overlaps the last window): a second ImageBitmap of the same
+        // frame is wasted work — expensive at 1080p — and would leak the first.
         if (
           frameIndex !== undefined &&
           frameIndex >= cacheStart &&
-          frameIndex <= cacheEnd
+          frameIndex <= cacheEnd &&
+          !this.cache.has(frameIndex)
         ) {
           createImageBitmap(frame)
             .then((bitmap) => {
@@ -683,12 +719,18 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   }
 
   private addToCache(frameIndex: number, bitmap: ImageBitmap): void {
-    if (this.cache.size >= this.cacheSize) {
-      const first = this.cache.keys().next();
-      if (!first.done) {
-        const evicted = this.cache.get(first.value);
-        if (evicted) evicted.close();
-        this.cache.delete(first.value);
+    const existing = this.cache.get(frameIndex);
+    if (existing) {
+      if (existing !== bitmap) existing.close();
+      this.cache.delete(frameIndex);
+    } else if (this.cache.size >= this.cacheSize) {
+      // Evict the oldest speculative frame first; frames a caller was shown
+      // are evicted only when nothing else is left (issue #242).
+      const victim = pickEvictionVictim(this.cache.keys(), this.viewed);
+      if (victim !== undefined) {
+        this.cache.get(victim)?.close();
+        this.cache.delete(victim);
+        this.viewed.delete(victim);
       }
     }
     this.cache.set(frameIndex, bitmap);

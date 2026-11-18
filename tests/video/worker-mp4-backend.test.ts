@@ -145,13 +145,44 @@ describe("WorkerMp4BoxBackend getFrame", () => {
       target: 50,
       start: 30, // keyframe before 50
       end: 110, // min(50 + lookahead(60), 999)
-      cacheStart: 30,
+      cacheStart: 40, // 50 - CACHE_WINDOW_BEHIND (issue #242)
       cacheEnd: 110,
     });
     const reqId = decode?.reqId as number;
     const bmp = fakeBitmap("f50");
     fake.emit({ type: "bitmap", reqId, frame: 50, bitmap: bmp });
     await expect(gp).resolves.toBe(bmp);
+  });
+
+  // Issue #242: frames shown to the caller must survive later seeks' windows,
+  // so jumping back to an earlier target is a cache hit.
+  it("revisiting earlier jump targets hits the cache", async () => {
+    const { fake, backend } = await makeReadyBackend(
+      makeParseResult(3000, 250),
+    );
+    const pool = [400, 900, 1500, 2100, 2700];
+    for (const t of pool) {
+      const gp = backend.getFrame(t);
+      await tick();
+      const decode = fake.lastOfType("decode") as Record<string, number>;
+      // Simulate the worker sending every frame of the window it was asked for.
+      for (let f = decode.cacheStart; f <= decode.cacheEnd; f += 1) {
+        fake.emit({
+          type: "bitmap",
+          reqId: decode.reqId,
+          frame: f,
+          bitmap: fakeBitmap(`f${f}`),
+        });
+      }
+      fake.emit({ type: "decodeDone", reqId: decode.reqId, aborted: false });
+      await gp;
+    }
+    const before = fake.countOfType("decode");
+    for (const t of pool) {
+      const hit = await backend.getFrame(t);
+      expect((hit as unknown as FakeBitmap).id).toBe(`f${t}`);
+    }
+    expect(fake.countOfType("decode")).toBe(before);
   });
 
   it("caches neighbor frames pushed during the same decode", async () => {
