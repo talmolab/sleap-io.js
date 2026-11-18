@@ -5,7 +5,8 @@
  * formats beyond MP4: WebM, Matroska, Ogg, MOV, MPEG-TS.
  *
  * Uses timestamp-based frame access internally, with a frame time index
- * built on initialization by iterating all packets.
+ * built on initialization from packet metadata (no payload reads), sorted
+ * into presentation order.
  */
 
 import type { VideoBackend, VideoFrame, RangeSource } from "./backend.js";
@@ -130,9 +131,18 @@ export class MediaBunnyVideoBackend implements VideoBackend {
     this._frameTimes = [];
 
     try {
-      for await (const packet of packetSink.packets()) {
+      // metadataOnly: timestamps come from the container's sample table, so
+      // skip reading every packet's payload (otherwise opening a video reads
+      // the whole file just to build this index).
+      for await (const packet of packetSink.packets(undefined, undefined, {
+        metadataOnly: true,
+      })) {
         this._frameTimes.push(packet.timestamp);
       }
+      // Packets arrive in decode order, but frame index i means the i-th frame
+      // shown. With B-frames those orders differ, so sort into presentation
+      // order before the index is used to seek.
+      this._frameTimes.sort((a, b) => a - b);
     } catch (error) {
       this._frameTimes = [];
       this.sink = null;
