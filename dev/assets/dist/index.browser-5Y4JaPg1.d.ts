@@ -2721,6 +2721,13 @@ declare function loadSlp(source: SlpSource, options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
     lazy?: boolean;
+    /**
+     * Recover files whose instance point spans don't match their skeleton's
+     * node count (written by older sleap-io.js versions) instead of throwing
+     * `SlpPointSpanError`, when that's provably safe. Default `false`. See
+     * `readSlp`.
+     */
+    repairPointSpans?: boolean;
     onProgress?: (current: number, total: number, message?: string) => void;
 }): Promise<Labels>;
 /**
@@ -4114,6 +4121,16 @@ interface StreamingSlpOptions {
      */
     userInstancesOnly?: boolean;
     /**
+     * When an instance's point span doesn't match its skeleton's node count,
+     * the read throws `SlpPointSpanError` (like Python sleap-io). Set this to
+     * recover files older sleap-io.js versions wrote: shifted spans are rebuilt
+     * when that's provably exact (the point rows are intact: no gaps or
+     * overlaps, one row per node), and an instance whose rows are provably its
+     * own but sit under the wrong skeleton is loaded as stored, with a
+     * `console.warn`. Anything else still throws. Default `false`. See #230.
+     */
+    repairPointSpans?: boolean;
+    /**
      * Optional progress callback fired as loading advances through its stages.
      * `current` counts completed stages out of `total`; `message` labels the
      * stage about to run. Matches the (current, total, message?) convention used
@@ -4123,4 +4140,76 @@ interface StreamingSlpOptions {
 }
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
-export { openStreamingH5 as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, type CreateVideoBackendOptions as J, CropVideoBackend as K, LibavH264Decoder as L, type CropWrapOptions as M, GrayscaleVideoBackend as N, type GrayscaleWrapOptions as O, type PaletteName as P, parseGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, urlFromConfirmation as T, UnsupportedVideoFormatError as U, type VideoOptions as V, checkDownloadHost as W, openGdrive as X, DEFAULT_MAX_BYTES as Y, StreamingH5File as Z, StreamingH5Writer as _, type RenderOptions as a, openSlpWriter as a$, openH5Worker as a0, isStreamingSupported as a1, isRangeSource as a2, serviceRangeBridge as a3, serviceWriteBridge as a4, serviceTruncateBridge as a5, type StreamingH5Source as a6, type RangeSource as a7, type RangeSink as a8, readSlpStreaming as a9, configureWebDemuxer as aA, isWebDemuxerConfigured as aB, type AviVideoOptions as aC, AviVideoBackend as aD, StreamingHdf5VideoBackend as aE, type ImageVideoOptions as aF, computePrefetchWindow as aG, ImageVideoBackend as aH, loadSlp as aI, saveSlp as aJ, loadAnalysisH5 as aK, saveAnalysisH5 as aL, saveAnalysisH5ToBytes as aM, loadNwb as aN, loadSlpSet as aO, saveSlpSet as aP, loadVideo as aQ, loadLabelImages as aR, setLabelImageFileReader as aS, type PagesAs as aT, type LoadLabelImagesOptions as aU, type LabelImageFileReader as aV, saveSlpToBytes as aW, ExportCancelled as aX, type EmbedOption as aY, type SlpWriteOptions as aZ, saveSlpStructureToBytes as a_, Mp4BoxVideoBackend as aa, type Mp4Sample as ab, type SerializableDecoderConfig as ac, type Mp4ParseResult as ad, type FeedEntry as ae, type ReadRegion as af, findKeyframeBefore as ag, planDecodeRange as ah, computeCacheWindow as ai, selectFeedSamples as aj, planReadRegions as ak, readSamplesByDecodeOrder as al, nextUncached as am, shouldDecodeAhead as an, type ByteSourceDescriptor as ao, type WorkerInMessage as ap, type WorkerOutMessage as aq, MP4_DECODE_WORKER_CODE as ar, createDecodeWorker as as, isWorkerDecodeAvailable as at, type WorkerLike as au, type WorkerBackendParams as av, WorkerMp4BoxBackend as aw, type MediaBunnyOptions as ax, MediaBunnyVideoBackend as ay, type WebDemuxerConfig as az, type RGB as b, type GeoJSONFeature as b$, SlpStreamWriter as b0, saveSlpMergedFromStores as b1, saveSlpMergedToSink as b2, type SlpWriteHeader as b3, type AppendStoreOptions as b4, type SlpWriteSink as b5, type MergeStoresOptions as b6, buildSerializableEmbedPlan as b7, type EmbeddedVideoAttrs as b8, type SerializableEmbedEntry as b9, isAnalysisH5File as bA, readNwb as bB, isNwbFile as bC, labelsToCsv as bD, saveLabelsCsv as bE, type CsvExportOptions as bF, URL_SCHEMES as bG, CLOUD_SCHEMES as bH, GDRIVE_HOSTS as bI, SENSITIVE_HEADERS as bJ, SENSITIVE_QUERY_PARAMS as bK, RETRYABLE_STATUSES as bL, isUrl as bM, isGdriveUrl as bN, redactUrl as bO, redactedCauseSummary as bP, RemoteIOError as bQ, type ResolvedUrl as bR, resolveUrl as bS, statusToMessage as bT, raiseRemote as bU, identityHeaders as bV, stripCrossOriginHeaders as bW, withRetries as bX, parseRetryAfterMs as bY, fetchRetrying as bZ, headOrRangeProbe as b_, type SerializableEncodeEntry as ba, type SerializableEmbedPlan as bb, appendEncodedVideos as bc, type AppendEncodedVideosOptions as bd, type EncodeFramePayload as be, type EncodedVideoSink as bf, type ExternalFrameReader as bg, buildLabelTableRows as bh, buildLabelTableUpdate as bi, buildMetadataJson as bj, buildTracksJson as bk, buildSuggestionsJson as bl, buildVideoSignatures as bm, buildExpectedSidecars as bn, checkInPlaceWritable as bo, onDiskTableFromMeta as bp, writeLabelTablesInPlace as bq, type LabelTable as br, type LabelTableRows as bs, type LabelTableUpdate as bt, type OnDiskMember as bu, type OnDiskTable as bv, type OnDiskTables as bw, type OnDiskSidecars as bx, type InPlaceWritable as by, type DatasetMetaLike as bz, type RawLabelImage as c, drawTrails as c$, type GeoJSONFeatureCollection as c0, roisToGeoJSON as c1, roisFromGeoJSON as c2, writeGeoJSON as c3, readGeoJSON as c4, type CocoCategory as c5, type CocoImage as c6, type CocoRle as c7, type CocoSegmentation as c8, type CocoAnnotation as c9, toNumpy as cA, fromNumpy as cB, labelsFromNumpy as cC, decodeYamlSkeleton as cD, encodeYamlSkeleton as cE, readSkeletonJson as cF, writeSkeletonJson as cG, readTrainingConfigSkeletons as cH, readTrainingConfigSkeleton as cI, isTrainingConfig as cJ, type RGBA as cK, type ColorSpec as cL, type ColorScheme as cM, type MarkerShape as cN, type Overlay as cO, type VideoOverlay as cP, NAMED_COLORS as cQ, PALETTES as cR, getPalette as cS, resolveColor as cT, rgbToCSS as cU, determineColorScheme as cV, drawCircle as cW, drawSquare as cX, drawDiamond as cY, drawTriangle as cZ, drawCross as c_, type CocoJson as ca, isCocoData as cb, parseCocoJson as cc, createSkeletonFromCategory as cd, decodeKeypoints as ce, decodeCompressedRleCounts as cf, decodeCocoRle as cg, decodeSegmentation as ch, readCoco as ci, readCocoSet as cj, readDlc as ck, readDlcProject as cl, isDlcData as cm, parseDlcCrop as cn, looksLikeDlcConfig as co, attachConfigSkeleton as cp, videoSetsStemMap as cq, extractFrameIndex as cr, resolveConfig as cs, setSourceVideo as ct, findProjectCsvs as cu, resolveProjectConfigPath as cv, readDlcDataframe as cw, type ReadDlcOptions as cx, type ReadDlcProjectOptions as cy, type DlcDataframe as cz, configureLibavDecoder as d, getMarkerFunction as d0, MARKER_FUNCTIONS as d1, type DrawTrailsOptions as d2, resolveTrailNode as d3, computeTrails as d4, nTrailPaletteColors as d5, collectTracks as d6, type TrailTarget as d7, type Trail as d8, RenderContext as d9, InstanceContext as da, drawMasks as db, drawLabelImage as dc, warn as dd, isDlcProjectPath as de, readDlcConfig as df, discoverConfig as dg, clampAlpha as dh, pickColor as di, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };
+/**
+ * Read-side check of instance point spans (issue #230).
+ *
+ * Each row of the `instances` table points at its coordinates with
+ * `point_id_start:point_id_end` — a slice of `points` (user instances) or
+ * `pred_points` (predicted instances). Points are positional: row `k` of the
+ * slice is node `k` of the instance's skeleton. So a span whose length differs
+ * from the skeleton's node count can't be read correctly. Before this check the
+ * readers built such instances anyway, which silently put coordinates on the
+ * wrong nodes.
+ *
+ * Older sleap-io.js writers produced two kinds of such files:
+ *  - shifted boundaries: spans of 16 and 18 for a 17-node skeleton, with the
+ *    point rows themselves intact. #230 first blamed a ≤0.5.4 span off-by-one;
+ *    #231 traced its example file to the `instances` table being written as
+ *    float32 (point ids above 2^24 rounded to even numbers).
+ *  - an instance whose skeleton wasn't in `labels.skeletons` was saved with
+ *    skeleton id 0, so its own (correct) rows sit under a skeleton with a
+ *    different node count. The writer now refuses to save that.
+ *
+ * Python sleap-io refuses all such files (talmolab/sleap-io#551), so by default
+ * we do too — with an error that says which instance, frame and video is wrong.
+ * With `repair`, {@link checkPointSpans} rebuilds shifted boundaries when that
+ * is provably exact, keeps the stored spans (with a warning) for the
+ * skeleton-id case, and still refuses anything else (see `planRepair`).
+ */
+
+/** One instance whose span length differs from its skeleton's node count. */
+interface PointSpanMismatch {
+    /** Row of the instance in the `instances` table. */
+    instanceRow: number;
+    /** `"user"` (rows of `points`) or `"predicted"` (rows of `pred_points`). */
+    instanceType: "user" | "predicted";
+    /** `point_id_start` as stored. */
+    pointStart: number;
+    /** `point_id_end` as stored. */
+    pointEnd: number;
+    /** `point_id_end - point_id_start`. */
+    span: number;
+    /** Number of nodes in the instance's skeleton. */
+    nodeCount: number;
+    /** Skeleton name, when it has one. */
+    skeletonName?: string;
+    /** Frame index in the video, or `null` when no frame row owns the instance. */
+    frameIdx: number | null;
+    /** Index into `labels.videos`, or `null` when unknown. */
+    videoIndex: number | null;
+    /** Video filename, when known. */
+    videoFilename?: string;
+}
+/**
+ * Thrown when an SLP file's instance point spans don't match their skeletons'
+ * node counts. Reading such a file would put coordinates on the wrong nodes.
+ *
+ * `mismatchCount` counts the affected instances; `first` describes the first
+ * one. When the caller asked for `repairPointSpans` and the repair was refused,
+ * `repairRefusedReason` says why.
+ */
+declare class SlpPointSpanError extends Error {
+    readonly mismatchCount: number;
+    readonly instanceCount: number;
+    readonly first: PointSpanMismatch;
+    readonly repairRefusedReason?: string;
+    constructor(options: {
+        message: string;
+        mismatchCount: number;
+        instanceCount: number;
+        first: PointSpanMismatch;
+        repairRefusedReason?: string;
+    });
+}
+
+export { openStreamingH5 as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, type CreateVideoBackendOptions as J, CropVideoBackend as K, LibavH264Decoder as L, type CropWrapOptions as M, GrayscaleVideoBackend as N, type GrayscaleWrapOptions as O, type PaletteName as P, parseGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, urlFromConfirmation as T, UnsupportedVideoFormatError as U, type VideoOptions as V, checkDownloadHost as W, openGdrive as X, DEFAULT_MAX_BYTES as Y, StreamingH5File as Z, StreamingH5Writer as _, type RenderOptions as a, type SlpWriteOptions as a$, openH5Worker as a0, isStreamingSupported as a1, isRangeSource as a2, serviceRangeBridge as a3, serviceWriteBridge as a4, serviceTruncateBridge as a5, type StreamingH5Source as a6, type RangeSource as a7, type RangeSink as a8, readSlpStreaming as a9, MediaBunnyVideoBackend as aA, type WebDemuxerConfig as aB, configureWebDemuxer as aC, isWebDemuxerConfigured as aD, type AviVideoOptions as aE, AviVideoBackend as aF, StreamingHdf5VideoBackend as aG, type ImageVideoOptions as aH, computePrefetchWindow as aI, ImageVideoBackend as aJ, loadSlp as aK, saveSlp as aL, loadAnalysisH5 as aM, saveAnalysisH5 as aN, saveAnalysisH5ToBytes as aO, loadNwb as aP, loadSlpSet as aQ, saveSlpSet as aR, loadVideo as aS, loadLabelImages as aT, setLabelImageFileReader as aU, type PagesAs as aV, type LoadLabelImagesOptions as aW, type LabelImageFileReader as aX, saveSlpToBytes as aY, ExportCancelled as aZ, type EmbedOption as a_, SlpPointSpanError as aa, type PointSpanMismatch as ab, Mp4BoxVideoBackend as ac, type Mp4Sample as ad, type SerializableDecoderConfig as ae, type Mp4ParseResult as af, type FeedEntry as ag, type ReadRegion as ah, findKeyframeBefore as ai, planDecodeRange as aj, computeCacheWindow as ak, selectFeedSamples as al, planReadRegions as am, readSamplesByDecodeOrder as an, nextUncached as ao, shouldDecodeAhead as ap, type ByteSourceDescriptor as aq, type WorkerInMessage as ar, type WorkerOutMessage as as, MP4_DECODE_WORKER_CODE as at, createDecodeWorker as au, isWorkerDecodeAvailable as av, type WorkerLike as aw, type WorkerBackendParams as ax, WorkerMp4BoxBackend as ay, type MediaBunnyOptions as az, type RGB as b, fetchRetrying as b$, saveSlpStructureToBytes as b0, openSlpWriter as b1, SlpStreamWriter as b2, saveSlpMergedFromStores as b3, saveSlpMergedToSink as b4, type SlpWriteHeader as b5, type AppendStoreOptions as b6, type SlpWriteSink as b7, type MergeStoresOptions as b8, buildSerializableEmbedPlan as b9, type InPlaceWritable as bA, type DatasetMetaLike as bB, isAnalysisH5File as bC, readNwb as bD, isNwbFile as bE, labelsToCsv as bF, saveLabelsCsv as bG, type CsvExportOptions as bH, URL_SCHEMES as bI, CLOUD_SCHEMES as bJ, GDRIVE_HOSTS as bK, SENSITIVE_HEADERS as bL, SENSITIVE_QUERY_PARAMS as bM, RETRYABLE_STATUSES as bN, isUrl as bO, isGdriveUrl as bP, redactUrl as bQ, redactedCauseSummary as bR, RemoteIOError as bS, type ResolvedUrl as bT, resolveUrl as bU, statusToMessage as bV, raiseRemote as bW, identityHeaders as bX, stripCrossOriginHeaders as bY, withRetries as bZ, parseRetryAfterMs as b_, type EmbeddedVideoAttrs as ba, type SerializableEmbedEntry as bb, type SerializableEncodeEntry as bc, type SerializableEmbedPlan as bd, appendEncodedVideos as be, type AppendEncodedVideosOptions as bf, type EncodeFramePayload as bg, type EncodedVideoSink as bh, type ExternalFrameReader as bi, buildLabelTableRows as bj, buildLabelTableUpdate as bk, buildMetadataJson as bl, buildTracksJson as bm, buildSuggestionsJson as bn, buildVideoSignatures as bo, buildExpectedSidecars as bp, checkInPlaceWritable as bq, onDiskTableFromMeta as br, writeLabelTablesInPlace as bs, type LabelTable as bt, type LabelTableRows as bu, type LabelTableUpdate as bv, type OnDiskMember as bw, type OnDiskTable as bx, type OnDiskTables as by, type OnDiskSidecars as bz, type RawLabelImage as c, drawTriangle as c$, headOrRangeProbe as c0, type GeoJSONFeature as c1, type GeoJSONFeatureCollection as c2, roisToGeoJSON as c3, roisFromGeoJSON as c4, writeGeoJSON as c5, readGeoJSON as c6, type CocoCategory as c7, type CocoImage as c8, type CocoRle as c9, type ReadDlcProjectOptions as cA, type DlcDataframe as cB, toNumpy as cC, fromNumpy as cD, labelsFromNumpy as cE, decodeYamlSkeleton as cF, encodeYamlSkeleton as cG, readSkeletonJson as cH, writeSkeletonJson as cI, readTrainingConfigSkeletons as cJ, readTrainingConfigSkeleton as cK, isTrainingConfig as cL, type RGBA as cM, type ColorSpec as cN, type ColorScheme as cO, type MarkerShape as cP, type Overlay as cQ, type VideoOverlay as cR, NAMED_COLORS as cS, PALETTES as cT, getPalette as cU, resolveColor as cV, rgbToCSS as cW, determineColorScheme as cX, drawCircle as cY, drawSquare as cZ, drawDiamond as c_, type CocoSegmentation as ca, type CocoAnnotation as cb, type CocoJson as cc, isCocoData as cd, parseCocoJson as ce, createSkeletonFromCategory as cf, decodeKeypoints as cg, decodeCompressedRleCounts as ch, decodeCocoRle as ci, decodeSegmentation as cj, readCoco as ck, readCocoSet as cl, readDlc as cm, readDlcProject as cn, isDlcData as co, parseDlcCrop as cp, looksLikeDlcConfig as cq, attachConfigSkeleton as cr, videoSetsStemMap as cs, extractFrameIndex as ct, resolveConfig as cu, setSourceVideo as cv, findProjectCsvs as cw, resolveProjectConfigPath as cx, readDlcDataframe as cy, type ReadDlcOptions as cz, configureLibavDecoder as d, drawCross as d0, drawTrails as d1, getMarkerFunction as d2, MARKER_FUNCTIONS as d3, type DrawTrailsOptions as d4, resolveTrailNode as d5, computeTrails as d6, nTrailPaletteColors as d7, collectTracks as d8, type TrailTarget as d9, type Trail as da, RenderContext as db, InstanceContext as dc, drawMasks as dd, drawLabelImage as de, warn as df, isDlcProjectPath as dg, readDlcConfig as dh, discoverConfig as di, clampAlpha as dj, pickColor as dk, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };

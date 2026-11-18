@@ -1027,6 +1027,42 @@ contract is identical, so a single bar works for any path. When <code>openVideos
 enabled, the videos stage additionally reports <code>"Opening videos (i/n)"</code> as each
 embedded video backend is opened. Reporting is a pure side effect and never
 changes the loaded <code>Labels</code>.</p>
+<h3 id="files-with-broken-point-spans">Files with broken point spans<a class="headerlink" href="#files-with-broken-point-spans" title="Permanent link">&para;</a></h3>
+<p>Each instance in an SLP file points at its coordinates with a row range in the
+<code>points</code> (or <code>pred_points</code>) table, and row <code>k</code> of that range is node <code>k</code>. If a
+range's length differs from the skeleton's node count, the points can't be put
+on the right nodes, so every reader throws <code>SlpPointSpanError</code>, as Python
+sleap-io does. The error names the first bad instance (its row, frame and
+video) and how many instances are affected.</p>
+<p>Older sleap-io.js versions wrote two kinds of such files, and
+<code>repairPointSpans: true</code> opens both:</p>
+<ul>
+<li><strong>Shifted ranges</strong> (for example 16 and 18 rows for a 17-node skeleton) whose
+  point rows are intact. #230 first traced these to a ≤0.5.4 off-by-one; #231
+  found its example came from the <code>instances</code> table being written as float32.
+  The ranges are rebuilt exactly, but only when that's provable: they cover the
+  point table with no gaps or overlaps, and the table has exactly one row per
+  node.</li>
+<li><strong>An instance saved with skeleton 0</strong> because its own skeleton wasn't in
+  <code>labels.skeletons</code>. Its rows are its own, so they're loaded as stored, with a
+  warning, the same as before this check; check those instances' nodes.</li>
+</ul>
+<p>Anything else still throws. After a rebuild, saving writes a file that reads
+cleanly. Instances loaded as stored still have the wrong number of points for
+their skeleton, so fix or remove them before saving. The writers now refuse to save an instance whose skeleton isn't in
+<code>labels.skeletons</code>, as Python sleap-io does; add it there, or add frames with
+<code>labels.append()</code>, which registers it.</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">SlpPointSpanError</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js"</span><span class="p">;</span>
+
+<span class="kd">let</span><span class="w"> </span><span class="nx">labels</span><span class="p">;</span>
+<span class="k">try</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">"dataset.slp"</span><span class="p">);</span>
+<span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="p">(</span><span class="nx">e</span><span class="w"> </span><span class="ow">instanceof</span><span class="w"> </span><span class="nx">SlpPointSpanError</span><span class="p">))</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="nx">e</span><span class="p">;</span>
+<span class="w">  </span><span class="nx">console</span><span class="p">.</span><span class="nx">warn</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">message</span><span class="p">);</span>
+<span class="w">  </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">"dataset.slp"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">repairPointSpans</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+<span class="p">}</span>
+</code></pre></div>
 <h2 id="saving-with-embedded-frames">Saving with Embedded Frames<a class="headerlink" href="#saving-with-embedded-frames" title="Permanent link">&para;</a></h2>
 <p>Embed video frames directly into the SLP file:</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">saveSlp</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js"</span><span class="p">;</span>

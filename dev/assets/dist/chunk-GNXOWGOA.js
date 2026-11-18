@@ -15499,6 +15499,199 @@ function resolveVideoUrl(url) {
   return resolved;
 }
 
+// src/codecs/slp/point-spans.ts
+var SlpPointSpanError = class extends Error {
+  mismatchCount;
+  instanceCount;
+  first;
+  repairRefusedReason;
+  constructor(options) {
+    super(options.message);
+    this.name = "SlpPointSpanError";
+    this.mismatchCount = options.mismatchCount;
+    this.instanceCount = options.instanceCount;
+    this.first = options.first;
+    this.repairRefusedReason = options.repairRefusedReason;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+var TABLE_NAME = { user: "points", predicted: "pred_points" };
+function columnLength(table) {
+  for (const column of Object.values(table)) {
+    if (column) return column.length;
+  }
+  return 0;
+}
+function checkPointSpans(options) {
+  const { instancesData, skeletons } = options;
+  const starts = instancesData.point_id_start;
+  const ends = instancesData.point_id_end;
+  if (!starts || !ends || skeletons.length === 0) {
+    return { repairedInstances: 0, keptInstances: 0 };
+  }
+  const types = instancesData.instance_type;
+  const skeletonIds = instancesData.skeleton;
+  const instanceCount = starts.length;
+  const nodeCountAt = (row) => {
+    const sk = skeletons[Number(skeletonIds?.[row] ?? 0)] ?? skeletons[0];
+    return sk.nodes.length;
+  };
+  const isPredictedAt = (row) => Number(types?.[row] ?? 0) !== 0;
+  let mismatchCount = 0;
+  let firstRow = -1;
+  const mismatchedTypes = { user: 0, predicted: 0 };
+  for (let row = 0; row < instanceCount; row++) {
+    const predicted = isPredictedAt(row);
+    if (predicted && options.userInstancesOnly) continue;
+    const span = Number(ends[row]) - Number(starts[row]);
+    if (span === nodeCountAt(row)) continue;
+    mismatchCount++;
+    if (firstRow < 0) firstRow = row;
+    mismatchedTypes[predicted ? "predicted" : "user"]++;
+  }
+  if (mismatchCount === 0) return { repairedInstances: 0, keptInstances: 0 };
+  const fail = (repairRefusedReason) => {
+    const first = describeMismatch(options, firstRow, nodeCountAt(firstRow));
+    throw new SlpPointSpanError({
+      message: buildMessage({
+        labelsPath: options.labelsPath,
+        mismatchCount,
+        instanceCount,
+        first,
+        repairRefusedReason
+      }),
+      mismatchCount,
+      instanceCount,
+      first,
+      repairRefusedReason
+    });
+  };
+  if (!options.repair) return fail();
+  const rebuild = [];
+  let keptInstances = 0;
+  for (const type of ["user", "predicted"]) {
+    if (!mismatchedTypes[type]) continue;
+    const rowCount = type === "user" ? options.pointsRowCount : options.predPointsRowCount;
+    const plan = planRepair(
+      instanceCount,
+      (row) => isPredictedAt(row) === (type === "predicted"),
+      starts,
+      ends,
+      nodeCountAt,
+      rowCount,
+      TABLE_NAME[type]
+    );
+    if (typeof plan === "string") return fail(plan);
+    if (plan.action === "rebuild") rebuild.push(plan.rows);
+    else keptInstances += mismatchedTypes[type];
+  }
+  let repairedInstances = 0;
+  if (rebuild.length > 0) {
+    const newStarts = Array.from(starts, Number);
+    const newEnds = Array.from(ends, Number);
+    for (const rows of rebuild) {
+      let next = 0;
+      for (const row of rows) {
+        const start = next;
+        next += nodeCountAt(row);
+        if (newStarts[row] !== start || newEnds[row] !== next) {
+          repairedInstances++;
+        }
+        newStarts[row] = start;
+        newEnds[row] = next;
+      }
+    }
+    instancesData.point_id_start = newStarts;
+    instancesData.point_id_end = newEnds;
+  }
+  const file = options.labelsPath ?? "SLP file";
+  if (repairedInstances > 0) {
+    console.warn(
+      `[sleap-io] ${file}: rebuilt the point spans of ${repairedInstances} instances whose boundaries had shifted (the point rows were intact).`
+    );
+  }
+  if (keptInstances > 0) {
+    const first = describeMismatch(options, firstRow, nodeCountAt(firstRow));
+    console.warn(
+      `[sleap-io] ${file}: ${keptInstances} instances have more or fewer points than their skeleton has nodes (first: ${describeLocation(first)}, ${first.span} points vs ${first.nodeCount} nodes). Loaded their points as stored. Older sleap-io.js versions wrote files like this when an instance's skeleton was missing from the labels; check these instances' nodes.`
+    );
+  }
+  return { repairedInstances, keptInstances };
+}
+function planRepair(instanceCount, isType, starts, ends, nodeCountAt, tableRowCount, tableName) {
+  const rows = [];
+  let expectedStart = 0;
+  let totalNodes = 0;
+  for (let row = 0; row < instanceCount; row++) {
+    if (!isType(row)) continue;
+    const start = Number(starts[row]);
+    const end = Number(ends[row]);
+    if (start !== expectedStart) {
+      return `instance row ${row} starts at ${tableName} row ${start}, but the previous instance ended at row ${expectedStart}`;
+    }
+    if (end < start) {
+      return `instance row ${row} ends (${end}) before it starts (${start})`;
+    }
+    expectedStart = end;
+    totalNodes += nodeCountAt(row);
+    rows.push(row);
+  }
+  if (expectedStart !== tableRowCount) {
+    return `the spans cover ${expectedStart} ${tableName} rows, but the table has ${tableRowCount}`;
+  }
+  return { action: totalNodes === tableRowCount ? "rebuild" : "keep", rows };
+}
+function describeMismatch(options, row, nodeCount) {
+  const { framesData, instancesData, skeletons, videos } = options;
+  const pointStart = Number(instancesData.point_id_start?.[row]);
+  const pointEnd = Number(instancesData.point_id_end?.[row]);
+  const skeleton = skeletons[Number(instancesData.skeleton?.[row] ?? 0)] ?? skeletons[0];
+  const mismatch = {
+    instanceRow: row,
+    instanceType: Number(instancesData.instance_type?.[row] ?? 0) === 0 ? "user" : "predicted",
+    pointStart,
+    pointEnd,
+    span: pointEnd - pointStart,
+    nodeCount,
+    frameIdx: null,
+    videoIndex: null
+  };
+  if (skeleton?.name) mismatch.skeletonName = skeleton.name;
+  const instStarts = framesData.instance_id_start;
+  const instEnds = framesData.instance_id_end;
+  const frameCount = instStarts?.length ?? 0;
+  for (let f = 0; f < frameCount; f++) {
+    const lo = Number(instStarts?.[f]);
+    const hi = Number(instEnds?.[f]);
+    if (row < lo || row >= hi) continue;
+    mismatch.frameIdx = Number(framesData.frame_idx?.[f] ?? 0);
+    const rawVideoId = Number(framesData.video?.[f] ?? 0);
+    const videoIndex = buildVideoIdMap(framesData, videos).get(
+      rawVideoId
+    ) ?? rawVideoId;
+    mismatch.videoIndex = videoIndex;
+    const filename = videos[videoIndex]?.filename;
+    if (typeof filename === "string") mismatch.videoFilename = filename;
+    break;
+  }
+  return mismatch;
+}
+function describeFrame(m) {
+  return `frame ${m.frameIdx} of video ${m.videoIndex}${m.videoFilename ? ` (${m.videoFilename})` : ""}`;
+}
+function describeLocation(m) {
+  return `instance row ${m.instanceRow}${m.frameIdx === null ? "" : `, ${describeFrame(m)}`}`;
+}
+function buildMessage(options) {
+  const { first, mismatchCount, instanceCount } = options;
+  const where = first.frameIdx === null ? "not in any frame" : describeFrame(first);
+  const skeleton = first.skeletonName ? `skeleton "${first.skeletonName}"` : "its skeleton";
+  const file = options.labelsPath ? ` ${options.labelsPath}` : "";
+  let message = `Can't read${file}: ${mismatchCount} of ${instanceCount} instances have a point span that doesn't match their skeleton's node count, so their points would land on the wrong nodes. First: instance row ${first.instanceRow} (${first.instanceType}, ${where}) spans ${first.span} ${TABLE_NAME[first.instanceType]} rows (${first.pointStart}\u2013${first.pointEnd}), but ${skeleton} has ${first.nodeCount} nodes.`;
+  message += options.repairRefusedReason ? ` Repair refused: ${options.repairRefusedReason}.` : " Pass { repairPointSpans: true } to recover the file when its point rows are intact (see sleap-io.js#230).";
+  return message;
+}
+
 // src/codecs/slp/source-video.ts
 function buildSourceVideoFromDict(dict, labelsPath) {
   const backend = dict.backend ?? {};
@@ -15919,7 +16112,8 @@ async function readSlpStreaming(source, options) {
       options?.rawSessions ?? false,
       options?.lazy ?? false,
       lazyVideoMetadata,
-      options?.userInstancesOnly ?? false
+      options?.userInstancesOnly ?? false,
+      options?.repairPointSpans ?? false
     );
   } finally {
     if (!openVideos && !lazyVideoMetadata) {
@@ -15927,7 +16121,7 @@ async function readSlpStreaming(source, options) {
     }
   }
 }
-async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false, lazyVideoMetadata = false, userInstancesOnly = false) {
+async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false, lazyVideoMetadata = false, userInstancesOnly = false, repairPointSpans = false) {
   if (lazy && userInstancesOnly) {
     throw new Error(
       "readSlpStreaming: userInstancesOnly can't be combined with lazy"
@@ -15998,6 +16192,17 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   const negativeFrames = negativeFrameKeys(
     await readStructDatasetStreaming(file, "negative_frames")
   );
+  checkPointSpans({
+    framesData,
+    instancesData,
+    skeletons,
+    videos,
+    pointsRowCount: columnLength(pointsData),
+    predPointsRowCount: columnLength(predPointsData),
+    repair: repairPointSpans,
+    userInstancesOnly,
+    labelsPath
+  });
   report(7);
   const lazyStore = lazy ? new LazyDataStore({
     framesData,
@@ -17407,6 +17612,15 @@ var INSTANCES_FIELDS = [
 var POINTS_FIELDS = ["x", "y", "visible", "complete"];
 var PRED_POINTS_FIELDS = ["x", "y", "visible", "complete", "score"];
 var NEGATIVE_FRAMES_FIELDS = ["video_id", "frame_idx"];
+function skeletonIdForWrite(skeletons, instance, frame) {
+  const id = skeletons.indexOf(instance.skeleton);
+  if (id >= 0) return id;
+  const name = instance.skeleton.name ? ` "${instance.skeleton.name}"` : "";
+  const video = frame.video?.filename;
+  throw new Error(
+    `Can't save: an instance in frame ${frame.frameIdx}${typeof video === "string" ? ` of ${video}` : ""} uses skeleton${name} (${instance.skeleton.nodes.length} nodes), which isn't in the labels' skeletons. Add it to labels.skeletons, or add the frame with labels.append() so it's registered, before saving.`
+  );
+}
 function numAt(col, i, def = 0) {
   const v = col?.[i];
   return v === void 0 || v === null ? def : Number(v);
@@ -17705,7 +17919,7 @@ var SlpStreamWriter = class {
         for (const inst of frame.instances) {
           const localInstId = instRows.length;
           localId.set(inst, localInstId);
-          const skeletonId = Math.max(0, this.skeletons.indexOf(inst.skeleton));
+          const skeletonId = skeletonIdForWrite(this.skeletons, inst, frame);
           const trackId = inst.track ? this.tracks.indexOf(inst.track) : -1;
           const trackingScore = inst.trackingScore ?? 0;
           let type = 0;
@@ -19005,9 +19219,10 @@ function buildLabelTableRows(labels) {
     for (const instance of labeledFrame.instances) {
       const instanceId = instances.length;
       instanceIndex.set(instance, instanceId);
-      const skeletonId = Math.max(
-        0,
-        labels.skeletons.indexOf(instance.skeleton)
+      const skeletonId = skeletonIdForWrite(
+        labels.skeletons,
+        instance,
+        labeledFrame
       );
       const trackId = instance.track ? labels.tracks.indexOf(instance.track) : -1;
       const trackingScore = instance.trackingScore ?? 0;
@@ -22347,6 +22562,16 @@ async function readSlp(source, options) {
       file.get("pred_points"),
       emscripten
     );
+    checkPointSpans({
+      framesData,
+      instancesData,
+      skeletons,
+      videos,
+      pointsRowCount: columnLength(pointsData),
+      predPointsRowCount: columnLength(predPointsData),
+      repair: options?.repairPointSpans ?? false,
+      labelsPath
+    });
     const labeledFrames = buildLabeledFrames2({
       framesData,
       instancesData,
@@ -22558,6 +22783,16 @@ async function readSlpLazy(source, options) {
       file.get("pred_points"),
       emscripten
     );
+    checkPointSpans({
+      framesData,
+      instancesData,
+      skeletons,
+      videos,
+      pointsRowCount: columnLength(pointsData),
+      predPointsRowCount: columnLength(predPointsData),
+      repair: options?.repairPointSpans ?? false,
+      labelsPath
+    });
     const negativeFramesDs = file.get("negative_frames");
     const negativeFrames = negativeFramesDs ? negativeFrameKeys(normalizeStructDataset(negativeFramesDs)) : /* @__PURE__ */ new Set();
     const store = new LazyDataStore({
@@ -24171,9 +24406,11 @@ async function loadSlp(source, options) {
           h5wasmUrl: options?.h5?.h5wasmUrl,
           openVideos,
           onProgress: options?.onProgress,
-          lazy
+          lazy,
+          repairPointSpans: options?.repairPointSpans
         });
       } catch (e) {
+        if (e instanceof SlpPointSpanError) throw e;
         if (streamMode === "auto") {
           console.warn(
             "[sleap-io] Worker-based loading failed, falling back to main thread:",
@@ -24189,13 +24426,15 @@ async function loadSlp(source, options) {
     return readSlpLazy(source, {
       openVideos,
       h5: options?.h5,
-      onProgress: options?.onProgress
+      onProgress: options?.onProgress,
+      repairPointSpans: options?.repairPointSpans
     });
   }
   return readSlp(source, {
     openVideos,
     h5: options?.h5,
-    onProgress: options?.onProgress
+    onProgress: options?.onProgress,
+    repairPointSpans: options?.repairPointSpans
   });
 }
 async function saveSlp(labels, filename, options) {
@@ -26556,6 +26795,7 @@ export {
   fetchRemoteSlpBytes,
   UnsupportedVideoFormatError,
   createVideoBackend,
+  SlpPointSpanError,
   readSlpStreaming,
   _registerFileWriter,
   ExportCancelled,

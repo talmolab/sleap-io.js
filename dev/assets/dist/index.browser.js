@@ -62,6 +62,7 @@ import {
   SkeletonMatchMethod,
   SkeletonMatcher,
   SkeletonMismatchError,
+  SlpPointSpanError,
   SlpStreamWriter,
   StreamingH5File,
   StreamingH5Writer,
@@ -238,7 +239,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-XBJYIWJN.js";
+} from "./chunk-GNXOWGOA.js";
 import {
   Camera,
   CameraGroup,
@@ -380,6 +381,7 @@ export {
   SkeletonMatchMethod,
   SkeletonMatcher,
   SkeletonMismatchError,
+  SlpPointSpanError,
   SlpStreamWriter,
   StreamingH5File,
   StreamingH5Writer,
