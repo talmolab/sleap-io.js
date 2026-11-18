@@ -20312,6 +20312,31 @@ function writeCentroids(file, centroids, _videos, tracks, instances, contexts) {
   file.create_dataset({ name: "centroids/source", data: sources });
 }
 
+// src/io/frame-instances.ts
+function maxInstancesPerFrame(lfs) {
+  let nInstances = 0;
+  for (const lf of lfs) {
+    const nUser = (lf.userInstances ?? []).length;
+    const nPredicted = (lf.predictedInstances ?? []).length;
+    nInstances = Math.max(nInstances, nUser, nPredicted);
+  }
+  return nInstances;
+}
+function untrackedFrameInstances(lf, isSingleInstance) {
+  const userInsts = lf.userInstances ?? [];
+  const predInsts = lf.predictedInstances ?? [];
+  if (userInsts.length === 0) return [...predInsts];
+  const include = [...userInsts];
+  if (isSingleInstance) return include;
+  for (const inst of predInsts) {
+    const replaced = userInsts.some(
+      (userInst) => userInst.fromPredicted != null && userInst.fromPredicted === inst || userInst.track != null && inst.track != null && userInst.track === inst.track
+    );
+    if (!replaced) include.push(inst);
+  }
+  return include;
+}
+
 // src/io/h5-read-utils.ts
 var textDecoder = new TextDecoder();
 function getDs(file, name) {
@@ -20737,45 +20762,6 @@ async function readLabels(filename, options) {
     close();
   }
 }
-function maxInstancesPerFrame(lfs) {
-  let nInstances = 0;
-  for (const lf of lfs) {
-    const nUser = (lf.userInstances ?? []).length;
-    const nPredicted = (lf.predictedInstances ?? []).length;
-    const nFrameInstances = Math.max(nUser, nPredicted);
-    nInstances = Math.max(nInstances, nFrameInstances);
-  }
-  return nInstances;
-}
-function untrackedFrameInstances(lf, isSingleInstance) {
-  const include = [];
-  const userInsts = lf.userInstances ?? [];
-  const predInsts = lf.predictedInstances ?? [];
-  const hasUser = userInsts.length > 0;
-  if (hasUser) {
-    for (const inst of userInsts) include.push(inst);
-    if (isSingleInstance && include.length > 0) {
-      return include;
-    }
-    for (const inst of predInsts) {
-      let skip = false;
-      for (const userInst of userInsts) {
-        if (userInst.fromPredicted !== void 0 && userInst.fromPredicted === inst) {
-          skip = true;
-          break;
-        }
-        if (userInst.track != null && inst.track != null && userInst.track === inst.track) {
-          skip = true;
-          break;
-        }
-      }
-      if (!skip) include.push(inst);
-    }
-  } else {
-    for (const inst of predInsts) include.push(inst);
-  }
-  return include;
-}
 function trackedFrameInstances(lf) {
   const trackToInstance = /* @__PURE__ */ new Map();
   for (const inst of lf.predictedInstances ?? []) {
@@ -20838,7 +20824,10 @@ function toAnalysisArrays(labels, video, allFrames, minOccupancy) {
     if (!lf) continue;
     const slotted = [];
     if (untracked) {
-      const insts = untrackedFrameInstances(lf, isSingleInstance);
+      const insts = untrackedFrameInstances(
+        lf,
+        isSingleInstance
+      );
       insts.forEach((inst, i) => {
         slotted.push([i, inst]);
       });
@@ -22096,6 +22085,7 @@ function labelsToCsv(labels, options = {}) {
   const includeEmpty = options.includeEmpty ?? false;
   const startFrame = options.startFrame ?? null;
   const endFrame = options.endFrame ?? null;
+  const preferUserInstances = options.preferUserInstances ?? true;
   let selectedVideos;
   if (options.video == null) {
     selectedVideos = labels.videos;
@@ -22109,6 +22099,7 @@ function labelsToCsv(labels, options = {}) {
   const videoSet = new Set(selectedVideos);
   const videoIndex = new Map(labels.videos.map((v, i) => [v, i]));
   const frames = labels.labeledFrames.filter((lf) => videoSet.has(lf.video));
+  const isSingleInstance = preferUserInstances && maxInstancesPerFrame(frames) === 1;
   const rows = [];
   const nodeColSet = /* @__PURE__ */ new Set();
   const seen = /* @__PURE__ */ new Set();
@@ -22121,7 +22112,7 @@ function labelsToCsv(labels, options = {}) {
     const byVid = seenByVideo.get(lf.video);
     if (byVid) byVid.push(lf.frameIdx);
     else seenByVideo.set(lf.video, [lf.frameIdx]);
-    const instances = [...lf.userInstances, ...lf.predictedInstances];
+    const instances = preferUserInstances ? untrackedFrameInstances(lf, isSingleInstance) : [...lf.userInstances, ...lf.predictedInstances];
     for (const inst of instances) {
       const predicted = inst instanceof PredictedInstance;
       const cols = /* @__PURE__ */ new Map();
@@ -22137,8 +22128,8 @@ function labelsToCsv(labels, options = {}) {
         const pt = inst.points[i];
         const xKey = `${name}.x`;
         const yKey = `${name}.y`;
-        cols.set(xKey, pt ? pt.xy[0] : Number.NaN);
-        cols.set(yKey, pt ? pt.xy[1] : Number.NaN);
+        cols.set(xKey, pt?.visible ? pt.xy[0] : Number.NaN);
+        cols.set(yKey, pt?.visible ? pt.xy[1] : Number.NaN);
         nodeColSet.add(xKey);
         nodeColSet.add(yKey);
         if (includeScore && predicted) {

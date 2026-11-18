@@ -2637,6 +2637,13 @@ declare function readNwb(source: NwbSource): Promise<Labels>;
  * (`_write_sleap` + `_transform_to_sleap_format`) over the instances-DataFrame
  * builder in `sleap_io.codecs.dataframe` (`_to_instances_df`).
  *
+ * One row per animal per frame (sleap-io PR #591): a prediction that a user
+ * instance replaced — linked by `fromPredicted`, or on the same track — is not
+ * written, and in a single-instance project any user instance replaces the
+ * frame's predictions. This is the Analysis HDF5 export's selection; see
+ * {@link CsvExportOptions.preferUserInstances}. Points marked not visible are
+ * written as empty x/y cells (sleap-io PR #564).
+ *
  * With `includeEmpty`, frames without instances are emitted as NaN rows and each
  * video's range is padded up to its full length — the fix from sleap-io PR #480
  * (matching the numpy / Analysis-HDF5 export, which already spans the whole
@@ -2668,6 +2675,16 @@ interface CsvExportOptions {
      * else last labeled frame + 1.
      */
     endFrame?: number | null;
+    /**
+     * Write one row per animal per frame, the way the Analysis HDF5 export does:
+     * skip a predicted instance that a user instance in the same frame replaced
+     * (linked by `fromPredicted`, or on the same track); in a single-instance
+     * project any user instance replaces the frame's predictions. Default `true`,
+     * matching Python `sleap_io.save_csv(..., format="sleap")`, which always turns
+     * on `prefer_user_instances` (sleap-io PR #591). Set `false` to write every
+     * user and predicted instance.
+     */
+    preferUserInstances?: boolean;
 }
 /**
  * Build the SLEAP Analysis CSV text for `labels`.

@@ -1754,11 +1754,16 @@ Reading tolerates both (cameras resolve by order); re-saving canonicalizes to
 <code>cam_N</code>.</p>
 </blockquote>
 <h2 id="sleap-analysis-csv-export">SLEAP Analysis CSV export<a class="headerlink" href="#sleap-analysis-csv-export" title="Permanent link">&para;</a></h2>
-<p>Export <code>Labels</code> to the SLEAP Analysis CSV — one row per instance per frame with
+<p>Export <code>Labels</code> to the SLEAP Analysis CSV — one row per animal per frame with
 columns <code>track, frame_idx, instance.score, {node}.score, {node}.x, {node}.y, …</code>
-(node columns sorted alphabetically; missing/invisible points and user-instance
-scores are empty cells). <code>labelsToCsv</code> is browser-safe (returns the string);
-<code>saveLabelsCsv</code> writes to disk (Node).</p>
+(node columns sorted alphabetically; missing points, points marked not visible
+and user-instance scores are empty cells). <code>labelsToCsv</code> is browser-safe
+(returns the string); <code>saveLabelsCsv</code> writes to disk (Node).</p>
+<p>"One row per animal" uses the Analysis HDF5 export's selection, like Python
+<code>sleap_io.save_csv(..., format="sleap")</code> (sleap-io PR #591): a prediction is
+skipped when a user instance in the same frame was made from it
+(<code>fromPredicted</code>) or is on the same track; in a single-instance project any user
+instance replaces the frame's predictions; other predictions are kept.</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">labelsToCsv</span><span class="p">,</span><span class="w"> </span><span class="nx">saveLabelsCsv</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js"</span><span class="p">;</span>
 
 <span class="kd">const</span><span class="w"> </span><span class="nx">csv</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">labelsToCsv</span><span class="p">(</span><span class="nx">labels</span><span class="p">);</span><span class="w">               </span><span class="c1">// string (browser + Node)</span>
@@ -1767,6 +1772,9 @@ scores are empty cells). <code>labelsToCsv</code> is browser-safe (returns the s
 <span class="c1">// Span the whole video: emit NaN rows for unlabeled frames, padded to the video</span>
 <span class="c1">// length when known (mirrors the Analysis-HDF5 export; sleap-io PR #480).</span>
 <span class="k">await</span><span class="w"> </span><span class="nx">saveLabelsCsv</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="s2">"out.csv"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">includeEmpty</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
+
+<span class="c1">// Write every user and predicted instance instead of one row per animal.</span>
+<span class="nx">labelsToCsv</span><span class="p">(</span><span class="nx">labels</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">preferUserInstances</span><span class="o">:</span><span class="w"> </span><span class="kt">false</span><span class="w"> </span><span class="p">});</span>
 
 <span class="c1">// Other options: video (Video | index filter), includeScore (default true),</span>
 <span class="c1">// startFrame / endFrame (inclusive / exclusive).</span>
