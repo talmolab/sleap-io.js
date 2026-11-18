@@ -13,6 +13,17 @@ export function _registerCentroidFactory(factory: CentroidFactory): void {
   _centroidFactory = factory;
 }
 
+// Late-binding factory for Instance.toBbox(), set by bbox.ts when it is
+// imported (bbox.ts imports this module, so a direct import would be circular).
+type BboxFactory = (
+  instance: Instance | PredictedInstance,
+  options?: import("./bbox.js").BboxFromInstanceOptions,
+) => import("./bbox.js").BoundingBox;
+let _bboxFactory: BboxFactory | null = null;
+export function _registerBboxFactory(factory: BboxFactory): void {
+  _bboxFactory = factory;
+}
+
 export class Track {
   name: string;
 
@@ -526,6 +537,29 @@ export class Instance {
       );
     }
     return _centroidFactory(this, { method, node });
+  }
+
+  /**
+   * Create an axis-aligned bounding box from this instance.
+   *
+   * `mode: "tight"` (default) fits the visible points; `mode: "centered"`
+   * builds a fixed-`size` box around the instance's centroid. `padding`
+   * inflates the box (scalar or `[px, py]`). A `PredictedInstance` yields a
+   * `PredictedBoundingBox` with its `score`, anything else a
+   * `UserBoundingBox`; the box links back via `box.instance`. Mirrors Python
+   * `Instance.to_bbox` (oriented boxes aren't supported yet).
+   *
+   * @see BoundingBox.fromInstance for the full option list.
+   */
+  toBbox(
+    options?: import("./bbox.js").BboxFromInstanceOptions,
+  ): import("./bbox.js").BoundingBox {
+    if (!_bboxFactory) {
+      throw new Error(
+        "BoundingBox not available. Import bbox.ts before calling toBbox().",
+      );
+    }
+    return _bboxFactory(this, options);
   }
 
   get isEmpty(): boolean {
