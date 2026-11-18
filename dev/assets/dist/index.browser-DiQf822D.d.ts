@@ -1,4 +1,4 @@
-import { b5 as VideoBackend, bk as RangeSource$1, b4 as GetFrameOptions, b3 as VideoFrame, L as Labels, V as Video, S as Skeleton, T as Track, al as SuggestionFrame, au as Identity, aq as RecordingSession, ay as LazyDataStore, b as LabeledFrame, W as FsResolver, bb as CropRect, bj as Fill, bc as FlatPoints, bd as PointPairs, b0 as UserLabelImage, c as LabelsSet, aC as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-lh5L6RLE.js';
+import { b8 as VideoBackend, bn as RangeSource$1, b7 as GetFrameOptions, b6 as VideoFrame, L as Labels, V as Video, S as Skeleton, T as Track, am as SuggestionFrame, av as Identity, ar as RecordingSession, az as LazyDataStore, b as LabeledFrame, W as FsResolver, be as CropRect, bm as Fill, bf as FlatPoints, bg as PointPairs, b3 as UserLabelImage, c as LabelsSet, aD as Geometry, R as ROI, I as Instance, e as SegmentationMask, P as PredictedInstance, d as LabelImage, B as BoundingBox } from './dictionary-c2Uw27zu.js';
 import { CustomVideoDecoder, EncodedPacket } from 'mediabunny';
 
 /**

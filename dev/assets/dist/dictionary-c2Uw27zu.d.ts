@@ -1,372 +1,3 @@
-declare class Node {
-    name: string;
-    constructor(name: string);
-}
-declare class Edge {
-    source: Node;
-    destination: Node;
-    constructor(source: Node, destination: Node);
-    at(index: number): Node;
-}
-declare class Symmetry {
-    nodes: Set<Node>;
-    constructor(nodes: Iterable<Node>);
-    at(index: number): Node;
-}
-type NodeOrIndex = Node | string | number;
-declare class Skeleton {
-    nodes: Node[];
-    edges: Edge[];
-    symmetries: Symmetry[];
-    name?: string;
-    private nameToNode;
-    private nodeToIndex;
-    constructor(options: {
-        nodes: Array<Node | string>;
-        edges?: Array<Edge | [NodeOrIndex, NodeOrIndex]>;
-        symmetries?: Array<Symmetry | [NodeOrIndex, NodeOrIndex]>;
-        name?: string;
-    } | Array<Node | string>);
-    rebuildCache(nodes?: Node[]): void;
-    get nodeNames(): string[];
-    index(node: NodeOrIndex): number;
-    node(node: NodeOrIndex): Node;
-    get edgeIndices(): Array<[number, number]>;
-    get symmetryNames(): Array<[string, string]>;
-    /**
-     * Check if this skeleton matches another skeleton's structure.
-     *
-     * Two skeletons match if they have the same nodes (by name), the same edges
-     * (by directed source/destination name pairs), and the same symmetries (by
-     * unordered node-name pairs). All comparisons are by node NAME, never by Node
-     * identity. Two empty skeletons match.
-     *
-     * @param other Another skeleton to compare with.
-     * @param opts.requireSameOrder If true, node names must be in the same order;
-     *   if false (default), only the set of node names must match. Affects ONLY
-     *   the node-name check — edges and symmetries are always compared as
-     *   unordered sets.
-     * @returns True if the skeletons match, false otherwise.
-     */
-    matches(other: Skeleton, opts?: {
-        requireSameOrder?: boolean;
-    }): boolean;
-    /**
-     * Calculate node overlap metrics with another skeleton.
-     *
-     * Node names are de-duplicated to sets first.
-     *
-     * @param other Another skeleton to compare with.
-     * @returns An object with similarity metrics:
-     *   - `nCommon`: Number of nodes in common.
-     *   - `nSelfOnly`: Number of nodes only in this skeleton.
-     *   - `nOtherOnly`: Number of nodes only in the other skeleton.
-     *   - `jaccard`: Jaccard similarity (intersection/union), 0 if union empty.
-     *   - `dice`: Dice coefficient (2*intersection/(nSelf+nOther)), 0 if both empty.
-     */
-    nodeSimilarities(other: Skeleton): {
-        nCommon: number;
-        nSelfOnly: number;
-        nOtherOnly: number;
-        jaccard: number;
-        dice: number;
-    };
-    addEdge(source: NodeOrIndex, destination: NodeOrIndex): void;
-    addSymmetry(left: NodeOrIndex, right: NodeOrIndex): void;
-    private edgeFrom;
-    private symmetryFrom;
-}
-
-declare class Identity {
-    name: string;
-    color?: string;
-    metadata: Record<string, unknown>;
-    constructor(options?: {
-        name?: string;
-        color?: string;
-        metadata?: Record<string, unknown>;
-    });
-}
-
-/**
- * A per-detection re-ID appearance embedding (SLP 2.5+).
- *
- * Mirrors Python `sleap_io.model.embedding.Embedding`: a 1-D feature vector produced
- * by a re-identification / appearance model, attached to a detection alongside its
- * {@link Identity} assignment. Stored on disk in the `/embeddings` group as an
- * `(N, D)` float matrix joined to detections by `(owner_type, owner_id)`.
- */
-declare class Embedding {
-    /** The 1-D feature vector. */
-    vector: number[];
-    constructor(vector: ArrayLike<number>);
-    /** Dimensionality `D` of the vector. */
-    get dim(): number;
-}
-
-type CentroidFactory = (instance: Instance | PredictedInstance, options?: {
-    method?: string;
-    node?: string | number;
-}) => any;
-declare function _registerCentroidFactory(factory: CentroidFactory): void;
-declare class Track {
-    name: string;
-    constructor(name?: string);
-    matches(other: Track, method?: string): boolean;
-}
-type Point = {
-    xy: [number, number];
-    visible: boolean;
-    complete: boolean;
-    score?: number;
-    name?: string;
-};
-type PredictedPoint = Point & {
-    score: number;
-};
-type PointsArray = Point[];
-type PredictedPointsArray = PredictedPoint[];
-/**
- * The SLP readers' parsed point columns (`x`/`y`/`visible`/`complete`[/`score`]),
- * as plain `number[]` (eager reader) or `Float64Array` (streaming worker). Fed to
- * {@link Instance._fromColumns} to build an instance without a `Point[]`.
- */
-interface PointColumns {
-    x?: ArrayLike<number>;
-    y?: ArrayLike<number>;
-    visible?: ArrayLike<number>;
-    complete?: ArrayLike<number>;
-    score?: ArrayLike<number>;
-}
-declare function pointsEmpty(length: number, names?: string[]): PointsArray;
-declare function predictedPointsEmpty(length: number, names?: string[]): PredictedPointsArray;
-/**
- * Deep-copy a point into a fresh plain literal, optionally under a new node
- * name. Use this instead of `{ ...point }`: `instance.points[i]` returns a
- * {@link PointView} flyweight whose fields are accessors (not own enumerable
- * properties), so a spread would silently drop `visible`/`complete`/`score`.
- * The `score` field is copied only when present (predicted points).
- */
-declare function clonePoint(p: Point, name?: string): Point;
-declare function pointsFromArray(array: number[][], names?: string[]): PointsArray;
-declare function predictedPointsFromArray(array: number[][], names?: string[]): PredictedPointsArray;
-/**
- * A live view of one keypoint over an {@link Instance}'s columnar storage.
- *
- * `instance.points[i]` returns one of these instead of a stored `{xy,...}`
- * object, so a project's keypoints live in a few packed typed arrays per
- * instance (~a few bytes/point) rather than an object graph (~150 B/point). It
- * satisfies the structural `Point` type: reads go straight to the columns, and
- * writes (`point.xy = [...]`, `point.visible = ...`) write back through. `xy`
- * getter returns a fresh `[x, y]` copy — no code mutates `point.xy[0]` in place
- * (verified), and returning a copy keeps callers that stash `point.xy` by
- * reference (e.g. centroid math) reading a stable snapshot.
- */
-declare class PointView {
-    #private;
-    constructor(owner: Instance, i: number);
-    get xy(): [number, number];
-    set xy(v: ArrayLike<number>);
-    get visible(): boolean;
-    set visible(v: boolean);
-    get complete(): boolean;
-    set complete(v: boolean);
-    get score(): number | undefined;
-    set score(v: number | undefined);
-    get name(): string | undefined;
-    set name(v: string | undefined);
-}
-declare class Instance {
-    skeleton: Skeleton;
-    track?: Track | null;
-    fromPredicted?: PredictedInstance | null;
-    trackingScore: number;
-    /**
-     * Persistent cross-video re-ID identity of this detection (SLP 2.5+), distinct
-     * from the ephemeral within-video {@link Track}. Persisted in the `/identity`
-     * catalog + `/identity/links`; attached after read, defaults to null.
-     */
-    identity?: Identity | null;
-    /** Confidence of the {@link identity} assignment (SLP 2.5+); null if unrecorded. */
-    identityScore?: number | null;
-    /** Per-detection re-ID appearance embedding (SLP 2.5+); persisted in `/embeddings`. */
-    identityEmbedding?: Embedding | null;
-    /** Class/category membership (SLP 2.7+); persisted via the `/categories` catalog + links. */
-    category?: string | null;
-    /** Confidence of the {@link category} assignment (SLP 2.7+); null if unrecorded. */
-    categoryScore?: number | null;
-    /** Per-detection category appearance embedding (SLP 2.7+); persisted in `/embeddings`. */
-    categoryEmbedding?: Embedding | null;
-    _xy: Float64Array;
-    _visible: Uint8Array;
-    _complete: Uint8Array;
-    _score: Float64Array | null;
-    _names: (string | undefined)[] | null;
-    _n: number;
-    constructor(options: {
-        points: PointsArray | Record<string, number[]>;
-        skeleton: Skeleton;
-        track?: Track | null;
-        fromPredicted?: PredictedInstance | null;
-        trackingScore?: number;
-    });
-    /** Pack a transient `Point[]` into the columnar typed-array storage. */
-    _ingest(pts: PointsArray): void;
-    /**
-     * Fill the columnar storage directly from the SLP readers' parsed point
-     * columns over `[start, end)`, skipping the intermediate `Point[]` literals
-     * (the slicePoints → pointsFromArray → `_ingest` path allocates ~3 throwaway
-     * objects per point). Values match that path exactly: `x ?? NaN`, `y ?? NaN`,
-     * `Boolean(visible)`, `Boolean(complete)`, and (predicted) `score ?? NaN`;
-     * names derive from the skeleton. Used by {@link Instance._fromColumns}.
-     */
-    _fillFromColumns(columns: PointColumns, start: number, end: number, predicted: boolean): void;
-    /**
-     * Build an Instance directly from reader point columns over `[start, end)`,
-     * without materializing a `Point[]`. Internal fast path for buildLabeledFrames;
-     * equivalent to `new Instance({ points: pointsFromArray(slicePoints(...)) })`.
-     */
-    static _fromColumns(opts: {
-        columns: PointColumns;
-        start: number;
-        end: number;
-        skeleton: Skeleton;
-        track?: Track | null;
-        fromPredicted?: PredictedInstance | null;
-        trackingScore?: number;
-    }): Instance;
-    /** Lazily allocate the score column (for a user instance gaining scores). */
-    _scoreColumn(): Float64Array;
-    /** Node name for point `i` — derived from the skeleton unless overridden. */
-    _pointName(i: number): string | undefined;
-    _setPointName(i: number, v: string | undefined): void;
-    /** The keypoints as an array of live {@link PointView}s (built on demand). */
-    get points(): PointsArray;
-    set points(pts: PointsArray);
-    static fromArray(points: number[][], skeleton: Skeleton): Instance;
-    static fromNumpy(options: {
-        pointsData: number[][];
-        skeleton: Skeleton;
-        track?: Track | null;
-        fromPredicted?: PredictedInstance | null;
-        trackingScore?: number;
-    }): Instance;
-    static empty(options: {
-        skeleton: Skeleton;
-    }): Instance;
-    get length(): number;
-    get nVisible(): number;
-    getPoint(target: number | string | Node): Point;
-    numpy(options?: {
-        invisibleAsNaN?: boolean;
-    }): number[][];
-    toString(): string;
-    /** Mean of visible point coordinates as `[x, y]`, or `null` if no points visible. */
-    get centroidXy(): [number, number] | null;
-    /**
-     * Create a Centroid from this instance.
-     *
-     * @param method - Computation method. Accepts the legacy camelCase names
-     *   (`"centerOfMass"` (default), `"bboxCenter"`, `"anchor"`) and Python's
-     *   snake_case names (`"center_of_mass"`, `"bbox_center"`). The persisted
-     *   `source` is always canonical snake_case for Python interop.
-     * @param node - Node specification for "anchor" method.
-     * @returns UserCentroid or PredictedCentroid depending on instance type.
-     */
-    toCentroid(method?: string, node?: string | number): any;
-    get isEmpty(): boolean;
-    /**
-     * Check if this instance has the same pose as another instance.
-     *
-     * Mirrors Python `Instance.same_pose_as` (instance.py:699-753).
-     *
-     * @param other - Another instance to compare with.
-     * @param tolerance - Maximum distance (in pixels) between corresponding points
-     *   for them to be considered the same. If `null`/`undefined`, uses exact
-     *   comparison including NaN==NaN handling.
-     * @returns `true` if the instances have the same pose within tolerance.
-     */
-    samePoseAs(other: Instance, tolerance?: number | null): boolean;
-    /**
-     * Check if this instance has the same identity (track) as another instance.
-     *
-     * Mirrors Python `Instance.same_identity_as` (instance.py:755-770). Compares
-     * tracks by reference identity, not by name.
-     *
-     * @param other - Another instance to compare with.
-     * @returns `true` if both instances share the same `Track` object.
-     */
-    sameIdentityAs(other: Instance): boolean;
-    /**
-     * Check if this instance overlaps with another by bounding-box IoU.
-     *
-     * Mirrors Python `Instance.overlaps_with` (instance.py:772-830). Bounding
-     * boxes are computed over VISIBLE points; if either has none, returns false.
-     * If the boxes do not STRICTLY intersect on both axes (touching edges count
-     * as no overlap), returns false regardless of `iouThreshold` — this matches
-     * Python's `np.any(intersection_min >= intersection_max) -> False`
-     * short-circuit, which runs before the threshold comparison.
-     *
-     * @param other - Another instance to compare with.
-     * @param iouThreshold - Minimum IoU to count as overlapping (inclusive `>=`).
-     */
-    overlapsWith(other: Instance, iouThreshold?: number): boolean;
-    /**
-     * Get the bounding box of visible points.
-     *
-     * Mirrors Python `Instance.bounding_box` (instance.py:832-849).
-     *
-     * @returns `[[minX, minY], [maxX, maxY]]` over visible points, or `null` if
-     *   there are no visible points.
-     */
-    boundingBox(): [[number, number], [number, number]] | null;
-}
-declare class PredictedInstance extends Instance {
-    score: number;
-    constructor(options: {
-        points: PredictedPointsArray | Record<string, number[]>;
-        skeleton: Skeleton;
-        track?: Track | null;
-        score?: number;
-        trackingScore?: number;
-        fromPredicted?: PredictedInstance | null;
-    });
-    static fromArray(points: number[][], skeleton: Skeleton, score?: number): PredictedInstance;
-    static fromNumpy(options: {
-        pointsData: number[][];
-        skeleton: Skeleton;
-        track?: Track | null;
-        score?: number;
-        trackingScore?: number;
-    }): PredictedInstance;
-    static empty(options: {
-        skeleton: Skeleton;
-    }): PredictedInstance;
-    /**
-     * Build a PredictedInstance directly from reader point columns over
-     * `[start, end)`, without materializing a `Point[]`. Internal fast path for
-     * buildLabeledFrames; equivalent to `new PredictedInstance({ points:
-     * predictedPointsFromArray(slicePoints(...)) })`.
-     */
-    static _fromColumns(opts: {
-        columns: PointColumns;
-        start: number;
-        end: number;
-        skeleton: Skeleton;
-        track?: Track | null;
-        score?: number;
-        trackingScore?: number;
-        fromPredicted?: PredictedInstance | null;
-    }): PredictedInstance;
-    numpy(options?: {
-        scores?: boolean;
-        invisibleAsNaN?: boolean;
-    }): number[][];
-    toString(): string;
-}
-declare function pointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PointsArray;
-declare function predictedPointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PredictedPointsArray;
-
 /**
  * Point coordinate transformation functions for virtual cropping.
  *
@@ -974,121 +605,31 @@ declare class Video {
     mergeWith(other: Video): Video;
 }
 
-/**
- * Normalize a centroid `source`/`method` string to its canonical snake_case
- * form for Python/PyQt on-disk interop.
- *
- * The SLP on-disk format is snake_case (Python-compatible). Historically the JS
- * side used camelCase method names (`"centerOfMass"`, `"bboxCenter"`) both for
- * the `fromInstance` `method` param and — via that param — for the persisted
- * `source` value, which mismatched Python `sleap-io`. This maps the legacy
- * camelCase names to Python's snake_case:
- * - `"centerOfMass"` -> `"center_of_mass"`
- * - `"bboxCenter"`   -> `"bbox_center"`
- *
- * All other values pass through unchanged: already-snake_case names
- * (`"center_of_mass"`, `"bbox_center"`), `"anchor"` / `"anchor:<node>"`, and
- * arbitrary sources (e.g. `"trackmate"`). Used by both `Centroid.fromInstance`
- * (to normalize the `method` param) and the SLP reader (to normalize legacy
- * camelCase `source` values on load).
- */
-declare function normalizeCentroidSource(source: string): string;
-/** Return the shared single-node `Skeleton(["centroid"])` instance. */
-declare function getCentroidSkeleton(): Skeleton;
-/**
- * Module-level constant for the centroid skeleton.
- * Lazily initialized on first access.
- */
-declare const CENTROID_SKELETON: Skeleton;
-/** Options for constructing a Centroid. */
-interface CentroidOptions {
-    x: number;
-    y: number;
-    z?: number | null;
-    track?: Track | null;
-    trackingScore?: number | null;
-    instance?: Instance | null;
-    category?: string;
-    name?: string;
-    source?: string;
-}
-/**
- * A point representing the center of an object.
- *
- * Supports optional 3D coordinates, track/instance metadata,
- * and interconversion with single-node Instance objects.
- *
- * Spatial-temporal context (video, frame index) is derived from the parent
- * LabeledFrame, matching how Instance/PredictedInstance work.
- *
- * This class is abstract. Use UserCentroid or PredictedCentroid.
- */
-declare class Centroid {
-    x: number;
-    y: number;
-    z: number | null;
-    track: Track | null;
-    trackingScore: number | null;
-    instance: Instance | null;
-    /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
-    identity?: Identity | null;
-    identityScore?: number | null;
-    identityEmbedding?: Embedding | null;
-    /** Category confidence + appearance embedding (SLP 2.7+). */
-    categoryScore?: number | null;
-    categoryEmbedding?: Embedding | null;
-    category: string;
+declare class Identity {
     name: string;
-    source: string;
-    /** @internal Deferred instance index for lazy resolution. */
-    _instanceIdx: number | null;
-    constructor(options: CentroidOptions);
-    /** Coordinates as `[x, y]`. */
-    get xy(): [number, number];
-    /** Coordinates as `[y, x]` (row, col order). */
-    get yx(): [number, number];
-    /** Coordinates as `[x, y, z]`. */
-    get xyz(): [number, number, number | null];
-    /** Whether this is a predicted centroid (has a score). */
-    get isPredicted(): boolean;
-    /**
-     * Convert this centroid to a single-node Instance.
-     *
-     * @param skeleton - Skeleton to use. Must have exactly one node.
-     *   Defaults to the shared CENTROID_SKELETON.
-     * @returns Instance or PredictedInstance depending on this centroid's type.
-     */
-    toInstance(skeleton?: Skeleton): Instance | PredictedInstance;
-    /**
-     * Create a centroid from an Instance.
-     *
-     * @param instance - Source instance.
-     * @param options - Options for centroid extraction.
-     * @param options.method - Computation method. Accepts both the legacy JS
-     *   camelCase names (`"centerOfMass"` (default), `"bboxCenter"`, `"anchor"`)
-     *   and Python's snake_case names (`"center_of_mass"`, `"bbox_center"`). The
-     *   persisted `source` is always the canonical snake_case value
-     *   (`"center_of_mass"`, `"bbox_center"`, or `"anchor:<node>"`) to match
-     *   Python `sleap-io` on disk.
-     * @param options.node - Node name or index for "anchor" method.
-     * @returns UserCentroid or PredictedCentroid depending on instance type.
-     */
-    static fromInstance(instance: Instance | PredictedInstance, options?: {
-        method?: string;
-        node?: string | number;
-        [key: string]: unknown;
-    }): Centroid;
-}
-/** User-annotated or derived centroid (no prediction score). */
-declare class UserCentroid extends Centroid {
-}
-/** Predicted centroid with a confidence score. */
-declare class PredictedCentroid extends Centroid {
-    score: number;
-    constructor(options: CentroidOptions & {
-        score: number;
+    color?: string;
+    metadata: Record<string, unknown>;
+    constructor(options?: {
+        name?: string;
+        color?: string;
+        metadata?: Record<string, unknown>;
     });
-    get isPredicted(): boolean;
+}
+
+/**
+ * A per-detection re-ID appearance embedding (SLP 2.5+).
+ *
+ * Mirrors Python `sleap_io.model.embedding.Embedding`: a 1-D feature vector produced
+ * by a re-identification / appearance model, attached to a detection alongside its
+ * {@link Identity} assignment. Stored on disk in the `/embeddings` group as an
+ * `(N, D)` float matrix joined to detections by `(owner_type, owner_id)`.
+ */
+declare class Embedding {
+    /** The 1-D feature vector. */
+    vector: number[];
+    constructor(vector: ArrayLike<number>);
+    /** Dimensionality `D` of the vector. */
+    get dim(): number;
 }
 
 type MaskFactory = (mask: Uint8Array, height: number, width: number, options: Record<string, unknown> & {
@@ -1396,6 +937,235 @@ declare class PredictedSegmentationMask extends SegmentationMask {
     toUser(link?: boolean): UserSegmentationMask;
 }
 
+declare class Node {
+    name: string;
+    constructor(name: string);
+}
+declare class Edge {
+    source: Node;
+    destination: Node;
+    constructor(source: Node, destination: Node);
+    at(index: number): Node;
+}
+declare class Symmetry {
+    nodes: Set<Node>;
+    constructor(nodes: Iterable<Node>);
+    at(index: number): Node;
+}
+type NodeOrIndex = Node | string | number;
+declare class Skeleton {
+    nodes: Node[];
+    edges: Edge[];
+    symmetries: Symmetry[];
+    name?: string;
+    private nameToNode;
+    private nodeToIndex;
+    constructor(options: {
+        nodes: Array<Node | string>;
+        edges?: Array<Edge | [NodeOrIndex, NodeOrIndex]>;
+        symmetries?: Array<Symmetry | [NodeOrIndex, NodeOrIndex]>;
+        name?: string;
+    } | Array<Node | string>);
+    rebuildCache(nodes?: Node[]): void;
+    get nodeNames(): string[];
+    index(node: NodeOrIndex): number;
+    node(node: NodeOrIndex): Node;
+    get edgeIndices(): Array<[number, number]>;
+    get symmetryNames(): Array<[string, string]>;
+    /**
+     * Check if this skeleton matches another skeleton's structure.
+     *
+     * Two skeletons match if they have the same nodes (by name), the same edges
+     * (by directed source/destination name pairs), and the same symmetries (by
+     * unordered node-name pairs). All comparisons are by node NAME, never by Node
+     * identity. Two empty skeletons match.
+     *
+     * @param other Another skeleton to compare with.
+     * @param opts.requireSameOrder If true, node names must be in the same order;
+     *   if false (default), only the set of node names must match. Affects ONLY
+     *   the node-name check — edges and symmetries are always compared as
+     *   unordered sets.
+     * @returns True if the skeletons match, false otherwise.
+     */
+    matches(other: Skeleton, opts?: {
+        requireSameOrder?: boolean;
+    }): boolean;
+    /**
+     * Calculate node overlap metrics with another skeleton.
+     *
+     * Node names are de-duplicated to sets first.
+     *
+     * @param other Another skeleton to compare with.
+     * @returns An object with similarity metrics:
+     *   - `nCommon`: Number of nodes in common.
+     *   - `nSelfOnly`: Number of nodes only in this skeleton.
+     *   - `nOtherOnly`: Number of nodes only in the other skeleton.
+     *   - `jaccard`: Jaccard similarity (intersection/union), 0 if union empty.
+     *   - `dice`: Dice coefficient (2*intersection/(nSelf+nOther)), 0 if both empty.
+     */
+    nodeSimilarities(other: Skeleton): {
+        nCommon: number;
+        nSelfOnly: number;
+        nOtherOnly: number;
+        jaccard: number;
+        dice: number;
+    };
+    addEdge(source: NodeOrIndex, destination: NodeOrIndex): void;
+    addSymmetry(left: NodeOrIndex, right: NodeOrIndex): void;
+    private edgeFrom;
+    private symmetryFrom;
+}
+
+/**
+ * Normalize a centroid `source`/`method` string to its canonical snake_case
+ * form for Python/PyQt on-disk interop.
+ *
+ * The SLP on-disk format is snake_case (Python-compatible). Historically the JS
+ * side used camelCase method names (`"centerOfMass"`, `"bboxCenter"`) both for
+ * the `fromInstance` `method` param and — via that param — for the persisted
+ * `source` value, which mismatched Python `sleap-io`. This maps the legacy
+ * camelCase names to Python's snake_case:
+ * - `"centerOfMass"` -> `"center_of_mass"`
+ * - `"bboxCenter"`   -> `"bbox_center"`
+ *
+ * All other values pass through unchanged: already-snake_case names
+ * (`"center_of_mass"`, `"bbox_center"`), `"anchor"` / `"anchor:<node>"`, and
+ * arbitrary sources (e.g. `"trackmate"`). Used by both `Centroid.fromInstance`
+ * (to normalize the `method` param) and the SLP reader (to normalize legacy
+ * camelCase `source` values on load).
+ */
+declare function normalizeCentroidSource(source: string): string;
+/** Return the shared single-node `Skeleton(["centroid"])` instance. */
+declare function getCentroidSkeleton(): Skeleton;
+/**
+ * Module-level constant for the centroid skeleton.
+ * Lazily initialized on first access.
+ */
+declare const CENTROID_SKELETON: Skeleton;
+/** Options for constructing a Centroid. */
+interface CentroidOptions {
+    x: number;
+    y: number;
+    z?: number | null;
+    track?: Track | null;
+    trackingScore?: number | null;
+    instance?: Instance | null;
+    category?: string;
+    name?: string;
+    source?: string;
+}
+/**
+ * A point representing the center of an object.
+ *
+ * Supports optional 3D coordinates, track/instance metadata,
+ * and interconversion with single-node Instance objects.
+ *
+ * Spatial-temporal context (video, frame index) is derived from the parent
+ * LabeledFrame, matching how Instance/PredictedInstance work.
+ *
+ * This class is abstract. Use UserCentroid or PredictedCentroid.
+ */
+declare class Centroid {
+    x: number;
+    y: number;
+    z: number | null;
+    track: Track | null;
+    trackingScore: number | null;
+    instance: Instance | null;
+    /** Per-detection re-ID identity (SLP 2.5+); attached from /identity/links. */
+    identity?: Identity | null;
+    identityScore?: number | null;
+    identityEmbedding?: Embedding | null;
+    /** Category confidence + appearance embedding (SLP 2.7+). */
+    categoryScore?: number | null;
+    categoryEmbedding?: Embedding | null;
+    category: string;
+    name: string;
+    source: string;
+    /** @internal Deferred instance index for lazy resolution. */
+    _instanceIdx: number | null;
+    constructor(options: CentroidOptions);
+    /** Coordinates as `[x, y]`. */
+    get xy(): [number, number];
+    /** Coordinates as `[y, x]` (row, col order). */
+    get yx(): [number, number];
+    /** Coordinates as `[x, y, z]`. */
+    get xyz(): [number, number, number | null];
+    /** Whether this is a predicted centroid (has a score). */
+    get isPredicted(): boolean;
+    /**
+     * Convert this centroid to a single-node Instance.
+     *
+     * @param skeleton - Skeleton to use. Must have exactly one node.
+     *   Defaults to the shared CENTROID_SKELETON.
+     * @returns Instance or PredictedInstance depending on this centroid's type.
+     */
+    toInstance(skeleton?: Skeleton): Instance | PredictedInstance;
+    /**
+     * Create a centroid from an Instance.
+     *
+     * @param instance - Source instance.
+     * @param options - Options for centroid extraction.
+     * @param options.method - Computation method. Accepts both the legacy JS
+     *   camelCase names (`"centerOfMass"` (default), `"bboxCenter"`, `"anchor"`)
+     *   and Python's snake_case names (`"center_of_mass"`, `"bbox_center"`). The
+     *   persisted `source` is always the canonical snake_case value
+     *   (`"center_of_mass"`, `"bbox_center"`, or `"anchor:<node>"`) to match
+     *   Python `sleap-io` on disk.
+     * @param options.node - Node name or index for "anchor" method.
+     * @returns UserCentroid or PredictedCentroid depending on instance type.
+     */
+    static fromInstance(instance: Instance | PredictedInstance, options?: {
+        method?: string;
+        node?: string | number;
+        [key: string]: unknown;
+    }): Centroid;
+}
+/** User-annotated or derived centroid (no prediction score). */
+declare class UserCentroid extends Centroid {
+}
+/** Predicted centroid with a confidence score. */
+declare class PredictedCentroid extends Centroid {
+    score: number;
+    constructor(options: CentroidOptions & {
+        score: number;
+    });
+    get isPredicted(): boolean;
+}
+
+/**
+ * Padding for box conversions: a scalar applies to both axes, an `[px, py]`
+ * pair applies per axis. Negative values shrink the box; values are not
+ * clamped. Mirrors the `padding` argument of Python `sleap-io`.
+ */
+type BboxPadding = number | [number, number];
+/** Options for {@link BoundingBox.fromInstance} / `Instance.toBbox()`. */
+interface BboxFromInstanceOptions {
+    /**
+     * `"tight"` (default) fits the visible points; `"centered"` builds a
+     * fixed-`size` box centered on the instance's centroid.
+     */
+    mode?: "tight" | "centered";
+    /**
+     * Box size for `mode: "centered"` (required there). A scalar yields a
+     * square box; `[w, h]` sets width and height independently.
+     */
+    size?: number | [number, number];
+    /** Amount to inflate the box outward (see {@link BboxPadding}). */
+    padding?: BboxPadding;
+    /** Anchor node (name or index) for `centerMethod: "anchor"`. */
+    node?: string | number;
+    /**
+     * Centroid method for `mode: "centered"`: `"center_of_mass"` (default),
+     * `"bbox_center"` or `"anchor"` (camelCase names are accepted too).
+     */
+    centerMethod?: string;
+    /**
+     * Throw when there is nothing to fit (no visible points, or an occluded
+     * anchor node) instead of returning a degenerate box with NaN corners.
+     */
+    errorOnEmpty?: boolean;
+}
 /** Options for constructing a BoundingBox. */
 interface BoundingBoxOptions {
     x1: number;
@@ -1480,6 +1250,42 @@ declare class BoundingBox {
     toRoi(): ROI;
     /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
     toMask(height: number, width: number): SegmentationMask;
+    /** Whether this box is degenerate (any corner coordinate is NaN). */
+    get isEmpty(): boolean;
+    /**
+     * Return a new box inflated outward by `padding`.
+     *
+     * The result has the same class as this box (`UserBoundingBox` or
+     * `PredictedBoundingBox`) and keeps `angle`, `score` and all metadata. For a
+     * rotated box the pre-rotation extent is inflated about the center, so the
+     * angle is unchanged. Mirrors Python `BoundingBox.pad`.
+     */
+    pad(padding: BboxPadding): BoundingBox;
+    /**
+     * Convert to a centroid at this box's center.
+     *
+     * A `PredictedBoundingBox` yields a `PredictedCentroid` carrying its
+     * `score`; any other box yields a `UserCentroid`. Metadata is inherited. A
+     * degenerate box gives a NaN centroid, or throws with `errorOnEmpty`.
+     * Mirrors Python `BoundingBox.to_centroid`.
+     */
+    toCentroid(options?: {
+        errorOnEmpty?: boolean;
+    }): Centroid;
+    /**
+     * Create an axis-aligned bounding box from a pose instance.
+     *
+     * A `PredictedInstance` yields a `PredictedBoundingBox` carrying its
+     * `score`; any other instance yields a `UserBoundingBox`. The box links back
+     * to the instance (`box.instance`) and inherits its track, tracking score,
+     * identity and category. With nothing to fit it returns a box with NaN
+     * corners (see {@link BoundingBox.isEmpty}), or throws with `errorOnEmpty`.
+     *
+     * Mirrors Python `Instance.to_bbox`, except that oriented boxes
+     * (`rotated=True` there) aren't supported yet: the result is always
+     * axis-aligned.
+     */
+    static fromInstance(instance: Instance, options?: BboxFromInstanceOptions): BoundingBox;
 }
 /** User-annotated bounding box (no prediction score). */
 declare class UserBoundingBox extends BoundingBox {
@@ -1492,6 +1298,284 @@ declare class PredictedBoundingBox extends BoundingBox {
     });
     get isPredicted(): boolean;
 }
+
+type CentroidFactory = (instance: Instance | PredictedInstance, options?: {
+    method?: string;
+    node?: string | number;
+}) => any;
+declare function _registerCentroidFactory(factory: CentroidFactory): void;
+type BboxFactory = (instance: Instance | PredictedInstance, options?: BboxFromInstanceOptions) => BoundingBox;
+declare function _registerBboxFactory(factory: BboxFactory): void;
+declare class Track {
+    name: string;
+    constructor(name?: string);
+    matches(other: Track, method?: string): boolean;
+}
+type Point = {
+    xy: [number, number];
+    visible: boolean;
+    complete: boolean;
+    score?: number;
+    name?: string;
+};
+type PredictedPoint = Point & {
+    score: number;
+};
+type PointsArray = Point[];
+type PredictedPointsArray = PredictedPoint[];
+/**
+ * The SLP readers' parsed point columns (`x`/`y`/`visible`/`complete`[/`score`]),
+ * as plain `number[]` (eager reader) or `Float64Array` (streaming worker). Fed to
+ * {@link Instance._fromColumns} to build an instance without a `Point[]`.
+ */
+interface PointColumns {
+    x?: ArrayLike<number>;
+    y?: ArrayLike<number>;
+    visible?: ArrayLike<number>;
+    complete?: ArrayLike<number>;
+    score?: ArrayLike<number>;
+}
+declare function pointsEmpty(length: number, names?: string[]): PointsArray;
+declare function predictedPointsEmpty(length: number, names?: string[]): PredictedPointsArray;
+/**
+ * Deep-copy a point into a fresh plain literal, optionally under a new node
+ * name. Use this instead of `{ ...point }`: `instance.points[i]` returns a
+ * {@link PointView} flyweight whose fields are accessors (not own enumerable
+ * properties), so a spread would silently drop `visible`/`complete`/`score`.
+ * The `score` field is copied only when present (predicted points).
+ */
+declare function clonePoint(p: Point, name?: string): Point;
+declare function pointsFromArray(array: number[][], names?: string[]): PointsArray;
+declare function predictedPointsFromArray(array: number[][], names?: string[]): PredictedPointsArray;
+/**
+ * A live view of one keypoint over an {@link Instance}'s columnar storage.
+ *
+ * `instance.points[i]` returns one of these instead of a stored `{xy,...}`
+ * object, so a project's keypoints live in a few packed typed arrays per
+ * instance (~a few bytes/point) rather than an object graph (~150 B/point). It
+ * satisfies the structural `Point` type: reads go straight to the columns, and
+ * writes (`point.xy = [...]`, `point.visible = ...`) write back through. `xy`
+ * getter returns a fresh `[x, y]` copy — no code mutates `point.xy[0]` in place
+ * (verified), and returning a copy keeps callers that stash `point.xy` by
+ * reference (e.g. centroid math) reading a stable snapshot.
+ */
+declare class PointView {
+    #private;
+    constructor(owner: Instance, i: number);
+    get xy(): [number, number];
+    set xy(v: ArrayLike<number>);
+    get visible(): boolean;
+    set visible(v: boolean);
+    get complete(): boolean;
+    set complete(v: boolean);
+    get score(): number | undefined;
+    set score(v: number | undefined);
+    get name(): string | undefined;
+    set name(v: string | undefined);
+}
+declare class Instance {
+    skeleton: Skeleton;
+    track?: Track | null;
+    fromPredicted?: PredictedInstance | null;
+    trackingScore: number;
+    /**
+     * Persistent cross-video re-ID identity of this detection (SLP 2.5+), distinct
+     * from the ephemeral within-video {@link Track}. Persisted in the `/identity`
+     * catalog + `/identity/links`; attached after read, defaults to null.
+     */
+    identity?: Identity | null;
+    /** Confidence of the {@link identity} assignment (SLP 2.5+); null if unrecorded. */
+    identityScore?: number | null;
+    /** Per-detection re-ID appearance embedding (SLP 2.5+); persisted in `/embeddings`. */
+    identityEmbedding?: Embedding | null;
+    /** Class/category membership (SLP 2.7+); persisted via the `/categories` catalog + links. */
+    category?: string | null;
+    /** Confidence of the {@link category} assignment (SLP 2.7+); null if unrecorded. */
+    categoryScore?: number | null;
+    /** Per-detection category appearance embedding (SLP 2.7+); persisted in `/embeddings`. */
+    categoryEmbedding?: Embedding | null;
+    _xy: Float64Array;
+    _visible: Uint8Array;
+    _complete: Uint8Array;
+    _score: Float64Array | null;
+    _names: (string | undefined)[] | null;
+    _n: number;
+    constructor(options: {
+        points: PointsArray | Record<string, number[]>;
+        skeleton: Skeleton;
+        track?: Track | null;
+        fromPredicted?: PredictedInstance | null;
+        trackingScore?: number;
+    });
+    /** Pack a transient `Point[]` into the columnar typed-array storage. */
+    _ingest(pts: PointsArray): void;
+    /**
+     * Fill the columnar storage directly from the SLP readers' parsed point
+     * columns over `[start, end)`, skipping the intermediate `Point[]` literals
+     * (the slicePoints → pointsFromArray → `_ingest` path allocates ~3 throwaway
+     * objects per point). Values match that path exactly: `x ?? NaN`, `y ?? NaN`,
+     * `Boolean(visible)`, `Boolean(complete)`, and (predicted) `score ?? NaN`;
+     * names derive from the skeleton. Used by {@link Instance._fromColumns}.
+     */
+    _fillFromColumns(columns: PointColumns, start: number, end: number, predicted: boolean): void;
+    /**
+     * Build an Instance directly from reader point columns over `[start, end)`,
+     * without materializing a `Point[]`. Internal fast path for buildLabeledFrames;
+     * equivalent to `new Instance({ points: pointsFromArray(slicePoints(...)) })`.
+     */
+    static _fromColumns(opts: {
+        columns: PointColumns;
+        start: number;
+        end: number;
+        skeleton: Skeleton;
+        track?: Track | null;
+        fromPredicted?: PredictedInstance | null;
+        trackingScore?: number;
+    }): Instance;
+    /** Lazily allocate the score column (for a user instance gaining scores). */
+    _scoreColumn(): Float64Array;
+    /** Node name for point `i` — derived from the skeleton unless overridden. */
+    _pointName(i: number): string | undefined;
+    _setPointName(i: number, v: string | undefined): void;
+    /** The keypoints as an array of live {@link PointView}s (built on demand). */
+    get points(): PointsArray;
+    set points(pts: PointsArray);
+    static fromArray(points: number[][], skeleton: Skeleton): Instance;
+    static fromNumpy(options: {
+        pointsData: number[][];
+        skeleton: Skeleton;
+        track?: Track | null;
+        fromPredicted?: PredictedInstance | null;
+        trackingScore?: number;
+    }): Instance;
+    static empty(options: {
+        skeleton: Skeleton;
+    }): Instance;
+    get length(): number;
+    get nVisible(): number;
+    getPoint(target: number | string | Node): Point;
+    numpy(options?: {
+        invisibleAsNaN?: boolean;
+    }): number[][];
+    toString(): string;
+    /** Mean of visible point coordinates as `[x, y]`, or `null` if no points visible. */
+    get centroidXy(): [number, number] | null;
+    /**
+     * Create a Centroid from this instance.
+     *
+     * @param method - Computation method. Accepts the legacy camelCase names
+     *   (`"centerOfMass"` (default), `"bboxCenter"`, `"anchor"`) and Python's
+     *   snake_case names (`"center_of_mass"`, `"bbox_center"`). The persisted
+     *   `source` is always canonical snake_case for Python interop.
+     * @param node - Node specification for "anchor" method.
+     * @returns UserCentroid or PredictedCentroid depending on instance type.
+     */
+    toCentroid(method?: string, node?: string | number): any;
+    /**
+     * Create an axis-aligned bounding box from this instance.
+     *
+     * `mode: "tight"` (default) fits the visible points; `mode: "centered"`
+     * builds a fixed-`size` box around the instance's centroid. `padding`
+     * inflates the box (scalar or `[px, py]`). A `PredictedInstance` yields a
+     * `PredictedBoundingBox` with its `score`, anything else a
+     * `UserBoundingBox`; the box links back via `box.instance`. Mirrors Python
+     * `Instance.to_bbox` (oriented boxes aren't supported yet).
+     *
+     * @see BoundingBox.fromInstance for the full option list.
+     */
+    toBbox(options?: BboxFromInstanceOptions): BoundingBox;
+    get isEmpty(): boolean;
+    /**
+     * Check if this instance has the same pose as another instance.
+     *
+     * Mirrors Python `Instance.same_pose_as` (instance.py:699-753).
+     *
+     * @param other - Another instance to compare with.
+     * @param tolerance - Maximum distance (in pixels) between corresponding points
+     *   for them to be considered the same. If `null`/`undefined`, uses exact
+     *   comparison including NaN==NaN handling.
+     * @returns `true` if the instances have the same pose within tolerance.
+     */
+    samePoseAs(other: Instance, tolerance?: number | null): boolean;
+    /**
+     * Check if this instance has the same identity (track) as another instance.
+     *
+     * Mirrors Python `Instance.same_identity_as` (instance.py:755-770). Compares
+     * tracks by reference identity, not by name.
+     *
+     * @param other - Another instance to compare with.
+     * @returns `true` if both instances share the same `Track` object.
+     */
+    sameIdentityAs(other: Instance): boolean;
+    /**
+     * Check if this instance overlaps with another by bounding-box IoU.
+     *
+     * Mirrors Python `Instance.overlaps_with` (instance.py:772-830). Bounding
+     * boxes are computed over VISIBLE points; if either has none, returns false.
+     * If the boxes do not STRICTLY intersect on both axes (touching edges count
+     * as no overlap), returns false regardless of `iouThreshold` — this matches
+     * Python's `np.any(intersection_min >= intersection_max) -> False`
+     * short-circuit, which runs before the threshold comparison.
+     *
+     * @param other - Another instance to compare with.
+     * @param iouThreshold - Minimum IoU to count as overlapping (inclusive `>=`).
+     */
+    overlapsWith(other: Instance, iouThreshold?: number): boolean;
+    /**
+     * Get the bounding box of visible points.
+     *
+     * Mirrors Python `Instance.bounding_box` (instance.py:832-849).
+     *
+     * @returns `[[minX, minY], [maxX, maxY]]` over visible points, or `null` if
+     *   there are no visible points.
+     */
+    boundingBox(): [[number, number], [number, number]] | null;
+}
+declare class PredictedInstance extends Instance {
+    score: number;
+    constructor(options: {
+        points: PredictedPointsArray | Record<string, number[]>;
+        skeleton: Skeleton;
+        track?: Track | null;
+        score?: number;
+        trackingScore?: number;
+        fromPredicted?: PredictedInstance | null;
+    });
+    static fromArray(points: number[][], skeleton: Skeleton, score?: number): PredictedInstance;
+    static fromNumpy(options: {
+        pointsData: number[][];
+        skeleton: Skeleton;
+        track?: Track | null;
+        score?: number;
+        trackingScore?: number;
+    }): PredictedInstance;
+    static empty(options: {
+        skeleton: Skeleton;
+    }): PredictedInstance;
+    /**
+     * Build a PredictedInstance directly from reader point columns over
+     * `[start, end)`, without materializing a `Point[]`. Internal fast path for
+     * buildLabeledFrames; equivalent to `new PredictedInstance({ points:
+     * predictedPointsFromArray(slicePoints(...)) })`.
+     */
+    static _fromColumns(opts: {
+        columns: PointColumns;
+        start: number;
+        end: number;
+        skeleton: Skeleton;
+        track?: Track | null;
+        score?: number;
+        trackingScore?: number;
+        fromPredicted?: PredictedInstance | null;
+    }): PredictedInstance;
+    numpy(options?: {
+        scores?: boolean;
+        invisibleAsNaN?: boolean;
+    }): number[][];
+    toString(): string;
+}
+declare function pointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PointsArray;
+declare function predictedPointsFromDict(pointsDict: Record<string, number[]>, skeleton: Skeleton): PredictedPointsArray;
 
 /** Per-object metadata in a LabelImage. */
 interface LabelImageObjectInfo {
@@ -3408,4 +3492,4 @@ declare function toDict(labels: Labels, options?: {
 }): LabelsDict;
 declare function fromDict(data: LabelsDict): Labels;
 
-export { _findAnnotationLinkMatches as $, AUTO_VIDEO_MATCHER as A, BoundingBox as B, Centroid as C, DUPLICATE_MATCHER as D, Edge as E, FrameGroup as F, PATH_VIDEO_MATCHER as G, BASENAME_VIDEO_MATCHER as H, Instance as I, IMAGE_DEDUP_VIDEO_MATCHER as J, SHAPE_VIDEO_MATCHER as K, Labels as L, MergeError as M, Node as N, OVERLAP_SKELETON_MATCHER as O, PredictedInstance as P, setFsResolver as Q, ROI as R, Skeleton as S, Track as T, UserROI as U, Video as V, type FsResolver as W, type MergeStrategy as X, _annotationCentroidXy as Y, _findAnnotationMatches as Z, _relinkFromPredicted as _, Symmetry as a, type LabelImageOptions as a$, _resolveMergedIsNegative as a0, _registerCentroidFactory as a1, type Point as a2, type PredictedPoint as a3, type PointsArray as a4, type PredictedPointsArray as a5, type PointColumns as a6, pointsEmpty as a7, predictedPointsEmpty as a8, clonePoint as a9, _registerMaskFactory as aA, AnnotationType as aB, type Geometry as aC, type ROIOptions as aD, rasterizeGeometry as aE, encodeWkb as aF, decodeWkb as aG, PredictedROI as aH, encodeRle as aI, decodeRle as aJ, resizeNearest as aK, traceMaskContours as aL, groupRingsIntoPolygons as aM, type SegmentationMaskOptions as aN, type UserSegmentationMaskOptions as aO, UserSegmentationMask as aP, PredictedSegmentationMask as aQ, type BoundingBoxOptions as aR, UserBoundingBox as aS, PredictedBoundingBox as aT, normalizeCentroidSource as aU, getCentroidSkeleton as aV, CENTROID_SKELETON as aW, type CentroidOptions as aX, UserCentroid as aY, PredictedCentroid as aZ, type LabelImageObjectInfo as a_, pointsFromArray as aa, predictedPointsFromArray as ab, PointView as ac, pointsFromDict as ad, predictedPointsFromDict as ae, type NodeOrIndex as af, EXISTS_TTL_MS as ag, type CropOptions as ah, resolveCropRect as ai, type VideoBackendErrorKind as aj, type VideoBackendError as ak, SuggestionFrame as al, rodriguesTransformation as am, Camera as an, CameraGroup as ao, InstanceGroup as ap, RecordingSession as aq, injectSessionFrameResolver as ar, cloneRecordingSession as as, makeCameraFromDict as at, Identity as au, Embedding as av, Instance3D as aw, PredictedInstance3D as ax, LazyDataStore as ay, LazyFrameList as az, LabeledFrame as b, UserLabelImage as b0, PredictedLabelImage as b1, normalizeLabelIds as b2, type VideoFrame as b3, type GetFrameOptions as b4, type VideoBackend as b5, type LabelsDict as b6, toDict as b7, fromDict as b8, cropPoints as b9, uncropPoints as ba, type CropRect as bb, type FlatPoints as bc, type PointPairs as bd, cropFrame as be, detectGrayscale as bf, grayscaleFrame as bg, type FrameLike as bh, type RawFrame as bi, type Fill as bj, type RangeSource as bk, LabelsSet as c, LabelImage as d, SegmentationMask as e, SkeletonMatchMethod as f, InstanceMatchMethod as g, TrackMatchMethod as h, VideoMatchMethod as i, FrameStrategy as j, ErrorMode as k, SkeletonMatcher as l, InstanceMatcher as m, TrackMatcher as n, VideoMatcher as o, ConflictResolution as p, SkeletonMismatchError as q, MergeResult as r, MatchResult as s, MergeProgressBar as t, STRUCTURE_SKELETON_MATCHER as u, SUBSET_SKELETON_MATCHER as v, IOU_MATCHER as w, IDENTITY_INSTANCE_MATCHER as x, NAME_TRACK_MATCHER as y, IDENTITY_TRACK_MATCHER as z };
+export { _findAnnotationLinkMatches as $, AUTO_VIDEO_MATCHER as A, BoundingBox as B, Centroid as C, DUPLICATE_MATCHER as D, Edge as E, FrameGroup as F, PATH_VIDEO_MATCHER as G, BASENAME_VIDEO_MATCHER as H, Instance as I, IMAGE_DEDUP_VIDEO_MATCHER as J, SHAPE_VIDEO_MATCHER as K, Labels as L, MergeError as M, Node as N, OVERLAP_SKELETON_MATCHER as O, PredictedInstance as P, setFsResolver as Q, ROI as R, Skeleton as S, Track as T, UserROI as U, Video as V, type FsResolver as W, type MergeStrategy as X, _annotationCentroidXy as Y, _findAnnotationMatches as Z, _relinkFromPredicted as _, Symmetry as a, UserCentroid as a$, _resolveMergedIsNegative as a0, _registerCentroidFactory as a1, _registerBboxFactory as a2, type Point as a3, type PredictedPoint as a4, type PointsArray as a5, type PredictedPointsArray as a6, type PointColumns as a7, pointsEmpty as a8, predictedPointsEmpty as a9, LazyFrameList as aA, _registerMaskFactory as aB, AnnotationType as aC, type Geometry as aD, type ROIOptions as aE, rasterizeGeometry as aF, encodeWkb as aG, decodeWkb as aH, PredictedROI as aI, encodeRle as aJ, decodeRle as aK, resizeNearest as aL, traceMaskContours as aM, groupRingsIntoPolygons as aN, type SegmentationMaskOptions as aO, type UserSegmentationMaskOptions as aP, UserSegmentationMask as aQ, PredictedSegmentationMask as aR, type BboxPadding as aS, type BboxFromInstanceOptions as aT, type BoundingBoxOptions as aU, UserBoundingBox as aV, PredictedBoundingBox as aW, normalizeCentroidSource as aX, getCentroidSkeleton as aY, CENTROID_SKELETON as aZ, type CentroidOptions as a_, clonePoint as aa, pointsFromArray as ab, predictedPointsFromArray as ac, PointView as ad, pointsFromDict as ae, predictedPointsFromDict as af, type NodeOrIndex as ag, EXISTS_TTL_MS as ah, type CropOptions as ai, resolveCropRect as aj, type VideoBackendErrorKind as ak, type VideoBackendError as al, SuggestionFrame as am, rodriguesTransformation as an, Camera as ao, CameraGroup as ap, InstanceGroup as aq, RecordingSession as ar, injectSessionFrameResolver as as, cloneRecordingSession as at, makeCameraFromDict as au, Identity as av, Embedding as aw, Instance3D as ax, PredictedInstance3D as ay, LazyDataStore as az, LabeledFrame as b, PredictedCentroid as b0, type LabelImageObjectInfo as b1, type LabelImageOptions as b2, UserLabelImage as b3, PredictedLabelImage as b4, normalizeLabelIds as b5, type VideoFrame as b6, type GetFrameOptions as b7, type VideoBackend as b8, type LabelsDict as b9, toDict as ba, fromDict as bb, cropPoints as bc, uncropPoints as bd, type CropRect as be, type FlatPoints as bf, type PointPairs as bg, cropFrame as bh, detectGrayscale as bi, grayscaleFrame as bj, type FrameLike as bk, type RawFrame as bl, type Fill as bm, type RangeSource as bn, LabelsSet as c, LabelImage as d, SegmentationMask as e, SkeletonMatchMethod as f, InstanceMatchMethod as g, TrackMatchMethod as h, VideoMatchMethod as i, FrameStrategy as j, ErrorMode as k, SkeletonMatcher as l, InstanceMatcher as m, TrackMatcher as n, VideoMatcher as o, ConflictResolution as p, SkeletonMismatchError as q, MergeResult as r, MatchResult as s, MergeProgressBar as t, STRUCTURE_SKELETON_MATCHER as u, SUBSET_SKELETON_MATCHER as v, IOU_MATCHER as w, IDENTITY_INSTANCE_MATCHER as x, NAME_TRACK_MATCHER as y, IDENTITY_TRACK_MATCHER as z };

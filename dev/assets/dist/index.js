@@ -248,7 +248,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-WEHVW67L.js";
+} from "./chunk-42XNFRKC.js";
 import {
   Camera,
   CameraGroup,
@@ -265,6 +265,7 @@ import {
   Skeleton,
   Symmetry,
   Track,
+  _registerBboxFactory,
   _registerCentroidFactory,
   clonePoint,
   cloneRecordingSession,
@@ -277,7 +278,7 @@ import {
   predictedPointsFromArray,
   predictedPointsFromDict,
   rodriguesTransformation
-} from "./chunk-U5RJ2ZA2.js";
+} from "./chunk-HZLWQQBS.js";
 import {
   CLOUD_SCHEMES,
   DEFAULT_MAX_BYTES,
@@ -3518,6 +3519,7 @@ export {
   _annotationCentroidXy,
   _findAnnotationLinkMatches,
   _findAnnotationMatches,
+  _registerBboxFactory,
   _registerCentroidFactory,
   _registerMaskFactory,
   _relinkFromPredicted,

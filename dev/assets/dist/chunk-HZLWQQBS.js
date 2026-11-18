@@ -3,6 +3,10 @@ var _centroidFactory = null;
 function _registerCentroidFactory(factory) {
   _centroidFactory = factory;
 }
+var _bboxFactory = null;
+function _registerBboxFactory(factory) {
+  _bboxFactory = factory;
+}
 var Track = class {
   name;
   constructor(name = "") {
@@ -392,6 +396,26 @@ var Instance = class _Instance {
       );
     }
     return _centroidFactory(this, { method, node });
+  }
+  /**
+   * Create an axis-aligned bounding box from this instance.
+   *
+   * `mode: "tight"` (default) fits the visible points; `mode: "centered"`
+   * builds a fixed-`size` box around the instance's centroid. `padding`
+   * inflates the box (scalar or `[px, py]`). A `PredictedInstance` yields a
+   * `PredictedBoundingBox` with its `score`, anything else a
+   * `UserBoundingBox`; the box links back via `box.instance`. Mirrors Python
+   * `Instance.to_bbox` (oriented boxes aren't supported yet).
+   *
+   * @see BoundingBox.fromInstance for the full option list.
+   */
+  toBbox(options) {
+    if (!_bboxFactory) {
+      throw new Error(
+        "BoundingBox not available. Import bbox.ts before calling toBbox()."
+      );
+    }
+    return _bboxFactory(this, options);
   }
   get isEmpty() {
     for (let i = 0; i < this._n; i += 1) {
@@ -1823,6 +1847,7 @@ function resolveIdentity(record, identities) {
 
 export {
   _registerCentroidFactory,
+  _registerBboxFactory,
   Track,
   pointsEmpty,
   predictedPointsEmpty,

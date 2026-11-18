@@ -12,6 +12,7 @@ import {
   Skeleton,
   Symmetry,
   Track,
+  _registerBboxFactory,
   _registerCentroidFactory,
   attrToNumber,
   attrToString,
@@ -36,7 +37,7 @@ import {
   resolveIdentity,
   resolveVideoFilename,
   sessionsReadError
-} from "./chunk-U5RJ2ZA2.js";
+} from "./chunk-HZLWQQBS.js";
 import {
   RemoteIOError,
   fetchRetrying,
@@ -831,6 +832,10 @@ var PredictedROI = class extends ROI {
 };
 
 // src/model/bbox.ts
+function applyPadding(x1, y1, x2, y2, padding) {
+  const [px, py] = Array.isArray(padding) ? padding : [padding, padding];
+  return [x1 - px, y1 - py, x2 + px, y2 + py];
+}
 var BoundingBox = class _BoundingBox {
   x1;
   y1;
@@ -979,7 +984,178 @@ var BoundingBox = class _BoundingBox {
   toMask(height, width) {
     return this.toRoi().toMask(height, width);
   }
+  /** Whether this box is degenerate (any corner coordinate is NaN). */
+  get isEmpty() {
+    return Number.isNaN(this.x1) || Number.isNaN(this.y1) || Number.isNaN(this.x2) || Number.isNaN(this.y2);
+  }
+  /**
+   * Return a new box inflated outward by `padding`.
+   *
+   * The result has the same class as this box (`UserBoundingBox` or
+   * `PredictedBoundingBox`) and keeps `angle`, `score` and all metadata. For a
+   * rotated box the pre-rotation extent is inflated about the center, so the
+   * angle is unchanged. Mirrors Python `BoundingBox.pad`.
+   */
+  pad(padding) {
+    const [x1, y1, x2, y2] = applyPadding(
+      this.x1,
+      this.y1,
+      this.x2,
+      this.y2,
+      padding
+    );
+    const opts = {
+      x1,
+      y1,
+      x2,
+      y2,
+      angle: this.angle,
+      track: this.track,
+      trackingScore: this.trackingScore,
+      instance: this.instance,
+      category: this.category,
+      name: this.name,
+      source: this.source
+    };
+    const out = this instanceof PredictedBoundingBox ? new PredictedBoundingBox({ ...opts, score: this.score }) : new UserBoundingBox(opts);
+    copyDetectionMetadata(this, out);
+    out._instanceIdx = this._instanceIdx;
+    return out;
+  }
+  /**
+   * Convert to a centroid at this box's center.
+   *
+   * A `PredictedBoundingBox` yields a `PredictedCentroid` carrying its
+   * `score`; any other box yields a `UserCentroid`. Metadata is inherited. A
+   * degenerate box gives a NaN centroid, or throws with `errorOnEmpty`.
+   * Mirrors Python `BoundingBox.to_centroid`.
+   */
+  toCentroid(options) {
+    let x = Number.NaN;
+    let y = Number.NaN;
+    if (this.isEmpty) {
+      if (options?.errorOnEmpty) {
+        throw new Error(
+          "Cannot compute centroid of a degenerate (NaN) bounding box."
+        );
+      }
+    } else {
+      [x, y] = this.centroidXy;
+    }
+    const opts = {
+      x,
+      y,
+      track: this.track,
+      trackingScore: this.trackingScore,
+      instance: this.instance,
+      category: this.category,
+      name: this.name,
+      source: this.source
+    };
+    const out = this instanceof PredictedBoundingBox ? new PredictedCentroid({ ...opts, score: this.score }) : new UserCentroid(opts);
+    copyDetectionMetadata(this, out);
+    out._instanceIdx = this._instanceIdx;
+    return out;
+  }
+  /**
+   * Create an axis-aligned bounding box from a pose instance.
+   *
+   * A `PredictedInstance` yields a `PredictedBoundingBox` carrying its
+   * `score`; any other instance yields a `UserBoundingBox`. The box links back
+   * to the instance (`box.instance`) and inherits its track, tracking score,
+   * identity and category. With nothing to fit it returns a box with NaN
+   * corners (see {@link BoundingBox.isEmpty}), or throws with `errorOnEmpty`.
+   *
+   * Mirrors Python `Instance.to_bbox`, except that oriented boxes
+   * (`rotated=True` there) aren't supported yet: the result is always
+   * axis-aligned.
+   */
+  static fromInstance(instance, options) {
+    const mode = options?.mode ?? "tight";
+    const padding = options?.padding ?? 0;
+    const empty = (reason) => {
+      if (options?.errorOnEmpty) throw new Error(reason);
+      return [Number.NaN, Number.NaN, Number.NaN, Number.NaN];
+    };
+    let corners;
+    if (mode === "tight") {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      let any = false;
+      for (const p of instance.points) {
+        const [px, py] = p.xy;
+        if (!p.visible || Number.isNaN(px) || Number.isNaN(py)) continue;
+        any = true;
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+      }
+      corners = any ? applyPadding(minX, minY, maxX, maxY, padding) : empty("No visible points to compute bounding box.");
+    } else if (mode === "centered") {
+      const size = options?.size;
+      if (size === void 0 || size === null) {
+        throw new Error("'size' is required for mode 'centered'.");
+      }
+      const center = centerOf(instance, options ?? {});
+      if (center === null) {
+        corners = empty("No visible points to compute the box center.");
+      } else {
+        const [w, h] = Array.isArray(size) ? size : [size, size];
+        const [cx, cy] = center;
+        corners = applyPadding(
+          cx - w / 2,
+          cy - h / 2,
+          cx + w / 2,
+          cy + h / 2,
+          padding
+        );
+      }
+    } else {
+      throw new Error(
+        `Unknown mode ${JSON.stringify(mode)}. Expected 'tight' or 'centered'.`
+      );
+    }
+    const [x1, y1, x2, y2] = corners;
+    const opts = {
+      x1,
+      y1,
+      x2,
+      y2,
+      track: instance.track ?? null,
+      trackingScore: instance.trackingScore ?? null,
+      instance,
+      category: instance.category ?? ""
+    };
+    const out = instance instanceof PredictedInstance ? new PredictedBoundingBox({ ...opts, score: instance.score }) : new UserBoundingBox(opts);
+    copyDetectionMetadata(instance, out);
+    return out;
+  }
 };
+function copyDetectionMetadata(from, to) {
+  to.identity = from.identity ?? null;
+  to.identityScore = from.identityScore ?? null;
+  to.identityEmbedding = from.identityEmbedding ?? null;
+  to.categoryScore = from.categoryScore ?? null;
+  to.categoryEmbedding = from.categoryEmbedding ?? null;
+}
+function centerOf(instance, options) {
+  if (instance.isEmpty) return null;
+  const method = normalizeCentroidSource(
+    options.centerMethod ?? "center_of_mass"
+  );
+  if (method === "anchor" && options.node !== void 0) {
+    const idx = typeof options.node === "string" ? instance.skeleton.index(options.node) : options.node;
+    const p = instance.points[idx];
+    if (p && (!p.visible || Number.isNaN(p.xy[0]) || Number.isNaN(p.xy[1]))) {
+      return null;
+    }
+  }
+  const c = Centroid.fromInstance(instance, { method, node: options.node });
+  return [c.x, c.y];
+}
 var UserBoundingBox = class extends BoundingBox {
 };
 var PredictedBoundingBox = class extends BoundingBox {
@@ -992,6 +1168,9 @@ var PredictedBoundingBox = class extends BoundingBox {
     return true;
   }
 };
+_registerBboxFactory(
+  (instance, options) => BoundingBox.fromInstance(instance, options)
+);
 
 // src/model/mask.ts
 function encodeRle(mask, height, width) {
