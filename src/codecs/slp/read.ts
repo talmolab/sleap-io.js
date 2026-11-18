@@ -89,6 +89,7 @@ import {
 } from "../../model/label-image.js";
 import type { LabelImageObjectInfo } from "../../model/label-image.js";
 import { inflate } from "pako";
+import { checkPointSpans, columnLength } from "./point-spans.js";
 
 const textDecoder = new TextDecoder();
 
@@ -133,6 +134,16 @@ export async function readSlp(
      * same. Reporting is a pure side effect and never alters the loaded Labels.
      */
     onProgress?: (current: number, total: number, message?: string) => void;
+    /**
+     * When an instance's point span doesn't match its skeleton's node count,
+     * the read throws {@link SlpPointSpanError} (like Python sleap-io). Set this
+     * to recover files older sleap-io.js versions wrote: shifted spans are
+     * rebuilt when that's provably exact (the point rows are intact: no gaps or
+     * overlaps, one row per node), and an instance whose rows are provably its
+     * own but sit under the wrong skeleton is loaded as stored, with a
+     * `console.warn`. Anything else still throws. Default `false`. See #230.
+     */
+    repairPointSpans?: boolean;
   },
 ): Promise<Labels> {
   // `total` is derived from the stage list (single source of truth) so the
@@ -215,6 +226,16 @@ export async function readSlp(
       file.get("pred_points"),
       emscripten,
     );
+    checkPointSpans({
+      framesData,
+      instancesData,
+      skeletons,
+      videos,
+      pointsRowCount: columnLength(pointsData),
+      predPointsRowCount: columnLength(predPointsData),
+      repair: options?.repairPointSpans ?? false,
+      labelsPath,
+    });
 
     const labeledFrames = buildLabeledFrames({
       framesData,
@@ -441,6 +462,16 @@ export async function readSlpLazy(
      * pure side effect and never alters the loaded Labels.
      */
     onProgress?: (current: number, total: number, message?: string) => void;
+    /**
+     * When an instance's point span doesn't match its skeleton's node count,
+     * the read throws {@link SlpPointSpanError} (like Python sleap-io). Set this
+     * to recover files older sleap-io.js versions wrote: shifted spans are
+     * rebuilt when that's provably exact (the point rows are intact: no gaps or
+     * overlaps, one row per node), and an instance whose rows are provably its
+     * own but sit under the wrong skeleton is loaded as stored, with a
+     * `console.warn`. Anything else still throws. Default `false`. See #230.
+     */
+    repairPointSpans?: boolean;
   },
 ): Promise<Labels> {
   // `total` is derived from the stage list (single source of truth) so the
@@ -518,6 +549,16 @@ export async function readSlpLazy(
       file.get("pred_points"),
       emscripten,
     );
+    checkPointSpans({
+      framesData,
+      instancesData,
+      skeletons,
+      videos,
+      pointsRowCount: columnLength(pointsData),
+      predPointsRowCount: columnLength(predPointsData),
+      repair: options?.repairPointSpans ?? false,
+      labelsPath,
+    });
 
     // Read negative frames (raw video ids; the store resolves them per frame)
     const negativeFramesDs = file.get("negative_frames");

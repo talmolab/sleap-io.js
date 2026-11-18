@@ -327,6 +327,47 @@ enabled, the videos stage additionally reports `"Opening videos (i/n)"` as each
 embedded video backend is opened. Reporting is a pure side effect and never
 changes the loaded `Labels`.
 
+### Files with broken point spans
+
+Each instance in an SLP file points at its coordinates with a row range in the
+`points` (or `pred_points`) table, and row `k` of that range is node `k`. If a
+range's length differs from the skeleton's node count, the points can't be put
+on the right nodes, so every reader throws `SlpPointSpanError`, as Python
+sleap-io does. The error names the first bad instance (its row, frame and
+video) and how many instances are affected.
+
+Older sleap-io.js versions wrote two kinds of such files, and
+`repairPointSpans: true` opens both:
+
+- **Shifted ranges** (for example 16 and 18 rows for a 17-node skeleton) whose
+  point rows are intact. #230 first traced these to a ≤0.5.4 off-by-one; #231
+  found its example came from the `instances` table being written as float32.
+  The ranges are rebuilt exactly, but only when that's provable: they cover the
+  point table with no gaps or overlaps, and the table has exactly one row per
+  node.
+- **An instance saved with skeleton 0** because its own skeleton wasn't in
+  `labels.skeletons`. Its rows are its own, so they're loaded as stored, with a
+  warning, the same as before this check; check those instances' nodes.
+
+Anything else still throws. After a rebuild, saving writes a file that reads
+cleanly. Instances loaded as stored still have the wrong number of points for
+their skeleton, so fix or remove them before saving. The writers now refuse to save an instance whose skeleton isn't in
+`labels.skeletons`, as Python sleap-io does; add it there, or add frames with
+`labels.append()`, which registers it.
+
+```ts
+import { loadSlp, SlpPointSpanError } from "@talmolab/sleap-io.js";
+
+let labels;
+try {
+  labels = await loadSlp("dataset.slp");
+} catch (e) {
+  if (!(e instanceof SlpPointSpanError)) throw e;
+  console.warn(e.message);
+  labels = await loadSlp("dataset.slp", { repairPointSpans: true });
+}
+```
+
 ## Saving with Embedded Frames
 
 Embed video frames directly into the SLP file:

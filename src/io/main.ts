@@ -2,6 +2,7 @@ import type { Labels } from "../model/labels.js";
 import { LabelsSet } from "../model/labels-set.js";
 import { Video } from "../model/video.js";
 import { readSlp, readSlpLazy } from "../codecs/slp/read.js";
+import { SlpPointSpanError } from "../codecs/slp/point-spans.js";
 import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
 import { writeSlp, saveSlpToBytes } from "../codecs/slp/write.js";
 import { createVideoBackend, type VideoBackendType } from "../video/factory.js";
@@ -61,6 +62,13 @@ export async function loadSlp(
     openVideos?: boolean;
     h5?: OpenH5Options;
     lazy?: boolean;
+    /**
+     * Recover files whose instance point spans don't match their skeleton's
+     * node count (written by older sleap-io.js versions) instead of throwing
+     * `SlpPointSpanError`, when that's provably safe. Default `false`. See
+     * `readSlp`.
+     */
+    repairPointSpans?: boolean;
     onProgress?: (current: number, total: number, message?: string) => void;
   },
 ): Promise<Labels> {
@@ -95,8 +103,12 @@ export async function loadSlp(
           openVideos,
           onProgress: options?.onProgress,
           lazy,
+          repairPointSpans: options?.repairPointSpans,
         });
       } catch (e) {
+        // A bad file is not a worker failure: the main-thread reader would
+        // reject it the same way, so don't read it twice.
+        if (e instanceof SlpPointSpanError) throw e;
         if (streamMode === "auto") {
           // Redact: the raw error can embed ?token= / userinfo (a remote URL).
           console.warn(
@@ -116,12 +128,14 @@ export async function loadSlp(
       openVideos,
       h5: options?.h5,
       onProgress: options?.onProgress,
+      repairPointSpans: options?.repairPointSpans,
     });
   }
   return readSlp(source, {
     openVideos,
     h5: options?.h5,
     onProgress: options?.onProgress,
+    repairPointSpans: options?.repairPointSpans,
   });
 }
 

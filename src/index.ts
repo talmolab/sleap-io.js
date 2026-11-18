@@ -135,6 +135,12 @@ export {
 // Streaming SLP reader (uses Web Worker, recommended for browser)
 export { readSlpStreaming } from "./codecs/slp/read-streaming.js";
 
+// Instance point-span validation on read (issue #230).
+export {
+  SlpPointSpanError,
+  type PointSpanMismatch,
+} from "./codecs/slp/point-spans.js";
+
 // Merge/matching public API (issue #90).
 // Named re-exports (not `export *`) so the underscore-prefixed internal helpers
 // and other module-private utilities in matching.ts stay private.
