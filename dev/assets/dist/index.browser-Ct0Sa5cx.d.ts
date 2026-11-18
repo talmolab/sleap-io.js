@@ -95,14 +95,50 @@ declare function planDecodeRange(samplesLength: number, keyframeIndices: number[
     end: number;
 };
 /**
+ * How many frames BEFORE the target one decode keeps, so stepping back a few
+ * frames after a jump is still a cache hit. A fixed count, deliberately not
+ * derived from `cacheSize` (issue #242).
+ */
+declare const CACHE_WINDOW_BEHIND = 10;
+/**
+ * How many recently viewed frames (frames a `getFrame` returned) the cache
+ * protects from eviction: a quarter of the cache. Speculative neighbours from a
+ * decode are evicted before these, so a bigger cache retains more past seeks
+ * (issue #242). The rest of the cache holds the current decode window.
+ */
+declare function viewedFrameCapacity(cacheSize: number): number;
+/**
  * The sub-range of `[start, end]` whose decoded frames are worth keeping in the
- * cache — `target ± cacheSize/2`, clamped to `[start, end]`. Frames decoded only
- * to satisfy the delta chain (outside this window) are discarded, not cached.
+ * cache: up to {@link CACHE_WINDOW_BEHIND} frames before `target`, the target,
+ * and everything decoded after it (the lookahead), clamped to `[start, end]`.
+ * Frames decoded only to satisfy the delta chain (outside this window) are
+ * discarded, not cached.
+ *
+ * The window does NOT grow with `cacheSize` (issue #242: it used to be
+ * `target ± cacheSize/2`, so one decode filled the whole cache and every seek
+ * evicted the previous one). `cacheSize` only caps it: the window never takes
+ * more than `cacheSize - viewedFrameCapacity(cacheSize)` slots, trimming the
+ * frames behind the target first, then the far end of the lookahead. The target
+ * itself is always kept.
  */
 declare function computeCacheWindow(start: number, end: number, target: number, cacheSize: number): {
     cacheStart: number;
     cacheEnd: number;
 };
+/**
+ * Record that `frame` was shown to a caller: move it to the newest end of the
+ * `viewed` set (insertion order = least → most recent) and drop the oldest
+ * entries beyond `capacity`. Dropped frames stay cached; they just lose their
+ * protection from eviction.
+ */
+declare function markViewed(viewed: Set<number>, frame: number, capacity: number): void;
+/**
+ * The cache key to evict when the cache is full: the least recently used frame
+ * that is NOT protected (not in `protectedFrames`), else the least recently used
+ * frame overall. `keysInLruOrder` is the cache `Map`'s keys (oldest first).
+ * Returns `undefined` for an empty cache.
+ */
+declare function pickEvictionVictim(keysInLruOrder: Iterable<number>, protectedFrames: ReadonlySet<number>): number | undefined;
 /**
  * The samples that must be FED to the decoder (in decode order) to decode the
  * presentation range `[start, end]`. Because presentation and decode order differ
@@ -150,6 +186,12 @@ declare class Mp4BoxVideoBackend implements VideoBackend {
     private samples;
     private keyframeIndices;
     private cache;
+    /**
+     * Frames recently returned by {@link getFrame} (oldest first), capped at
+     * {@link viewedFrameCapacity}. Eviction skips these while it can, so jumping
+     * back to a frame the user already saw stays a cache hit (issue #242).
+     */
+    private viewed;
     private cacheSize;
     private lookahead;
     private decoder;
@@ -183,6 +225,13 @@ declare class Mp4BoxVideoBackend implements VideoBackend {
         filename?: string;
     });
     getFrame(frameIndex: number, opts?: GetFrameOptions): Promise<VideoFrame | null>;
+    /**
+     * Return a cached frame to a caller: touch it as most-recently-used and, for
+     * a non-pinned read, mark it viewed so later decode windows don't evict it.
+     * Pinned (batch/embedding) reads are not the user looking at a frame, so they
+     * don't take protection away from frames the user actually saw.
+     */
+    private takeFromCache;
     /**
      * Proactively decode a run of frames AHEAD of `fromFrame` into the cache so
      * sequential playback finds cache hits instead of blocking on the periodic
@@ -370,6 +419,11 @@ declare class WorkerMp4BoxBackend implements VideoBackend {
     private keyframeIndices;
     private samplesLength;
     private cache;
+    /**
+     * Frames recently returned by {@link getFrame}, protected from eviction (see
+     * {@link viewedFrameCapacity}; issue #242).
+     */
+    private viewed;
     private cacheSize;
     private lookahead;
     private reqCounter;
@@ -392,6 +446,12 @@ declare class WorkerMp4BoxBackend implements VideoBackend {
     private onBitmap;
     private onDecodeSettled;
     getFrame(frameIndex: number, opts?: GetFrameOptions): Promise<VideoFrame | null>;
+    /**
+     * Bookkeeping for a frame handed to a caller: if it is (still) the cached
+     * bitmap, touch it as most-recently-used and, for a non-pinned read, mark it
+     * viewed so later decode windows evict speculative neighbours first.
+     */
+    private noteReturned;
     decodeAhead(fromFrame: number, opts?: GetFrameOptions): void;
     nearestKeyframe(frameIndex: number): number;
     getFrameTimes(): Promise<number[] | null>;
@@ -406,7 +466,8 @@ declare class WorkerMp4BoxBackend implements VideoBackend {
  * formats beyond MP4: WebM, Matroska, Ogg, MOV, MPEG-TS.
  *
  * Uses timestamp-based frame access internally, with a frame time index
- * built on initialization by iterating all packets.
+ * built on initialization from packet metadata (no payload reads), sorted
+ * into presentation order.
  */
 
 interface MediaBunnyOptions {
@@ -4212,4 +4273,4 @@ declare class SlpPointSpanError extends Error {
     });
 }
 
-export { openStreamingH5 as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, type CreateVideoBackendOptions as J, CropVideoBackend as K, LibavH264Decoder as L, type CropWrapOptions as M, GrayscaleVideoBackend as N, type GrayscaleWrapOptions as O, type PaletteName as P, parseGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, urlFromConfirmation as T, UnsupportedVideoFormatError as U, type VideoOptions as V, checkDownloadHost as W, openGdrive as X, DEFAULT_MAX_BYTES as Y, StreamingH5File as Z, StreamingH5Writer as _, type RenderOptions as a, type SlpWriteOptions as a$, openH5Worker as a0, isStreamingSupported as a1, isRangeSource as a2, serviceRangeBridge as a3, serviceWriteBridge as a4, serviceTruncateBridge as a5, type StreamingH5Source as a6, type RangeSource as a7, type RangeSink as a8, readSlpStreaming as a9, MediaBunnyVideoBackend as aA, type WebDemuxerConfig as aB, configureWebDemuxer as aC, isWebDemuxerConfigured as aD, type AviVideoOptions as aE, AviVideoBackend as aF, StreamingHdf5VideoBackend as aG, type ImageVideoOptions as aH, computePrefetchWindow as aI, ImageVideoBackend as aJ, loadSlp as aK, saveSlp as aL, loadAnalysisH5 as aM, saveAnalysisH5 as aN, saveAnalysisH5ToBytes as aO, loadNwb as aP, loadSlpSet as aQ, saveSlpSet as aR, loadVideo as aS, loadLabelImages as aT, setLabelImageFileReader as aU, type PagesAs as aV, type LoadLabelImagesOptions as aW, type LabelImageFileReader as aX, saveSlpToBytes as aY, ExportCancelled as aZ, type EmbedOption as a_, SlpPointSpanError as aa, type PointSpanMismatch as ab, Mp4BoxVideoBackend as ac, type Mp4Sample as ad, type SerializableDecoderConfig as ae, type Mp4ParseResult as af, type FeedEntry as ag, type ReadRegion as ah, findKeyframeBefore as ai, planDecodeRange as aj, computeCacheWindow as ak, selectFeedSamples as al, planReadRegions as am, readSamplesByDecodeOrder as an, nextUncached as ao, shouldDecodeAhead as ap, type ByteSourceDescriptor as aq, type WorkerInMessage as ar, type WorkerOutMessage as as, MP4_DECODE_WORKER_CODE as at, createDecodeWorker as au, isWorkerDecodeAvailable as av, type WorkerLike as aw, type WorkerBackendParams as ax, WorkerMp4BoxBackend as ay, type MediaBunnyOptions as az, type RGB as b, fetchRetrying as b$, saveSlpStructureToBytes as b0, openSlpWriter as b1, SlpStreamWriter as b2, saveSlpMergedFromStores as b3, saveSlpMergedToSink as b4, type SlpWriteHeader as b5, type AppendStoreOptions as b6, type SlpWriteSink as b7, type MergeStoresOptions as b8, buildSerializableEmbedPlan as b9, type InPlaceWritable as bA, type DatasetMetaLike as bB, isAnalysisH5File as bC, readNwb as bD, isNwbFile as bE, labelsToCsv as bF, saveLabelsCsv as bG, type CsvExportOptions as bH, URL_SCHEMES as bI, CLOUD_SCHEMES as bJ, GDRIVE_HOSTS as bK, SENSITIVE_HEADERS as bL, SENSITIVE_QUERY_PARAMS as bM, RETRYABLE_STATUSES as bN, isUrl as bO, isGdriveUrl as bP, redactUrl as bQ, redactedCauseSummary as bR, RemoteIOError as bS, type ResolvedUrl as bT, resolveUrl as bU, statusToMessage as bV, raiseRemote as bW, identityHeaders as bX, stripCrossOriginHeaders as bY, withRetries as bZ, parseRetryAfterMs as b_, type EmbeddedVideoAttrs as ba, type SerializableEmbedEntry as bb, type SerializableEncodeEntry as bc, type SerializableEmbedPlan as bd, appendEncodedVideos as be, type AppendEncodedVideosOptions as bf, type EncodeFramePayload as bg, type EncodedVideoSink as bh, type ExternalFrameReader as bi, buildLabelTableRows as bj, buildLabelTableUpdate as bk, buildMetadataJson as bl, buildTracksJson as bm, buildSuggestionsJson as bn, buildVideoSignatures as bo, buildExpectedSidecars as bp, checkInPlaceWritable as bq, onDiskTableFromMeta as br, writeLabelTablesInPlace as bs, type LabelTable as bt, type LabelTableRows as bu, type LabelTableUpdate as bv, type OnDiskMember as bw, type OnDiskTable as bx, type OnDiskTables as by, type OnDiskSidecars as bz, type RawLabelImage as c, drawTriangle as c$, headOrRangeProbe as c0, type GeoJSONFeature as c1, type GeoJSONFeatureCollection as c2, roisToGeoJSON as c3, roisFromGeoJSON as c4, writeGeoJSON as c5, readGeoJSON as c6, type CocoCategory as c7, type CocoImage as c8, type CocoRle as c9, type ReadDlcProjectOptions as cA, type DlcDataframe as cB, toNumpy as cC, fromNumpy as cD, labelsFromNumpy as cE, decodeYamlSkeleton as cF, encodeYamlSkeleton as cG, readSkeletonJson as cH, writeSkeletonJson as cI, readTrainingConfigSkeletons as cJ, readTrainingConfigSkeleton as cK, isTrainingConfig as cL, type RGBA as cM, type ColorSpec as cN, type ColorScheme as cO, type MarkerShape as cP, type Overlay as cQ, type VideoOverlay as cR, NAMED_COLORS as cS, PALETTES as cT, getPalette as cU, resolveColor as cV, rgbToCSS as cW, determineColorScheme as cX, drawCircle as cY, drawSquare as cZ, drawDiamond as c_, type CocoSegmentation as ca, type CocoAnnotation as cb, type CocoJson as cc, isCocoData as cd, parseCocoJson as ce, createSkeletonFromCategory as cf, decodeKeypoints as cg, decodeCompressedRleCounts as ch, decodeCocoRle as ci, decodeSegmentation as cj, readCoco as ck, readCocoSet as cl, readDlc as cm, readDlcProject as cn, isDlcData as co, parseDlcCrop as cp, looksLikeDlcConfig as cq, attachConfigSkeleton as cr, videoSetsStemMap as cs, extractFrameIndex as ct, resolveConfig as cu, setSourceVideo as cv, findProjectCsvs as cw, resolveProjectConfigPath as cx, readDlcDataframe as cy, type ReadDlcOptions as cz, configureLibavDecoder as d, drawCross as d0, drawTrails as d1, getMarkerFunction as d2, MARKER_FUNCTIONS as d3, type DrawTrailsOptions as d4, resolveTrailNode as d5, computeTrails as d6, nTrailPaletteColors as d7, collectTracks as d8, type TrailTarget as d9, type Trail as da, RenderContext as db, InstanceContext as dc, drawMasks as dd, drawLabelImage as de, warn as df, isDlcProjectPath as dg, readDlcConfig as dh, discoverConfig as di, clampAlpha as dj, pickColor as dk, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };
+export { openStreamingH5 as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, type CreateVideoBackendOptions as J, CropVideoBackend as K, LibavH264Decoder as L, type CropWrapOptions as M, GrayscaleVideoBackend as N, type GrayscaleWrapOptions as O, type PaletteName as P, parseGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, urlFromConfirmation as T, UnsupportedVideoFormatError as U, type VideoOptions as V, checkDownloadHost as W, openGdrive as X, DEFAULT_MAX_BYTES as Y, StreamingH5File as Z, StreamingH5Writer as _, type RenderOptions as a, type LabelImageFileReader as a$, openH5Worker as a0, isStreamingSupported as a1, isRangeSource as a2, serviceRangeBridge as a3, serviceWriteBridge as a4, serviceTruncateBridge as a5, type StreamingH5Source as a6, type RangeSource as a7, type RangeSink as a8, readSlpStreaming as a9, type WorkerLike as aA, type WorkerBackendParams as aB, WorkerMp4BoxBackend as aC, type MediaBunnyOptions as aD, MediaBunnyVideoBackend as aE, type WebDemuxerConfig as aF, configureWebDemuxer as aG, isWebDemuxerConfigured as aH, type AviVideoOptions as aI, AviVideoBackend as aJ, StreamingHdf5VideoBackend as aK, type ImageVideoOptions as aL, computePrefetchWindow as aM, ImageVideoBackend as aN, loadSlp as aO, saveSlp as aP, loadAnalysisH5 as aQ, saveAnalysisH5 as aR, saveAnalysisH5ToBytes as aS, loadNwb as aT, loadSlpSet as aU, saveSlpSet as aV, loadVideo as aW, loadLabelImages as aX, setLabelImageFileReader as aY, type PagesAs as aZ, type LoadLabelImagesOptions as a_, SlpPointSpanError as aa, type PointSpanMismatch as ab, Mp4BoxVideoBackend as ac, type Mp4Sample as ad, type SerializableDecoderConfig as ae, type Mp4ParseResult as af, type FeedEntry as ag, type ReadRegion as ah, findKeyframeBefore as ai, planDecodeRange as aj, CACHE_WINDOW_BEHIND as ak, viewedFrameCapacity as al, computeCacheWindow as am, markViewed as an, pickEvictionVictim as ao, selectFeedSamples as ap, planReadRegions as aq, readSamplesByDecodeOrder as ar, nextUncached as as, shouldDecodeAhead as at, type ByteSourceDescriptor as au, type WorkerInMessage as av, type WorkerOutMessage as aw, MP4_DECODE_WORKER_CODE as ax, createDecodeWorker as ay, isWorkerDecodeAvailable as az, type RGB as b, identityHeaders as b$, saveSlpToBytes as b0, ExportCancelled as b1, type EmbedOption as b2, type SlpWriteOptions as b3, saveSlpStructureToBytes as b4, openSlpWriter as b5, SlpStreamWriter as b6, saveSlpMergedFromStores as b7, saveSlpMergedToSink as b8, type SlpWriteHeader as b9, type OnDiskMember as bA, type OnDiskTable as bB, type OnDiskTables as bC, type OnDiskSidecars as bD, type InPlaceWritable as bE, type DatasetMetaLike as bF, isAnalysisH5File as bG, readNwb as bH, isNwbFile as bI, labelsToCsv as bJ, saveLabelsCsv as bK, type CsvExportOptions as bL, URL_SCHEMES as bM, CLOUD_SCHEMES as bN, GDRIVE_HOSTS as bO, SENSITIVE_HEADERS as bP, SENSITIVE_QUERY_PARAMS as bQ, RETRYABLE_STATUSES as bR, isUrl as bS, isGdriveUrl as bT, redactUrl as bU, redactedCauseSummary as bV, RemoteIOError as bW, type ResolvedUrl as bX, resolveUrl as bY, statusToMessage as bZ, raiseRemote as b_, type AppendStoreOptions as ba, type SlpWriteSink as bb, type MergeStoresOptions as bc, buildSerializableEmbedPlan as bd, type EmbeddedVideoAttrs as be, type SerializableEmbedEntry as bf, type SerializableEncodeEntry as bg, type SerializableEmbedPlan as bh, appendEncodedVideos as bi, type AppendEncodedVideosOptions as bj, type EncodeFramePayload as bk, type EncodedVideoSink as bl, type ExternalFrameReader as bm, buildLabelTableRows as bn, buildLabelTableUpdate as bo, buildMetadataJson as bp, buildTracksJson as bq, buildSuggestionsJson as br, buildVideoSignatures as bs, buildExpectedSidecars as bt, checkInPlaceWritable as bu, onDiskTableFromMeta as bv, writeLabelTablesInPlace as bw, type LabelTable as bx, type LabelTableRows as by, type LabelTableUpdate as bz, type RawLabelImage as c, determineColorScheme as c$, stripCrossOriginHeaders as c0, withRetries as c1, parseRetryAfterMs as c2, fetchRetrying as c3, headOrRangeProbe as c4, type GeoJSONFeature as c5, type GeoJSONFeatureCollection as c6, roisToGeoJSON as c7, roisFromGeoJSON as c8, writeGeoJSON as c9, findProjectCsvs as cA, resolveProjectConfigPath as cB, readDlcDataframe as cC, type ReadDlcOptions as cD, type ReadDlcProjectOptions as cE, type DlcDataframe as cF, toNumpy as cG, fromNumpy as cH, labelsFromNumpy as cI, decodeYamlSkeleton as cJ, encodeYamlSkeleton as cK, readSkeletonJson as cL, writeSkeletonJson as cM, readTrainingConfigSkeletons as cN, readTrainingConfigSkeleton as cO, isTrainingConfig as cP, type RGBA as cQ, type ColorSpec as cR, type ColorScheme as cS, type MarkerShape as cT, type Overlay as cU, type VideoOverlay as cV, NAMED_COLORS as cW, PALETTES as cX, getPalette as cY, resolveColor as cZ, rgbToCSS as c_, readGeoJSON as ca, type CocoCategory as cb, type CocoImage as cc, type CocoRle as cd, type CocoSegmentation as ce, type CocoAnnotation as cf, type CocoJson as cg, isCocoData as ch, parseCocoJson as ci, createSkeletonFromCategory as cj, decodeKeypoints as ck, decodeCompressedRleCounts as cl, decodeCocoRle as cm, decodeSegmentation as cn, readCoco as co, readCocoSet as cp, readDlc as cq, readDlcProject as cr, isDlcData as cs, parseDlcCrop as ct, looksLikeDlcConfig as cu, attachConfigSkeleton as cv, videoSetsStemMap as cw, extractFrameIndex as cx, resolveConfig as cy, setSourceVideo as cz, configureLibavDecoder as d, drawCircle as d0, drawSquare as d1, drawDiamond as d2, drawTriangle as d3, drawCross as d4, drawTrails as d5, getMarkerFunction as d6, MARKER_FUNCTIONS as d7, type DrawTrailsOptions as d8, resolveTrailNode as d9, computeTrails as da, nTrailPaletteColors as db, collectTracks as dc, type TrailTarget as dd, type Trail as de, RenderContext as df, InstanceContext as dg, drawMasks as dh, drawLabelImage as di, warn as dj, isDlcProjectPath as dk, readDlcConfig as dl, discoverConfig as dm, clampAlpha as dn, pickColor as dp, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };

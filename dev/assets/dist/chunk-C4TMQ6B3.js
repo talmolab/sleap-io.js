@@ -6138,9 +6138,12 @@ var MediaBunnyVideoBackend = class _MediaBunnyVideoBackend {
     const packetSink = new EncodedPacketSink(videoTrack);
     this._frameTimes = [];
     try {
-      for await (const packet of packetSink.packets()) {
+      for await (const packet of packetSink.packets(void 0, void 0, {
+        metadataOnly: true
+      })) {
         this._frameTimes.push(packet.timestamp);
       }
+      this._frameTimes.sort((a, b) => a - b);
     } catch (error) {
       this._frameTimes = [];
       this.sink = null;
@@ -9731,6 +9734,125 @@ function isRangeSource(source) {
   return typeof source === "object" && source !== null && typeof source.size === "number" && typeof source.readRange === "function";
 }
 
+// src/video/mp4-decode-core.ts
+function findKeyframeBefore(keyframeIndices, frameIndex) {
+  let result = 0;
+  for (const keyframe of keyframeIndices) {
+    if (keyframe <= frameIndex) result = keyframe;
+    else break;
+  }
+  return result;
+}
+function planDecodeRange(samplesLength, keyframeIndices, target, opts) {
+  const start = findKeyframeBefore(keyframeIndices, target);
+  const end = opts.scrub ? target : Math.min(target + opts.lookahead, samplesLength - 1);
+  return { start, end };
+}
+var CACHE_WINDOW_BEHIND = 10;
+function viewedFrameCapacity(cacheSize) {
+  return Math.max(0, Math.floor(cacheSize / 4));
+}
+function computeCacheWindow(start, end, target, cacheSize) {
+  const budget = Math.max(1, cacheSize - viewedFrameCapacity(cacheSize));
+  const ahead = Math.max(0, Math.min(end - target, budget - 1));
+  const behind = Math.max(
+    0,
+    Math.min(target - start, CACHE_WINDOW_BEHIND, budget - 1 - ahead)
+  );
+  return { cacheStart: target - behind, cacheEnd: target + ahead };
+}
+function markViewed(viewed, frame, capacity) {
+  viewed.delete(frame);
+  if (capacity > 0) viewed.add(frame);
+  while (viewed.size > capacity) {
+    const oldest = viewed.values().next();
+    if (oldest.done) break;
+    viewed.delete(oldest.value);
+  }
+}
+function pickEvictionVictim(keysInLruOrder, protectedFrames) {
+  let fallback;
+  for (const key of keysInLruOrder) {
+    if (!protectedFrames.has(key)) return key;
+    if (fallback === void 0) fallback = key;
+  }
+  return fallback;
+}
+function selectFeedSamples(samples, start, end) {
+  let minDecodeIndex = Number.POSITIVE_INFINITY;
+  let maxDecodeIndex = Number.NEGATIVE_INFINITY;
+  for (let i = start; i <= end; i += 1) {
+    minDecodeIndex = Math.min(minDecodeIndex, samples[i].decodeIndex);
+    maxDecodeIndex = Math.max(maxDecodeIndex, samples[i].decodeIndex);
+  }
+  const toFeed = [];
+  for (let i = 0; i < samples.length; i += 1) {
+    const sample = samples[i];
+    if (sample.decodeIndex >= minDecodeIndex && sample.decodeIndex <= maxDecodeIndex) {
+      toFeed.push({ presentationIndex: i, sample });
+    }
+  }
+  toFeed.sort((a, b) => a.sample.decodeIndex - b.sample.decodeIndex);
+  return toFeed;
+}
+function planReadRegions(toFeed) {
+  const regions = [];
+  let i = 0;
+  while (i < toFeed.length) {
+    const first = toFeed[i].sample;
+    let regionEnd = i;
+    let regionBytes = first.size;
+    while (regionEnd < toFeed.length - 1) {
+      const current = toFeed[regionEnd].sample;
+      const next = toFeed[regionEnd + 1].sample;
+      if (next.offset === current.offset + current.size) {
+        regionEnd += 1;
+        regionBytes += next.size;
+      } else {
+        break;
+      }
+    }
+    const members = [];
+    for (let j = i; j <= regionEnd; j += 1) {
+      members.push({
+        decodeIndex: toFeed[j].sample.decodeIndex,
+        size: toFeed[j].sample.size
+      });
+    }
+    regions.push({ offset: first.offset, length: regionBytes, members });
+    i = regionEnd + 1;
+  }
+  return regions;
+}
+async function readSamplesByDecodeOrder(toFeed, readRange) {
+  const regions = planReadRegions(toFeed);
+  const results = /* @__PURE__ */ new Map();
+  for (const region of regions) {
+    const buffer = await readRange(region.offset, region.length);
+    const view = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+    let bufferOffset = 0;
+    for (const member of region.members) {
+      results.set(
+        member.decodeIndex,
+        view.slice(bufferOffset, bufferOffset + member.size)
+      );
+      bufferOffset += member.size;
+    }
+  }
+  return results;
+}
+function nextUncached(from, length, has) {
+  let start = from;
+  while (start < length && has(start)) start += 1;
+  return start;
+}
+function shouldDecodeAhead(fromFrame, length, margin, has) {
+  if (!length) return false;
+  const probe = fromFrame + margin;
+  if (probe >= length) return false;
+  return !has(probe);
+}
+
 // src/video/mp4box-video.ts
 function isBrowser2() {
   return typeof window !== "undefined" && typeof document !== "undefined";
@@ -9778,6 +9900,12 @@ var Mp4BoxVideoBackend = class {
   samples;
   keyframeIndices;
   cache;
+  /**
+   * Frames recently returned by {@link getFrame} (oldest first), capped at
+   * {@link viewedFrameCapacity}. Eviction skips these while it can, so jumping
+   * back to a frame the user already saw stays a cache hit (issue #242).
+   */
+  viewed;
   cacheSize;
   lookahead;
   decoder;
@@ -9817,6 +9945,7 @@ var Mp4BoxVideoBackend = class {
     this.samples = [];
     this.keyframeIndices = [];
     this.cache = /* @__PURE__ */ new Map();
+    this.viewed = /* @__PURE__ */ new Set();
     this.cacheSize = options?.cacheSize ?? DEFAULT_CACHE_SIZE;
     this.lookahead = options?.lookahead ?? DEFAULT_LOOKAHEAD;
     this.decoder = null;
@@ -9843,12 +9972,7 @@ var Mp4BoxVideoBackend = class {
     await this.ready;
     if (frameIndex < 0 || frameIndex >= this.samples.length) return null;
     if (this.cache.has(frameIndex)) {
-      const bitmap = this.cache.get(frameIndex) ?? null;
-      if (bitmap) {
-        this.cache.delete(frameIndex);
-        this.cache.set(frameIndex, bitmap);
-      }
-      return bitmap;
+      return this.takeFromCache(frameIndex, opts);
     }
     if (!opts?.pinned) this.latestRequestedFrame = frameIndex;
     this.aheadAbort?.abort();
@@ -9862,7 +9986,23 @@ var Mp4BoxVideoBackend = class {
       });
     });
     await this.decodeQueue;
-    return this.cache.get(frameIndex) ?? null;
+    return this.takeFromCache(frameIndex, opts);
+  }
+  /**
+   * Return a cached frame to a caller: touch it as most-recently-used and, for
+   * a non-pinned read, mark it viewed so later decode windows don't evict it.
+   * Pinned (batch/embedding) reads are not the user looking at a frame, so they
+   * don't take protection away from frames the user actually saw.
+   */
+  takeFromCache(frameIndex, opts) {
+    const bitmap = this.cache.get(frameIndex);
+    if (!bitmap) return null;
+    this.cache.delete(frameIndex);
+    this.cache.set(frameIndex, bitmap);
+    if (!opts?.pinned) {
+      markViewed(this.viewed, frameIndex, viewedFrameCapacity(this.cacheSize));
+    }
+    return bitmap;
   }
   /**
    * Proactively decode a run of frames AHEAD of `fromFrame` into the cache so
@@ -9953,6 +10093,7 @@ var Mp4BoxVideoBackend = class {
       bitmap.close();
     });
     this.cache.clear();
+    this.viewed.clear();
     this.fileBlob = null;
     this.rangeSource = null;
   }
@@ -10162,9 +10303,12 @@ var Mp4BoxVideoBackend = class {
     for (const { pi, sample } of toFeed) {
       timestampMap.set(Math.round(sample.timestamp), pi);
     }
-    const halfCache = Math.floor(this.cacheSize / 2);
-    const cacheStart = Math.max(start, target - halfCache);
-    const cacheEnd = Math.min(end, target + halfCache);
+    const { cacheStart, cacheEnd } = computeCacheWindow(
+      start,
+      end,
+      target,
+      this.cacheSize
+    );
     let decodedCount = 0;
     let resolveComplete;
     let rejectComplete;
@@ -10191,7 +10335,7 @@ var Mp4BoxVideoBackend = class {
           decodedCount += 1;
           if (decodedCount >= toFeed.length) resolveComplete();
         };
-        if (frameIndex !== void 0 && frameIndex >= cacheStart && frameIndex <= cacheEnd) {
+        if (frameIndex !== void 0 && frameIndex >= cacheStart && frameIndex <= cacheEnd && !this.cache.has(frameIndex)) {
           createImageBitmap(frame).then((bitmap) => {
             this.addToCache(frameIndex, bitmap);
             handleClose();
@@ -10239,113 +10383,21 @@ var Mp4BoxVideoBackend = class {
     await completionPromise;
   }
   addToCache(frameIndex, bitmap) {
-    if (this.cache.size >= this.cacheSize) {
-      const first = this.cache.keys().next();
-      if (!first.done) {
-        const evicted = this.cache.get(first.value);
-        if (evicted) evicted.close();
-        this.cache.delete(first.value);
+    const existing = this.cache.get(frameIndex);
+    if (existing) {
+      if (existing !== bitmap) existing.close();
+      this.cache.delete(frameIndex);
+    } else if (this.cache.size >= this.cacheSize) {
+      const victim = pickEvictionVictim(this.cache.keys(), this.viewed);
+      if (victim !== void 0) {
+        this.cache.get(victim)?.close();
+        this.cache.delete(victim);
+        this.viewed.delete(victim);
       }
     }
     this.cache.set(frameIndex, bitmap);
   }
 };
-
-// src/video/mp4-decode-core.ts
-function findKeyframeBefore(keyframeIndices, frameIndex) {
-  let result = 0;
-  for (const keyframe of keyframeIndices) {
-    if (keyframe <= frameIndex) result = keyframe;
-    else break;
-  }
-  return result;
-}
-function planDecodeRange(samplesLength, keyframeIndices, target, opts) {
-  const start = findKeyframeBefore(keyframeIndices, target);
-  const end = opts.scrub ? target : Math.min(target + opts.lookahead, samplesLength - 1);
-  return { start, end };
-}
-function computeCacheWindow(start, end, target, cacheSize) {
-  const half = Math.floor(cacheSize / 2);
-  return {
-    cacheStart: Math.max(start, target - half),
-    cacheEnd: Math.min(end, target + half)
-  };
-}
-function selectFeedSamples(samples, start, end) {
-  let minDecodeIndex = Number.POSITIVE_INFINITY;
-  let maxDecodeIndex = Number.NEGATIVE_INFINITY;
-  for (let i = start; i <= end; i += 1) {
-    minDecodeIndex = Math.min(minDecodeIndex, samples[i].decodeIndex);
-    maxDecodeIndex = Math.max(maxDecodeIndex, samples[i].decodeIndex);
-  }
-  const toFeed = [];
-  for (let i = 0; i < samples.length; i += 1) {
-    const sample = samples[i];
-    if (sample.decodeIndex >= minDecodeIndex && sample.decodeIndex <= maxDecodeIndex) {
-      toFeed.push({ presentationIndex: i, sample });
-    }
-  }
-  toFeed.sort((a, b) => a.sample.decodeIndex - b.sample.decodeIndex);
-  return toFeed;
-}
-function planReadRegions(toFeed) {
-  const regions = [];
-  let i = 0;
-  while (i < toFeed.length) {
-    const first = toFeed[i].sample;
-    let regionEnd = i;
-    let regionBytes = first.size;
-    while (regionEnd < toFeed.length - 1) {
-      const current = toFeed[regionEnd].sample;
-      const next = toFeed[regionEnd + 1].sample;
-      if (next.offset === current.offset + current.size) {
-        regionEnd += 1;
-        regionBytes += next.size;
-      } else {
-        break;
-      }
-    }
-    const members = [];
-    for (let j = i; j <= regionEnd; j += 1) {
-      members.push({
-        decodeIndex: toFeed[j].sample.decodeIndex,
-        size: toFeed[j].sample.size
-      });
-    }
-    regions.push({ offset: first.offset, length: regionBytes, members });
-    i = regionEnd + 1;
-  }
-  return regions;
-}
-async function readSamplesByDecodeOrder(toFeed, readRange) {
-  const regions = planReadRegions(toFeed);
-  const results = /* @__PURE__ */ new Map();
-  for (const region of regions) {
-    const buffer = await readRange(region.offset, region.length);
-    const view = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
-    let bufferOffset = 0;
-    for (const member of region.members) {
-      results.set(
-        member.decodeIndex,
-        view.slice(bufferOffset, bufferOffset + member.size)
-      );
-      bufferOffset += member.size;
-    }
-  }
-  return results;
-}
-function nextUncached(from, length, has) {
-  let start = from;
-  while (start < length && has(start)) start += 1;
-  return start;
-}
-function shouldDecodeAhead(fromFrame, length, margin, has) {
-  if (!length) return false;
-  const probe = fromFrame + margin;
-  if (probe >= length) return false;
-  return !has(probe);
-}
 
 // src/video/mp4box-decode-worker.ts
 var MP4_DECODE_WORKER_CODE = `
@@ -10638,6 +10690,11 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
   keyframeIndices;
   samplesLength;
   cache;
+  /**
+   * Frames recently returned by {@link getFrame}, protected from eviction (see
+   * {@link viewedFrameCapacity}; issue #242).
+   */
+  viewed;
   cacheSize;
   lookahead;
   reqCounter;
@@ -10660,6 +10717,7 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
     this.cacheSize = params.cacheSize ?? DEFAULT_CACHE_SIZE2;
     this.lookahead = params.lookahead ?? DEFAULT_LOOKAHEAD2;
     this.cache = /* @__PURE__ */ new Map();
+    this.viewed = /* @__PURE__ */ new Set();
     this.pending = /* @__PURE__ */ new Map();
     this.reqCounter = 0;
     this.aheadReqId = null;
@@ -10749,12 +10807,7 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
     await this.ready;
     if (frameIndex < 0 || frameIndex >= this.samplesLength) return null;
     if (this.cache.has(frameIndex)) {
-      const bitmap = this.cache.get(frameIndex) ?? null;
-      if (bitmap) {
-        this.cache.delete(frameIndex);
-        this.cache.set(frameIndex, bitmap);
-      }
-      return bitmap;
+      return this.noteReturned(frameIndex, this.cache.get(frameIndex), opts);
     }
     if (this.aheadInFlight && this.aheadReqId != null) {
       this.worker.postMessage({ type: "abort", reqId: this.aheadReqId });
@@ -10820,7 +10873,28 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
       cacheEnd
     };
     this.worker.postMessage(decode);
-    return promise;
+    return promise.then((frame) => this.noteReturned(frameIndex, frame, opts));
+  }
+  /**
+   * Bookkeeping for a frame handed to a caller: if it is (still) the cached
+   * bitmap, touch it as most-recently-used and, for a non-pinned read, mark it
+   * viewed so later decode windows evict speculative neighbours first.
+   */
+  noteReturned(frameIndex, frame, opts) {
+    if (frame == null) return null;
+    const cached = this.cache.get(frameIndex);
+    if (cached === frame) {
+      this.cache.delete(frameIndex);
+      this.cache.set(frameIndex, cached);
+      if (!opts?.pinned) {
+        markViewed(
+          this.viewed,
+          frameIndex,
+          viewedFrameCapacity(this.cacheSize)
+        );
+      }
+    }
+    return frame;
   }
   decodeAhead(fromFrame, opts) {
     if (this.closed || !this.samplesLength) return;
@@ -10881,16 +10955,17 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
       this.cache.delete(frameIndex);
     }
     if (!this.cache.has(frameIndex) && this.cache.size >= this.cacheSize) {
-      const first = this.cache.keys().next();
-      if (!first.done) {
-        const evicted = this.cache.get(first.value);
+      const victim = pickEvictionVictim(this.cache.keys(), this.viewed);
+      if (victim !== void 0) {
+        const evicted = this.cache.get(victim);
         if (evicted) {
           try {
             evicted.close();
           } catch {
           }
         }
-        this.cache.delete(first.value);
+        this.cache.delete(victim);
+        this.viewed.delete(victim);
       }
     }
     this.cache.set(frameIndex, bitmap);
@@ -10912,6 +10987,7 @@ var WorkerMp4BoxBackend = class _WorkerMp4BoxBackend {
       }
     });
     this.cache.clear();
+    this.viewed.clear();
     this.pending.forEach((pending) => {
       if (!pending.settled) {
         pending.settled = true;
@@ -26741,15 +26817,19 @@ export {
   Labels,
   Identity,
   Embedding,
-  Mp4BoxVideoBackend,
   findKeyframeBefore,
   planDecodeRange,
+  CACHE_WINDOW_BEHIND,
+  viewedFrameCapacity,
   computeCacheWindow,
+  markViewed,
+  pickEvictionVictim,
   selectFeedSamples,
   planReadRegions,
   readSamplesByDecodeOrder,
   nextUncached,
   shouldDecodeAhead,
+  Mp4BoxVideoBackend,
   MP4_DECODE_WORKER_CODE,
   createDecodeWorker,
   isWorkerDecodeAvailable,
