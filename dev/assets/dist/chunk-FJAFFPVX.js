@@ -15578,6 +15578,101 @@ function buildCentroidTuples(data, categories, names, sources, tracks) {
   return centroids;
 }
 
+// src/codecs/slp/bboxes.ts
+var BBOX_NUMERIC_COLUMNS = [
+  "x1",
+  "y1",
+  "x2",
+  "y2",
+  "angle",
+  "video",
+  "frame_idx",
+  "track",
+  "instance",
+  "is_predicted",
+  "score",
+  "tracking_score"
+];
+function buildBboxTuples(data, categories, names, sources, tracks) {
+  const xCenters = data.x_center ?? [];
+  const isCenterBased = xCenters.length > 0;
+  const x1s = data.x1 ?? [];
+  const count = isCenterBased ? xCenters.length : x1s.length;
+  if (!count) return [];
+  const yCenters = data.y_center ?? [];
+  const widths = data.width ?? [];
+  const heights = data.height ?? [];
+  const y1s = data.y1 ?? [];
+  const x2s = data.x2 ?? [];
+  const y2s = data.y2 ?? [];
+  const angles = data.angle ?? [];
+  const videoIndices = data.video ?? [];
+  const frameIndices = data.frame_idx ?? [];
+  const trackIndices = data.track ?? [];
+  const instanceIndices = data.instance ?? [];
+  const isPredictedCol = data.is_predicted ?? [];
+  const scores = data.score ?? [];
+  const trackingScores = data.tracking_score ?? [];
+  const bboxes = [];
+  for (let i = 0; i < count; i++) {
+    const videoIdx = Number(videoIndices[i]);
+    const frameIdxVal = Number(frameIndices[i]);
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    let x1;
+    let y1;
+    let x2;
+    let y2;
+    if (isCenterBased) {
+      const cx = Number(xCenters[i]);
+      const cy = Number(yCenters[i]);
+      const w = Number(widths[i]);
+      const h = Number(heights[i]);
+      x1 = cx - w / 2;
+      y1 = cy - h / 2;
+      x2 = cx + w / 2;
+      y2 = cy + h / 2;
+    } else {
+      x1 = Number(x1s[i]);
+      y1 = Number(y1s[i]);
+      x2 = Number(x2s[i]);
+      y2 = Number(y2s[i]);
+    }
+    const angleVal = angles.length > i ? Number(angles[i]) : 0;
+    const tsVal = trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
+    const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
+    const options = {
+      x1,
+      y1,
+      x2,
+      y2,
+      angle: Number.isNaN(angleVal) ? 0 : angleVal,
+      track,
+      trackingScore,
+      category: categories[i] ?? "",
+      name: names[i] ?? "",
+      source: sources[i] ?? ""
+    };
+    const scoreVal = scores.length > i ? Number(scores[i]) : Number.NaN;
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : !Number.isNaN(scoreVal);
+    let bbox;
+    if (isPred) {
+      bbox = new PredictedBoundingBox({
+        ...options,
+        score: Number.isNaN(scoreVal) ? 0 : scoreVal
+      });
+    } else {
+      bbox = new UserBoundingBox(options);
+    }
+    const instanceIdx = Number(instanceIndices[i]);
+    if (instanceIdx >= 0) {
+      bbox._instanceIdx = instanceIdx;
+    }
+    bboxes.push([bbox, videoIdx, frameIdxVal]);
+  }
+  return bboxes;
+}
+
 // src/model/negative-frames.ts
 function negativeFrameKeys(columns) {
   const videoIds = columns.video_id ?? columns.video ?? [];
@@ -15662,6 +15757,142 @@ async function readCentroidsStreaming(file, tracks) {
     return buildCentroidTuples(data, categories, names, sources, tracks);
   } catch {
     return [];
+  }
+}
+async function readBboxesStreaming(file, tracks) {
+  try {
+    if (!file.keys().includes("bboxes")) return [];
+    const decode = (v) => typeof v === "string" ? v : v instanceof Uint8Array ? new TextDecoder().decode(v) : String(v ?? "");
+    let children = [];
+    try {
+      children = await file.getKeys("bboxes");
+    } catch {
+      children = [];
+    }
+    if (children.includes("x1")) {
+      const data2 = {};
+      for (const name of BBOX_NUMERIC_COLUMNS) {
+        try {
+          const d = await file.getDatasetValue(`bboxes/${name}`);
+          data2[name] = normalizeDatasetArray(d.value);
+        } catch {
+          data2[name] = [];
+        }
+      }
+      const strCol = async (name) => {
+        try {
+          const d = await file.getDatasetValue(`bboxes/${name}`);
+          return normalizeDatasetArray(d.value).map(decode);
+        } catch {
+          return [];
+        }
+      };
+      const categories2 = await strCol("category");
+      const names2 = await strCol("name");
+      const sources2 = await strCol("source");
+      return buildBboxTuples(data2, categories2, names2, sources2, tracks);
+    }
+    const data = await readStructDatasetStreaming(file, "bboxes");
+    let bboxAttrs = {};
+    try {
+      bboxAttrs = await file.getAttrs("bboxes");
+    } catch {
+      bboxAttrs = {};
+    }
+    const keys = file.keys();
+    const parseJsonList = (raw) => {
+      const v = raw?.value ?? raw;
+      const text = typeof v === "string" ? v : v instanceof Uint8Array ? new TextDecoder().decode(v) : null;
+      if (text === null) return Array.isArray(v) ? v.map(decode) : [];
+      try {
+        const parsed = JSON.parse(text);
+        return Array.isArray(parsed) ? parsed.map(decode) : [];
+      } catch {
+        return [];
+      }
+    };
+    const strMeta = async (rootName, attrName) => {
+      if (keys.includes(rootName)) {
+        try {
+          const attrs = await file.getAttrs(rootName);
+          const fromAttr = parseJsonList(attrs.json);
+          if (fromAttr.length) return fromAttr;
+        } catch {
+        }
+        try {
+          const d = await file.getDatasetValue(rootName);
+          const v = d.value;
+          const bytes = v instanceof Uint8Array ? v : ArrayBuffer.isView(v) || Array.isArray(v) ? Uint8Array.from(v) : null;
+          if (bytes) {
+            const fromData = parseJsonList(bytes);
+            if (fromData.length) return fromData;
+          }
+        } catch {
+        }
+      }
+      return parseJsonList(bboxAttrs[attrName]);
+    };
+    const categories = await strMeta("bbox_categories", "categories");
+    const names = await strMeta("bbox_names", "names");
+    const sources = await strMeta("bbox_sources", "sources");
+    return buildBboxTuples(data, categories, names, sources, tracks);
+  } catch {
+    return [];
+  }
+}
+function attachAnnotationTuples(tuples, opts) {
+  if (!tuples.length) return;
+  const { labeledFrames, lazyStore, videos } = opts;
+  if (labeledFrames) {
+    const frameMap = /* @__PURE__ */ new Map();
+    for (const lf of labeledFrames) {
+      frameMap.set(`${videos.indexOf(lf.video)}:${lf.frameIdx}`, lf);
+    }
+    const getOrCreate = (vidIdx, frameIdx) => {
+      const key = `${vidIdx}:${frameIdx}`;
+      let lf = frameMap.get(key);
+      if (!lf) {
+        lf = new LabeledFrame({ video: videos[vidIdx], frameIdx });
+        frameMap.set(key, lf);
+        labeledFrames.push(lf);
+      }
+      return lf;
+    };
+    const attached = [];
+    for (const [ann, vidIdx, frameIdx] of tuples) {
+      if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
+        opts.frameList(getOrCreate(vidIdx, frameIdx)).push(ann);
+        attached.push(ann);
+      }
+    }
+    const allInst = instanceRowLookup(
+      labeledFrames,
+      opts.instanceRows,
+      opts.userInstancesOnly
+    );
+    for (const ann of attached) {
+      if (ann._instanceIdx !== null && ann._instanceIdx >= 0) {
+        const inst = allInst(ann._instanceIdx);
+        if (inst) {
+          ann.instance = inst;
+          ann._instanceIdx = null;
+        }
+      }
+    }
+  } else if (lazyStore) {
+    const byFrame = /* @__PURE__ */ new Map();
+    const undistributed = [];
+    for (const [ann, vidIdx, frameIdx] of tuples) {
+      if (vidIdx >= 0 && frameIdx >= 0) {
+        const key = `${vidIdx}:${frameIdx}`;
+        const list = byFrame.get(key);
+        if (list) list.push(ann);
+        else byFrame.set(key, [ann]);
+      } else {
+        undistributed.push(ann);
+      }
+    }
+    opts.setLazy(lazyStore, byFrame, undistributed);
   }
 }
 async function readSlpStreaming(source, options) {
@@ -15839,61 +16070,29 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
       }
     }
   }
-  const centroidTuples = await readCentroidsStreaming(file, tracks);
-  if (centroidTuples.length) {
-    if (labeledFrames) {
-      const frameMap = /* @__PURE__ */ new Map();
-      for (const lf of labeledFrames) {
-        frameMap.set(`${videos.indexOf(lf.video)}:${lf.frameIdx}`, lf);
-      }
-      const getOrCreate = (vidIdx, frameIdx) => {
-        const key = `${vidIdx}:${frameIdx}`;
-        let lf = frameMap.get(key);
-        if (!lf) {
-          lf = new LabeledFrame({ video: videos[vidIdx], frameIdx });
-          frameMap.set(key, lf);
-          labeledFrames.push(lf);
-        }
-        return lf;
-      };
-      for (const [c, vidIdx, frameIdx] of centroidTuples) {
-        if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
-          getOrCreate(vidIdx, frameIdx).centroids.push(c);
-        }
-      }
-      const allInst = instanceRowLookup(
-        labeledFrames,
-        instanceRows,
-        userInstancesOnly
-      );
-      for (const lf of labeledFrames) {
-        for (const c of lf.centroids) {
-          if (c._instanceIdx !== null && c._instanceIdx >= 0) {
-            const inst = allInst(c._instanceIdx);
-            if (inst) {
-              c.instance = inst;
-              c._instanceIdx = null;
-            }
-          }
-        }
-      }
-    } else if (lazyStore) {
-      const byFrame = /* @__PURE__ */ new Map();
-      const undistributed = [];
-      for (const [c, vidIdx, frameIdx] of centroidTuples) {
-        if (vidIdx >= 0 && frameIdx >= 0) {
-          const key = `${vidIdx}:${frameIdx}`;
-          const list = byFrame.get(key);
-          if (list) list.push(c);
-          else byFrame.set(key, [c]);
-        } else {
-          undistributed.push(c);
-        }
-      }
-      lazyStore._centroidByFrame = byFrame;
-      lazyStore._undistributedCentroids = undistributed;
+  const attachCommon = {
+    labeledFrames,
+    lazyStore,
+    videos,
+    instanceRows,
+    userInstancesOnly
+  };
+  attachAnnotationTuples(await readCentroidsStreaming(file, tracks), {
+    ...attachCommon,
+    frameList: (lf) => lf.centroids,
+    setLazy: (store, byFrame, undistributed) => {
+      store._centroidByFrame = byFrame;
+      store._undistributedCentroids = undistributed;
     }
-  }
+  });
+  attachAnnotationTuples(await readBboxesStreaming(file, tracks), {
+    ...attachCommon,
+    frameList: (lf) => lf.bboxes,
+    setLazy: (store, byFrame, undistributed) => {
+      store._bboxByFrame = byFrame;
+      store._undistributedBboxes = undistributed;
+    }
+  });
   report(9);
   const sessions = userInstancesOnly ? [] : await readSessionsStreaming(
     file,
@@ -19842,57 +20041,57 @@ function writeMasks(file, masks, videos, tracks, instances, contexts) {
 }
 function writeBboxes(file, bboxes, _videos, tracks, instances, contexts) {
   if (!bboxes.length) return;
-  const rows = [];
+  const n = bboxes.length;
+  const x1 = new Float64Array(n);
+  const y1 = new Float64Array(n);
+  const x2 = new Float64Array(n);
+  const y2 = new Float64Array(n);
+  const angle = new Float64Array(n);
+  const video = new Int32Array(n);
+  const frameIdx = new Int32Array(n);
+  const track = new Int32Array(n);
+  const instance = new Int32Array(n);
+  const isPredicted = new Uint8Array(n);
+  const score = new Float64Array(n);
+  const trackingScore = new Float64Array(n);
   const categories = [];
   const names = [];
   const sources = [];
-  for (let i = 0; i < bboxes.length; i++) {
+  for (let i = 0; i < n; i++) {
     const bbox = bboxes[i];
-    const videoIdx = contexts ? contexts[i][0] : -1;
-    const frameIdx = contexts ? contexts[i][1] : -1;
-    const trackIdx = bbox.track ? tracks.indexOf(bbox.track) : -1;
-    const score = bbox.isPredicted ? bbox.score : Number.NaN;
-    const instanceIdx = bbox.instance ? instances.indexOf(bbox.instance) : bbox._instanceIdx ?? -1;
-    const trackingScore = bbox.trackingScore ?? Number.NaN;
-    rows.push([
-      bbox.x1,
-      bbox.y1,
-      bbox.x2,
-      bbox.y2,
-      bbox.angle,
-      videoIdx,
-      frameIdx,
-      trackIdx,
-      score,
-      instanceIdx,
-      trackingScore
-    ]);
+    x1[i] = bbox.x1;
+    y1[i] = bbox.y1;
+    x2[i] = bbox.x2;
+    y2[i] = bbox.y2;
+    angle[i] = bbox.angle;
+    video[i] = contexts ? contexts[i][0] : -1;
+    frameIdx[i] = contexts ? contexts[i][1] : -1;
+    track[i] = bbox.track ? tracks.indexOf(bbox.track) : -1;
+    instance[i] = bbox.instance ? instances.indexOf(bbox.instance) : bbox._instanceIdx ?? -1;
+    isPredicted[i] = bbox.isPredicted ? 1 : 0;
+    score[i] = bbox.isPredicted ? bbox.score : Number.NaN;
+    trackingScore[i] = bbox.trackingScore ?? Number.NaN;
     categories.push(bbox.category);
     names.push(bbox.name);
     sources.push(bbox.source);
   }
-  createMatrixDataset(
-    file,
-    "bboxes",
-    rows,
-    [
-      "x1",
-      "y1",
-      "x2",
-      "y2",
-      "angle",
-      "video",
-      "frame_idx",
-      "track",
-      "score",
-      "instance",
-      "tracking_score"
-    ],
-    "<f8"
-  );
-  writeStringDataset(file, "bbox_categories", categories);
-  writeStringDataset(file, "bbox_names", names);
-  writeStringDataset(file, "bbox_sources", sources);
+  file.create_group("bboxes");
+  const col = (name, data, dtype) => file.create_dataset({ name: `bboxes/${name}`, data, shape: [n], dtype });
+  col("x1", x1, "<d");
+  col("y1", y1, "<d");
+  col("x2", x2, "<d");
+  col("y2", y2, "<d");
+  col("angle", angle, "<d");
+  col("video", video, "<i4");
+  col("frame_idx", frameIdx, "<i4");
+  col("track", track, "<i4");
+  col("instance", instance, "<i4");
+  col("is_predicted", isPredicted, "<B");
+  col("score", score, "<d");
+  col("tracking_score", trackingScore, "<d");
+  file.create_dataset({ name: "bboxes/category", data: categories });
+  file.create_dataset({ name: "bboxes/name", data: names });
+  file.create_dataset({ name: "bboxes/source", data: sources });
 }
 function writeLabelImages(file, labelImages, _videos, tracks, instances, contexts) {
   if (!labelImages.length) return;
@@ -23365,85 +23564,42 @@ function readRoisWithMigration(file, videos, tracks, instances) {
   return { rois, migratedBboxes };
 }
 function readBboxes(file, _videos, tracks) {
-  const bboxesDs = file.get("bboxes");
-  if (!bboxesDs) return [];
-  const bboxesData = normalizeStructDataset(bboxesDs);
-  const xCenters = bboxesData.x_center ?? [];
-  const isLegacy = xCenters.length > 0;
-  const x1s = bboxesData.x1 ?? [];
-  const count = isLegacy ? xCenters.length : x1s.length;
-  if (!count) return [];
-  const categories = readStringMetadata(
-    file,
-    "bbox_categories",
-    bboxesDs,
-    "categories"
-  );
-  const names = readStringMetadata(file, "bbox_names", bboxesDs, "names");
-  const sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
-  const yCenters = bboxesData.y_center ?? [];
-  const widths = bboxesData.width ?? [];
-  const heights = bboxesData.height ?? [];
-  const y1s = bboxesData.y1 ?? [];
-  const x2s = bboxesData.x2 ?? [];
-  const y2s = bboxesData.y2 ?? [];
-  const angles = bboxesData.angle ?? [];
-  const videoIndices = bboxesData.video ?? [];
-  const frameIndices = bboxesData.frame_idx ?? [];
-  const trackIndices = bboxesData.track ?? [];
-  const bboxScores = bboxesData.score ?? [];
-  const instanceIndices = bboxesData.instance ?? [];
-  const trackingScores = bboxesData.tracking_score ?? [];
-  const bboxes = [];
-  for (let i = 0; i < count; i++) {
-    const videoIdx = Number(videoIndices[i]);
-    const frameIdxVal = Number(frameIndices[i]);
-    const trackIdx = Number(trackIndices[i]);
-    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-    const scoreVal = Number(bboxScores[i]);
-    const instanceIdx = Number(instanceIndices[i]);
-    let bx1, by1, bx2, by2;
-    if (isLegacy) {
-      const cx = Number(xCenters[i]);
-      const cy = Number(yCenters[i]);
-      const w = Number(widths[i]);
-      const h = Number(heights[i]);
-      bx1 = cx - w / 2;
-      by1 = cy - h / 2;
-      bx2 = cx + w / 2;
-      by2 = cy + h / 2;
-    } else {
-      bx1 = Number(x1s[i]);
-      by1 = Number(y1s[i]);
-      bx2 = Number(x2s[i]);
-      by2 = Number(y2s[i]);
+  let data;
+  let categories;
+  let names;
+  let sources;
+  const bboxesNode = file.get("bboxes");
+  if (!bboxesNode) return [];
+  if (bboxesNode.type === "Group") {
+    data = {};
+    for (const name of BBOX_NUMERIC_COLUMNS) {
+      data[name] = file.get(`bboxes/${name}`)?.value ?? [];
     }
-    const tsVal = trackingScores.length > i ? Number(trackingScores[i]) : Number.NaN;
-    const trackingScore = Number.isNaN(tsVal) ? null : tsVal;
-    const options = {
-      x1: bx1,
-      y1: by1,
-      x2: bx2,
-      y2: by2,
-      angle: Number(angles[i]),
-      track,
-      trackingScore,
-      category: categories[i] ?? "",
-      name: names[i] ?? "",
-      source: sources[i] ?? ""
+    const strCol = (name) => {
+      const ds = file.get(`bboxes/${name}`);
+      if (!ds) return [];
+      try {
+        return (ds.value ?? []).length ? Array.from(ds.value, decodeStr) : [];
+      } catch {
+        return [];
+      }
     };
-    let bbox;
-    if (Number.isNaN(scoreVal)) {
-      bbox = new UserBoundingBox(options);
-    } else {
-      bbox = new PredictedBoundingBox({ ...options, score: scoreVal });
-    }
-    if (instanceIdx >= 0) {
-      bbox._instanceIdx = instanceIdx;
-    }
-    bboxes.push([bbox, videoIdx, frameIdxVal]);
+    categories = strCol("category");
+    names = strCol("name");
+    sources = strCol("source");
+  } else {
+    const bboxesDs = bboxesNode;
+    data = normalizeStructDataset(bboxesDs);
+    categories = readStringMetadata(
+      file,
+      "bbox_categories",
+      bboxesDs,
+      "categories"
+    );
+    names = readStringMetadata(file, "bbox_names", bboxesDs, "names");
+    sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
   }
-  return bboxes;
+  return buildBboxTuples(data, categories, names, sources, tracks);
 }
 function readStringMetadata(file, datasetPath, dataset, attrName) {
   const ds = file.get(datasetPath);
