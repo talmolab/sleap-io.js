@@ -152,9 +152,10 @@ describe("Python compatibility (#76)", () => {
       expectFixedString(file.get("mask_names"), "json");
       expectFixedString(file.get("mask_sources"), "json");
 
-      expectFixedString(file.get("bbox_categories"), "json");
-      expectFixedString(file.get("bbox_names"), "json");
-      expectFixedString(file.get("bbox_sources"), "json");
+      // Bounding boxes use Python's columnar `/bboxes` group (vlen-str
+      // category/name/source children), not root JSON string datasets.
+      expect(file.get("bbox_categories")).toBeNull();
+      expect(file.get("bboxes/category")).toBeTruthy();
     } finally {
       file.close();
       module.FS.unlink(memPath);

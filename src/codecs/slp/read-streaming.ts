@@ -40,6 +40,8 @@ import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
 import type { Centroid } from "../../model/centroid.js";
 import { buildCentroidTuples } from "./centroids.js";
+import type { BoundingBox } from "../../model/bbox.js";
+import { BBOX_NUMERIC_COLUMNS, buildBboxTuples } from "./bboxes.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
 import {
@@ -221,6 +223,216 @@ async function readCentroidsStreaming(
     return buildCentroidTuples(data, categories, names, sources, tracks);
   } catch {
     return [];
+  }
+}
+
+/**
+ * Read `/bboxes` (bounding-box annotations) via the streaming file API. Mirrors
+ * the eager `readBboxes`: the Python / current-JS columnar GROUP (one child
+ * dataset per field, each an async range read) is preferred; a legacy flat
+ * `/bboxes` matrix (+ `field_names` attr and root `bbox_*` JSON string
+ * datasets) or a pre-2.0 Python compound table is read as a fallback. Returns
+ * `[bbox, videoIdx, frameIdx]` routing tuples; `[]` when absent. Without this,
+ * a browser/Tauri load (which uses the streaming reader) silently drops every
+ * box that the eager/lazy readers keep.
+ */
+async function readBboxesStreaming(
+  file: StreamingH5File,
+  tracks: Track[],
+): Promise<[BoundingBox, number, number][]> {
+  try {
+    if (!file.keys().includes("bboxes")) return [];
+    const decode = (v: unknown): string =>
+      typeof v === "string"
+        ? v
+        : v instanceof Uint8Array
+          ? new TextDecoder().decode(v)
+          : String(v ?? "");
+
+    // Group layout: `/bboxes` is a group with an `x1` child. (A legacy dataset
+    // has no keys; don't probe `bboxes/x1` directly, h5wasm resolves child
+    // paths under a dataset to a bogus object.)
+    let children: string[] = [];
+    try {
+      children = await file.getKeys("bboxes");
+    } catch {
+      children = [];
+    }
+    if (children.includes("x1")) {
+      const data: Record<string, ArrayLike<number>> = {};
+      for (const name of BBOX_NUMERIC_COLUMNS) {
+        try {
+          const d = await file.getDatasetValue(`bboxes/${name}`);
+          data[name] = normalizeDatasetArray(d.value) as ArrayLike<number>;
+        } catch {
+          data[name] = [];
+        }
+      }
+      const strCol = async (name: string): Promise<string[]> => {
+        try {
+          const d = await file.getDatasetValue(`bboxes/${name}`);
+          return normalizeDatasetArray(d.value).map(decode);
+        } catch {
+          return [];
+        }
+      };
+      const categories = await strCol("category");
+      const names = await strCol("name");
+      const sources = await strCol("source");
+      return buildBboxTuples(data, categories, names, sources, tracks);
+    }
+
+    // Legacy layouts: a flat matrix (+ `field_names`) or compound dataset.
+    const data = (await readStructDatasetStreaming(file, "bboxes")) as Record<
+      string,
+      ArrayLike<number>
+    >;
+    let bboxAttrs: Record<string, unknown> = {};
+    try {
+      bboxAttrs = await file.getAttrs("bboxes");
+    } catch {
+      bboxAttrs = {};
+    }
+    const keys = file.keys();
+    const parseJsonList = (raw: unknown): string[] => {
+      const v = (raw as { value?: unknown })?.value ?? raw;
+      const text =
+        typeof v === "string"
+          ? v
+          : v instanceof Uint8Array
+            ? new TextDecoder().decode(v)
+            : null;
+      if (text === null) return Array.isArray(v) ? v.map(decode) : [];
+      try {
+        const parsed = JSON.parse(text);
+        return Array.isArray(parsed) ? parsed.map(decode) : [];
+      } catch {
+        return [];
+      }
+    };
+    // v1.9+ JS: root `bbox_*` uint8 datasets holding JSON (also mirrored in a
+    // `json` attr); older files: JSON string attrs on `/bboxes` itself.
+    const strMeta = async (
+      rootName: string,
+      attrName: string,
+    ): Promise<string[]> => {
+      if (keys.includes(rootName)) {
+        try {
+          const attrs = await file.getAttrs(rootName);
+          const fromAttr = parseJsonList(attrs.json);
+          if (fromAttr.length) return fromAttr;
+        } catch {
+          /* fall through to the dataset bytes */
+        }
+        try {
+          const d = await file.getDatasetValue(rootName);
+          const v = d.value;
+          const bytes =
+            v instanceof Uint8Array
+              ? v
+              : ArrayBuffer.isView(v) || Array.isArray(v)
+                ? Uint8Array.from(v as ArrayLike<number>)
+                : null;
+          if (bytes) {
+            const fromData = parseJsonList(bytes);
+            if (fromData.length) return fromData;
+          }
+        } catch {
+          /* fall through to the attr on /bboxes */
+        }
+      }
+      return parseJsonList(bboxAttrs[attrName]);
+    };
+    const categories = await strMeta("bbox_categories", "categories");
+    const names = await strMeta("bbox_names", "names");
+    const sources = await strMeta("bbox_sources", "sources");
+    return buildBboxTuples(data, categories, names, sources, tracks);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Route `[annotation, videoIdx, frameIdx]` tuples onto frames, shared by the
+ * streaming centroid and bbox paths (mirrors the eager reader). Eager: push onto
+ * the matching LabeledFrame (creating annotation-only frames) and resolve each
+ * deferred `_instanceIdx` against the `instances` table rows. Lazy: hand the
+ * per-frame map + undistributed list to the store for materializeFrame.
+ */
+function attachAnnotationTuples<
+  T extends {
+    instance: Instance | null;
+    _instanceIdx: number | null;
+  },
+>(
+  tuples: [T, number, number][],
+  opts: {
+    labeledFrames: LabeledFrame[] | undefined;
+    lazyStore: LazyDataStore | undefined;
+    videos: Video[];
+    instanceRows: Map<number, Instance | PredictedInstance>;
+    userInstancesOnly: boolean;
+    frameList: (lf: LabeledFrame) => T[];
+    setLazy: (
+      store: LazyDataStore,
+      byFrame: Map<string, T[]>,
+      undistributed: T[],
+    ) => void;
+  },
+): void {
+  if (!tuples.length) return;
+  const { labeledFrames, lazyStore, videos } = opts;
+  if (labeledFrames) {
+    const frameMap = new Map<string, LabeledFrame>();
+    for (const lf of labeledFrames) {
+      frameMap.set(`${videos.indexOf(lf.video)}:${lf.frameIdx}`, lf);
+    }
+    const getOrCreate = (vidIdx: number, frameIdx: number): LabeledFrame => {
+      const key = `${vidIdx}:${frameIdx}`;
+      let lf = frameMap.get(key);
+      if (!lf) {
+        lf = new LabeledFrame({ video: videos[vidIdx], frameIdx });
+        frameMap.set(key, lf);
+        labeledFrames.push(lf);
+      }
+      return lf;
+    };
+    const attached: T[] = [];
+    for (const [ann, vidIdx, frameIdx] of tuples) {
+      if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
+        opts.frameList(getOrCreate(vidIdx, frameIdx)).push(ann);
+        attached.push(ann);
+      }
+    }
+    // Resolve deferred instance refs (mirrors the eager reader).
+    const allInst = instanceRowLookup(
+      labeledFrames,
+      opts.instanceRows,
+      opts.userInstancesOnly,
+    );
+    for (const ann of attached) {
+      if (ann._instanceIdx !== null && ann._instanceIdx >= 0) {
+        const inst = allInst(ann._instanceIdx);
+        if (inst) {
+          ann.instance = inst;
+          ann._instanceIdx = null;
+        }
+      }
+    }
+  } else if (lazyStore) {
+    const byFrame = new Map<string, T[]>();
+    const undistributed: T[] = [];
+    for (const [ann, vidIdx, frameIdx] of tuples) {
+      if (vidIdx >= 0 && frameIdx >= 0) {
+        const key = `${vidIdx}:${frameIdx}`;
+        const list = byFrame.get(key);
+        if (list) list.push(ann);
+        else byFrame.set(key, [ann]);
+      } else {
+        undistributed.push(ann);
+      }
+    }
+    opts.setLazy(lazyStore, byFrame, undistributed);
   }
 }
 
@@ -477,65 +689,32 @@ export async function readFromStreamingFile(
     }
   }
 
-  // Centroids (`/centroids` group). The eager and lazy readers read these; the
-  // streaming reader (browser/Tauri WebView) must too, or a loaded project
-  // silently drops its centroid annotations.
-  const centroidTuples = await readCentroidsStreaming(file, tracks);
-  if (centroidTuples.length) {
-    if (labeledFrames) {
-      const frameMap = new Map<string, LabeledFrame>();
-      for (const lf of labeledFrames) {
-        frameMap.set(`${videos.indexOf(lf.video)}:${lf.frameIdx}`, lf);
-      }
-      const getOrCreate = (vidIdx: number, frameIdx: number): LabeledFrame => {
-        const key = `${vidIdx}:${frameIdx}`;
-        let lf = frameMap.get(key);
-        if (!lf) {
-          lf = new LabeledFrame({ video: videos[vidIdx], frameIdx });
-          frameMap.set(key, lf);
-          labeledFrames.push(lf);
-        }
-        return lf;
-      };
-      for (const [c, vidIdx, frameIdx] of centroidTuples) {
-        if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
-          getOrCreate(vidIdx, frameIdx).centroids.push(c);
-        }
-      }
-      // Resolve deferred instance refs (mirrors the eager reader).
-      const allInst = instanceRowLookup(
-        labeledFrames,
-        instanceRows,
-        userInstancesOnly,
-      );
-      for (const lf of labeledFrames) {
-        for (const c of lf.centroids) {
-          if (c._instanceIdx !== null && c._instanceIdx >= 0) {
-            const inst = allInst(c._instanceIdx);
-            if (inst) {
-              c.instance = inst;
-              c._instanceIdx = null;
-            }
-          }
-        }
-      }
-    } else if (lazyStore) {
-      const byFrame = new Map<string, Centroid[]>();
-      const undistributed: Centroid[] = [];
-      for (const [c, vidIdx, frameIdx] of centroidTuples) {
-        if (vidIdx >= 0 && frameIdx >= 0) {
-          const key = `${vidIdx}:${frameIdx}`;
-          const list = byFrame.get(key);
-          if (list) list.push(c);
-          else byFrame.set(key, [c]);
-        } else {
-          undistributed.push(c);
-        }
-      }
-      lazyStore._centroidByFrame = byFrame;
-      lazyStore._undistributedCentroids = undistributed;
-    }
-  }
+  // Centroids (`/centroids` group) and bounding boxes (`/bboxes`). The eager and
+  // lazy readers read these; the streaming reader (browser/Tauri WebView) must
+  // too, or a loaded project silently drops its centroid / box annotations.
+  const attachCommon = {
+    labeledFrames,
+    lazyStore,
+    videos,
+    instanceRows,
+    userInstancesOnly,
+  };
+  attachAnnotationTuples<Centroid>(await readCentroidsStreaming(file, tracks), {
+    ...attachCommon,
+    frameList: (lf) => lf.centroids,
+    setLazy: (store, byFrame, undistributed) => {
+      store._centroidByFrame = byFrame;
+      store._undistributedCentroids = undistributed;
+    },
+  });
+  attachAnnotationTuples<BoundingBox>(await readBboxesStreaming(file, tracks), {
+    ...attachCommon,
+    frameList: (lf) => lf.bboxes,
+    setLazy: (store, byFrame, undistributed) => {
+      store._bboxByFrame = byFrame;
+      store._undistributedBboxes = undistributed;
+    },
+  });
 
   // Read sessions — grouping captured as index refs (no frame materialization).
   // (Skipped with userInstancesOnly: their groupings refer to frames and
