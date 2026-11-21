@@ -37,6 +37,12 @@ import type { Identity } from "../../model/identity.js";
 import { PredictedInstance3D } from "../../model/instance3d.js";
 import type { LazyDataStore } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
+import {
+  METADATA_ATTR_SIZE_LIMIT,
+  PROVENANCE_DATASET,
+  encodeMetadataAttr,
+  encodeProvenanceJson,
+} from "./provenance.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile:
@@ -1936,17 +1942,10 @@ export async function writeSlp(
   }
 }
 
-/**
- * Build the exact JSON string written into the `/metadata` `json` attribute by
- * {@link writeMetadata}. Exposed so the in-place saver can re-emit that attribute
- * (via {@link writeLabelTablesInPlace}) without re-serializing the whole file.
- * The caller decides WHEN metadata actually changed and passes this into
- * {@link buildLabelTableUpdate}'s `metadataJson` option; a value-only pose edit
- * leaves it unset so the attribute is untouched.
- */
-export function buildMetadataJson(labels: Labels): string {
+/** The `/metadata` `json` dict for `labels`, before the attribute size guard. */
+function metadataDict(labels: Labels): Record<string, unknown> {
   const { skeletons, nodes } = serializeSkeletons(labels.skeletons);
-  const metadata = {
+  return {
     version: "2.0.0",
     skeletons,
     nodes,
@@ -1956,11 +1955,44 @@ export function buildMetadataJson(labels: Labels): string {
     negative_anchors: {},
     provenance: labels.provenance ?? {},
   };
-  return JSON.stringify(metadata);
+}
+
+/**
+ * Build the exact JSON string written into the `/metadata` `json` attribute by
+ * {@link writeMetadata}. Exposed so the in-place saver can re-emit that attribute
+ * (via {@link writeLabelTablesInPlace}) without re-serializing the whole file.
+ * The caller decides WHEN metadata actually changed and passes this into
+ * {@link buildLabelTableUpdate}'s `metadataJson` option; a value-only pose edit
+ * leaves it unset so the attribute is untouched.
+ *
+ * Like the full writer, keys that would push the attribute past HDF5's 64 KB
+ * limit are left out (largest first, never `version`/`skeletons`/`nodes`); see
+ * {@link encodeMetadataAttr}. Provenance always survives in `/provenance_json`.
+ */
+export function buildMetadataJson(labels: Labels): string {
+  return encodeMetadataAttr(metadataDict(labels), { warn: false });
+}
+
+/**
+ * Write `Labels.provenance` to the top-level `/provenance_json` dataset, as
+ * Python `_write_provenance_dataset`: a scalar fixed-length `|S<n>` JSON string,
+ * which is not subject to the 64 KB attribute limit. Empty provenance writes no
+ * dataset. Only called on freshly created files (the in-place path never
+ * rewrites this dataset; see {@link checkInPlaceWritable}).
+ */
+function writeProvenanceDataset(file: any, labels: Labels): void {
+  const json = encodeProvenanceJson(labels.provenance);
+  if (json === null) return;
+  file.create_dataset({
+    name: PROVENANCE_DATASET,
+    data: json,
+    shape: [],
+    dtype: `S${textEncoder.encode(json).length}`,
+  });
 }
 
 function writeMetadata(file: any, labels: Labels): void {
-  const metadataJson = buildMetadataJson(labels);
+  const metadataJson = encodeMetadataAttr(metadataDict(labels));
 
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
   const hasIdentities = (labels.identities?.length ?? 0) > 0;
@@ -2056,6 +2088,7 @@ function writeMetadata(file: any, labels: Labels): void {
   const metadataGroup = file.get("metadata");
   metadataGroup.create_attribute("format_id", formatId);
   setStringAttr(metadataGroup, "json", metadataJson);
+  writeProvenanceDataset(file, labels);
 }
 
 function serializeSkeletons(skeletons: Skeleton[]): {
@@ -2243,7 +2276,7 @@ function sourceVideoDict(video: Video): Record<string, unknown> | null {
 }
 
 /** Python `METADATA_ATTR_SIZE_LIMIT`: the HDF5 64 KB attribute ceiling. */
-const SOURCE_VIDEO_ATTR_LIMIT = 64000;
+const SOURCE_VIDEO_ATTR_LIMIT = METADATA_ATTR_SIZE_LIMIT;
 
 /**
  * Write a source video's metadata JSON into its `{group}/source_video` HDF5
@@ -3395,6 +3428,13 @@ export interface OnDiskSidecars {
   metadataJson: string | null;
   /** Per-video signatures (see {@link buildVideoSignatures}). */
   videos: string[] | null;
+  /**
+   * The `/provenance_json` dataset's JSON text; `null` when the dataset is
+   * absent. Optional: when omitted, the gate falls back to the `provenance`
+   * key of `metadataJson`, and refuses if that key is missing (large provenance
+   * is left out of the attribute, so it cannot be compared there).
+   */
+  provenanceJson?: string | null;
 }
 
 /**
@@ -3410,7 +3450,48 @@ export function buildExpectedSidecars(labels: Labels): OnDiskSidecars {
     suggestionsJson: buildSuggestionsJson(labels.suggestions, labels.videos),
     metadataJson: buildMetadataJson(labels),
     videos: buildVideoSignatures(labels.videos),
+    provenanceJson: encodeProvenanceJson(labels.provenance),
   };
+}
+
+/** Re-serialize a JSON object string so formatting differences don't count. */
+function canonicalJsonObject(text: string): string | undefined {
+  try {
+    const v: unknown = JSON.parse(text);
+    return typeof v === "object" && v !== null && !Array.isArray(v)
+      ? JSON.stringify(v)
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The provenance a reader would load from the file described by `sidecars`, as
+ * canonical JSON (`"{}"` when there is none), or `undefined` when it can't be
+ * determined. Mirrors `resolveProvenance`: the `/provenance_json` dataset
+ * first, then the `metadata/json` attribute's `provenance` key.
+ */
+function sidecarProvenance(sidecars: OnDiskSidecars): string | undefined {
+  if (sidecars.provenanceJson) {
+    const fromDataset = canonicalJsonObject(sidecars.provenanceJson);
+    if (fromDataset !== undefined) return fromDataset;
+  }
+  if (sidecars.metadataJson === null) return undefined;
+  let md: unknown;
+  try {
+    md = JSON.parse(sidecars.metadataJson);
+  } catch {
+    return undefined;
+  }
+  const prov = (md as Record<string, unknown> | null)?.provenance;
+  if (typeof prov === "object" && prov !== null && !Array.isArray(prov)) {
+    return JSON.stringify(prov);
+  }
+  // No `provenance` key in the attribute: it is genuinely empty only if the
+  // caller confirmed there is no dataset either. Otherwise it may have been
+  // dropped for size and live only in a dataset we weren't shown.
+  return sidecars.provenanceJson === null ? "{}" : undefined;
 }
 
 /** Element-wise string-array equality (null treated as empty). */
@@ -3440,7 +3521,10 @@ function sameStringArray(a: string[] | null, b: string[] | null): boolean {
  *    the (rewritten) frames table's `video` indices would point into a stale
  *    video list. Compared semantically via per-video signatures
  *    ({@link buildVideoSignatures}), not a byte-exact `videos_json` diff; OR
- *  - the `/metadata` json changed (e.g. a skeleton or provenance edit) but
+ *  - the provenance changed (or can't be determined from `sidecars.onDisk`) —
+ *    the in-place writer does NOT rewrite the `/provenance_json` dataset, which
+ *    readers prefer over the metadata attribute; OR
+ *  - the `/metadata` json changed (e.g. a skeleton edit) but
  *    `update.metadataJson` was not set to carry that change into the attr.
  *
  * A pose/point/visibility/score/track-membership-preserving edit still passes.
@@ -3525,6 +3609,25 @@ export function checkInPlaceWritable(
         "the video set changed (a video was added, removed, or repointed); an in-place save cannot update videos_json or the embedded video groups (the frames table would point into a stale video list) — re-save the whole file instead",
     };
   }
+  // The in-place writer never rewrites `/provenance_json` (h5wasm can neither
+  // delete a dataset nor resize a string one), and readers prefer that dataset
+  // over the metadata attribute, so any provenance change needs a full re-save.
+  const onDiskProvenance = sidecarProvenance(sidecars.onDisk);
+  const expectedProvenance = sidecars.expected.provenanceJson
+    ? canonicalJsonObject(sidecars.expected.provenanceJson)
+    : "{}";
+  if (
+    onDiskProvenance === undefined ||
+    onDiskProvenance !== expectedProvenance
+  ) {
+    return {
+      ok: false,
+      reason:
+        onDiskProvenance === undefined
+          ? "the on-disk provenance could not be determined (pass sidecars.onDisk.provenanceJson from the /provenance_json dataset); an in-place save cannot rewrite /provenance_json — re-save the whole file instead"
+          : "the provenance changed; an in-place save cannot rewrite the /provenance_json dataset — re-save the whole file instead",
+    };
+  }
   if (
     sidecars.onDisk.metadataJson !== sidecars.expected.metadataJson &&
     update.metadataJson === undefined
@@ -3532,7 +3635,7 @@ export function checkInPlaceWritable(
     return {
       ok: false,
       reason:
-        "the /metadata json changed (e.g. a skeleton or provenance edit) but update.metadataJson was not set to carry it — set update.metadataJson, or re-save the whole file instead",
+        "the /metadata json changed (e.g. a skeleton edit) but update.metadataJson was not set to carry it — set update.metadataJson, or re-save the whole file instead",
     };
   }
 

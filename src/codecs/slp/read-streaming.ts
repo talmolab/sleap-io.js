@@ -35,6 +35,7 @@ import {
   reconstructInstance3D,
   resolveIdentity,
 } from "./parsers.js";
+import { PROVENANCE_DATASET, resolveProvenance } from "./provenance.js";
 import { buildSourceVideoFromDict } from "./source-video.js";
 import { Labels } from "../../model/labels.js";
 import { LabeledFrame } from "../../model/labeled-frame.js";
@@ -575,6 +576,7 @@ export async function readFromStreamingFile(
   ) as Record<string, unknown> | null;
 
   const skeletons = parseSkeletons(metadataJson);
+  const provenanceValue = await readProvenanceValueStreaming(file);
 
   report(1);
   const tracks = await readTracksStreaming(file);
@@ -766,7 +768,7 @@ export async function readFromStreamingFile(
     suggestions,
     sessions,
     identities,
-    provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
+    provenance: resolveProvenance(provenanceValue, metadataJson) ?? {},
   });
   if (lazyStore) {
     // Attach the lazy proxies BEFORE injectSessionFrameResolver so the resolver's
@@ -797,6 +799,21 @@ async function readTracksStreaming(file: StreamingH5File): Promise<Track[]> {
     return parseTracks(values);
   } catch {
     return [];
+  }
+}
+
+/**
+ * Raw value of the top-level `/provenance_json` dataset, or `undefined` when it
+ * is absent or unreadable. Streaming mirror of `readProvenanceValue` (read.ts).
+ */
+async function readProvenanceValueStreaming(
+  file: StreamingH5File,
+): Promise<unknown> {
+  try {
+    if (!file.keys().includes(PROVENANCE_DATASET)) return undefined;
+    return (await file.getDatasetValue(PROVENANCE_DATASET)).value;
+  } catch {
+    return undefined;
   }
 }
 
