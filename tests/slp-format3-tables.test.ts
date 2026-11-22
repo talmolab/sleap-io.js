@@ -849,6 +849,23 @@ describe("the store-merging writers and stores from 3.0 files", () => {
   });
 });
 
+describe("box and centroid flags", () => {
+  it("read any nonzero is_predicted as predicted, as Python does", async () => {
+    // Boxes and centroids are groups of columns in every layout; their
+    // is_predicted is stored as uint8, which h5wasm can write.
+    const file = await editedCopy(V3, (h5) => {
+      for (const p of ["bboxes/is_predicted", "centroids/is_predicted"]) {
+        // biome-ignore lint/suspicious/noExplicitAny: h5wasm Dataset
+        (h5.get(p) as any).write_slice([[0, 1]], new Uint8Array([2]));
+      }
+    });
+    const labels = await readSlp(file, EDIT);
+    const frame = labels.labeledFrames[0];
+    expect(frame.bboxes[0].constructor.name).toBe("PredictedBoundingBox");
+    expect(frame.centroids[0].constructor.name).toBe("PredictedCentroid");
+  });
+});
+
 describe("sub-tables this version does not know", () => {
   it("are listed as unread by every reader", async () => {
     const file = await editedCopy(V3, (h5) => {

@@ -80,7 +80,8 @@ export function buildCentroidTuples(
     };
 
     const isPred =
-      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+      // Any nonzero flag is predicted, as Python's bool().
+      isPredictedCol.length > i ? Number(isPredictedCol[i]) !== 0 : false;
 
     let centroid: Centroid;
     if (isPred) {
