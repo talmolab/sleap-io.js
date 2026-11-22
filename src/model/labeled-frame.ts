@@ -7,7 +7,7 @@ import { LabelImage } from "./label-image.js";
 import { ROI } from "./roi.js";
 import { InstanceMatcher, InstanceMatchMethod } from "./matching.js";
 import type { RecordMetadata } from "./record-metadata.js";
-import { copySourceMark, mergeSourceMark } from "./source-mark.js";
+import { copySourceMark, takeViewMark } from "./source-mark.js";
 
 /** Strategy for merging annotation lists between frames. */
 export type MergeStrategy =
@@ -344,6 +344,8 @@ function _resolveAnnotationUpdateTracks(
     (selfList[selfIdx] as any).trackingScore = (
       otherList[otherIdx] as any
     ).trackingScore;
+    // It now holds the other's track: view-only if the other is.
+    takeViewMark(selfList[selfIdx], otherList[otherIdx]);
   });
 }
 
@@ -691,11 +693,35 @@ export class LabeledFrame {
 
     const conflicts: Array<[Instance, Instance, string]> = [];
     // Frame metadata: this frame's keys win, the other's fill in (Python
-    // `merge_metadata`). The frame now holds the other's content, so it takes
-    // the stricter format 3.0 source mark of the two.
+    // `merge_metadata`). A format 3.0 source mark follows content, not the
+    // merge: this frame becomes view-only only if it takes frame-level content
+    // (a metadata key it lacked, or the negative flag) from a view-only frame.
+    // Instances and annotations taken from the other carry their own marks.
+    const takesMetadata = Object.keys(other.metadata).some(
+      (key) => !(key in this.metadata),
+    );
+    const wasNegative = this.isNegative;
     this.metadata = { ...other.metadata, ...this.metadata };
-    mergeSourceMark(this, other);
+    if (takesMetadata) takeViewMark(this, other);
+    try {
+      return this._mergeInstances(other, frame, instanceMatcher, conflicts);
+    } finally {
+      if (!wasNegative && this.isNegative && other.isNegative) {
+        takeViewMark(this, other);
+      }
+    }
+  }
 
+  /** The strategy part of {@link merge}. */
+  private _mergeInstances(
+    other: LabeledFrame,
+    frame: string,
+    instanceMatcher: InstanceMatcher,
+    conflicts: Array<[Instance, Instance, string]>,
+  ): [
+    Array<Instance | PredictedInstance>,
+    Array<[Instance, Instance, string]>,
+  ] {
     if (frame === "keep_original") {
       this.mergeAnnotations(other, "keep_original");
       [this.isNegative] = _resolveMergedIsNegative(
@@ -732,6 +758,8 @@ export class LabeledFrame {
         this.instances[selfIdx].track = other.instances[otherIdx].track;
         this.instances[selfIdx].trackingScore =
           other.instances[otherIdx].trackingScore;
+        // It now holds the other's track: view-only if the other is.
+        takeViewMark(this.instances[selfIdx], other.instances[otherIdx]);
       }
       this.mergeAnnotations(other, "update_tracks", instanceMatcher.threshold);
       [this.isNegative] = _resolveMergedIsNegative(

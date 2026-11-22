@@ -54,6 +54,7 @@ import {
   skipsInstanceRow,
 } from "../src/codecs/slp/columnar.js";
 import {
+  buildLabelTableRows,
   buildLabelTableUpdate,
   checkInPlaceWritable,
   openSlpWriter,
@@ -69,8 +70,16 @@ import { loadSlpMetadata, validateSlpBuffer } from "../src/lite.js";
 import {
   Instance,
   PredictedInstance,
+  clonePoint,
   type Point,
 } from "../src/model/instance.js";
+import { PredictedSegmentationMask } from "../src/model/mask.js";
+import { LabelImage } from "../src/model/label-image.js";
+import {
+  copySourceMark,
+  setSourceAccess,
+  sourceMarkOf,
+} from "../src/model/source-mark.js";
 import { Labels } from "../src/model/labels.js";
 import { LabelsSet } from "../src/model/labels-set.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
@@ -542,7 +551,7 @@ describe("the open-time choice travels with the records", () => {
     });
   }
 
-  it("edit content merged elsewhere is saved as chosen, without a word", async () => {
+  it("edit content merged elsewhere is saved as chosen", async () => {
     const target = await readSlp(slpPath(V2), { openVideos: false });
     await target.merge(await load("edit"));
     expect(target.sourceFormat).toBeNull();
@@ -554,7 +563,14 @@ describe("the open-time choice travels with the records", () => {
       (i) => !(i instanceof PredictedInstance) && i.points[2].xy[0] !== 50,
     );
     expect(user?.points[2].xy).toEqual([Number.NaN, Number.NaN]);
-    expect(warn).not.toHaveBeenCalled();
+    // The merged instances and boxes are the caller's choice: no word about
+    // them. The project's own frames took metadata keys, so those keys are
+    // now the frames' own and their drop is warned about.
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes("unlabelled"))).toBe(false);
+    expect(messages).toEqual([
+      expect.stringContaining("(frames: flagged, note)"),
+    ]);
   });
 
   it("edit frames appended to a writer with a plain header are written absent", async () => {
@@ -640,6 +656,236 @@ describe("the open-time choice travels with the records", () => {
     const again = buildLabelTableUpdate(labels);
     expect(checkInPlaceWritable(again, {}, sidecars).ok).toBe(true);
     expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("marks follow content, and can be carried or switched", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  const own = () => readSlp(slpPath(V2), { openVideos: false });
+  const load = (format3: Format3Access, name = POSE) =>
+    readSlp(slpPath(name), { openVideos: false, format3 });
+
+  it("a keep_original merge of a view-only twin leaves your frames yours", async () => {
+    const labels = await own();
+    await labels.merge(await load("view"), { frame: "keep_original" });
+    expect(labels.labeledFrames.length).toBe(4);
+    for (const frame of labels.labeledFrames) {
+      expect(sourceMarkOf(frame)).toBeUndefined();
+      for (const inst of frame.instances) {
+        expect(sourceMarkOf(inst)).toBeUndefined();
+      }
+    }
+    await saveSlpToBytes(labels);
+    buildLabelTableRows(labels);
+  });
+
+  it("a frame that takes a metadata key from a view-only frame is view-only", async () => {
+    const labels = await own();
+    const view = await load("view", META);
+    labels.labeledFrames[0].merge(view.labeledFrames[0], {
+      frame: "keep_original",
+    });
+    expect(sourceMarkOf(labels.labeledFrames[0])?.access).toBe("view");
+    expect(sourceMarkOf(labels.labeledFrames[1])).toBeUndefined();
+  });
+
+  it("an instance that takes a track from a view-only instance is view-only", async () => {
+    const labels = await own();
+    const view = await load("view");
+    const frame = labels.labeledFrames[0];
+    frame.merge(view.labeledFrames[0], { frame: "update_tracks" });
+    expect(sourceMarkOf(frame)).toBeUndefined();
+    expect(sourceMarkOf(frame.instances[0])?.access).toBe("view");
+    expect(await caught(() => saveSlpToBytes(labels))).toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+  });
+
+  it("taking from an edit-loaded frame keeps the warning for your own metadata", async () => {
+    const labels = await own();
+    const frame = labels.labeledFrames[0];
+    frame.metadata = { mine: 1 };
+    frame.merge((await load("edit", META)).labeledFrames[0], {
+      frame: "keep_original",
+    });
+    expect(sourceMarkOf(frame)).toBeUndefined();
+    await saveSlpToBytes(labels);
+    const dropped = warn.mock.calls
+      .map((c) => String(c[0]))
+      .filter((m) => m.includes("metadata"));
+    expect(dropped.length).toBe(1);
+    expect(dropped[0]).toContain("mine");
+  });
+
+  it("box, mask, ROI and label image conversions keep the mark", async () => {
+    const view = await load("view", META);
+    const box = view.labeledFrames[0].bboxes[1];
+    const roi = box.toRoi();
+    const mask = box.toMask(64, 64);
+    const derived: Array<[string, object]> = [
+      ["toRoi", roi],
+      ["toMask", mask],
+      ["mask.toBbox", mask.toBbox()],
+      ["mask.toPolygon", mask.toPolygon()],
+      ["mask.resampled", mask.resampled(32, 32)],
+      ["roi.toMask", roi.toMask(64, 64)],
+      ...roi.explode().map((r) => ["roi.explode", r] as [string, object]),
+    ];
+    if (mask instanceof PredictedSegmentationMask) {
+      derived.push(["mask.toUser", mask.toUser()]);
+    }
+    const image = LabelImage.fromMasks([box.toMask(64, 64)]);
+    copySourceMark(box, image); // fromMasks composes several masks
+    derived.push(
+      ["labelImage.resampled", image.resampled(32, 32)],
+      ...image.toMasks().map((m) => ["toMasks", m] as [string, object]),
+      ...image.toBboxes().map((b) => ["toBboxes", b] as [string, object]),
+    );
+    for (const [label, record] of derived) {
+      expect([label, sourceMarkOf(record)?.access]).toEqual([label, "view"]);
+    }
+    // And the writers see it: a converted ROI saved as one's own is refused.
+    const labels = await own();
+    labels.labeledFrames[0].rois.push(roi as never);
+    expect(await caught(() => saveSlpToBytes(labels))).toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+  });
+
+  it("buildLabelTableRows refuses view-only labels and records", async () => {
+    const view = await load("view");
+    expect(await caught(() => buildLabelTableRows(view))).toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+    const plain = new Labels({
+      labeledFrames: view.labeledFrames,
+      videos: view.videos,
+      skeletons: view.skeletons,
+      tracks: view.tracks,
+    });
+    expect(await caught(() => buildLabelTableRows(plain))).toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+  });
+
+  it("copySourceMark carries the choice to records an application rebuilds", async () => {
+    const view = await load("view");
+    const original = view.labeledFrames[0].instances[0];
+    const rebuilt = new Instance({
+      points: original.points.map((p) => clonePoint(p)),
+      skeleton: original.skeleton,
+    });
+    expect(sourceMarkOf(rebuilt)).toBeUndefined();
+    copySourceMark(original, rebuilt);
+    const labels = await own();
+    labels.labeledFrames[0].instances.push(rebuilt);
+    expect(await caught(() => saveSlpToBytes(labels))).toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+  });
+
+  it("the source format is frozen; setSourceAccess switches the choice", async () => {
+    const view = await load("view", META);
+    expect(Object.isFrozen(view.sourceFormat)).toBe(true);
+    expect(Object.isFrozen(view.sourceFormat?.summary)).toBe(true);
+    expect(() => {
+      (view.sourceFormat as { access: string }).access = "edit";
+    }).toThrow();
+    const elsewhere = view.copy();
+    setSourceAccess(view, "edit");
+    expect(view.sourceFormat?.access).toBe("edit");
+    expect(sourceMarkOf(view.labeledFrames[0].bboxes[0])?.access).toBe("edit");
+    await expectEditSave(await saveSlpToBytes(view));
+    // A copy taken before keeps its own choice.
+    expect(await caught(() => saveSlpToBytes(elsewhere))).toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+    expect(() => setSourceAccess(view, "write" as never)).toThrow(TypeError);
+    expect(() => setSourceAccess(new Labels(), "edit")).toThrow(
+      "not loaded from an SLP format 3.0 file",
+    );
+  });
+
+  it("setSourceAccess switches lazy labels, their store and materialized frames", async () => {
+    const lazy = await readSlpLazy(slpPath(META), {
+      openVideos: false,
+      format3: "view",
+    });
+    const first = lazy.frameAt(0) as LabeledFrame;
+    expect(sourceMarkOf(first)?.access).toBe("view");
+    setSourceAccess(lazy, "edit");
+    expect(sourceMarkOf(first)?.access).toBe("edit");
+    expect(lazy._lazyDataStore?.sourceFormat?.access).toBe("edit");
+    await expectEditSave(await saveSlpToBytes(lazy));
+  });
+
+  it("a box of your own added to a lazy frame stays yours", async () => {
+    const lazy = await readSlpLazy(slpPath(META), {
+      openVideos: false,
+      format3: "edit",
+    });
+    const frame = lazy.frameAt(0) as LabeledFrame;
+    const mine = new UserBoundingBox({
+      x1: 0,
+      y1: 0,
+      x2: 1,
+      y2: 1,
+      metadata: { mine: 1 },
+    });
+    frame.bboxes.push(mine);
+    lazy.releaseFrame(0);
+    const again = lazy.frameAt(0) as LabeledFrame;
+    expect(again.bboxes).toContain(mine);
+    expect(sourceMarkOf(mine)).toBeUndefined();
+  });
+
+  it("a lazy store holding a view-only annotation is refused", async () => {
+    const view = await load("view", META);
+    const lazy = await readSlpLazy(slpPath(META), {
+      openVideos: false,
+      format3: "edit",
+    });
+    const centroid = view.labeledFrames[0].bboxes[0].toCentroid();
+    lazy._lazyDataStore?._centroidByFrame.set("0:0", [centroid]);
+    expect(await caught(() => saveSlpToBytes(lazy))).toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+  });
+
+  it("every reader refuses a wrong format3 value before reading", async () => {
+    const bad = { openVideos: false, format3: "bogus" as Format3Access };
+    expect(await caught(() => readSlp(slpPath(V2), bad))).toBeInstanceOf(
+      TypeError,
+    );
+    expect(await caught(() => readSlpLazy(slpPath(V2), bad))).toBeInstanceOf(
+      TypeError,
+    );
+    expect(
+      await caught(() => readStreaming(V2, "bogus" as Format3Access)),
+    ).toBeInstanceOf(TypeError);
+  });
+
+  it("the committed format 3.0 fixtures name no machine path", () => {
+    for (const name of [
+      "format3_pose.slp",
+      "format3_pose.v2.slp",
+      "format3_unlabeled.slp",
+      "format3_rois_stub.slp",
+      "format3_metadata.slp",
+      "format3_defaults.slp",
+      "format3_bad_frame_id.slp",
+      "format3_embedded.pkg.slp",
+    ]) {
+      const text = Buffer.from(slpBytes(name)).toString("latin1");
+      for (const needle of ["/scr/", "/home/", "/Users/", "/tmp/", ":\\\\"]) {
+        expect([name, text.includes(needle)]).toEqual([name, false]);
+      }
+    }
   });
 });
 

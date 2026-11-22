@@ -153,7 +153,7 @@ export type UnlabeledAs = "error" | "absent";
 
 /**
  * Throw {@link SlpViewOnlyError} for labels (or a lazy store, or a table
- * update) loaded from a format 3.0 file with `format3: "view"`. Every writer
+ * update) loaded from a format 3.0 file with `format3: "view"`. Every SLP writer
  * calls this before it touches its target.
  */
 export function refuseViewOnly(
@@ -231,6 +231,30 @@ function framesLegacyLosses(frames: Iterable<LabeledFrame>): LegacyLosses {
 }
 
 /**
+ * Throw {@link SlpViewOnlyError} if any frame, instance or annotation in
+ * `frames` was loaded with `format3: "view"`.
+ */
+function refuseViewOnlyRecords(frames: Iterable<LabeledFrame>): void {
+  const check = (record: object): void => {
+    const mark = sourceMarkOf(record);
+    if (mark?.access === "view") throw new SlpViewOnlyError(mark);
+  };
+  for (const frame of frames) {
+    check(frame);
+    for (const list of [
+      frame.instances,
+      frame.centroids,
+      frame.bboxes,
+      frame.masks,
+      frame.labelImages,
+      frame.rois,
+    ] as object[][]) {
+      for (const record of list) check(record);
+    }
+  }
+}
+
+/**
  * The {@link LegacyLosses} of a lazy store, read from its raw columns. The
  * store's source covers its pose rows; boxes are checked one by one.
  */
@@ -244,6 +268,18 @@ function storeLegacyLosses(store: LazyDataStore): LegacyLosses {
     const mark = sourceMarkOf(box);
     if (mark?.access === "view") viewOnly ??= mark;
     if (!mark) ownBoxes.push(box);
+  }
+  // The other annotations the lazy writers write from the store's maps.
+  for (const [byFrame, undistributed] of [
+    [store._centroidByFrame, store._undistributedCentroids],
+    [store._maskByFrame, store._undistributedMasks],
+    [store._roiByFrame, store._undistributedRois],
+    [store._labelImageByFrame, store._undistributedLabelImages],
+  ] as Array<[Map<string, object[]>, object[]]>) {
+    for (const record of [...undistributed, ...[...byFrame.values()].flat()]) {
+      const mark = sourceMarkOf(record);
+      if (mark?.access === "view") viewOnly ??= mark;
+    }
   }
   const unlabeled =
     countUnlabeledPoints(store.pointsData) +
@@ -3419,8 +3455,17 @@ function buildNegativeFrameRows(labels: Labels): number[][] {
  * {@link buildLabelTableUpdate} (the in-place save path) so both emit
  * byte-identical columns using the same field-name constants. Contains no HDF5
  * I/O — pure `Labels` → `number[][]`.
+ *
+ * Content loaded with `format3: "view"` (the labels, or any frame, instance or
+ * annotation) is refused, since a caller may build an in-place update from
+ * these rows by hand. Unlabelled points are written as absent; for the
+ * `unlabeledAs` rule and the metadata warning, use {@link buildLabelTableUpdate}.
+ *
+ * @throws {SlpViewOnlyError} For view-only labels or records.
  */
 export function buildLabelTableRows(labels: Labels): LabelTableRows {
+  refuseViewOnly(labels);
+  refuseViewOnlyRecords(labels.labeledFrames);
   const frames: number[][] = [];
   const instances: number[][] = [];
   const points: number[][] = [];

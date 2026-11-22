@@ -186,7 +186,7 @@ export class Labels {
   /**
    * Set when the labels were loaded from a file in SLP format 3.0: its format,
    * what it holds that the 2.x layout cannot store, and the caller's
-   * `format3` choice. With `access: "view"` every writer refuses the labels;
+   * `format3` choice. With `access: "view"` every SLP writer refuses the labels;
    * with `"edit"` writers save the 2.x layout and drop those fields. `null`
    * for labels from 1.x/2.x files or built in memory. Carried by
    * {@link copy} and {@link extract}. The choice also travels with each

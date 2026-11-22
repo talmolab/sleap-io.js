@@ -15,6 +15,7 @@ import {
 import { checkSlpFormat, unreadTablesError } from "./format-check.js";
 import {
   buildFormat3Summary,
+  checkFormat3Option,
   checkMetadataColumns,
   chooseFormat3Access,
   type Format3Access,
@@ -178,7 +179,7 @@ export async function readSlp(
     /**
      * What to do with a file in SLP format 3.0, which this version reads but
      * cannot write (it saves the 2.x layout only). `"view"` loads it
-     * read-only: every writer refuses the labels. `"edit"` loads it so that a
+     * read-only: every SLP writer refuses the labels. `"edit"` loads it so that a
      * save writes the 2.x layout and drops what that layout cannot store
      * (unlabelled points become hidden points with no location; record
      * metadata and unknown columns are not written). Without this option a
@@ -190,6 +191,8 @@ export async function readSlp(
 ): Promise<Labels> {
   // `total` is derived from the stage list (single source of truth) so the
   // count cannot drift from the labels. `report(i)` fires the i-th stage label.
+  // A wrong option is the caller's error: refuse it before reading anything.
+  checkFormat3Option(options?.format3);
   const total = EAGER_STAGES.length;
   const onProgress = options?.onProgress;
   const report = (i: number) => onProgress?.(i, total, EAGER_STAGES[i]);
@@ -570,7 +573,7 @@ export async function readSlpLazy(
     /**
      * What to do with a file in SLP format 3.0, which this version reads but
      * cannot write (it saves the 2.x layout only). `"view"` loads it
-     * read-only: every writer refuses the labels. `"edit"` loads it so that a
+     * read-only: every SLP writer refuses the labels. `"edit"` loads it so that a
      * save writes the 2.x layout and drops what that layout cannot store
      * (unlabelled points become hidden points with no location; record
      * metadata and unknown columns are not written). Without this option a
@@ -582,6 +585,8 @@ export async function readSlpLazy(
 ): Promise<Labels> {
   // `total` is derived from the stage list (single source of truth) so the
   // count cannot drift from the labels. `report(i)` fires the i-th stage label.
+  // A wrong option is the caller's error: refuse it before reading anything.
+  checkFormat3Option(options?.format3);
   const total = LAZY_STAGES.length;
   const onProgress = options?.onProgress;
   const report = (i: number) => onProgress?.(i, total, LAZY_STAGES[i]);

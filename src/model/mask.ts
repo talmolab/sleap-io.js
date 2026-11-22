@@ -13,7 +13,7 @@ import {
   UserBoundingBox,
   PredictedBoundingBox,
 } from "./bbox.js";
-import { copySourceMark } from "./source-mark.js";
+import { copySourceMark, keepSourceMark } from "./source-mark.js";
 
 export function encodeRle(
   mask: Uint8Array,
@@ -480,6 +480,17 @@ export class SegmentationMask {
    * The returned mask has scale=[1,1] and offset=[0,0].
    */
   resampled(targetHeight: number, targetWidth: number): SegmentationMask {
+    // A conversion keeps the format 3.0 source of the content.
+    return keepSourceMark(
+      this,
+      this._resampledUnmarked(targetHeight, targetWidth),
+    );
+  }
+
+  private _resampledUnmarked(
+    targetHeight: number,
+    targetWidth: number,
+  ): SegmentationMask {
     const srcData = this.data;
     const resized = resizeNearest(
       srcData,
@@ -627,6 +638,11 @@ export class SegmentationMask {
    * Use {@link toBbox} or the `bbox` getter for the axis-aligned bounding box.
    */
   toPolygon(): ROI {
+    // A conversion keeps the format 3.0 source of the content.
+    return keepSourceMark(this, this._toPolygonUnmarked());
+  }
+
+  private _toPolygonUnmarked(): ROI {
     const rings = this.contours();
     let geometry: Geometry;
     if (rings.length === 0) {
@@ -736,6 +752,11 @@ export class PredictedSegmentationMask extends SegmentationMask {
    *   `fromPredicted` to this predicted mask. When `false`, leave it `null`.
    */
   toUser(link = true): UserSegmentationMask {
+    // A conversion keeps the format 3.0 source of the content.
+    return keepSourceMark(this, this._toUserUnmarked(link));
+  }
+
+  private _toUserUnmarked(link = true): UserSegmentationMask {
     const user = new UserSegmentationMask({
       rleCounts: this.rleCounts.slice(),
       height: this.height,

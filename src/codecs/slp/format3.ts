@@ -134,7 +134,7 @@ export class SlpFormat3ChoiceError extends SlpFormatError {
 }
 
 /**
- * Thrown by every writer, before it touches its target, for labels loaded from
+ * Thrown by every SLP writer, before it touches its target, for labels loaded from
  * a format 3.0 file with `format3: "view"`.
  */
 export class SlpViewOnlyError extends Error {
@@ -154,6 +154,21 @@ export class SlpViewOnlyError extends Error {
     this.sourceFormat = sourceFormat;
     Object.setPrototypeOf(this, new.target.prototype);
   }
+}
+
+/** A deeply frozen copy of a summary. */
+function freezeSummary(summary: Format3Summary): Format3Summary {
+  return Object.freeze({
+    ...summary,
+    metadataKeys: Object.freeze({
+      instances: Object.freeze([...summary.metadataKeys.instances]),
+      frames: Object.freeze([...summary.metadataKeys.frames]),
+      bboxes: Object.freeze([...summary.metadataKeys.bboxes]),
+    }) as Format3Summary["metadataKeys"],
+    unknownColumns: Object.freeze([
+      ...summary.unknownColumns,
+    ]) as unknown as string[],
+  });
 }
 
 /** Build the summary of a 3.0 file from what the readers gathered. */
@@ -204,12 +219,14 @@ export function chooseFormat3Access(
   if (access === undefined) {
     throw new SlpFormat3ChoiceError(labelsPath, summary);
   }
-  return {
+  // Shared by the labels and every record's mark, so frozen: the choice is
+  // changed with setSourceAccess, never by mutating this object.
+  return Object.freeze({
     formatId: summary.formatId,
     access,
-    summary,
+    summary: freezeSummary(summary),
     labelsPath: safePath(labelsPath),
-  };
+  });
 }
 
 /**

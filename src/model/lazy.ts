@@ -13,7 +13,7 @@ import type { Embedding } from "./embedding.js";
 import { type MetadataColumns, metadataRecord } from "./record-metadata.js";
 import type { SlpSourceFormat } from "../codecs/slp/format3.js";
 import { skipsInstanceRow } from "../codecs/slp/columnar.js";
-import { markFrameSource } from "./source-mark.js";
+import { markSource } from "./source-mark.js";
 
 /**
  * Raw data store holding HDF5 dataset arrays for lazy materialization.
@@ -369,8 +369,11 @@ export class LazyDataStore {
     if (this.negativeFrames.has(`${rawVideoId}:${frameIndex}`)) {
       frame.isNegative = true;
     }
-    // Every record carries the open-time choice wherever it goes.
-    markFrameSource(frame, this.sourceFormat);
+    // Every record carries the open-time choice wherever it goes. The
+    // annotations were marked when read: the lists are the store's own, and
+    // a record the caller has since added to them keeps its own origin.
+    markSource(frame, this.sourceFormat);
+    for (const instance of instances) markSource(instance, this.sourceFormat);
     return frame;
   }
 
@@ -595,6 +598,11 @@ export class LazyFrameList {
   /** Drop cached frames in the half-open range `[start, end)`. */
   releaseWindow(start: number, end: number): void {
     for (let i = start; i < end; i++) this.cache.delete(i);
+  }
+
+  /** @internal The frames materialized so far. */
+  _cachedFrames(): IterableIterator<LabeledFrame> {
+    return this.cache.values();
   }
 
   /** Drop all cached frames (keeps the underlying store). */

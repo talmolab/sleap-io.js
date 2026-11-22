@@ -381,7 +381,7 @@ reader (and `loadSlp`) takes a `format3` option, and a 3.0 file loaded without
 it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
 
 - `format3: "view"` loads everything and marks the labels view-only
-  (`labels.sourceFormat.access === "view"`). Every writer (`saveSlp`,
+  (`labels.sourceFormat.access === "view"`). Every SLP writer (`saveSlp`,
   `saveSlpToBytes`, `saveSlpStructureToBytes`, `saveSlpSet`, `openSlpWriter`,
   `SlpStreamWriter.appendStore` and `appendFrames`, `saveSlpMergedFromStores`,
   `saveSlpMergedToSink` and the in-place save functions) refuses them with
@@ -393,11 +393,27 @@ it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
 
 The choice travels with the content, not only with the `Labels` it was loaded
 into. Every labeled frame, instance and annotation read from a 3.0 file carries
-it, and copies keep it (`Labels.copy`, `extract`, `merge`, `BoundingBox.pad` and
-the other conversions). So content from a view-only file is refused by every
-writer wherever it ends up (merged into other labels, passed to
+it, and copies keep it (`Labels.copy`, `extract`, `merge`, `BoundingBox.pad`,
+`toRoi`, `toMask` and the other conversions between boxes, centroids, masks,
+ROIs and label images). So content from a view-only file is refused by every
+SLP writer wherever it ends up (merged into other labels, passed to
 `new Labels({ labeledFrames })`, or appended to a streaming writer), and content
-from an edit-loaded file is saved as the caller chose wherever it ends up.
+from an edit-loaded file is saved as the caller chose wherever it ends up. A
+merge passes the choice on only with what it takes: a frame of your own that
+takes nothing from a view-only frame (for example with `frame: "keep_original"`)
+stays yours.
+
+Exports to other formats (Analysis HDF5, CSV, NWB, COCO and the like) are
+conversions, not SLP saves, and do not check the choice. Nor do `toDict` /
+`fromDict` and the numpy codec: records rebuilt from their output are new and
+carry no choice. An application that rebuilds records itself, for example for
+undo snapshots, carries it with `copySourceMark(original, rebuilt)`
+(`sourceMarkOf(record)` reads it).
+
+`labels.sourceFormat` and the records' choice are frozen. To change the choice
+after loading (say, the user decides to edit a file opened view-only), call
+`setSourceAccess(labels, "edit")`: it switches the labels and every record they
+hold from that file.
 
 After saving edit-loaded labels over their source file, that file is in the
 2.x layout. Set `labels.sourceFormat = null` to say so; the in-place save

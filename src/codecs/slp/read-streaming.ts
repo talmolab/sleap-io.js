@@ -25,6 +25,7 @@ import {
 import { checkSlpFormat, unreadTablesError } from "./format-check.js";
 import {
   buildFormat3Summary,
+  checkFormat3Option,
   checkMetadataColumns,
   chooseFormat3Access,
   type Format3Access,
@@ -179,7 +180,7 @@ export interface StreamingSlpOptions {
   onProgress?: (current: number, total: number, message?: string) => void;
   /**
    * What to do with a file in SLP format 3.0, which this version reads but
-   * cannot write: `"view"` (read-only, every writer refuses the labels) or
+   * cannot write: `"view"` (read-only, every SLP writer refuses the labels) or
    * `"edit"` (a save writes the 2.x layout and drops what it cannot store).
    * Without it a 3.0 file throws `SlpFormat3ChoiceError`. See `readSlp`.
    */
@@ -497,6 +498,8 @@ export async function readSlpStreaming(
   source: StreamingH5Source,
   options?: StreamingSlpOptions,
 ): Promise<Labels> {
+  // A wrong option is the caller's error: refuse it before reading anything.
+  checkFormat3Option(options?.format3);
   if (!isStreamingSupported()) {
     throw new Error(
       "Streaming HDF5 requires Web Worker support (browser environment)",
@@ -572,6 +575,7 @@ export async function readFromStreamingFile(
   repairPointSpans: boolean = false,
   format3Choice?: Format3Access,
 ): Promise<Labels> {
+  checkFormat3Option(format3Choice);
   if (lazy && userInstancesOnly) {
     throw new Error(
       "readSlpStreaming: userInstancesOnly can't be combined with lazy",

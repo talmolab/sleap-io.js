@@ -5,7 +5,7 @@ import { ROI } from "./roi.js";
 import type { Identity } from "./identity.js";
 import type { Embedding } from "./embedding.js";
 import type { RecordMetadata } from "./record-metadata.js";
-import { copySourceMark } from "./source-mark.js";
+import { copySourceMark, keepSourceMark } from "./source-mark.js";
 import {
   Centroid,
   PredictedCentroid,
@@ -247,6 +247,11 @@ export class BoundingBox {
 
   /** Convert to a Polygon ROI. */
   toRoi(): ROI {
+    // A conversion keeps the format 3.0 source of the content.
+    return keepSourceMark(this, this._toRoiUnmarked());
+  }
+
+  private _toRoiUnmarked(): ROI {
     const c = this.corners;
     // Close the ring
     const ring = [...c, c[0]];

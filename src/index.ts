@@ -155,6 +155,12 @@ export {
   LOSSLESS_FORMAT3_ASKS,
 } from "./codecs/slp/format3.js";
 export { SlpTableError } from "./codecs/slp/format-check.js";
+// The format 3.0 choice carried by each record (see model/source-mark.ts).
+export {
+  copySourceMark,
+  sourceMarkOf,
+  setSourceAccess,
+} from "./model/source-mark.js";
 export type {
   Format3Access,
   Format3Summary,

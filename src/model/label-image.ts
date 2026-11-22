@@ -12,6 +12,7 @@ import {
   encodeRle,
   resizeNearest,
 } from "./mask.js";
+import { keepSourceMark } from "./source-mark.js";
 
 /** Per-object metadata in a LabelImage. */
 export interface LabelImageObjectInfo {
@@ -144,6 +145,17 @@ export class LabelImage {
    * The returned label image has scale=[1,1] and offset=[0,0].
    */
   resampled(targetHeight: number, targetWidth: number): LabelImage {
+    // A conversion keeps the format 3.0 source of the content.
+    return keepSourceMark(
+      this,
+      this._resampledUnmarked(targetHeight, targetWidth),
+    );
+  }
+
+  private _resampledUnmarked(
+    targetHeight: number,
+    targetWidth: number,
+  ): LabelImage {
     const resizedData = resizeNearest(
       this.data,
       this.height,
@@ -712,6 +724,11 @@ export class LabelImage {
 
   /** Decompose this LabelImage into individual SegmentationMask objects. */
   toMasks(): SegmentationMask[] {
+    // A conversion keeps the format 3.0 source of the content.
+    return keepSourceMark(this, this._toMasksUnmarked());
+  }
+
+  private _toMasksUnmarked(): SegmentationMask[] {
     const ids = this.labelIds;
     const maskMap = new Map<number, Uint8Array>();
     for (const lid of ids) {
@@ -767,6 +784,11 @@ export class LabelImage {
    * Label IDs present in `objects` but with no pixels in the data are skipped.
    */
   toBboxes(): BoundingBox[] {
+    // A conversion keeps the format 3.0 source of the content.
+    return keepSourceMark(this, this._toBboxesUnmarked());
+  }
+
+  private _toBboxesUnmarked(): BoundingBox[] {
     const data = this.data;
     const h = this.height;
     const w = this.width;
