@@ -9,6 +9,8 @@ import {
   writeSlp,
   saveSlpToBytes,
   checkSlpSavable,
+  type EmbedOption,
+  type SlpWriteOptions,
   type UnlabeledAs,
 } from "../codecs/slp/write.js";
 import {
@@ -170,8 +172,14 @@ export async function loadSlp(
  * @param labels - Labels object to save
  * @param filename - Output file path
  * @param options - Save options
- * @param options.embed - Embed video frames: true/"all", "user", "suggestions", "user+suggestions", "all+suggestions"
+ * @param options.embed - Embed video frames: true/"all", "user", "suggestions", "user+suggestions", "all+suggestions", "source", or a list of `[video, frameIdx]` pairs
  * @param options.restoreOriginalVideos - Restore source video paths on save (default: true)
+ * @param options.embedAllVideos - When embedding, also turn videos with no
+ *   frames to embed into empty embedded videos (default: true); see
+ *   `SlpWriteOptions.embedAllVideos`.
+ * @param options.onProgress - Progress callback while embedding; return
+ *   `false` to cancel (throws `ExportCancelled`); see
+ *   `SlpWriteOptions.onProgress`.
  * @param options.unlabeledAs - How to save unlabelled points, which the 2.x
  *   layout cannot store (see `SlpWriteOptions.unlabeledAs`).
  * @throws {SlpViewOnlyError} For labels loaded with `format3: "view"`.
@@ -180,14 +188,18 @@ export async function saveSlp(
   labels: Labels,
   filename: string,
   options?: {
-    embed?: boolean | string;
+    embed?: EmbedOption;
     restoreOriginalVideos?: boolean;
+    embedAllVideos?: boolean;
+    onProgress?: SlpWriteOptions["onProgress"];
     unlabeledAs?: UnlabeledAs;
   },
 ): Promise<void> {
   await writeSlp(filename, labels, {
     embed: options?.embed ?? false,
     restoreOriginalVideos: options?.restoreOriginalVideos ?? true,
+    embedAllVideos: options?.embedAllVideos,
+    onProgress: options?.onProgress,
     unlabeledAs: options?.unlabeledAs,
   });
 }
