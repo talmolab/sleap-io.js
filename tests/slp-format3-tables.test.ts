@@ -762,6 +762,13 @@ describe("loadSlp in a browser does not lose what the streaming reader skips", (
     expect(labels.labeledFrames).toHaveLength(4);
   });
 
+  it("both entry points export StreamingIncompleteError", async () => {
+    const node = await import("../src/index.js");
+    const browser = await import("../src/index.browser.js");
+    expect(node.StreamingIncompleteError).toBe(StreamingIncompleteError);
+    expect(browser.StreamingIncompleteError).toBe(StreamingIncompleteError);
+  });
+
   it("the streaming reader refuses such a file when asked, naming what it skips", async () => {
     let error: unknown;
     try {
