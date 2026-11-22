@@ -385,13 +385,19 @@ byte ranges inside their buffers) raise `SlpTableError`. The streaming reader
 reads, of these tables, the links of instances and the session tables (it
 reads no ROIs, masks or label images in any layout), and the summary it gives
 for a 3.0 file lists the rest in `unreadTables` (below), as something an edit
-drops. `loadSlp` in a browser uses the streaming reader only for files it
-reads in full: in its default stream mode (`"auto"`), a file holding ROIs,
-masks, label images, or links or embeddings of detections other than
-instances is read on the main thread instead, so nothing is lost. The lite
-`loadSlpMetadata` reads the session tables, and its `streamingUnreadTables`
-lists what a direct `readSlpStreaming` would leave out (its `format3` summary
-describes `readSlp`, `readSlpLazy` and `loadSlp`). The range checks run in the
+drops. `loadSlp` in a browser uses the streaming reader, except that in its
+default stream mode (`"auto"`) a 3.0 file holding ROIs, masks, label images,
+or links or embeddings of detections other than instances is read with the
+standard reader on the main thread, so nothing is lost. That read takes the
+whole file into memory (a URL is downloaded whole, a `File` read whole) and
+blocks the page while it runs; pass `h5: { stream: "range" }` to keep
+streaming, and the summary then lists what is not read. Files before 3.0 take
+the streaming route as before, which skips that content in them without a
+word. The lite `loadSlpMetadata` reads the session tables, and its
+`streamingUnreadTables` lists what a streaming read would leave out, for files
+of any format (the link tables of Python-written 2.x files are listed whenever
+present, as the lite reader cannot read their owner types); its `format3`
+summary describes `readSlp`, `readSlpLazy` and `loadSlp`. The range checks run in the
 readers that read a table, so the streaming and lite readers do not check the
 tables they leave out. The streaming reader's `userInstancesOnly`, which skips
 predicted instances and sessions, opens a 3.0 file only with
@@ -423,12 +429,14 @@ it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
   form stores some numbers in narrower types than 3.0: scores, tracking
   scores, scales and offsets of ROIs, masks, label images and score maps as
   32-bit floats, and their video, track and instance indices as 32-bit
-  integers. The store-merging writers (`SlpStreamWriter.appendStore`,
-  `saveSlpMergedFromStores`, `saveSlpMergedToSink`) write no per-detection
-  identity or category links or embeddings, and only the identities and
-  sessions given in their header; they refuse a store loaded this way that
-  holds any of those, before writing it, and name what would be lost. Save
-  such labels with `saveSlp` or `saveSlpToBytes`.
+  integers. The streaming writer (`SlpStreamWriter.appendStore` and
+  `appendFrames`, `saveSlpMergedFromStores`, `saveSlpMergedToSink`) writes no
+  per-detection identity or category links or embeddings (the category of a
+  centroid, box, mask or ROI is kept, in its own column, but not its score),
+  and only the identities and sessions given in its header. It refuses
+  stores and frames loaded this way that hold any of those, before writing
+  them, and names what would be lost. Save such labels with `saveSlp` or
+  `saveSlpToBytes`.
 
 The choice travels with the content, not only with the `Labels` it was loaded
 into. Every labeled frame, instance and annotation (static ROIs included), and

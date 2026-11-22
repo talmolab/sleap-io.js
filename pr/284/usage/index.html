@@ -1079,13 +1079,19 @@ byte ranges inside their buffers) raise <code>SlpTableError</code>. The streamin
 reads, of these tables, the links of instances and the session tables (it
 reads no ROIs, masks or label images in any layout), and the summary it gives
 for a 3.0 file lists the rest in <code>unreadTables</code> (below), as something an edit
-drops. <code>loadSlp</code> in a browser uses the streaming reader only for files it
-reads in full: in its default stream mode (<code>"auto"</code>), a file holding ROIs,
-masks, label images, or links or embeddings of detections other than
-instances is read on the main thread instead, so nothing is lost. The lite
-<code>loadSlpMetadata</code> reads the session tables, and its <code>streamingUnreadTables</code>
-lists what a direct <code>readSlpStreaming</code> would leave out (its <code>format3</code> summary
-describes <code>readSlp</code>, <code>readSlpLazy</code> and <code>loadSlp</code>). The range checks run in the
+drops. <code>loadSlp</code> in a browser uses the streaming reader, except that in its
+default stream mode (<code>"auto"</code>) a 3.0 file holding ROIs, masks, label images,
+or links or embeddings of detections other than instances is read with the
+standard reader on the main thread, so nothing is lost. That read takes the
+whole file into memory (a URL is downloaded whole, a <code>File</code> read whole) and
+blocks the page while it runs; pass <code>h5: { stream: "range" }</code> to keep
+streaming, and the summary then lists what is not read. Files before 3.0 take
+the streaming route as before, which skips that content in them without a
+word. The lite <code>loadSlpMetadata</code> reads the session tables, and its
+<code>streamingUnreadTables</code> lists what a streaming read would leave out, for files
+of any format (the link tables of Python-written 2.x files are listed whenever
+present, as the lite reader cannot read their owner types); its <code>format3</code>
+summary describes <code>readSlp</code>, <code>readSlpLazy</code> and <code>loadSlp</code>. The range checks run in the
 readers that read a table, so the streaming and lite readers do not check the
 tables they leave out. The streaming reader's <code>userInstancesOnly</code>, which skips
 predicted instances and sessions, opens a 3.0 file only with
@@ -1115,12 +1121,14 @@ it throws <code>SlpFormat3ChoiceError</code> (a subclass of <code>SlpFormatError
   form stores some numbers in narrower types than 3.0: scores, tracking
   scores, scales and offsets of ROIs, masks, label images and score maps as
   32-bit floats, and their video, track and instance indices as 32-bit
-  integers. The store-merging writers (<code>SlpStreamWriter.appendStore</code>,
-  <code>saveSlpMergedFromStores</code>, <code>saveSlpMergedToSink</code>) write no per-detection
-  identity or category links or embeddings, and only the identities and
-  sessions given in their header; they refuse a store loaded this way that
-  holds any of those, before writing it, and name what would be lost. Save
-  such labels with <code>saveSlp</code> or <code>saveSlpToBytes</code>.</li>
+  integers. The streaming writer (<code>SlpStreamWriter.appendStore</code> and
+  <code>appendFrames</code>, <code>saveSlpMergedFromStores</code>, <code>saveSlpMergedToSink</code>) writes no
+  per-detection identity or category links or embeddings (the category of a
+  centroid, box, mask or ROI is kept, in its own column, but not its score),
+  and only the identities and sessions given in its header. It refuses
+  stores and frames loaded this way that hold any of those, before writing
+  them, and names what would be lost. Save such labels with <code>saveSlp</code> or
+  <code>saveSlpToBytes</code>.</li>
 </ul>
 <p>The choice travels with the content, not only with the <code>Labels</code> it was loaded
 into. Every labeled frame, instance and annotation (static ROIs included), and

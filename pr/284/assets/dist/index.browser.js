@@ -68,6 +68,7 @@ import {
   StreamingH5File,
   StreamingH5Writer,
   StreamingHdf5VideoBackend,
+  StreamingIncompleteError,
   SuggestionFrame,
   TrackMatchMethod,
   TrackMatcher,
@@ -243,7 +244,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-O5IKKWYG.js";
+} from "./chunk-UJ33X3VA.js";
 import {
   Camera,
   CameraGroup,
@@ -410,6 +411,7 @@ export {
   StreamingH5File,
   StreamingH5Writer,
   StreamingHdf5VideoBackend,
+  StreamingIncompleteError,
   SuggestionFrame,
   Symmetry,
   Track,

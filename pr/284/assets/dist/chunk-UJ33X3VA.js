@@ -14993,12 +14993,15 @@ var StreamingH5File = class {
    * Close the file and terminate the worker.
    */
   async close() {
-    if (this._isOpen) {
-      await this.send("close");
-      this._isOpen = false;
+    try {
+      if (this._isOpen) {
+        this._isOpen = false;
+        await this.send("close");
+      }
+    } finally {
+      this.worker.terminate();
+      this._keys = [];
     }
-    this.worker.terminate();
-    this._keys = [];
   }
 };
 var StreamingH5Writer = class {
@@ -15355,7 +15358,13 @@ async function openH5Worker(source, options) {
     throw new Error("Web Worker HDF5 access requires Worker/Blob/URL support");
   }
   const file = new StreamingH5File();
-  await file.openAny(source, options);
+  try {
+    await file.openAny(source, options);
+  } catch (e) {
+    await file.close().catch(() => {
+    });
+    throw e;
+  }
   return file;
 }
 
@@ -15486,10 +15495,11 @@ async function openFromUrl(module, fs, url, options) {
   return { file, close: () => file.close() };
 }
 async function openFromFile(module, fs, file, options) {
-  const mountPath = `/slp-local-${Date.now()}`;
-  fs.mkdir?.(mountPath);
-  const filename = options?.filenameHint ?? file.name ?? "local.slp";
-  if (fs.mount && fs.filesystems && fs.filesystems.WORKERFS) {
+  const inWorker = typeof globalThis.FileReaderSync !== "undefined";
+  if (inWorker && fs.mount && fs.filesystems && fs.filesystems.WORKERFS) {
+    const mountPath = `/slp-local-${Date.now()}`;
+    fs.mkdir?.(mountPath);
+    const filename = options?.filenameHint ?? file.name ?? "local.slp";
     fs.mount(fs.filesystems.WORKERFS, { files: [file] }, mountPath);
     const filePath = `${mountPath}/${filename}`;
     const h5file2 = new module.File(filePath, "r");
@@ -16528,7 +16538,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
       `readSlpStreaming: '${labelsPath}' is in SLP format 3.0; userInstancesOnly drops its predicted instances and sessions, so it can only be opened with format3: "view" (or without the filter).`
     );
   }
-  if (failIfIncomplete) {
+  if (failIfIncomplete && isFormat3(formatId)) {
     const unread = await unreadByStreaming(file, file.keys());
     if (unread.length > 0) {
       throw new StreamingIncompleteError(labelsPath, unread);
@@ -17971,6 +17981,49 @@ function refuseViewOnly(source) {
     if (mark?.access === "view") throw new SlpViewOnlyError(mark);
   }
 }
+function annotationLinkLoss(d) {
+  return d.identity != null || d.identityEmbedding != null || d.categoryScore != null || d.categoryEmbedding != null;
+}
+function instanceLinkLoss(d) {
+  return d.identity != null || d.identityEmbedding != null || d.category != null && d.category !== "" || d.categoryEmbedding != null;
+}
+function refuseFormat3FrameLosses(frames) {
+  const fromFormat3 = (record) => !!sourceMarkOf(record);
+  let instances = false;
+  let annotations = false;
+  let source;
+  for (const frame of frames) {
+    for (const inst of frame.instances) {
+      if (fromFormat3(inst) && instanceLinkLoss(inst)) {
+        instances = true;
+        source ??= sourceMarkOf(inst);
+      }
+    }
+    for (const list of [
+      frame.centroids,
+      frame.bboxes,
+      frame.masks,
+      frame.rois
+    ]) {
+      for (const d of list) {
+        if (fromFormat3(d) && annotationLinkLoss(d)) {
+          annotations = true;
+          source ??= sourceMarkOf(d);
+        }
+      }
+    }
+  }
+  if (!source) return;
+  const lost = [
+    ...instances ? ["the identities, categories or embeddings of their instances"] : [],
+    ...annotations ? [
+      "the identities, category scores or embeddings of their centroids, boxes, masks or ROIs"
+    ] : []
+  ];
+  throw new Error(
+    `Frames loaded from '${source.labelsPath}' (SLP format ${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ${lost.join(", and ")}, which SlpStreamWriter.appendFrames does not write. Save them with saveSlp or saveSlpToBytes, which keep them.`
+  );
+}
 function refuseFormat3StoreLosses(store, header) {
   const source = store.sourceFormat;
   if (!source) return;
@@ -17990,11 +18043,9 @@ function refuseFormat3StoreLosses(store, header) {
   ]) {
     annotations.push(...undistributed, ...[...byFrame.values()].flat());
   }
-  if (annotations.some(
-    (d) => d.identity != null || d.identityEmbedding != null || d.category != null && d.category !== "" || d.categoryEmbedding != null
-  )) {
+  if (annotations.some(annotationLinkLoss)) {
     lost.push(
-      "the identities, categories or embeddings of its centroids, boxes, masks or ROIs"
+      "the identities, category scores or embeddings of its centroids, boxes, masks or ROIs"
     );
   }
   if (store.sourceSessionCount > 0 && !header.sessions) {
@@ -18843,6 +18894,7 @@ var SlpStreamWriter = class {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
     if (frames.length === 0) return;
     enforceLegacyLayout(framesLegacyLosses(frames), options?.unlabeledAs);
+    refuseFormat3FrameLosses(frames);
     try {
       const frameBase = this.frameRows;
       const instBase = this.instRows;
@@ -28377,6 +28429,7 @@ export {
   UnsupportedVideoFormatError,
   createVideoBackend,
   SlpPointSpanError,
+  StreamingIncompleteError,
   readSlpStreaming,
   _registerFileWriter,
   ExportCancelled,
