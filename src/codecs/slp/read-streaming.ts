@@ -8,7 +8,14 @@
  * @module
  */
 
-import { checkSlpFormat } from "./format-check.js";
+import {
+  METADATA_SUBGROUP,
+  negativeFrameKeysFromFrames,
+  type PoseTableName,
+  poseTableFromColumns,
+  UNREAD_FORMAT_3_TABLES,
+} from "./columnar.js";
+import { checkSlpFormat, unreadTablesError } from "./format-check.js";
 import {
   openH5Worker,
   type StreamingH5File,
@@ -586,6 +593,7 @@ export async function readFromStreamingFile(
   ) as Record<string, unknown> | null;
 
   const skeletons = parseSkeletons(metadataJson);
+  await refuseUnreadFormat3TablesStreaming(file, labelsPath, formatId);
 
   report(1);
   const tracks = await readTracksStreaming(file);
@@ -612,17 +620,22 @@ export async function readFromStreamingFile(
 
   // Read frame/instance/point data
   report(4);
-  const framesData = await readStructDatasetStreaming(file, "frames");
+  const readTable = (table: PoseTableName) =>
+    readPoseTableStreaming(file, table, formatId, labelsPath);
+  const framesData = await readTable("frames");
   report(5);
-  const instancesData = await readStructDatasetStreaming(file, "instances");
+  const instancesData = await readTable("instances");
   report(6);
-  const pointsData = await readStructDatasetStreaming(file, "points");
+  const pointsData = await readTable("points");
   const predPointsData = userInstancesOnly
     ? {}
-    : await readStructDatasetStreaming(file, "pred_points");
-  const negativeFrames = negativeFrameKeys(
-    await readStructDatasetStreaming(file, "negative_frames"),
-  );
+    : await readTable("pred_points");
+  // Format 3.0 keeps the negative flag as a `/frames` column.
+  const negativeFrames = framesData.is_negative
+    ? negativeFrameKeysFromFrames(framesData)
+    : negativeFrameKeys(
+        await readStructDatasetStreaming(file, "negative_frames"),
+      );
   checkPointSpans({
     framesData,
     instancesData,
@@ -1858,6 +1871,66 @@ async function readSessionDataStreaming(
 /**
  * Read a structured dataset and normalize to column format.
  */
+/** The children of a group, or none when the path is absent or a dataset. */
+async function childKeys(
+  file: StreamingH5File,
+  path: string,
+): Promise<string[]> {
+  try {
+    return await file.getKeys(path);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A format 3.0 file may hold tables this version does not read in their 3.0
+ * form yet. Refuse it by name instead of loading it without them.
+ */
+async function refuseUnreadFormat3TablesStreaming(
+  file: StreamingH5File,
+  labelsPath: string,
+  formatId: number,
+): Promise<void> {
+  if (!(formatId >= 3.0)) return;
+  const root = file.keys();
+  const found: string[] = [];
+  for (const path of UNREAD_FORMAT_3_TABLES) {
+    const [parent, child] = path.split("/");
+    if (!root.includes(parent)) continue;
+    if (
+      child === undefined ||
+      (await childKeys(file, parent)).includes(child)
+    ) {
+      found.push(path);
+    }
+  }
+  if (found.length > 0) throw unreadTablesError(labelsPath, formatId, found);
+}
+
+/**
+ * Read one pose table in either layout: a compound dataset (formats 1.x and
+ * 2.x) or, from format 3.0 on, a group with one dataset per column (see
+ * columnar.ts). The columns are fetched one by one from the worker.
+ */
+async function readPoseTableStreaming(
+  file: StreamingH5File,
+  table: PoseTableName,
+  formatId: number,
+  labelsPath: string,
+  // biome-ignore lint/suspicious/noExplicitAny: matches the 2.x table type
+): Promise<Record<string, any>> {
+  if (!(formatId >= 3.0)) return readStructDatasetStreaming(file, table);
+  if (!file.keys().includes(table)) return {};
+  const columns: Record<string, ArrayLike<unknown>> = {};
+  for (const name of await childKeys(file, table)) {
+    if (name === METADATA_SUBGROUP) continue;
+    const data = await file.getDatasetValue(`${table}/${name}`);
+    columns[name] = data.value as ArrayLike<unknown>;
+  }
+  return poseTableFromColumns(table, columns, labelsPath);
+}
+
 async function readStructDatasetStreaming(
   file: StreamingH5File,
   path: string,

@@ -27,9 +27,15 @@ import {
   getValue,
   isDataset,
   isGroup,
+  type JsfiveDataset,
+  type JsfiveGroup,
   type JsfiveSource,
 } from "./codecs/slp/jsfive.js";
-import { checkSlpFormat } from "./codecs/slp/format-check.js";
+import { UNREAD_FORMAT_3_TABLES } from "./codecs/slp/columnar.js";
+import {
+  checkSlpFormat,
+  unreadTablesError,
+} from "./codecs/slp/format-check.js";
 import {
   parseJsonAttr,
   parseSkeletons,
@@ -255,6 +261,19 @@ export async function loadSlpMetadata(
       throw new Error("Invalid SLP file: missing metadata.attrs.json");
     }
 
+    // A format 3.0 file may hold tables this version does not read in their
+    // 3.0 form yet; `/session_data` is the one this reader would touch.
+    if (formatId >= 3.0) {
+      const found = UNREAD_FORMAT_3_TABLES.filter((path) => !!file.get(path));
+      if (found.length > 0) {
+        throw unreadTablesError(
+          options?.filename ?? "slp-data.slp",
+          formatId,
+          found,
+        );
+      }
+    }
+
     // Parse skeletons using shared logic
     const skeletons = parseSkeletons(metadataJson);
 
@@ -322,11 +341,18 @@ export async function loadSlpMetadata(
     const pointsDs = file.get("points");
     const predPointsDs = file.get("pred_points");
 
+    // Format 3.0 stores each table as a group with one dataset per column, so
+    // the row count is the length of one of its required columns.
+    const rows = (
+      table: JsfiveDataset | JsfiveGroup | null,
+      columnPath: string,
+    ): number =>
+      getShape(isGroup(table) ? file.get(columnPath) : table)[0] ?? 0;
     const counts = {
-      labeledFrames: getShape(framesDs)[0] ?? 0,
-      instances: getShape(instancesDs)[0] ?? 0,
-      points: getShape(pointsDs)[0] ?? 0,
-      predictedPoints: getShape(predPointsDs)[0] ?? 0,
+      labeledFrames: rows(framesDs, "frames/frame_idx"),
+      instances: rows(instancesDs, "instances/instance_type"),
+      points: rows(pointsDs, "points/x"),
+      predictedPoints: rows(predPointsDs, "pred_points/x"),
     };
 
     // Check for embedded images by looking at video metadata

@@ -368,16 +368,26 @@ try {
 }
 ```
 
-### Files in a format this version cannot read
+### Format 3.0 files, and formats this version cannot read
 
-sleap-io.js reads SLP formats 1.x and 2.x. Format 3.0, which Python sleap-io
-0.10 introduces, stores each pose table as a group with one dataset per column,
-and this version does not read it yet. Every reader (`loadSlp`, `readSlp`,
-`readSlpLazy`, `readSlpStreaming`, and `loadSlpMetadata` and
-`validateSlpBuffer` in the lite build) throws `SlpFormatError` for a file of
-format 3 or higher. Without the check such a file would load with no error and
-no poses. The same error is thrown for a file whose `required_features`
-attribute on `/metadata` names a feature this version doesn't know.
+sleap-io.js reads SLP formats 1.x, 2.x and the pose tables of format 3.0, which
+Python sleap-io 0.10 introduces. Format 3.0 stores each pose table (`/frames`,
+`/instances`, `/points`, `/pred_points`) as a group with one dataset per
+column. Every reader handles both layouts and returns the same `Labels`.
+
+sleap-io.js still writes the 2.x layout only, so a format 3.0 file that is
+loaded and saved comes out in the 2.x layout.
+
+Every reader (`loadSlp`, `readSlp`, `readSlpLazy`, `readSlpStreaming`, and
+`loadSlpMetadata` and `validateSlpBuffer` in the lite build) throws
+`SlpFormatError` for a file it cannot read:
+
+- a file of format 4 or higher;
+- a file whose `required_features` attribute on `/metadata` names a feature
+  this version doesn't know;
+- a format 3.0 file that holds a table this version does not read in that
+  format yet: ROIs, masks, label images, identity and category links, or
+  session data. The message names the tables.
 
 The message names the file and its format and says which tool can read it. The
 error also carries `formatId` and `unsupportedFeatures`.
@@ -389,14 +399,12 @@ try {
   const labels = await loadSlp("dataset.slp");
 } catch (e) {
   if (!(e instanceof SlpFormatError)) throw e;
-  // e.g. "... is in SLP format 3.0, which this version of sleap-io.js cannot
-  // read ... Python sleap-io 0.10 or newer reads this format. ..."
   console.error(e.message);
 }
 ```
 
-To open a format 3.0 file here, load it with Python sleap-io 0.10 or newer and
-save a copy in the 2.x layout:
+A format 3.0 file that is refused for its tables can be saved in the 2.x layout
+with Python sleap-io 0.10 or newer:
 
 ```python
 import sleap_io as sio

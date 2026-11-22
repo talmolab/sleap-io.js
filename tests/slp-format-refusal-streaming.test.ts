@@ -67,18 +67,15 @@ describe("readSlpStreaming closes the file when it refuses it", () => {
   ]) {
     it(`with ${JSON.stringify(options)}`, async () => {
       closed = 0;
-      attrsFor = "format3_minimal.slp";
+      attrsFor = "format4_stub.slp";
       let error: unknown;
       try {
-        await readSlpStreaming(
-          "https://example.com/format3_minimal.slp",
-          options,
-        );
+        await readSlpStreaming("https://example.com/format4_stub.slp", options);
       } catch (e) {
         error = e;
       }
       expect(error).toBeInstanceOf(SlpFormatError);
-      expect((error as Error).message).toContain("SLP format 3.0");
+      expect((error as Error).message).toContain("SLP format 4.0");
       expect(closed).toBe(1);
     });
   }

@@ -1,4 +1,11 @@
-import { checkSlpFormat } from "./format-check.js";
+import {
+  METADATA_SUBGROUP,
+  negativeFrameKeysFromFrames,
+  type PoseTableName,
+  poseTableFromColumns,
+  UNREAD_FORMAT_3_TABLES,
+} from "./columnar.js";
+import { checkSlpFormat, unreadTablesError } from "./format-check.js";
 import {
   openH5File,
   type OpenH5Options,
@@ -183,6 +190,7 @@ export async function readSlp(
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
     );
+    refuseUnreadFormat3Tables(file, labelsPath, formatId);
     // Throws the same helpful error if the `metadata` group exists but its
     // required `json` attribute is missing/empty (truncated/corrupt file);
     // mirrors Python sleap-io PR #446.
@@ -220,15 +228,19 @@ export async function readSlp(
     // `.value` when unavailable). Fetched once; null on browsers without the
     // raw surface, which is fine — normalizeStructDataset then uses `.value`.
     const emscripten = await getH5EmscriptenModule();
-    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
-    const instancesData = normalizeStructDataset(
-      file.get("instances"),
+    const framesData = readPoseTable(file, "frames", emscripten, labelsPath);
+    const instancesData = readPoseTable(
+      file,
+      "instances",
       emscripten,
+      labelsPath,
     );
-    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
-    const predPointsData = normalizeStructDataset(
-      file.get("pred_points"),
+    const pointsData = readPoseTable(file, "points", emscripten, labelsPath);
+    const predPointsData = readPoseTable(
+      file,
+      "pred_points",
       emscripten,
+      labelsPath,
     );
     checkPointSpans({
       framesData,
@@ -253,8 +265,16 @@ export async function readSlp(
     });
 
     // Read negative frames (video ids resolved like /frames', see helper)
+    // Format 3.0 keeps the flag as a `/frames` column.
     const negativeFramesDs = file.get("negative_frames");
-    if (negativeFramesDs) {
+    if (framesData.is_negative) {
+      markNegativeFrames(
+        labeledFrames,
+        negativeFrameKeysFromFrames(framesData),
+        framesData,
+        videos,
+      );
+    } else if (negativeFramesDs) {
       markNegativeFrames(
         labeledFrames,
         negativeFrameKeys(normalizeStructDataset(negativeFramesDs)),
@@ -510,6 +530,7 @@ export async function readSlpLazy(
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
     );
+    refuseUnreadFormat3Tables(file, labelsPath, formatId);
     // Throws the same helpful error if the `metadata` group exists but its
     // required `json` attribute is missing/empty (truncated/corrupt file);
     // mirrors Python sleap-io PR #446.
@@ -546,15 +567,19 @@ export async function readSlpLazy(
     // Read raw data but don't build frames yet. Use the fast columnar compound
     // read (falls back to `.value`); see normalizeStructDataset / h5-compound.ts.
     const emscripten = await getH5EmscriptenModule();
-    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
-    const instancesData = normalizeStructDataset(
-      file.get("instances"),
+    const framesData = readPoseTable(file, "frames", emscripten, labelsPath);
+    const instancesData = readPoseTable(
+      file,
+      "instances",
       emscripten,
+      labelsPath,
     );
-    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
-    const predPointsData = normalizeStructDataset(
-      file.get("pred_points"),
+    const pointsData = readPoseTable(file, "points", emscripten, labelsPath);
+    const predPointsData = readPoseTable(
+      file,
+      "pred_points",
       emscripten,
+      labelsPath,
     );
     checkPointSpans({
       framesData,
@@ -568,10 +593,13 @@ export async function readSlpLazy(
     });
 
     // Read negative frames (raw video ids; the store resolves them per frame)
+    // Format 3.0 keeps the flag as a `/frames` column.
     const negativeFramesDs = file.get("negative_frames");
-    const negativeFrames = negativeFramesDs
-      ? negativeFrameKeys(normalizeStructDataset(negativeFramesDs))
-      : new Set<string>();
+    const negativeFrames = framesData.is_negative
+      ? negativeFrameKeysFromFrames(framesData)
+      : negativeFramesDs
+        ? negativeFrameKeys(normalizeStructDataset(negativeFramesDs))
+        : new Set<string>();
 
     const store = new LazyDataStore({
       framesData,
@@ -2534,6 +2562,53 @@ function readLabelImages(
     labelImages.push([li, videoIdx, frameIdxVal]);
   }
   return labelImages;
+}
+
+/**
+ * A format 3.0 file may hold tables this version does not read in their 3.0
+ * form yet. Refuse it by name instead of loading it without them.
+ */
+function refuseUnreadFormat3Tables(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  labelsPath: string,
+  formatId: number,
+): void {
+  if (!(formatId >= 3.0)) return;
+  const found = UNREAD_FORMAT_3_TABLES.filter((path) => {
+    try {
+      return !!file.get(path);
+    } catch {
+      return false;
+    }
+  });
+  if (found.length > 0) throw unreadTablesError(labelsPath, formatId, found);
+}
+
+/**
+ * Read one pose table in either layout: a compound dataset (formats 1.x and
+ * 2.x) or a group with one dataset per column (format 3.0, see columnar.ts).
+ */
+function readPoseTable(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  table: PoseTableName,
+  module: unknown,
+  labelsPath: string,
+  // biome-ignore lint/suspicious/noExplicitAny: matches normalizeStructDataset
+): Record<string, any[]> {
+  const node = file.get(table);
+  if (node && node.type === "Group") {
+    const columns: Record<string, ArrayLike<unknown>> = {};
+    for (const name of node.keys() as string[]) {
+      if (name === METADATA_SUBGROUP) continue;
+      const child = file.get(`${table}/${name}`);
+      if (!child || child.type === "Group") continue;
+      columns[name] = child.value as ArrayLike<unknown>;
+    }
+    return poseTableFromColumns(table, columns, labelsPath);
+  }
+  return normalizeStructDataset(node, module);
 }
 
 function normalizeStructDataset(

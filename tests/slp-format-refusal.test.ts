@@ -1,12 +1,11 @@
 /**
  * Every reader refuses SLP files it cannot read (issue #278).
  *
- * Before this check, a format 3.0 file (one dataset per column, written by
- * Python sleap-io 0.10) loaded with no error and no poses: the readers asked
- * each pose table for a compound value, got nothing back from a group, and
- * carried on. Now the in-memory, lazy, streaming and lite readers throw
- * `SlpFormatError` for a file of format 3 or higher and for a file whose
- * `required_features` attribute names a feature this version doesn't know.
+ * The in-memory, lazy, streaming and lite readers throw `SlpFormatError` for a
+ * file of format 4 or higher and for a file whose `required_features`
+ * attribute names a feature this version doesn't know. Format 3.0 (one dataset
+ * per column, written by Python sleap-io 0.10) was refused in 0.5.17 and is
+ * read from 0.6.0 on; see slp-format3-read.test.ts.
  *
  * Fixtures (`tests/data/slp/gen_format3_fixture.py`) were written with Python
  * sleap-io 0.10.0 from the `release/0.10` branch at commit fe4f91c7b:
@@ -53,7 +52,7 @@ const V4 = "format4_stub.slp";
 const FEATURES = "required_features_unknown.slp";
 const FEATURES_BYTES = "required_features_unknown_bytes.slp";
 /** Fixtures this version must refuse; every other one in the folder loads. */
-const REFUSED = [V3, V4, FEATURES, FEATURES_BYTES];
+const REFUSED = [V4, FEATURES, FEATURES_BYTES];
 const N_FRAMES = 3;
 
 /**
@@ -149,34 +148,39 @@ async function refusal(load: () => Promise<unknown>): Promise<SlpFormatError> {
   return error as SlpFormatError;
 }
 
-describe("format 3.0 files are refused by every reader", () => {
-  for (const [label, load] of READERS) {
-    it(`${label} throws SlpFormatError naming the format and a reader`, async () => {
-      const error = await refusal(() => load(V3));
-      expect(error.name).toBe("SlpFormatError");
-      expect(error.formatId).toBe(3);
-      expect(error.unsupportedFeatures).toEqual([]);
-      expect(error.labelsPath).toContain(V3);
-      expect(error.message).toContain(V3);
-      expect(error.message).toContain("SLP format 3.0");
-      expect(error.message).toContain("Python sleap-io 0.10 or newer");
-      expect(error.message).toContain("legacy_format=True");
-    });
-  }
+describe("format 3.0 files are read, not refused", () => {
+  it("readSlp, readSlpLazy and loadSlp load the 3.0 fixture's frames", async () => {
+    const eager = await readSlp(slpPath(V3), { openVideos: false });
+    expect(eager.labeledFrames.length).toBe(N_FRAMES);
+    const lazy = await readSlpLazy(slpPath(V3), { openVideos: false });
+    expect(lazy.length).toBe(N_FRAMES);
+    const loaded = await loadSlp(slpPath(V3), { openVideos: false });
+    expect(loaded.labeledFrames.length).toBe(N_FRAMES);
+  });
 
-  it("validateSlpBuffer (lite) throws SlpFormatError", () => {
+  it("the streaming reader gets past the format check", async () => {
     let error: unknown;
     try {
-      validateSlpBuffer(slpBytes(V3));
+      await readFromStreamingFile(
+        await metadataOnlyStreamingFile(V3),
+        `https://example.com/${V3}`,
+      );
     } catch (e) {
       error = e;
     }
-    expect(error).toBeInstanceOf(SlpFormatError);
-    expect((error as SlpFormatError).message).toContain("SLP format 3.0");
+    expect(error).toBeDefined();
+    expect(error).not.toBeInstanceOf(SlpFormatError);
+  });
+
+  it("the lite reader counts its rows and validates it", async () => {
+    const metadata = await loadSlpMetadata(slpBytes(V3));
+    expect(metadata.formatId).toBe(3);
+    expect(metadata.counts.labeledFrames).toBe(N_FRAMES);
+    expect(validateSlpBuffer(slpBytes(V3))).toBe(true);
   });
 });
 
-describe("formats above 3 are refused by every reader", () => {
+describe("formats from 4 on are refused by every reader", () => {
   for (const [label, load] of READERS) {
     it(`${label} throws SlpFormatError for format 4.0`, async () => {
       const error = await refusal(() => load(V4));
@@ -304,7 +308,7 @@ describe("old-layout files load as before", () => {
 
 describe("checkSlpFormat", () => {
   it("passes every format below the limit, wrapped or bare", () => {
-    for (const formatId of [1.0, 1.1, 1.2, 1.4, 2.0, 2.3, 2.8, 2.99]) {
+    for (const formatId of [1.0, 1.1, 1.2, 1.4, 2.0, 2.8, 2.99, 3.0, 3.99]) {
       expect(() =>
         checkSlpFormat("a.slp", { format_id: formatId }),
       ).not.toThrow();
@@ -322,8 +326,8 @@ describe("checkSlpFormat", () => {
   });
 
   it("refuses the limit itself and everything above it", () => {
-    expect(SLP_FORMAT_ID_LIMIT).toBe(3.0);
-    for (const formatId of [3, 3.0, 3.1, 4, 10]) {
+    expect(SLP_FORMAT_ID_LIMIT).toBe(4.0);
+    for (const formatId of [4, 4.0, 4.5, 10]) {
       expect(() => checkSlpFormat("a.slp", { format_id: formatId })).toThrow(
         SlpFormatError,
       );
@@ -331,8 +335,8 @@ describe("checkSlpFormat", () => {
         checkSlpFormat("a.slp", { format_id: { value: formatId } }),
       ).toThrow(SlpFormatError);
     }
-    expect(() => checkSlpFormat("a.slp", { format_id: 3.1 })).toThrow(
-      "SLP format 3.1",
+    expect(() => checkSlpFormat("a.slp", { format_id: 4.5 })).toThrow(
+      "SLP format 4.5",
     );
   });
 
@@ -370,12 +374,12 @@ describe("checkSlpFormat", () => {
   it("reports the format number before the features when both apply", () => {
     let error: unknown;
     try {
-      checkSlpFormat("a.slp", { format_id: 3.0, required_features: ["x"] });
+      checkSlpFormat("a.slp", { format_id: 4.0, required_features: ["x"] });
     } catch (e) {
       error = e;
     }
-    expect((error as SlpFormatError).formatId).toBe(3);
-    expect((error as SlpFormatError).message).toContain("SLP format 3.0");
+    expect((error as SlpFormatError).formatId).toBe(4);
+    expect((error as SlpFormatError).message).toContain("SLP format 4.0");
   });
 
   it("masks credentials in a URL, in the message and in labelsPath", () => {
@@ -383,7 +387,7 @@ describe("checkSlpFormat", () => {
     try {
       checkSlpFormat(
         "https://user:hunter2@example.com/data/a.slp?token=s3cret&page=2",
-        { format_id: 3.0 },
+        { format_id: 4.0 },
       );
     } catch (e) {
       error = e;
@@ -406,7 +410,7 @@ describe("checkSlpFormat", () => {
     ]) {
       let error: unknown;
       try {
-        checkSlpFormat(source, { format_id: 3.0 });
+        checkSlpFormat(source, { format_id: 4.0 });
       } catch (e) {
         error = e;
       }
