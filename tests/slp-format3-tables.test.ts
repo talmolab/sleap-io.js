@@ -553,6 +553,66 @@ describe("format 3.0 tables read as their 2.x twins", () => {
   });
 });
 
+describe("what the streaming reader does not read", () => {
+  const CATEGORY_META = [
+    "categories/meta_key",
+    "categories/meta_owner",
+    "categories/meta_val",
+  ];
+
+  it("is in its summary, and an edit drops only what that lists", async () => {
+    const eager = (await readSlp(slpPath(V3), EDIT)).sourceFormat?.summary;
+    expect(eager?.unreadTables).toEqual(CATEGORY_META);
+    const streamed = await readStreaming(V3);
+    const summary = streamed.sourceFormat?.summary;
+    // Its ROIs, masks and label images, and the links of detections other
+    // than instances, are not read by the streaming reader.
+    expect(summary?.unreadTables).toEqual(
+      [
+        ...CATEGORY_META,
+        "categories/links",
+        "identity/links",
+        "label_images",
+        "masks",
+        "rois",
+      ].sort(),
+    );
+    expect(summary?.lossless).toBe(false);
+    expect(streamed.labeledFrames.flatMap((f) => f.rois)).toEqual([]);
+    // The rest of the summary is the eager reader's.
+    expect({ ...summary, unreadTables: [] }).toEqual({
+      ...eager,
+      unreadTables: [],
+    });
+  });
+
+  it("the choice error names them", async () => {
+    const { file, close } = await streamingFile(V3);
+    try {
+      let error: unknown;
+      try {
+        await readFromStreamingFile(file, `https://example.com/${V3}`);
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(SlpFormat3ChoiceError);
+      expect((error as Error).message).toContain("label_images, masks, rois");
+    } finally {
+      close();
+    }
+  });
+
+  it("links of instances only are not listed", async () => {
+    // format3_label_images_blob.slp links instances only (no other detection).
+    const summary = (await readStreaming(BLOB)).sourceFormat?.summary;
+    expect(summary?.unreadTables).toEqual([...CATEGORY_META, "label_images"]);
+    expect(
+      (await readStreaming("format3_pose.slp")).sourceFormat?.summary
+        .unreadTables,
+    ).toEqual([]);
+  });
+});
+
 describe("unknown columns of the format 3.0 tables", () => {
   const EXPECTED = [
     "categories/links/extra",

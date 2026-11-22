@@ -383,8 +383,9 @@ ROI without `is_predicted` is a user ROI), and the range checks Python runs
 over these tables (links to videos, tracks, instances, catalogs and frames,
 byte ranges inside their buffers) raise `SlpTableError`. The streaming reader
 reads, of these tables, the links of instances and the session tables (it
-reads no ROIs, masks or label images in any layout); the lite
-`loadSlpMetadata` reads the session tables.
+reads no ROIs, masks or label images in any layout), and the summary it gives
+for a 3.0 file lists the rest in `unreadTables` (below), as something an edit
+drops. The lite `loadSlpMetadata` reads the session tables.
 
 sleap-io.js still writes the 2.x layout only, so a format 3.0 file that is
 loaded and saved comes out in the 2.x layout. That never happens silently: every

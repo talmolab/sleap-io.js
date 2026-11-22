@@ -2341,11 +2341,14 @@ async function readFormat3Streaming(
   }
   const summary = buildFormat3Summary({
     formatId,
-    unreadTables: unreadMembers({
-      root,
-      groups,
-      provenanceInMetadata: tables.provenanceInMetadata ?? false,
-    }),
+    unreadTables: [
+      ...unreadMembers({
+        root,
+        groups,
+        provenanceInMetadata: tables.provenanceInMetadata ?? false,
+      }),
+      ...(await unreadByStreaming(file, root)),
+    ],
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(
       predPointsData ?? tables.predPointFlags ?? undefined,
@@ -2363,6 +2366,84 @@ async function readFormat3Streaming(
     frameMetadata,
     bboxMetadata,
   };
+}
+
+/**
+ * Top-level members the other readers read but the streaming reader does not
+ * read in any layout: the ROI, mask and label image tables with their buffers
+ * and strings.
+ */
+const STREAMING_UNREAD_TOP_LEVEL: readonly string[] = [
+  "rois",
+  "roi_wkb",
+  "roi_categories",
+  "roi_names",
+  "roi_sources",
+  "masks",
+  "mask_rle",
+  "mask_categories",
+  "mask_names",
+  "mask_sources",
+  "mask_score_map_index",
+  "mask_score_maps",
+  "label_images",
+  "label_image_objects",
+  "label_image_data",
+  "label_image_sources",
+  "label_image_obj_categories",
+  "label_image_obj_names",
+  "label_image_score_map_index",
+  "label_image_score_maps",
+];
+
+/** The owner types of a links table or embeddings join column, as numbers. */
+async function ownerTypesStreaming(
+  file: StreamingH5File,
+  path: string,
+  column: string,
+): Promise<number[]> {
+  const group = await isGroupStreaming(file, path);
+  if (group) {
+    if (!(await childKeys(file, path)).includes(column)) return [];
+    const value = (await file.getDatasetValue(`${path}/${column}`)).value;
+    return normalizeDatasetArray(value).map(Number);
+  }
+  const cols = await readStructDatasetStreaming(file, path, true);
+  return Array.from(cols[column] ?? [], Number);
+}
+
+/**
+ * What a file holds that the streaming reader, unlike the others, does not
+ * read: ROIs, masks and label images (in any layout), and the identity and
+ * category links and embeddings of detections other than instances. Listed
+ * in the format 3.0 summary so that an edit says it drops them.
+ */
+async function unreadByStreaming(
+  file: StreamingH5File,
+  root: readonly string[],
+): Promise<string[]> {
+  const out = STREAMING_UNREAD_TOP_LEVEL.filter((name) => root.includes(name));
+  for (const group of ["identity", "categories"]) {
+    if (!root.includes(group)) continue;
+    if (!(await childKeys(file, group)).includes("links")) continue;
+    const types = await ownerTypesStreaming(
+      file,
+      `${group}/links`,
+      "owner_type",
+    );
+    if (types.some((t) => t !== 0)) out.push(`${group}/links`);
+  }
+  if (root.includes("embeddings")) {
+    const children = await childKeys(file, "embeddings");
+    const types: number[] = [];
+    for (const column of ["owner_type", "category_owner_type"]) {
+      if (!children.includes(column)) continue;
+      const value = (await file.getDatasetValue(`embeddings/${column}`)).value;
+      types.push(...normalizeDatasetArray(value).map(Number));
+    }
+    if (types.some((t) => t !== 0)) out.push("embeddings");
+  }
+  return out;
 }
 
 async function readStructDatasetStreaming(
