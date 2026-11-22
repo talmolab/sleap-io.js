@@ -216,6 +216,7 @@ Used for `.slp`, `.h5`, or `.hdf5` sources (embedded frames).
 
 - Selected automatically by `loadVideo()` for HDF5 inputs.
 - Decodes embedded PNG/JPEG frames in browsers; raw frames require `shape` + `channelOrder`.
+- Frames stored with BGR channel order (`channel_order` attribute; files below format 1.4 default to BGR) are returned as RGB in browsers. Outside a browser `getFrame()` returns the stored bytes, in the order given by `backend.embeddedChannelOrder`; the crop and grayscale wrappers decode them to RGB (with the optional `skia-canvas` package on Node).
 
 ### `MediaVideoBackend`
 Browser fallback when WebCodecs/mp4box is unavailable.

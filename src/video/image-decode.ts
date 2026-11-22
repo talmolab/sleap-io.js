@@ -2,8 +2,17 @@
 //
 // Shared image decode/rasterize helpers, used by `CropVideoBackend` (to
 // rasterize/decode inner frames before cropping), `GrayscaleVideoBackend` (to
-// normalize inner frames before collapsing channels), and `ImageVideoBackend`
-// (to decode each image-sequence frame).
+// normalize inner frames before collapsing channels), `ImageVideoBackend`
+// (to decode each image-sequence frame), and the embedded HDF5 backends (to
+// decode stored frames in a browser).
+//
+// Channel order: embedded frames may be stored with "BGR" channel order (the
+// `channel_order` attribute; files below format 1.4 default to BGR). This
+// module owns the red/blue swap: every decode here that is given a stored
+// channel order returns RGB pixels. A frame a backend hands out still encoded
+// (or as raw pixel bytes) is in its stored order
+// (`VideoBackend.embeddedChannelOrder`); a decoded frame (`ImageBitmap`,
+// `ImageData`) is always RGB, so it is never swapped again.
 //
 // Browser-safe: this module never statically imports a Node-only decoder.
 // Decoding/rasterizing uses `createImageBitmap` + `OffscreenCanvas` when
@@ -13,6 +22,30 @@
 import type { VideoFrame } from "./backend.js";
 import type { RawFrame } from "../transform/frame.js";
 import { encodePngPixels } from "./png-encode.js";
+
+/** Whether a stored channel order is BGR (case-insensitive). */
+export function isBgrOrder(channelOrder: string | null | undefined): boolean {
+  return (
+    typeof channelOrder === "string" && channelOrder.toUpperCase() === "BGR"
+  );
+}
+
+/**
+ * Swap the red and blue channels in place on interleaved pixels with
+ * `channels` values per pixel (RGBA `ImageData` is `channels = 4`). A no-op for
+ * fewer than 3 channels, which have no red/blue to swap.
+ */
+export function swapRedBlue(
+  data: Uint8Array | Uint8ClampedArray,
+  channels: number,
+): void {
+  if (channels < 3) return;
+  for (let i = 0; i + 2 < data.length; i += channels) {
+    const r = data[i];
+    data[i] = data[i + 2];
+    data[i + 2] = r;
+  }
+}
 
 /** Rasterize an opaque `ImageBitmap` to RGBA `ImageData` (OffscreenCanvas / skia). */
 export async function rasterizeBitmap(bitmap: ImageBitmap): Promise<ImageData> {
@@ -151,21 +184,26 @@ export function isEncodedBytes(bytes: Uint8Array): boolean {
 /**
  * Normalize any {@link VideoFrame} into something a pure/sync pixel transform
  * (e.g. `cropFrame`, `grayscaleFrame`) can read pixels from: an `ImageData` or
- * a {@link RawFrame}.
+ * a {@link RawFrame}, with RGB channel order.
  *
- * - `ImageData`-shaped: returned as-is.
+ * - `ImageData`-shaped: returned as-is (already RGB).
  * - `ImageBitmap`: rasterized to `ImageData` (OffscreenCanvas / skia-canvas).
- * - Encoded bytes (PNG/JPEG): decoded to `ImageData`.
+ * - Encoded bytes (PNG/JPEG): decoded to `ImageData`, swapping red and blue
+ *   when `channelOrder` is "BGR".
  * - Raw pixel bytes: wrapped as a {@link RawFrame} using `rawShape`'s
  *   width/height/channels (the `[frames, height, width, channels]` shape of
- *   the backend that produced `frame`).
+ *   the backend that produced `frame`); copied with red and blue swapped when
+ *   `channelOrder` is "BGR" and there are at least 3 channels.
  *
+ * @param channelOrder Stored channel order of the producing backend
+ *   (`VideoBackend.embeddedChannelOrder`). Applies only to undecoded bytes.
  * @throws Error If `frame` is raw pixel bytes and no `rawShape` is given to
  *   interpret them.
  */
 export async function toReadableFrame(
   frame: VideoFrame,
   rawShape?: [number, number, number, number],
+  channelOrder?: string,
 ): Promise<ImageData | RawFrame> {
   if (isImageBitmapLike(frame)) {
     return rasterizeBitmap(frame as ImageBitmap);
@@ -178,7 +216,7 @@ export async function toReadableFrame(
       ? new Uint8Array(frame)
       : (frame as Uint8Array);
   if (isEncodedBytes(bytes)) {
-    return decodeEncoded(bytes);
+    return decodeEncoded(bytes, channelOrder);
   }
   if (!rawShape) {
     throw new Error(
@@ -187,11 +225,31 @@ export async function toReadableFrame(
     );
   }
   const [, height, width, channels] = rawShape;
+  if (isBgrOrder(channelOrder) && channels >= 3) {
+    const data = bytes.slice(0, width * height * channels);
+    swapRedBlue(data, channels);
+    return { data, width, height, channels };
+  }
   return { data: bytes, width, height, channels };
 }
 
-/** Decode encoded (PNG/JPEG/…) image bytes to RGBA `ImageData` (browser / skia). */
-export async function decodeEncoded(bytes: Uint8Array): Promise<ImageData> {
+/**
+ * Decode encoded (PNG/JPEG/…) image bytes to RGBA `ImageData` (browser / skia).
+ *
+ * @param channelOrder Stored channel order of the bytes. "BGR" swaps red and
+ *   blue after decoding so the result is RGB; anything else is left as is.
+ */
+export async function decodeEncoded(
+  bytes: Uint8Array,
+  channelOrder?: string,
+): Promise<ImageData> {
+  const img = await decodeEncodedPixels(bytes);
+  if (isBgrOrder(channelOrder)) swapRedBlue(img.data, 4);
+  return img;
+}
+
+/** Decode encoded image bytes to RGBA `ImageData` in their stored order. */
+async function decodeEncodedPixels(bytes: Uint8Array): Promise<ImageData> {
   // Browser: createImageBitmap + OffscreenCanvas.
   if (
     typeof createImageBitmap !== "undefined" &&
@@ -231,4 +289,80 @@ export async function decodeEncoded(bytes: Uint8Array): Promise<ImageData> {
         `Original error: ${(err as Error).message}`,
     );
   }
+}
+
+/** Whether this runtime is a browser window (not Node, not a worker). */
+function isBrowserWindow(): boolean {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
+
+/**
+ * Browser decode of one stored embedded frame (the embedded HDF5 backends'
+ * `getFrame`), returning RGB pixels: an `ImageBitmap` when the stored order is
+ * RGB, else an `ImageData` with red and blue swapped.
+ *
+ * Returns `null` outside a browser window (Node, workers): the backend then
+ * hands out the stored bytes, which {@link toReadableFrame} /
+ * {@link decodeEncoded} decode given the backend's `embeddedChannelOrder`.
+ */
+export async function decodeEmbeddedImage(
+  bytes: Uint8Array,
+  format: string,
+  channelOrder: string,
+): Promise<VideoFrame | null> {
+  if (!isBrowserWindow() || typeof createImageBitmap === "undefined") {
+    return null;
+  }
+  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
+  const safeBytes = new Uint8Array(bytes);
+  const blob = new Blob([safeBytes.buffer], { type: mime });
+  const bitmap = await createImageBitmap(blob);
+  if (!isBgrOrder(channelOrder)) return bitmap;
+
+  // Images encoded by OpenCV are stored BGR: rasterize, then swap.
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) return bitmap;
+  ctx.drawImage(bitmap, 0, 0);
+  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  swapRedBlue(imageData.data, 4);
+  return imageData;
+}
+
+/**
+ * Browser expansion of one stored raw-pixel embedded frame to RGBA
+ * `ImageData`, reading red and blue from their stored positions.
+ *
+ * Returns `null` outside a browser window, without a shape, or when the bytes
+ * are shorter than the shape; the backend then hands out the stored bytes.
+ */
+export function decodeEmbeddedRaw(
+  bytes: Uint8Array,
+  shape: [number, number, number, number] | undefined,
+  channelOrder: string,
+): VideoFrame | null {
+  if (!isBrowserWindow() || !shape) return null;
+  const [, height, width, channels] = shape;
+  if (!height || !width || !channels) return null;
+
+  const expectedLength = height * width * channels;
+  if (bytes.length < expectedLength) return null;
+
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  const useBgr = isBgrOrder(channelOrder);
+
+  for (let i = 0; i < width * height; i += 1) {
+    const base = i * channels;
+    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
+    const g = bytes[base + 1] ?? 0;
+    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
+    const a = channels === 4 ? (bytes[base + 3] ?? 255) : 255;
+    const out = i * 4;
+    rgba[out] = r;
+    rgba[out + 1] = g;
+    rgba[out + 2] = b;
+    rgba[out + 3] = a;
+  }
+
+  return new ImageData(rgba, width, height);
 }

@@ -19,9 +19,11 @@ import type { VideoBackend, VideoFrame } from "../../video/backend.js";
 import { GrayscaleVideoBackend } from "../../video/grayscale-backend.js";
 import {
   decodeEncoded,
+  isBgrOrder,
   isEncodedBytes,
   isImageBitmapLike,
   isImageDataLike,
+  swapRedBlue,
 } from "../../video/image-decode.js";
 import {
   ExportCancelled,
@@ -125,10 +127,16 @@ function isPng(bytes: Uint8Array): boolean {
   );
 }
 
-/** Turn a decoded frame into a payload the worker owns (copied/cloned). */
+/**
+ * Turn a decoded frame into a payload the worker owns (copied/cloned), in RGB
+ * channel order (the order the new embed records). `channelOrder` is the
+ * source's stored order (`VideoBackend.embeddedChannelOrder`); it applies only
+ * to undecoded bytes, which are swapped to RGB when it is "BGR".
+ */
 export async function toEncodeFramePayload(
   frame: VideoFrame,
   rawShape?: [number, number, number, number],
+  channelOrder?: string,
 ): Promise<EncodeFramePayload> {
   if (isImageBitmapLike(frame)) {
     // The backend may cache this bitmap and draw it again, so hand over a copy.
@@ -158,9 +166,11 @@ export async function toEncodeFramePayload(
       ? new Uint8Array(frame)
       : (frame as unknown as Uint8Array);
   if (isEncodedBytes(bytes)) {
-    if (isPng(bytes)) return { kind: "png", bytes: bytes.slice() };
-    // Stored as PNG like every other frame, so re-encode (e.g. a JPEG).
-    const img = await decodeEncoded(bytes);
+    const bgr = isBgrOrder(channelOrder);
+    if (isPng(bytes) && !bgr) return { kind: "png", bytes: bytes.slice() };
+    // Stored as an RGB PNG like every other frame, so re-encode (e.g. a JPEG,
+    // or a BGR PNG).
+    const img = await decodeEncoded(bytes, channelOrder);
     return {
       kind: "pixels",
       data: new Uint8Array(img.data),
@@ -176,9 +186,11 @@ export async function toEncodeFramePayload(
     );
   }
   const [, height, width, channels] = rawShape;
+  const data = bytes.slice();
+  if (isBgrOrder(channelOrder)) swapRedBlue(data, channels);
   return {
     kind: "pixels",
-    data: bytes.slice(),
+    data,
     width,
     height,
     channels,
@@ -273,7 +285,11 @@ export async function appendEncodedVideos(
       }
       const pending = sink.appendEncodedFrame(
         frameIdx,
-        await toEncodeFramePayload(frame, source?.shape),
+        await toEncodeFramePayload(
+          frame,
+          source?.shape,
+          source?.embeddedChannelOrder,
+        ),
       );
       // Awaited in order below; this only keeps a failure that lands while an
       // earlier frame is awaited from surfacing as an unhandled rejection.
