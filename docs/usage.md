@@ -744,7 +744,7 @@ Multi-camera 3D pose estimation with cross-library interop (Python sleap-io, luc
 import { Identity, Instance3D, PredictedInstance3D } from "@talmolab/sleap-io.js";
 
 // Ground-truth identity (persists across sessions)
-const animal = new Identity({ name: "mouse_A", color: "#ff0000" });
+const animal = new Identity({ name: "animal_A", color: "#ff0000" });
 
 // 3D instance from triangulation
 const inst3d = new Instance3D({

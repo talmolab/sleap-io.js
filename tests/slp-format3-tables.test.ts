@@ -320,7 +320,7 @@ describe("format 3.0 tables read as their 2.x twins", () => {
       ]);
       expect(fg0.groups[0]).toMatchObject({
         score: 0.9375,
-        identity: "mouse_A",
+        identity: "animal_A",
         metadata: { tag: "first" },
         kind: "Instance3D",
         points: [
@@ -331,7 +331,7 @@ describe("format 3.0 tables read as their 2.x twins", () => {
         score3d: 0.8125,
       });
       expect(fg1.groups[0]).toMatchObject({
-        identity: "mouse_B",
+        identity: "animal_B",
         kind: "PredictedInstance3D",
         score3d: 0.6875,
         pointScores: [0.5, 0.25, "nan"],
@@ -343,7 +343,7 @@ describe("format 3.0 tables read as their 2.x twins", () => {
     const s = describe3(await readSlp(slpPath(V3), EDIT));
     const [f00] = s.frames;
     expect(s.instances[0]).toEqual({
-      identity: "mouse_A",
+      identity: "animal_A",
       identityScore: 0.875,
       category: "female",
       categoryScore: 0.75,
@@ -357,7 +357,7 @@ describe("format 3.0 tables read as their 2.x twins", () => {
         track: "a",
         trackingScore: 0.25,
         instance: 0,
-        identity: "mouse_A",
+        identity: "animal_A",
         identityScore: 0.5,
       }),
     ]);
@@ -389,7 +389,7 @@ describe("format 3.0 tables read as their 2.x twins", () => {
       fromPredicted: 0,
       instance: 0,
       trackingScore: 0.5,
-      identity: "mouse_A",
+      identity: "animal_A",
       category: "female",
     });
     const [li] = f00.labelImages;
@@ -427,7 +427,7 @@ describe("format 3.0 tables read as their 2.x twins", () => {
       score: 0.5,
     });
     expect(f00.centroids[0][2]).toMatchObject({
-      identity: "mouse_B",
+      identity: "animal_B",
       category: "male",
     });
     expect(f00.bboxes[0]).toEqual([
@@ -435,7 +435,7 @@ describe("format 3.0 tables read as their 2.x twins", () => {
       9,
       0,
       {
-        identity: "mouse_A",
+        identity: "animal_A",
         identityScore: 0.125,
         category: "female",
         categoryScore: 0.375,

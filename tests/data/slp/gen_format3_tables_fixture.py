@@ -107,8 +107,8 @@ def make_labels(*, blob: bool = False) -> sio.Labels:
         sio.Video(filename=f"cam{i}.mp4", open_backend=False) for i in range(3)
     ]
     tracks = [sio.Track(name="a"), sio.Track(name="b")]
-    mouse_a = sio.Identity(name="mouse_A", metadata={"color": "#e6194b"})
-    mouse_b = sio.Identity(name="mouse_B")
+    animal_a = sio.Identity(name="animal_A", metadata={"color": "#e6194b"})
+    animal_b = sio.Identity(name="animal_B")
     female = sio.Category(name="female")
     male = sio.Category(name="male", metadata={"note": "class"})
 
@@ -131,10 +131,10 @@ def make_labels(*, blob: bool = False) -> sio.Labels:
         )
 
     u00 = user(0, tracks[0])
-    u00.identity, u00.identity_score = mouse_a, 0.875
+    u00.identity, u00.identity_score = animal_a, 0.875
     u00.category, u00.category_score = female, 0.75
     p00 = predicted(1, 0.5, tracks[1])
-    p00.identity = mouse_b
+    p00.identity = animal_b
     p00.category = male
     u10 = user(2, tracks[0])
     p10 = predicted(3, 0.25, tracks[1])
@@ -188,7 +188,7 @@ def make_labels(*, blob: bool = False) -> sio.Labels:
         tracking_score=0.25,
         instance=u00,
     )
-    roi_user.identity, roi_user.identity_score = mouse_a, 0.5
+    roi_user.identity, roi_user.identity_score = animal_a, 0.5
     lf00.rois.append(roi_user)
     roi_pred = sio.PredictedROI.from_polygon(
         [(2, 2), (8, 2), (5, 6)], score=0.625, video=videos[1], source="model"
@@ -222,7 +222,7 @@ def make_labels(*, blob: bool = False) -> sio.Labels:
         raster, instance=u00, track=tracks[0], tracking_score=0.5
     )
     mask_user.from_predicted = mask_pred
-    mask_user.identity, mask_user.identity_score = mouse_a, 0.25
+    mask_user.identity, mask_user.identity_score = animal_a, 0.25
     mask_user.category = female
     lf00.masks.extend([mask_pred, mask_user])
     other = np.zeros((6, 8), dtype=bool)
@@ -266,10 +266,10 @@ def make_labels(*, blob: bool = False) -> sio.Labels:
 
     # A centroid and a box, so links of every owner kind are written.
     centroid = sio.UserCentroid(x=5.0, y=6.0, track=tracks[1], instance=p00)
-    centroid.identity, centroid.category = mouse_b, male
+    centroid.identity, centroid.category = animal_b, male
     lf00.centroids.append(centroid)
     box = sio.UserBoundingBox(x1=1.0, y1=2.0, x2=8.0, y2=9.0, instance=u00)
-    box.identity, box.identity_score = mouse_a, 0.125
+    box.identity, box.identity_score = animal_a, 0.125
     box.category, box.category_score = female, 0.375
     lf00.bboxes.append(box)
 
@@ -297,7 +297,7 @@ def make_labels(*, blob: bool = False) -> sio.Labels:
         instance_by_camera=dict(zip(cameras, [u00, u10, u20])),
         score=0.9375,
         instance_3d=sio.Instance3D(points=points3d, skeleton=skeleton, score=0.8125),
-        identity=mouse_a,
+        identity=animal_a,
         metadata={"tag": "first"},
     )
     group1 = sio.InstanceGroup(instance_by_camera={cameras[0]: p00, cameras[1]: p10})
@@ -309,7 +309,7 @@ def make_labels(*, blob: bool = False) -> sio.Labels:
             score=0.6875,
             point_scores=np.array([0.5, 0.25, np.nan]),
         ),
-        identity=mouse_b,
+        identity=animal_b,
     )
     session._frame_group_by_frame_idx[0] = sio.FrameGroup(
         frame_idx=0,
@@ -326,7 +326,7 @@ def make_labels(*, blob: bool = False) -> sio.Labels:
         videos=videos,
         skeletons=[skeleton],
         tracks=tracks,
-        identities=[mouse_a, mouse_b],
+        identities=[animal_a, animal_b],
         categories=[female, male],
         sessions=[session],
         rois=static,
