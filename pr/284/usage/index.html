@@ -1077,8 +1077,15 @@ ROI without <code>is_predicted</code> is a user ROI), and the range checks Pytho
 over these tables (links to videos, tracks, instances, catalogs and frames,
 byte ranges inside their buffers) raise <code>SlpTableError</code>. The streaming reader
 reads, of these tables, the links of instances and the session tables (it
-reads no ROIs, masks or label images in any layout); the lite
-<code>loadSlpMetadata</code> reads the session tables.</p>
+reads no ROIs, masks or label images in any layout), and the summary it gives
+for a 3.0 file lists the rest in <code>unreadTables</code> (below), as something an edit
+drops. The lite <code>loadSlpMetadata</code> reads the session tables.</p>
+<p>A recording session's metadata is stored at the top level of its
+<code>sessions_json</code> entry, beside <code>calibration</code>, <code>camcorder_to_video_idx_map</code>,
+<code>fg_start</code> and <code>fg_end</code>, as Python sleap-io stores it. A metadata key with one
+of those names is not saved, and the readers read the entries of a <code>metadata</code>
+key that holds an object as metadata (files from earlier sleap-io.js versions
+stored it there), so avoid those keys.</p>
 <p>sleap-io.js still writes the 2.x layout only, so a format 3.0 file that is
 loaded and saved comes out in the 2.x layout. That never happens silently: every
 reader (and <code>loadSlp</code>) takes a <code>format3</code> option, and a 3.0 file loaded without
@@ -1094,7 +1101,11 @@ it throws <code>SlpFormat3ChoiceError</code> (a subclass of <code>SlpFormatError
   what that layout cannot store: points marked as not labelled are written as
   hidden points with no location, and metadata and unknown columns (of any
   table) are not written. ROIs, masks, label images, links and session tables
-  are written in their 2.x form.</li>
+  are written in their 2.x form. Like Python's <code>legacy_format=True</code>, that
+  form stores some numbers in narrower types than 3.0: scores, tracking
+  scores, scales and offsets of ROIs, masks, label images and score maps as
+  32-bit floats, and their video, track and instance indices as 32-bit
+  integers.</li>
 </ul>
 <p>The choice travels with the content, not only with the <code>Labels</code> it was loaded
 into. Every labeled frame, instance and annotation (static ROIs included), and
@@ -1136,8 +1147,9 @@ returned as <code>format3</code> by the lite <code>loadSlpMetadata</code>, so an
 before a full read) says what an edit would drop. Besides unlabelled points,
 metadata and unknown columns, that is anything in the file this version does
 not read at all, in <code>unreadTables</code>: for example the frame-spanning events
-(<code>events</code>, <code>event_types</code>), the metadata of categories (<code>categories/meta_*</code>), or
-a table added by a newer writer:</p>
+(<code>events</code>, <code>event_types</code>), the metadata of categories (<code>categories/meta_*</code>), a
+table added by a newer writer, or a sub-table it does not know inside one it
+reads (<code>masks/&lt;name&gt;</code>):</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">SlpFormat3ChoiceError</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js"</span><span class="p">;</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="nx">labels</span><span class="p">;</span>

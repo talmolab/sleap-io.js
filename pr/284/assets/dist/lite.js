@@ -25,11 +25,14 @@ import {
   parseSuggestions,
   parseTracks,
   parseVideosMetadata,
+  reportTableProblems,
+  sessionProblems,
   tableFromColumns,
   unknownColumns,
   unknownTableColumns,
+  unknownTableGroups,
   unreadMembers
-} from "./chunk-5HSVGS7Y.js";
+} from "./chunk-YX2YBCUQ.js";
 import "./chunk-3UBNQTMV.js";
 
 // src/codecs/slp/jsfive.ts
@@ -103,14 +106,22 @@ function groupDatasets(file, path) {
 function readColumnTableJsfive(file, table, labelsPath) {
   if (!isGroupPath(file, table)) return null;
   const columns = {};
+  const unknownLengths = {};
   for (const name of groupDatasets(file, table)) {
-    if (!isKnownTableColumn(table, name)) continue;
-    const value = getValue(file.get(`${table}/${name}`));
+    const dataset = file.get(`${table}/${name}`);
+    if (!isKnownTableColumn(table, name)) {
+      const shape = getShape(dataset);
+      if (name !== TABLE_SPECS[table].buffer && shape.length) {
+        unknownLengths[name] = shape[0];
+      }
+      continue;
+    }
+    const value = getValue(dataset);
     if (value && typeof value === "object" && "length" in value) {
       columns[name] = value;
     }
   }
-  return tableFromColumns(table, columns, labelsPath);
+  return tableFromColumns(table, columns, labelsPath, unknownLengths);
 }
 function isMetadataDtype(dtype) {
   if (Array.isArray(dtype)) return dtype[0] === "VLEN_STRING";
@@ -146,16 +157,24 @@ function format3SummaryJsfive(file, formatId, provenanceInMetadata) {
   ];
   return buildFormat3Summary({
     formatId,
-    unreadTables: unreadMembers({
-      root: file.keys,
-      groups: Object.fromEntries(
-        PARTLY_READ_GROUPS.filter((g) => isGroup(file.get(g))).map((g) => [
-          g,
-          members(g)
-        ])
-      ),
-      provenanceInMetadata
-    }),
+    unreadTables: [
+      ...unreadMembers({
+        root: file.keys,
+        groups: Object.fromEntries(
+          PARTLY_READ_GROUPS.filter((g) => isGroup(file.get(g))).map((g) => [
+            g,
+            members(g)
+          ])
+        ),
+        provenanceInMetadata
+      }),
+      ...FORMAT3_TABLES.flatMap(
+        (table) => isGroupPath(file, table) ? unknownTableGroups(
+          table,
+          members(table).filter((n) => isGroup(file.get(`${table}/${n}`)))
+        ) : []
+      )
+    ],
     unlabeledUserPoints: unlabeled("points"),
     unlabeledPredictedPoints: unlabeled("pred_points"),
     metadataKeys: {
@@ -228,12 +247,32 @@ function readSessionDataJsfive(file, labelsPath) {
     if (Array.isArray(v)) return v;
     return v != null ? [v] : null;
   };
+  const points3d = matrix("points_3d", 3);
+  const predPoints3d = matrix("pred_points_3d", 4);
+  if (columnar) {
+    const rows = (m) => m && m.ncols > 0 ? Math.floor(m.flat.length / m.ncols) : 0;
+    const frames = file.get("frames");
+    reportTableProblems(
+      labelsPath,
+      sessionProblems({
+        frameGroups,
+        instanceGroups,
+        members,
+        nPoints3d: rows(points3d),
+        nPredPoints3d: rows(predPoints3d),
+        nIdentities: getShape(file.get("identity/name"))[0] ?? 0,
+        nFrames: frames ? getShape(
+          isGroup(frames) ? file.get("frames/frame_idx") : frames
+        )[0] ?? 0 : null
+      })
+    );
+  }
   return {
     frameGroups,
     instanceGroups,
     members,
-    points3d: matrix("points_3d", 3),
-    predPoints3d: matrix("pred_points_3d", 4),
+    points3d,
+    predPoints3d,
     frameGroupMeta: meta("frame_group_meta"),
     instanceGroupMeta: meta("instance_group_meta")
   };

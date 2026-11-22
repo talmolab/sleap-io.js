@@ -85,8 +85,9 @@ import {
   takeViewMark,
   unknownColumns,
   unknownTableColumns,
+  unknownTableGroups,
   unreadMembers
-} from "./chunk-5HSVGS7Y.js";
+} from "./chunk-YX2YBCUQ.js";
 import {
   openGdrive
 } from "./chunk-RC2FIFDH.js";
@@ -17458,13 +17459,18 @@ async function isGroupStreaming(file, path) {
 async function readColumnTableStreaming(file, table, labelsPath) {
   if (!await isGroupStreaming(file, table)) return null;
   const columns = {};
+  const unknownLengths = {};
   for (const name of await membersStreaming(file, table, "Dataset")) {
-    if (!isKnownTableColumn(table, name)) continue;
-    columns[name] = normalizeDatasetArray(
-      (await file.getDatasetValue(`${table}/${name}`)).value
-    );
+    if (isKnownTableColumn(table, name)) {
+      columns[name] = normalizeDatasetArray(
+        (await file.getDatasetValue(`${table}/${name}`)).value
+      );
+    } else if (name !== TABLE_SPECS[table].buffer) {
+      const shape = (await file.getDatasetMeta(`${table}/${name}`)).shape;
+      if (shape?.length) unknownLengths[name] = shape[0];
+    }
   }
-  return tableFromColumns(table, columns, labelsPath);
+  return tableFromColumns(table, columns, labelsPath, unknownLengths);
 }
 function emptyColumnTable(table) {
   return tableFromColumns(
@@ -17589,12 +17595,19 @@ async function readFormat3Streaming(file, labelsPath, formatId, tables) {
     );
   }
   unknown.push(...unknownColumns("bboxes", bboxColumns));
+  const unreadGroups = [];
   for (const table of FORMAT3_TABLES) {
     if (!await isGroupStreaming(file, table)) continue;
     unknown.push(
       ...unknownTableColumns(
         table,
         await membersStreaming(file, table, "Dataset")
+      )
+    );
+    unreadGroups.push(
+      ...unknownTableGroups(
+        table,
+        await membersStreaming(file, table, "Group")
       )
     );
   }
@@ -17604,11 +17617,15 @@ async function readFormat3Streaming(file, labelsPath, formatId, tables) {
   }
   const summary = buildFormat3Summary({
     formatId,
-    unreadTables: unreadMembers({
-      root,
-      groups,
-      provenanceInMetadata: tables.provenanceInMetadata ?? false
-    }),
+    unreadTables: [
+      ...unreadMembers({
+        root,
+        groups,
+        provenanceInMetadata: tables.provenanceInMetadata ?? false
+      }),
+      ...await unreadByStreaming(file, root),
+      ...unreadGroups
+    ],
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(
       predPointsData ?? tables.predPointFlags ?? void 0
@@ -17626,6 +17643,62 @@ async function readFormat3Streaming(file, labelsPath, formatId, tables) {
     frameMetadata,
     bboxMetadata
   };
+}
+var STREAMING_UNREAD_TOP_LEVEL = [
+  "rois",
+  "roi_wkb",
+  "roi_categories",
+  "roi_names",
+  "roi_sources",
+  "masks",
+  "mask_rle",
+  "mask_categories",
+  "mask_names",
+  "mask_sources",
+  "mask_score_map_index",
+  "mask_score_maps",
+  "label_images",
+  "label_image_objects",
+  "label_image_data",
+  "label_image_sources",
+  "label_image_obj_categories",
+  "label_image_obj_names",
+  "label_image_score_map_index",
+  "label_image_score_maps"
+];
+async function ownerTypesStreaming(file, path, column) {
+  const group = await isGroupStreaming(file, path);
+  if (group) {
+    if (!(await childKeys(file, path)).includes(column)) return [];
+    const value = (await file.getDatasetValue(`${path}/${column}`)).value;
+    return normalizeDatasetArray(value).map(Number);
+  }
+  const cols = await readStructDatasetStreaming(file, path, true);
+  return Array.from(cols[column] ?? [], Number);
+}
+async function unreadByStreaming(file, root) {
+  const out = STREAMING_UNREAD_TOP_LEVEL.filter((name) => root.includes(name));
+  for (const group of ["identity", "categories"]) {
+    if (!root.includes(group)) continue;
+    if (!(await childKeys(file, group)).includes("links")) continue;
+    const types = await ownerTypesStreaming(
+      file,
+      `${group}/links`,
+      "owner_type"
+    );
+    if (types.some((t) => t !== 0)) out.push(`${group}/links`);
+  }
+  if (root.includes("embeddings")) {
+    const children = await childKeys(file, "embeddings");
+    const types = [];
+    for (const column of ["owner_type", "category_owner_type"]) {
+      if (!children.includes(column)) continue;
+      const value = (await file.getDatasetValue(`embeddings/${column}`)).value;
+      types.push(...normalizeDatasetArray(value).map(Number));
+    }
+    if (types.some((t) => t !== 0)) out.push("embeddings");
+  }
+  return out;
 }
 async function readStructDatasetStreaming(file, path, assumePresent = false) {
   try {
@@ -24894,7 +24967,7 @@ function readRoisWithMigration(file, videos, tracks, ctx, instances) {
     const trackIdx = Number(trackIndices[i]);
     const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
     const annotType = Number(annotationTypes[i]);
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) !== 0 : false;
     const roiTsVal = trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
     const roiTrackingScore = Number.isNaN(roiTsVal) ? null : roiTsVal;
     if (annotType === 1 /* BOUNDING_BOX */ && !isPred) {
@@ -25178,7 +25251,7 @@ function readMasks(file, _videos, tracks, ctx) {
       scale: [scaleX, scaleY],
       offset: [offsetX, offsetY]
     };
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) !== 0 : false;
     let mask;
     if (isPred) {
       const rawScore = scoreCol.length > i ? Number(scoreCol[i]) : 0;
@@ -25357,7 +25430,7 @@ function readLabelImages(file, _videos, tracks, ctx, instances) {
         _instanceIdx: instIdx >= 0 ? instIdx : -1
       });
     }
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) !== 0 : false;
     const liScaleX = liScaleXCol.length > i ? Number(liScaleXCol[i]) : 1;
     const liScaleY = liScaleYCol.length > i ? Number(liScaleYCol[i]) : 1;
     const liOffsetX = liOffsetXCol.length > i ? Number(liOffsetXCol[i]) : 0;
@@ -25415,11 +25488,16 @@ function isH5Group(file, path) {
 function readColumnTable(file, table, labelsPath) {
   if (!isH5Group(file, table)) return null;
   const columns = {};
+  const unknownLengths = {};
   for (const name of h5Members(file, table, "Dataset")) {
-    if (!isKnownTableColumn(table, name)) continue;
-    columns[name] = file.get(`${table}/${name}`).value;
+    const dataset = file.get(`${table}/${name}`);
+    if (isKnownTableColumn(table, name)) {
+      columns[name] = dataset.value;
+    } else if (name !== TABLE_SPECS[table].buffer && dataset.shape?.length) {
+      unknownLengths[name] = dataset.shape[0];
+    }
   }
-  return tableFromColumns(table, columns, labelsPath);
+  return tableFromColumns(table, columns, labelsPath, unknownLengths);
 }
 function bufferBytes(dataset) {
   if (!dataset) return new Uint8Array(0);
@@ -25518,13 +25596,18 @@ function readFormat3(file, labelsPath, formatId, nVideos, tables) {
   ) : null;
   const summary = buildFormat3Summary({
     formatId,
-    unreadTables: unreadMembers({
-      root: file.keys(),
-      groups: Object.fromEntries(
-        PARTLY_READ_GROUPS.map((g) => [g, h5Members(file, g)])
-      ),
-      provenanceInMetadata: tables.provenanceInMetadata ?? false
-    }),
+    unreadTables: [
+      ...unreadMembers({
+        root: file.keys(),
+        groups: Object.fromEntries(
+          PARTLY_READ_GROUPS.map((g) => [g, h5Members(file, g)])
+        ),
+        provenanceInMetadata: tables.provenanceInMetadata ?? false
+      }),
+      ...FORMAT3_TABLES.flatMap(
+        (table) => isH5Group(file, table) ? unknownTableGroups(table, h5Members(file, table, "Group")) : []
+      )
+    ],
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(predPointsData),
     metadataKeys: {

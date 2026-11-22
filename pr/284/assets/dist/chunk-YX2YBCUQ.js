@@ -2266,12 +2266,20 @@ function unknownTableColumns(table, datasets) {
   const buffer = TABLE_SPECS[table].buffer;
   return datasets.filter((name) => name !== buffer && !isKnownTableColumn(table, name)).map((name) => `${table}/${name}`);
 }
+var KNOWN_SUBTABLES = {
+  masks: ["score_maps"],
+  label_images: ["objects", "score_maps"]
+};
+function unknownTableGroups(table, groups) {
+  const known = KNOWN_SUBTABLES[table] ?? [];
+  return groups.filter((name) => !known.includes(name)).map((name) => `${table}/${name}`);
+}
 function decodeString(value) {
   if (typeof value === "string") return value;
   if (value instanceof Uint8Array) return new TextDecoder().decode(value);
   return value === null || value === void 0 ? "" : String(value);
 }
-function tableFromColumns(table, columns, labelsPath) {
+function tableFromColumns(table, columns, labelsPath, unknownLengths = {}) {
   const spec = TABLE_SPECS[table];
   const present = Object.keys(columns).filter((k) => columns[k] !== void 0);
   const missing = [...spec.numbers, ...spec.strings].filter(
@@ -2302,6 +2310,15 @@ function tableFromColumns(table, columns, labelsPath) {
       );
     }
     out[name] = values;
+  }
+  for (const [name, length] of Object.entries(unknownLengths)) {
+    if (rows !== -1 && length !== rows) {
+      throw new SlpTableError(
+        labelsPath,
+        `has /${table} columns of different lengths (${first}: ${rows} values, ${name}: ${length}).`,
+        3
+      );
+    }
   }
   rows = Math.max(rows, 0);
   for (const [name, value] of Object.entries(spec.defaults)) {
@@ -2963,7 +2980,7 @@ function reconstructColumnarFrameGroups(cameras, skeletons, identities, sessionD
       const pts3dStart = num(ig.pts3d_start, g);
       if (pts3dStart >= 0) {
         const pts3dEnd = num(ig.pts3d_end, g);
-        const predicted = num(ig.pts3d_predicted, g) === 1;
+        const predicted = num(ig.pts3d_predicted, g) !== 0;
         const src = predicted ? sessionData.predPoints3d : sessionData.points3d;
         if (src) {
           const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });
@@ -3104,6 +3121,7 @@ export {
   TABLE_SPECS,
   isKnownTableColumn,
   unknownTableColumns,
+  unknownTableGroups,
   tableFromColumns,
   tableRows,
   reportTableProblems,
