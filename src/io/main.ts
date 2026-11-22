@@ -13,6 +13,7 @@ import {
   type SlpWriteOptions,
   type UnlabeledAs,
 } from "../codecs/slp/write.js";
+import { checkEmbedImageFormat } from "../codecs/slp/embed-format.js";
 import {
   checkFormat3Option,
   type Format3Access,
@@ -180,6 +181,10 @@ export async function loadSlp(
  * @param options.onProgress - Progress callback while embedding; return
  *   `false` to cancel (throws `ExportCancelled`); see
  *   `SlpWriteOptions.onProgress`.
+ * @param options.imageFormat - Image format for embedded frames: "png" or
+ *   "jpg" ("jpeg" is stored as "jpg"); see `SlpWriteOptions.imageFormat`.
+ * @param options.imageQuality - JPEG quality (0-100) or PNG compression level
+ *   (0-9), with an explicit `imageFormat`.
  * @param options.unlabeledAs - How to save unlabelled points, which the 2.x
  *   layout cannot store (see `SlpWriteOptions.unlabeledAs`).
  * @throws {SlpViewOnlyError} For labels loaded with `format3: "view"`.
@@ -192,6 +197,8 @@ export async function saveSlp(
     restoreOriginalVideos?: boolean;
     embedAllVideos?: boolean;
     onProgress?: SlpWriteOptions["onProgress"];
+    imageFormat?: SlpWriteOptions["imageFormat"];
+    imageQuality?: number | null;
     unlabeledAs?: UnlabeledAs;
   },
 ): Promise<void> {
@@ -200,6 +207,8 @@ export async function saveSlp(
     restoreOriginalVideos: options?.restoreOriginalVideos ?? true,
     embedAllVideos: options?.embedAllVideos,
     onProgress: options?.onProgress,
+    imageFormat: options?.imageFormat,
+    imageQuality: options?.imageQuality,
     unlabeledAs: options?.unlabeledAs,
   });
 }
@@ -207,6 +216,11 @@ export async function saveSlp(
 export { saveSlpToBytes } from "../codecs/slp/write.js";
 export { ExportCancelled } from "../codecs/slp/write.js";
 export type { EmbedOption, SlpWriteOptions } from "../codecs/slp/write.js";
+export {
+  checkEmbedImageFormat,
+  EMBED_IMAGE_FORMATS,
+  type EmbedImageFormat,
+} from "../codecs/slp/embed-format.js";
 // Main-thread half of the streaming pkg.slp writer (Phase 2 / Task 2.1):
 // write the small label/metadata structure only, skipping the big
 // `video{i}/video` embedded-image datasets — a Web Worker adds those later by
@@ -238,7 +252,7 @@ export type {
   SerializableEmbedPlan,
 } from "../codecs/slp/write.js";
 // Streaming new-embed: read each frame of a continuous video and let the
-// writer's worker PNG-encode and append it straight to disk.
+// writer's worker encode (PNG or JPEG) and append it straight to disk.
 export { appendEncodedVideos } from "../codecs/slp/stream-embed.js";
 export type {
   AppendEncodedVideosOptions,
@@ -468,17 +482,23 @@ export async function loadSlpSet(
  * @param options - Save options (forwarded to saveSlp)
  * @throws {SlpViewOnlyError} If any of the labels were loaded with
  *   `format3: "view"`; checked before any file is written.
+ * @throws Error If `imageFormat` / `imageQuality` are invalid; checked before
+ *   any file is written.
  */
 export async function saveSlpSet(
   labelsSet: LabelsSet,
   options?: {
     embed?: boolean | string;
     restoreOriginalVideos?: boolean;
+    imageFormat?: SlpWriteOptions["imageFormat"];
+    imageQuality?: number | null;
     unlabeledAs?: UnlabeledAs;
   },
 ): Promise<void> {
-  // Refuse the whole set before writing any file: view-only labels or
-  // records, and unlabelled points the `unlabeledAs` mode refuses.
+  // Refuse the whole set before writing any file: bad image options,
+  // view-only labels or records, and unlabelled points the `unlabeledAs`
+  // mode refuses.
+  checkEmbedImageFormat(options?.imageFormat, options?.imageQuality);
   for (const [, labels] of labelsSet) {
     checkSlpSavable(labels, { unlabeledAs: options?.unlabeledAs });
   }

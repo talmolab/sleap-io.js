@@ -869,9 +869,9 @@ export class StreamingH5Writer {
   }
 
   /**
-   * PNG-encode (in the worker) and append one frame of the video begun with
-   * {@link beginEncodedVideo}. The frame's bitmap or buffer is transferred, so
-   * the caller must not use it afterwards.
+   * Encode (in the worker: PNG, or the entry's chosen format) and append one
+   * frame of the video begun with {@link beginEncodedVideo}. The frame's
+   * bitmap or buffer is transferred, so the caller must not use it afterwards.
    */
   async appendEncodedFrame(
     frameIdx: number,
@@ -881,7 +881,7 @@ export class StreamingH5Writer {
       frame.kind === "bitmap"
         ? [frame.bitmap]
         : [
-            (frame.kind === "png" ? frame.bytes : frame.data)
+            (frame.kind === "pixels" ? frame.data : frame.bytes)
               .buffer as ArrayBuffer,
           ];
     await this.send("appendEncodedFrame", { frameIdx, frame }, transfer);
