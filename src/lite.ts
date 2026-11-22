@@ -98,6 +98,8 @@ export {
 export { SlpTableError } from "./codecs/slp/format-check.js";
 export type {
   Format3Access,
+  Format3Option,
+  MetadataKindsByTable,
   Format3Summary,
   SlpSourceFormat,
 } from "./codecs/slp/format3.js";
@@ -146,10 +148,10 @@ export interface SlpMetadata {
   provenance?: Record<string, unknown>;
 
   /**
-   * For a file in SLP format 3.0: what it holds that the 2.x layout (the only
-   * one this version writes) cannot store. The full readers throw
-   * `SlpFormat3ChoiceError` with this same summary unless given the `format3`
-   * option, so an application can read it here first and ask the user.
+   * For a file in SLP format 3.0: what it holds that the 2.x layout cannot
+   * store. The full readers throw `SlpFormat3ChoiceError` with this same
+   * summary when given `format3: "ask"`, so an application can read it here
+   * first and ask the user.
    * Absent for files before 3.0.
    */
   format3?: Format3Summary;

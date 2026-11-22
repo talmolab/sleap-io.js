@@ -1,4 +1,13 @@
 import {
+  buildColumnCarry,
+  CARRIED_TABLES,
+  carriedColumn,
+  isUnknownColumn,
+  POSE_TABLES,
+  sessionCarryOwners,
+  type UnknownColumns,
+} from "./carry-read.js";
+import {
   checkPoseTables,
   countUnlabeledPoints,
   hasSkippedInstanceRows,
@@ -36,7 +45,8 @@ import {
   checkFormat3Option,
   checkMetadataColumns,
   chooseFormat3Access,
-  type Format3Access,
+  type Format3Option,
+  metadataKindsOf,
   isFormat3,
   metadataColumn,
   metadataKindFromH5,
@@ -202,16 +212,16 @@ export async function readSlp(
      */
     repairPointSpans?: boolean;
     /**
-     * What to do with a file in SLP format 3.0, which this version reads but
-     * cannot write (it saves the 2.x layout only). `"view"` loads it
-     * read-only: every SLP writer refuses the labels. `"edit"` loads it so that a
-     * save writes the 2.x layout and drops what that layout cannot store
-     * (unlabelled points become hidden points with no location; record
-     * metadata and unknown columns are not written). Without this option a
-     * 3.0 file throws {@link SlpFormat3ChoiceError}, whose `summary` lists what
-     * an edit would drop. Files before 3.0 ignore it.
+     * What a later save may do with a file in SLP format 3.0. Unset (or
+     * `"keep"`): load it editable, and a save keeps format 3.0. `"view"` loads
+     * it read-only: every SLP writer refuses the labels. `"edit"` loads it so
+     * that a save writes the 2.x layout and drops what that layout cannot
+     * store (unlabelled points become hidden points with no location; record
+     * metadata and unknown columns are not written). `"ask"` throws
+     * {@link SlpFormat3ChoiceError}, whose `summary` lists what an edit would
+     * drop. Files before 3.0 ignore it.
      */
-    format3?: Format3Access;
+    format3?: Format3Option;
   },
 ): Promise<Labels> {
   // `total` is derived from the stage list (single source of truth) so the
@@ -338,6 +348,8 @@ export async function readSlp(
       frameMetadata: format3?.frameMetadata,
       instanceRows,
     });
+    // The frames built from `/frames` rows, before annotation-only frames.
+    const poseFrames = labeledFrames.slice();
     // Links to instances (box and centroid `instance`, identity and category
     // owners) are `/instances` rows. When the reader skipped rows (a 3.0
     // instance type other than user or predicted), index by row, with a hole
@@ -535,6 +547,40 @@ export async function readSlp(
       rois: staticRois,
     });
     labels.sourceFormat = format3?.sourceFormat ?? null;
+    if (format3) {
+      // Unknown columns, kept to write back on a format 3.0 save.
+      const nFrameRows = (framesData.frame_idx ?? []).length;
+      const nInstanceRows = (instancesData.instance_type ?? []).length;
+      const labelImages = labelImageTuples.map((t) => t[0]);
+      labels._carriedColumns = buildColumnCarry(readUnknownColumnsH5(file), {
+        frames: poseFrames.length === nFrameRows ? poseFrames : undefined,
+        instances: Array.from({ length: nInstanceRows }, (_, row) =>
+          instanceRows.get(row),
+        ),
+        instanceRows: {
+          type: instancesData.instance_type ?? [],
+          start: instancesData.point_id_start ?? [],
+          end: instancesData.point_id_end ?? [],
+        },
+        nPoints: columnLength(pointsData),
+        nPredPoints: columnLength(predPointsData),
+        pointsOf: (inst) => (inst as Instance)._xy,
+        rois: roiTuples.map((t) => t[0]),
+        masks: maskTuples.map((t) => t[0]),
+        maskScoreMapOwners: columnH5(file, "masks/score_maps/mask_idx"),
+        labelImages,
+        labelImageObjects: labelImages.flatMap((li) => [
+          ...li.objects.values(),
+        ]),
+        labelImageScoreMapOwners: columnH5(
+          file,
+          "label_images/score_maps/li_idx",
+        ),
+        identityLinks: linkKeysH5(file, "identity/links"),
+        categoryLinks: linkKeysH5(file, "categories/links"),
+        sessions: sessionOwnersH5(file, sessions),
+      });
+    }
     // Every record carries the open-time choice wherever it goes.
     for (const frame of labels.labeledFrames) {
       markFrameSource(frame, format3?.sourceFormat);
@@ -604,16 +650,16 @@ export async function readSlpLazy(
      */
     repairPointSpans?: boolean;
     /**
-     * What to do with a file in SLP format 3.0, which this version reads but
-     * cannot write (it saves the 2.x layout only). `"view"` loads it
-     * read-only: every SLP writer refuses the labels. `"edit"` loads it so that a
-     * save writes the 2.x layout and drops what that layout cannot store
-     * (unlabelled points become hidden points with no location; record
-     * metadata and unknown columns are not written). Without this option a
-     * 3.0 file throws {@link SlpFormat3ChoiceError}, whose `summary` lists what
-     * an edit would drop. Files before 3.0 ignore it.
+     * What a later save may do with a file in SLP format 3.0. Unset (or
+     * `"keep"`): load it editable, and a save keeps format 3.0. `"view"` loads
+     * it read-only: every SLP writer refuses the labels. `"edit"` loads it so
+     * that a save writes the 2.x layout and drops what that layout cannot
+     * store (unlabelled points become hidden points with no location; record
+     * metadata and unknown columns are not written). `"ask"` throws
+     * {@link SlpFormat3ChoiceError}, whose `summary` lists what an edit would
+     * drop. Files before 3.0 ignore it.
      */
-    format3?: Format3Access;
+    format3?: Format3Option;
   },
 ): Promise<Labels> {
   // `total` is derived from the stage list (single source of truth) so the
@@ -860,6 +906,38 @@ export async function readSlpLazy(
     store._undistributedMasks = mResult.undistributed;
     store._undistributedRois = rResult.undistributed;
     store._undistributedLabelImages = liResult.undistributed;
+
+    if (format3) {
+      // Unknown columns: the pose tables' are written back with the raw rows;
+      // the others' while the annotations are the ones loaded.
+      const unknown = readUnknownColumnsH5(file);
+      const pose: NonNullable<LazyDataStore["unknownColumns"]> = {};
+      for (const table of POSE_TABLES) {
+        if (unknown[table]) pose[table] = unknown[table];
+      }
+      store.unknownColumns = Object.keys(pose).length > 0 ? pose : null;
+      const labelImages = labelImageTuples.map((t) => t[0]);
+      store.annotationCarry = buildColumnCarry(
+        unknown,
+        {
+          rois: roiTuples.map((t) => t[0]),
+          masks: maskTuples.map((t) => t[0]),
+          maskScoreMapOwners: columnH5(file, "masks/score_maps/mask_idx"),
+          labelImages,
+          labelImageObjects: labelImages.flatMap((li) => [
+            ...li.objects.values(),
+          ]),
+          labelImageScoreMapOwners: columnH5(
+            file,
+            "label_images/score_maps/li_idx",
+          ),
+          identityLinks: linkKeysH5(file, "identity/links"),
+          categoryLinks: linkKeysH5(file, "categories/links"),
+          sessions: sessionOwnersH5(file, sessions),
+        },
+        FORMAT3_TABLES,
+      );
+    }
 
     // Check for annotation-only frames not in /frames (e.g., TrackMate SLPs)
     const frameKeys = new Set<string>();
@@ -2924,6 +3002,88 @@ function isH5Group(
 }
 
 /**
+ * The unknown columns of a format 3.0 file's tables (see carry-read.ts), to
+ * write them back on a format 3.0 save.
+ */
+function readUnknownColumnsH5(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+): UnknownColumns {
+  const out: UnknownColumns = {};
+  for (const table of CARRIED_TABLES) {
+    if (!isH5Group(file, table)) continue;
+    for (const name of h5Members(file, table, "Dataset")) {
+      if (!isUnknownColumn(table, name)) continue;
+      const ds = file.get(`${table}/${name}`);
+      const md = ds?.metadata;
+      const column = carriedColumn(
+        md ? { ...md, shape: ds.shape } : null,
+        md && Array.isArray(ds.shape) && ds.shape.length === 1
+          ? ds.value
+          : null,
+      );
+      if (column) {
+        out[table] ??= {};
+        out[table][name] = column;
+      }
+    }
+  }
+  return out;
+}
+
+/** The `(owner_type, owner_id, catalog index)` of each 3.0 link row. */
+function linkKeysH5(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  table: "identity/links" | "categories/links",
+): number[][] | undefined {
+  if (!isH5Group(file, table)) return undefined;
+  const index = table === "identity/links" ? "identity_idx" : "category_idx";
+  const read = (name: string): ArrayLike<unknown> =>
+    file.get(`${table}/${name}`)?.value ?? [];
+  const type = read("owner_type");
+  const owner = read("owner_id");
+  const idx = read(index);
+  return Array.from({ length: type.length }, (_, i) => [
+    Number(type[i]),
+    Number(owner[i]),
+    Number(idx[i]),
+  ]);
+}
+
+/** The records owning the rows of a 3.0 file's session tables. */
+function sessionOwnersH5(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  sessions: RecordingSession[],
+) {
+  if (!isH5Group(file, "session_data/frame_groups")) return undefined;
+  return sessionCarryOwners(sessions, {
+    nFrameGroups:
+      columnH5(file, "session_data/frame_groups/frame_idx")?.length ?? 0,
+    memberStart:
+      columnH5(file, "session_data/instance_groups/member_start") ?? [],
+    memberEnd: columnH5(file, "session_data/instance_groups/member_end") ?? [],
+    camera: columnH5(file, "session_data/instance_group_members/camera") ?? [],
+  });
+}
+
+/** A column of a 3.0 table as numbers, or none when absent. */
+function columnH5(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  path: string,
+): number[] | undefined {
+  try {
+    const ds = file.get(path);
+    if (!ds || ds.type === "Group") return undefined;
+    return Array.from(ds.value as ArrayLike<unknown>, Number);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
  * Read one of the format 3.0 tables other than the pose tables when it is
  * stored as a group of columns, or `null` when it is not (absent, or a 2.x
  * dataset). Only the columns this version knows are read; the others are
@@ -3059,8 +3219,14 @@ function readMetadataColumns(
     const datasets = h5Members(file, `${base}/${key}`, "Dataset");
     if (!datasets.includes("values")) continue;
     const values = file.get(`${base}/${key}/values`);
+    let kindAttr: unknown;
+    try {
+      kindAttr = values.attrs?.kind?.value;
+    } catch {
+      kindAttr = undefined;
+    }
     const column = metadataColumn(
-      metadataKindFromH5(values.metadata),
+      metadataKindFromH5(values.metadata, kindAttr),
       values.value,
       datasets.includes("present")
         ? file.get(`${base}/${key}/present`).value
@@ -3103,7 +3269,7 @@ function readFormat3(
     pointsData: Record<string, any>;
     // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTable
     predPointsData: Record<string, any>;
-    choice: Format3Access | undefined;
+    choice: Format3Option | undefined;
     /** Whether `/metadata`'s `json` attribute holds the provenance. */
     provenanceInMetadata?: boolean;
   },
@@ -3177,7 +3343,11 @@ function readFormat3(
     ],
   });
   return {
-    sourceFormat: chooseFormat3Access(labelsPath, summary, tables.choice),
+    sourceFormat: chooseFormat3Access(labelsPath, summary, tables.choice, {
+      instances: metadataKindsOf(instanceMetadata),
+      frames: metadataKindsOf(frameMetadata),
+      bboxes: metadataKindsOf(bboxMetadata),
+    }),
     instanceMetadata,
     frameMetadata,
     bboxMetadata,

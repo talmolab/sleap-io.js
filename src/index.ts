@@ -147,8 +147,8 @@ export {
   SLP_FORMAT_ID_LIMIT,
   SLP_SUPPORTED_FEATURES,
 } from "./codecs/slp/format-check.js";
-// SLP format 3.0: the choice at open time between viewing and editing (a save
-// writes the 2.x layout).
+// SLP format 3.0: the choice at open time between keeping, viewing and editing
+// a 3.0 file.
 export {
   SlpFormat3ChoiceError,
   SlpViewOnlyError,
@@ -163,6 +163,8 @@ export {
 } from "./model/source-mark.js";
 export type {
   Format3Access,
+  Format3Option,
+  MetadataKindsByTable,
   Format3Summary,
   SlpSourceFormat,
 } from "./codecs/slp/format3.js";

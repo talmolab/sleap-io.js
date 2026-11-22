@@ -1,3 +1,11 @@
+import {
+  buildColumnCarry,
+  carriedColumn,
+  isUnknownColumn,
+  POSE_TABLES,
+  sessionCarryOwners,
+  type UnknownColumns,
+} from "./carry-read.js";
 /**
  * Streaming SLP file reader using HTTP range requests.
  *
@@ -41,7 +49,8 @@ import {
   checkFormat3Option,
   checkMetadataColumns,
   chooseFormat3Access,
-  type Format3Access,
+  type Format3Option,
+  metadataKindsOf,
   isFormat3,
   metadataColumn,
   metadataKindFromH5,
@@ -178,8 +187,8 @@ export interface StreamingSlpOptions {
    * no instances to begin with (e.g. negative frames) are kept. A user
    * instance's `fromPredicted` link is left unset, and recording sessions
    * (multi-camera groupings) aren't read. Default `false`. Can't be combined
-   * with `lazy`, nor, for a file in SLP format 3.0, with `format3: "edit"`
-   * (a save would lose what the filter skipped).
+   * with `lazy`, and a file in SLP format 3.0 opens with it only with
+   * `format3: "view"` (a save would lose what the filter skipped).
    */
   userInstancesOnly?: boolean;
   /**
@@ -200,12 +209,13 @@ export interface StreamingSlpOptions {
    */
   onProgress?: (current: number, total: number, message?: string) => void;
   /**
-   * What to do with a file in SLP format 3.0, which this version reads but
-   * cannot write: `"view"` (read-only, every SLP writer refuses the labels) or
-   * `"edit"` (a save writes the 2.x layout and drops what it cannot store).
-   * Without it a 3.0 file throws `SlpFormat3ChoiceError`. See `readSlp`.
+   * What a later save may do with a file in SLP format 3.0: unset or
+   * `"keep"` (saves keep format 3.0), `"view"` (read-only, every SLP writer
+   * refuses the labels), `"edit"` (a save writes the 2.x layout and drops what
+   * it cannot store) or `"ask"` (throw `SlpFormat3ChoiceError`). See
+   * `readSlp`.
    */
-  format3?: Format3Access;
+  format3?: Format3Option;
   /**
    * Throw {@link StreamingIncompleteError}, before reading any table, when the
    * file holds content this reader does not read (ROIs, masks, label images,
@@ -622,7 +632,7 @@ export async function readFromStreamingFile(
   lazyVideoMetadata: boolean = false,
   userInstancesOnly: boolean = false,
   repairPointSpans: boolean = false,
-  format3Choice?: Format3Access,
+  format3Choice?: Format3Option,
   failIfIncomplete: boolean = false,
 ): Promise<Labels> {
   checkFormat3Option(format3Choice);
@@ -687,7 +697,12 @@ export async function readFromStreamingFile(
   ) as Record<string, unknown> | null;
 
   const skeletons = parseSkeletons(metadataJson);
-  if (userInstancesOnly && format3Choice === "edit" && isFormat3(formatId)) {
+  if (
+    userInstancesOnly &&
+    format3Choice !== "view" &&
+    format3Choice !== "ask" &&
+    isFormat3(formatId)
+  ) {
     // The filter drops predicted instances and every recording session, which
     // a save of an edit load would then lose without the summary saying so.
     throw new Error(
@@ -943,6 +958,76 @@ export async function readFromStreamingFile(
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
   });
   labels.sourceFormat = format3?.sourceFormat ?? null;
+  if (format3) {
+    // Unknown columns of the tables this reader reads, kept to write back on
+    // a format 3.0 save (the pose tables', and the links').
+    const carried = [
+      ...POSE_TABLES,
+      "identity/links",
+      "categories/links",
+      "session_data/frame_groups",
+      "session_data/instance_groups",
+      "session_data/instance_group_members",
+    ];
+    const unknown = await readUnknownColumnsStreaming(file, carried);
+    const column = async (p: string): Promise<number[]> =>
+      Array.from(
+        ((await file.getDatasetValue(p)).value ?? []) as ArrayLike<unknown>,
+        Number,
+      );
+    const links = {
+      identityLinks: await linkKeysStreaming(file, "identity/links"),
+      categoryLinks: await linkKeysStreaming(file, "categories/links"),
+      sessions: (await isGroupStreaming(file, "session_data/frame_groups"))
+        ? sessionCarryOwners(sessions, {
+            nFrameGroups: (await column("session_data/frame_groups/frame_idx"))
+              .length,
+            memberStart: await column(
+              "session_data/instance_groups/member_start",
+            ),
+            memberEnd: await column("session_data/instance_groups/member_end"),
+            camera: await column("session_data/instance_group_members/camera"),
+          })
+        : undefined,
+    };
+    if (lazyStore) {
+      const pose: NonNullable<LazyDataStore["unknownColumns"]> = {};
+      for (const table of POSE_TABLES) {
+        if (unknown[table]) pose[table] = unknown[table];
+      }
+      lazyStore.unknownColumns = Object.keys(pose).length > 0 ? pose : null;
+      lazyStore.annotationCarry = buildColumnCarry(
+        unknown,
+        links,
+        carried.slice(POSE_TABLES.length),
+      );
+    } else if (labeledFrames) {
+      const nFrameRows = columnLength(framesData);
+      const nInstanceRows = (instancesData.instance_type ?? []).length;
+      labels._carriedColumns = buildColumnCarry(
+        unknown,
+        {
+          frames:
+            labeledFrames.length === nFrameRows
+              ? labeledFrames.slice()
+              : undefined,
+          instances: Array.from({ length: nInstanceRows }, (_, row) =>
+            instanceRows.get(row),
+          ),
+          instanceRows: {
+            type: instancesData.instance_type ?? [],
+            start: instancesData.point_id_start ?? [],
+            end: instancesData.point_id_end ?? [],
+          },
+          nPoints: columnLength(pointsData),
+          nPredPoints: columnLength(predPointsData),
+          pointsOf: (inst) => (inst as Instance)._xy,
+          ...links,
+        },
+        carried,
+      );
+    }
+  }
   markSessionSource(sessions, format3?.sourceFormat);
   if (labeledFrames) {
     for (const frame of labeledFrames) {
@@ -2240,6 +2325,60 @@ async function isDatasetStreaming(
 }
 
 /** The members of a group of the given type, or none when it is absent. */
+/**
+ * The unknown columns of a format 3.0 file's tables `tables` (see
+ * carry-read.ts), read through the worker, to write them back on a format 3.0
+ * save.
+ */
+async function readUnknownColumnsStreaming(
+  file: StreamingH5File,
+  tables: readonly string[],
+): Promise<UnknownColumns> {
+  const out: UnknownColumns = {};
+  for (const table of tables) {
+    if (!(await isGroupStreaming(file, table))) continue;
+    for (const name of await membersStreaming(file, table, "Dataset")) {
+      if (!isUnknownColumn(table, name)) continue;
+      const path = `${table}/${name}`;
+      const meta = await file.getDatasetMeta(path);
+      const info = {
+        ...((meta.metadata ?? {}) as object),
+        shape: meta.shape ?? null,
+      };
+      if (!Array.isArray(meta.shape) || meta.shape.length !== 1) continue;
+      const column = carriedColumn(
+        info,
+        (await file.getDatasetValue(path)).value,
+      );
+      if (column) {
+        out[table] ??= {};
+        out[table][name] = column;
+      }
+    }
+  }
+  return out;
+}
+
+/** The `(owner_type, owner_id, catalog index)` of each 3.0 link row. */
+async function linkKeysStreaming(
+  file: StreamingH5File,
+  table: "identity/links" | "categories/links",
+): Promise<number[][] | undefined> {
+  if (!(await isGroupStreaming(file, table))) return undefined;
+  const index = table === "identity/links" ? "identity_idx" : "category_idx";
+  const read = async (name: string): Promise<ArrayLike<unknown>> =>
+    ((await file.getDatasetValue(`${table}/${name}`))
+      .value as ArrayLike<unknown>) ?? [];
+  const type = await read("owner_type");
+  const owner = await read("owner_id");
+  const idx = await read(index);
+  return Array.from({ length: type.length }, (_, i) => [
+    Number(type[i]),
+    Number(owner[i]),
+    Number(idx[i]),
+  ]);
+}
+
 async function membersStreaming(
   file: StreamingH5File,
   path: string,
@@ -2276,9 +2415,16 @@ async function readMetadataColumnsStreaming(
     const datasets = await membersStreaming(file, `${base}/${key}`, "Dataset");
     if (!datasets.includes("values")) continue;
     const meta = await file.getDatasetMeta(`${base}/${key}/values`);
-    const kind = metadataKindFromH5(
-      meta.metadata as Parameters<typeof metadataKindFromH5>[0],
-    );
+    const md = meta.metadata as Parameters<typeof metadataKindFromH5>[0];
+    // A uint8 column written by this library may be marked boolean.
+    const kindAttr =
+      md?.type === 0
+        ? await file
+            .getAttrs(`${base}/${key}/values`)
+            .then((attrs) => attrs.kind ?? null)
+            .catch(() => null)
+        : undefined;
+    const kind = metadataKindFromH5(md, kindAttr);
     if (kind === null) continue;
     const values = (await file.getDatasetValue(`${base}/${key}/values`)).value;
     const present = datasets.includes("present")
@@ -2325,7 +2471,7 @@ async function readFormat3Streaming(
     /** `labeled`/`visible` of `/pred_points` when the table itself was not read. */
     predPointFlags?: Record<string, ArrayLike<unknown>> | null;
     nVideos: number;
-    choice: Format3Access | undefined;
+    choice: Format3Option | undefined;
     /** Whether `/metadata`'s `json` attribute holds the provenance. */
     provenanceInMetadata?: boolean;
   },
@@ -2422,7 +2568,11 @@ async function readFormat3Streaming(
     unknownColumns: unknown,
   });
   return {
-    sourceFormat: chooseFormat3Access(labelsPath, summary, tables.choice),
+    sourceFormat: chooseFormat3Access(labelsPath, summary, tables.choice, {
+      instances: metadataKindsOf(instanceMetadata),
+      frames: metadataKindsOf(frameMetadata),
+      bboxes: metadataKindsOf(bboxMetadata),
+    }),
     instanceMetadata,
     frameMetadata,
     bboxMetadata,

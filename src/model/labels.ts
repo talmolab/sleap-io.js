@@ -20,6 +20,12 @@ import {
 } from "./camera.js";
 import type { Identity } from "./identity.js";
 import type { SlpSourceFormat } from "../codecs/slp/format3.js";
+import { ColumnCarry } from "../codecs/slp/column-carry.js";
+import {
+  buildColumnCarry,
+  POSE_TABLES,
+  type UnknownColumns,
+} from "../codecs/slp/carry-read.js";
 import { hasSkippedInstanceRows } from "../codecs/slp/columnar.js";
 import { copySourceMark } from "./source-mark.js";
 
@@ -186,18 +192,37 @@ export class Labels {
   /**
    * Set when the labels were loaded from a file in SLP format 3.0: its format,
    * what it holds that the 2.x layout cannot store, and the caller's
-   * `format3` choice. With `access: "view"` every SLP writer refuses the labels;
-   * with `"edit"` writers save the 2.x layout and drop those fields. `null`
-   * for labels from 1.x/2.x files or built in memory. Carried by
-   * {@link copy} and {@link extract}. The choice also travels with each
-   * frame, instance and annotation read from the file (see
-   * `model/source-mark.ts`); writers decide record by record.
+   * `format3` choice. With `access: "keep"` (the default) a save keeps format
+   * 3.0; with `"view"` every SLP writer refuses the labels; with `"edit"`
+   * writers save the 2.x layout and drop those fields. `null` for labels from
+   * 1.x/2.x files or built in memory. Carried by {@link copy} and
+   * {@link extract}. The choice also travels with each frame, instance and
+   * annotation read from the file (see `model/source-mark.ts`); writers decide
+   * record by record.
    *
    * After saving edit-loaded labels over their source file, set this to
    * `null`: the file is now in the 2.x layout, and the in-place save functions
-   * then patch it again instead of sending every save to a full rewrite.
+   * then patch it as a 2.x file.
    */
   sourceFormat: SlpSourceFormat | null = null;
+
+  /**
+   * The SLP layout these labels were last saved in (`"v2"` or `"v3"`), or
+   * `null`. A later save with `slpVersion: "auto"` keeps that layout: labels
+   * saved in format 3.0 stay in format 3.0, and labels saved in the 2.x layout
+   * go back to the content rule. Carried by {@link copy} and {@link extract}.
+   * @internal
+   */
+  _slpLayout: "v2" | "v3" | null = null;
+
+  /**
+   * Unknown table columns kept from a format 3.0 file, which a format 3.0
+   * save writes back while their rows line up with the records (see
+   * `codecs/slp/column-carry.ts`). Carried by {@link copy} and
+   * {@link extract}, where a save then drops them with a warning.
+   * @internal
+   */
+  _carriedColumns: ColumnCarry | null = null;
 
   // Index caches (excluded from serialization, rebuilt on demand)
   private _frameIndex: Map<Video, Map<number, LabeledFrame>> | null = null;
@@ -693,6 +718,13 @@ export class Labels {
   materialize(): void {
     if (!this._lazyFrameList) return;
     const store = this._lazyDataStore;
+    // The frame of each `/frames` row, for the unknown columns kept.
+    const rowFrames =
+      store?.unknownColumns || store?.annotationCarry
+        ? Array.from({ length: store.frameCount }, (_, i) =>
+            this._lazyFrameList?.at(i),
+          )
+        : null;
     this.labeledFrames = this._lazyFrameList.toArray();
     this._lazyFrameList = null;
     this._lazyDataStore = null;
@@ -749,6 +781,41 @@ export class Labels {
     // Keep undistributed ROIs as static ROIs
     if (store) {
       this._staticRois = store._undistributedRois;
+    }
+
+    // Unknown columns kept from a format 3.0 file now follow the frames and
+    // instances materialized from their rows (see column-carry.ts).
+    if (store && rowFrames) {
+      const byRow: Array<Instance | PredictedInstance | undefined> = new Array(
+        (store.instancesData.instance_type ?? []).length,
+      );
+      for (const frame of rowFrames) {
+        for (const inst of frame?.instances ?? []) {
+          const row = store._instanceRow.get(inst as Instance);
+          if (row !== undefined) byRow[row] = inst;
+        }
+      }
+      const pose =
+        buildColumnCarry(
+          (store.unknownColumns ?? {}) as UnknownColumns,
+          {
+            frames: rowFrames,
+            instances: byRow,
+            instanceRows: {
+              type: store.instancesData.instance_type ?? [],
+              start: store.instancesData.point_id_start ?? [],
+              end: store.instancesData.point_id_end ?? [],
+            },
+            nPoints: (store.pointsData.x ?? []).length,
+            nPredPoints: (store.predPointsData.x ?? []).length,
+            pointsOf: (inst) => (inst as Instance)._xy,
+          },
+          POSE_TABLES,
+        ) ?? new ColumnCarry();
+      for (const [table, carried] of store.annotationCarry?.tables ?? []) {
+        pose.tables.set(table, carried);
+      }
+      this._carriedColumns = pose.size > 0 ? pose : null;
     }
   }
 
@@ -1525,6 +1592,8 @@ export class Labels {
     }
 
     labelsCopy.sourceFormat = this.sourceFormat;
+    labelsCopy._slpLayout = this._slpLayout;
+    labelsCopy._carriedColumns = this._carriedColumns;
 
     if (options?.openVideos !== undefined) {
       for (const video of labelsCopy.videos) {
@@ -2985,6 +3054,8 @@ export class Labels {
     labels.provenance.source_labels =
       (this.provenance.filename as string | undefined) ?? null;
     labels.sourceFormat = this.sourceFormat;
+    labels._slpLayout = this._slpLayout;
+    labels._carriedColumns = this._carriedColumns;
 
     return labels;
   }
