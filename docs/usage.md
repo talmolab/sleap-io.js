@@ -429,12 +429,14 @@ it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
   form stores some numbers in narrower types than 3.0: scores, tracking
   scores, scales and offsets of ROIs, masks, label images and score maps as
   32-bit floats, and their video, track and instance indices as 32-bit
-  integers. The store-merging writers (`SlpStreamWriter.appendStore`,
-  `saveSlpMergedFromStores`, `saveSlpMergedToSink`) write no per-detection
-  identity or category links or embeddings, and only the identities and
-  sessions given in their header; they refuse a store loaded this way that
-  holds any of those, before writing it, and name what would be lost. Save
-  such labels with `saveSlp` or `saveSlpToBytes`.
+  integers. The streaming writer (`SlpStreamWriter.appendStore` and
+  `appendFrames`, `saveSlpMergedFromStores`, `saveSlpMergedToSink`) writes no
+  per-detection identity or category links or embeddings (the category of a
+  centroid, box, mask or ROI is kept, in its own column, but not its score),
+  and only the identities and sessions given in its header. It refuses
+  stores and frames loaded this way that hold any of those, before writing
+  them, and names what would be lost. Save such labels with `saveSlp` or
+  `saveSlpToBytes`.
 
 The choice travels with the content, not only with the `Labels` it was loaded
 into. Every labeled frame, instance and annotation (static ROIs included), and
