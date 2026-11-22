@@ -7,6 +7,7 @@ import {
   InstanceGroup,
   METADATA_SUBGROUP,
   Node,
+  PARTLY_READ_GROUPS,
   PredictedInstance,
   PredictedInstance3D,
   RecordingSession,
@@ -62,8 +63,9 @@ import {
   sessionsReadError,
   skipsInstanceRow,
   unknownColumns,
+  unreadMembers,
   unreadTablesError
-} from "./chunk-R3B3DLP2.js";
+} from "./chunk-OGVVQHLP.js";
 import {
   openGdrive
 } from "./chunk-RC2FIFDH.js";
@@ -16624,7 +16626,8 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     predPointsData: userInstancesOnly ? null : predPointsData,
     predPointFlags,
     nVideos: videos.length,
-    choice: format3Choice
+    choice: format3Choice,
+    provenanceInMetadata: !!metadataJson && "provenance" in metadataJson
   });
   checkPointSpans({
     framesData,
@@ -17612,8 +17615,17 @@ async function readFormat3Streaming(file, labelsPath, formatId, tables) {
     );
   }
   unknown.push(...unknownColumns("bboxes", bboxColumns));
+  const groups = {};
+  for (const group of PARTLY_READ_GROUPS) {
+    if (root.includes(group)) groups[group] = await childKeys(file, group);
+  }
   const summary = buildFormat3Summary({
     formatId,
+    unreadTables: unreadMembers({
+      root,
+      groups,
+      provenanceInMetadata: tables.provenanceInMetadata ?? false
+    }),
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(
       predPointsData ?? tables.predPointFlags ?? void 0
@@ -23412,7 +23424,8 @@ async function readSlp(source, options) {
       instancesData,
       pointsData,
       predPointsData,
-      choice: options?.format3
+      choice: options?.format3,
+      provenanceInMetadata: !!metadataJson && "provenance" in metadataJson
     });
     checkPointSpans({
       framesData,
@@ -23667,7 +23680,8 @@ async function readSlpLazy(source, options) {
       instancesData,
       pointsData,
       predPointsData,
-      choice: options?.format3
+      choice: options?.format3,
+      provenanceInMetadata: !!metadataJson && "provenance" in metadataJson
     });
     checkPointSpans({
       framesData,
@@ -25144,6 +25158,13 @@ function readFormat3(file, labelsPath, formatId, nVideos, tables) {
   ) : null;
   const summary = buildFormat3Summary({
     formatId,
+    unreadTables: unreadMembers({
+      root: file.keys(),
+      groups: Object.fromEntries(
+        PARTLY_READ_GROUPS.map((g) => [g, h5Members(file, g)])
+      ),
+      provenanceInMetadata: tables.provenanceInMetadata ?? false
+    }),
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(predPointsData),
     metadataKeys: {

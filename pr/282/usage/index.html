@@ -1120,7 +1120,11 @@ without a warning.</p>
 <p>Every 3.0 file asks, even one that holds nothing the 2.x layout cannot store,
 because saving it rewrites it in another layout. The error's <code>summary</code> (also
 returned as <code>format3</code> by the lite <code>loadSlpMetadata</code>, so an application can ask
-before a full read) says what an edit would drop:</p>
+before a full read) says what an edit would drop. Besides unlabelled points,
+metadata and unknown columns, that is anything in the file this version does
+not read at all, in <code>unreadTables</code>: for example the frame-spanning events
+(<code>events</code>, <code>event_types</code>), the metadata of categories (<code>categories/meta_*</code>), or
+a table added by a newer writer:</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">SlpFormat3ChoiceError</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js"</span><span class="p">;</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="nx">labels</span><span class="p">;</span>
@@ -1128,7 +1132,8 @@ before a full read) says what an edit would drop:</p>
 <span class="w">  </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">"dataset.slp"</span><span class="p">);</span>
 <span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="p">(</span><span class="nx">e</span><span class="w"> </span><span class="ow">instanceof</span><span class="w"> </span><span class="nx">SlpFormat3ChoiceError</span><span class="p">))</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="nx">e</span><span class="p">;</span>
-<span class="w">  </span><span class="c1">// e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns, lossless }</span>
+<span class="w">  </span><span class="c1">// e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns,</span>
+<span class="w">  </span><span class="c1">//              unreadTables, lossless }</span>
 <span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">edit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">summary</span><span class="p">.</span><span class="nx">lossless</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nx">confirm</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">message</span><span class="p">);</span>
 <span class="w">  </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">"dataset.slp"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">format3</span><span class="o">:</span><span class="w"> </span><span class="kt">edit</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="s2">"edit"</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="s2">"view"</span><span class="w"> </span><span class="p">});</span>
 <span class="p">}</span>

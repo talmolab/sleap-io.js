@@ -2841,6 +2841,13 @@ interface Format3Summary {
     };
     /** Columns this version does not know, as paths like `points/foo`. */
     unknownColumns: string[];
+    /**
+     * Members of the file this version does not read at all, as paths: other
+     * tables (for example `events` and `event_types`), and members of groups it
+     * reads in part (for example `categories/meta_key`). See
+     * {@link unreadMembers}.
+     */
+    unreadTables: string[];
     /** True when an edit would drop nothing (all of the above are empty). */
     lossless: boolean;
 }

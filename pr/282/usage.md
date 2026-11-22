@@ -431,7 +431,11 @@ without a warning.
 Every 3.0 file asks, even one that holds nothing the 2.x layout cannot store,
 because saving it rewrites it in another layout. The error's `summary` (also
 returned as `format3` by the lite `loadSlpMetadata`, so an application can ask
-before a full read) says what an edit would drop:
+before a full read) says what an edit would drop. Besides unlabelled points,
+metadata and unknown columns, that is anything in the file this version does
+not read at all, in `unreadTables`: for example the frame-spanning events
+(`events`, `event_types`), the metadata of categories (`categories/meta_*`), or
+a table added by a newer writer:
 
 ```ts
 import { loadSlp, SlpFormat3ChoiceError } from "@talmolab/sleap-io.js";
@@ -441,7 +445,8 @@ try {
   labels = await loadSlp("dataset.slp");
 } catch (e) {
   if (!(e instanceof SlpFormat3ChoiceError)) throw e;
-  // e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns, lossless }
+  // e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns,
+  //              unreadTables, lossless }
   const edit = e.summary.lossless || confirm(e.message);
   labels = await loadSlp("dataset.slp", { format3: edit ? "edit" : "view" });
 }
