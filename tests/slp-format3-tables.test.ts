@@ -713,19 +713,45 @@ describe("edit saves of the format 3.0 tables", () => {
     }
   }
 
-  it("an eager save reads back as the 2.x twin itself", async () => {
-    for (const [v3, v2] of [
-      [V3, V2],
-      [BLOB, BLOB_V2],
-    ]) {
-      const back = await readSlp(
-        tempFile(await saveSlpToBytes(await readSlp(slpPath(v3), EDIT))),
-        { openVideos: false },
+  for (const [what, save] of SAVES) {
+    it(`${what} reads back as the 2.x twin itself`, async () => {
+      for (const [v3, v2] of [
+        [V3, V2],
+        [BLOB, BLOB_V2],
+      ]) {
+        const back = await readSlp(tempFile(await save(v3)), {
+          openVideos: false,
+        });
+        expect(describe3(back)).toEqual(
+          describe3(await readSlp(slpPath(v2), { openVideos: false })),
+        );
+      }
+    });
+  }
+
+  it("a lazy save of a 2.x file keeps its identity and category links", async () => {
+    const bytes = await saveSlpToBytes(
+      await readSlpLazy(slpPath("py_written_27_category.slp"), {
+        openVideos: false,
+      }),
+    );
+    // The format the links need (2.7), as an eager save writes.
+    expect((await loadSlpMetadata(bytes)).formatId).toBe(2.7);
+    const back = await readSlp(tempFile(bytes), { openVideos: false });
+    const eager = await readSlp(slpPath("py_written_27_category.slp"), {
+      openVideos: false,
+    });
+    const links = (labels: Labels) =>
+      labels.labeledFrames.flatMap((f) =>
+        f.instances.map((i) => [
+          i.identity?.name ?? null,
+          i.identityScore ?? null,
+          i.category ?? null,
+          i.categoryScore ?? null,
+        ]),
       );
-      expect(describe3(back)).toEqual(
-        describe3(await readSlp(slpPath(v2), { openVideos: false })),
-      );
-    }
+    expect(links(back)).toEqual(links(eager));
+    expect(links(eager).some(([, , c]) => c !== null)).toBe(true);
   });
 });
 
@@ -1282,19 +1308,17 @@ describe("an edit save of the format 3.0 tables reads back in Python", () => {
               `${what} of ${v3} read back with sleap-io ${saved.version} (${python.label})`,
             );
             expect(saved.format_id).toBeLessThan(3);
-            // As Python reads the same save of the 2.x twin, and (eager saves;
-            // lazy saves write no links) the 2.x twin it wrote itself.
+            // As Python reads the same save of the 2.x twin, and the 2.x twin
+            // it wrote itself.
             expect(saved).toEqual(
               describeInPython(python, tempFile(await save(v2))),
             );
-            if (what === "an eager save") {
-              const { format_id: _a, ...rest } = saved;
-              const { format_id: _b, ...fixture } = describeInPython(
-                python,
-                slpPath(v2),
-              );
-              expect(rest).toEqual(fixture);
-            }
+            const { format_id: _a, ...rest } = saved;
+            const { format_id: _b, ...fixture } = describeInPython(
+              python,
+              slpPath(v2),
+            );
+            expect(rest).toEqual(fixture);
           },
         );
       }

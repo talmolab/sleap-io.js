@@ -878,6 +878,56 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
     [],
     liCtx,
   );
+
+  // Per-detection identity and category links (and embeddings), as the eager
+  // writer writes them. The instances are the store's rows, written in order
+  // above, so their links come from the store by row; the other detections
+  // are objects, in the order their tables were just written.
+  const detections: DetectionCollections = {
+    instance: lazyInstanceDetections(store, labels.identities),
+    centroid: allCentroids,
+    mask: allMasks,
+    bbox: allBboxes,
+    roi: allRois,
+  };
+  writeIdentityLinks(file, labels.identities, detections);
+  writeCategoryLinks(file, detections);
+  writeEmbeddings(file, detections);
+}
+
+/**
+ * The identity and category of each `/instances` row of a lazy store, as the
+ * readers attach them when a frame materializes: one entry per row (empty for
+ * rows without links), from the store's link and embedding maps.
+ */
+function lazyInstanceDetections(
+  store: LazyDataStore,
+  identities: Identity[],
+): IdentityBearing[] {
+  const rows = (store.instancesData.instance_type ?? []).length;
+  const out: IdentityBearing[] = Array.from({ length: rows }, () => ({}));
+  const catalog = store.identities ?? identities;
+  for (const [row, [idx, score]] of store._instanceIdentityLinks ?? []) {
+    const identity = catalog[idx];
+    if (out[row] && identity) {
+      out[row].identity = identity;
+      out[row].identityScore = score;
+    }
+  }
+  for (const [row, embedding] of store._instanceEmbeddings ?? []) {
+    if (out[row]) out[row].identityEmbedding = embedding;
+  }
+  const categories = store.categoryCatalog ?? [];
+  for (const [row, [idx, score]] of store._instanceCategoryLinks ?? []) {
+    if (out[row] && idx >= 0 && idx < categories.length) {
+      out[row].category = categories[idx];
+      out[row].categoryScore = score;
+    }
+  }
+  for (const [row, embedding] of store._instanceCategoryEmbeddings ?? []) {
+    if (out[row]) out[row].categoryEmbedding = embedding;
+  }
+  return out;
 }
 
 /**
@@ -2995,6 +3045,11 @@ function anyDetection(
 
 /** Whether any detection carries a per-detection identity or embedding (format 2.5). */
 function hasPerDetectionIdentity(labels: Labels): boolean {
+  // A lazy store keeps its instances' links by row (written by the lazy saves).
+  const store = labels.isLazy ? labels._lazyDataStore : null;
+  if (store?._instanceIdentityLinks?.size || store?._instanceEmbeddings?.size) {
+    return true;
+  }
   return anyDetection(
     labels,
     (d) => d.identity != null || d.identityEmbedding != null,
@@ -3003,6 +3058,13 @@ function hasPerDetectionIdentity(labels: Labels): boolean {
 
 /** Whether any detection carries a category or category embedding (format 2.7). */
 function hasPerDetectionCategory(labels: Labels): boolean {
+  const store = labels.isLazy ? labels._lazyDataStore : null;
+  if (
+    store?._instanceCategoryLinks?.size ||
+    store?._instanceCategoryEmbeddings?.size
+  ) {
+    return true;
+  }
   return anyDetection(
     labels,
     (d) =>
