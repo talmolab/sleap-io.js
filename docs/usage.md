@@ -387,6 +387,13 @@ reads no ROIs, masks or label images in any layout), and the summary it gives
 for a 3.0 file lists the rest in `unreadTables` (below), as something an edit
 drops. The lite `loadSlpMetadata` reads the session tables.
 
+A recording session's metadata is stored at the top level of its
+`sessions_json` entry, beside `calibration`, `camcorder_to_video_idx_map`,
+`fg_start` and `fg_end`, as Python sleap-io stores it. A metadata key with one
+of those names is not saved, and the readers read the entries of a `metadata`
+key that holds an object as metadata (files from earlier sleap-io.js versions
+stored it there), so avoid those keys.
+
 sleap-io.js still writes the 2.x layout only, so a format 3.0 file that is
 loaded and saved comes out in the 2.x layout. That never happens silently: every
 reader (and `loadSlp`) takes a `format3` option, and a 3.0 file loaded without
@@ -402,7 +409,11 @@ it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
   what that layout cannot store: points marked as not labelled are written as
   hidden points with no location, and metadata and unknown columns (of any
   table) are not written. ROIs, masks, label images, links and session tables
-  are written in their 2.x form.
+  are written in their 2.x form. Like Python's `legacy_format=True`, that
+  form stores some numbers in narrower types than 3.0: scores, tracking
+  scores, scales and offsets of ROIs, masks, label images and score maps as
+  32-bit floats, and their video, track and instance indices as 32-bit
+  integers.
 
 The choice travels with the content, not only with the `Labels` it was loaded
 into. Every labeled frame, instance and annotation (static ROIs included), and
@@ -448,8 +459,9 @@ returned as `format3` by the lite `loadSlpMetadata`, so an application can ask
 before a full read) says what an edit would drop. Besides unlabelled points,
 metadata and unknown columns, that is anything in the file this version does
 not read at all, in `unreadTables`: for example the frame-spanning events
-(`events`, `event_types`), the metadata of categories (`categories/meta_*`), or
-a table added by a newer writer:
+(`events`, `event_types`), the metadata of categories (`categories/meta_*`), a
+table added by a newer writer, or a sub-table it does not know inside one it
+reads (`masks/<name>`):
 
 ```ts
 import { loadSlp, SlpFormat3ChoiceError } from "@talmolab/sleap-io.js";
