@@ -142,15 +142,26 @@ describe("Python compatibility (#76)", () => {
       expectFixedString(file.get("instances"), "field_names");
       expectFixedString(file.get("points"), "field_names");
 
-      expectFixedString(file.get("rois"), "field_names");
-
-      // v1.9+: string metadata stored as root-level datasets with "json" attribute
-      expectFixedString(file.get("roi_categories"), "json");
-      expectFixedString(file.get("roi_names"), "json");
-      expectFixedString(file.get("roi_sources"), "json");
-      expectFixedString(file.get("mask_categories"), "json");
-      expectFixedString(file.get("mask_names"), "json");
-      expectFixedString(file.get("mask_sources"), "json");
+      // ROIs and masks are compound tables, as Python sleap-io writes them,
+      // with their strings in variable-length UTF-8 string datasets.
+      for (const name of ["rois", "masks"]) {
+        expect(file.get(name)?.metadata.type, name).toBe(6); // H5T_COMPOUND
+      }
+      for (const name of [
+        "roi_categories",
+        "roi_names",
+        "roi_sources",
+        "mask_categories",
+        "mask_names",
+        "mask_sources",
+      ]) {
+        const ds = file.get(name);
+        expect([name, ds.metadata.type, ds.metadata.vlen]).toEqual([
+          name,
+          3,
+          true,
+        ]);
+      }
 
       // Bounding boxes use Python's columnar `/bboxes` group (vlen-str
       // category/name/source children), not root JSON string datasets.

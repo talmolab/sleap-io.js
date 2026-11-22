@@ -74,20 +74,6 @@ function setStringAttr(target: any, name: string, value: string): void {
   target.create_attribute(name, value, null, `S${byteLength}`);
 }
 
-/** Write a string array as a JSON-encoded string attribute dataset at root level. */
-function writeStringDataset(file: any, name: string, values: string[]): void {
-  const json = JSON.stringify(values);
-  const bytes = textEncoder.encode(json);
-  file.create_dataset({
-    name,
-    data: bytes,
-    shape: [bytes.length],
-    dtype: "<B",
-  });
-  const ds = file.get(name);
-  setStringAttr(ds, "json", json);
-}
-
 const SPAWNED_ON = 0;
 
 /**
@@ -5081,6 +5067,108 @@ function createCompoundDataset(
   );
 }
 
+// The 2.x annotation tables as Python sleap-io writes them (`legacy_format=True`
+// in 0.10, and 0.9.x): contiguous compound datasets with these member types
+// (`_TABLE_SPECS[...].legacy`, `LI_DTYPE`, `OBJ_DTYPE`, `LI_SM_INDEX_DTYPE`),
+// and the strings in variable-length UTF-8 string datasets beside them. See
+// the note above INSTANCE_COMPOUND_FIELDS for the h5wasm dtype characters.
+const SPATIAL_COMPOUND_FIELDS: CompoundField[] = [
+  ["scale_x", "<f"], // f4
+  ["scale_y", "<f"], // f4
+  ["offset_x", "<f"], // f4
+  ["offset_y", "<f"], // f4
+];
+const ROI_COMPOUND_FIELDS: CompoundField[] = [
+  ["annotation_type", "<B"], // u1
+  ["video", "<i"], // i4
+  ["frame_idx", "<q"], // i8
+  ["track", "<i"], // i4
+  ["is_predicted", "<B"], // u1
+  ["score", "<f"], // f4
+  ["tracking_score", "<f"], // f4
+  ["wkb_start", "<Q"], // u8
+  ["wkb_end", "<Q"], // u8
+  ["instance", "<i"], // i4
+];
+const MASK_COMPOUND_FIELDS: CompoundField[] = [
+  ["height", "<I"], // u4
+  ["width", "<I"], // u4
+  ["annotation_type", "<B"], // u1
+  ["video", "<i"], // i4
+  ["frame_idx", "<q"], // i8
+  ["track", "<i"], // i4
+  ["instance", "<i"], // i4
+  ["from_predicted", "<i"], // i4
+  ["is_predicted", "<B"], // u1
+  ["score", "<f"], // f4
+  ["tracking_score", "<f"], // f4
+  ["rle_start", "<Q"], // u8
+  ["rle_end", "<Q"], // u8
+  ...SPATIAL_COMPOUND_FIELDS,
+];
+const scoreMapIndexFields = (index: string): CompoundField[] => [
+  [index, "<I"], // u4
+  ["data_start", "<Q"], // u8
+  ["data_end", "<Q"], // u8
+  ["height", "<I"], // u4
+  ["width", "<I"], // u4
+  ...SPATIAL_COMPOUND_FIELDS,
+];
+const LABEL_IMAGE_COMPOUND_FIELDS: CompoundField[] = [
+  ["video", "<i"], // i4
+  ["frame_idx", "<q"], // i8
+  ["height", "<I"], // u4
+  ["width", "<I"], // u4
+  ["n_objects", "<I"], // u4
+  ["objects_start", "<I"], // u4
+  ["data_start", "<Q"], // u8
+  ["data_end", "<Q"], // u8
+  ["is_predicted", "<B"], // u1
+  ["score", "<f"], // f4
+  ...SPATIAL_COMPOUND_FIELDS,
+];
+const LABEL_IMAGE_OBJECT_COMPOUND_FIELDS: CompoundField[] = [
+  ["label_id", "<i"], // i4
+  ["track", "<i"], // i4
+  ["instance", "<i"], // i4
+  ["score", "<f"], // f4
+  ["tracking_score", "<f"], // f4
+];
+
+/**
+ * Write one of the 2.x annotation tables as Python sleap-io does: a
+ * contiguous compound dataset with `fields` as its members. `rows[i][j]` is
+ * the value of column `columns[j]` of row i, in any order.
+ */
+function createLegacyTable(
+  file: any,
+  name: string,
+  rows: number[][],
+  columns: string[],
+  fields: CompoundField[],
+): void {
+  const data = new Map<string, number[]>();
+  for (const [field] of fields) {
+    const j = columns.indexOf(field);
+    if (j < 0) throw new Error(`${name}: no value for column ${field}`);
+    data.set(
+      field,
+      rows.map((row) => row[j]),
+    );
+  }
+  file.create_dataset({ name, data, shape: [rows.length], dtype: fields });
+}
+
+/** Write strings as Python sleap-io does: a variable-length UTF-8 dataset. */
+function writeVlenStrings(file: any, name: string, values: string[]): void {
+  file.create_dataset({
+    name,
+    data: values,
+    shape: [values.length],
+    dtype: "S",
+  });
+}
+
 function writeRois(
   file: any,
   rois: ROI[],
@@ -5140,7 +5228,7 @@ function writeRois(
     sources.push(roi.source);
   }
 
-  createMatrixDataset(
+  createLegacyTable(
     file,
     "rois",
     rows,
@@ -5156,13 +5244,13 @@ function writeRois(
       "instance",
       "is_predicted",
     ],
-    "<f8",
+    ROI_COMPOUND_FIELDS,
   );
 
   // Write string metadata as datasets at root level (v1.9+)
-  writeStringDataset(file, "roi_categories", categories);
-  writeStringDataset(file, "roi_names", names);
-  writeStringDataset(file, "roi_sources", sources);
+  writeVlenStrings(file, "roi_categories", categories);
+  writeVlenStrings(file, "roi_names", names);
+  writeVlenStrings(file, "roi_sources", sources);
 
   // Write concatenated WKB bytes
   const totalWkb = wkbChunks.reduce((sum, c) => sum + c.length, 0);
@@ -5308,6 +5396,10 @@ function writeMasks(
           smOffset + compressed.length,
           smH,
           mask.width,
+          pm.scoreMapScale[0],
+          pm.scoreMapScale[1],
+          pm.scoreMapOffset[0],
+          pm.scoreMapOffset[1],
         ]);
         scoreMapChunks.push(compressed);
         smOffset += compressed.length;
@@ -5315,7 +5407,7 @@ function writeMasks(
     }
   }
 
-  createMatrixDataset(
+  createLegacyTable(
     file,
     "masks",
     rows,
@@ -5338,13 +5430,13 @@ function writeMasks(
       "offset_y",
       "from_predicted",
     ],
-    "<f8",
+    MASK_COMPOUND_FIELDS,
   );
 
   // Write string metadata as datasets at root level (v1.9+)
-  writeStringDataset(file, "mask_categories", categories);
-  writeStringDataset(file, "mask_names", names);
-  writeStringDataset(file, "mask_sources", sources);
+  writeVlenStrings(file, "mask_categories", categories);
+  writeVlenStrings(file, "mask_names", names);
+  writeVlenStrings(file, "mask_sources", sources);
 
   // Write concatenated RLE bytes
   const totalRle = rleChunks.reduce((sum, c) => sum + c.length, 0);
@@ -5381,12 +5473,22 @@ function writeMasks(
 
   // Write score maps
   if (scoreMapIndexRows.length > 0) {
-    createMatrixDataset(
+    createLegacyTable(
       file,
       "mask_score_map_index",
       scoreMapIndexRows,
-      ["mask_idx", "data_start", "data_end", "height", "width"],
-      "<f8",
+      [
+        "mask_idx",
+        "data_start",
+        "data_end",
+        "height",
+        "width",
+        "scale_x",
+        "scale_y",
+        "offset_x",
+        "offset_y",
+      ],
+      scoreMapIndexFields("mask_idx"),
     );
     const totalSm = scoreMapChunks.reduce((sum, c) => sum + c.length, 0);
     const smFlat = new Uint8Array(totalSm);
@@ -5604,6 +5706,10 @@ function writeLabelImages(
           smOffset + smCompressed.length,
           smH,
           li.width,
+          pli.scoreMapScale[0],
+          pli.scoreMapScale[1],
+          pli.scoreMapOffset[0],
+          pli.scoreMapOffset[1],
         ]);
         smChunks.push(smCompressed);
         smOffset += smCompressed.length;
@@ -5612,7 +5718,7 @@ function writeLabelImages(
   }
 
   // Write main metadata table
-  createMatrixDataset(
+  createLegacyTable(
     file,
     "label_images",
     rows,
@@ -5632,24 +5738,24 @@ function writeLabelImages(
       "offset_x",
       "offset_y",
     ],
-    "<f8",
+    LABEL_IMAGE_COMPOUND_FIELDS,
   );
 
   // Write string metadata as datasets at root level (v1.9+)
-  writeStringDataset(file, "label_image_sources", sources);
+  writeVlenStrings(file, "label_image_sources", sources);
 
   // Write objects table (if any objects exist)
   if (objectRows.length > 0) {
-    createMatrixDataset(
+    createLegacyTable(
       file,
       "label_image_objects",
       objectRows,
       ["label_id", "track", "instance", "score", "tracking_score"],
-      "<f8",
+      LABEL_IMAGE_OBJECT_COMPOUND_FIELDS,
     );
     // Write string metadata as datasets at root level (v1.9+)
-    writeStringDataset(file, "label_image_obj_categories", objectCategories);
-    writeStringDataset(file, "label_image_obj_names", objectNames);
+    writeVlenStrings(file, "label_image_obj_categories", objectCategories);
+    writeVlenStrings(file, "label_image_obj_names", objectNames);
   }
 
   // Write concatenated compressed pixel data
@@ -5669,12 +5775,22 @@ function writeLabelImages(
 
   // Write score maps
   if (smIndexRows.length > 0) {
-    createMatrixDataset(
+    createLegacyTable(
       file,
       "label_image_score_map_index",
       smIndexRows,
-      ["li_idx", "data_start", "data_end", "height", "width"],
-      "<f8",
+      [
+        "li_idx",
+        "data_start",
+        "data_end",
+        "height",
+        "width",
+        "scale_x",
+        "scale_y",
+        "offset_x",
+        "offset_y",
+      ],
+      scoreMapIndexFields("li_idx"),
     );
     const totalSm = smChunks.reduce((sum, c) => sum + c.length, 0);
     const smFlat = new Uint8Array(totalSm);

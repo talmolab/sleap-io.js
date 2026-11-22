@@ -16,6 +16,12 @@
  *   - format3_tables_defaults.slp: format3_tables.slp without the optional
  *     columns of the ROI, mask and label image tables
  *
+ * js_written_annotations.slp and js_written_label_images_blob.slp are
+ * format3_tables.v2.slp and format3_label_images_blob.v2.slp saved by
+ * sleap-io.js before its 2.x writers stored these tables as Python does (flat
+ * float matrices with `field_names`, strings as JSON bytes with a `json`
+ * attribute); readers must still read them.
+ *
  * Each reader must give the same labels for a 3.0 file as for its 2.x twin.
  * The streaming reader reads the links of instances and the sessions (and no
  * ROIs, masks or label images, in any layout); the lite reader reads sessions.
@@ -674,6 +680,18 @@ function tempFile(bytes: Uint8Array, name = "saved.slp"): string {
   return file;
 }
 
+describe("2.x files written by earlier sleap-io.js versions", () => {
+  for (const [old, v2] of [
+    ["js_written_annotations.slp", V2],
+    ["js_written_label_images_blob.slp", BLOB_V2],
+  ]) {
+    it(`${old} reads as the Python-written file it was saved from`, async () => {
+      const read = (n: string) => readSlp(slpPath(n), { openVideos: false });
+      expect(describe3(await read(old))).toEqual(describe3(await read(v2)));
+    });
+  }
+});
+
 describe("edit saves of the format 3.0 tables", () => {
   for (const [what, save] of SAVES) {
     for (const [v3, v2] of [
@@ -1247,83 +1265,57 @@ function describeInPython(
   return JSON.parse(out.trim().split("\n").pop()!);
 }
 
-/**
- * Remove the ROIs, masks and label images from loaded labels (eager or lazy).
- * The 2.x writers store their strings in a form Python sleap-io does not read
- * (see the Python read-back below), whatever layout the labels came from.
- */
-function withoutRoisMasksImages(labels: Labels): Labels {
-  for (const frame of labels.labeledFrames) {
-    frame.rois = [];
-    frame.masks = [];
-    frame.labelImages = [];
-  }
-  labels._staticRois = [];
-  const store = labels._lazyDataStore;
-  if (store) {
-    store._roiByFrame = new Map();
-    store._maskByFrame = new Map();
-    store._labelImageByFrame = new Map();
-    store._undistributedRois = [];
-    store._undistributedMasks = [];
-    store._undistributedLabelImages = [];
-  }
-  return labels;
-}
-
-/** Python's view of a file without the parts removed above. */
-function withoutRoisMasksImagesPy(d: Record<string, unknown>) {
-  const { format_id: _f, static_rois: _s, ...rest } = d;
-  return {
-    ...rest,
-    frames: (d.frames as Array<Record<string, unknown>>).map(
-      ({ rois: _r, masks: _m, label_images: _l, ...frame }) => frame,
-    ),
-  };
-}
-
 describe("an edit save of the format 3.0 tables reads back in Python", () => {
-  // Links of every owner kind left (instances, centroids, boxes) and the
-  // session of three cameras with its 3D points.
-  const saves: Array<[string, (name: string) => Promise<Uint8Array>]> = [
-    [
-      "an eager save",
-      async (n) =>
-        saveSlpToBytes(withoutRoisMasksImages(await readSlp(slpPath(n), EDIT))),
-    ],
-    [
-      "a lazy save",
-      async (n) =>
-        saveSlpToBytes(
-          withoutRoisMasksImages(await readSlpLazy(slpPath(n), EDIT)),
-        ),
-    ],
-  ];
   for (const python of pythons()) {
-    for (const [what, save] of saves) {
-      for (const v3 of [V3, UNKNOWN]) {
+    for (const [what, save] of SAVES) {
+      for (const [v3, v2] of [
+        [V3, V2],
+        [UNKNOWN, V2],
+        [BLOB, BLOB_V2],
+      ]) {
         it.skipIf(SKIP_PYTHON)(
           `${what} of ${v3}, with ${python.label}`,
           async () => {
             // Throws (fails the test) if this Python cannot run.
             const saved = describeInPython(python, tempFile(await save(v3)));
-            const twin = describeInPython(python, tempFile(await save(V2)));
             console.log(
               `${what} of ${v3} read back with sleap-io ${saved.version} (${python.label})`,
             );
             expect(saved.format_id).toBeLessThan(3);
-            expect(saved).toEqual(twin);
+            // As Python reads the same save of the 2.x twin, and (eager saves;
+            // lazy saves write no links) the 2.x twin it wrote itself.
+            expect(saved).toEqual(
+              describeInPython(python, tempFile(await save(v2))),
+            );
             if (what === "an eager save") {
-              // And as Python reads the 2.x twin it wrote itself.
-              expect(withoutRoisMasksImagesPy(saved)).toEqual(
-                withoutRoisMasksImagesPy(describeInPython(python, slpPath(V2))),
+              const { format_id: _a, ...rest } = saved;
+              const { format_id: _b, ...fixture } = describeInPython(
+                python,
+                slpPath(v2),
               );
-              const s = saved.sessions as Array<{ frame_groups: unknown[] }>;
-              expect(s[0].frame_groups).toHaveLength(2);
+              expect(rest).toEqual(fixture);
             }
           },
         );
       }
     }
+    it.skipIf(SKIP_PYTHON)(
+      `a save of a 2.x file with these tables, with ${python.label}`,
+      async () => {
+        for (const v2 of [V2, BLOB_V2]) {
+          const labels = await readSlp(slpPath(v2), { openVideos: false });
+          expect(labels.sourceFormat).toBeNull();
+          const { format_id: _a, ...saved } = describeInPython(
+            python,
+            tempFile(await saveSlpToBytes(labels)),
+          );
+          const { format_id: _b, ...fixture } = describeInPython(
+            python,
+            slpPath(v2),
+          );
+          expect(saved).toEqual(fixture);
+        }
+      },
+    );
   }
 });
