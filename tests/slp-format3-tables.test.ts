@@ -605,13 +605,18 @@ describe("unknown columns of the format 3.0 tables", () => {
     expect((error as Error).message).toContain("rois/extra");
   });
 
-  it("files without them are lossless", async () => {
+  it("files without them list none", async () => {
     for (const name of [V3, BLOB, DEFAULTS]) {
-      const labels = await readSlp(slpPath(name), EDIT);
-      expect([name, labels.sourceFormat?.summary.lossless]).toEqual([
+      const summary = (await readSlp(slpPath(name), EDIT)).sourceFormat
+        ?.summary;
+      expect([name, summary?.unknownColumns]).toEqual([name, []]);
+      // What they hold that an edit drops: the metadata of a category, which
+      // this version does not read (categories are plain strings).
+      expect([name, summary?.unreadTables]).toEqual([
         name,
-        true,
+        ["categories/meta_key", "categories/meta_owner", "categories/meta_val"],
       ]);
+      expect(summary?.lossless).toBe(false);
     }
   });
 
