@@ -1021,6 +1021,12 @@ describe("marks follow content, and can be carried or switched", () => {
       "format3_defaults.slp",
       "format3_bad_frame_id.slp",
       "format3_embedded.pkg.slp",
+      "format3_tables.slp",
+      "format3_tables.v2.slp",
+      "format3_label_images_blob.slp",
+      "format3_label_images_blob.v2.slp",
+      "format3_tables_unknown.slp",
+      "format3_tables_defaults.slp",
     ]) {
       const text = Buffer.from(slpBytes(name)).toString("latin1");
       for (const needle of ["/scr/", "/home/", "/Users/", "/tmp/", ":\\\\"]) {
@@ -1137,15 +1143,8 @@ describe("columns and tables a newer writer may add", () => {
     expect(lite.format3?.unknownColumns).toEqual(["points/cov"]);
   });
 
-  it("validateSlpBuffer refuses a 3.0 table no reader reads yet", () => {
-    let error: unknown;
-    try {
-      validateSlpBuffer(slpBytes("format3_rois_stub.slp"));
-    } catch (e) {
-      error = e;
-    }
-    expect(error).toBeInstanceOf(SlpFormatError);
-    expect((error as Error).message).toContain("/rois");
+  it("validateSlpBuffer accepts a 3.0 file with every table", () => {
+    expect(validateSlpBuffer(slpBytes("format3_tables.slp"))).toBe(true);
     expect(validateSlpBuffer(slpBytes(POSE))).toBe(true);
   });
 

@@ -370,10 +370,21 @@ try {
 
 ### Format 3.0 files, and formats this version cannot read
 
-sleap-io.js reads SLP formats 1.x, 2.x and the pose tables of format 3.0, which
-Python sleap-io 0.10 introduces. Format 3.0 stores each pose table (`/frames`,
-`/instances`, `/points`, `/pred_points`) as a group with one dataset per
-column. Every reader handles both layouts and returns the same `Labels`.
+sleap-io.js reads SLP formats 1.x, 2.x and 3.0, which Python sleap-io 0.10
+introduces. Format 3.0 stores every table as a group with one dataset per
+column: the pose tables (`/frames`, `/instances`, `/points`, `/pred_points`),
+`/rois`, `/masks` (with `score_maps/`), `/label_images` (with `objects/` and
+`score_maps/`), the identity and category links (`/identity/links`,
+`/categories/links`) and the recording session tables
+(`/session_data/frame_groups`, `instance_groups`, `instance_group_members`).
+Every reader handles both layouts and returns the same `Labels`. A 3.0 table
+missing an optional column reads it as Python sleap-io does (for example, an
+ROI without `is_predicted` is a user ROI), and the range checks Python runs
+over these tables (links to videos, tracks, instances, catalogs and frames,
+byte ranges inside their buffers) raise `SlpTableError`. The streaming reader
+reads, of these tables, the links of instances and the session tables (it
+reads no ROIs, masks or label images in any layout); the lite
+`loadSlpMetadata` reads the session tables.
 
 sleap-io.js still writes the 2.x layout only, so a format 3.0 file that is
 loaded and saved comes out in the 2.x layout. That never happens silently: every
@@ -388,8 +399,9 @@ it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
   `SlpViewOnlyError` before it touches its target.
 - `format3: "edit"` loads the same, and a save writes the 2.x layout and drops
   what that layout cannot store: points marked as not labelled are written as
-  hidden points with no location, and metadata and unknown columns are not
-  written.
+  hidden points with no location, and metadata and unknown columns (of any
+  table) are not written. ROIs, masks, label images, links and session tables
+  are written in their 2.x form.
 
 The choice travels with the content, not only with the `Labels` it was loaded
 into. Every labeled frame, instance and annotation read from a 3.0 file carries
@@ -473,12 +485,10 @@ Every reader (`loadSlp`, `readSlp`, `readSlpLazy`, `readSlpStreaming`, and
 - a file of format 4 or higher;
 - a file whose `required_features` attribute on `/metadata` names a feature
   this version doesn't know;
-- a format 3.0 file that holds a table this version does not read in that
-  format yet: ROIs, masks, label images, identity and category links, or
-  session data. The message names the tables;
 - a format 3.0 file whose tables are inconsistent (a missing required column,
   columns of different lengths, instance or point ranges that do not fit,
-  metadata without one row per record). This is `SlpTableError`, a subclass of
+  links to rows that do not exist, byte ranges outside their buffer, metadata
+  without one row per record). This is `SlpTableError`, a subclass of
   `SlpFormatError`, and the message names the table.
 
 The message names the file and its format and says which tool can read it. The
@@ -495,8 +505,8 @@ try {
 }
 ```
 
-A format 3.0 file that is refused for its tables can be saved in the 2.x layout
-with Python sleap-io 0.10 or newer:
+A format 3.0 file can also be saved in the 2.x layout with Python sleap-io 0.10
+or newer:
 
 ```python
 import sleap_io as sio

@@ -185,28 +185,3 @@ export function checkSlpFormat(
     });
   }
 }
-
-/**
- * The error for a format 3.0 file that holds tables this version does not read
- * yet (see `UNREAD_FORMAT_3_TABLES`). Loading the file without them would drop
- * those annotations without a word.
- */
-export function unreadTablesError(
-  source: string,
-  formatId: number,
-  tables: readonly string[],
-): SlpFormatError {
-  const labelsPath = isUrl(source) ? redactUrl(source) : source;
-  return new SlpFormatError({
-    message:
-      `The SLEAP labels file '${labelsPath}' is in SLP format ` +
-      `${formatLabel(formatId)} and holds tables that this version of ` +
-      `sleap-io.js does not read in that format yet ` +
-      `(${tables.map((t) => `/${t}`).join(", ")}). Open the file with ` +
-      "Python sleap-io 0.10 or " +
-      "newer, or save a copy there in the 2.x layout with " +
-      "`labels.save(new_path, legacy_format=True)`.",
-    labelsPath,
-    formatId,
-  });
-}

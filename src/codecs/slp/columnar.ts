@@ -20,7 +20,9 @@
  *
  * Both HDF5 readers (h5wasm on the main thread, the streaming worker) gather
  * the raw columns and hand them to {@link poseTableFromColumns}, so the layout
- * rules live in one place. This module has no HDF5 dependency.
+ * rules live in one place. The other tables format 3.0 stores as columns
+ * (ROIs, masks, label images, links, session tables) are in
+ * `columnar-tables.ts`. This module has no HDF5 dependency.
  */
 
 import { SlpTableError } from "./format-check.js";
@@ -153,7 +155,9 @@ export function unknownColumns(
  * h5wasm hands 64-bit integers over as `BigInt64Array`, which the frame
  * builders can't do index arithmetic with, and booleans as `Int8Array`.
  */
-function numberColumn(values: ArrayLike<unknown> | undefined): Float64Array {
+export function numberColumn(
+  values: ArrayLike<unknown> | undefined,
+): Float64Array {
   if (!values) return new Float64Array(0);
   if (values instanceof Float64Array) return values;
   const out = new Float64Array(values.length);
@@ -403,17 +407,3 @@ export function negativeFrameKeysFromFrames(frames: PoseTable): Set<string> {
   }
   return keys;
 }
-
-/**
- * Tables that format 3.0 stores in a new form which this version does not read
- * yet. A file that has one is refused by name: loading it would drop those
- * annotations without a word.
- */
-export const UNREAD_FORMAT_3_TABLES = [
-  "rois",
-  "masks",
-  "label_images",
-  "identity/links",
-  "categories/links",
-  "session_data",
-] as const;

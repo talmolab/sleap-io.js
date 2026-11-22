@@ -7,7 +7,8 @@
  *   - format3_pose.v2.slp: the same labels in the 2.x layout
  *   - format3_unlabeled.slp: format 3.0 with a point marked as not labelled
  *     and metadata on a frame and an instance
- *   - format3_rois_stub.slp: format3_pose.slp plus an empty `/rois` group
+ *   - format3_rois_stub.slp: format3_pose.slp plus an empty `/rois` group,
+ *     a table without its required columns
  *
  * Each reader (in memory, lazy, streaming, lite) must give the same result for
  * the 3.0 file as for its 2.x twin, and the values the generator wrote. A 3.0
@@ -17,7 +18,10 @@
 import { describe, it, expect } from "./bun-test";
 import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
 import { readFromStreamingFile } from "../src/codecs/slp/read-streaming.js";
-import { SlpFormatError } from "../src/codecs/slp/format-check.js";
+import {
+  SlpFormatError,
+  SlpTableError,
+} from "../src/codecs/slp/format-check.js";
 import {
   poseTableFromColumns,
   negativeFrameKeysFromFrames,
@@ -211,27 +215,36 @@ describe("format 3.0 pose tables", () => {
   });
 });
 
-describe("a 3.0 file with a table that is not read yet is refused by name", () => {
-  const cases: Array<[string, () => Promise<unknown>]> = [
+describe("a 3.0 table without its required columns", () => {
+  // format3_rois_stub.slp has an empty `/rois` group: no column at all.
+  for (const [label, load] of [
     ["readSlp", () => readSlp(slpPath(ROIS_STUB), EDIT)],
     ["readSlpLazy", () => readSlpLazy(slpPath(ROIS_STUB), EDIT)],
-    ["readFromStreamingFile", () => readStreaming(ROIS_STUB)],
-    ["loadSlpMetadata (lite)", () => loadSlpMetadata(slpBytes(ROIS_STUB))],
-  ];
-  for (const [label, load] of cases) {
-    it(label, async () => {
+  ] as Array<[string, () => Promise<unknown>]>) {
+    it(`is refused by ${label}, naming the table`, async () => {
       let error: unknown;
       try {
         await load();
       } catch (e) {
         error = e;
       }
-      expect(error).toBeInstanceOf(SlpFormatError);
+      expect(error).toBeInstanceOf(SlpTableError);
       expect((error as SlpFormatError).formatId).toBe(3);
       expect((error as Error).message).toContain("/rois");
-      expect((error as Error).message).toContain("SLP format 3.0");
+      expect((error as Error).message).toContain("required column");
     });
   }
+
+  // Neither reads ROIs in any layout, so the table does not stop them.
+  it("does not stop the streaming reader, which reads no ROIs", async () => {
+    const labels = await readStreaming(ROIS_STUB);
+    expect(labels.labeledFrames.length).toBe(4);
+  });
+
+  it("does not stop the lite reader, which reads no ROIs", async () => {
+    const meta = await loadSlpMetadata(slpBytes(ROIS_STUB));
+    expect(meta.counts.labeledFrames).toBe(4);
+  });
 });
 
 describe("a 3.0 file with content the 2.x layout cannot store", () => {

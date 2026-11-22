@@ -10,8 +10,8 @@ Writes these small synthetic files next to this script:
   give the same result for both files.
 - `format3_unlabeled.slp`: format 3.0 with what the 2.x layout cannot store: a
   point marked as not labelled, and metadata on a frame and on an instance.
-- `format3_rois_stub.slp`: `format3_pose.slp` with an empty `/rois` group added,
-  standing in for a format 3.0 file with a table that is not read yet.
+- `format3_rois_stub.slp`: `format3_pose.slp` with an empty `/rois` group added:
+  a format 3.0 table without its required columns, which readers refuse.
 - `format3_metadata.slp`: format 3.0 with unlabelled user and predicted points,
   metadata of every kind (bool, int, float, string) on instances, frames and
   bounding boxes, some records lacking a key (so `present` is written), extra
@@ -366,8 +366,8 @@ def main() -> None:
     first.instances[0].metadata["annotator"] = "someone"
     save_as(labels, HERE / "format3_unlabeled.slp", "v3")
 
-    # A format 3.0 file with a table this reader does not read in that format
-    # yet: the pose fixture plus an empty `/rois` group.
+    # A format 3.0 table without its required columns: the pose fixture plus
+    # an empty `/rois` group.
     stub = HERE / "format3_rois_stub.slp"
     shutil.copyfile(HERE / "format3_pose.slp", stub)
     with h5py.File(stub, "r+") as f:
