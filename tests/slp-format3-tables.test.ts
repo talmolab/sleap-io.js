@@ -45,7 +45,12 @@ import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
 import {
   readFromStreamingFile,
   readSessionsStreaming,
+  StreamingIncompleteError,
 } from "../src/codecs/slp/read-streaming.js";
+import {
+  readStreamingOrNull,
+  type StreamingReader,
+} from "../src/io/load-route.js";
 import {
   type SlpFormatError,
   SlpTableError,
@@ -620,6 +625,150 @@ describe("what the streaming reader does not read", () => {
       (await readStreaming("format3_pose.slp")).sourceFormat?.summary
         .unreadTables,
     ).toEqual([]);
+  });
+});
+
+/** The streaming summary's unread tables that the eager summary lacks. */
+async function streamingOnly(name: string): Promise<string[]> {
+  const eager = (await readSlp(slpPath(name), EDIT)).sourceFormat?.summary;
+  const streamed = (await readStreaming(name)).sourceFormat?.summary;
+  return (streamed?.unreadTables ?? []).filter(
+    (t) => !eager?.unreadTables.includes(t),
+  );
+}
+
+describe("what the streaming reader would not read, before a full read", () => {
+  for (const name of [V3, BLOB, UNKNOWN, DEFAULTS, "format3_pose.slp"]) {
+    it(`the lite reader lists it for ${name}, as the streaming summary does`, async () => {
+      const lite = await loadSlpMetadata(slpBytes(name));
+      expect(lite.streamingUnreadTables).toEqual(await streamingOnly(name));
+      // The lite `format3` summary is the eager readers' one.
+      expect(lite.format3).toEqual(
+        (await readSlp(slpPath(name), EDIT)).sourceFormat?.summary,
+      );
+    });
+  }
+
+  it("the lite reader lists it for 2.x files too", async () => {
+    // Python's 2.x link tables are compound datasets jsfive cannot read, so
+    // their owner types are unknown and the tables are listed to be safe.
+    expect((await loadSlpMetadata(slpBytes(V2))).streamingUnreadTables).toEqual(
+      [
+        "categories/links",
+        "identity/links",
+        "label_image_data",
+        "label_image_obj_categories",
+        "label_image_obj_names",
+        "label_image_objects",
+        "label_image_score_map_index",
+        "label_image_score_maps",
+        "label_image_sources",
+        "label_images",
+        "mask_categories",
+        "mask_names",
+        "mask_rle",
+        "mask_score_map_index",
+        "mask_score_maps",
+        "mask_sources",
+        "masks",
+        "roi_categories",
+        "roi_names",
+        "roi_sources",
+        "roi_wkb",
+        "rois",
+      ],
+    );
+    // A JS save stores the links as a flat table whose owner types it reads.
+    const labels = await readSlp(slpPath("format3_pose.v2.slp"), {
+      openVideos: false,
+    });
+    labels.labeledFrames[0].instances[0].identity = undefined;
+    expect(
+      (await loadSlpMetadata(await saveSlpToBytes(labels)))
+        .streamingUnreadTables,
+    ).toEqual([]);
+  });
+});
+
+describe("loadSlp in a browser does not lose what the streaming reader skips", () => {
+  /** The streaming reader over a fixture's stand-in, as `loadSlp` calls it. */
+  const standIn =
+    (name: string): StreamingReader =>
+    async (_source, options) => {
+      const { file, close } = await streamingFile(name);
+      try {
+        return await readFromStreamingFile(
+          file,
+          `https://example.com/${name}`,
+          undefined,
+          false,
+          undefined,
+          false,
+          false,
+          false,
+          false,
+          false,
+          options.format3,
+          options.failIfIncomplete ?? false,
+        );
+      } finally {
+        close();
+      }
+    };
+
+  /** What `loadSlp` does in a browser: streaming first, else the main thread. */
+  async function browserLoad(name: string, streamMode = "auto") {
+    const labels = await readStreamingOrNull(
+      slpPath(name),
+      { format3: "edit" },
+      streamMode,
+      standIn(name),
+    );
+    return {
+      streamed: labels !== null,
+      labels: labels ?? (await readSlp(slpPath(name), EDIT)),
+    };
+  }
+
+  it("reads a file with ROIs, masks and label images on the main thread", async () => {
+    const { streamed, labels } = await browserLoad(V3);
+    expect(streamed).toBe(false);
+    const s = describe3(labels);
+    expect(s).toEqual(describe3(await readSlp(slpPath(V3), EDIT)));
+    expect(s.frames.flatMap((f) => f.masks)).toHaveLength(3);
+    expect(labels.sourceFormat?.summary.unreadTables).toEqual([
+      "categories/meta_key",
+      "categories/meta_owner",
+      "categories/meta_val",
+    ]);
+  });
+
+  it("streams a file the streaming reader reads in full", async () => {
+    const { streamed, labels } = await browserLoad("format3_pose.slp");
+    expect(streamed).toBe(true);
+    expect(labels.labeledFrames).toHaveLength(4);
+  });
+
+  it("the streaming reader refuses such a file when asked, naming what it skips", async () => {
+    let error: unknown;
+    try {
+      await standIn(V3)(slpPath(V3), {
+        format3: "edit",
+        failIfIncomplete: true,
+      });
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(StreamingIncompleteError);
+    expect((error as StreamingIncompleteError).unread).toEqual(
+      await streamingOnly(V3),
+    );
+  });
+
+  it("an explicit stream mode keeps streaming, and the summary lists the loss", async () => {
+    const { streamed, labels } = await browserLoad(V3, "stream");
+    expect(streamed).toBe(true);
+    expect(labels.sourceFormat?.summary.unreadTables).toContain("masks");
   });
 });
 

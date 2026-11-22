@@ -2,8 +2,6 @@ import type { Labels } from "../model/labels.js";
 import { LabelsSet } from "../model/labels-set.js";
 import { Video } from "../model/video.js";
 import { readSlp, readSlpLazy } from "../codecs/slp/read.js";
-import { SlpFormatError } from "../codecs/slp/format-check.js";
-import { SlpPointSpanError } from "../codecs/slp/point-spans.js";
 import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
 import {
   writeSlp,
@@ -21,7 +19,7 @@ import {
   type SlpSource,
   isStreamingSupported,
 } from "../codecs/slp/h5.js";
-import { redactedCauseSummary } from "./remote.js";
+import { readStreamingOrNull } from "./load-route.js";
 import {
   readLabels as readAnalysisH5,
   writeLabels as writeAnalysisH5,
@@ -51,7 +49,11 @@ function isBrowserWithWorkerSupport(): boolean {
  * Load a SLEAP labels file (.slp).
  *
  * Automatically selects the best loading strategy:
- * - Browser with Worker support: uses streaming reader via Web Worker
+ * - Browser with Worker support: uses streaming reader via Web Worker, unless
+ *   the file holds content that reader does not read (ROIs, masks, label
+ *   images, links and embeddings of detections other than instances); in the
+ *   default `"auto"` stream mode such a file is read on the main thread, so
+ *   nothing is lost
  * - Node.js or fallback: uses standard HDF5 reader
  *
  * @param source - Path to .slp file, ArrayBuffer, Uint8Array, File, or FileSystemFileHandle
@@ -116,8 +118,12 @@ export async function loadSlp(
     }
 
     if (streamingSource !== null) {
-      try {
-        return await readSlpStreaming(streamingSource, {
+      // In "auto" mode, a file holding content the streaming reader does not
+      // read (ROIs, masks, label images, links of other detections) is read
+      // on the main thread instead, so nothing is lost.
+      const labels = await readStreamingOrNull(
+        streamingSource,
+        {
           filenameHint: options?.h5?.filenameHint,
           headers: options?.h5?.headers,
           h5wasmUrl: options?.h5?.h5wasmUrl,
@@ -126,22 +132,11 @@ export async function loadSlp(
           lazy,
           repairPointSpans: options?.repairPointSpans,
           format3: options?.format3,
-        });
-      } catch (e) {
-        // A bad file is not a worker failure: the main-thread reader would
-        // reject it the same way, so don't read it twice.
-        if (e instanceof SlpPointSpanError || e instanceof SlpFormatError)
-          throw e;
-        if (streamMode === "auto") {
-          // Redact: the raw error can embed ?token= / userinfo (a remote URL).
-          console.warn(
-            "[sleap-io] Worker-based loading failed, falling back to main thread:",
-            redactedCauseSummary(e),
-          );
-        } else {
-          throw e;
-        }
-      }
+        },
+        streamMode,
+        readSlpStreaming,
+      );
+      if (labels) return labels;
     }
   }
 

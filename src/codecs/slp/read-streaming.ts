@@ -35,6 +35,7 @@ import {
   unknownTableGroups,
 } from "./columnar-tables.js";
 import { checkSlpFormat, SlpFormatError } from "./format-check.js";
+import { streamingUnreadMembers } from "./streaming-coverage.js";
 import {
   buildFormat3Summary,
   checkFormat3Option,
@@ -204,6 +205,33 @@ export interface StreamingSlpOptions {
    * Without it a 3.0 file throws `SlpFormat3ChoiceError`. See `readSlp`.
    */
   format3?: Format3Access;
+  /**
+   * Throw {@link StreamingIncompleteError}, before reading any table, when the
+   * file holds content this reader does not read (ROIs, masks, label images,
+   * links and embeddings of detections other than instances), so the caller
+   * can use the in-memory reader instead. `loadSlp` does that in its default
+   * (`"auto"`) mode. Default `false`: such content is not read, and a 3.0
+   * file's summary lists it as something an edit drops.
+   */
+  failIfIncomplete?: boolean;
+}
+
+/**
+ * Thrown by the streaming reader, when asked (`failIfIncomplete`), for a file
+ * that holds content it does not read. `unread` lists it, as paths.
+ */
+export class StreamingIncompleteError extends Error {
+  readonly unread: string[];
+
+  constructor(labelsPath: string, unread: string[]) {
+    super(
+      `The streaming reader does not read ${unread.join(", ")} of ` +
+        `'${labelsPath}'; read it with readSlp or readSlpLazy instead.`,
+    );
+    this.name = "StreamingIncompleteError";
+    this.unread = unread;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
 }
 
 /**
@@ -556,6 +584,7 @@ export async function readSlpStreaming(
       options?.userInstancesOnly ?? false,
       options?.repairPointSpans ?? false,
       options?.format3,
+      options?.failIfIncomplete ?? false,
     );
   } catch (e) {
     // A failed read returns no Labels, so no video backend can need the file.
@@ -593,6 +622,7 @@ export async function readFromStreamingFile(
   userInstancesOnly: boolean = false,
   repairPointSpans: boolean = false,
   format3Choice?: Format3Access,
+  failIfIncomplete: boolean = false,
 ): Promise<Labels> {
   checkFormat3Option(format3Choice);
   if (lazy && userInstancesOnly) {
@@ -656,6 +686,12 @@ export async function readFromStreamingFile(
   ) as Record<string, unknown> | null;
 
   const skeletons = parseSkeletons(metadataJson);
+  if (failIfIncomplete) {
+    const unread = await unreadByStreaming(file, file.keys());
+    if (unread.length > 0) {
+      throw new StreamingIncompleteError(labelsPath, unread);
+    }
+  }
 
   report(1);
   const tracks = await readTracksStreaming(file);
@@ -2382,34 +2418,6 @@ async function readFormat3Streaming(
   };
 }
 
-/**
- * Top-level members the other readers read but the streaming reader does not
- * read in any layout: the ROI, mask and label image tables with their buffers
- * and strings.
- */
-const STREAMING_UNREAD_TOP_LEVEL: readonly string[] = [
-  "rois",
-  "roi_wkb",
-  "roi_categories",
-  "roi_names",
-  "roi_sources",
-  "masks",
-  "mask_rle",
-  "mask_categories",
-  "mask_names",
-  "mask_sources",
-  "mask_score_map_index",
-  "mask_score_maps",
-  "label_images",
-  "label_image_objects",
-  "label_image_data",
-  "label_image_sources",
-  "label_image_obj_categories",
-  "label_image_obj_names",
-  "label_image_score_map_index",
-  "label_image_score_maps",
-];
-
 /** The owner types of a links table or embeddings join column, as numbers. */
 async function ownerTypesStreaming(
   file: StreamingH5File,
@@ -2436,16 +2444,15 @@ async function unreadByStreaming(
   file: StreamingH5File,
   root: readonly string[],
 ): Promise<string[]> {
-  const out = STREAMING_UNREAD_TOP_LEVEL.filter((name) => root.includes(name));
+  const owners: Record<string, number[]> = {};
   for (const group of ["identity", "categories"]) {
     if (!root.includes(group)) continue;
     if (!(await childKeys(file, group)).includes("links")) continue;
-    const types = await ownerTypesStreaming(
+    owners[`${group}/links`] = await ownerTypesStreaming(
       file,
       `${group}/links`,
       "owner_type",
     );
-    if (types.some((t) => t !== 0)) out.push(`${group}/links`);
   }
   if (root.includes("embeddings")) {
     const children = await childKeys(file, "embeddings");
@@ -2455,9 +2462,9 @@ async function unreadByStreaming(
       const value = (await file.getDatasetValue(`embeddings/${column}`)).value;
       types.push(...normalizeDatasetArray(value).map(Number));
     }
-    if (types.some((t) => t !== 0)) out.push("embeddings");
+    owners.embeddings = types;
   }
-  return out;
+  return streamingUnreadMembers({ root, owners });
 }
 
 async function readStructDatasetStreaming(

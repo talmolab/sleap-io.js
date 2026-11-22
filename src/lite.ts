@@ -56,6 +56,7 @@ import {
   unreadMembers,
 } from "./codecs/slp/format3.js";
 import { checkSlpFormat } from "./codecs/slp/format-check.js";
+import { streamingUnreadMembers } from "./codecs/slp/streaming-coverage.js";
 import {
   parseJsonAttr,
   parseSkeletons,
@@ -152,6 +153,18 @@ export interface SlpMetadata {
    * Absent for files before 3.0.
    */
   format3?: Format3Summary;
+
+  /**
+   * What the file holds that the streaming reader (`readSlpStreaming`) does
+   * not read, as paths: ROI, mask and label image tables (in any layout), and
+   * `identity/links`, `categories/links` or `embeddings` when they hold rows
+   * of detections other than instances (or when their owner types cannot be
+   * read here). Empty when that reader reads everything the others read.
+   * `format3` describes `readSlp` and `readSlpLazy`; a 3.0 file read with
+   * `readSlpStreaming` also drops these on an edit. `loadSlp` reads a file
+   * listing any of them with the in-memory reader in its default mode.
+   */
+  streamingUnreadTables: string[];
 }
 
 /** Whether `path` is a group, and so is each of its parents. */
@@ -205,6 +218,66 @@ function readColumnTableJsfive(
     }
   }
   return tableFromColumns(table, columns, labelsPath, unknownLengths);
+}
+
+/**
+ * One column of a table read with jsfive: a 3.0 column dataset, or a column
+ * of a flat 2-D table with a `field_names` attribute (as sleap-io.js writes
+ * 2.x tables). `null` when it cannot be read here (a compound dataset).
+ */
+function columnJsfive(
+  file: ReturnType<typeof openJsfiveFile>,
+  path: string,
+  column: string,
+): number[] | null {
+  const node = file.get(path);
+  if (isGroup(node)) {
+    if (!node.keys.includes(column)) return [];
+    const value = getValue(file.get(`${path}/${column}`));
+    return value && typeof value === "object" && "length" in value
+      ? Array.from(value as ArrayLike<unknown>, Number)
+      : null;
+  }
+  const flat = getValue(node) as ArrayLike<unknown> | null;
+  const shape = getShape(node);
+  const raw = (getAttrs(node) as Record<string, unknown>)?.field_names;
+  let fields: string[] = [];
+  try {
+    fields = typeof raw === "string" ? (JSON.parse(raw) as string[]) : [];
+  } catch {
+    fields = [];
+  }
+  const j = fields.indexOf(column);
+  if (!flat || shape.length !== 2 || j < 0) return null;
+  const [rows, cols] = shape;
+  return Array.from({ length: rows }, (_, i) => Number(flat[i * cols + j]));
+}
+
+/** What the streaming reader would not read (see `streamingUnreadTables`). */
+function streamingUnreadJsfive(
+  file: ReturnType<typeof openJsfiveFile>,
+): string[] {
+  const owners: Record<string, number[] | null> = {};
+  for (const group of ["identity", "categories"]) {
+    const node = file.get(group);
+    if (isGroup(node) && node.keys.includes("links")) {
+      owners[`${group}/links`] = columnJsfive(
+        file,
+        `${group}/links`,
+        "owner_type",
+      );
+    }
+  }
+  const embeddings = file.get("embeddings");
+  if (isGroup(embeddings)) {
+    const types: number[] = [];
+    for (const column of ["owner_type", "category_owner_type"]) {
+      if (!embeddings.keys.includes(column)) continue;
+      types.push(...(columnJsfive(file, "embeddings", column) ?? [Number.NaN]));
+    }
+    owners.embeddings = types;
+  }
+  return streamingUnreadMembers({ root: file.keys, owners });
 }
 
 /** Whether a jsfive dtype is one a metadata `values` column may have. */
@@ -590,6 +663,7 @@ export async function loadSlpMetadata(
       provenance: metadataJson.provenance as
         | Record<string, unknown>
         | undefined,
+      streamingUnreadTables: streamingUnreadJsfive(file),
       ...(formatId >= 3.0
         ? {
             format3: format3SummaryJsfive(

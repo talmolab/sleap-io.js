@@ -385,7 +385,13 @@ byte ranges inside their buffers) raise `SlpTableError`. The streaming reader
 reads, of these tables, the links of instances and the session tables (it
 reads no ROIs, masks or label images in any layout), and the summary it gives
 for a 3.0 file lists the rest in `unreadTables` (below), as something an edit
-drops. The lite `loadSlpMetadata` reads the session tables.
+drops. `loadSlp` in a browser uses the streaming reader only for files it
+reads in full: in its default stream mode (`"auto"`), a file holding ROIs,
+masks, label images, or links or embeddings of detections other than
+instances is read on the main thread instead, so nothing is lost. The lite
+`loadSlpMetadata` reads the session tables, and its `streamingUnreadTables`
+lists what a direct `readSlpStreaming` would leave out (its `format3` summary
+describes `readSlp`, `readSlpLazy` and `loadSlp`).
 
 A recording session's metadata is stored at the top level of its
 `sessions_json` entry, beside `calibration`, `camcorder_to_video_idx_map`,
