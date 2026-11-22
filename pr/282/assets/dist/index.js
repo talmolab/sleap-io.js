@@ -253,7 +253,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-H6Y4WUA4.js";
+} from "./chunk-TPH2T4Q3.js";
 import {
   Camera,
   CameraGroup,
@@ -273,6 +273,7 @@ import {
   Skeleton,
   SlpFormat3ChoiceError,
   SlpFormatError,
+  SlpTableError,
   SlpViewOnlyError,
   Symmetry,
   Track,
@@ -289,7 +290,7 @@ import {
   predictedPointsFromArray,
   predictedPointsFromDict,
   rodriguesTransformation
-} from "./chunk-AQDNAEXL.js";
+} from "./chunk-5RVLUAE6.js";
 import {
   DEFAULT_MAX_BYTES,
   checkDownloadHost,
@@ -3517,6 +3518,7 @@ export {
   SlpFormatError,
   SlpPointSpanError,
   SlpStreamWriter,
+  SlpTableError,
   SlpViewOnlyError,
   StreamingH5File,
   StreamingH5Writer,

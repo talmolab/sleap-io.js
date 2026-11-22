@@ -8,6 +8,7 @@ import {
   Skeleton,
   SlpFormat3ChoiceError,
   SlpFormatError,
+  SlpTableError,
   SlpViewOnlyError,
   Symmetry,
   Track,
@@ -23,7 +24,7 @@ import {
   parseVideosMetadata,
   unknownColumns,
   unreadTablesError
-} from "./chunk-AQDNAEXL.js";
+} from "./chunk-5RVLUAE6.js";
 import "./chunk-3UBNQTMV.js";
 
 // src/codecs/slp/jsfive.ts
@@ -81,6 +82,11 @@ function getValue(item) {
 }
 
 // src/lite.ts
+function refuseUnreadTables(file, labelsPath, formatId) {
+  if (!(formatId >= 3)) return;
+  const found = UNREAD_FORMAT_3_TABLES.filter((path) => !!file.get(path));
+  if (found.length > 0) throw unreadTablesError(labelsPath, formatId, found);
+}
 function isMetadataDtype(dtype) {
   if (Array.isArray(dtype)) return dtype[0] === "VLEN_STRING";
   if (typeof dtype !== "string") return false;
@@ -210,16 +216,7 @@ async function loadSlpMetadata(source, options) {
     if (!metadataJson) {
       throw new Error("Invalid SLP file: missing metadata.attrs.json");
     }
-    if (formatId >= 3) {
-      const found = UNREAD_FORMAT_3_TABLES.filter((path) => !!file.get(path));
-      if (found.length > 0) {
-        throw unreadTablesError(
-          options?.filename ?? "slp-data.slp",
-          formatId,
-          found
-        );
-      }
-    }
+    refuseUnreadTables(file, options?.filename ?? "slp-data.slp", formatId);
     const skeletons = parseSkeletons(metadataJson);
     const tracksDataset = file.get("tracks_json");
     const tracksValue = getValue(tracksDataset);
@@ -306,6 +303,13 @@ function validateSlpBuffer(source) {
     if (!attrs.json) {
       throw new Error("Invalid SLP file: missing metadata.attrs.json");
     }
+    refuseUnreadTables(
+      file,
+      "slp-data.slp",
+      Number(
+        attrs.format_id?.value ?? attrs.format_id ?? 1
+      )
+    );
     return true;
   } finally {
     file.close();
@@ -325,6 +329,7 @@ export {
   Skeleton,
   SlpFormat3ChoiceError,
   SlpFormatError,
+  SlpTableError,
   SlpViewOnlyError,
   Symmetry,
   Track,

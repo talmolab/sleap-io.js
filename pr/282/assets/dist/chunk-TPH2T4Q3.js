@@ -22,6 +22,7 @@ import {
   attrToNumber,
   attrToString,
   buildFormat3Summary,
+  checkFormat3Option,
   checkMetadataColumns,
   checkPoseTables,
   checkSlpFormat,
@@ -35,6 +36,7 @@ import {
   injectSessionFrameResolver,
   isColumnarTable,
   isFormat3,
+  isKnownPoseColumn,
   metadataColumn,
   metadataKeys,
   metadataKeysOf,
@@ -61,7 +63,7 @@ import {
   skipsInstanceRow,
   unknownColumns,
   unreadTablesError
-} from "./chunk-AQDNAEXL.js";
+} from "./chunk-5RVLUAE6.js";
 import {
   openGdrive
 } from "./chunk-RC2FIFDH.js";
@@ -76,6 +78,41 @@ import {
   resolveUrl,
   statusToMessage
 } from "./chunk-3UBNQTMV.js";
+
+// src/model/source-mark.ts
+var marks = /* @__PURE__ */ new WeakMap();
+function sourceMarkOf(record) {
+  return record ? marks.get(record) : void 0;
+}
+function markSource(record, sourceFormat) {
+  if (record && sourceFormat) marks.set(record, sourceFormat);
+}
+function copySourceMark(from, to) {
+  const mark = sourceMarkOf(from);
+  if (mark && to) marks.set(to, mark);
+}
+function mergeSourceMark(target, source) {
+  const incoming = sourceMarkOf(source);
+  if (!incoming || !target) return;
+  const own = marks.get(target);
+  if (!own || own.access === "edit" && incoming.access === "view") {
+    marks.set(target, incoming);
+  }
+}
+function markFrameSource(frame, sourceFormat) {
+  if (!sourceFormat) return;
+  markSource(frame, sourceFormat);
+  for (const list of [
+    frame.instances,
+    frame.centroids,
+    frame.bboxes,
+    frame.masks,
+    frame.labelImages,
+    frame.rois
+  ]) {
+    for (const record of list) markSource(record, sourceFormat);
+  }
+}
 
 // src/model/centroid.ts
 function normalizeCentroidSource(source) {
@@ -167,21 +204,20 @@ var Centroid = class _Centroid {
       complete: true,
       name: skel.nodeNames[0]
     };
-    if (this instanceof PredictedCentroid) {
-      return new PredictedInstance({
-        points: [{ ...point, score: this.score }],
-        skeleton: skel,
-        track: this.track,
-        score: this.score,
-        trackingScore: this.trackingScore ?? void 0
-      });
-    }
-    return new Instance({
+    const out = this instanceof PredictedCentroid ? new PredictedInstance({
+      points: [{ ...point, score: this.score }],
+      skeleton: skel,
+      track: this.track,
+      score: this.score,
+      trackingScore: this.trackingScore ?? void 0
+    }) : new Instance({
       points: [point],
       skeleton: skel,
       track: this.track,
       trackingScore: this.trackingScore ?? void 0
     });
+    copySourceMark(this, out);
+    return out;
   }
   /**
    * Create a centroid from an Instance.
@@ -255,13 +291,12 @@ var Centroid = class _Centroid {
       source: method === "anchor" ? `anchor:${options?.node}` : method,
       ...extraOptions
     };
-    if ("score" in instance && typeof instance.score === "number") {
-      return new PredictedCentroid({
-        ...centroidOptions,
-        score: instance.score
-      });
-    }
-    return new UserCentroid(centroidOptions);
+    const out = "score" in instance && typeof instance.score === "number" ? new PredictedCentroid({
+      ...centroidOptions,
+      score: instance.score
+    }) : new UserCentroid(centroidOptions);
+    copySourceMark(instance, out);
+    return out;
   }
 };
 var UserCentroid = class extends Centroid {
@@ -1174,6 +1209,7 @@ function copyDetectionMetadata(from, to) {
   to.identityEmbedding = from.identityEmbedding ?? null;
   to.categoryScore = from.categoryScore ?? null;
   to.categoryEmbedding = from.categoryEmbedding ?? null;
+  copySourceMark(from, to);
 }
 function centerOf(instance, options) {
   if (instance.isEmpty) return null;
@@ -1626,6 +1662,7 @@ var SegmentationMask = class _SegmentationMask {
     };
     const bb = this instanceof PredictedSegmentationMask ? new PredictedBoundingBox({ ...opts, score: this.score }) : new UserBoundingBox(opts);
     bb._instanceIdx = this._instanceIdx;
+    copySourceMark(this, bb);
     return bb;
   }
   /**
@@ -3673,6 +3710,11 @@ function _shallowCopy(item) {
 }
 function _copyWithMemo(item, memo) {
   const itemCopy = _shallowCopy(item);
+  copySourceMark(item, itemCopy);
+  const meta = itemCopy.metadata;
+  if (meta !== null && typeof meta === "object" && !Array.isArray(meta)) {
+    itemCopy.metadata = { ...meta };
+  }
   memo.set(item, itemCopy);
   return itemCopy;
 }
@@ -4062,6 +4104,7 @@ var LabeledFrame = class {
     const frame = opts.frame ?? "auto";
     const conflicts = [];
     this.metadata = { ...other.metadata, ...this.metadata };
+    mergeSourceMark(this, other);
     if (frame === "keep_original") {
       this.mergeAnnotations(other, "keep_original");
       [this.isNegative] = _resolveMergedIsNegative(
@@ -6732,6 +6775,7 @@ var LazyDataStore = class _LazyDataStore {
     if (this.negativeFrames.has(`${rawVideoId}:${frameIndex}`)) {
       frame.isNegative = true;
     }
+    markFrameSource(frame, this.sourceFormat);
     return frame;
   }
   /**
@@ -6989,6 +7033,10 @@ var LabelsSet = class _LabelsSet {
 };
 
 // src/model/labels.ts
+function withSourceMark(from, to) {
+  copySourceMark(from, to);
+  return to;
+}
 var SLEAP_IO_VERSION = "0.3.1";
 function pathBasename(path) {
   const parts = path.split(/[/\\]/);
@@ -7066,7 +7114,13 @@ var Labels = class _Labels {
    * `format3` choice. With `access: "view"` every writer refuses the labels;
    * with `"edit"` writers save the 2.x layout and drop those fields. `null`
    * for labels from 1.x/2.x files or built in memory. Carried by
-   * {@link copy} and {@link extract}.
+   * {@link copy} and {@link extract}. The choice also travels with each
+   * frame, instance and annotation read from the file (see
+   * `model/source-mark.ts`); writers decide record by record.
+   *
+   * After saving edit-loaded labels over their source file, set this to
+   * `null`: the file is now in the 2.x layout, and the in-place save functions
+   * then patch it again instead of sending every save to a full rewrite.
    */
   sourceFormat = null;
   // Index caches (excluded from serialization, rebuilt on demand)
@@ -7959,14 +8013,17 @@ To use, first materialize:
       const newSkeleton = skeletonMap.get(inst.skeleton) ?? inst.skeleton;
       const newTrack = inst.track ? trackMap.get(inst.track) ?? inst.track : null;
       if (inst instanceof PredictedInstance) {
-        return new PredictedInstance({
-          points: newPoints,
-          skeleton: newSkeleton,
-          track: newTrack,
-          score: inst.score,
-          trackingScore: inst.trackingScore,
-          metadata: inst.metadata
-        });
+        return withSourceMark(
+          inst,
+          new PredictedInstance({
+            points: newPoints,
+            skeleton: newSkeleton,
+            track: newTrack,
+            score: inst.score,
+            trackingScore: inst.trackingScore,
+            metadata: inst.metadata
+          })
+        );
       }
       const ni = new Instance({
         points: newPoints,
@@ -7975,7 +8032,7 @@ To use, first materialize:
         trackingScore: inst.trackingScore,
         metadata: inst.metadata
       });
-      return ni;
+      return withSourceMark(inst, ni);
     };
     const cloneAncillary = (items) => items.map((item) => {
       const saved = [];
@@ -8023,7 +8080,7 @@ To use, first materialize:
           }
         }
       }
-      return clone;
+      return withSourceMark(item, clone);
     });
     let labelsCopy;
     if (this.isLazy) {
@@ -8035,7 +8092,7 @@ To use, first materialize:
       if (this._lazyFrameList?._supplementary.length) {
         newLazyFrames._supplementary = this._lazyFrameList._supplementary.map(
           (lf) => {
-            return new LabeledFrame({
+            const frame = new LabeledFrame({
               video: videoMap.get(lf.video) ?? lf.video,
               frameIdx: lf.frameIdx,
               instances: lf.instances.map(cloneInstance),
@@ -8047,6 +8104,7 @@ To use, first materialize:
               rois: cloneAncillary(lf.rois),
               metadata: lf.metadata
             });
+            return withSourceMark(lf, frame);
           }
         );
       }
@@ -8098,6 +8156,7 @@ To use, first materialize:
           rois: cloneAncillary(f.rois),
           metadata: f.metadata
         });
+        copySourceMark(f, nf);
         frameMap.set(f, nf);
         return nf;
       });
@@ -8422,6 +8481,7 @@ To use, first materialize:
         metadata: instance.metadata
       });
     }
+    copySourceMark(instance, newInstance);
     if (memo !== void 0) memo.set(instance, newInstance);
     return newInstance;
   }
@@ -8649,6 +8709,7 @@ To use, first materialize:
             isNegative: otherFrame.isNegative,
             metadata: otherFrame.metadata
           });
+          copySourceMark(otherFrame, newFrame);
           const instanceMemo = /* @__PURE__ */ new Map();
           for (const inst of otherFrame.instances) {
             newFrame.instances.push(
@@ -9357,22 +9418,28 @@ To use, first materialize:
       const newTrack = mapTrack(inst.track);
       if (inst.constructor === PredictedInstance) {
         const predicted = inst;
-        return new PredictedInstance({
+        return withSourceMark(
+          inst,
+          new PredictedInstance({
+            points: newPoints,
+            skeleton: newSkeleton,
+            track: newTrack,
+            score: predicted.score,
+            trackingScore: predicted.trackingScore,
+            metadata: predicted.metadata
+          })
+        );
+      }
+      return withSourceMark(
+        inst,
+        new Instance({
           points: newPoints,
           skeleton: newSkeleton,
           track: newTrack,
-          score: predicted.score,
-          trackingScore: predicted.trackingScore,
-          metadata: predicted.metadata
-        });
-      }
-      return new Instance({
-        points: newPoints,
-        skeleton: newSkeleton,
-        track: newTrack,
-        trackingScore: inst.trackingScore,
-        metadata: inst.metadata
-      });
+          trackingScore: inst.trackingScore,
+          metadata: inst.metadata
+        })
+      );
     };
     const cloneAncillary = (items) => items.map((item) => {
       const clone = Object.create(
@@ -9405,21 +9472,24 @@ To use, first materialize:
         }
         anyClone.objects = newObjects;
       }
-      return clone;
+      return withSourceMark(item, clone);
     });
     return frames.map(
-      (f) => new LabeledFrame({
-        video: mapVideo(f.video),
-        frameIdx: f.frameIdx,
-        instances: f.instances.map(cloneInstance),
-        isNegative: f.isNegative,
-        centroids: cloneAncillary(f.centroids),
-        bboxes: cloneAncillary(f.bboxes),
-        masks: cloneAncillary(f.masks),
-        labelImages: cloneAncillary(f.labelImages),
-        rois: cloneAncillary(f.rois),
-        metadata: f.metadata
-      })
+      (f) => withSourceMark(
+        f,
+        new LabeledFrame({
+          video: mapVideo(f.video),
+          frameIdx: f.frameIdx,
+          instances: f.instances.map(cloneInstance),
+          isNegative: f.isNegative,
+          centroids: cloneAncillary(f.centroids),
+          bboxes: cloneAncillary(f.bboxes),
+          masks: cloneAncillary(f.masks),
+          labelImages: cloneAncillary(f.labelImages),
+          rois: cloneAncillary(f.rois),
+          metadata: f.metadata
+        })
+      )
     );
   }
   /**
@@ -14162,6 +14232,19 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
 // number[][]. Flushes at the end. Never opens a video group.
 function updateLabelsInPlace(payload) {
   if (!currentDestFile) throw new Error('updateLabelsInPlace: no dest file open (call openWrite first)');
+  // Backstops kept in lockstep with writeLabelTablesInPlace (write.ts): refuse
+  // labels loaded view-only, and a file whose pose tables are in the SLP
+  // format 3.0 layout (groups of columns), before anything is written.
+  if (payload.sourceAccess === 'view') {
+    throw new Error('updateLabelsInPlace: these labels were loaded from an SLP format 3.0 file for viewing only (format3: "view") and cannot be saved');
+  }
+  var poseTables = ['frames', 'instances', 'points', 'pred_points'];
+  for (var p = 0; p < poseTables.length; p++) {
+    var node = currentDestFile.get(poseTables[p]);
+    if (node && node.type === 'Group') {
+      throw new Error('in-place save: "' + poseTables[p] + '" is in the SLP format 3.0 layout, which this version cannot patch \u2014 re-save the whole file instead');
+    }
+  }
   var tables = payload.tables || [];
   for (var t = 0; t < tables.length; t++) {
     var tb = tables[t];
@@ -15098,6 +15181,9 @@ var StreamingH5Writer = class {
    * `update.metadataJson` is set. Never touches any `video{i}/video` group.
    */
   async updateLabelsInPlace(update) {
+    if (update.sourceFormat?.access === "view") {
+      throw new SlpViewOnlyError(update.sourceFormat);
+    }
     const tables = [];
     const transfer = [];
     const push = (name, dtype, table) => {
@@ -15127,7 +15213,11 @@ var StreamingH5Writer = class {
     push("negative_frames", "<i8", update.negativeFrames);
     return this.send(
       "updateLabelsInPlace",
-      { tables, metadataJson: update.metadataJson ?? null },
+      {
+        tables,
+        metadataJson: update.metadataJson ?? null,
+        sourceAccess: update.sourceFormat?.access ?? null
+      },
       transfer
     );
   }
@@ -16378,6 +16468,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   report(6);
   const pointsData = await readTable("points");
   const predPointsData = userInstancesOnly ? {} : await readTable("pred_points");
+  const predPointFlags = userInstancesOnly && formatId >= 3 ? await readPointFlagsStreaming(file, "pred_points") : null;
   const negativeFrames = framesData.is_negative ? negativeFrameKeysFromFrames(framesData) : negativeFrameKeys(
     await readStructDatasetStreaming(file, "negative_frames")
   );
@@ -16386,6 +16477,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     instancesData,
     pointsData,
     predPointsData: userInstancesOnly ? null : predPointsData,
+    predPointFlags,
     nVideos: videos.length,
     choice: format3Choice
   });
@@ -16485,16 +16577,23 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     instanceRows,
     userInstancesOnly: rowsByMap
   };
-  attachAnnotationTuples(await readCentroidsStreaming(file, tracks), {
-    ...attachCommon,
-    frameList: (lf) => lf.centroids,
-    setLazy: (store, byFrame, undistributed) => {
-      store._centroidByFrame = byFrame;
-      store._undistributedCentroids = undistributed;
-    }
-  });
+  const markTuples = (tuples) => {
+    for (const [ann] of tuples) markSource(ann, format3?.sourceFormat);
+    return tuples;
+  };
   attachAnnotationTuples(
-    await readBboxesStreaming(file, tracks, format3?.bboxMetadata),
+    markTuples(await readCentroidsStreaming(file, tracks)),
+    {
+      ...attachCommon,
+      frameList: (lf) => lf.centroids,
+      setLazy: (store, byFrame, undistributed) => {
+        store._centroidByFrame = byFrame;
+        store._undistributedCentroids = undistributed;
+      }
+    }
+  );
+  attachAnnotationTuples(
+    markTuples(await readBboxesStreaming(file, tracks, format3?.bboxMetadata)),
     {
       ...attachCommon,
       frameList: (lf) => lf.bboxes,
@@ -16524,6 +16623,11 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     provenance: metadataJson?.provenance ?? {}
   });
   labels.sourceFormat = format3?.sourceFormat ?? null;
+  if (labeledFrames) {
+    for (const frame of labeledFrames) {
+      markFrameSource(frame, format3?.sourceFormat);
+    }
+  }
   if (lazyStore) {
     labels._lazyFrameList = new LazyFrameList(lazyStore);
     labels._lazyDataStore = lazyStore;
@@ -17253,15 +17357,33 @@ async function refuseUnreadFormat3TablesStreaming(file, labelsPath, formatId) {
   if (found.length > 0) throw unreadTablesError(labelsPath, formatId, found);
 }
 async function readPoseTableStreaming(file, table, formatId, labelsPath) {
-  if (!(formatId >= 3)) return readStructDatasetStreaming(file, table);
-  if (!file.keys().includes(table)) return {};
+  const present = file.keys().includes(table);
+  const isGroup4 = present && !await isDatasetStreaming(file, table);
+  if (!isGroup4) {
+    if (formatId >= 3 && !present) return {};
+    return readStructDatasetStreaming(file, table);
+  }
   const columns = {};
   for (const name of await childKeys(file, table)) {
-    if (name === METADATA_SUBGROUP) continue;
+    if (!isKnownPoseColumn(table, name)) continue;
     const data = await file.getDatasetValue(`${table}/${name}`);
     columns[name] = data.value;
   }
   return poseTableFromColumns(table, columns, labelsPath);
+}
+async function readPointFlagsStreaming(file, table) {
+  if (!file.keys().includes(table)) return null;
+  const names = await childKeys(file, table);
+  if (!names.includes("labeled")) return null;
+  const flags = {};
+  for (const name of ["labeled", "visible"]) {
+    if (names.includes(name)) {
+      flags[name] = normalizeDatasetArray(
+        (await file.getDatasetValue(`${table}/${name}`)).value
+      );
+    }
+  }
+  return flags;
 }
 async function isDatasetStreaming(file, path) {
   try {
@@ -17348,7 +17470,9 @@ async function readFormat3Streaming(file, labelsPath, formatId, tables) {
   const summary = buildFormat3Summary({
     formatId,
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
-    unlabeledPredictedPoints: countUnlabeledPoints(predPointsData ?? void 0),
+    unlabeledPredictedPoints: countUnlabeledPoints(
+      predPointsData ?? tables.predPointFlags ?? void 0
+    ),
     metadataKeys: {
       instances: metadataKeys(instanceMetadata),
       frames: metadataKeys(frameMetadata),
@@ -17630,58 +17754,93 @@ function refuseViewOnly(source) {
   const sourceFormat = source?.sourceFormat;
   if (sourceFormat?.access === "view") throw new SlpViewOnlyError(sourceFormat);
 }
+function tablesWithKeys(tables) {
+  return tables.filter(([, keys]) => keys.length > 0);
+}
 function framesLegacyLosses(frames) {
-  let unlabeledPoints = 0;
-  const instances = [];
-  const frameList = [];
-  const boxes = [];
+  let viewOnly = null;
+  let unlabeledEdit = 0;
+  let unlabeledOwn = 0;
+  const ownInstances = [];
+  const ownFrames = [];
+  const ownBoxes = [];
+  const markOf = (record) => {
+    const mark = sourceMarkOf(record);
+    if (mark?.access === "view") viewOnly ??= mark;
+    return mark;
+  };
   for (const frame of frames) {
-    frameList.push(frame);
+    if (!markOf(frame)) ownFrames.push(frame);
     for (const inst of frame.instances) {
-      unlabeledPoints += inst.nUnlabeled;
-      instances.push(inst);
+      const mark = markOf(inst);
+      if (mark?.access === "edit") unlabeledEdit += inst.nUnlabeled;
+      else if (!mark) {
+        unlabeledOwn += inst.nUnlabeled;
+        ownInstances.push(inst);
+      }
     }
-    for (const box of frame.bboxes) boxes.push(box);
+    for (const box of frame.bboxes) if (!markOf(box)) ownBoxes.push(box);
+    for (const list of [
+      frame.centroids,
+      frame.masks,
+      frame.labelImages,
+      frame.rois
+    ]) {
+      for (const record of list) markOf(record);
+    }
   }
   return {
-    unlabeledPoints,
-    metadataKeys: [
-      ["instances", metadataKeysOf(instances)],
-      ["frames", metadataKeysOf(frameList)],
-      ["bboxes", metadataKeysOf(boxes)]
-    ].filter(([, keys]) => keys.length > 0)
+    viewOnly,
+    unlabeledEdit,
+    unlabeledOwn,
+    metadataKeys: tablesWithKeys([
+      ["instances", metadataKeysOf(ownInstances)],
+      ["frames", metadataKeysOf(ownFrames)],
+      ["bboxes", metadataKeysOf(ownBoxes)]
+    ])
   };
 }
 function storeLegacyLosses(store) {
+  let viewOnly = store.sourceFormat?.access === "view" ? store.sourceFormat : null;
+  const ownBoxes = [];
   const boxes = [...store._undistributedBboxes];
   for (const list of store._bboxByFrame.values()) boxes.push(...list);
+  for (const box of boxes) {
+    const mark = sourceMarkOf(box);
+    if (mark?.access === "view") viewOnly ??= mark;
+    if (!mark) ownBoxes.push(box);
+  }
+  const unlabeled = countUnlabeledPoints(store.pointsData) + countUnlabeledPoints(store.predPointsData);
+  const chosen = !!store.sourceFormat;
   return {
-    unlabeledPoints: countUnlabeledPoints(store.pointsData) + countUnlabeledPoints(store.predPointsData),
-    metadataKeys: [
-      ["instances", metadataKeys(store.instanceMetadata)],
-      ["frames", metadataKeys(store.frameMetadata)],
-      ["bboxes", metadataKeysOf(boxes)]
-    ].filter(([, keys]) => keys.length > 0)
+    viewOnly,
+    unlabeledEdit: chosen ? unlabeled : 0,
+    unlabeledOwn: chosen ? 0 : unlabeled,
+    metadataKeys: tablesWithKeys([
+      ["instances", chosen ? [] : metadataKeys(store.instanceMetadata)],
+      ["frames", chosen ? [] : metadataKeys(store.frameMetadata)],
+      ["bboxes", metadataKeysOf(ownBoxes)]
+    ])
   };
 }
-function enforceLegacyLayout(losses, sourceFormat, unlabeledAs) {
-  const chosen = sourceFormat?.access === "edit";
-  const mode = unlabeledAs ?? (chosen ? "absent" : "error");
-  if (mode !== "error" && mode !== "absent") {
+function enforceLegacyLayout(losses, unlabeledAs, options) {
+  if (losses.viewOnly) throw new SlpViewOnlyError(losses.viewOnly);
+  if (unlabeledAs !== void 0 && unlabeledAs !== "error" && unlabeledAs !== "absent") {
     throw new Error(
-      `unlabeledAs must be "error" or "absent", got ${JSON.stringify(mode)}.`
+      `unlabeledAs must be "error" or "absent", got ${JSON.stringify(unlabeledAs)}.`
     );
   }
-  const n = losses.unlabeledPoints;
-  if (n > 0 && mode === "error") {
+  const own = losses.unlabeledOwn;
+  const refused = unlabeledAs === "error" ? own + losses.unlabeledEdit : unlabeledAs === void 0 ? own : 0;
+  if (refused > 0) {
     throw new Error(
-      `${n} point(s) are unlabelled, but the SLP 2.x layout this version writes cannot store unlabelled points: they would read back as labelled hidden points. Pass unlabeledAs: "absent" to save them as hidden points with no location.`
+      `${refused} point(s) are unlabelled, but the SLP 2.x layout this version writes cannot store unlabelled points: they would read back as labelled hidden points. Pass unlabeledAs: "absent" to save them as hidden points with no location.`
     );
   }
-  if (chosen) return;
-  if (n > 0) {
+  if (options?.warn === false) return;
+  if (own > 0) {
     console.warn(
-      `Saving ${n} unlabelled point(s) as hidden points with no location (labelled, not visible), since the SLP 2.x layout cannot store unlabelled points.`
+      `Saving ${own} unlabelled point(s) as hidden points with no location (labelled, not visible), since the SLP 2.x layout cannot store unlabelled points.`
     );
   }
   if (losses.metadataKeys.length > 0) {
@@ -17690,6 +17849,12 @@ function enforceLegacyLayout(losses, sourceFormat, unlabeledAs) {
       `Instance, frame and bounding box metadata can't be stored in the SLP 2.x layout and was not saved (${named}).`
     );
   }
+}
+function checkSlpSavable(labels, options) {
+  refuseViewOnly(labels);
+  const store = labels._lazyDataStore;
+  const losses = labels.isLazy && store ? storeLegacyLosses(store) : framesLegacyLosses(labels.labeledFrames);
+  enforceLegacyLayout(losses, options?.unlabeledAs, { warn: false });
 }
 function absentPointColumns(columns) {
   if (countUnlabeledPoints(columns) === 0) return columns;
@@ -18100,10 +18265,6 @@ var SlpStreamWriter = class {
   // key skips that frame entirely. Append overlays (appendFrames) BEFORE bulk
   // stores so the overlay's frame is the one kept. See #208 follow-up.
   writtenFrames = /* @__PURE__ */ new Set();
-  // Set when the header labels or an appended store came from a format 3.0
-  // file opened with `format3: "edit"`: frames appended later default to
-  // writing unlabelled points as absent, as the caller already chose.
-  sourceFormat;
   // Per-frame annotations (masks/rois/bboxes/centroids/label-images) accumulated
   // across appends and written once at finalize — they're far fewer than pose
   // points, so they are not windowed. `ctx` is `[videoIndex, frameIdx]`; `inst`
@@ -18125,7 +18286,6 @@ var SlpStreamWriter = class {
     this.videos = header.videos;
     this.skeletons = header.skeletons;
     this.tracks = header.tracks;
-    this.sourceFormat = header.sourceFormat ?? null;
   }
   /**
    * Append every frame of `store` (in windows), rebasing its ids onto the
@@ -18145,14 +18305,7 @@ var SlpStreamWriter = class {
   appendStore(store, opts) {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
     refuseViewOnly(store);
-    enforceLegacyLayout(
-      storeLegacyLosses(store),
-      store.sourceFormat,
-      opts?.unlabeledAs
-    );
-    if (store.sourceFormat?.access === "edit") {
-      this.sourceFormat ??= store.sourceFormat;
-    }
+    enforceLegacyLayout(storeLegacyLosses(store), opts?.unlabeledAs);
     const windowFrames = opts?.windowFrames ?? DEFAULT_WRITE_WINDOW_FRAMES;
     const vOff = opts?.videoIndexOffset ?? 0;
     const tOff = opts?.trackOffset ?? 0;
@@ -18173,14 +18326,18 @@ var SlpStreamWriter = class {
     const qx = predPoints.x, qy = predPoints.y, qv = predPoints.visible, qc = predPoints.complete, qs = predPoints.score;
     const skippedRanges = [];
     const skippedKeys = /* @__PURE__ */ new Set();
+    const skipRows = hasSkippedInstanceRows(idn);
     for (let r = 0; r < nFrames; r++) {
       const key = `${remapVideo(numAt(fd.video, r))}:${numAt(fd.frame_idx, r)}`;
+      const iStart = numAt(fd.instance_id_start, r);
+      const iEnd = numAt(fd.instance_id_end, r);
       if (this.writtenFrames.has(key)) {
-        skippedRanges.push([
-          numAt(fd.instance_id_start, r),
-          numAt(fd.instance_id_end, r)
-        ]);
+        skippedRanges.push([iStart, iEnd]);
         skippedKeys.add(key);
+      } else if (skipRows) {
+        for (let j = iStart; j < iEnd; j++) {
+          if (skipsInstanceRow(idn, j)) skippedRanges.push([j, j + 1]);
+        }
       }
     }
     const outIdxOf = (idx) => {
@@ -18234,12 +18391,19 @@ var SlpStreamWriter = class {
           framesFlat[fi++] = newFrameId;
           framesFlat[fi++] = combinedVideo;
           framesFlat[fi++] = frameIdx;
+          let kept = iEnd - iStart;
+          if (skipRows) {
+            for (let j = iStart; j < iEnd; j++) {
+              if (skipsInstanceRow(idn, j)) kept--;
+            }
+          }
           framesFlat[fi++] = instBase + outInsts;
-          framesFlat[fi++] = instBase + outInsts + (iEnd - iStart);
+          framesFlat[fi++] = instBase + outInsts + kept;
           if (store.negativeFrames.has(`${numAt(fd.video, r)}:${frameIdx}`)) {
             this.negativeFrames.add(`${combinedVideo}:${frameIdx}`);
           }
           for (let j = iStart; j < iEnd; j++) {
+            if (skipRows && skipsInstanceRow(idn, j)) continue;
             const type = numAt(idn.instance_type, j);
             const ptStart = numAt(idn.point_id_start, j);
             const ptEnd = numAt(idn.point_id_end, j);
@@ -18341,19 +18505,17 @@ var SlpStreamWriter = class {
    * batch. Intended for a bounded batch (the corrected subset), so it is not
    * windowed. Interleave freely with {@link appendStore}.
    *
-   * Unlabelled points are refused or written as absent before anything is
-   * written, per `options.unlabeledAs` (see {@link UnlabeledAs}); the default
-   * is `"absent"` when the header labels or an appended store were loaded
-   * with `format3: "edit"`, `"error"` otherwise.
+   * Before anything is written, each frame, instance and annotation is
+   * checked against the format 3.0 file it was loaded from, if any: a record
+   * loaded with `format3: "view"` throws {@link SlpViewOnlyError}; unlabelled
+   * points of records loaded with `"edit"` are written as absent; those of
+   * other records follow `options.unlabeledAs` (see {@link UnlabeledAs},
+   * default `"error"`).
    */
   appendFrames(frames, options) {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
     if (frames.length === 0) return;
-    enforceLegacyLayout(
-      framesLegacyLosses(frames),
-      this.sourceFormat,
-      options?.unlabeledAs
-    );
+    enforceLegacyLayout(framesLegacyLosses(frames), options?.unlabeledAs);
     try {
       const frameBase = this.frameRows;
       const instBase = this.instRows;
@@ -18771,8 +18933,7 @@ async function openSlpWriter(header) {
   return new SlpStreamWriter(module, file, memPath, {
     videos: header.videos,
     skeletons: header.skeletons,
-    tracks: header.tracks ?? [],
-    sourceFormat
+    tracks: header.tracks ?? []
   });
 }
 function skeletonSignature(skeletons) {
@@ -18848,7 +19009,8 @@ async function writeSlpBytes(labels, options, { includeEmbeddedData }) {
   const hasEmbeddedToPreserve = embedMode !== "source" && labels.videos.some(isRawCopyable);
   const doEmbed = embedMode !== false && embedMode !== "source" || hasEmbeddedToPreserve;
   if (labels.isLazy) {
-    if (doEmbed) {
+    const store = labels._lazyDataStore;
+    if (doEmbed || store && hasSkippedInstanceRows(store.instancesData)) {
       labels.materialize();
     } else {
       let lazyWriteLabels = labels;
@@ -18866,11 +19028,10 @@ async function writeSlpBytes(labels, options, { includeEmbeddedData }) {
         }
       }
       if (proceedWithFastPath) {
-        const store = lazyWriteLabels._lazyDataStore;
-        if (store) {
+        const lazyStore = lazyWriteLabels._lazyDataStore;
+        if (lazyStore) {
           enforceLegacyLayout(
-            storeLegacyLosses(store),
-            labels.sourceFormat ?? store.sourceFormat,
+            storeLegacyLosses(lazyStore),
             options?.unlabeledAs
           );
         }
@@ -18892,7 +19053,6 @@ async function writeSlpBytes(labels, options, { includeEmbeddedData }) {
   }
   enforceLegacyLayout(
     framesLegacyLosses(labels.labeledFrames),
-    labels.sourceFormat,
     options?.unlabeledAs
   );
   let writeLabels2 = labels;
@@ -19787,7 +19947,6 @@ function buildLabelTableUpdate(labels, opts) {
   refuseViewOnly(labels);
   enforceLegacyLayout(
     framesLegacyLosses(labels.labeledFrames),
-    labels.sourceFormat,
     opts?.unlabeledAs
   );
   const r = buildLabelTableRows(labels);
@@ -23244,6 +23403,9 @@ async function readSlp(source, options) {
       rois: staticRois
     });
     labels.sourceFormat = format3?.sourceFormat ?? null;
+    for (const frame of labels.labeledFrames) {
+      markFrameSource(frame, format3?.sourceFormat);
+    }
     injectSessionFrameResolver(labels);
     return labels;
   } finally {
@@ -23421,6 +23583,15 @@ async function readSlpLazy(source, options) {
       }
       return { byFrame, undistributed };
     };
+    for (const tuples of [
+      centroidTuples,
+      bboxTuples,
+      maskTuples,
+      roiTuples,
+      labelImageTuples
+    ]) {
+      for (const [ann] of tuples) markSource(ann, format3?.sourceFormat);
+    }
     const cResult = buildAnnByFrame(centroidTuples);
     const bResult = buildAnnByFrame(bboxTuples);
     const mResult = buildAnnByFrame(maskTuples);
@@ -23458,17 +23629,17 @@ async function readSlpLazy(source, options) {
       const vidIdx = Number(vidIdxStr);
       const fidx = Number(fidxStr);
       if (vidIdx >= 0 && vidIdx < videos.length) {
-        lazyFrames._supplementary.push(
-          new LabeledFrame({
-            video: videos[vidIdx],
-            frameIdx: fidx,
-            centroids: store._centroidByFrame.get(key) ?? [],
-            bboxes: store._bboxByFrame.get(key) ?? [],
-            masks: store._maskByFrame.get(key) ?? [],
-            labelImages: store._labelImageByFrame.get(key) ?? [],
-            rois: store._roiByFrame.get(key) ?? []
-          })
-        );
+        const frame = new LabeledFrame({
+          video: videos[vidIdx],
+          frameIdx: fidx,
+          centroids: store._centroidByFrame.get(key) ?? [],
+          bboxes: store._bboxByFrame.get(key) ?? [],
+          masks: store._maskByFrame.get(key) ?? [],
+          labelImages: store._labelImageByFrame.get(key) ?? [],
+          rois: store._roiByFrame.get(key) ?? []
+        });
+        markFrameSource(frame, format3?.sourceFormat);
+        lazyFrames._supplementary.push(frame);
       }
     }
     const labels = new Labels({
@@ -24721,7 +24892,7 @@ function readPoseTable(file, table, module, labelsPath) {
   if (node && node.type === "Group") {
     const columns = {};
     for (const name of node.keys()) {
-      if (name === METADATA_SUBGROUP) continue;
+      if (!isKnownPoseColumn(table, name)) continue;
       const child = file.get(`${table}/${name}`);
       if (!child || child.type === "Group") continue;
       columns[name] = child.value;
@@ -25058,6 +25229,7 @@ function isBrowserWithWorkerSupport() {
   return typeof window !== "undefined" && isStreamingSupported();
 }
 async function loadSlp(source, options) {
+  checkFormat3Option(options?.format3);
   const streamMode = options?.h5?.stream ?? "auto";
   const openVideos = options?.openVideos ?? true;
   const lazy = options?.lazy ?? false;
@@ -25179,7 +25351,9 @@ async function loadSlpSet(sources, options) {
   return set;
 }
 async function saveSlpSet(labelsSet, options) {
-  for (const [, labels] of labelsSet) refuseViewOnly(labels);
+  for (const [, labels] of labelsSet) {
+    checkSlpSavable(labels, { unlabeledAs: options?.unlabeledAs });
+  }
   const promises = [];
   for (const [filename, labels] of labelsSet) {
     promises.push(saveSlp(labels, filename, options));

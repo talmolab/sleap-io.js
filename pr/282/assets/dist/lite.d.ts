@@ -1,5 +1,5 @@
-import { F as FrameGroup, S as Skeleton, T as Track, a as Format3Summary } from './dictionary-DZ9Lx2lh.js';
-export { E as Edge, h as Format3Access, L as LOSSLESS_FORMAT3_ASKS, N as Node, d as SLP_FORMAT_ID_LIMIT, e as SLP_SUPPORTED_FEATURES, f as SlpFormat3ChoiceError, c as SlpFormatError, i as SlpSourceFormat, g as SlpViewOnlyError, b as Symmetry } from './dictionary-DZ9Lx2lh.js';
+import { F as FrameGroup, S as Skeleton, T as Track, a as Format3Summary } from './dictionary-HBpY-Jnf.js';
+export { E as Edge, i as Format3Access, L as LOSSLESS_FORMAT3_ASKS, N as Node, d as SLP_FORMAT_ID_LIMIT, e as SLP_SUPPORTED_FEATURES, f as SlpFormat3ChoiceError, c as SlpFormatError, j as SlpSourceFormat, h as SlpTableError, g as SlpViewOnlyError, b as Symmetry } from './dictionary-HBpY-Jnf.js';
 
 /**
  * jsfive-based HDF5 file interface.

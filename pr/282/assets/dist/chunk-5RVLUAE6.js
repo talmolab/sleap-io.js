@@ -132,9 +132,10 @@ var PointView = class {
   set complete(v) {
     this.#owner._complete[this.#i] = v ? 1 : 0;
   }
+  /** Whether the point is labelled; a visible point always is. */
   get labeled() {
     const labeled = this.#owner._labeled;
-    return labeled ? labeled[this.#i] !== 0 : true;
+    return labeled ? labeled[this.#i] !== 0 || this.#owner._visible[this.#i] !== 0 : true;
   }
   set labeled(v) {
     if (v && !this.#owner._labeled) return;
@@ -1358,6 +1359,84 @@ function makeCameraFromDict(data) {
   });
 }
 
+// src/codecs/slp/format-check.ts
+var SLP_FORMAT_ID_LIMIT = 4;
+var SLP_SUPPORTED_FEATURES = /* @__PURE__ */ new Set();
+var SlpFormatError = class extends Error {
+  labelsPath;
+  formatId;
+  unsupportedFeatures;
+  constructor(options) {
+    super(options.message);
+    this.name = "SlpFormatError";
+    this.labelsPath = options.labelsPath;
+    this.formatId = options.formatId;
+    this.unsupportedFeatures = options.unsupportedFeatures ?? [];
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+var SlpTableError = class extends SlpFormatError {
+  constructor(labelsPath, detail, formatId) {
+    const path = isUrl(labelsPath) ? redactUrl(labelsPath) : labelsPath;
+    super({
+      message: `The SLEAP labels file '${path}' ${detail}`,
+      labelsPath: path,
+      formatId
+    });
+    this.name = "SlpTableError";
+  }
+};
+function attrValue(attr) {
+  if (attr !== null && typeof attr === "object" && !Array.isArray(attr) && !ArrayBuffer.isView(attr) && "value" in attr) {
+    return attr.value;
+  }
+  return attr;
+}
+function featureName(entry) {
+  const text = entry instanceof Uint8Array ? new TextDecoder().decode(entry) : String(entry);
+  return text.replace(/\u0000+$/, "").trim();
+}
+function requiredFeatures(attr) {
+  const value = attrValue(attr);
+  if (value === void 0 || value === null) return [];
+  const entries = Array.isArray(value) || ArrayBuffer.isView(value) && !(value instanceof Uint8Array) ? Array.from(value) : [value];
+  return entries.map(featureName).filter((name) => name.length > 0);
+}
+function formatLabel(formatId) {
+  return Number.isInteger(formatId) ? formatId.toFixed(1) : String(formatId);
+}
+function checkSlpFormat(source, metadataAttrs) {
+  const attrs = metadataAttrs ?? {};
+  const labelsPath = isUrl(source) ? redactUrl(source) : source;
+  const rawFormatId = attrValue(attrs.format_id);
+  const formatId = rawFormatId === void 0 || rawFormatId === null ? null : Number(rawFormatId);
+  if (formatId !== null && formatId >= SLP_FORMAT_ID_LIMIT) {
+    const readers = "It was written by a newer tool than this version of sleap-io.js knows. Open it with the tool that wrote it, or upgrade sleap-io.js.";
+    throw new SlpFormatError({
+      message: `The SLEAP labels file '${labelsPath}' is in SLP format ${formatLabel(formatId)}, which this version of sleap-io.js cannot read (it reads formats below ${formatLabel(SLP_FORMAT_ID_LIMIT)}). ` + readers,
+      labelsPath,
+      formatId
+    });
+  }
+  const unsupported = [...new Set(requiredFeatures(attrs.required_features))].filter((name) => !SLP_SUPPORTED_FEATURES.has(name)).sort();
+  if (unsupported.length > 0) {
+    throw new SlpFormatError({
+      message: `The SLEAP labels file '${labelsPath}'` + (formatId !== null && !Number.isNaN(formatId) ? ` (SLP format ${formatLabel(formatId)})` : "") + ` requires SLP features that this version of sleap-io.js does not support (${unsupported.join(", ")}). Open it with the tool that wrote it, such as a recent Python sleap-io, or upgrade sleap-io.js.`,
+      labelsPath,
+      formatId,
+      unsupportedFeatures: unsupported
+    });
+  }
+}
+function unreadTablesError(source, formatId, tables) {
+  const labelsPath = isUrl(source) ? redactUrl(source) : source;
+  return new SlpFormatError({
+    message: `The SLEAP labels file '${labelsPath}' is in SLP format ${formatLabel(formatId)} and holds tables that this version of sleap-io.js does not read in that format yet (${tables.map((t) => `/${t}`).join(", ")}). Open the file with Python sleap-io 0.10 or newer, or save a copy there in the 2.x layout with \`labels.save(new_path, legacy_format=True)\`.`,
+    labelsPath,
+    formatId
+  });
+}
+
 // src/codecs/slp/columnar.ts
 var VIDEO_IS_INDEX = /* @__PURE__ */ Symbol.for(
   "sleap-io.slp.videoIsIndex"
@@ -1406,6 +1485,9 @@ var KNOWN_COLUMNS = {
   ]
 };
 var METADATA_SUBGROUP = "metadata";
+function isKnownPoseColumn(table, name) {
+  return KNOWN_COLUMNS[table].includes(name);
+}
 var KNOWN_BBOX_COLUMNS = [
   "x1",
   "y1",
@@ -1438,18 +1520,26 @@ function poseTableFromColumns(table, columns, labelsPath) {
   const present = Object.keys(columns).filter((k) => columns[k] !== void 0);
   const missing = REQUIRED_COLUMNS[table].filter((c) => !present.includes(c));
   if (missing.length > 0) {
-    throw new Error(
-      `The SLEAP labels file '${labelsPath}' has a /${table} table without the required column(s) ${missing.join(", ")}.`
+    throw new SlpTableError(
+      labelsPath,
+      `has a /${table} table without the required column(s) ${missing.join(", ")}.`,
+      3
     );
   }
   const out = {};
   let rows = -1;
+  let first = "";
   for (const name of present) {
     const values = numberColumn(columns[name]);
-    if (rows === -1) rows = values.length;
+    if (rows === -1) {
+      rows = values.length;
+      first = name;
+    }
     if (values.length !== rows) {
-      throw new Error(
-        `The SLEAP labels file '${labelsPath}' has /${table} columns of different lengths (${name}: ${values.length}, expected ${rows}).`
+      throw new SlpTableError(
+        labelsPath,
+        `has /${table} columns of different lengths (${first}: ${rows} values, ${name}: ${values.length}).`,
+        3
       );
     }
     out[name] = values;
@@ -1572,8 +1662,10 @@ function checkPoseTables(options) {
     }
   }
   if (problems.length > 0) {
-    throw new Error(
-      `The SLEAP labels file '${options.labelsPath}' has inconsistent pose tables: ${problems.join("; ")}.`
+    throw new SlpTableError(
+      options.labelsPath,
+      `has inconsistent pose tables: ${problems.join("; ")}.`,
+      3
     );
   }
 }
@@ -1621,73 +1713,6 @@ var PredictedInstance3D = class extends Instance3D {
     this.pointScores = options.pointScores;
   }
 };
-
-// src/codecs/slp/format-check.ts
-var SLP_FORMAT_ID_LIMIT = 4;
-var SLP_SUPPORTED_FEATURES = /* @__PURE__ */ new Set();
-var SlpFormatError = class extends Error {
-  labelsPath;
-  formatId;
-  unsupportedFeatures;
-  constructor(options) {
-    super(options.message);
-    this.name = "SlpFormatError";
-    this.labelsPath = options.labelsPath;
-    this.formatId = options.formatId;
-    this.unsupportedFeatures = options.unsupportedFeatures ?? [];
-    Object.setPrototypeOf(this, new.target.prototype);
-  }
-};
-function attrValue(attr) {
-  if (attr !== null && typeof attr === "object" && !Array.isArray(attr) && !ArrayBuffer.isView(attr) && "value" in attr) {
-    return attr.value;
-  }
-  return attr;
-}
-function featureName(entry) {
-  const text = entry instanceof Uint8Array ? new TextDecoder().decode(entry) : String(entry);
-  return text.replace(/\u0000+$/, "").trim();
-}
-function requiredFeatures(attr) {
-  const value = attrValue(attr);
-  if (value === void 0 || value === null) return [];
-  const entries = Array.isArray(value) || ArrayBuffer.isView(value) && !(value instanceof Uint8Array) ? Array.from(value) : [value];
-  return entries.map(featureName).filter((name) => name.length > 0);
-}
-function formatLabel(formatId) {
-  return Number.isInteger(formatId) ? formatId.toFixed(1) : String(formatId);
-}
-function checkSlpFormat(source, metadataAttrs) {
-  const attrs = metadataAttrs ?? {};
-  const labelsPath = isUrl(source) ? redactUrl(source) : source;
-  const rawFormatId = attrValue(attrs.format_id);
-  const formatId = rawFormatId === void 0 || rawFormatId === null ? null : Number(rawFormatId);
-  if (formatId !== null && formatId >= SLP_FORMAT_ID_LIMIT) {
-    const readers = "It was written by a newer tool than this version of sleap-io.js knows. Open it with the tool that wrote it, or upgrade sleap-io.js.";
-    throw new SlpFormatError({
-      message: `The SLEAP labels file '${labelsPath}' is in SLP format ${formatLabel(formatId)}, which this version of sleap-io.js cannot read (it reads formats below ${formatLabel(SLP_FORMAT_ID_LIMIT)}). ` + readers,
-      labelsPath,
-      formatId
-    });
-  }
-  const unsupported = [...new Set(requiredFeatures(attrs.required_features))].filter((name) => !SLP_SUPPORTED_FEATURES.has(name)).sort();
-  if (unsupported.length > 0) {
-    throw new SlpFormatError({
-      message: `The SLEAP labels file '${labelsPath}'` + (formatId !== null && !Number.isNaN(formatId) ? ` (SLP format ${formatLabel(formatId)})` : "") + ` requires SLP features that this version of sleap-io.js does not support (${unsupported.join(", ")}). Open it with the tool that wrote it, such as a recent Python sleap-io, or upgrade sleap-io.js.`,
-      labelsPath,
-      formatId,
-      unsupportedFeatures: unsupported
-    });
-  }
-}
-function unreadTablesError(source, formatId, tables) {
-  const labelsPath = isUrl(source) ? redactUrl(source) : source;
-  return new SlpFormatError({
-    message: `The SLEAP labels file '${labelsPath}' is in SLP format ${formatLabel(formatId)} and holds tables that this version of sleap-io.js does not read in that format yet (${tables.map((t) => `/${t}`).join(", ")}). It reads the poses of format 3 files only. Open the file with Python sleap-io 0.10 or newer, or save a copy there in the 2.x layout with \`labels.save(new_path, legacy_format=True)\`.`,
-    labelsPath,
-    formatId
-  });
-}
 
 // src/model/record-metadata.ts
 function metadataValue(kind, raw) {
@@ -1793,11 +1818,7 @@ function buildFormat3Summary(options) {
   };
 }
 function chooseFormat3Access(labelsPath, summary, choice) {
-  if (choice !== void 0 && choice !== "view" && choice !== "edit") {
-    throw new Error(
-      `format3 must be "view" or "edit", got ${JSON.stringify(choice)}.`
-    );
-  }
+  checkFormat3Option(choice);
   const access = choice ?? (summary.lossless && !LOSSLESS_FORMAT3_ASKS ? "edit" : void 0);
   if (access === void 0) {
     throw new SlpFormat3ChoiceError(labelsPath, summary);
@@ -1808,6 +1829,13 @@ function chooseFormat3Access(labelsPath, summary, choice) {
     summary,
     labelsPath: safePath(labelsPath)
   };
+}
+function checkFormat3Option(choice) {
+  if (choice !== void 0 && choice !== "view" && choice !== "edit") {
+    throw new TypeError(
+      `format3 must be "view" or "edit", got ${JSON.stringify(choice)}.`
+    );
+  }
 }
 function isFormat3(formatId) {
   return formatId >= 3;
@@ -1825,7 +1853,7 @@ function metadataKindFromH5(meta) {
       return "str";
     case 8: {
       const names = Object.keys(meta.enum_type?.members ?? {}).sort();
-      return names.length === 2 && names[0] === "FALSE" && names[1] === "TRUE" ? "bool" : null;
+      return names.length === 2 && names[0] === "FALSE" && names[1] === "TRUE" ? "bool" : "int";
     }
     default:
       return null;
@@ -1834,8 +1862,10 @@ function metadataKindFromH5(meta) {
 function checkMetadataColumns(table, columns, rows, labelsPath) {
   for (const [key, column] of Object.entries(columns)) {
     if (column.values.length !== rows || column.present !== null && column.present.length !== rows) {
-      throw new Error(
-        `The SLEAP labels file '${safePath(labelsPath)}' has /${table}/metadata/${key} without one row per record (${rows}).`
+      throw new SlpTableError(
+        labelsPath,
+        `has /${table}/metadata/${key} without one row per record (${rows}).`,
+        3
       );
     }
   }
@@ -2397,8 +2427,15 @@ export {
   injectSessionFrameResolver,
   cloneRecordingSession,
   makeCameraFromDict,
+  SLP_FORMAT_ID_LIMIT,
+  SLP_SUPPORTED_FEATURES,
+  SlpFormatError,
+  SlpTableError,
+  checkSlpFormat,
+  unreadTablesError,
   VIDEO_IS_INDEX,
   METADATA_SUBGROUP,
+  isKnownPoseColumn,
   unknownColumns,
   poseTableFromColumns,
   isColumnarTable,
@@ -2413,16 +2450,12 @@ export {
   metadataKeysOf,
   Instance3D,
   PredictedInstance3D,
-  SLP_FORMAT_ID_LIMIT,
-  SLP_SUPPORTED_FEATURES,
-  SlpFormatError,
-  checkSlpFormat,
-  unreadTablesError,
   LOSSLESS_FORMAT3_ASKS,
   SlpFormat3ChoiceError,
   SlpViewOnlyError,
   buildFormat3Summary,
   chooseFormat3Access,
+  checkFormat3Option,
   isFormat3,
   metadataKindFromH5,
   checkMetadataColumns,

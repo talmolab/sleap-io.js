@@ -1,4 +1,4 @@
-import { bj as VideoBackend, by as RangeSource$1, bi as GetFrameOptions, bh as VideoFrame, i as SlpSourceFormat, j as Labels, V as Video, S as Skeleton, T as Track, ax as SuggestionFrame, aG as Identity, aC as RecordingSession, aK as LazyDataStore, k as LabeledFrame, a5 as FsResolver, bp as CropRect, bx as Fill, bq as FlatPoints, br as PointPairs, be as UserLabelImage, h as Format3Access, l as LabelsSet, aO as Geometry, R as ROI, I as Instance, n as SegmentationMask, P as PredictedInstance, m as LabelImage, B as BoundingBox } from './dictionary-DZ9Lx2lh.js';
+import { bk as VideoBackend, bz as RangeSource$1, bj as GetFrameOptions, bi as VideoFrame, j as SlpSourceFormat, k as Labels, V as Video, S as Skeleton, T as Track, ay as SuggestionFrame, aH as Identity, aD as RecordingSession, aL as LazyDataStore, l as LabeledFrame, a6 as FsResolver, bq as CropRect, by as Fill, br as FlatPoints, bs as PointPairs, bf as UserLabelImage, i as Format3Access, m as LabelsSet, aP as Geometry, R as ROI, I as Instance, o as SegmentationMask, P as PredictedInstance, n as LabelImage, B as BoundingBox } from './dictionary-HBpY-Jnf.js';
 import { CustomVideoDecoder, EncodedPacket } from 'mediabunny';
 
 /**
@@ -718,8 +718,11 @@ type SlpWriteOptions = {
     /**
      * How to save unlabelled points (`labeled` and `visible` both false), which
      * the 2.x layout this version writes cannot store; see {@link UnlabeledAs}.
-     * Defaults to `"absent"` for labels loaded with `format3: "edit"` (the
-     * caller already chose) and to `"error"` otherwise.
+     * Decided record by record: points of instances loaded from a format 3.0
+     * file with `format3: "edit"` (wherever they have been merged or copied
+     * since) are written as absent unless this is `"error"`; points of any other
+     * instance are refused unless this is `"absent"`. Records loaded with
+     * `format3: "view"` are never written.
      */
     unlabeledAs?: UnlabeledAs;
 };
@@ -752,8 +755,9 @@ interface AppendStoreOptions {
     /** Frames per append window (defaults to {@link DEFAULT_WRITE_WINDOW_FRAMES}). */
     windowFrames?: number;
     /**
-     * How to write unlabelled points (see {@link UnlabeledAs}). Defaults to
-     * `"absent"` for a store loaded with `format3: "edit"`, `"error"` otherwise.
+     * How to write unlabelled points (see {@link UnlabeledAs}). Points of a
+     * store loaded with `format3: "edit"` are written as absent unless this is
+     * `"error"`; any other store's are refused unless this is `"absent"`.
      */
     unlabeledAs?: UnlabeledAs;
 }
@@ -789,7 +793,6 @@ declare class SlpStreamWriter {
     private negativeFrames;
     private closed;
     private writtenFrames;
-    private sourceFormat;
     private pendingRois;
     private pendingMasks;
     private pendingBboxes;
@@ -800,7 +803,6 @@ declare class SlpStreamWriter {
         videos: Video[];
         skeletons: Skeleton[];
         tracks: Track[];
-        sourceFormat?: SlpSourceFormat | null;
     });
     /**
      * Append every frame of `store` (in windows), rebasing its ids onto the
@@ -826,10 +828,12 @@ declare class SlpStreamWriter {
      * batch. Intended for a bounded batch (the corrected subset), so it is not
      * windowed. Interleave freely with {@link appendStore}.
      *
-     * Unlabelled points are refused or written as absent before anything is
-     * written, per `options.unlabeledAs` (see {@link UnlabeledAs}); the default
-     * is `"absent"` when the header labels or an appended store were loaded
-     * with `format3: "edit"`, `"error"` otherwise.
+     * Before anything is written, each frame, instance and annotation is
+     * checked against the format 3.0 file it was loaded from, if any: a record
+     * loaded with `format3: "view"` throws {@link SlpViewOnlyError}; unlabelled
+     * points of records loaded with `"edit"` are written as absent; those of
+     * other records follow `options.unlabeledAs` (see {@link UnlabeledAs},
+     * default `"error"`).
      */
     appendFrames(frames: LabeledFrame[], options?: {
         unlabeledAs?: UnlabeledAs;
@@ -2825,6 +2829,9 @@ declare function saveLabelsCsv(labels: Labels, filename: string, options?: CsvEx
  *   writer refuses the labels), `"edit"` lets a save write the 2.x layout and
  *   drop what it cannot store. Without it such a file throws
  *   `SlpFormat3ChoiceError`, whose `summary` lists what an edit would drop.
+ *   That error comes after the pose tables have been read; to avoid reading
+ *   a large or remote file twice, ask with the lite `loadSlpMetadata` first or
+ *   pass this from the start.
  * @returns Loaded Labels object
  */
 declare function loadSlp(source: SlpSource, options?: {
