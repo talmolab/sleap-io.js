@@ -51,6 +51,7 @@ import {
   readStreamingOrNull,
   type StreamingReader,
 } from "../src/io/load-route.js";
+import { openH5FileBrowser } from "../src/codecs/slp/h5.js";
 import {
   type SlpFormatError,
   SlpTableError,
@@ -695,7 +696,19 @@ describe("loadSlp in a browser does not lose what the streaming reader skips", (
   const standIn =
     (name: string): StreamingReader =>
     async (_source, options) => {
-      const { file, close } = await streamingFile(name);
+      // The stand-in has no fast path for 2.x compound pose tables.
+      let compound: Record<string, unknown> = {};
+      if (name.endsWith(".v2.slp")) {
+        const store = (await readSlpLazy(slpPath(name), { openVideos: false }))
+          ._lazyDataStore!;
+        compound = {
+          frames: store.framesData,
+          instances: store.instancesData,
+          points: store.pointsData,
+          pred_points: store.predPointsData,
+        };
+      }
+      const { file, close } = await streamingFile(name, compound);
       try {
         return await readFromStreamingFile(
           file,
@@ -765,10 +778,56 @@ describe("loadSlp in a browser does not lose what the streaming reader skips", (
     );
   });
 
-  it("an explicit stream mode keeps streaming, and the summary lists the loss", async () => {
-    const { streamed, labels } = await browserLoad(V3, "stream");
+  it('stream mode "range" keeps streaming, and the summary lists the loss', async () => {
+    const { streamed, labels } = await browserLoad(V3, "range");
     expect(streamed).toBe(true);
     expect(labels.sourceFormat?.summary.unreadTables).toContain("masks");
+    expect(labels.labeledFrames.flatMap((f) => f.masks)).toEqual([]);
+  });
+
+  it("streams a 2.x file as before, without what the streaming reader skips", async () => {
+    // An existing gap: the streaming reader reads no masks in any layout.
+    const { streamed, labels } = await browserLoad(V2);
+    expect(streamed).toBe(true);
+    expect(labels.labeledFrames.flatMap((f) => f.masks)).toEqual([]);
+    expect(labels.labeledFrames.flatMap((f) => f.instances)).toHaveLength(8);
+  });
+});
+
+describe("a File read on a page's main thread", () => {
+  const fileOf = (name: string) =>
+    new File([slpBytes(name)], name, { type: "application/octet-stream" });
+
+  it("is read whole into memory, never through WORKERFS", async () => {
+    // A stand-in h5wasm module whose WORKERFS aborts outside a worker, as
+    // h5wasm's browser build does.
+    const written: string[] = [];
+    const opened: string[] = [];
+    const module = {
+      FS: {
+        filesystems: { WORKERFS: {} },
+        mkdir: () => {},
+        rmdir: () => {},
+        unmount: () => {},
+        mount: () => {
+          throw new Error("Aborted: WORKERFS outside a worker");
+        },
+        writeFile: (path: string) => written.push(path),
+      },
+      File: class {
+        constructor(path: string) {
+          opened.push(path);
+        }
+        close() {}
+      },
+    };
+    const { close } = await openH5FileBrowser(
+      module as never,
+      fileOf("format3_pose.slp"),
+    );
+    close();
+    expect(written).toEqual(["/tmp-slp.slp"]);
+    expect(opened).toEqual(["/tmp-slp.slp"]);
   });
 });
 
