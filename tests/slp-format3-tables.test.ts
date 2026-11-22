@@ -936,6 +936,34 @@ function setColumn(h5: H5File, p: string, values: number[]): void {
   ds.write_slice([[0, values.length]], new BigInt64Array(values.map(BigInt)));
 }
 
+describe("predicted masks and label images without a score", () => {
+  it("read a score of 0, as Python sleap-io reads them", async () => {
+    const file = await editedCopy(V3, (h5) => {
+      for (const p of ["masks/score", "label_images/score"]) {
+        // biome-ignore lint/suspicious/noExplicitAny: h5wasm Dataset
+        const ds = h5.get(p) as any;
+        const n = ds.shape[0];
+        ds.write_slice([[0, n]], new Float64Array(n).fill(Number.NaN));
+      }
+    });
+    for (const read of [
+      () => readSlp(file, EDIT),
+      async () => {
+        const labels = await readSlpLazy(file, EDIT);
+        labels.materialize();
+        return labels;
+      },
+    ]) {
+      const s = describe3(await read());
+      const scores = s.frames.flatMap((f) => [
+        ...f.masks.filter((m) => m.kind.startsWith("Predicted")),
+        ...f.labelImages.filter((li) => li.kind.startsWith("Predicted")),
+      ]);
+      expect(scores.map((x) => x.score)).toEqual([0, 0]);
+    }
+  });
+});
+
 describe("range checks of the format 3.0 tables", () => {
   const cases: Array<[string, string, number[], string]> = [
     ["an ROI video", "rois/video", [0, 9, 0, -1], "/rois video"],

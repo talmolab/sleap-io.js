@@ -2590,7 +2590,9 @@ function readMasks(
     let mask: SegmentationMask;
 
     if (isPred) {
-      const scoreVal = scoreCol.length > i ? Number(scoreCol[i]) : 0;
+      // A missing score (NaN) reads as 0, as in Python sleap-io.
+      const rawScore = scoreCol.length > i ? Number(scoreCol[i]) : 0;
+      const scoreVal = Number.isNaN(rawScore) ? 0 : rawScore;
       const sm = scoreMaps.get(i);
       mask = new PredictedSegmentationMask({
         ...baseOptions,
@@ -2839,7 +2841,9 @@ function readLabelImages(
 
     let li: LabelImage;
     if (isPred) {
-      const liScore = liScoreCol.length > i ? Number(liScoreCol[i]) : 0;
+      // A missing score (NaN) reads as 0, as in Python sleap-io.
+      const rawLiScore = liScoreCol.length > i ? Number(liScoreCol[i]) : 0;
+      const liScore = Number.isNaN(rawLiScore) ? 0 : rawLiScore;
       const sm = liScoreMaps.get(i);
       li = new PredictedLabelImage({
         data: pixelData,
