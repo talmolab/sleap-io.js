@@ -106,6 +106,9 @@ await saveSlp(labels, "/tmp/roundtrip.slp", {
 - `options.embedAllVideos` (default `true`, as Python's `embed_all_videos`): when embedding, a video with no frames to embed becomes an empty embedded video referencing the package (keeping its shape and source video), so the package is portable. `false` leaves such videos as external references.
 - `options.onProgress(current, total, message)`: called as frames are read (`"Embedding frames"`) and written (`"Writing frames"`). Return `false` to cancel: the save throws `ExportCancelled`.
 - `options.restoreOriginalVideos` (default `true`): keep original video paths.
+- `options.imageFormat`: the image format embedded frames are stored in, as Python's `image_format`: `"png"` (lossless) or `"jpg"` (lossy, smaller); `"jpeg"` is stored as `"jpg"`. With it, frames already encoded in that format are stored verbatim and the rest are decoded and encoded in it, including the images of already-embedded videos stored in another format (a PNG package becomes a JPEG one); a grayscale video stores one-channel images. Omitted (default): new frames are stored as PNG and already-embedded images are copied as they are. See "Image format" in the usage guide.
+- `options.imageQuality`: JPEG quality (0-100, default 95) with `"jpg"`, or PNG compression level (0-9) with `"png"`, as Python's `image_quality`. Needs an explicit `imageFormat`. Frames stored verbatim keep their bytes.
+- Invalid `imageFormat` / `imageQuality` throw before anything is written.
 
 ### `saveSlpToBytes(labels, options)`
 Serialize Labels to SLP format and return the bytes. Works in both Node.js and browser environments.
@@ -115,7 +118,7 @@ const bytes: Uint8Array = await saveSlpToBytes(labels, { embed: false });
 ```
 
 - `labels`: `Labels` object to serialize.
-- `options`: the same `embed`, `embedAllVideos`, `onProgress` and `restoreOriginalVideos` options as `saveSlp`.
+- `options`: the same `embed`, `embedAllVideos`, `onProgress`, `restoreOriginalVideos`, `imageFormat` and `imageQuality` options as `saveSlp`.
 - Returns `Promise<Uint8Array>`.
 
 ### `loadVideo(source, options)`
