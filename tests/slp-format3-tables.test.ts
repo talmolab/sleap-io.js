@@ -66,6 +66,7 @@ import {
   saveSlpToBytes,
 } from "../src/codecs/slp/write.js";
 import { loadSlp } from "../src/index.js";
+import { sessionMetadataFromJson } from "../src/codecs/slp/parsers.js";
 import { loadSlpMetadata } from "../src/lite.js";
 import { Labels } from "../src/model/labels.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
@@ -296,6 +297,8 @@ describe("format 3.0 tables read as their 2.x twins", () => {
         ["cam1", 1],
         ["cam2", 2],
       ]);
+      // Python stores session metadata at the top level of its JSON entry.
+      expect(s[0].metadata).toEqual({ rig: "three" });
       const [fg0, fg1] = s[0].frameGroups;
       expect(fg0.frameIdx).toBe(0);
       expect(fg0.metadata).toEqual({ note: "fg0" });
@@ -692,8 +695,14 @@ describe("2.x files written by earlier sleap-io.js versions", () => {
     ["js_written_label_images_blob.slp", BLOB_V2],
   ]) {
     it(`${old} reads as the Python-written file it was saved from`, async () => {
-      const read = (n: string) => readSlp(slpPath(n), { openVideos: false });
-      expect(describe3(await read(old))).toEqual(describe3(await read(v2)));
+      const read = async (n: string) => {
+        const d = describe3(await readSlp(slpPath(n), { openVideos: false }));
+        // Earlier versions read no session metadata from Python files, so
+        // these files have none to keep.
+        for (const session of d.sessions) session.metadata = {};
+        return d;
+      };
+      expect(await read(old)).toEqual(await read(v2));
     });
   }
 });
@@ -941,6 +950,29 @@ function setColumn(h5: H5File, p: string, values: number[]): void {
   expect(ds.shape).toEqual([values.length]);
   ds.write_slice([[0, values.length]], new BigInt64Array(values.map(BigInt)));
 }
+
+describe("session metadata", () => {
+  it("is read from the top level (Python) and from a `metadata` key (earlier sleap-io.js)", () => {
+    const structure = {
+      calibration: {},
+      camcorder_to_video_idx_map: {},
+      fg_start: 0,
+      fg_end: 1,
+    };
+    expect(
+      sessionMetadataFromJson({ ...structure, rig: "three", n: 2 }),
+    ).toEqual({ rig: "three", n: 2 });
+    expect(
+      sessionMetadataFromJson({ ...structure, metadata: { rig: "three" } }),
+    ).toEqual({ rig: "three" });
+    expect(sessionMetadataFromJson({ ...structure, metadata: {} })).toEqual({});
+  });
+
+  it("the lite reader reads it too", async () => {
+    const meta = await loadSlpMetadata(slpBytes(V3));
+    expect(meta.sessions[0].metadata).toEqual({ rig: "three" });
+  });
+});
 
 describe("predicted masks and label images without a score", () => {
   it("read a score of 0, as Python sleap-io reads them", async () => {

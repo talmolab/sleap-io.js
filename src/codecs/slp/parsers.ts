@@ -650,6 +650,39 @@ export interface SessionMetadata {
   frameGroups?: FrameGroup[];
 }
 
+/** Keys of a `sessions_json` entry that are not session metadata. */
+const SESSION_STRUCTURE_KEYS = new Set([
+  "calibration",
+  "camcorder_to_video_idx_map",
+  "fg_start",
+  "fg_end",
+  "frame_group_dicts",
+]);
+
+/**
+ * The session-level metadata of a parsed `sessions_json` entry. Python
+ * sleap-io stores it at the top level of the entry (`session_dict.update(
+ * session.metadata)`), so every key that is not part of the session's
+ * structure is metadata. sleap-io.js wrote it under a `metadata` key, whose
+ * entries are read as metadata too.
+ */
+export function sessionMetadataFromJson(
+  parsed: Record<string, unknown>,
+): Record<string, unknown> {
+  const metadata: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(parsed)) {
+    if (SESSION_STRUCTURE_KEYS.has(key) || key === "metadata") continue;
+    metadata[key] = value;
+  }
+  const nested = parsed.metadata;
+  if (nested && typeof nested === "object" && !Array.isArray(nested)) {
+    Object.assign(metadata, nested);
+  } else if (nested !== undefined) {
+    metadata.metadata = nested;
+  }
+  return metadata;
+}
+
 /**
  * Parse recording session metadata from sessions_json dataset values.
  *
@@ -731,7 +764,7 @@ export function parseSessionsMetadata(
     sessions.push({
       cameras,
       videosByCamera,
-      metadata: parsed.metadata as Record<string, unknown> | undefined,
+      metadata: sessionMetadataFromJson(parsed),
       ...(frameGroups ? { frameGroups } : {}),
     });
   }

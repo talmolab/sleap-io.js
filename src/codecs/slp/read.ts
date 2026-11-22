@@ -69,6 +69,7 @@ import {
   parseJsonEntry,
   sessionsReadError,
   reconstructColumnarFrameGroups,
+  sessionMetadataFromJson,
   type SessionData,
   type SessionPointMatrix,
   parseSkeletons,
@@ -1882,7 +1883,7 @@ function readSessions(
 
     const session = new RecordingSession({
       cameraGroup,
-      metadata: (parsed.metadata as Record<string, unknown> | undefined) ?? {},
+      metadata: sessionMetadataFromJson(parsed),
     });
     // Optionally retain the verbatim parsed sessions_json dict (deprecated,
     // opt-in via `rawSessions`). Deep-cloned so it is an INDEPENDENT snapshot:
