@@ -1800,6 +1800,19 @@ var SlpViewOnlyError = class extends Error {
     Object.setPrototypeOf(this, new.target.prototype);
   }
 };
+function freezeSummary(summary) {
+  return Object.freeze({
+    ...summary,
+    metadataKeys: Object.freeze({
+      instances: Object.freeze([...summary.metadataKeys.instances]),
+      frames: Object.freeze([...summary.metadataKeys.frames]),
+      bboxes: Object.freeze([...summary.metadataKeys.bboxes])
+    }),
+    unknownColumns: Object.freeze([
+      ...summary.unknownColumns
+    ])
+  });
+}
 function buildFormat3Summary(options) {
   const unlabeledPoints = options.unlabeledUserPoints + options.unlabeledPredictedPoints;
   const { instances, frames, bboxes } = options.metadataKeys;
@@ -1823,12 +1836,12 @@ function chooseFormat3Access(labelsPath, summary, choice) {
   if (access === void 0) {
     throw new SlpFormat3ChoiceError(labelsPath, summary);
   }
-  return {
+  return Object.freeze({
     formatId: summary.formatId,
     access,
-    summary,
+    summary: freezeSummary(summary),
     labelsPath: safePath(labelsPath)
-  };
+  });
 }
 function checkFormat3Option(choice) {
   if (choice !== void 0 && choice !== "view" && choice !== "edit") {

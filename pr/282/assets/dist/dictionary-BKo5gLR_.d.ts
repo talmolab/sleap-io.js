@@ -700,6 +700,7 @@ declare class ROI {
     /** Whether this is a predicted ROI (has a score). */
     get isPredicted(): boolean;
     explode(): ROI[];
+    private _explodeUnmarked;
     toGeoJSON(): {
         type: "Feature";
         geometry: Geometry;
@@ -721,6 +722,7 @@ declare class ROI {
         y: number;
     };
     toMask(height: number, width: number): SegmentationMask;
+    private _toMaskUnmarked;
     private _allPoints;
 }
 declare function rasterizeGeometry(geometry: Geometry, height: number, width: number): Uint8Array;
@@ -835,6 +837,7 @@ declare class SegmentationMask {
      * The returned mask has scale=[1,1] and offset=[0,0].
      */
     resampled(targetHeight: number, targetWidth: number): SegmentationMask;
+    private _resampledUnmarked;
     get bbox(): {
         x: number;
         y: number;
@@ -874,6 +877,7 @@ declare class SegmentationMask {
      * Use {@link toBbox} or the `bbox` getter for the axis-aligned bounding box.
      */
     toPolygon(): ROI;
+    private _toPolygonUnmarked;
 }
 interface UserSegmentationMaskOptions extends SegmentationMaskOptions {
     /**
@@ -935,6 +939,7 @@ declare class PredictedSegmentationMask extends SegmentationMask {
      *   `fromPredicted` to this predicted mask. When `false`, leave it `null`.
      */
     toUser(link?: boolean): UserSegmentationMask;
+    private _toUserUnmarked;
 }
 
 /**
@@ -1283,6 +1288,7 @@ declare class BoundingBox {
     get isRotated(): boolean;
     /** Convert to a Polygon ROI. */
     toRoi(): ROI;
+    private _toRoiUnmarked;
     /** Convert to a SegmentationMask by rasterizing the bbox polygon. */
     toMask(height: number, width: number): SegmentationMask;
     /** Whether this box is degenerate (any corner coordinate is NaN). */
@@ -1710,6 +1716,7 @@ declare class LabelImage {
      * The returned label image has scale=[1,1] and offset=[0,0].
      */
     resampled(targetHeight: number, targetWidth: number): LabelImage;
+    private _resampledUnmarked;
     /** Get a binary mask (Uint8Array) for a specific label ID. */
     getObjectMask(labelId: number): Uint8Array;
     /** Get a binary mask for all objects associated with a given track. */
@@ -1795,6 +1802,7 @@ declare class LabelImage {
     }): UserLabelImage;
     /** Decompose this LabelImage into individual SegmentationMask objects. */
     toMasks(): SegmentationMask[];
+    private _toMasksUnmarked;
     /** Extract tight bounding boxes for each object in the label image.
      *
      * Returns `UserBoundingBox` or `PredictedBoundingBox` objects depending on
@@ -1805,6 +1813,7 @@ declare class LabelImage {
      * Label IDs present in `objects` but with no pixels in the data are skipped.
      */
     toBboxes(): BoundingBox[];
+    private _toBboxesUnmarked;
 }
 /** User-annotated label image (no prediction score). */
 declare class UserLabelImage extends LabelImage {
@@ -2453,6 +2462,8 @@ declare class LabeledFrame {
         Array<Instance | PredictedInstance>,
         Array<[Instance, Instance, string]>
     ];
+    /** The strategy part of {@link merge}. */
+    private _mergeInstances;
     /**
      * Append an annotation to this frame, routing to the correct list by type.
      *
@@ -2851,7 +2862,7 @@ declare class SlpFormat3ChoiceError extends SlpFormatError {
     constructor(labelsPath: string, summary: Format3Summary);
 }
 /**
- * Thrown by every writer, before it touches its target, for labels loaded from
+ * Thrown by every SLP writer, before it touches its target, for labels loaded from
  * a format 3.0 file with `format3: "view"`.
  */
 declare class SlpViewOnlyError extends Error {
@@ -3008,6 +3019,8 @@ declare class LazyFrameList {
     release(index: number): void;
     /** Drop cached frames in the half-open range `[start, end)`. */
     releaseWindow(start: number, end: number): void;
+    /** @internal The frames materialized so far. */
+    _cachedFrames(): IterableIterator<LabeledFrame>;
     /** Drop all cached frames (keeps the underlying store). */
     clearCache(): void;
     /** Materialize all frames and return as a regular array. */
@@ -3051,7 +3064,7 @@ declare class Labels {
     /**
      * Set when the labels were loaded from a file in SLP format 3.0: its format,
      * what it holds that the 2.x layout cannot store, and the caller's
-     * `format3` choice. With `access: "view"` every writer refuses the labels;
+     * `format3` choice. With `access: "view"` every SLP writer refuses the labels;
      * with `"edit"` writers save the 2.x layout and drop those fields. `null`
      * for labels from 1.x/2.x files or built in memory. Carried by
      * {@link copy} and {@link extract}. The choice also travels with each

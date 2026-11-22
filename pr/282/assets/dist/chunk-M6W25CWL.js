@@ -63,7 +63,7 @@ import {
   skipsInstanceRow,
   unknownColumns,
   unreadTablesError
-} from "./chunk-5RVLUAE6.js";
+} from "./chunk-R3B3DLP2.js";
 import {
   openGdrive
 } from "./chunk-RC2FIFDH.js";
@@ -91,13 +91,9 @@ function copySourceMark(from, to) {
   const mark = sourceMarkOf(from);
   if (mark && to) marks.set(to, mark);
 }
-function mergeSourceMark(target, source) {
+function takeViewMark(target, source) {
   const incoming = sourceMarkOf(source);
-  if (!incoming || !target) return;
-  const own = marks.get(target);
-  if (!own || own.access === "edit" && incoming.access === "view") {
-    marks.set(target, incoming);
-  }
+  if (target && incoming?.access === "view") marks.set(target, incoming);
 }
 function markFrameSource(frame, sourceFormat) {
   if (!sourceFormat) return;
@@ -111,6 +107,68 @@ function markFrameSource(frame, sourceFormat) {
     frame.rois
   ]) {
     for (const record of list) markSource(record, sourceFormat);
+  }
+}
+function keepSourceMark(from, out) {
+  if (Array.isArray(out)) {
+    for (const record of out) copySourceMark(from, record);
+  } else {
+    copySourceMark(from, out);
+  }
+  return out;
+}
+function setSourceAccess(labels, access) {
+  if (access !== "view" && access !== "edit") {
+    throw new TypeError(
+      `access must be "view" or "edit", got ${JSON.stringify(access)}.`
+    );
+  }
+  const old = labels.sourceFormat;
+  if (!old) {
+    throw new Error(
+      "setSourceAccess: these labels were not loaded from an SLP format 3.0 file."
+    );
+  }
+  if (old.access === access) return;
+  const next = Object.freeze({ ...old, access });
+  const swap = (record) => {
+    if (marks.get(record) === old) marks.set(record, next);
+  };
+  const swapFrame = (frame) => {
+    swap(frame);
+    for (const list of [
+      frame.instances,
+      frame.centroids,
+      frame.bboxes,
+      frame.masks,
+      frame.labelImages,
+      frame.rois
+    ]) {
+      for (const record of list) swap(record);
+    }
+  };
+  labels.sourceFormat = next;
+  for (const frame of labels.labeledFrames) swapFrame(frame);
+  for (const roi of labels._staticRois) swap(roi);
+  const store = labels._lazyDataStore;
+  if (store) {
+    if (store.sourceFormat === old) store.sourceFormat = next;
+    for (const [byFrame, undistributed] of [
+      [store._centroidByFrame, store._undistributedCentroids],
+      [store._bboxByFrame, store._undistributedBboxes],
+      [store._maskByFrame, store._undistributedMasks],
+      [store._roiByFrame, store._undistributedRois],
+      [store._labelImageByFrame, store._undistributedLabelImages]
+    ]) {
+      for (const record of undistributed) swap(record);
+      for (const list of byFrame.values())
+        for (const record of list) swap(record);
+    }
+  }
+  const lazyFrames = labels._lazyFrameList;
+  if (lazyFrames) {
+    for (const frame of lazyFrames._supplementary) swapFrame(frame);
+    for (const frame of lazyFrames._cachedFrames()) swapFrame(frame);
   }
 }
 
@@ -419,6 +477,9 @@ var ROI = class _ROI {
     return false;
   }
   explode() {
+    return keepSourceMark(this, this._explodeUnmarked());
+  }
+  _explodeUnmarked() {
     const Ctor = this.constructor;
     const copyFields = {
       name: this.name,
@@ -532,6 +593,9 @@ var ROI = class _ROI {
     return { x: (b.minX + b.maxX) / 2, y: (b.minY + b.maxY) / 2 };
   }
   toMask(height, width) {
+    return keepSourceMark(this, this._toMaskUnmarked(height, width));
+  }
+  _toMaskUnmarked(height, width) {
     if (!_maskFactory) {
       throw new Error(
         "SegmentationMask not available. Import mask.ts before calling toMask()."
@@ -1035,6 +1099,9 @@ var BoundingBox = class _BoundingBox {
   }
   /** Convert to a Polygon ROI. */
   toRoi() {
+    return keepSourceMark(this, this._toRoiUnmarked());
+  }
+  _toRoiUnmarked() {
     const c = this.corners;
     const ring = [...c, c[0]];
     const roi = ROI.fromPolygon(ring, {
@@ -1568,6 +1635,12 @@ var SegmentationMask = class _SegmentationMask {
    * The returned mask has scale=[1,1] and offset=[0,0].
    */
   resampled(targetHeight, targetWidth) {
+    return keepSourceMark(
+      this,
+      this._resampledUnmarked(targetHeight, targetWidth)
+    );
+  }
+  _resampledUnmarked(targetHeight, targetWidth) {
     const srcData = this.data;
     const resized = resizeNearest(
       srcData,
@@ -1699,6 +1772,9 @@ var SegmentationMask = class _SegmentationMask {
    * Use {@link toBbox} or the `bbox` getter for the axis-aligned bounding box.
    */
   toPolygon() {
+    return keepSourceMark(this, this._toPolygonUnmarked());
+  }
+  _toPolygonUnmarked() {
     const rings = this.contours();
     let geometry;
     if (rings.length === 0) {
@@ -1777,6 +1853,9 @@ var PredictedSegmentationMask = class extends SegmentationMask {
    *   `fromPredicted` to this predicted mask. When `false`, leave it `null`.
    */
   toUser(link = true) {
+    return keepSourceMark(this, this._toUserUnmarked(link));
+  }
+  _toUserUnmarked(link = true) {
     const user = new UserSegmentationMask({
       rleCounts: this.rleCounts.slice(),
       height: this.height,
@@ -1898,6 +1977,12 @@ var LabelImage = class _LabelImage {
    * The returned label image has scale=[1,1] and offset=[0,0].
    */
   resampled(targetHeight, targetWidth) {
+    return keepSourceMark(
+      this,
+      this._resampledUnmarked(targetHeight, targetWidth)
+    );
+  }
+  _resampledUnmarked(targetHeight, targetWidth) {
     const resizedData = resizeNearest(
       this.data,
       this.height,
@@ -2364,6 +2449,9 @@ var LabelImage = class _LabelImage {
   // --- Conversion ---
   /** Decompose this LabelImage into individual SegmentationMask objects. */
   toMasks() {
+    return keepSourceMark(this, this._toMasksUnmarked());
+  }
+  _toMasksUnmarked() {
     const ids = this.labelIds;
     const maskMap = /* @__PURE__ */ new Map();
     for (const lid of ids) {
@@ -2418,6 +2506,9 @@ var LabelImage = class _LabelImage {
    * Label IDs present in `objects` but with no pixels in the data are skipped.
    */
   toBboxes() {
+    return keepSourceMark(this, this._toBboxesUnmarked());
+  }
+  _toBboxesUnmarked() {
     const data = this.data;
     const h = this.height;
     const w = this.width;
@@ -3852,6 +3943,7 @@ function _resolveAnnotationUpdateTracks(selfList, otherList, attr, threshold) {
   selfToOther.forEach(({ otherIdx }, selfIdx) => {
     selfList[selfIdx].track = otherList[otherIdx].track;
     selfList[selfIdx].trackingScore = otherList[otherIdx].trackingScore;
+    takeViewMark(selfList[selfIdx], otherList[otherIdx]);
   });
 }
 function _resolveMergedIsNegative(selfNeg, otherNeg, merged) {
@@ -4103,8 +4195,22 @@ var LabeledFrame = class {
     const instanceMatcher = opts.instance ?? new InstanceMatcher(InstanceMatchMethod.SPATIAL, { threshold: 5 });
     const frame = opts.frame ?? "auto";
     const conflicts = [];
+    const takesMetadata = Object.keys(other.metadata).some(
+      (key) => !(key in this.metadata)
+    );
+    const wasNegative = this.isNegative;
     this.metadata = { ...other.metadata, ...this.metadata };
-    mergeSourceMark(this, other);
+    if (takesMetadata) takeViewMark(this, other);
+    try {
+      return this._mergeInstances(other, frame, instanceMatcher, conflicts);
+    } finally {
+      if (!wasNegative && this.isNegative && other.isNegative) {
+        takeViewMark(this, other);
+      }
+    }
+  }
+  /** The strategy part of {@link merge}. */
+  _mergeInstances(other, frame, instanceMatcher, conflicts) {
     if (frame === "keep_original") {
       this.mergeAnnotations(other, "keep_original");
       [this.isNegative] = _resolveMergedIsNegative(
@@ -4137,6 +4243,7 @@ var LabeledFrame = class {
       for (const [selfIdx, otherIdx] of matches2) {
         this.instances[selfIdx].track = other.instances[otherIdx].track;
         this.instances[selfIdx].trackingScore = other.instances[otherIdx].trackingScore;
+        takeViewMark(this.instances[selfIdx], other.instances[otherIdx]);
       }
       this.mergeAnnotations(other, "update_tracks", instanceMatcher.threshold);
       [this.isNegative] = _resolveMergedIsNegative(
@@ -6775,7 +6882,8 @@ var LazyDataStore = class _LazyDataStore {
     if (this.negativeFrames.has(`${rawVideoId}:${frameIndex}`)) {
       frame.isNegative = true;
     }
-    markFrameSource(frame, this.sourceFormat);
+    markSource(frame, this.sourceFormat);
+    for (const instance of instances) markSource(instance, this.sourceFormat);
     return frame;
   }
   /**
@@ -6953,6 +7061,10 @@ var LazyFrameList = class {
   releaseWindow(start, end) {
     for (let i = start; i < end; i++) this.cache.delete(i);
   }
+  /** @internal The frames materialized so far. */
+  _cachedFrames() {
+    return this.cache.values();
+  }
   /** Drop all cached frames (keeps the underlying store). */
   clearCache() {
     this.cache.clear();
@@ -7111,7 +7223,7 @@ var Labels = class _Labels {
   /**
    * Set when the labels were loaded from a file in SLP format 3.0: its format,
    * what it holds that the 2.x layout cannot store, and the caller's
-   * `format3` choice. With `access: "view"` every writer refuses the labels;
+   * `format3` choice. With `access: "view"` every SLP writer refuses the labels;
    * with `"edit"` writers save the 2.x layout and drop those fields. `null`
    * for labels from 1.x/2.x files or built in memory. Carried by
    * {@link copy} and {@link extract}. The choice also travels with each
@@ -16359,6 +16471,7 @@ function attachAnnotationTuples(tuples, opts) {
   }
 }
 async function readSlpStreaming(source, options) {
+  checkFormat3Option(options?.format3);
   if (!isStreamingSupported()) {
     throw new Error(
       "Streaming HDF5 requires Web Worker support (browser environment)"
@@ -16398,6 +16511,7 @@ async function readSlpStreaming(source, options) {
   return labels;
 }
 async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false, lazyVideoMetadata = false, userInstancesOnly = false, repairPointSpans = false, format3Choice) {
+  checkFormat3Option(format3Choice);
   if (lazy && userInstancesOnly) {
     throw new Error(
       "readSlpStreaming: userInstancesOnly can't be combined with lazy"
@@ -17800,6 +17914,25 @@ function framesLegacyLosses(frames) {
     ])
   };
 }
+function refuseViewOnlyRecords(frames) {
+  const check = (record) => {
+    const mark = sourceMarkOf(record);
+    if (mark?.access === "view") throw new SlpViewOnlyError(mark);
+  };
+  for (const frame of frames) {
+    check(frame);
+    for (const list of [
+      frame.instances,
+      frame.centroids,
+      frame.bboxes,
+      frame.masks,
+      frame.labelImages,
+      frame.rois
+    ]) {
+      for (const record of list) check(record);
+    }
+  }
+}
 function storeLegacyLosses(store) {
   let viewOnly = store.sourceFormat?.access === "view" ? store.sourceFormat : null;
   const ownBoxes = [];
@@ -17809,6 +17942,17 @@ function storeLegacyLosses(store) {
     const mark = sourceMarkOf(box);
     if (mark?.access === "view") viewOnly ??= mark;
     if (!mark) ownBoxes.push(box);
+  }
+  for (const [byFrame, undistributed] of [
+    [store._centroidByFrame, store._undistributedCentroids],
+    [store._maskByFrame, store._undistributedMasks],
+    [store._roiByFrame, store._undistributedRois],
+    [store._labelImageByFrame, store._undistributedLabelImages]
+  ]) {
+    for (const record of [...undistributed, ...[...byFrame.values()].flat()]) {
+      const mark = sourceMarkOf(record);
+      if (mark?.access === "view") viewOnly ??= mark;
+    }
   }
   const unlabeled = countUnlabeledPoints(store.pointsData) + countUnlabeledPoints(store.predPointsData);
   const chosen = !!store.sourceFormat;
@@ -19844,6 +19988,8 @@ function buildNegativeFrameRows(labels) {
   return rows;
 }
 function buildLabelTableRows(labels) {
+  refuseViewOnly(labels);
+  refuseViewOnlyRecords(labels.labeledFrames);
   const frames = [];
   const instances = [];
   const points = [];
@@ -23169,6 +23315,7 @@ var EAGER_STAGES = [
   "Reading annotations"
 ];
 async function readSlp(source, options) {
+  checkFormat3Option(options?.format3);
   const total = EAGER_STAGES.length;
   const onProgress = options?.onProgress;
   const report = (i) => onProgress?.(i, total, EAGER_STAGES[i]);
@@ -23423,6 +23570,7 @@ var LAZY_STAGES = [
   "Reading annotations"
 ];
 async function readSlpLazy(source, options) {
+  checkFormat3Option(options?.format3);
   const total = LAZY_STAGES.length;
   const onProgress = options?.onProgress;
   const report = (i) => onProgress?.(i, total, LAZY_STAGES[i]);
@@ -27500,6 +27648,9 @@ function drawLabelOutlines(image, region, x0, y0, drawH, drawW, outlineWidth, ou
 }
 
 export {
+  sourceMarkOf,
+  copySourceMark,
+  setSourceAccess,
   normalizeCentroidSource,
   getCentroidSkeleton,
   CENTROID_SKELETON,

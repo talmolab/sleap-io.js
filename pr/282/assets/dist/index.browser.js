@@ -107,6 +107,7 @@ import {
   computeTrails,
   configureLibavDecoder,
   configureWebDemuxer,
+  copySourceMark,
   createDecodeWorker,
   createSkeletonFromCategory,
   createVideoBackend,
@@ -230,8 +231,10 @@ import {
   setFsResolver,
   setImageBytesReader,
   setLabelImageFileReader,
+  setSourceAccess,
   setSourceVideo,
   shouldDecodeAhead,
+  sourceMarkOf,
   toDict,
   toNumpy,
   traceMaskContours,
@@ -243,7 +246,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-TPH2T4Q3.js";
+} from "./chunk-M6W25CWL.js";
 import {
   Camera,
   CameraGroup,
@@ -280,7 +283,7 @@ import {
   predictedPointsFromArray,
   predictedPointsFromDict,
   rodriguesTransformation
-} from "./chunk-5RVLUAE6.js";
+} from "./chunk-R3B3DLP2.js";
 import {
   DEFAULT_MAX_BYTES,
   checkDownloadHost,
@@ -454,6 +457,7 @@ export {
   computeTrails,
   configureLibavDecoder,
   configureWebDemuxer,
+  copySourceMark,
   createDecodeWorker,
   createSkeletonFromCategory,
   createVideoBackend,
@@ -598,8 +602,10 @@ export {
   setFsResolver,
   setImageBytesReader,
   setLabelImageFileReader,
+  setSourceAccess,
   setSourceVideo,
   shouldDecodeAhead,
+  sourceMarkOf,
   statusToMessage,
   stripCrossOriginHeaders,
   toDict,
