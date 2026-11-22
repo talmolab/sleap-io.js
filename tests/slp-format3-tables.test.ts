@@ -75,6 +75,11 @@ import { sessionMetadataFromJson } from "../src/codecs/slp/parsers.js";
 import { loadSlpMetadata } from "../src/lite.js";
 import { Labels } from "../src/model/labels.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
+import { ROI } from "../src/model/roi.js";
+import { SegmentationMask } from "../src/model/mask.js";
+import { UserLabelImage } from "../src/model/label-image.js";
+import { Video } from "../src/model/video.js";
+import { deflate } from "pako";
 import { PredictedInstance } from "../src/model/instance.js";
 import { PredictedInstance3D } from "../src/model/instance3d.js";
 import { cloneRecordingSession } from "../src/model/camera.js";
@@ -1549,6 +1554,241 @@ describe("score map scale and offset", () => {
           ...f.label_images.map((li) => li[7]).filter((x) => x !== null),
         ]);
         expect(spatial).toEqual(EXPECTED);
+      },
+    );
+  }
+});
+
+describe("2.x saves of these tables, regressions", () => {
+  /**
+   * Labels with a label image whose compressed pixels take more than 2^24
+   * bytes, followed by a small one, so the second one's byte range starts
+   * past 16 MB at an odd offset, which a float32 column cannot hold.
+   */
+  function largeLabelImages(): { labels: Labels; firstSum: number } {
+    const height = 2400;
+    let width = 2400;
+    let pixels: Int32Array;
+    // Pseudo-random 24-bit labels barely compress; widen until the
+    // compressed length (the second image's offset) is odd.
+    for (;;) {
+      pixels = new Int32Array(height * width);
+      let state = 12345;
+      for (let i = 0; i < pixels.length; i += 1) {
+        state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+        pixels[i] = state >>> 8;
+      }
+      const length = deflate(
+        new Uint8Array(pixels.buffer, pixels.byteOffset, pixels.byteLength),
+      ).length;
+      if (length > 2 ** 24 && length % 2 === 1) break;
+      width += 1;
+    }
+    const video = new Video({ filename: "big.mp4" });
+    const small = new Int32Array(4 * 6);
+    small.fill(1, 6, 10);
+    const labels = new Labels({
+      videos: [video],
+      labeledFrames: [
+        new LabeledFrame({
+          video,
+          frameIdx: 0,
+          labelImages: [
+            new UserLabelImage({ data: pixels, height, width }),
+            new UserLabelImage({
+              data: small,
+              height: 4,
+              width: 6,
+              objects: new Map([
+                [
+                  1,
+                  {
+                    track: null,
+                    category: "",
+                    name: "after",
+                    instance: null,
+                  },
+                ],
+              ]),
+              source: "small",
+            }),
+          ],
+        }),
+      ],
+    });
+    let firstSum = 0;
+    for (const p of pixels) firstSum += p;
+    return { labels, firstSum };
+  }
+
+  /** Labels with strings outside ASCII in every string column. */
+  function unicodeLabels(): Labels {
+    const video = new Video({ filename: "v.mp4" });
+    const raster = new Uint8Array(10 * 10);
+    raster[11] = 1;
+    const pixels = new Int32Array(4 * 6);
+    pixels[7] = 2;
+    return new Labels({
+      videos: [video],
+      rois: [
+        ROI.fromBbox(1, 2, 5, 6, {
+          name: "größe 日本",
+          category: "κατηγορία",
+          source: "sörce",
+          video,
+        }),
+      ],
+      labeledFrames: [
+        new LabeledFrame({
+          video,
+          frameIdx: 0,
+          masks: [
+            SegmentationMask.fromArray(raster, 10, 10, {
+              name: "ñame-✓",
+              category: "κατηγορία",
+              source: "sörce",
+            }),
+          ],
+          labelImages: [
+            new UserLabelImage({
+              data: pixels,
+              height: 4,
+              width: 6,
+              source: "sörce",
+              objects: new Map([
+                [
+                  2,
+                  {
+                    track: null,
+                    category: "κατηγορία",
+                    name: "ñame-✓",
+                    instance: null,
+                  },
+                ],
+              ]),
+            }),
+          ],
+        }),
+      ],
+    });
+  }
+
+  const SUMS_PY = `
+import json, sys
+import numpy as np
+import sleap_io as sio
+labels = sio.load_slp(sys.argv[1])
+print(json.dumps({
+    "version": sio.__version__,
+    "label_images": [[int(np.asarray(li.data, dtype=np.int64).sum()),
+                      list(np.asarray(li.data).shape), li.source,
+                      sorted([int(k), o.name] for k, o in li.objects.items())]
+                     for li in labels.label_images],
+}))
+`;
+
+  it("a byte range past 16 MB reads back in JS", async () => {
+    const { labels, firstSum } = largeLabelImages();
+    const back = await readSlp(tempFile(await saveSlpToBytes(labels)), {
+      openVideos: false,
+    });
+    const [big, small] = back.labeledFrames[0].labelImages;
+    expect([big.height, big.width]).toEqual([
+      labels.labeledFrames[0].labelImages[0].height,
+      labels.labeledFrames[0].labelImages[0].width,
+    ]);
+    let sum = 0;
+    for (const p of big.data) sum += p;
+    expect(sum).toBe(firstSum);
+    expect(Array.from(small.data)).toEqual(
+      Array.from(labels.labeledFrames[0].labelImages[1].data),
+    );
+    expect(small.objects.get(1)?.name).toBe("after");
+  });
+
+  it("strings outside ASCII read back in JS", async () => {
+    const back = await readSlp(
+      tempFile(await saveSlpToBytes(unicodeLabels())),
+      {
+        openVideos: false,
+      },
+    );
+    const roi = back.staticRois[0];
+    expect([roi.name, roi.category, roi.source]).toEqual([
+      "größe 日本",
+      "κατηγορία",
+      "sörce",
+    ]);
+    const mask = back.labeledFrames[0].masks[0];
+    expect([mask.name, mask.category, mask.source]).toEqual([
+      "ñame-✓",
+      "κατηγορία",
+      "sörce",
+    ]);
+    const li = back.labeledFrames[0].labelImages[0];
+    expect(li.source).toBe("sörce");
+    expect(li.objects.get(2)).toMatchObject({
+      name: "ñame-✓",
+      category: "κατηγορία",
+    });
+  });
+
+  for (const python of pythons()) {
+    it.skipIf(SKIP_PYTHON)(
+      `a byte range past 16 MB reads back in Python, with ${python.label}`,
+      async () => {
+        const { labels, firstSum } = largeLabelImages();
+        const out = execFileSync(
+          python.cmd,
+          [
+            ...python.args,
+            "-c",
+            SUMS_PY,
+            tempFile(await saveSlpToBytes(labels)),
+          ],
+          {
+            timeout: 120_000,
+            stdio: ["ignore", "pipe", "pipe"],
+            env: {
+              ...process.env,
+              NUMPY_MADVISE_HUGEPAGE: "0",
+              OMP_NUM_THREADS: "8",
+            },
+          },
+        ).toString();
+        const result = JSON.parse(out.trim().split("\n").pop()!);
+        console.log(
+          `a byte range past 16 MB read back with sleap-io ${result.version} (${python.label})`,
+        );
+        const big = labels.labeledFrames[0].labelImages[0];
+        expect(result.label_images).toEqual([
+          [firstSum, [big.height, big.width], "", []],
+          [4, [4, 6], "small", [[1, "after"]]],
+        ]);
+      },
+    );
+
+    it.skipIf(SKIP_PYTHON)(
+      `strings outside ASCII read back in Python, with ${python.label}`,
+      async () => {
+        const saved = describeInPython(
+          python,
+          tempFile(await saveSlpToBytes(unicodeLabels())),
+        );
+        const frame = (saved.frames as Array<Record<string, unknown[][]>>)[0];
+        const roi = (saved.static_rois as unknown[][])[0];
+        expect([roi[2], roi[3]]).toEqual(["größe 日本", "sörce"]);
+        expect((roi[9] as unknown[])[2]).toBe("κατηγορία");
+        const mask = frame.masks[0];
+        expect([mask[4], mask[5]]).toEqual(["ñame-✓", "sörce"]);
+        expect((mask[15] as unknown[])[2]).toBe("κατηγορία");
+        const li = frame.label_images[0];
+        expect(li[2]).toBe("sörce");
+        expect((li[8] as unknown[][])[0].slice(0, 3)).toEqual([
+          2,
+          "ñame-✓",
+          "κατηγορία",
+        ]);
       },
     );
   }
