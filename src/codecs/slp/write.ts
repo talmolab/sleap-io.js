@@ -159,6 +159,74 @@ export function refuseViewOnly(
 }
 
 /**
+ * The streaming writer (`SlpStreamWriter.appendStore`, and so
+ * `saveSlpMergedFromStores` and `saveSlpMergedToSink`) writes a store's
+ * poses and annotations, but no per-detection identity or category links or
+ * embeddings, and only the identities and sessions given in its header. A
+ * store loaded from a format 3.0 file for editing promised that a save drops
+ * only what its summary lists, so such a store holding any of those is refused
+ * before it is written, naming what would be lost. Stores from files before 3.0
+ * are written as before.
+ *
+ * @throws {Error} Naming what would be lost and the writers that keep it.
+ */
+export function refuseFormat3StoreLosses(
+  store: LazyDataStore,
+  header: { identities: boolean; sessions: boolean },
+): void {
+  const source = store.sourceFormat;
+  if (!source) return;
+  const lost: string[] = [];
+  if ((store.identities ?? []).length > 0 && !header.identities) {
+    lost.push("its identities");
+  }
+  if (
+    store._instanceIdentityLinks?.size ||
+    store._instanceCategoryLinks?.size ||
+    store._instanceEmbeddings?.size ||
+    store._instanceCategoryEmbeddings?.size
+  ) {
+    lost.push("the identities, categories or embeddings of its instances");
+  }
+  const annotations: IdentityBearing[] = [];
+  for (const [byFrame, undistributed] of [
+    [store._centroidByFrame, store._undistributedCentroids],
+    [store._bboxByFrame, store._undistributedBboxes],
+    [store._maskByFrame, store._undistributedMasks],
+    [store._roiByFrame, store._undistributedRois],
+  ] as Array<[Map<string, IdentityBearing[]>, IdentityBearing[]]>) {
+    annotations.push(...undistributed, ...[...byFrame.values()].flat());
+  }
+  if (
+    annotations.some(
+      (d) =>
+        d.identity != null ||
+        d.identityEmbedding != null ||
+        (d.category != null && d.category !== "") ||
+        d.categoryEmbedding != null,
+    )
+  ) {
+    lost.push(
+      "the identities, categories or embeddings of its centroids, boxes, " +
+        "masks or ROIs",
+    );
+  }
+  if (store.sourceSessionCount > 0 && !header.sessions) {
+    lost.push("its recording sessions");
+  }
+  if (lost.length > 0) {
+    throw new Error(
+      `The labels loaded from '${source.labelsPath}' (SLP format ` +
+        `${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ${lost.join(", ")}, which the streaming ` +
+        "writer (appendStore, saveSlpMergedFromStores, saveSlpMergedToSink) " +
+        "does not write. Save them with saveSlp or saveSlpToBytes, which " +
+        "keep them, or pass the identities and sessions in the writer's " +
+        "header.",
+    );
+  }
+}
+
+/**
  * What records about to be written hold that the 2.x layout cannot store,
  * split by where the records came from (see `model/source-mark.ts`).
  */
@@ -1196,6 +1264,8 @@ export class SlpStreamWriter {
       videos: Video[];
       skeletons: Skeleton[];
       tracks: Track[];
+      identities?: Identity[];
+      sessions?: RecordingSession[];
     },
   ) {
     this.module = module;
@@ -1204,7 +1274,14 @@ export class SlpStreamWriter {
     this.videos = header.videos;
     this.skeletons = header.skeletons;
     this.tracks = header.tracks;
+    this.headerHas = {
+      identities: (header.identities ?? []).length > 0,
+      sessions: (header.sessions ?? []).length > 0,
+    };
   }
+
+  /** Whether the header written at open holds identities and sessions. */
+  private headerHas: { identities: boolean; sessions: boolean };
 
   /**
    * Append every frame of `store` (in windows), rebasing its ids onto the
@@ -1226,6 +1303,7 @@ export class SlpStreamWriter {
     // Before any row is written: a view-only store is refused, and unlabelled
     // points are refused or written as absent.
     refuseViewOnly(store);
+    refuseFormat3StoreLosses(store, this.headerHas);
     enforceLegacyLayout(storeLegacyLosses(store), opts?.unlabeledAs);
     const windowFrames = opts?.windowFrames ?? DEFAULT_WRITE_WINDOW_FRAMES;
     const vOff = opts?.videoIndexOffset ?? 0;
@@ -2004,6 +2082,8 @@ export async function openSlpWriter(
     videos: header.videos,
     skeletons: header.skeletons,
     tracks: header.tracks ?? [],
+    identities: header.identities ?? [],
+    sessions: header.sessions ?? [],
   });
 }
 
@@ -2054,8 +2134,15 @@ async function buildMergedWriter(
   if (stores.length === 0) {
     throw new Error("merging SLP stores requires at least one store");
   }
-  // Refuse a view-only store before the writer is opened.
+  // Refuse a view-only store, and a store from a 3.0 file holding what this
+  // writer would drop, before the writer is opened.
   for (const store of stores) refuseViewOnly(store);
+  for (const store of stores) {
+    refuseFormat3StoreLosses(store, {
+      identities: (options?.identities ?? []).length > 0,
+      sessions: (options?.sessions ?? []).length > 0,
+    });
+  }
   const sig = skeletonSignature(stores[0].skeletons);
   for (let i = 1; i < stores.length; i++) {
     if (skeletonSignature(stores[i].skeletons) !== sig) {

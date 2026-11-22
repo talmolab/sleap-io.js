@@ -913,6 +913,7 @@ export async function readSlpLazy(
     });
 
     markSessionSource(sessions, format3?.sourceFormat);
+    store.sourceSessionCount = sessions.length;
     // Replace the eager labeledFrames with lazy proxy
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;

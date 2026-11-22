@@ -947,6 +947,7 @@ export async function readFromStreamingFile(
     // differs from the eager streaming build for rare sparse/non-contiguous ids.
     labels._lazyFrameList = new LazyFrameList(lazyStore);
     labels._lazyDataStore = lazyStore;
+    lazyStore.sourceSessionCount = sessions.length;
   }
   // Sessions are read before the frame store exists; wire the lazy frame
   // resolver now so ref-backed grouping resolves against labels.labeledFrames

@@ -772,6 +772,83 @@ describe("loadSlp in a browser does not lose what the streaming reader skips", (
   });
 });
 
+describe("the store-merging writers and stores from 3.0 files", () => {
+  const lazyEdit = async (name: string) => {
+    const labels = await readSlpLazy(slpPath(name), EDIT);
+    return { labels, store: labels._lazyDataStore! };
+  };
+
+  it("refuse a store whose identities, links or sessions they would drop", async () => {
+    const { store } = await lazyEdit(V3);
+    for (const write of [
+      () => saveSlpMergedFromStores([store]),
+      async () => {
+        const writer = await openSlpWriter({
+          skeletons: store.skeletons,
+          videos: store.videos,
+          tracks: store.tracks,
+        });
+        try {
+          writer.appendStore(store);
+        } finally {
+          writer.close();
+        }
+      },
+    ]) {
+      let error: unknown;
+      try {
+        await write();
+      } catch (e) {
+        error = e;
+      }
+      expect(error).toBeInstanceOf(Error);
+      const message = (error as Error).message;
+      expect(message).toContain("its identities");
+      expect(message).toContain(
+        "the identities, categories or embeddings of its instances",
+      );
+      expect(message).toContain("centroids, boxes, masks or ROIs");
+      expect(message).toContain("its recording sessions");
+      expect(message).toContain("saveSlpToBytes");
+    }
+  });
+
+  it("write such a store when the header carries what it holds", async () => {
+    // Identities and sessions in the header are written; links are not, so
+    // a store with links is still refused.
+    const { labels, store } = await lazyEdit(V3);
+    let error: unknown;
+    try {
+      await saveSlpMergedFromStores([store], {
+        identities: labels.identities,
+        sessions: labels.sessions,
+      });
+    } catch (e) {
+      error = e;
+    }
+    expect((error as Error).message).not.toContain("its identities");
+    expect((error as Error).message).not.toContain("its recording sessions");
+    expect((error as Error).message).toContain("of its instances");
+  });
+
+  it("write stores of 3.0 files without such content, and of 2.x files, as before", async () => {
+    const pose = (await lazyEdit("format3_pose.slp")).store;
+    const bytes = await saveSlpMergedFromStores([pose]);
+    expect(
+      (await readSlp(bytes, { openVideos: false })).labeledFrames,
+    ).toHaveLength(4);
+    // A 2.x store with the same content is written (the existing gap: the
+    // links and sessions are not).
+    const twin = (await readSlpLazy(slpPath(V2), { openVideos: false }))
+      ._lazyDataStore!;
+    const back = await readSlp(await saveSlpMergedFromStores([twin]), {
+      openVideos: false,
+    });
+    expect(back.labeledFrames.flatMap((f) => f.instances)).toHaveLength(8);
+    expect(back.sessions).toHaveLength(0);
+  });
+});
+
 describe("sub-tables this version does not know", () => {
   it("are listed as unread by every reader", async () => {
     const file = await editedCopy(V3, (h5) => {
