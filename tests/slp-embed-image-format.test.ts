@@ -1078,6 +1078,67 @@ describe("already-embedded videos with imageFormat (as Python)", () => {
     });
   }
 
+  for (const bgr of [false, true]) {
+    it(`a grayscale view of a ${bgr ? "BGR" : "RGB"} colour package keeps R, as Python reads it, on both paths`, async () => {
+      const pkg = await colourPackage({ bgr });
+      const load = async () => {
+        const labels = await readSlp(pkg, { openVideos: true });
+        await labels.videos[0].backend!.ensureLoaded?.();
+        labels.videos[0].grayscale = true;
+        return labels;
+      };
+      for (const imageFormat of ["png", "jpg"] as const) {
+        const [mem] = await embeddedVideos(
+          writeTmp(await saveSlpToBytes(await load(), { imageFormat })),
+        );
+        const [streamed] = await embeddedVideos(
+          await streamSave(await load(), { imageFormat }),
+        );
+        if (imageFormat === "jpg") {
+          expect(streamed.rows.map((r) => [...r])).toEqual(
+            mem.rows.map((r) => [...r]),
+          );
+        }
+        for (const v of [mem, streamed]) {
+          expect([v.format, v.channel_order, v.channels]).toEqual([
+            imageFormat,
+            "RGB",
+            1,
+          ]);
+          expect(v.frameNumbers).toEqual([0, 3, 5]);
+          for (const [i, row] of v.rows.entries()) {
+            expect(encodedImageChannels(row)).toBe(1);
+            // Channel 0 of the RGB image is R, whatever the stored order.
+            const d = diff(
+              await pixelsOf(row, 1),
+              expected(v.frameNumbers[i], 1),
+            );
+            expect(d.max).toBeLessThanOrEqual(imageFormat === "png" ? 0 : 4);
+          }
+        }
+      }
+    });
+  }
+
+  it("a streamed plan converts only with allowEncode, and says so", async () => {
+    const labels = await readSlp(await colourPackage(), { openVideos: true });
+    await expect(
+      buildSerializableEmbedPlan(labels, false, "", { imageFormat: "jpg" }),
+    ).rejects.toThrow('converting embedded video0 to imageFormat "jpg"');
+    // In the stored format it stays a raw copy, which needs no allowEncode.
+    const plan = await buildSerializableEmbedPlan(labels, false, "in.pkg.slp", {
+      imageFormat: "png",
+    });
+    expect([plan.entries.length, plan.encodeEntries.length]).toEqual([1, 0]);
+    const converted = await buildSerializableEmbedPlan(labels, false, "", {
+      allowEncode: true,
+      imageFormat: "jpg",
+    });
+    expect(converted.encodeEntries.map((e) => e.frameNumbers)).toEqual([
+      [0, 3, 5],
+    ]);
+  });
+
   it("a legacy grayscale package becomes one-component JPEGs, also on a re-save without embed", async () => {
     const original = await readSlp(fixture("minimal_instance.pkg.slp"), {
       openVideos: true,
@@ -1247,6 +1308,22 @@ describe("embedded JPEGs read back in Python sleap-io", () => {
           "jpg",
           3,
           12,
+        );
+      },
+    ],
+    [
+      "a grayscale view of a BGR colour package converted to JPEG",
+      async () => {
+        const labels = await readSlp(await colourPackage({ bgr: true }), {
+          openVideos: true,
+        });
+        await labels.videos[0].backend!.ensureLoaded?.();
+        labels.videos[0].grayscale = true;
+        return synthetic(
+          writeTmp(await saveSlpToBytes(labels, { imageFormat: "jpg" })),
+          "jpg",
+          1,
+          6,
         );
       },
     ],

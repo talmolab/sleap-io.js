@@ -231,7 +231,9 @@ export function framePixels(
   const channels = explicit ?? (src.length === n * 4 ? 4 : src.length / n);
   const rgba = explicit === undefined && channels === 4;
   const outCh = gray ? 1 : rgba ? 3 : channels;
-  const swap = swapRB && outCh >= 3;
+  // BGR pixels are swapped before a grayscale collapse, so a grayscale read
+  // keeps R (the first channel of the RGB image), as Python reads it.
+  const swap = swapRB && channels >= 3;
   if (outCh === channels && !swap) {
     return {
       data:
@@ -248,7 +250,7 @@ export function framePixels(
     for (let c = 0; c < outCh; c++) out[o + c] = src[i + c];
     if (swap) {
       out[o] = src[i + 2];
-      out[o + 2] = src[i];
+      if (outCh >= 3) out[o + 2] = src[i];
     }
   }
   return { data: out, width, height, channels: outCh };

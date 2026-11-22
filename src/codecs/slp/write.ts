@@ -147,8 +147,10 @@ export type SlpWriteOptions = {
    * returns in RGB channel order, or an already-embedded video's stored
    * images) are stored verbatim and every other frame is decoded and encoded
    * in it, so an already-embedded video stored in another format is
-   * converted (all of its stored images); a grayscale video's frames are
-   * stored with one channel. When omitted, frames are stored as before: new
+   * converted; a grayscale video's frames are stored with one channel.
+   * Unlike Python, a conversion keeps all of the video's stored images
+   * (Python keeps only the frames `embed` selects), and a save without
+   * `embed` converts too (Python's `embed=False` writes no images). When omitted, frames are stored as before: new
    * frames as PNG, except encoded bytes a backend returns, which are kept as
    * they are, and already-embedded images copied as they are.
    */
@@ -4414,11 +4416,13 @@ export type SerializableEmbedEntry = {
 };
 
 /**
- * Serializable projection of one NEW-embed ("encode") {@link EmbedPlanEntry}:
- * a continuous video (e.g. an mp4) whose frames are read on the main thread
- * and encoded + appended by the streaming writer's worker (see
- * {@link appendEncodedVideos}). Only returned when
- * {@link buildSerializableEmbedPlan} is called with `allowEncode`.
+ * Serializable projection of one "encode" {@link EmbedPlanEntry}: a video
+ * whose frames are read on the main thread and encoded + appended by the
+ * streaming writer's worker (see {@link appendEncodedVideos}). That is a new
+ * embed of a continuous video (e.g. an mp4), or, with `imageFormat`, an
+ * already-embedded video converted to that format (its stored images are
+ * read as stored). Only returned when {@link buildSerializableEmbedPlan} is
+ * called with `allowEncode`.
  */
 export type SerializableEncodeEntry = {
   /** This video's position in `labels.videos` (and its `video{i}` group). */
@@ -4482,18 +4486,22 @@ export type SerializableEmbedPlan = {
  * raw entry down to plain data a worker can act on without the live `Labels`/
  * `Video`/backend objects.
  *
- * By default, throws if `planEmbedding` selected a `kind: "encode"` (new-embed
- * of a continuous video) entry for any video. With `allowEncode`, those are
- * returned as `encodeEntries` instead (planned without reading any frame), for
- * `appendEncodedVideos` (stream-embed.ts) to read, encode and append.
+ * By default, throws if `planEmbedding` selected a `kind: "encode"` entry for
+ * any video: a new embed of a continuous video, or, with an `imageFormat`, an
+ * already-embedded video stored in another format, which is converted. So a
+ * raw-copy re-save that passes `imageFormat` needs `allowEncode` whenever a
+ * video converts. With `allowEncode`, those are returned as `encodeEntries`
+ * instead (planned without reading any frame), for `appendEncodedVideos`
+ * (stream-embed.ts) to read, encode and append.
  *
  * @param labels Labels to save (already-open embedded video backends).
  * @param embedMode Same `embed` option as `saveSlpToBytes`/`planEmbedding`.
  * @param sourcePath On-disk path of the SOURCE pkg.slp; the worker opens it
  *   via its own read bridge to copy the embedded groups from. Unused when
  *   there are no raw entries.
- * @throws Error if any selected video would use the new-embed ("encode")
- *   path without `allowEncode`, or a raw-copyable video's backend exposes no
+ * @throws Error if any selected video would use the "encode" path (a new
+ *   embed, or a conversion to `imageFormat`) without `allowEncode`, or a
+ *   raw-copyable video's backend exposes no
  *   `dataset` to locate its source embedded group by.
  */
 export async function buildSerializableEmbedPlan(
@@ -4502,16 +4510,20 @@ export async function buildSerializableEmbedPlan(
   sourcePath: string,
   options: {
     /**
-     * Also plan new embeds of continuous videos (`encodeEntries`) instead of
-     * throwing, without reading their frames. Use with the same `embed` and
-     * `embedAllVideos` as the structure write, so the two agree.
+     * Also plan new embeds of continuous videos, and conversions of
+     * already-embedded videos to `imageFormat` (`encodeEntries`), instead of
+     * throwing, without reading their frames. Use with the same `embed`,
+     * `embedAllVideos` and image options as the structure write, so the two
+     * agree.
      */
     allowEncode?: boolean;
     /** As {@link SlpWriteOptions.embedAllVideos}; only with `allowEncode`. */
     embedAllVideos?: boolean;
     /**
-     * As {@link SlpWriteOptions.imageFormat}: the format new embeds
-     * (`encodeEntries`) are stored in. Use the same as the structure write.
+     * As {@link SlpWriteOptions.imageFormat}: the format `encodeEntries` are
+     * stored in. An already-embedded video stored in another format becomes
+     * an encode entry (a conversion), which needs `allowEncode`. Use the same
+     * as the structure write.
      */
     imageFormat?: SlpWriteOptions["imageFormat"];
     /** As {@link SlpWriteOptions.imageQuality}. */
@@ -4555,11 +4567,14 @@ export async function buildSerializableEmbedPlan(
     }
     if (entry.kind !== "raw") {
       throw new Error(
-        `buildSerializableEmbedPlan: video${entry.videoIndex} would use the ` +
-          `new-embed ("encode") path, which the streaming writer's worker ` +
-          "half does not support - this path is re-save/raw-copy of an " +
-          "already-embedded pkg.slp ONLY (new-embed of a continuous video is " +
-          "a deferred follow-up).",
+        entry.video.hasEmbeddedImages
+          ? `buildSerializableEmbedPlan: converting embedded video${entry.videoIndex} ` +
+              `to imageFormat "${entry.format}" uses the "encode" path; pass ` +
+              "allowEncode and write its encodeEntries with appendEncodedVideos."
+          : `buildSerializableEmbedPlan: video${entry.videoIndex} would use the ` +
+              `new-embed ("encode") path; pass allowEncode and write its ` +
+              "encodeEntries with appendEncodedVideos (without it, the plan is " +
+              "raw-copy only, for already-embedded videos).",
       );
     }
     const sourceDataset =
