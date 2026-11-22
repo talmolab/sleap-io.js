@@ -107,36 +107,71 @@ export function keepSourceMark<T>(from: object, out: T): T {
 }
 
 /**
- * Switch labels loaded from a format 3.0 file, and every record they hold that
- * carries the same open-time choice, to `access`: for example, let the user
- * edit a file first opened view-only (`setSourceAccess(labels, "edit")`).
+ * Give `target`, built from several records (a composition), the strictest
+ * mark among them: view-only if any is, else edit if any is.
+ */
+export function markFromSources(
+  target: object,
+  sources: Iterable<object | null | undefined>,
+): void {
+  let strictest: SlpSourceFormat | undefined;
+  for (const source of sources) {
+    const mark = sourceMarkOf(source);
+    if (!mark) continue;
+    if (!strictest || (strictest.access === "edit" && mark.access === "view")) {
+      strictest = mark;
+    }
+  }
+  if (strictest) marks.set(target, strictest);
+}
+
+/**
+ * Switch the format 3.0 choice of every record `labels` hold that carries
+ * one, whatever file it came from, and of `labels.sourceFormat` if set, to
+ * `access`. For example, let the user edit a file first opened view-only
+ * (`setSourceAccess(labels, "edit")`), or content of such a file that has
+ * since been merged into a project of the user's own.
  *
  * `labels.sourceFormat` and the marks are frozen, so this is the way to change
- * the choice after loading. Records of the file that have been copied or
- * merged into other labels keep the choice they had; switch those labels too.
+ * the choice after loading. It switches what `labels` hold now: their frames
+ * and every instance and annotation in them, their static ROIs, and for lazy
+ * labels their store, its annotations and the frames materialized and still
+ * cached. Records held elsewhere keep the choice they had: copies in other
+ * labels (switch those labels too), and a lazy frame the caller released from
+ * the cache and still holds (materialize it again). A lazy copy shares its
+ * annotation records with the labels it was copied from, so switching either
+ * switches those annotations for both.
  *
- * @throws {Error} If the labels were not loaded from a format 3.0 file.
+ * @returns The number of records whose choice changed (`labels.sourceFormat`
+ *   and a lazy store not counted).
  * @throws {TypeError} If `access` is not `"view"` or `"edit"`.
  */
 export function setSourceAccess(
   labels: Labels,
   access: SlpSourceFormat["access"],
-): void {
+): number {
   if (access !== "view" && access !== "edit") {
     throw new TypeError(
       `access must be "view" or "edit", got ${JSON.stringify(access)}.`,
     );
   }
-  const old = labels.sourceFormat;
-  if (!old) {
-    throw new Error(
-      "setSourceAccess: these labels were not loaded from an SLP format 3.0 file.",
-    );
-  }
-  if (old.access === access) return;
-  const next: SlpSourceFormat = Object.freeze({ ...old, access });
+  // One new frozen source per old one, so records of one file still share it.
+  const switched = new Map<SlpSourceFormat, SlpSourceFormat>();
+  const switchedTo = (old: SlpSourceFormat): SlpSourceFormat => {
+    if (old.access === access) return old;
+    let next = switched.get(old);
+    if (!next) {
+      next = Object.freeze({ ...old, access });
+      switched.set(old, next);
+    }
+    return next;
+  };
+  let count = 0;
   const swap = (record: object): void => {
-    if (marks.get(record) === old) marks.set(record, next);
+    const old = marks.get(record);
+    if (!old || old.access === access) return;
+    marks.set(record, switchedTo(old));
+    count += 1;
   };
   const swapFrame = (frame: MarkableFrame): void => {
     swap(frame);
@@ -151,12 +186,13 @@ export function setSourceAccess(
       for (const record of list) swap(record);
     }
   };
-  labels.sourceFormat = next;
+  if (labels.sourceFormat)
+    labels.sourceFormat = switchedTo(labels.sourceFormat);
   for (const frame of labels.labeledFrames) swapFrame(frame);
   for (const roi of labels._staticRois) swap(roi);
   const store = labels._lazyDataStore;
   if (store) {
-    if (store.sourceFormat === old) store.sourceFormat = next;
+    if (store.sourceFormat) store.sourceFormat = switchedTo(store.sourceFormat);
     for (const [byFrame, undistributed] of [
       [store._centroidByFrame, store._undistributedCentroids],
       [store._bboxByFrame, store._undistributedBboxes],
@@ -165,8 +201,9 @@ export function setSourceAccess(
       [store._labelImageByFrame, store._undistributedLabelImages],
     ] as Array<[Map<string, object[]>, object[]]>) {
       for (const record of undistributed) swap(record);
-      for (const list of byFrame.values())
+      for (const list of byFrame.values()) {
         for (const record of list) swap(record);
+      }
     }
   }
   const lazyFrames = labels._lazyFrameList;
@@ -174,4 +211,5 @@ export function setSourceAccess(
     for (const frame of lazyFrames._supplementary) swapFrame(frame);
     for (const frame of lazyFrames._cachedFrames()) swapFrame(frame);
   }
+  return count;
 }

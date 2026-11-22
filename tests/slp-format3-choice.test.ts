@@ -62,6 +62,7 @@ import {
   saveSlpMergedToSink,
   saveSlpStructureToBytes,
   saveSlpToBytes,
+  checkSlpSavable,
   writeLabelTablesInPlace,
   writeSlp,
 } from "../src/codecs/slp/write.js";
@@ -740,7 +741,8 @@ describe("marks follow content, and can be carried or switched", () => {
       derived.push(["mask.toUser", mask.toUser()]);
     }
     const image = LabelImage.fromMasks([box.toMask(64, 64)]);
-    copySourceMark(box, image); // fromMasks composes several masks
+    // A composition takes the strictest mark of its masks.
+    expect(sourceMarkOf(image)?.access).toBe("view");
     derived.push(
       ["labelImage.resampled", image.resampled(32, 32)],
       ...image.toMasks().map((m) => ["toMasks", m] as [string, object]),
@@ -806,9 +808,84 @@ describe("marks follow content, and can be carried or switched", () => {
       SlpViewOnlyError,
     );
     expect(() => setSourceAccess(view, "write" as never)).toThrow(TypeError);
-    expect(() => setSourceAccess(new Labels(), "edit")).toThrow(
-      "not loaded from an SLP format 3.0 file",
+    // Labels holding no record of a 3.0 file: nothing to switch.
+    expect(setSourceAccess(new Labels(), "edit")).toBe(0);
+  });
+
+  it("setSourceAccess switches view-only content merged into your own labels", async () => {
+    const labels = await own();
+    const view = await load("view", META);
+    await labels.merge(view);
+    labels.addStaticRoi(view.labeledFrames[0].bboxes[0].toRoi());
+    expect(labels.sourceFormat).toBeNull();
+    expect(await caught(() => saveSlpToBytes(labels))).toBeInstanceOf(
+      SlpViewOnlyError,
     );
+    expect(setSourceAccess(labels, "edit")).toBeGreaterThan(0);
+    expect(labels.sourceFormat).toBeNull();
+    await saveSlpToBytes(labels);
+    // The file's own labels keep their choice.
+    expect(view.sourceFormat?.access).toBe("view");
+    expect(sourceMarkOf(view.labeledFrames[0])?.access).toBe("view");
+    // And back.
+    setSourceAccess(labels, "view");
+    expect(await caught(() => saveSlpToBytes(labels))).toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+  });
+
+  it("a static ROI made from view-only content is refused by the eager writers", async () => {
+    const view = await load("view", META);
+    const labels = await own();
+    labels.addStaticRoi(view.labeledFrames[0].bboxes[0].toRoi());
+    for (const write of [
+      () => saveSlpToBytes(labels),
+      () => saveSlpStructureToBytes(labels),
+      () => buildLabelTableRows(labels),
+      () => buildLabelTableUpdate(labels),
+      () => checkSlpSavable(labels),
+    ]) {
+      expect(await caught(write)).toBeInstanceOf(SlpViewOnlyError);
+    }
+  });
+
+  it("a label image composed of view-only masks is refused", async () => {
+    const view = await load("view", META);
+    const box = view.labeledFrames[0].bboxes[0];
+    const edit = await load("edit", META);
+    const editMask = edit.labeledFrames[0].bboxes[0].toMask(64, 64);
+    const image = LabelImage.fromMasks([editMask, box.toMask(64, 64)]);
+    expect(sourceMarkOf(image)?.access).toBe("view");
+    expect(sourceMarkOf(LabelImage.fromMasks([editMask]))?.access).toBe("edit");
+    const labels = await own();
+    labels.labeledFrames[0].labelImages.push(image);
+    expect(await caught(() => saveSlpToBytes(labels))).toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+  });
+
+  it("update_tracks marks an instance only when its track or score changes", async () => {
+    const view = await load("view");
+    const labels = await own();
+    const frame = labels.labeledFrames[0];
+    const theirs = view.labeledFrames[0];
+    // Every instance on both sides holds the same track and score, so the
+    // matches (spatial, several per instance here) take nothing.
+    const track = labels.tracks[0];
+    for (const inst of [...frame.instances, ...theirs.instances]) {
+      inst.track = track;
+      inst.trackingScore = 0.25;
+    }
+    frame.merge(theirs, { frame: "update_tracks" });
+    for (const inst of frame.instances) {
+      expect(sourceMarkOf(inst)).toBeUndefined();
+    }
+    // A changed score is taken, and with it the view-only choice.
+    theirs.instances[0].trackingScore = 0.5;
+    frame.merge(theirs, { frame: "update_tracks" });
+    expect(
+      frame.instances.some((inst) => sourceMarkOf(inst)?.access === "view"),
+    ).toBe(true);
   });
 
   it("setSourceAccess switches lazy labels, their store and materialized frames", async () => {

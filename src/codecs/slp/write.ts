@@ -186,7 +186,10 @@ function tablesWithKeys(
 }
 
 /** The {@link LegacyLosses} of materialized frames, record by record. */
-function framesLegacyLosses(frames: Iterable<LabeledFrame>): LegacyLosses {
+function framesLegacyLosses(
+  frames: Iterable<LabeledFrame>,
+  staticRois: Iterable<object> = [],
+): LegacyLosses {
   let viewOnly: SlpSourceFormat | null = null;
   let unlabeledEdit = 0;
   let unlabeledOwn = 0;
@@ -198,6 +201,8 @@ function framesLegacyLosses(frames: Iterable<LabeledFrame>): LegacyLosses {
     if (mark?.access === "view") viewOnly ??= mark;
     return mark;
   };
+  // Static ROIs (not on any frame) are written too.
+  for (const roi of staticRois) markOf(roi);
   for (const frame of frames) {
     if (!markOf(frame)) ownFrames.push(frame);
     for (const inst of frame.instances) {
@@ -234,11 +239,15 @@ function framesLegacyLosses(frames: Iterable<LabeledFrame>): LegacyLosses {
  * Throw {@link SlpViewOnlyError} if any frame, instance or annotation in
  * `frames` was loaded with `format3: "view"`.
  */
-function refuseViewOnlyRecords(frames: Iterable<LabeledFrame>): void {
+function refuseViewOnlyRecords(
+  frames: Iterable<LabeledFrame>,
+  staticRois: Iterable<object> = [],
+): void {
   const check = (record: object): void => {
     const mark = sourceMarkOf(record);
     if (mark?.access === "view") throw new SlpViewOnlyError(mark);
   };
+  for (const roi of staticRois) check(roi);
   for (const frame of frames) {
     check(frame);
     for (const list of [
@@ -380,7 +389,7 @@ export function checkSlpSavable(
   const losses =
     labels.isLazy && store
       ? storeLegacyLosses(store)
-      : framesLegacyLosses(labels.labeledFrames);
+      : framesLegacyLosses(labels.labeledFrames, labels._staticRois);
   enforceLegacyLayout(losses, options?.unlabeledAs, { warn: false });
 }
 
@@ -2192,7 +2201,7 @@ async function writeSlpBytes(
   }
 
   enforceLegacyLayout(
-    framesLegacyLosses(labels.labeledFrames),
+    framesLegacyLosses(labels.labeledFrames, labels._staticRois),
     options?.unlabeledAs,
   );
 
@@ -3465,7 +3474,7 @@ function buildNegativeFrameRows(labels: Labels): number[][] {
  */
 export function buildLabelTableRows(labels: Labels): LabelTableRows {
   refuseViewOnly(labels);
-  refuseViewOnlyRecords(labels.labeledFrames);
+  refuseViewOnlyRecords(labels.labeledFrames, labels._staticRois);
   const frames: number[][] = [];
   const instances: number[][] = [];
   const points: number[][] = [];
@@ -3651,7 +3660,7 @@ export function buildLabelTableUpdate(
 ): LabelTableUpdate {
   refuseViewOnly(labels);
   enforceLegacyLayout(
-    framesLegacyLosses(labels.labeledFrames),
+    framesLegacyLosses(labels.labeledFrames, labels._staticRois),
     opts?.unlabeledAs,
   );
   const r = buildLabelTableRows(labels);

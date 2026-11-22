@@ -340,12 +340,16 @@ function _resolveAnnotationUpdateTracks(
   }
 
   selfToOther.forEach(({ otherIdx }, selfIdx) => {
-    (selfList[selfIdx] as any).track = (otherList[otherIdx] as any).track;
-    (selfList[selfIdx] as any).trackingScore = (
-      otherList[otherIdx] as any
-    ).trackingScore;
+    const own = selfList[selfIdx] as any;
+    const theirs = otherList[otherIdx] as any;
+    // Only a value it did not hold makes it take the other's content.
+    const changed =
+      own.track !== theirs.track ||
+      !Object.is(own.trackingScore, theirs.trackingScore);
+    own.track = theirs.track;
+    own.trackingScore = theirs.trackingScore;
     // It now holds the other's track: view-only if the other is.
-    takeViewMark(selfList[selfIdx], otherList[otherIdx]);
+    if (changed) takeViewMark(own, theirs);
   });
 }
 
@@ -755,11 +759,16 @@ export class LabeledFrame {
         other.instances,
       );
       for (const [selfIdx, otherIdx] of matches) {
-        this.instances[selfIdx].track = other.instances[otherIdx].track;
-        this.instances[selfIdx].trackingScore =
-          other.instances[otherIdx].trackingScore;
+        const own = this.instances[selfIdx];
+        const theirs = other.instances[otherIdx];
+        // Only a value it did not hold makes it take the other's content.
+        const changed =
+          own.track !== theirs.track ||
+          !Object.is(own.trackingScore, theirs.trackingScore);
+        own.track = theirs.track;
+        own.trackingScore = theirs.trackingScore;
         // It now holds the other's track: view-only if the other is.
-        takeViewMark(this.instances[selfIdx], other.instances[otherIdx]);
+        if (changed) takeViewMark(own, theirs);
       }
       this.mergeAnnotations(other, "update_tracks", instanceMatcher.threshold);
       [this.isNegative] = _resolveMergedIsNegative(
