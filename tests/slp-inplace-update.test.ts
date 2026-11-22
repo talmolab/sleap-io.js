@@ -8,6 +8,7 @@
 // open in Python AND stay in-place editable.
 import { describe, it, expect } from "./bun-test";
 import {
+  loadSlp,
   saveSlpToBytes,
   buildLabelTableUpdate,
   buildMetadataJson,
@@ -513,7 +514,7 @@ describe("checkInPlaceWritable + onDiskTableFromMeta", () => {
     };
   }
 
-  it("refuses a Python-written file (enum points) with an /enum/ reason", async () => {
+  it("accepts a Python-written file's HDF5 booleans (enum members) for a value edit", async () => {
     await ready;
     const src = path.join(fixtureRoot, "slp", "minimal_instance.slp");
     // Build OnDiskTables from the Python fixture's real dataset metadata.
@@ -542,12 +543,14 @@ describe("checkInPlaceWritable + onDiskTableFromMeta", () => {
     expect(onDisk.points?.layout).toBe("compound");
     expect(onDisk.points?.members?.some((m) => m.typeClass === 8)).toBe(true);
 
-    const labels = makeLabels(1, 0);
+    // The file's own labels, values edited: the enum members no longer
+    // refuse the in-place save (they are written with the file's type).
+    const labels = await loadSlp(src, { openVideos: false });
+    labels.labeledFrames[0].instances[0].points[0].xy = [1, 2];
     const update = buildLabelTableUpdate(labels);
-    // Matching sidecars so ONLY the enum check can drive the refusal.
-    const res = checkInPlaceWritable(update, onDisk, matchingSidecars(labels));
-    expect(res.ok).toBe(false);
-    if (!res.ok) expect(res.reason).toMatch(/enum/i);
+    expect(
+      checkInPlaceWritable(update, onDisk, matchingSidecars(labels)),
+    ).toEqual({ ok: true });
   });
 
   it("allows a pure pose edit on flat chunked (app) tables — sidecars unchanged", () => {
