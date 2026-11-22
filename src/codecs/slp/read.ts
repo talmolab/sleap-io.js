@@ -2385,20 +2385,27 @@ function readStringMetadata(
   return readAttrString(dataset, attrName);
 }
 
+/** A score map read from a score map index and its buffer. */
+interface ScoreMapEntry {
+  scoreMap: Float32Array;
+  height: number;
+  width: number;
+  scale: [number, number];
+  offset: [number, number];
+}
+
 /**
  * Read score maps from index + data datasets.
- * Returns a Map from annotation index to { scoreMap, height, width }.
+ * Returns a Map from annotation index to its score map, size, and the score
+ * map's scale and offset (format 2.1+; 1 and 0 when not stored).
  */
 function readScoreMaps(
   file: any,
   table: "masks/score_maps" | "label_images/score_maps",
   nOwners: number,
   labelsPath: string,
-): Map<number, { scoreMap: Float32Array; height: number; width: number }> {
-  const result = new Map<
-    number,
-    { scoreMap: Float32Array; height: number; width: number }
-  >();
+): Map<number, ScoreMapEntry> {
+  const result = new Map<number, ScoreMapEntry>();
   let indexData: Record<string, any>;
   let dataFlat: Uint8Array;
   // Format 3.0: a group of columns inside the owning table, with its `data`
@@ -2427,6 +2434,10 @@ function readScoreMaps(
   const ends = indexData.data_end ?? [];
   const smHeights = indexData.height ?? [];
   const smWidths = indexData.width ?? [];
+  const spatial = (name: string, i: number, fallback: number): number => {
+    const column = indexData[name];
+    return column && column.length > i ? Number(column[i]) : fallback;
+  };
 
   for (let i = 0; i < idxCol.length; i++) {
     const annotIdx = Number(idxCol[i]);
@@ -2450,7 +2461,13 @@ function readScoreMaps(
       ),
     );
 
-    result.set(annotIdx, { scoreMap, height: h, width: w });
+    result.set(annotIdx, {
+      scoreMap,
+      height: h,
+      width: w,
+      scale: [spatial("scale_x", i, 1), spatial("scale_y", i, 1)],
+      offset: [spatial("offset_x", i, 0), spatial("offset_y", i, 0)],
+    });
   }
   return result;
 }
@@ -2598,6 +2615,8 @@ function readMasks(
         ...baseOptions,
         score: scoreVal,
         scoreMap: sm?.scoreMap ?? null,
+        scoreMapScale: sm?.scale,
+        scoreMapOffset: sm?.offset,
       });
     } else {
       mask = new UserSegmentationMask(baseOptions);
@@ -2853,6 +2872,8 @@ function readLabelImages(
         source: sources[i] ?? "",
         score: liScore,
         scoreMap: sm?.scoreMap ?? null,
+        scoreMapScale: sm?.scale,
+        scoreMapOffset: sm?.offset,
         scale: liScale,
         offset: liOffset,
       });

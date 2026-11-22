@@ -186,6 +186,9 @@ function describe3(labels: Labels) {
         offset: m.offset,
         score: num(m.score),
         scoreMap: m.scoreMap ? Array.from(m.scoreMap as Float32Array) : null,
+        scoreMapSpatial: m.scoreMap
+          ? [m.scoreMapScale, m.scoreMapOffset]
+          : null,
         ...det(m),
       })),
       labelImages: f.labelImages.map((li: any) => ({
@@ -197,6 +200,9 @@ function describe3(labels: Labels) {
         offset: li.offset,
         score: num(li.score),
         scoreMap: sum(li.scoreMap),
+        scoreMapSpatial: li.scoreMap
+          ? [li.scoreMapScale, li.scoreMapOffset]
+          : null,
         objects: [...li.objects.entries()].map(([id, o]: [number, any]) => ({
           id,
           name: o.name,
@@ -1253,13 +1259,18 @@ for lf in labels.labeled_frames:
                    list(map(float, m.scale)), list(map(float, m.offset)),
                    num(getattr(m, "score", None)),
                    None if getattr(m, "score_map", None) is None
-                   else np.asarray(m.score_map).ravel().tolist(), det(m)]
+                   else np.asarray(m.score_map).ravel().tolist(),
+                   None if getattr(m, "score_map", None) is None
+                   else [list(map(float, m.score_map_scale)), list(map(float, m.score_map_offset))],
+                   det(m)]
                   for m in lf.masks],
         "label_images": [[type(li).__name__, np.asarray(li.data).tolist(), li.source,
                           list(map(float, li.scale)), list(map(float, li.offset)),
                           num(getattr(li, "score", None)),
                           None if getattr(li, "score_map", None) is None
                           else np.asarray(li.score_map).ravel().tolist(),
+                          None if getattr(li, "score_map", None) is None
+                          else [list(map(float, li.score_map_scale)), list(map(float, li.score_map_offset))],
                           sorted([int(k), o.name, name(o.category) or "", name(o.track),
                                   idx(o.instance), num(o.score), num(o.tracking_score)]
                                  for k, o in li.objects.items())]
@@ -1367,6 +1378,77 @@ describe("an edit save of the format 3.0 tables reads back in Python", () => {
           );
           expect(saved).toEqual(fixture);
         }
+      },
+    );
+  }
+});
+
+/** format3_tables.slp with a score map scale and offset that are not 1 and 0. */
+const spatialScoreMaps = () =>
+  editedCopy(V3, (h5) => {
+    const set = (p: string, v: number) =>
+      // biome-ignore lint/suspicious/noExplicitAny: h5wasm Dataset
+      (h5.get(p) as any).write_slice([[0, 1]], new Float64Array([v]));
+    set("masks/score_maps/scale_x", 2);
+    set("masks/score_maps/offset_y", 3);
+    set("label_images/score_maps/scale_y", 0.5);
+    set("label_images/score_maps/offset_x", -4);
+  });
+
+/** The score map scale and offset of the predicted masks and label images. */
+function scoreMapSpatial(labels: Labels) {
+  const s = describe3(labels);
+  return s.frames.flatMap((f) =>
+    [...f.masks, ...f.labelImages]
+      .filter((x) => x.scoreMapSpatial !== null)
+      .map((x) => x.scoreMapSpatial),
+  );
+}
+
+describe("score map scale and offset", () => {
+  const EXPECTED = [
+    [
+      [2, 1],
+      [0, 3],
+    ],
+    [
+      [1, 0.5],
+      [-4, 0],
+    ],
+  ];
+
+  it("are read from every layout and survive a save", async () => {
+    const file = await spatialScoreMaps();
+    const labels = await readSlp(file, EDIT);
+    expect(scoreMapSpatial(labels)).toEqual(EXPECTED);
+    const lazy = await readSlpLazy(file, EDIT);
+    lazy.materialize();
+    expect(scoreMapSpatial(lazy)).toEqual(EXPECTED);
+    // A 2.x save stores them in the score map index, as Python does.
+    const back = await readSlp(tempFile(await saveSlpToBytes(labels)), {
+      openVideos: false,
+    });
+    expect(scoreMapSpatial(back)).toEqual(EXPECTED);
+  });
+
+  for (const python of pythons()) {
+    it.skipIf(SKIP_PYTHON)(
+      `read back in Python from a 2.x save, with ${python.label}`,
+      async () => {
+        const labels = await readSlp(await spatialScoreMaps(), EDIT);
+        const saved = describeInPython(
+          python,
+          tempFile(await saveSlpToBytes(labels)),
+        );
+        const frames = saved.frames as Array<{
+          masks: unknown[][];
+          label_images: unknown[][];
+        }>;
+        const spatial = frames.flatMap((f) => [
+          ...f.masks.map((m) => m[14]).filter((x) => x !== null),
+          ...f.label_images.map((li) => li[7]).filter((x) => x !== null),
+        ]);
+        expect(spatial).toEqual(EXPECTED);
       },
     );
   }
