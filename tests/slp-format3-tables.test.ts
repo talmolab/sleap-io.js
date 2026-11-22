@@ -1329,6 +1329,7 @@ for s in labels.sessions:
         })
     sessions.append({
         "cameras": [[c.name, labels.videos.index(s.get_video(c))] for c in s.camera_group.cameras],
+        "metadata": dict(s.metadata),
         "frame_groups": groups,
     })
 print(json.dumps({

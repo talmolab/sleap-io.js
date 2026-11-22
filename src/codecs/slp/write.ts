@@ -3378,11 +3378,14 @@ function writeSessions(
     }
     const fgEnd = fgRows.length;
 
+    // Session metadata goes at the top level of the entry, as Python sleap-io
+    // writes it (`session_dict.update(session.metadata)`); the keys of the
+    // session's structure win over metadata keys of the same name.
     sessionsJson.push(
       JSON.stringify({
+        ...(session.metadata ?? {}),
         calibration,
         camcorder_to_video_idx_map,
-        metadata: session.metadata ?? {},
         fg_start: fgStart,
         fg_end: fgEnd,
       }),
