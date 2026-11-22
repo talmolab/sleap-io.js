@@ -248,7 +248,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-XINULMKS.js";
+} from "./chunk-G3PXJRW5.js";
 import {
   Camera,
   CameraGroup,
@@ -285,7 +285,7 @@ import {
   predictedPointsFromArray,
   predictedPointsFromDict,
   rodriguesTransformation
-} from "./chunk-R3B3DLP2.js";
+} from "./chunk-OGVVQHLP.js";
 import {
   DEFAULT_MAX_BYTES,
   checkDownloadHost,

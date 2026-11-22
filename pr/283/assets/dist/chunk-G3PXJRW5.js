@@ -7,6 +7,7 @@ import {
   InstanceGroup,
   METADATA_SUBGROUP,
   Node,
+  PARTLY_READ_GROUPS,
   PredictedInstance,
   PredictedInstance3D,
   RecordingSession,
@@ -62,8 +63,9 @@ import {
   sessionsReadError,
   skipsInstanceRow,
   unknownColumns,
+  unreadMembers,
   unreadTablesError
-} from "./chunk-R3B3DLP2.js";
+} from "./chunk-OGVVQHLP.js";
 import {
   openGdrive
 } from "./chunk-RC2FIFDH.js";
@@ -16922,7 +16924,8 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     predPointsData: userInstancesOnly ? null : predPointsData,
     predPointFlags,
     nVideos: videos.length,
-    choice: format3Choice
+    choice: format3Choice,
+    provenanceInMetadata: !!metadataJson && "provenance" in metadataJson
   });
   checkPointSpans({
     framesData,
@@ -17910,8 +17913,17 @@ async function readFormat3Streaming(file, labelsPath, formatId, tables) {
     );
   }
   unknown.push(...unknownColumns("bboxes", bboxColumns));
+  const groups = {};
+  for (const group of PARTLY_READ_GROUPS) {
+    if (root.includes(group)) groups[group] = await childKeys(file, group);
+  }
   const summary = buildFormat3Summary({
     formatId,
+    unreadTables: unreadMembers({
+      root,
+      groups,
+      provenanceInMetadata: tables.provenanceInMetadata ?? false
+    }),
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(
       predPointsData ?? tables.predPointFlags ?? void 0
@@ -19009,7 +19021,7 @@ function framePixels(img, { gray = false, swapRB = false } = {}) {
   const channels = explicit ?? (src.length === n * 4 ? 4 : src.length / n);
   const rgba = explicit === void 0 && channels === 4;
   const outCh = gray ? 1 : rgba ? 3 : channels;
-  const swap = swapRB && outCh >= 3;
+  const swap = swapRB && channels >= 3;
   if (outCh === channels && !swap) {
     return {
       data: src instanceof Uint8Array ? src : new Uint8Array(src.buffer, src.byteOffset, src.byteLength),
@@ -19023,7 +19035,7 @@ function framePixels(img, { gray = false, swapRB = false } = {}) {
     for (let c = 0; c < outCh; c++) out[o + c] = src[i + c];
     if (swap) {
       out[o] = src[i + 2];
-      out[o + 2] = src[i];
+      if (outCh >= 3) out[o + 2] = src[i];
     }
   }
   return { data: out, width, height, channels: outCh };
@@ -21702,7 +21714,7 @@ async function buildSerializableEmbedPlan(labels, embedMode, sourcePath, options
     }
     if (entry.kind !== "raw") {
       throw new Error(
-        `buildSerializableEmbedPlan: video${entry.videoIndex} would use the new-embed ("encode") path, which the streaming writer's worker half does not support - this path is re-save/raw-copy of an already-embedded pkg.slp ONLY (new-embed of a continuous video is a deferred follow-up).`
+        entry.video.hasEmbeddedImages ? `buildSerializableEmbedPlan: converting embedded video${entry.videoIndex} to imageFormat "${entry.format}" uses the "encode" path; pass allowEncode and write its encodeEntries with appendEncodedVideos.` : `buildSerializableEmbedPlan: video${entry.videoIndex} would use the new-embed ("encode") path; pass allowEncode and write its encodeEntries with appendEncodedVideos (without it, the plan is raw-copy only, for already-embedded videos).`
       );
     }
     const sourceDataset = entry.video.backend?.dataset ?? entry.video.backendMetadata.dataset;
@@ -24757,7 +24769,8 @@ async function readSlp(source, options) {
       instancesData,
       pointsData,
       predPointsData,
-      choice: options?.format3
+      choice: options?.format3,
+      provenanceInMetadata: !!metadataJson && "provenance" in metadataJson
     });
     checkPointSpans({
       framesData,
@@ -25012,7 +25025,8 @@ async function readSlpLazy(source, options) {
       instancesData,
       pointsData,
       predPointsData,
-      choice: options?.format3
+      choice: options?.format3,
+      provenanceInMetadata: !!metadataJson && "provenance" in metadataJson
     });
     checkPointSpans({
       framesData,
@@ -26489,6 +26503,13 @@ function readFormat3(file, labelsPath, formatId, nVideos, tables) {
   ) : null;
   const summary = buildFormat3Summary({
     formatId,
+    unreadTables: unreadMembers({
+      root: file.keys(),
+      groups: Object.fromEntries(
+        PARTLY_READ_GROUPS.map((g) => [g, h5Members(file, g)])
+      ),
+      provenanceInMetadata: tables.provenanceInMetadata ?? false
+    }),
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(predPointsData),
     metadataKeys: {

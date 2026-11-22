@@ -1120,7 +1120,11 @@ without a warning.</p>
 <p>Every 3.0 file asks, even one that holds nothing the 2.x layout cannot store,
 because saving it rewrites it in another layout. The error's <code>summary</code> (also
 returned as <code>format3</code> by the lite <code>loadSlpMetadata</code>, so an application can ask
-before a full read) says what an edit would drop:</p>
+before a full read) says what an edit would drop. Besides unlabelled points,
+metadata and unknown columns, that is anything in the file this version does
+not read at all, in <code>unreadTables</code>: for example the frame-spanning events
+(<code>events</code>, <code>event_types</code>), the metadata of categories (<code>categories/meta_*</code>), or
+a table added by a newer writer:</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">SlpFormat3ChoiceError</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js"</span><span class="p">;</span>
 
 <span class="kd">let</span><span class="w"> </span><span class="nx">labels</span><span class="p">;</span>
@@ -1128,7 +1132,8 @@ before a full read) says what an edit would drop:</p>
 <span class="w">  </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">"dataset.slp"</span><span class="p">);</span>
 <span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
 <span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="p">(</span><span class="nx">e</span><span class="w"> </span><span class="ow">instanceof</span><span class="w"> </span><span class="nx">SlpFormat3ChoiceError</span><span class="p">))</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="nx">e</span><span class="p">;</span>
-<span class="w">  </span><span class="c1">// e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns, lossless }</span>
+<span class="w">  </span><span class="c1">// e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns,</span>
+<span class="w">  </span><span class="c1">//              unreadTables, lossless }</span>
 <span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">edit</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="nx">e</span><span class="p">.</span><span class="nx">summary</span><span class="p">.</span><span class="nx">lossless</span><span class="w"> </span><span class="o">||</span><span class="w"> </span><span class="nx">confirm</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">message</span><span class="p">);</span>
 <span class="w">  </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">"dataset.slp"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">format3</span><span class="o">:</span><span class="w"> </span><span class="kt">edit</span><span class="w"> </span><span class="o">?</span><span class="w"> </span><span class="s2">"edit"</span><span class="w"> </span><span class="o">:</span><span class="w"> </span><span class="s2">"view"</span><span class="w"> </span><span class="p">});</span>
 <span class="p">}</span>
@@ -1250,20 +1255,36 @@ Python sleap-io's <code>image_format</code> and <code>image_quality</code>):</p>
   first).</li>
 <li><strong>Grayscale videos</strong> store one-channel images (a grayscale JPEG or PNG), so
   they read back with one channel in JS and Python.</li>
-<li><strong>Already-embedded videos</strong> (re-saving a <code>.pkg.slp</code>) follow the same rule,
+<li><strong>Already-embedded videos</strong> (re-saving a <code>.pkg.slp</code>) follow the same rule
   as in Python: images already stored in the chosen format are copied as they
   are, and images in another format are converted, so <code>imageFormat: "jpg"</code>
-  turns a PNG package into a JPEG one. All of a video's stored images are
-  kept, whatever <code>embed</code> selects.</li>
-<li><strong>Without <code>imageFormat</code></strong>, frames are stored as before: new frames as PNG
-  (except encoded frames a backend returns, which are kept as they are), and
-  already-embedded images copied as they are.</li>
-<li><strong>Frame readers</strong> passed to the streaming writer (<code>frameReader</code>) must return
-  RGB images (encoded bytes or pixels).</li>
+  turns a PNG package into a JPEG one. Two things differ from Python, both
+  because sleap-io.js always keeps a package's stored images:</li>
+<li>All of a video's stored images are kept and converted, whatever <code>embed</code>
+    selects. Python keeps only the frames <code>embed</code> selects.</li>
+<li>A save without <code>embed</code> keeps the stored images too, so it converts them.
+    Python's default save (<code>embed=False</code>) writes no images at all and refers
+    to the source video, so it never converts.</li>
 </ul>
+<p>Converting in memory decodes and encodes every stored image, which takes
+  about twice the memory of a plain re-save; convert large packages with the
+  streaming writer (<code>saveSlpStructureToBytes</code>, then
+  <code>buildSerializableEmbedPlan(…, { allowEncode: true, imageFormat })</code> and
+  <code>appendEncodedVideos</code>), which handles a few frames at a time.
+- <strong>Packages of raw pixel arrays</strong> (Python's <code>image_format="hdf5"</code>) are not
+  embedded images here: a save without <code>embed</code> refers to them, as before, and
+  <code>imageFormat</code> doesn't convert them; with <code>embed</code>, their frames are embedded
+  as new frames in the chosen format.
+- <strong>Without <code>imageFormat</code></strong>, frames are stored as before: new frames as PNG
+  (except encoded frames a backend returns, which are kept as they are), and
+  already-embedded images copied as they are.
+- <strong>Frame readers</strong> passed to the streaming writer (<code>frameReader</code>) must return
+  RGB images (encoded bytes or pixels).</p>
 <p>The same options are accepted by <code>saveSlpToBytes</code>, <code>saveSlpStructureToBytes</code>,
 <code>writeSlp</code>, <code>saveSlpSet</code>, and <code>buildSerializableEmbedPlan</code> (for the streaming
-writer, whose worker encodes the frames).</p>
+writer, whose worker encodes the frames). The in-memory and streaming paths
+store the same JPEG bytes; their PNGs decode to the same pixels but are
+compressed differently (see below).</p>
 <p>JPEGs are written by a small encoder in plain JS, the same bytes in a browser,
 a worker and Node: baseline JPEG with the standard tables scaled by quality as
 libjpeg does, colour as YCbCr 4:2:0, grayscale as one component, which is what

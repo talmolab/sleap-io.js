@@ -431,7 +431,11 @@ without a warning.
 Every 3.0 file asks, even one that holds nothing the 2.x layout cannot store,
 because saving it rewrites it in another layout. The error's `summary` (also
 returned as `format3` by the lite `loadSlpMetadata`, so an application can ask
-before a full read) says what an edit would drop:
+before a full read) says what an edit would drop. Besides unlabelled points,
+metadata and unknown columns, that is anything in the file this version does
+not read at all, in `unreadTables`: for example the frame-spanning events
+(`events`, `event_types`), the metadata of categories (`categories/meta_*`), or
+a table added by a newer writer:
 
 ```ts
 import { loadSlp, SlpFormat3ChoiceError } from "@talmolab/sleap-io.js";
@@ -441,7 +445,8 @@ try {
   labels = await loadSlp("dataset.slp");
 } catch (e) {
   if (!(e instanceof SlpFormat3ChoiceError)) throw e;
-  // e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns, lossless }
+  // e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns,
+  //              unreadTables, lossless }
   const edit = e.summary.lossless || confirm(e.message);
   labels = await loadSlp("dataset.slp", { format3: edit ? "edit" : "view" });
 }
@@ -580,11 +585,26 @@ await saveSlp(labels, "labels.pkg.slp", {
   first).
 - **Grayscale videos** store one-channel images (a grayscale JPEG or PNG), so
   they read back with one channel in JS and Python.
-- **Already-embedded videos** (re-saving a `.pkg.slp`) follow the same rule,
+- **Already-embedded videos** (re-saving a `.pkg.slp`) follow the same rule
   as in Python: images already stored in the chosen format are copied as they
   are, and images in another format are converted, so `imageFormat: "jpg"`
-  turns a PNG package into a JPEG one. All of a video's stored images are
-  kept, whatever `embed` selects.
+  turns a PNG package into a JPEG one. Two things differ from Python, both
+  because sleap-io.js always keeps a package's stored images:
+  - All of a video's stored images are kept and converted, whatever `embed`
+    selects. Python keeps only the frames `embed` selects.
+  - A save without `embed` keeps the stored images too, so it converts them.
+    Python's default save (`embed=False`) writes no images at all and refers
+    to the source video, so it never converts.
+
+  Converting in memory decodes and encodes every stored image, which takes
+  about twice the memory of a plain re-save; convert large packages with the
+  streaming writer (`saveSlpStructureToBytes`, then
+  `buildSerializableEmbedPlan(…, { allowEncode: true, imageFormat })` and
+  `appendEncodedVideos`), which handles a few frames at a time.
+- **Packages of raw pixel arrays** (Python's `image_format="hdf5"`) are not
+  embedded images here: a save without `embed` refers to them, as before, and
+  `imageFormat` doesn't convert them; with `embed`, their frames are embedded
+  as new frames in the chosen format.
 - **Without `imageFormat`**, frames are stored as before: new frames as PNG
   (except encoded frames a backend returns, which are kept as they are), and
   already-embedded images copied as they are.
@@ -593,7 +613,9 @@ await saveSlp(labels, "labels.pkg.slp", {
 
 The same options are accepted by `saveSlpToBytes`, `saveSlpStructureToBytes`,
 `writeSlp`, `saveSlpSet`, and `buildSerializableEmbedPlan` (for the streaming
-writer, whose worker encodes the frames).
+writer, whose worker encodes the frames). The in-memory and streaming paths
+store the same JPEG bytes; their PNGs decode to the same pixels but are
+compressed differently (see below).
 
 JPEGs are written by a small encoder in plain JS, the same bytes in a browser,
 a worker and Node: baseline JPEG with the standard tables scaled by quality as

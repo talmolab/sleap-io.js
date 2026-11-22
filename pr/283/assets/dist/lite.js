@@ -3,6 +3,7 @@ import {
   LOSSLESS_FORMAT3_ASKS,
   METADATA_SUBGROUP,
   Node,
+  PARTLY_READ_GROUPS,
   SLP_FORMAT_ID_LIMIT,
   SLP_SUPPORTED_FEATURES,
   Skeleton,
@@ -23,8 +24,9 @@ import {
   parseTracks,
   parseVideosMetadata,
   unknownColumns,
+  unreadMembers,
   unreadTablesError
-} from "./chunk-R3B3DLP2.js";
+} from "./chunk-OGVVQHLP.js";
 import "./chunk-3UBNQTMV.js";
 
 // src/codecs/slp/jsfive.ts
@@ -92,7 +94,7 @@ function isMetadataDtype(dtype) {
   if (typeof dtype !== "string") return false;
   return /^[<>|=]?[biuf]\d+$/.test(dtype) || /^\|?S\d+$/.test(dtype);
 }
-function format3SummaryJsfive(file, formatId) {
+function format3SummaryJsfive(file, formatId, provenanceInMetadata) {
   const members = (path) => {
     const node = file.get(path);
     return isGroup(node) ? node.keys : [];
@@ -121,6 +123,16 @@ function format3SummaryJsfive(file, formatId) {
   ];
   return buildFormat3Summary({
     formatId,
+    unreadTables: unreadMembers({
+      root: file.keys,
+      groups: Object.fromEntries(
+        PARTLY_READ_GROUPS.filter((g) => isGroup(file.get(g))).map((g) => [
+          g,
+          members(g)
+        ])
+      ),
+      provenanceInMetadata
+    }),
     unlabeledUserPoints: unlabeled("points"),
     unlabeledPredictedPoints: unlabeled("pred_points"),
     metadataKeys: {
@@ -277,7 +289,13 @@ async function loadSlpMetadata(source, options) {
       counts,
       hasEmbeddedImages,
       provenance: metadataJson.provenance,
-      ...formatId >= 3 ? { format3: format3SummaryJsfive(file, formatId) } : {}
+      ...formatId >= 3 ? {
+        format3: format3SummaryJsfive(
+          file,
+          formatId,
+          "provenance" in metadataJson
+        )
+      } : {}
     };
   } finally {
     file.close();

@@ -1772,6 +1772,11 @@ function describeDrops(summary) {
   if (summary.unknownColumns.length > 0) {
     drops.push(`unknown columns (${summary.unknownColumns.join(", ")})`);
   }
+  if (summary.unreadTables.length > 0) {
+    drops.push(
+      `what this version does not read (${summary.unreadTables.join(", ")})`
+    );
+  }
   return drops;
 }
 var SlpFormat3ChoiceError = class extends SlpFormatError {
@@ -1810,8 +1815,89 @@ function freezeSummary(summary) {
     }),
     unknownColumns: Object.freeze([
       ...summary.unknownColumns
+    ]),
+    unreadTables: Object.freeze([
+      ...summary.unreadTables
     ])
   });
+}
+var READ_TOP_LEVEL = /* @__PURE__ */ new Set([
+  "metadata",
+  "videos_json",
+  "tracks_json",
+  "suggestions_json",
+  "sessions_json",
+  "session_data",
+  "identity",
+  "identities_json",
+  "embeddings",
+  "categories",
+  "frames",
+  "instances",
+  "points",
+  "pred_points",
+  "negative_frames",
+  "video_crops",
+  "bboxes",
+  "centroids",
+  "rois",
+  "roi_wkb",
+  "roi_categories",
+  "roi_names",
+  "roi_sources",
+  "masks",
+  "mask_rle",
+  "mask_categories",
+  "mask_names",
+  "mask_sources",
+  "mask_score_map_index",
+  "mask_score_maps",
+  "label_images",
+  "label_image_objects",
+  "label_image_data",
+  "label_image_sources",
+  "label_image_obj_categories",
+  "label_image_obj_names",
+  "label_image_score_map_index",
+  "label_image_score_maps"
+]);
+var READ_GROUP_MEMBERS = {
+  identity: /* @__PURE__ */ new Set(["name", "meta_owner", "meta_key", "meta_val", "links"]),
+  categories: /* @__PURE__ */ new Set(["name", "links"]),
+  embeddings: /* @__PURE__ */ new Set([
+    "vectors",
+    "owner_type",
+    "owner_id",
+    "category_vectors",
+    "category_owner_type",
+    "category_owner_id"
+  ]),
+  session_data: /* @__PURE__ */ new Set([
+    "frame_groups",
+    "instance_groups",
+    "instance_group_members",
+    "points_3d",
+    "pred_points_3d",
+    "frame_group_meta",
+    "instance_group_meta"
+  ])
+};
+var PARTLY_READ_GROUPS = Object.keys(READ_GROUP_MEMBERS);
+function unreadMembers(options) {
+  const out = [];
+  for (const name of options.root) {
+    if (READ_TOP_LEVEL.has(name) || /^video\d+$/.test(name)) continue;
+    if (name === "provenance_json" && options.provenanceInMetadata) continue;
+    out.push(name);
+  }
+  for (const [group, members] of Object.entries(options.groups)) {
+    const read = READ_GROUP_MEMBERS[group];
+    if (!read) continue;
+    for (const name of members) {
+      if (!read.has(name)) out.push(`${group}/${name}`);
+    }
+  }
+  return out.sort();
 }
 function buildFormat3Summary(options) {
   const unlabeledPoints = options.unlabeledUserPoints + options.unlabeledPredictedPoints;
@@ -1827,7 +1913,8 @@ function buildFormat3Summary(options) {
       bboxes: [...bboxes].sort()
     },
     unknownColumns: [...options.unknownColumns].sort(),
-    lossless: unlabeledPoints === 0 && instances.length + frames.length + bboxes.length === 0 && options.unknownColumns.length === 0
+    unreadTables: [...options.unreadTables ?? []].sort(),
+    lossless: unlabeledPoints === 0 && instances.length + frames.length + bboxes.length === 0 && options.unknownColumns.length === 0 && (options.unreadTables ?? []).length === 0
   };
 }
 function chooseFormat3Access(labelsPath, summary, choice) {
@@ -2466,6 +2553,8 @@ export {
   LOSSLESS_FORMAT3_ASKS,
   SlpFormat3ChoiceError,
   SlpViewOnlyError,
+  PARTLY_READ_GROUPS,
+  unreadMembers,
   buildFormat3Summary,
   chooseFormat3Access,
   checkFormat3Option,
