@@ -42,6 +42,8 @@ import {
   FORMAT3_TABLES,
   type Format3TableName,
   isKnownTableColumn,
+  reportTableProblems,
+  sessionProblems,
   TABLE_SPECS,
   tableFromColumns,
   unknownTableColumns,
@@ -390,12 +392,37 @@ function readSessionDataJsfive(
     return v != null ? [v] : null;
   };
 
+  const points3d = matrix("points_3d", 3);
+  const predPoints3d = matrix("pred_points_3d", 4);
+  if (columnar) {
+    // Python sleap-io's range checks on 3.0 session tables, as the other
+    // readers run them.
+    const rows = (m: SessionPointMatrix | null) =>
+      m && m.ncols > 0 ? Math.floor(m.flat.length / m.ncols) : 0;
+    const frames = file.get("frames");
+    reportTableProblems(
+      labelsPath,
+      sessionProblems({
+        frameGroups: frameGroups as ColumnTable,
+        instanceGroups: instanceGroups as ColumnTable,
+        members: members as ColumnTable,
+        nPoints3d: rows(points3d),
+        nPredPoints3d: rows(predPoints3d),
+        nIdentities: getShape(file.get("identity/name"))[0] ?? 0,
+        nFrames: frames
+          ? (getShape(
+              isGroup(frames) ? file.get("frames/frame_idx") : frames,
+            )[0] ?? 0)
+          : null,
+      }),
+    );
+  }
   return {
     frameGroups,
     instanceGroups,
     members,
-    points3d: matrix("points_3d", 3),
-    predPoints3d: matrix("pred_points_3d", 4),
+    points3d,
+    predPoints3d,
     frameGroupMeta: meta("frame_group_meta"),
     instanceGroupMeta: meta("instance_group_meta"),
   };

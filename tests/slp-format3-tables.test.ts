@@ -32,7 +32,12 @@
  */
 import { describe, it, expect, setDefaultTimeout } from "./bun-test";
 import { execFileSync } from "node:child_process";
-import { copyFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import {
+  copyFileSync,
+  mkdtempSync,
+  readFileSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { ready, File as H5File } from "h5wasm/node";
@@ -1140,7 +1145,9 @@ describe("range checks of the format 3.0 tables", () => {
         readers.push(() => readStreaming(file));
       }
       if (column.startsWith("session_data")) {
+        // The streaming and lite readers read the session tables too.
         readers.push(() => readStreaming(file));
+        readers.push(() => loadSlpMetadata(new Uint8Array(readFileSync(file))));
       }
       for (const read of readers) {
         let error: unknown;
