@@ -133,6 +133,22 @@ export {
   SLP_FORMAT_ID_LIMIT,
   SLP_SUPPORTED_FEATURES,
 } from "./codecs/slp/format-check.js";
+// SLP format 3.0: the choice at open time between viewing and editing (a save
+// writes the 2.x layout).
+export {
+  SlpFormat3ChoiceError,
+  SlpViewOnlyError,
+  LOSSLESS_FORMAT3_ASKS,
+} from "./codecs/slp/format3.js";
+export type {
+  Format3Access,
+  Format3Summary,
+  SlpSourceFormat,
+} from "./codecs/slp/format3.js";
+export type {
+  RecordMetadata,
+  RecordMetadataValue,
+} from "./model/record-metadata.js";
 
 // Merge/matching public API (issue #90).
 // Named re-exports (not `export *`) so the underscore-prefixed internal helpers

@@ -10,12 +10,13 @@
  *   - format3_rois_stub.slp: format3_pose.slp plus an empty `/rois` group
  *
  * Each reader (in memory, lazy, streaming, lite) must give the same result for
- * the 3.0 file as for its 2.x twin, and the values the generator wrote.
+ * the 3.0 file as for its 2.x twin, and the values the generator wrote. A 3.0
+ * file is opened here with `format3: "edit"`; the choice itself is covered by
+ * slp-format3-choice.test.ts.
  */
 import { describe, it, expect } from "./bun-test";
 import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
 import { readFromStreamingFile } from "../src/codecs/slp/read-streaming.js";
-import type { StreamingH5File } from "../src/codecs/slp/h5-streaming.js";
 import { SlpFormatError } from "../src/codecs/slp/format-check.js";
 import {
   poseTableFromColumns,
@@ -28,69 +29,15 @@ import { loadSlpMetadata } from "../src/lite.js";
 import { PredictedInstance } from "../src/model/instance.js";
 import type { Labels } from "../src/model/labels.js";
 import { Video } from "../src/model/video.js";
-import { ready, File as H5File } from "h5wasm/node";
-import { readFileSync } from "node:fs";
-import { fileURLToPath } from "node:url";
-import path from "node:path";
+import { slpBytes, slpPath, streamingFile } from "./slp-format3-files";
 
-const slpDir = path.join(
-  fileURLToPath(new URL("./data", import.meta.url)),
-  "slp",
-);
-const slpPath = (name: string) => path.join(slpDir, name);
-const slpBytes = (name: string) => new Uint8Array(readFileSync(slpPath(name)));
+/** Read options: open a 3.0 file for editing (2.x files ignore the choice). */
+const EDIT = { openVideos: false, format3: "edit" } as const;
 
 const V3 = "format3_pose.slp";
 const V2 = "format3_pose.v2.slp";
 const UNLABELED = "format3_unlabeled.slp";
 const ROIS_STUB = "format3_rois_stub.slp";
-
-/**
- * A `StreamingH5File` over a real fixture, read with h5wasm/node.
- * `readSlpStreaming` needs a Web Worker and can't run in this suite, so the
- * streaming reader is driven through `readFromStreamingFile`. Attributes come
- * back wrapped as `{ value }`, as the worker's `getAttrs` returns them.
- * `compound` supplies the already-columnar pose tables of a 2.x file, which
- * the worker reads with a fast path this stand-in doesn't have.
- */
-async function streamingFile(
-  name: string,
-  compound: Record<string, unknown> = {},
-): Promise<{ file: StreamingH5File; close: () => void }> {
-  await ready;
-  const h5 = new H5File(slpPath(name), "r");
-  // biome-ignore lint/suspicious/noExplicitAny: h5wasm entities
-  const get = (p: string) => h5.get(p) as any;
-  const file = {
-    keys: () => h5.keys() as string[],
-    getKeys: async (p: string) => {
-      const node = get(p);
-      if (!node || node.type !== "Group") {
-        throw new Error(`Not a group: ${p}`);
-      }
-      return node.keys() as string[];
-    },
-    getAttrs: async (p: string) => {
-      const node = get(p);
-      if (!node) throw new Error(`Path not found: ${p}`);
-      const out: Record<string, unknown> = {};
-      for (const [key, attr] of Object.entries(node.attrs ?? {})) {
-        out[key] = { value: (attr as { value: unknown }).value };
-      }
-      return out;
-    },
-    getDatasetMeta: async (p: string) => {
-      const d = get(p);
-      return { shape: d?.shape ?? [], dtype: d?.dtype ?? "" };
-    },
-    getDatasetValue: async (p: string) => {
-      if (p in compound) return { value: compound[p], shape: [], dtype: "" };
-      const d = get(p);
-      return { value: d?.value, shape: d?.shape ?? [], dtype: d?.dtype ?? "" };
-    },
-  } as unknown as StreamingH5File;
-  return { file, close: () => h5.close() };
-}
 
 /** Load a fixture through the streaming reader, eagerly or lazily. */
 async function readStreaming(name: string, lazy = false): Promise<Labels> {
@@ -116,6 +63,10 @@ async function readStreaming(name: string, lazy = false): Promise<Labels> {
       undefined,
       false,
       lazy,
+      false,
+      false,
+      false,
+      "edit",
     );
     if (lazy) labels.materialize();
     return labels;
@@ -146,7 +97,11 @@ function summarize(labels: Labels) {
             ? inst.points.map((p) => p.score)
             : null,
         score: inst instanceof PredictedInstance ? inst.score : null,
-        trackingScore: inst.trackingScore,
+        // A missing tracking score is NaN from a 3.0 file and 0 from a 2.x
+        // one (as before); compare them as the same.
+        trackingScore: Number.isNaN(inst.trackingScore)
+          ? 0
+          : inst.trackingScore,
         fromPredicted:
           !(inst instanceof PredictedInstance) && inst.fromPredicted
             ? all.indexOf(inst.fromPredicted)
@@ -158,21 +113,21 @@ function summarize(labels: Labels) {
 
 /** The readers that return poses, as calls that load the named fixture. */
 const READERS: Array<[string, (name: string) => Promise<Labels>]> = [
-  ["readSlp (in memory)", (n) => readSlp(slpPath(n), { openVideos: false })],
+  ["readSlp (in memory)", (n) => readSlp(slpPath(n), EDIT)],
   [
     "readSlp (in memory, from bytes)",
-    (n) => readSlp(slpBytes(n), { openVideos: false, h5: { filenameHint: n } }),
+    (n) => readSlp(slpBytes(n), { ...EDIT, h5: { filenameHint: n } }),
   ],
   [
     "readSlpLazy",
     async (n) => {
-      const labels = await readSlpLazy(slpPath(n), { openVideos: false });
+      const labels = await readSlpLazy(slpPath(n), EDIT);
       expect(labels.isLazy).toBe(true);
       labels.materialize();
       return labels;
     },
   ],
-  ["loadSlp", (n) => loadSlp(slpPath(n), { openVideos: false })],
+  ["loadSlp", (n) => loadSlp(slpPath(n), EDIT)],
   ["readFromStreamingFile (streaming)", (n) => readStreaming(n)],
   ["readFromStreamingFile (streaming, lazy)", (n) => readStreaming(n, true)],
 ];
@@ -251,18 +206,15 @@ describe("format 3.0 pose tables", () => {
   });
 
   it("a lazily loaded 3.0 file reports its frame count before materializing", async () => {
-    const labels = await readSlpLazy(slpPath(V3), { openVideos: false });
+    const labels = await readSlpLazy(slpPath(V3), EDIT);
     expect(labels.length).toBe(4);
   });
 });
 
 describe("a 3.0 file with a table that is not read yet is refused by name", () => {
   const cases: Array<[string, () => Promise<unknown>]> = [
-    ["readSlp", () => readSlp(slpPath(ROIS_STUB), { openVideos: false })],
-    [
-      "readSlpLazy",
-      () => readSlpLazy(slpPath(ROIS_STUB), { openVideos: false }),
-    ],
+    ["readSlp", () => readSlp(slpPath(ROIS_STUB), EDIT)],
+    ["readSlpLazy", () => readSlpLazy(slpPath(ROIS_STUB), EDIT)],
     ["readFromStreamingFile", () => readStreaming(ROIS_STUB)],
     ["loadSlpMetadata (lite)", () => loadSlpMetadata(slpBytes(ROIS_STUB))],
   ];
@@ -283,15 +235,20 @@ describe("a 3.0 file with a table that is not read yet is refused by name", () =
 });
 
 describe("a 3.0 file with content the 2.x layout cannot store", () => {
-  // The `labeled` flag and record metadata are not in the model yet. Until
-  // they are, the poses must still load: the unlabelled tail reads as hidden.
   for (const [label, load] of READERS) {
-    it(`${label} loads its poses`, async () => {
-      const s = summarize(await load(UNLABELED));
+    it(`${label} loads its poses and the unlabelled point`, async () => {
+      const labels = await load(UNLABELED);
+      const s = summarize(labels);
       expect(s.frames.map((f) => f.instances.length)).toEqual([2, 2, 1, 0]);
       const user = s.frames[0].instances[0];
       expect(user.visible).toEqual([true, true, false]);
       expect(user.xy[2]).toEqual([Number.NaN, Number.NaN]);
+      const points = labels.labeledFrames[0].instances[0].points;
+      expect(points.map((p) => p.labeled)).toEqual([true, true, false]);
+      expect(labels.labeledFrames[0].metadata).toEqual({ note: "frame note" });
+      expect(labels.labeledFrames[0].instances[0].metadata).toEqual({
+        annotator: "someone",
+      });
     });
   }
 });

@@ -31,7 +31,17 @@ import {
   type JsfiveGroup,
   type JsfiveSource,
 } from "./codecs/slp/jsfive.js";
-import { UNREAD_FORMAT_3_TABLES } from "./codecs/slp/columnar.js";
+import {
+  countUnlabeledPoints,
+  METADATA_SUBGROUP,
+  type PoseTableName,
+  UNREAD_FORMAT_3_TABLES,
+  unknownColumns,
+} from "./codecs/slp/columnar.js";
+import {
+  buildFormat3Summary,
+  type Format3Summary,
+} from "./codecs/slp/format3.js";
 import {
   checkSlpFormat,
   unreadTablesError,
@@ -69,6 +79,16 @@ export {
   SLP_FORMAT_ID_LIMIT,
   SLP_SUPPORTED_FEATURES,
 } from "./codecs/slp/format-check.js";
+export {
+  SlpFormat3ChoiceError,
+  SlpViewOnlyError,
+  LOSSLESS_FORMAT3_ASKS,
+} from "./codecs/slp/format3.js";
+export type {
+  Format3Access,
+  Format3Summary,
+  SlpSourceFormat,
+} from "./codecs/slp/format3.js";
 
 /**
  * Metadata extracted from an SLP file without loading pose data.
@@ -112,6 +132,84 @@ export interface SlpMetadata {
 
   /** Raw provenance data (SLEAP version, build info, etc.) */
   provenance?: Record<string, unknown>;
+
+  /**
+   * For a file in SLP format 3.0: what it holds that the 2.x layout (the only
+   * one this version writes) cannot store. The full readers throw
+   * `SlpFormat3ChoiceError` with this same summary unless given the `format3`
+   * option, so an application can read it here first and ask the user.
+   * Absent for files before 3.0.
+   */
+  format3?: Format3Summary;
+}
+
+/** Whether a jsfive dtype is one a metadata `values` column may have. */
+function isMetadataDtype(dtype: unknown): boolean {
+  if (Array.isArray(dtype)) return dtype[0] === "VLEN_STRING";
+  if (typeof dtype !== "string") return false;
+  return /^[<>|=]?[biuf]\d+$/.test(dtype) || /^\|?S\d+$/.test(dtype);
+}
+
+/**
+ * The summary of a format 3.0 file (see `Format3Summary`), read with jsfive.
+ * Reads only the `labeled` and `visible` columns of the point tables and the
+ * names of the tables' members.
+ */
+function format3SummaryJsfive(
+  file: ReturnType<typeof openJsfiveFile>,
+  formatId: number,
+): Format3Summary {
+  const members = (path: string): string[] => {
+    const node = file.get(path);
+    return isGroup(node) ? node.keys : [];
+  };
+  const datasets = (path: string): string[] =>
+    members(path).filter((name) => isDataset(file.get(`${path}/${name}`)));
+  const column = (path: string): ArrayLike<number> | undefined => {
+    const value = getValue(file.get(path));
+    return value && typeof value === "object" && "length" in value
+      ? (value as ArrayLike<number>)
+      : undefined;
+  };
+  const unlabeled = (table: string): number =>
+    isGroup(file.get(table))
+      ? countUnlabeledPoints({
+          labeled: column(`${table}/labeled`),
+          visible: column(`${table}/visible`),
+        })
+      : 0;
+  const keys = (table: string): string[] => {
+    const base = `${table}/${METADATA_SUBGROUP}`;
+    return members(base).filter((key) => {
+      const values = file.get(`${base}/${key}/values`);
+      return (
+        isGroup(file.get(`${base}/${key}`)) &&
+        isDataset(values) &&
+        getShape(values).length === 1 &&
+        isMetadataDtype(values.dtype)
+      );
+    });
+  };
+  const poseTables: PoseTableName[] = [
+    "frames",
+    "instances",
+    "points",
+    "pred_points",
+  ];
+  return buildFormat3Summary({
+    formatId,
+    unlabeledUserPoints: unlabeled("points"),
+    unlabeledPredictedPoints: unlabeled("pred_points"),
+    metadataKeys: {
+      instances: keys("instances"),
+      frames: keys("frames"),
+      bboxes: keys("bboxes"),
+    },
+    unknownColumns: [
+      ...poseTables.flatMap((table) => unknownColumns(table, datasets(table))),
+      ...unknownColumns("bboxes", datasets("bboxes")),
+    ],
+  });
 }
 
 /**
@@ -373,6 +471,9 @@ export async function loadSlpMetadata(
       provenance: metadataJson.provenance as
         | Record<string, unknown>
         | undefined,
+      ...(formatId >= 3.0
+        ? { format3: format3SummaryJsfive(file, formatId) }
+        : {}),
     };
   } finally {
     file.close();

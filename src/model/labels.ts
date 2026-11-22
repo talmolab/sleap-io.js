@@ -19,6 +19,7 @@ import {
   injectSessionFrameResolver,
 } from "./camera.js";
 import type { Identity } from "./identity.js";
+import type { SlpSourceFormat } from "../codecs/slp/format3.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
 import { type LazyDataStore, LazyFrameList } from "./lazy.js";
@@ -173,6 +174,16 @@ export class Labels {
   _lazyFrameList: LazyFrameList | null = null;
   /** @internal Lazy data store holding raw HDF5 data. */
   _lazyDataStore: LazyDataStore | null = null;
+
+  /**
+   * Set when the labels were loaded from a file in SLP format 3.0: its format,
+   * what it holds that the 2.x layout cannot store, and the caller's
+   * `format3` choice. With `access: "view"` every writer refuses the labels;
+   * with `"edit"` writers save the 2.x layout and drop those fields. `null`
+   * for labels from 1.x/2.x files or built in memory. Carried by
+   * {@link copy} and {@link extract}.
+   */
+  sourceFormat: SlpSourceFormat | null = null;
 
   // Index caches (excluded from serialization, rebuilt on demand)
   private _frameIndex: Map<Video, Map<number, LabeledFrame>> | null = null;
@@ -1475,6 +1486,8 @@ export class Labels {
       });
       injectSessionFrameResolver(labelsCopy);
     }
+
+    labelsCopy.sourceFormat = this.sourceFormat;
 
     if (options?.openVideos !== undefined) {
       for (const video of labelsCopy.videos) {
@@ -2932,6 +2945,7 @@ export class Labels {
     labels.provenance = { ...labels.provenance };
     labels.provenance.source_labels =
       (this.provenance.filename as string | undefined) ?? null;
+    labels.sourceFormat = this.sourceFormat;
 
     return labels;
   }

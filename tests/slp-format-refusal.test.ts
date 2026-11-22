@@ -150,11 +150,13 @@ async function refusal(load: () => Promise<unknown>): Promise<SlpFormatError> {
 
 describe("format 3.0 files are read, not refused", () => {
   it("readSlp, readSlpLazy and loadSlp load the 3.0 fixture's frames", async () => {
-    const eager = await readSlp(slpPath(V3), { openVideos: false });
+    // A 3.0 file asks the caller to choose (see slp-format3-choice.test.ts).
+    const options = { openVideos: false, format3: "edit" } as const;
+    const eager = await readSlp(slpPath(V3), options);
     expect(eager.labeledFrames.length).toBe(N_FRAMES);
-    const lazy = await readSlpLazy(slpPath(V3), { openVideos: false });
+    const lazy = await readSlpLazy(slpPath(V3), options);
     expect(lazy.length).toBe(N_FRAMES);
-    const loaded = await loadSlp(slpPath(V3), { openVideos: false });
+    const loaded = await loadSlp(slpPath(V3), options);
     expect(loaded.labeledFrames.length).toBe(N_FRAMES);
   });
 

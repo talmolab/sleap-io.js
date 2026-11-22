@@ -376,7 +376,46 @@ Python sleap-io 0.10 introduces. Format 3.0 stores each pose table (`/frames`,
 column. Every reader handles both layouts and returns the same `Labels`.
 
 sleap-io.js still writes the 2.x layout only, so a format 3.0 file that is
-loaded and saved comes out in the 2.x layout.
+loaded and saved comes out in the 2.x layout. That never happens silently: every
+reader (and `loadSlp`) takes a `format3` option, and a 3.0 file loaded without
+it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
+
+- `format3: "view"` loads everything and marks the labels view-only
+  (`labels.sourceFormat.access === "view"`). Every writer (`saveSlp`,
+  `saveSlpToBytes`, `saveSlpStructureToBytes`, `saveSlpSet`, `openSlpWriter`,
+  `SlpStreamWriter.appendStore`, `saveSlpMergedFromStores`,
+  `saveSlpMergedToSink` and the in-place save functions) refuses them with
+  `SlpViewOnlyError` before it touches its target.
+- `format3: "edit"` loads the same, and a save writes the 2.x layout and drops
+  what that layout cannot store: points marked as not labelled are written as
+  hidden points with no location, and metadata and unknown columns are not
+  written.
+
+Every 3.0 file asks, even one that holds nothing the 2.x layout cannot store,
+because saving it rewrites it in another layout. The error's `summary` (also
+returned as `format3` by the lite `loadSlpMetadata`, so an application can ask
+before a full read) says what an edit would drop:
+
+```ts
+import { loadSlp, SlpFormat3ChoiceError } from "@talmolab/sleap-io.js";
+
+let labels;
+try {
+  labels = await loadSlp("dataset.slp");
+} catch (e) {
+  if (!(e instanceof SlpFormat3ChoiceError)) throw e;
+  // e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns, lossless }
+  const edit = e.summary.lossless || confirm(e.message);
+  labels = await loadSlp("dataset.slp", { format3: edit ? "edit" : "view" });
+}
+```
+
+What format 3.0 adds is read into the model either way: `point.labeled`
+(`false` with `visible` false means the source did not annotate the node; absent
+means `true`), and `metadata` on instances, labeled frames and bounding boxes.
+Labels built in memory can hold them too. Saving such labels follows Python's
+`legacy_format=True`: unlabelled points throw unless the writer is given
+`unlabeledAs: "absent"`, and metadata is dropped with a warning.
 
 Every reader (`loadSlp`, `readSlp`, `readSlpLazy`, `readSlpStreaming`, and
 `loadSlpMetadata` and `validateSlpBuffer` in the lite build) throws

@@ -5,7 +5,13 @@ import { readSlp, readSlpLazy } from "../codecs/slp/read.js";
 import { SlpFormatError } from "../codecs/slp/format-check.js";
 import { SlpPointSpanError } from "../codecs/slp/point-spans.js";
 import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
-import { writeSlp, saveSlpToBytes } from "../codecs/slp/write.js";
+import {
+  writeSlp,
+  saveSlpToBytes,
+  refuseViewOnly,
+  type UnlabeledAs,
+} from "../codecs/slp/write.js";
+import type { Format3Access } from "../codecs/slp/format3.js";
 import { createVideoBackend, type VideoBackendType } from "../video/factory.js";
 import {
   type OpenH5Options,
@@ -55,6 +61,11 @@ function isBrowserWithWorkerSupport(): boolean {
  *   stages and message labels the stage about to run. Emitted by all reader
  *   paths (streaming, eager, and lazy); the final call is (total, total,
  *   "Finalizing"). Stage counts differ by path (streaming is finer-grained).
+ * @param options.format3 - For a file in SLP format 3.0, which this version
+ *   reads but saves only in the 2.x layout: `"view"` loads it read-only (every
+ *   writer refuses the labels), `"edit"` lets a save write the 2.x layout and
+ *   drop what it cannot store. Without it such a file throws
+ *   `SlpFormat3ChoiceError`, whose `summary` lists what an edit would drop.
  * @returns Loaded Labels object
  */
 export async function loadSlp(
@@ -71,6 +82,7 @@ export async function loadSlp(
      */
     repairPointSpans?: boolean;
     onProgress?: (current: number, total: number, message?: string) => void;
+    format3?: Format3Access;
   },
 ): Promise<Labels> {
   const streamMode = options?.h5?.stream ?? "auto";
@@ -105,6 +117,7 @@ export async function loadSlp(
           onProgress: options?.onProgress,
           lazy,
           repairPointSpans: options?.repairPointSpans,
+          format3: options?.format3,
         });
       } catch (e) {
         // A bad file is not a worker failure: the main-thread reader would
@@ -131,6 +144,7 @@ export async function loadSlp(
       h5: options?.h5,
       onProgress: options?.onProgress,
       repairPointSpans: options?.repairPointSpans,
+      format3: options?.format3,
     });
   }
   return readSlp(source, {
@@ -138,6 +152,7 @@ export async function loadSlp(
     h5: options?.h5,
     onProgress: options?.onProgress,
     repairPointSpans: options?.repairPointSpans,
+    format3: options?.format3,
   });
 }
 
@@ -149,6 +164,9 @@ export async function loadSlp(
  * @param options - Save options
  * @param options.embed - Embed video frames: true/"all", "user", "suggestions", "user+suggestions", "all+suggestions"
  * @param options.restoreOriginalVideos - Restore source video paths on save (default: true)
+ * @param options.unlabeledAs - How to save unlabelled points, which the 2.x
+ *   layout cannot store (see `SlpWriteOptions.unlabeledAs`).
+ * @throws {SlpViewOnlyError} For labels loaded with `format3: "view"`.
  */
 export async function saveSlp(
   labels: Labels,
@@ -156,11 +174,13 @@ export async function saveSlp(
   options?: {
     embed?: boolean | string;
     restoreOriginalVideos?: boolean;
+    unlabeledAs?: UnlabeledAs;
   },
 ): Promise<void> {
   await writeSlp(filename, labels, {
     embed: options?.embed ?? false,
     restoreOriginalVideos: options?.restoreOriginalVideos ?? true,
+    unlabeledAs: options?.unlabeledAs,
   });
 }
 
@@ -390,7 +410,11 @@ export {
  */
 export async function loadSlpSet(
   sources: string[] | Record<string, string>,
-  options?: { openVideos?: boolean; h5?: OpenH5Options },
+  options?: {
+    openVideos?: boolean;
+    h5?: OpenH5Options;
+    format3?: Format3Access;
+  },
 ): Promise<LabelsSet> {
   const set = new LabelsSet();
 
@@ -422,14 +446,18 @@ export async function loadSlpSet(
  *
  * @param labelsSet - LabelsSet to save
  * @param options - Save options (forwarded to saveSlp)
+ * @throws {SlpViewOnlyError} If any of the labels were loaded with
+ *   `format3: "view"`; checked before any file is written.
  */
 export async function saveSlpSet(
   labelsSet: LabelsSet,
   options?: {
     embed?: boolean | string;
     restoreOriginalVideos?: boolean;
+    unlabeledAs?: UnlabeledAs;
   },
 ): Promise<void> {
+  for (const [, labels] of labelsSet) refuseViewOnly(labels);
   const promises: Promise<void>[] = [];
   for (const [filename, labels] of labelsSet) {
     promises.push(saveSlp(labels, filename, options));
