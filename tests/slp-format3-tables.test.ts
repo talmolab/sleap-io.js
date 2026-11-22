@@ -849,6 +849,40 @@ describe("the store-merging writers and stores from 3.0 files", () => {
   });
 });
 
+describe("the streaming reader's userInstancesOnly and a 3.0 file", () => {
+  const read = async (name: string, format3: "view" | "edit") => {
+    const { file, close } = await streamingFile(name);
+    try {
+      return await readFromStreamingFile(
+        file,
+        `https://example.com/${name}`,
+        undefined,
+        false,
+        undefined,
+        false,
+        false,
+        false,
+        true, // userInstancesOnly
+        false,
+        format3,
+      );
+    } finally {
+      close();
+    }
+  };
+
+  it("cannot be opened for editing, since a save would lose what it skips", async () => {
+    await expect(read(V3, "edit")).rejects.toThrow(
+      "userInstancesOnly drops its predicted instances and sessions",
+    );
+  });
+
+  it("can be opened for viewing", async () => {
+    const labels = await read(V3, "view");
+    expect(labels.labeledFrames.flatMap((f) => f.instances)).toHaveLength(3);
+  });
+});
+
 describe("box and centroid flags", () => {
   it("read any nonzero is_predicted as predicted, as Python does", async () => {
     // Boxes and centroids are groups of columns in every layout; their

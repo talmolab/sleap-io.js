@@ -178,7 +178,8 @@ export interface StreamingSlpOptions {
    * no instances to begin with (e.g. negative frames) are kept. A user
    * instance's `fromPredicted` link is left unset, and recording sessions
    * (multi-camera groupings) aren't read. Default `false`. Can't be combined
-   * with `lazy`.
+   * with `lazy`, nor, for a file in SLP format 3.0, with `format3: "edit"`
+   * (a save would lose what the filter skipped).
    */
   userInstancesOnly?: boolean;
   /**
@@ -686,6 +687,15 @@ export async function readFromStreamingFile(
   ) as Record<string, unknown> | null;
 
   const skeletons = parseSkeletons(metadataJson);
+  if (userInstancesOnly && format3Choice === "edit" && isFormat3(formatId)) {
+    // The filter drops predicted instances and every recording session, which
+    // a save of an edit load would then lose without the summary saying so.
+    throw new Error(
+      `readSlpStreaming: '${labelsPath}' is in SLP format 3.0; ` +
+        "userInstancesOnly drops its predicted instances and sessions, so it " +
+        'can only be opened with format3: "view" (or without the filter).',
+    );
+  }
   if (failIfIncomplete) {
     const unread = await unreadByStreaming(file, file.keys());
     if (unread.length > 0) {
