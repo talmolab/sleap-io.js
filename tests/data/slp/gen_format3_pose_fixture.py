@@ -1,6 +1,6 @@
-"""Generate the fixtures for tests/slp-format3-read.test.ts.
+"""Generate the SLP format 3.0 fixtures for the tests/slp-format3-*.test.ts files.
 
-Writes four small synthetic files next to this script:
+Writes these small synthetic files next to this script:
 
 - `format3_pose.slp`: SLP format 3.0 (one dataset per column). Two videos, two
   tracks, user and predicted instances, a hidden point, a verified point, a
@@ -21,6 +21,10 @@ Writes four small synthetic files next to this script:
   every reader falls back to the defaults of the 3.0 reading rules.
 - `format3_bad_frame_id.slp`: `format3_pose.slp` with an instance whose
   `frame_id` names the wrong frame, which the 3.0 range checks refuse.
+- `format3_embedded.pkg.slp`: `minimal_instance.pkg.slp` saved in format 3.0
+  with its frame embedded, then its embedded group renamed `/video2`, as after
+  removing videos from a package. `/frames/video` holds the list index (0),
+  which no longer matches the group number.
 
 The committed fixtures were written with Python sleap-io 0.10.0 from the
 `release/0.10` branch (commit fe4f91c7b), which is not on PyPI yet:
@@ -35,6 +39,7 @@ on disk is not in the layout it asked for.
 from __future__ import annotations
 
 import inspect
+import json
 import shutil
 from pathlib import Path
 
@@ -211,6 +216,27 @@ def repack(path: Path) -> None:
     tmp.replace(path)
 
 
+def make_embedded_fixture(path: Path) -> None:
+    """Write `format3_embedded.pkg.slp` (see the module docstring)."""
+    labels = sio.load_slp(str(HERE / "minimal_instance.pkg.slp"))
+    sio.save_slp(labels, str(path), legacy_format=False, embed=True)
+    with h5py.File(path, "r+") as f:
+        assert float(f["metadata"].attrs["format_id"]) >= 3.0
+        assert isinstance(f["points"], h5py.Group)
+        f.move("video0", "video2")
+        videos = [json.loads(v) for v in f["videos_json"][:]]
+        videos[0]["backend"]["dataset"] = "video2/video"
+        del f["videos_json"]
+        f.create_dataset(
+            "videos_json", data=[json.dumps(v) for v in videos], maxshape=(None,)
+        )
+        assert f["frames/video"][()].tolist() == [0]
+    check = sio.load_slp(str(path))
+    assert check.videos[0].backend.dataset == "video2/video"
+    assert check.videos[0].backend.get_frame(0).shape[:2] == (384, 384)
+    print(f"{path.name}: format_id 3, embedded under /video2 at index 0")
+
+
 def main() -> None:
     save_as(make_labels(), HERE / "format3_pose.slp", "v3")
     save_as(make_labels(), HERE / "format3_pose.v2.slp", "v2")
@@ -232,6 +258,7 @@ def main() -> None:
     make_metadata_fixture(HERE / "format3_metadata.slp")
     make_defaults_fixture(HERE / "format3_defaults.slp")
     make_bad_frame_id_fixture(HERE / "format3_bad_frame_id.slp")
+    make_embedded_fixture(HERE / "format3_embedded.pkg.slp")
 
     for name in (
         "format3_pose.slp",
@@ -239,6 +266,7 @@ def main() -> None:
         "format3_unlabeled.slp",
         "format3_metadata.slp",
         "format3_defaults.slp",
+        "format3_embedded.pkg.slp",
     ):
         check = sio.load_slp(str(HERE / name))
         print(
