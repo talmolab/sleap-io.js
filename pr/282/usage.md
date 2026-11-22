@@ -398,10 +398,12 @@ it, and copies keep it (`Labels.copy`, `extract`, `merge`, `BoundingBox.pad`,
 ROIs and label images). So content from a view-only file is refused by every
 SLP writer wherever it ends up (merged into other labels, passed to
 `new Labels({ labeledFrames })`, or appended to a streaming writer), and content
-from an edit-loaded file is saved as the caller chose wherever it ends up. A
-merge passes the choice on only with what it takes: a frame of your own that
-takes nothing from a view-only frame (for example with `frame: "keep_original"`)
-stays yours.
+from an edit-loaded file (its instances and annotations) is saved as the caller
+chose wherever it ends up. A merge passes only a view-only choice on to records
+of your own, and only with what they take: a frame of your own that takes
+nothing from a view-only frame (for example with `frame: "keep_original"`)
+stays yours. An edit choice is not passed on to your own frames: metadata keys
+they take from an edit-loaded frame are warned about at save like your own.
 
 Exports to other formats (Analysis HDF5, CSV, NWB, COCO and the like) are
 conversions, not SLP saves, and do not check the choice. Nor do `toDict` /
@@ -412,8 +414,13 @@ undo snapshots, carries it with `copySourceMark(original, rebuilt)`
 
 `labels.sourceFormat` and the records' choice are frozen. To change the choice
 after loading (say, the user decides to edit a file opened view-only), call
-`setSourceAccess(labels, "edit")`: it switches the labels and every record they
-hold from that file.
+`setSourceAccess(labels, "edit")`: it switches `labels.sourceFormat`, if set,
+and every record the labels hold that carries a choice, whatever file it came
+from. So it also works on a project of your own into which view-only content
+was merged. Records held elsewhere keep their choice: copies in other labels
+(switch those too), and a lazy frame released from the cache and still held
+(materialize it again). A lazy copy shares its annotation records with the
+labels it was copied from, so switching either switches those for both.
 
 After saving edit-loaded labels over their source file, that file is in the
 2.x layout. Set `labels.sourceFormat = null` to say so; the in-place save

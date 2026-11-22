@@ -117,22 +117,39 @@ function keepSourceMark(from, out) {
   }
   return out;
 }
+function markFromSources(target, sources) {
+  let strictest;
+  for (const source of sources) {
+    const mark = sourceMarkOf(source);
+    if (!mark) continue;
+    if (!strictest || strictest.access === "edit" && mark.access === "view") {
+      strictest = mark;
+    }
+  }
+  if (strictest) marks.set(target, strictest);
+}
 function setSourceAccess(labels, access) {
   if (access !== "view" && access !== "edit") {
     throw new TypeError(
       `access must be "view" or "edit", got ${JSON.stringify(access)}.`
     );
   }
-  const old = labels.sourceFormat;
-  if (!old) {
-    throw new Error(
-      "setSourceAccess: these labels were not loaded from an SLP format 3.0 file."
-    );
-  }
-  if (old.access === access) return;
-  const next = Object.freeze({ ...old, access });
+  const switched = /* @__PURE__ */ new Map();
+  const switchedTo = (old) => {
+    if (old.access === access) return old;
+    let next = switched.get(old);
+    if (!next) {
+      next = Object.freeze({ ...old, access });
+      switched.set(old, next);
+    }
+    return next;
+  };
+  let count = 0;
   const swap = (record) => {
-    if (marks.get(record) === old) marks.set(record, next);
+    const old = marks.get(record);
+    if (!old || old.access === access) return;
+    marks.set(record, switchedTo(old));
+    count += 1;
   };
   const swapFrame = (frame) => {
     swap(frame);
@@ -147,12 +164,13 @@ function setSourceAccess(labels, access) {
       for (const record of list) swap(record);
     }
   };
-  labels.sourceFormat = next;
+  if (labels.sourceFormat)
+    labels.sourceFormat = switchedTo(labels.sourceFormat);
   for (const frame of labels.labeledFrames) swapFrame(frame);
   for (const roi of labels._staticRois) swap(roi);
   const store = labels._lazyDataStore;
   if (store) {
-    if (store.sourceFormat === old) store.sourceFormat = next;
+    if (store.sourceFormat) store.sourceFormat = switchedTo(store.sourceFormat);
     for (const [byFrame, undistributed] of [
       [store._centroidByFrame, store._undistributedCentroids],
       [store._bboxByFrame, store._undistributedBboxes],
@@ -161,8 +179,9 @@ function setSourceAccess(labels, access) {
       [store._labelImageByFrame, store._undistributedLabelImages]
     ]) {
       for (const record of undistributed) swap(record);
-      for (const list of byFrame.values())
+      for (const list of byFrame.values()) {
         for (const record of list) swap(record);
+      }
     }
   }
   const lazyFrames = labels._lazyFrameList;
@@ -170,6 +189,7 @@ function setSourceAccess(labels, access) {
     for (const frame of lazyFrames._supplementary) swapFrame(frame);
     for (const frame of lazyFrames._cachedFrames()) swapFrame(frame);
   }
+  return count;
 }
 
 // src/model/centroid.ts
@@ -2163,7 +2183,10 @@ var LabelImage = class _LabelImage {
       source: options?.source ?? ""
     });
   }
-  /** Create a LabelImage by compositing an array of SegmentationMasks. */
+  /**
+   * Create a LabelImage by compositing an array of SegmentationMasks. The
+   * result takes the strictest format 3.0 source mark of its masks.
+   */
   static fromMasks(masks, options) {
     if (masks.length === 0) {
       throw new Error("Cannot create LabelImage from empty mask list.");
@@ -2204,7 +2227,7 @@ var LabelImage = class _LabelImage {
         instance: masks[i].instance
       });
     }
-    return new UserLabelImage({
+    const image = new UserLabelImage({
       data,
       height,
       width,
@@ -2213,6 +2236,8 @@ var LabelImage = class _LabelImage {
       scale,
       offset
     });
+    markFromSources(image, masks);
+    return image;
   }
   /**
    * Create a list of LabelImages from a stack of 2D arrays (one per frame).
@@ -3941,9 +3966,12 @@ function _resolveAnnotationUpdateTracks(selfList, otherList, attr, threshold) {
     }
   }
   selfToOther.forEach(({ otherIdx }, selfIdx) => {
-    selfList[selfIdx].track = otherList[otherIdx].track;
-    selfList[selfIdx].trackingScore = otherList[otherIdx].trackingScore;
-    takeViewMark(selfList[selfIdx], otherList[otherIdx]);
+    const own = selfList[selfIdx];
+    const theirs = otherList[otherIdx];
+    const changed = own.track !== theirs.track || !Object.is(own.trackingScore, theirs.trackingScore);
+    own.track = theirs.track;
+    own.trackingScore = theirs.trackingScore;
+    if (changed) takeViewMark(own, theirs);
   });
 }
 function _resolveMergedIsNegative(selfNeg, otherNeg, merged) {
@@ -4241,9 +4269,12 @@ var LabeledFrame = class {
         other.instances
       );
       for (const [selfIdx, otherIdx] of matches2) {
-        this.instances[selfIdx].track = other.instances[otherIdx].track;
-        this.instances[selfIdx].trackingScore = other.instances[otherIdx].trackingScore;
-        takeViewMark(this.instances[selfIdx], other.instances[otherIdx]);
+        const own = this.instances[selfIdx];
+        const theirs = other.instances[otherIdx];
+        const changed = own.track !== theirs.track || !Object.is(own.trackingScore, theirs.trackingScore);
+        own.track = theirs.track;
+        own.trackingScore = theirs.trackingScore;
+        if (changed) takeViewMark(own, theirs);
       }
       this.mergeAnnotations(other, "update_tracks", instanceMatcher.threshold);
       [this.isNegative] = _resolveMergedIsNegative(
@@ -17871,7 +17902,7 @@ function refuseViewOnly(source) {
 function tablesWithKeys(tables) {
   return tables.filter(([, keys]) => keys.length > 0);
 }
-function framesLegacyLosses(frames) {
+function framesLegacyLosses(frames, staticRois = []) {
   let viewOnly = null;
   let unlabeledEdit = 0;
   let unlabeledOwn = 0;
@@ -17883,6 +17914,7 @@ function framesLegacyLosses(frames) {
     if (mark?.access === "view") viewOnly ??= mark;
     return mark;
   };
+  for (const roi of staticRois) markOf(roi);
   for (const frame of frames) {
     if (!markOf(frame)) ownFrames.push(frame);
     for (const inst of frame.instances) {
@@ -17914,11 +17946,12 @@ function framesLegacyLosses(frames) {
     ])
   };
 }
-function refuseViewOnlyRecords(frames) {
+function refuseViewOnlyRecords(frames, staticRois = []) {
   const check = (record) => {
     const mark = sourceMarkOf(record);
     if (mark?.access === "view") throw new SlpViewOnlyError(mark);
   };
+  for (const roi of staticRois) check(roi);
   for (const frame of frames) {
     check(frame);
     for (const list of [
@@ -17997,7 +18030,7 @@ function enforceLegacyLayout(losses, unlabeledAs, options) {
 function checkSlpSavable(labels, options) {
   refuseViewOnly(labels);
   const store = labels._lazyDataStore;
-  const losses = labels.isLazy && store ? storeLegacyLosses(store) : framesLegacyLosses(labels.labeledFrames);
+  const losses = labels.isLazy && store ? storeLegacyLosses(store) : framesLegacyLosses(labels.labeledFrames, labels._staticRois);
   enforceLegacyLayout(losses, options?.unlabeledAs, { warn: false });
 }
 function absentPointColumns(columns) {
@@ -19196,7 +19229,7 @@ async function writeSlpBytes(labels, options, { includeEmbeddedData }) {
     }
   }
   enforceLegacyLayout(
-    framesLegacyLosses(labels.labeledFrames),
+    framesLegacyLosses(labels.labeledFrames, labels._staticRois),
     options?.unlabeledAs
   );
   let writeLabels2 = labels;
@@ -19989,7 +20022,7 @@ function buildNegativeFrameRows(labels) {
 }
 function buildLabelTableRows(labels) {
   refuseViewOnly(labels);
-  refuseViewOnlyRecords(labels.labeledFrames);
+  refuseViewOnlyRecords(labels.labeledFrames, labels._staticRois);
   const frames = [];
   const instances = [];
   const points = [];
@@ -20092,7 +20125,7 @@ var H5T_FLOAT_CLASS = 1;
 function buildLabelTableUpdate(labels, opts) {
   refuseViewOnly(labels);
   enforceLegacyLayout(
-    framesLegacyLosses(labels.labeledFrames),
+    framesLegacyLosses(labels.labeledFrames, labels._staticRois),
     opts?.unlabeledAs
   );
   const r = buildLabelTableRows(labels);

@@ -1742,7 +1742,10 @@ declare class LabelImage {
         createTracks?: boolean;
         source?: string;
     }): UserLabelImage;
-    /** Create a LabelImage by compositing an array of SegmentationMasks. */
+    /**
+     * Create a LabelImage by compositing an array of SegmentationMasks. The
+     * result takes the strictest format 3.0 source mark of its masks.
+     */
     static fromMasks(masks: SegmentationMask[], options?: {
         source?: string;
     }): UserLabelImage;
