@@ -64,6 +64,36 @@ export function takeViewMark(
   if (target && incoming?.access === "view") marks.set(target, incoming);
 }
 
+/** A recording session, as far as marks are concerned. */
+interface MarkableSession {
+  frameGroups: Map<number, { instanceGroups: object[] }>;
+}
+
+/**
+ * The records of recording sessions that a file's session tables hold: every
+ * frame group and instance group.
+ */
+export function sessionRecords(sessions: Iterable<MarkableSession>): object[] {
+  const records: object[] = [];
+  for (const session of sessions) {
+    for (const group of session.frameGroups.values()) {
+      records.push(group, ...group.instanceGroups);
+    }
+  }
+  return records;
+}
+
+/** Mark every frame group and instance group of `sessions`. */
+export function markSessionSource(
+  sessions: Iterable<MarkableSession>,
+  sourceFormat: SlpSourceFormat | null | undefined,
+): void {
+  if (!sourceFormat) return;
+  for (const record of sessionRecords(sessions)) {
+    markSource(record, sourceFormat);
+  }
+}
+
 /** A labeled frame and what it holds, as far as marks are concerned. */
 interface MarkableFrame {
   instances: object[];
@@ -134,7 +164,8 @@ export function markFromSources(
  *
  * `labels.sourceFormat` and the marks are frozen, so this is the way to change
  * the choice after loading. It switches what `labels` hold now: their frames
- * and every instance and annotation in them, their static ROIs, and for lazy
+ * and every instance and annotation in them, their static ROIs, the frame
+ * groups and instance groups of their sessions, and for lazy
  * labels their store, its annotations and the frames materialized and still
  * cached. Records held elsewhere keep the choice they had: copies in other
  * labels (switch those labels too), and a lazy frame the caller released from
@@ -190,6 +221,7 @@ export function setSourceAccess(
     labels.sourceFormat = switchedTo(labels.sourceFormat);
   for (const frame of labels.labeledFrames) swapFrame(frame);
   for (const roi of labels._staticRois) swap(roi);
+  for (const record of sessionRecords(labels.sessions)) swap(record);
   const store = labels._lazyDataStore;
   if (store) {
     if (store.sourceFormat) store.sourceFormat = switchedTo(store.sourceFormat);

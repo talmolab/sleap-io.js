@@ -711,6 +711,162 @@ describe("edit saves of the format 3.0 tables", () => {
   });
 });
 
+describe("view-only content of the format 3.0 tables", () => {
+  /** Labels holding only `take(view)` of a view-only load, as new labels. */
+  const cases: Array<[string, (view: Labels) => Labels]> = [
+    [
+      "a frame ROI",
+      (view) => {
+        const roi = view.labeledFrames[0].rois[0];
+        return new Labels({
+          videos: view.videos,
+          labeledFrames: [
+            new LabeledFrame({
+              video: view.videos[0],
+              frameIdx: 0,
+              rois: [roi],
+            }),
+          ],
+        });
+      },
+    ],
+    [
+      "a static ROI",
+      (view) => new Labels({ videos: view.videos, rois: view.staticRois }),
+    ],
+    [
+      "a mask",
+      (view) =>
+        new Labels({
+          videos: view.videos,
+          labeledFrames: [
+            new LabeledFrame({
+              video: view.videos[0],
+              frameIdx: 0,
+              masks: [view.labeledFrames[4].masks[0]],
+            }),
+          ],
+        }),
+    ],
+    [
+      "a label image",
+      (view) =>
+        new Labels({
+          videos: view.videos,
+          labeledFrames: [
+            new LabeledFrame({
+              video: view.videos[0],
+              frameIdx: 0,
+              labelImages: [view.labeledFrames[0].labelImages[0]],
+            }),
+          ],
+        }),
+    ],
+    [
+      "a recording session (copied)",
+      (view) =>
+        new Labels({
+          videos: view.videos,
+          skeletons: view.skeletons,
+          sessions: view.sessions.map((s) => cloneRecordingSession(s)),
+        }),
+    ],
+  ];
+
+  for (const [what, take] of cases) {
+    it(`${what} is refused by every SLP writer`, async () => {
+      const view = await readSlp(slpPath(V3), VIEW);
+      const labels = take(view);
+      expect(labels.sourceFormat).toBeNull();
+      const writers: Array<() => Promise<unknown>> = [
+        () => saveSlpToBytes(labels),
+        () => saveSlpStructureToBytes(labels),
+      ];
+      // The streaming writer's header holds sessions, not frames.
+      if (labels.sessions.length > 0) {
+        writers.push(() =>
+          openSlpWriter({
+            skeletons: labels.skeletons,
+            videos: labels.videos,
+            sessions: labels.sessions,
+          }),
+        );
+      }
+      for (const write of writers) {
+        await expect(write()).rejects.toBeInstanceOf(SlpViewOnlyError);
+      }
+    });
+  }
+
+  it("records read from these tables carry the choice", async () => {
+    for (const read of [
+      () => readSlp(slpPath(V3), VIEW),
+      async () => {
+        const labels = await readSlpLazy(slpPath(V3), VIEW);
+        labels.materialize();
+        return labels;
+      },
+      () => readStreaming(V3, { format3: "view" }),
+    ]) {
+      const labels = await read();
+      const records: object[] = [
+        ...labels.labeledFrames.flatMap((f) => [
+          ...f.rois,
+          ...f.masks,
+          ...f.labelImages,
+        ]),
+        ...labels.staticRois,
+        ...labels.sessions.flatMap((s) =>
+          [...s.frameGroups.values()].flatMap((fg) => [
+            fg,
+            ...fg.instanceGroups,
+          ]),
+        ),
+      ];
+      expect(records.length).toBeGreaterThan(0);
+      for (const record of records) {
+        expect(sourceMarkOf(record)?.access).toBe("view");
+      }
+    }
+  });
+
+  it("copies of the labels keep the choice of static ROIs and sessions", async () => {
+    const copy = (await readSlp(slpPath(V3), VIEW)).copy();
+    const records: object[] = [
+      ...copy.staticRois,
+      ...copy.sessions.flatMap((s) =>
+        [...s.frameGroups.values()].flatMap((fg) => [fg, ...fg.instanceGroups]),
+      ),
+    ];
+    expect(records.length).toBe(2 + 2 + 3);
+    for (const record of records) {
+      expect(sourceMarkOf(record)?.access).toBe("view");
+    }
+  });
+
+  it("setSourceAccess switches the session records too", async () => {
+    const labels = await readSlp(slpPath(V3), VIEW);
+    await expect(saveSlpToBytes(labels)).rejects.toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+    const sessions = labels.sessions;
+    setSourceAccess(labels, "edit");
+    const fg = [...sessions[0].frameGroups.values()][0];
+    expect(sourceMarkOf(fg)?.access).toBe("edit");
+    expect(sourceMarkOf(fg.instanceGroups[0])?.access).toBe("edit");
+    expect(sourceMarkOf(labels.staticRois[0])?.access).toBe("edit");
+    const bytes = await saveSlpToBytes(labels);
+    expect(bytes.length).toBeGreaterThan(0);
+  });
+
+  it("a lazy view-only load is refused by the merged-store writer", async () => {
+    const labels = await readSlpLazy(slpPath(V3), VIEW);
+    await expect(
+      saveSlpMergedFromStores([labels._lazyDataStore!]),
+    ).rejects.toBeInstanceOf(SlpViewOnlyError);
+  });
+});
+
 /** A copy of a fixture whose datasets `edit` changes, in a temp dir. */
 async function editedCopy(
   name: string,

@@ -4,6 +4,7 @@ import type { Video } from "./video.js";
 import type { Identity } from "./identity.js";
 import type { Instance3D } from "./instance3d.js";
 import type { Labels } from "./labels.js";
+import { copySourceMark } from "./source-mark.js";
 
 export function rodriguesTransformation(input: number[][] | number[]): {
   matrix: number[][];
@@ -464,7 +465,7 @@ function cloneInstanceGroup(
   // touching the private `_points` field.
   const points =
     ig.instance3d || !ig.points ? undefined : ig.points.map((p) => [...p]);
-  return new InstanceGroup({
+  const copy = new InstanceGroup({
     instanceByCamera,
     instanceRefsByCamera,
     score: ig.score,
@@ -473,6 +474,9 @@ function cloneInstanceGroup(
     instance3d: ig.instance3d,
     metadata: structuredClone(ig.metadata),
   });
+  // A copy keeps the open-time choice of the file it was read from.
+  copySourceMark(ig, copy);
+  return copy;
 }
 
 /**
@@ -546,16 +550,15 @@ export function cloneRecordingSession(
       for (const [c, lf] of fg._labeledFrameByCamera)
         labeledFrameByCamera.set(remapCam(c), frameMap?.get(lf) ?? lf);
     }
-    frameGroupByFrameIdx.set(
-      fidx,
-      new FrameGroup({
-        frameIdx: fg.frameIdx,
-        instanceGroups,
-        labeledFrameByCamera,
-        labeledFrameRefsByCamera,
-        metadata: structuredClone(fg.metadata),
-      }),
-    );
+    const copy = new FrameGroup({
+      frameIdx: fg.frameIdx,
+      instanceGroups,
+      labeledFrameByCamera,
+      labeledFrameRefsByCamera,
+      metadata: structuredClone(fg.metadata),
+    });
+    copySourceMark(fg, copy);
+    frameGroupByFrameIdx.set(fidx, copy);
   }
 
   return new RecordingSession({

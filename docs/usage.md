@@ -404,8 +404,9 @@ it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
   are written in their 2.x form.
 
 The choice travels with the content, not only with the `Labels` it was loaded
-into. Every labeled frame, instance and annotation read from a 3.0 file carries
-it, and copies keep it (`Labels.copy`, `extract`, `merge`, `BoundingBox.pad`,
+into. Every labeled frame, instance and annotation (static ROIs included), and
+every frame group and instance group of a recording session, read from a 3.0
+file carries it, and copies keep it (`Labels.copy` with its sessions, `extract`, `merge`, `BoundingBox.pad`,
 `toRoi`, `toMask` and the other conversions between boxes, centroids, masks,
 ROIs and label images). So content from a view-only file is refused by every
 SLP writer wherever it ends up (merged into other labels, passed to

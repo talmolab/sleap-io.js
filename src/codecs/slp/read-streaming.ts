@@ -52,7 +52,11 @@ import {
   metadataKeys,
   metadataRecord,
 } from "../../model/record-metadata.js";
-import { markFrameSource, markSource } from "../../model/source-mark.js";
+import {
+  markFrameSource,
+  markSessionSource,
+  markSource,
+} from "../../model/source-mark.js";
 import {
   openH5Worker,
   type StreamingH5File,
@@ -891,6 +895,7 @@ export async function readFromStreamingFile(
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
   });
   labels.sourceFormat = format3?.sourceFormat ?? null;
+  markSessionSource(sessions, format3?.sourceFormat);
   if (labeledFrames) {
     for (const frame of labeledFrames) {
       markFrameSource(frame, format3?.sourceFormat);

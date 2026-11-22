@@ -48,7 +48,11 @@ import {
   metadataKeys,
   metadataRecord,
 } from "../../model/record-metadata.js";
-import { markFrameSource, markSource } from "../../model/source-mark.js";
+import {
+  markFrameSource,
+  markSessionSource,
+  markSource,
+} from "../../model/source-mark.js";
 import {
   openH5File,
   type OpenH5Options,
@@ -533,6 +537,8 @@ export async function readSlp(
     for (const frame of labels.labeledFrames) {
       markFrameSource(frame, format3?.sourceFormat);
     }
+    for (const roi of staticRois) markSource(roi, format3?.sourceFormat);
+    markSessionSource(sessions, format3?.sourceFormat);
     // Sessions are read before the frame store exists; wire the lazy frame
     // resolver now so ref-backed grouping resolves against labels.labeledFrames.
     injectSessionFrameResolver(labels);
@@ -904,6 +910,7 @@ export async function readSlpLazy(
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
     });
 
+    markSessionSource(sessions, format3?.sourceFormat);
     // Replace the eager labeledFrames with lazy proxy
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;

@@ -44,7 +44,7 @@ import {
   hasSkippedInstanceRows,
   skipsInstanceRow,
 } from "./columnar.js";
-import { sourceMarkOf } from "../../model/source-mark.js";
+import { sessionRecords, sourceMarkOf } from "../../model/source-mark.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile:
@@ -157,10 +157,19 @@ export type UnlabeledAs = "error" | "absent";
  * calls this before it touches its target.
  */
 export function refuseViewOnly(
-  source: { sourceFormat?: SlpSourceFormat | null } | null | undefined,
+  source:
+    | { sourceFormat?: SlpSourceFormat | null; sessions?: RecordingSession[] }
+    | null
+    | undefined,
 ): void {
   const sourceFormat = source?.sourceFormat;
   if (sourceFormat?.access === "view") throw new SlpViewOnlyError(sourceFormat);
+  // The frame groups and instance groups of recording sessions, which no
+  // frame holds.
+  for (const record of sessionRecords(source?.sessions ?? [])) {
+    const mark = sourceMarkOf(record);
+    if (mark?.access === "view") throw new SlpViewOnlyError(mark);
+  }
 }
 
 /**
@@ -1875,7 +1884,7 @@ export async function openSlpWriter(
 ): Promise<SlpStreamWriter> {
   const sourceFormat = (header as { sourceFormat?: SlpSourceFormat | null })
     .sourceFormat;
-  refuseViewOnly({ sourceFormat });
+  refuseViewOnly({ sourceFormat, sessions: header.sessions });
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_stream_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
