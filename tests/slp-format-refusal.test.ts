@@ -378,6 +378,43 @@ describe("checkSlpFormat", () => {
     expect((error as SlpFormatError).message).toContain("SLP format 3.0");
   });
 
+  it("masks credentials in a URL, in the message and in labelsPath", () => {
+    let error: unknown;
+    try {
+      checkSlpFormat(
+        "https://user:hunter2@example.com/data/a.slp?token=s3cret&page=2",
+        { format_id: 3.0 },
+      );
+    } catch (e) {
+      error = e;
+    }
+    const refused = error as SlpFormatError;
+    expect(refused).toBeInstanceOf(SlpFormatError);
+    for (const text of [refused.message, refused.labelsPath]) {
+      expect(text).not.toContain("hunter2");
+      expect(text).not.toContain("s3cret");
+      expect(text).toContain("example.com/data/a.slp");
+      expect(text).toContain("page=2");
+    }
+  });
+
+  it("leaves local paths as given, Windows drive letters included", () => {
+    for (const source of [
+      "/data/a b/labels.slp",
+      "C:\\data\\labels.slp",
+      "labels.slp",
+    ]) {
+      let error: unknown;
+      try {
+        checkSlpFormat(source, { format_id: 3.0 });
+      } catch (e) {
+        error = e;
+      }
+      expect((error as SlpFormatError).labelsPath).toBe(source);
+      expect((error as SlpFormatError).message).toContain(`'${source}'`);
+    }
+  });
+
   it("is the same class from the main and lite entry points", () => {
     expect(PublicSlpFormatError).toBe(SlpFormatError);
     expect(LiteSlpFormatError).toBe(SlpFormatError);

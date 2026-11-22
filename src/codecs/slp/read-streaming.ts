@@ -475,8 +475,9 @@ export async function readSlpStreaming(
         ? source.name
         : (options?.filenameHint ?? "slp-data.slp");
 
+  let labels: Labels;
   try {
-    return await readFromStreamingFile(
+    labels = await readFromStreamingFile(
       file,
       sourcePath,
       options?.filenameHint,
@@ -488,14 +489,20 @@ export async function readSlpStreaming(
       options?.userInstancesOnly ?? false,
       options?.repairPointSpans ?? false,
     );
-  } finally {
-    // Keep the file open when video backends need it: eager (openVideos) OR
-    // deferred (lazyVideoMetadata), whose per-video backends read frame data on
-    // demand from this same StreamingH5File. Only close for pure metadata reads.
-    if (!openVideos && !lazyVideoMetadata) {
-      await file.close();
-    }
+  } catch (e) {
+    // A failed read returns no Labels, so no video backend can need the file.
+    // Close it, which also ends its worker: a refused file (SlpFormatError) is
+    // an ordinary outcome and must not leave a worker running each time.
+    await file.close().catch(() => {});
+    throw e;
   }
+  // Keep the file open when video backends need it: eager (openVideos) OR
+  // deferred (lazyVideoMetadata), whose per-video backends read frame data on
+  // demand from this same StreamingH5File. Only close for pure metadata reads.
+  if (!openVideos && !lazyVideoMetadata) {
+    await file.close();
+  }
+  return labels;
 }
 
 /**

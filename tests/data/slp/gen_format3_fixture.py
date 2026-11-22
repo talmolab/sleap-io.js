@@ -1,6 +1,6 @@
 """Generate the fixtures for tests/slp-format-refusal.test.ts.
 
-Writes four small synthetic files next to this script:
+Writes five small synthetic files next to this script:
 
 - `format3_minimal.slp`: SLP format 3.0 (one dataset per column), written by
   Python sleap-io. sleap-io.js does not read this layout yet and must refuse it.
@@ -19,8 +19,11 @@ The committed fixtures were written with Python sleap-io 0.10.0 from the
     uv run --with "sleap-io @ git+https://github.com/talmolab/sleap-io@fe4f91c7b" \
         python tests/data/slp/gen_format3_fixture.py
 
-The script asks for each layout explicitly and then checks what landed on disk,
-so it keeps producing a format 3.0 file whatever sleap-io's default layout is.
+The script asks for each layout explicitly: with `slp_version="v2"` / `"v3"`
+when `save_slp` has that option, and with `legacy_format` otherwise. It then
+checks what landed on disk and stops if a file is not in the layout it asked
+for, so a change in sleap-io's default layout or option names cannot put a
+wrong fixture here without anyone noticing. If it stops, update `save_as`.
 """
 
 from __future__ import annotations

@@ -11,6 +11,8 @@
  * module has no HDF5 dependency, so the lite (jsfive) reader shares it.
  */
 
+import { isUrl, redactUrl } from "../../io/remote.js";
+
 /**
  * The first `format_id` this version of sleap-io.js cannot read. Formats 1.x
  * and 2.x store the pose tables as compound datasets. Format 3.0 (Python
@@ -33,6 +35,7 @@ export const SLP_SUPPORTED_FEATURES: ReadonlySet<string> = new Set<string>();
  * {@link SLP_SUPPORTED_FEATURES}.
  *
  * The message names the file and its format and says which tool can read it.
+ * `labelsPath` is the file's path or name, with URL credentials masked.
  * `formatId` is the file's `format_id` (`null` when the file has none);
  * `unsupportedFeatures` lists the required features this version doesn't know
  * (empty when the format number alone caused the refusal).
@@ -110,15 +113,18 @@ function formatLabel(formatId: number): string {
  * sleap-io.js cannot read. Files without a `format_id` attribute pass, as
  * before.
  *
- * @param labelsPath Path or name of the SLP file (used in the message).
+ * @param source Path, URL or name of the SLP file. It goes into the message
+ *   and the error's `labelsPath`; credentials in a URL (userinfo, token query
+ *   parameters) are masked first.
  * @param metadataAttrs The attributes of the file's `/metadata` group, as any
  *   of the HDF5 backends returns them.
  */
 export function checkSlpFormat(
-  labelsPath: string,
+  source: string,
   metadataAttrs: Record<string, unknown> | null | undefined,
 ): void {
   const attrs = metadataAttrs ?? {};
+  const labelsPath = isUrl(source) ? redactUrl(source) : source;
 
   const rawFormatId = attrValue(attrs.format_id);
   const formatId =
