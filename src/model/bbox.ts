@@ -4,6 +4,7 @@ import type { SegmentationMask } from "./mask.js";
 import { ROI } from "./roi.js";
 import type { Identity } from "./identity.js";
 import type { Embedding } from "./embedding.js";
+import type { RecordMetadata } from "./record-metadata.js";
 import {
   Centroid,
   PredictedCentroid,
@@ -71,6 +72,8 @@ export interface BoundingBoxOptions {
   category?: string;
   name?: string;
   source?: string;
+  /** Per-box values (see {@link BoundingBox.metadata}). */
+  metadata?: RecordMetadata;
 }
 
 /** Base bounding box class for detection/tracking workflows. */
@@ -93,6 +96,12 @@ export class BoundingBox {
   category: string;
   name: string;
   source: string;
+  /**
+   * Per-box values (bool, number or string), stored by SLP format 3.0 in
+   * `/bboxes/metadata`. The 2.x layout this version writes cannot store them,
+   * so a save drops them (see `saveSlpToBytes`).
+   */
+  metadata: RecordMetadata;
   /** @internal Deferred instance index for lazy resolution. */
   _instanceIdx: number | null = null;
 
@@ -113,6 +122,7 @@ export class BoundingBox {
     this.category = options.category ?? "";
     this.name = options.name ?? "";
     this.source = options.source ?? "";
+    this.metadata = options.metadata ? { ...options.metadata } : {};
   }
 
   /** Create from corner coordinates [x1, y1, x2, y2]. */
@@ -294,6 +304,7 @@ export class BoundingBox {
       category: this.category,
       name: this.name,
       source: this.source,
+      metadata: this.metadata,
     };
     const out =
       this instanceof PredictedBoundingBox

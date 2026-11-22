@@ -1290,6 +1290,7 @@ export class Labels {
           track: newTrack,
           score: inst.score,
           trackingScore: inst.trackingScore,
+          metadata: inst.metadata,
         });
       }
       const ni = new Instance({
@@ -1297,6 +1298,7 @@ export class Labels {
         skeleton: newSkeleton,
         track: newTrack,
         trackingScore: inst.trackingScore,
+        metadata: inst.metadata,
       });
       // fromPredicted can't be fully remapped (would need global instance identity),
       // so we leave it null on the copy.
@@ -1387,6 +1389,7 @@ export class Labels {
               masks: cloneAncillary(lf.masks) as SegmentationMask[],
               labelImages: cloneAncillary(lf.labelImages) as LabelImage[],
               rois: cloneAncillary(lf.rois) as ROI[],
+              metadata: lf.metadata,
             });
           },
         );
@@ -1440,6 +1443,7 @@ export class Labels {
           masks: cloneAncillary(f.masks) as SegmentationMask[],
           labelImages: cloneAncillary(f.labelImages) as LabelImage[],
           rois: cloneAncillary(f.rois) as ROI[],
+          metadata: f.metadata,
         });
         frameMap.set(f, nf);
         return nf;
@@ -1831,6 +1835,7 @@ export class Labels {
         track: mappedTrack,
         trackingScore: predicted.trackingScore,
         fromPredicted: predicted.fromPredicted,
+        metadata: predicted.metadata,
       });
     } else {
       newInstance = new Instance({
@@ -1839,6 +1844,7 @@ export class Labels {
         track: mappedTrack,
         trackingScore: instance.trackingScore,
         fromPredicted: instance.fromPredicted,
+        metadata: instance.metadata,
       });
     }
     if (memo !== undefined) memo.set(instance, newInstance);
@@ -2151,6 +2157,7 @@ export class Labels {
             frameIdx: mappedFrameIdx,
             instances: [],
             isNegative: otherFrame.isNegative,
+            metadata: otherFrame.metadata,
           });
           const instanceMemo = new Map<object, object>();
           for (const inst of otherFrame.instances) {
@@ -3078,6 +3085,7 @@ export class Labels {
           track: newTrack,
           score: predicted.score,
           trackingScore: predicted.trackingScore,
+          metadata: predicted.metadata,
         });
       }
       return new Instance({
@@ -3085,6 +3093,7 @@ export class Labels {
         skeleton: newSkeleton,
         track: newTrack,
         trackingScore: inst.trackingScore,
+        metadata: inst.metadata,
       });
     };
 
@@ -3107,6 +3116,14 @@ export class Labels {
         // Drop instance back-refs (cannot be remapped without global identity).
         if ("instance" in anyClone) {
           anyClone.instance = null;
+        }
+        // Per-record metadata (bounding boxes): an independent dictionary.
+        if (
+          anyClone.metadata !== null &&
+          typeof anyClone.metadata === "object" &&
+          !Array.isArray(anyClone.metadata)
+        ) {
+          anyClone.metadata = { ...(anyClone.metadata as object) };
         }
         // LabelImage: copy the objects Map and remap nested track refs.
         if ("objects" in anyClone && anyClone.objects instanceof Map) {
@@ -3140,6 +3157,7 @@ export class Labels {
           masks: cloneAncillary(f.masks) as SegmentationMask[],
           labelImages: cloneAncillary(f.labelImages) as LabelImage[],
           rois: cloneAncillary(f.rois) as ROI[],
+          metadata: f.metadata,
         }),
     );
   }

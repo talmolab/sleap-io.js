@@ -6,6 +6,7 @@ import { SegmentationMask, PredictedSegmentationMask } from "./mask.js";
 import { LabelImage } from "./label-image.js";
 import { ROI } from "./roi.js";
 import { InstanceMatcher, InstanceMatchMethod } from "./matching.js";
+import type { RecordMetadata } from "./record-metadata.js";
 
 /** Strategy for merging annotation lists between frames. */
 export type MergeStrategy =
@@ -378,6 +379,12 @@ export class LabeledFrame {
   masks: SegmentationMask[];
   labelImages: LabelImage[];
   rois: ROI[];
+  /**
+   * Per-frame values (bool, number or string), stored by SLP format 3.0 in
+   * `/frames/metadata`. The 2.x layout this version writes cannot store them,
+   * so a save drops them (see `saveSlpToBytes`).
+   */
+  metadata: RecordMetadata;
 
   constructor(options: {
     video: Video;
@@ -389,6 +396,7 @@ export class LabeledFrame {
     masks?: SegmentationMask[];
     labelImages?: LabelImage[];
     rois?: ROI[];
+    metadata?: RecordMetadata;
   }) {
     this.video = options.video;
     this.frameIdx = options.frameIdx;
@@ -399,6 +407,7 @@ export class LabeledFrame {
     this.masks = options.masks ?? [];
     this.labelImages = options.labelImages ?? [];
     this.rois = options.rois ?? [];
+    this.metadata = options.metadata ? { ...options.metadata } : {};
   }
 
   get length(): number {
@@ -674,6 +683,9 @@ export class LabeledFrame {
     const frame = opts.frame ?? "auto";
 
     const conflicts: Array<[Instance, Instance, string]> = [];
+    // Frame metadata: this frame's keys win, the other's fill in (Python
+    // `merge_metadata`).
+    this.metadata = { ...other.metadata, ...this.metadata };
 
     if (frame === "keep_original") {
       this.mergeAnnotations(other, "keep_original");
