@@ -8,11 +8,13 @@
 //
 // Channel order: embedded frames may be stored with "BGR" channel order (the
 // `channel_order` attribute; files below format 1.4 default to BGR). This
-// module owns the red/blue swap: every decode here that is given a stored
-// channel order returns RGB pixels. A frame a backend hands out still encoded
-// (or as raw pixel bytes) is in its stored order
-// (`VideoBackend.embeddedChannelOrder`); a decoded frame (`ImageBitmap`,
-// `ImageData`) is always RGB, so it is never swapped again.
+// module owns the red/blue swap. Outside the browser decode of the embedded
+// backends it follows Python sleap-io: the order applies only to encoded
+// (PNG/JPEG) images with exactly 3 color channels ({@link needsRedBlueSwap});
+// raw pixel bytes and images with alpha are returned as stored. A frame a
+// backend hands out still encoded (or as raw pixel bytes) is in its stored
+// order (`VideoBackend.embeddedChannelOrder`); a decoded frame (`ImageBitmap`,
+// `ImageData`) is already in display order, so it is never swapped again.
 //
 // Browser-safe: this module never statically imports a Node-only decoder.
 // Decoding/rasterizing uses `createImageBitmap` + `OffscreenCanvas` when
@@ -28,6 +30,94 @@ export function isBgrOrder(channelOrder: string | null | undefined): boolean {
   return (
     typeof channelOrder === "string" && channelOrder.toUpperCase() === "BGR"
   );
+}
+
+/**
+ * Number of channels an encoded PNG/JPEG image decodes to, as Python sleap-io
+ * (imageio) reads it, or `null` when the header can't be read.
+ *
+ * PNG: from the IHDR color type (gray 1, gray+alpha 2, RGB 3, RGBA 4; a
+ * palette image is 3 channels, or 4 with a `tRNS` transparency chunk). JPEG:
+ * the component count of the first start-of-frame segment.
+ */
+export function encodedChannelCount(bytes: Uint8Array): number | null {
+  const png =
+    bytes.length >= 26 &&
+    bytes[0] === 0x89 &&
+    bytes[1] === 0x50 &&
+    bytes[2] === 0x4e &&
+    bytes[3] === 0x47;
+  if (png) {
+    const colorType = bytes[25];
+    if (colorType === 0) return 1;
+    if (colorType === 2) return 3;
+    if (colorType === 4) return 2;
+    if (colorType === 6) return 4;
+    if (colorType === 3) return pngHasChunk(bytes, "tRNS") ? 4 : 3;
+    return null;
+  }
+  const jpeg =
+    bytes.length >= 4 &&
+    bytes[0] === 0xff &&
+    bytes[1] === 0xd8 &&
+    bytes[2] === 0xff;
+  if (!jpeg) return null;
+  let i = 2;
+  while (i + 4 <= bytes.length) {
+    if (bytes[i] !== 0xff) return null;
+    const marker = bytes[i + 1];
+    if (marker === 0xff) {
+      i += 1; // fill byte
+      continue;
+    }
+    const length = (bytes[i + 2] << 8) | bytes[i + 3];
+    const isSof =
+      marker >= 0xc0 &&
+      marker <= 0xcf &&
+      marker !== 0xc4 &&
+      marker !== 0xc8 &&
+      marker !== 0xcc;
+    if (isSof) return i + 9 < bytes.length ? bytes[i + 9] : null;
+    if (marker === 0xda || marker === 0xd9) return null; // scan data / end
+    i += 2 + length;
+  }
+  return null;
+}
+
+/** Whether a PNG has a chunk of `type` before its image data. */
+function pngHasChunk(bytes: Uint8Array, type: string): boolean {
+  let i = 8;
+  while (i + 8 <= bytes.length) {
+    const length =
+      ((bytes[i] << 24) |
+        (bytes[i + 1] << 16) |
+        (bytes[i + 2] << 8) |
+        bytes[i + 3]) >>>
+      0;
+    const name = String.fromCharCode(
+      bytes[i + 4],
+      bytes[i + 5],
+      bytes[i + 6],
+      bytes[i + 7],
+    );
+    if (name === type) return true;
+    if (name === "IDAT" || name === "IEND") return false;
+    i += 12 + length;
+  }
+  return false;
+}
+
+/**
+ * Whether decoding these encoded image bytes, stored in `channelOrder`, swaps
+ * red and blue: the order is "BGR" and the image has exactly 3 channels.
+ * Python sleap-io applies the same rule (`HDF5Video.decode_embedded`); a gray
+ * image has nothing to swap and an image with alpha is returned as stored.
+ */
+export function needsRedBlueSwap(
+  bytes: Uint8Array,
+  channelOrder: string | null | undefined,
+): boolean {
+  return isBgrOrder(channelOrder) && encodedChannelCount(bytes) === 3;
 }
 
 /**
@@ -189,11 +279,12 @@ export function isEncodedBytes(bytes: Uint8Array): boolean {
  * - `ImageData`-shaped: returned as-is (already RGB).
  * - `ImageBitmap`: rasterized to `ImageData` (OffscreenCanvas / skia-canvas).
  * - Encoded bytes (PNG/JPEG): decoded to `ImageData`, swapping red and blue
- *   when `channelOrder` is "BGR".
+ *   when `channelOrder` is "BGR" and the image has 3 channels
+ *   ({@link needsRedBlueSwap}).
  * - Raw pixel bytes: wrapped as a {@link RawFrame} using `rawShape`'s
  *   width/height/channels (the `[frames, height, width, channels]` shape of
- *   the backend that produced `frame`); copied with red and blue swapped when
- *   `channelOrder` is "BGR" and there are at least 3 channels.
+ *   the backend that produced `frame`), in their stored order. As in Python
+ *   sleap-io, the channel order is not applied to raw pixels.
  *
  * @param channelOrder Stored channel order of the producing backend
  *   (`VideoBackend.embeddedChannelOrder`). Applies only to undecoded bytes.
@@ -225,11 +316,6 @@ export async function toReadableFrame(
     );
   }
   const [, height, width, channels] = rawShape;
-  if (isBgrOrder(channelOrder) && channels >= 3) {
-    const data = bytes.slice(0, width * height * channels);
-    swapRedBlue(data, channels);
-    return { data, width, height, channels };
-  }
   return { data: bytes, width, height, channels };
 }
 
@@ -237,14 +323,15 @@ export async function toReadableFrame(
  * Decode encoded (PNG/JPEG/…) image bytes to RGBA `ImageData` (browser / skia).
  *
  * @param channelOrder Stored channel order of the bytes. "BGR" swaps red and
- *   blue after decoding so the result is RGB; anything else is left as is.
+ *   blue after decoding a 3-channel image so the result is RGB
+ *   ({@link needsRedBlueSwap}); anything else is left as is.
  */
 export async function decodeEncoded(
   bytes: Uint8Array,
   channelOrder?: string,
 ): Promise<ImageData> {
   const img = await decodeEncodedPixels(bytes);
-  if (isBgrOrder(channelOrder)) swapRedBlue(img.data, 4);
+  if (needsRedBlueSwap(bytes, channelOrder)) swapRedBlue(img.data, 4);
   return img;
 }
 
@@ -322,7 +409,10 @@ export async function decodeEmbeddedImage(
   // Images encoded by OpenCV are stored BGR: rasterize, then swap.
   const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
   const ctx = canvas.getContext("2d");
-  if (!ctx) return bitmap;
+  if (!ctx) {
+    // Returning the bitmap would hand out BGR pixels as if they were RGB.
+    throw new Error("Failed to get a 2D context to decode a BGR frame");
+  }
   ctx.drawImage(bitmap, 0, 0);
   const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
   swapRedBlue(imageData.data, 4);

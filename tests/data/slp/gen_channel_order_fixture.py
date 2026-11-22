@@ -25,8 +25,7 @@ opencv-python 5.1.0.
 
 Run
 ---
-    NUMPY_MADVISE_HUGEPAGE=0 OMP_NUM_THREADS=8 python \\
-        tests/data/slp/gen_channel_order_fixture.py
+    python tests/data/slp/gen_channel_order_fixture.py
 
 The packages are saved with ``legacy_format=True`` (the SLP 2.x layout), which
 readers below SLP format 3.0 can open.

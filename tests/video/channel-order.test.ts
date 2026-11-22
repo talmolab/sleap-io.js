@@ -10,7 +10,8 @@
  * - the crop and grayscale wrappers, which decode those bytes themselves;
  * - the streaming embedded backend (channel order read from the dataset
  *   attributes on first use);
- * - the new-embed payload, which re-encodes frames as RGB;
+ * - the new-embed payload and the in-memory package writer, which re-encode
+ *   frames as RGB;
  * - the browser branch of the embedded backend, which decodes in `getFrame`
  *   (simulated here with skia-canvas standing in for the browser APIs).
  *
@@ -18,11 +19,18 @@
  * by Python sleap-io (`gen_channel_order_fixture.py`). Each holds one 32x32
  * frame with four solid 16x16 quadrants. The decode uses skia-canvas on Node;
  * if it is missing these tests fail rather than skip.
+ *
+ * As in Python sleap-io, the order applies only to encoded images with exactly
+ * 3 channels: gray images, images with alpha and raw pixel bytes are returned
+ * as stored.
  */
 import { describe, it, expect, vi, afterEach } from "../bun-test";
 import { fileURLToPath } from "node:url";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { readSlp } from "../../src/codecs/slp/read.js";
+import { saveSlpToBytes } from "../../src/codecs/slp/write.js";
 import { openH5File } from "../../src/codecs/slp/h5.js";
 import { toEncodeFramePayload } from "../../src/codecs/slp/stream-embed.js";
 import type { StreamingH5File } from "../../src/codecs/slp/h5-streaming.js";
@@ -33,9 +41,17 @@ import { Hdf5VideoBackend } from "../../src/video/hdf5-video.js";
 import { StreamingHdf5VideoBackend } from "../../src/video/streaming-hdf5-video.js";
 import {
   decodeEncoded,
+  encodedChannelCount,
+  needsRedBlueSwap,
   swapRedBlue,
   toReadableFrame,
 } from "../../src/video/image-decode.js";
+import { encodePngPixels } from "../../src/video/png-encode.js";
+import { Labels } from "../../src/model/labels.js";
+import { Video } from "../../src/model/video.js";
+import { Skeleton } from "../../src/model/skeleton.js";
+import { LabeledFrame } from "../../src/model/labeled-frame.js";
+import { Instance } from "../../src/model/instance.js";
 
 const SLP_DIR = fileURLToPath(new URL("../data/slp", import.meta.url));
 
@@ -104,11 +120,7 @@ describe("channel order: decoder availability", () => {
   it("skia-canvas is installed, so the Node decode below really runs", async () => {
     const sc = await import("skia-canvas");
     expect(typeof sc.loadImage).toBe("function");
-    const canvas = new sc.Canvas(2, 1);
-    const ctx = canvas.getContext("2d");
-    ctx.fillStyle = "rgb(200, 100, 50)";
-    ctx.fillRect(0, 0, 2, 1);
-    const png = new Uint8Array(await canvas.toBuffer("png"));
+    const png = await encodePngPixels(Uint8Array.from([200, 100, 50]), 1, 1, 3);
     const img = await decodeEncoded(png, "BGR");
     expect(pixel(img, 0, 0)).toEqual([50, 100, 200, 255]);
   }, 60_000);
@@ -127,22 +139,94 @@ describe("channel order: shared decoder", () => {
     expect(Array.from(gray)).toEqual([1, 2, 3]);
   });
 
-  it("toReadableFrame swaps raw BGR pixel bytes into a copy", async () => {
-    const stored = Uint8Array.from([10, 20, 30, 40, 50, 60]); // 2x1 BGR
-    const out = (await toReadableFrame(
-      stored as unknown as VideoFrame,
+  it("toReadableFrame returns raw pixel bytes as stored, as Python reads them", async () => {
+    const stored = Uint8Array.from([10, 20, 30, 40, 50, 60]); // 2x1, 3 channels
+    for (const order of ["BGR", "RGB"]) {
+      const out = (await toReadableFrame(
+        stored as unknown as VideoFrame,
+        [1, 1, 2, 3],
+        order,
+      )) as Pixels;
+      expect(Array.from(out.data)).toEqual([10, 20, 30, 40, 50, 60]);
+    }
+  });
+
+  it("swaps only 3-channel encoded images (gray and alpha images stay as stored)", async () => {
+    const rgb = await encodePngPixels(Uint8Array.from([200, 100, 50]), 1, 1, 3);
+    const rgba = await encodePngPixels(
+      Uint8Array.from([200, 100, 50, 255]),
+      1,
+      1,
+      4,
+    );
+    const gray = await encodePngPixels(Uint8Array.from([90]), 1, 1, 1);
+    expect(encodedChannelCount(rgb)).toBe(3);
+    expect(encodedChannelCount(rgba)).toBe(4);
+    expect(encodedChannelCount(gray)).toBe(1);
+    expect(needsRedBlueSwap(rgb, "BGR")).toBe(true);
+    expect(needsRedBlueSwap(rgb, "bgr")).toBe(true);
+    expect(needsRedBlueSwap(rgb, "RGB")).toBe(false);
+    expect(needsRedBlueSwap(rgba, "BGR")).toBe(false);
+    expect(needsRedBlueSwap(gray, "BGR")).toBe(false);
+    expect(needsRedBlueSwap(Uint8Array.from([1, 2, 3, 4]), "BGR")).toBe(false);
+    expect(pixel(await decodeEncoded(rgb, "BGR"), 0, 0)).toEqual([
+      50, 100, 200, 255,
+    ]);
+    expect(pixel(await decodeEncoded(rgba, "BGR"), 0, 0)).toEqual([
+      200, 100, 50, 255,
+    ]);
+    expect(pixel(await decodeEncoded(gray, "BGR"), 0, 0)).toEqual([
+      90, 90, 90, 255,
+    ]);
+  });
+
+  it("reads a JPEG's component count from its start-of-frame header", () => {
+    // SOI, an APP0 segment, then SOF0 with 1 or 3 components.
+    const jpeg = (components: number) =>
+      Uint8Array.from([
+        0xff,
+        0xd8,
+        0xff,
+        0xe0,
+        0x00,
+        0x04,
+        0x00,
+        0x00,
+        0xff,
+        0xc0,
+        0x00,
+        0x0b,
+        0x08,
+        0x00,
+        0x01,
+        0x00,
+        0x01,
+        components,
+      ]);
+    expect(encodedChannelCount(jpeg(1))).toBe(1);
+    expect(encodedChannelCount(jpeg(3))).toBe(3);
+    expect(needsRedBlueSwap(jpeg(1), "BGR")).toBe(false);
+    expect(needsRedBlueSwap(jpeg(3), "BGR")).toBe(true);
+  });
+
+  it("new-embed payload keeps raw pixels and gray PNGs as stored", async () => {
+    const raw = Uint8Array.from([10, 20, 30, 40, 50, 60]);
+    const payload = await toEncodeFramePayload(
+      raw as unknown as VideoFrame,
       [1, 1, 2, 3],
       "BGR",
-    )) as Pixels;
-    expect(Array.from(out.data)).toEqual([30, 20, 10, 60, 50, 40]);
-    expect(Array.from(stored)).toEqual([10, 20, 30, 40, 50, 60]);
-    // RGB (or no order) leaves the bytes as they are.
-    const same = (await toReadableFrame(
-      stored as unknown as VideoFrame,
-      [1, 1, 2, 3],
-      "RGB",
-    )) as Pixels;
-    expect(Array.from(same.data)).toEqual([10, 20, 30, 40, 50, 60]);
+    );
+    expect(payload.kind).toBe("pixels");
+    if (payload.kind === "pixels") {
+      expect(Array.from(payload.data)).toEqual([10, 20, 30, 40, 50, 60]);
+    }
+    const gray = await encodePngPixels(Uint8Array.from([90]), 1, 1, 1);
+    const grayPayload = await toEncodeFramePayload(
+      gray as unknown as VideoFrame,
+      undefined,
+      "BGR",
+    );
+    expect(grayPayload.kind).toBe("png");
   });
 
   it("toReadableFrame leaves decoded ImageData alone whatever the order", async () => {
@@ -219,12 +303,57 @@ describe.each(CASES)("channel order: $file (Node)", ({ file, order, tol }) => {
     gray.close();
   });
 
+  // Autodetect compares red with blue, so its answer does not depend on the
+  // channel order; these check the branches decode and return RGB frames.
   it("grayscale autodetect sees a color frame", async () => {
     const inner = await openEmbedded(file);
     const gray = GrayscaleVideoBackend.wrap({ inner, grayscale: null });
     await gray.getFrame(0);
     expect(gray.grayscale).toBe(false);
     gray.close();
+  });
+
+  it("grayscale autodetect over crop decodes the full frame and returns RGB", async () => {
+    const inner = await openEmbedded(file);
+    const crop = CropVideoBackend.wrap({ inner, crop: [0, 0, 16, 32] });
+    const gray = GrayscaleVideoBackend.wrap({ inner: crop, grayscale: null });
+    const img = (await gray.getFrame(0)) as unknown as Pixels;
+    expect(gray.grayscale).toBe(false);
+    expectColor(pixel(img, 8, 8), [220, 30, 40], tol, "autodetect crop red");
+    expectColor(pixel(img, 8, 24), [40, 50, 210], tol, "autodetect crop blue");
+    gray.close();
+  });
+
+  it("in-memory package writer saves a new embed from it as RGB", async () => {
+    const backend = await openEmbedded(file);
+    // A video that is not marked embedded, so saving re-embeds its frames.
+    const video = new Video({ filename: "source.h5", backend });
+    const skeleton = new Skeleton({ nodes: ["A"] });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({
+          video,
+          frameIdx: 0,
+          instances: [new Instance({ points: { A: [1, 2] }, skeleton })],
+        }),
+      ],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+    const out = path.join(
+      fs.mkdtempSync(path.join(os.tmpdir(), "channel-order-")),
+      "out.pkg.slp",
+    );
+    fs.writeFileSync(out, await saveSlpToBytes(labels, { embed: "user" }));
+    const saved = await readSlp(out, { openVideos: true });
+    const reread = saved.videos[0].backend!;
+    expect(reread.embeddedChannelOrder).toBe("RGB");
+    const frame = (await reread.getFrame(0)) as VideoFrame;
+    expectQuadrants(
+      await toReadableFrame(frame, reread.shape, "RGB"),
+      tol,
+      "saved",
+    );
   });
 
   it("new-embed payload is RGB", async () => {

@@ -19,11 +19,10 @@ import type { VideoBackend, VideoFrame } from "../../video/backend.js";
 import { GrayscaleVideoBackend } from "../../video/grayscale-backend.js";
 import {
   decodeEncoded,
-  isBgrOrder,
   isEncodedBytes,
   isImageBitmapLike,
   isImageDataLike,
-  swapRedBlue,
+  needsRedBlueSwap,
 } from "../../video/image-decode.js";
 import {
   ExportCancelled,
@@ -131,7 +130,8 @@ function isPng(bytes: Uint8Array): boolean {
  * Turn a decoded frame into a payload the worker owns (copied/cloned), in RGB
  * channel order (the order the new embed records). `channelOrder` is the
  * source's stored order (`VideoBackend.embeddedChannelOrder`); it applies only
- * to undecoded bytes, which are swapped to RGB when it is "BGR".
+ * to undecoded 3-channel PNG/JPEG bytes, which are swapped to RGB when it is
+ * "BGR" (raw pixel bytes are passed on as stored, as Python reads them).
  */
 export async function toEncodeFramePayload(
   frame: VideoFrame,
@@ -166,10 +166,10 @@ export async function toEncodeFramePayload(
       ? new Uint8Array(frame)
       : (frame as unknown as Uint8Array);
   if (isEncodedBytes(bytes)) {
-    const bgr = isBgrOrder(channelOrder);
-    if (isPng(bytes) && !bgr) return { kind: "png", bytes: bytes.slice() };
+    const swap = needsRedBlueSwap(bytes, channelOrder);
+    if (isPng(bytes) && !swap) return { kind: "png", bytes: bytes.slice() };
     // Stored as an RGB PNG like every other frame, so re-encode (e.g. a JPEG,
-    // or a BGR PNG).
+    // or a BGR color PNG).
     const img = await decodeEncoded(bytes, channelOrder);
     return {
       kind: "pixels",
@@ -186,11 +186,9 @@ export async function toEncodeFramePayload(
     );
   }
   const [, height, width, channels] = rawShape;
-  const data = bytes.slice();
-  if (isBgrOrder(channelOrder)) swapRedBlue(data, channels);
   return {
     kind: "pixels",
-    data,
+    data: bytes.slice(),
     width,
     height,
     channels,
