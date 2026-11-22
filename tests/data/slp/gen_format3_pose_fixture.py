@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import inspect
 import json
+import os
 import shutil
 from pathlib import Path
 
@@ -216,10 +217,104 @@ def repack(path: Path) -> None:
     tmp.replace(path)
 
 
+def scrub_paths(path: Path) -> None:
+    """Make the paths of this directory in a file's strings relative.
+
+    An embedding save records where the package and its source were written
+    (videos, source video, provenance). The fixtures are public, so the
+    directory they were generated in must not be stored.
+    """
+    prefixes = [str(HERE) + os.sep, str(HERE.resolve()) + os.sep]
+
+    def scrub(text: str) -> str:
+        for prefix in prefixes:
+            text = text.replace(prefix, "")
+            # JSON-escaped forms of the same prefix.
+            text = text.replace(prefix.replace("/", "\\/"), "")
+        return text
+
+    def visit_attrs(obj) -> None:
+        for key, value in list(obj.attrs.items()):
+            if isinstance(value, bytes):
+                new = scrub(value.decode()).encode()
+                if new != value:
+                    obj.attrs[key] = np.bytes_(new)
+            elif isinstance(value, str):
+                new = scrub(value)
+                if new != value:
+                    obj.attrs[key] = new
+
+    with h5py.File(path, "r+") as f:
+        visit_attrs(f)
+        names: list[str] = []
+        f.visit(names.append)
+        for name in names:
+            obj = f[name]
+            visit_attrs(obj)
+            if (
+                isinstance(obj, h5py.Dataset)
+                and h5py.check_string_dtype(obj.dtype) is not None
+                and obj.ndim == 1
+            ):
+                values = obj.asstr()[()].tolist()
+                new = [scrub(v) for v in values]
+                if new != values:
+                    obj[...] = np.array(new, dtype=obj.dtype)
+
+
+def assert_no_machine_paths(path: Path) -> None:
+    """Fail if a fixture stores an absolute path of the machine that wrote it."""
+    raw = path.read_bytes()
+    needles = {
+        str(HERE),
+        str(HERE.resolve()),
+        str(Path.home()),
+        str(Path.cwd().resolve()),
+        "/scr/",
+        "/home/",
+        "/Users/",
+        "/tmp/",
+    }
+    found = sorted(n for n in needles if n.encode() in raw)
+    assert not found, f"{path.name} stores machine paths: {found}"
+    # Strings inside datasets and attributes, decoded (in case of compression).
+    with h5py.File(path, "r") as f:
+        texts: list[str] = []
+
+        def collect(obj) -> None:
+            for value in obj.attrs.values():
+                if isinstance(value, (bytes, str)):
+                    texts.append(value.decode() if isinstance(value, bytes) else value)
+
+        collect(f)
+        names: list[str] = []
+        f.visit(names.append)
+        for name in names:
+            obj = f[name]
+            collect(obj)
+            if (
+                isinstance(obj, h5py.Dataset)
+                and h5py.check_string_dtype(obj.dtype) is not None
+            ):
+                texts.extend(
+                    str(v) for v in np.atleast_1d(obj.asstr()[()]).ravel().tolist()
+                )
+    found = sorted({n for n in needles for t in texts if n in t})
+    assert not found, f"{path.name} stores machine paths: {found}"
+
+
 def make_embedded_fixture(path: Path) -> None:
     """Write `format3_embedded.pkg.slp` (see the module docstring)."""
-    labels = sio.load_slp(str(HERE / "minimal_instance.pkg.slp"))
-    sio.save_slp(labels, str(path), legacy_format=False, embed=True)
+    # Load and save by relative paths from this directory, then make any path
+    # the save still recorded relative (see scrub_paths).
+    cwd = Path.cwd()
+    os.chdir(HERE)
+    try:
+        labels = sio.load_slp("minimal_instance.pkg.slp")
+        sio.save_slp(labels, path.name, legacy_format=False, embed=True)
+    finally:
+        os.chdir(cwd)
+    scrub_paths(path)
     with h5py.File(path, "r+") as f:
         assert float(f["metadata"].attrs["format_id"]) >= 3.0
         assert isinstance(f["points"], h5py.Group)
@@ -274,7 +369,24 @@ def main() -> None:
             f"{sum(len(lf.instances) for lf in check)} instances, "
             f"negative {[lf.frame_idx for lf in check if lf.is_negative]}"
         )
+    # Every file this script writes is public: none may name this machine.
+    for name in WRITTEN:
+        assert_no_machine_paths(HERE / name)
+    print(f"no machine paths in the {len(WRITTEN)} fixtures")
     print("sleap-io", sio.__version__)
+
+
+#: Every fixture this script writes.
+WRITTEN = (
+    "format3_pose.slp",
+    "format3_pose.v2.slp",
+    "format3_unlabeled.slp",
+    "format3_rois_stub.slp",
+    "format3_metadata.slp",
+    "format3_defaults.slp",
+    "format3_bad_frame_id.slp",
+    "format3_embedded.pkg.slp",
+)
 
 
 if __name__ == "__main__":
