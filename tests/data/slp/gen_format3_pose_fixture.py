@@ -12,6 +12,15 @@ Writes four small synthetic files next to this script:
   point marked as not labelled, and metadata on a frame and on an instance.
 - `format3_rois_stub.slp`: `format3_pose.slp` with an empty `/rois` group added,
   standing in for a format 3.0 file with a table that is not read yet.
+- `format3_metadata.slp`: format 3.0 with unlabelled user and predicted points,
+  metadata of every kind (bool, int, float, string) on instances, frames and
+  bounding boxes, some records lacking a key (so `present` is written), extra
+  columns this reader does not know in every pose table and in `/bboxes`, and
+  members of `metadata/` that readers must ignore.
+- `format3_defaults.slp`: `format3_pose.slp` without any optional column, so
+  every reader falls back to the defaults of the 3.0 reading rules.
+- `format3_bad_frame_id.slp`: `format3_pose.slp` with an instance whose
+  `frame_id` names the wrong frame, which the 3.0 range checks refuse.
 
 The committed fixtures were written with Python sleap-io 0.10.0 from the
 `release/0.10` branch (commit fe4f91c7b), which is not on PyPI yet:
@@ -118,6 +127,90 @@ def make_labels() -> sio.Labels:
     )
 
 
+def add_column(f: h5py.File, table: str, name: str, data) -> None:
+    """Add a column to a 3.0 table, as a newer writer might."""
+    f[table].create_dataset(name, data=data)
+
+
+def make_metadata_fixture(path: Path) -> None:
+    """Write `format3_metadata.slp` (see the module docstring)."""
+    labels = make_labels()
+    f0, f5, _, f7 = labels.labeled_frames
+    user, pred = f0.instances
+    user.set_unlabeled("tail")
+    pred.set_unlabeled("head")
+    user.metadata.update(
+        {"annotator": "someone", "reviewed": True, "pass": 2, "quality": 0.5}
+    )
+    pred.metadata.update({"reviewed": False, "pass": 1, "quality": 0.25})
+    f5.instances[0].metadata.update({"pass": 3})
+    f0.metadata.update({"note": "frame note", "flagged": True})
+    f7.metadata.update({"note": "negative"})
+    f0.bboxes.append(
+        sio.UserBoundingBox(
+            x1=1.0, y1=2.0, x2=3.0, y2=4.0, metadata={"source_id": 7, "label": "box"}
+        )
+    )
+    f0.bboxes.append(
+        sio.PredictedBoundingBox(x1=5.0, y1=6.0, x2=7.0, y2=8.0, score=0.5)
+    )
+    save_as(labels, path, "v3")
+    with h5py.File(path, "r+") as f:
+        row_column = {
+            "frames": "frame_idx",
+            "instances": "instance_type",
+            "points": "x",
+            "pred_points": "x",
+            "bboxes": "x1",
+        }
+        for table, column in row_column.items():
+            n = len(f[f"{table}/{column}"])
+            add_column(f, table, "extra", np.arange(n, dtype=float))
+        # Members of `metadata/` that are not a key: readers ignore them.
+        f["instances/metadata"].create_dataset("loose", data=np.zeros(5))
+        f["instances/metadata"].create_group("two_d").create_dataset(
+            "values", data=np.zeros((5, 2))
+        )
+        f["frames/metadata"].create_group("no_values")
+
+
+def make_defaults_fixture(path: Path) -> None:
+    """Write `format3_defaults.slp`: the pose file without optional columns."""
+    shutil.copyfile(HERE / "format3_pose.slp", path)
+    optional = {
+        "points": ("visible", "verified", "labeled"),
+        "pred_points": ("visible", "verified", "labeled", "score"),
+        "instances": ("track", "from_predicted", "score", "tracking_score"),
+        "frames": ("is_negative",),
+    }
+    with h5py.File(path, "r+") as f:
+        for table, columns in optional.items():
+            for column in columns:
+                if column in f[table]:
+                    del f[f"{table}/{column}"]
+    repack(path)
+
+
+def make_bad_frame_id_fixture(path: Path) -> None:
+    """Write `format3_bad_frame_id.slp`: instance 0 claims to be in frame 1."""
+    shutil.copyfile(HERE / "format3_pose.slp", path)
+    with h5py.File(path, "r+") as f:
+        frame_id = f["instances/frame_id"][()]
+        frame_id[0] = 1
+        f["instances/frame_id"][...] = frame_id
+
+
+def repack(path: Path) -> None:
+    """Copy every object into a fresh file, so deleted datasets free their space."""
+    tmp = path.with_suffix(".tmp")
+    with h5py.File(path, "r") as src, h5py.File(tmp, "w") as dst:
+        for key, value in src.attrs.items():
+            dst.attrs[key] = value
+        for name in src:
+            src.copy(src[name], dst, name=name)
+    tmp.replace(path)
+
+
 def main() -> None:
     save_as(make_labels(), HERE / "format3_pose.slp", "v3")
     save_as(make_labels(), HERE / "format3_pose.v2.slp", "v2")
@@ -136,7 +229,17 @@ def main() -> None:
     with h5py.File(stub, "r+") as f:
         f.create_group("rois")
 
-    for name in ("format3_pose.slp", "format3_pose.v2.slp", "format3_unlabeled.slp"):
+    make_metadata_fixture(HERE / "format3_metadata.slp")
+    make_defaults_fixture(HERE / "format3_defaults.slp")
+    make_bad_frame_id_fixture(HERE / "format3_bad_frame_id.slp")
+
+    for name in (
+        "format3_pose.slp",
+        "format3_pose.v2.slp",
+        "format3_unlabeled.slp",
+        "format3_metadata.slp",
+        "format3_defaults.slp",
+    ):
         check = sio.load_slp(str(HERE / name))
         print(
             f"  {name}: {len(check)} frames, "
