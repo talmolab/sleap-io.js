@@ -43,6 +43,11 @@ console.log(metadata.provenance);   // { sleap_version, ... }
 
 **Returns:** `Promise<SlpMetadata>`
 
+**Throws:** `SlpFormatError` (exported from the lite build too) for a file in a
+format this version cannot read: format 3 or higher, or a `required_features`
+attribute that names an unknown feature. `validateSlpBuffer` throws it as well.
+See [Files in a format this version cannot read](usage.md#files-in-a-format-this-version-cannot-read).
+
 ### `validateSlpBuffer(source)`
 
 Quick structural validation of an SLP file.

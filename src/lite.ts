@@ -29,6 +29,7 @@ import {
   isGroup,
   type JsfiveSource,
 } from "./codecs/slp/jsfive.js";
+import { checkSlpFormat } from "./codecs/slp/format-check.js";
 import {
   parseJsonAttr,
   parseSkeletons,
@@ -57,6 +58,11 @@ export type {
 export type { JsfiveSource } from "./codecs/slp/jsfive.js";
 export { Skeleton, Node, Edge, Symmetry } from "./model/skeleton.js";
 export { Track } from "./model/instance.js";
+export {
+  SlpFormatError,
+  SLP_FORMAT_ID_LIMIT,
+  SLP_SUPPORTED_FEATURES,
+} from "./codecs/slp/format-check.js";
 
 /**
  * Metadata extracted from an SLP file without loading pose data.
@@ -212,6 +218,14 @@ export async function loadSlpMetadata(
   const file = openJsfiveFile(source, options?.filename);
 
   try {
+    // Refuse formats this version can't read before anything else, so that a
+    // newer layout gets the message that names its format and not a complaint
+    // about a missing table or, worse, zero counts with no error (#278).
+    checkSlpFormat(
+      options?.filename ?? "slp-data.slp",
+      file.keys.includes("metadata") ? getAttrs(file.get("metadata")) : null,
+    );
+
     // Verify SLEAP structure
     const requiredKeys = ["metadata", "frames", "instances", "points"];
     for (const key of requiredKeys) {
@@ -348,6 +362,7 @@ export async function loadSlpMetadata(
  * @param source - ArrayBuffer or Uint8Array containing the SLP file
  * @returns true if the file is a valid SLP file
  * @throws Error with details if the file is invalid
+ * @throws SlpFormatError if the file is in a format this version cannot read
  *
  * @example
  * ```typescript
@@ -363,6 +378,13 @@ export function validateSlpBuffer(source: JsfiveSource): boolean {
   const file = openJsfiveFile(source);
 
   try {
+    // A file in a format this version can't read is not one the caller can
+    // go on to load, so it does not validate (#278).
+    checkSlpFormat(
+      "slp-data.slp",
+      file.keys.includes("metadata") ? getAttrs(file.get("metadata")) : null,
+    );
+
     // Check for required SLEAP structure
     const requiredKeys = ["metadata", "frames", "instances", "points"];
     const missingKeys = requiredKeys.filter((k) => !file.keys.includes(k));

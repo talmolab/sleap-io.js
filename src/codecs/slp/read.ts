@@ -1,3 +1,4 @@
+import { checkSlpFormat } from "./format-check.js";
 import {
   openH5File,
   type OpenH5Options,
@@ -176,6 +177,9 @@ export async function readSlp(
 
     const metadataAttrs =
       (metadataGroup as unknown as { attrs?: Record<string, any> }).attrs ?? {};
+    // Refuse formats this version can't read before touching anything else;
+    // a newer layout would otherwise load with no error and no poses (#278).
+    checkSlpFormat(labelsPath, metadataAttrs);
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
     );
@@ -500,6 +504,9 @@ export async function readSlpLazy(
 
     const metadataAttrs =
       (metadataGroup as unknown as { attrs?: Record<string, any> }).attrs ?? {};
+    // Refuse formats this version can't read before touching anything else;
+    // a newer layout would otherwise load with no error and no poses (#278).
+    checkSlpFormat(labelsPath, metadataAttrs);
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
     );

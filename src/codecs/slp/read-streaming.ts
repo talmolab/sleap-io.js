@@ -8,6 +8,7 @@
  * @module
  */
 
+import { checkSlpFormat } from "./format-check.js";
 import {
   openH5Worker,
   type StreamingH5File,
@@ -561,6 +562,9 @@ export async function readFromStreamingFile(
   } catch {
     throw missingMetadataJsonError(labelsPath);
   }
+  // Refuse formats this version can't read before touching anything else; a
+  // newer layout would otherwise load with no error and no poses (#278).
+  checkSlpFormat(labelsPath, metadataAttrs);
   const formatId = Number(
     (metadataAttrs["format_id"] as { value?: number })?.value ??
       metadataAttrs["format_id"] ??
