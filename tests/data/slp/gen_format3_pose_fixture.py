@@ -21,6 +21,9 @@ Writes these small synthetic files next to this script:
   every reader falls back to the defaults of the 3.0 reading rules.
 - `format3_bad_frame_id.slp`: `format3_pose.slp` with an instance whose
   `frame_id` names the wrong frame, which the 3.0 range checks refuse.
+- `format3_events.slp`: `format3_pose.slp` with what this reader does not read
+  at all: frame-spanning events and their types (`/events`, `/event_types`),
+  and a top-level dataset of a newer writer (`/future_table`).
 - `format3_embedded.pkg.slp`: `minimal_instance.pkg.slp` saved in format 3.0
   with its frame embedded, then its embedded group renamed `/video2`, as after
   removing videos from a package. `/frames/video` holds the list index (0),
@@ -197,6 +200,26 @@ def make_defaults_fixture(path: Path) -> None:
     repack(path)
 
 
+def make_events_fixture(path: Path) -> None:
+    """Write `format3_events.slp` (see the module docstring)."""
+    labels = make_labels()
+    grooming = sio.EventType(name="grooming", description="self-grooming")
+    labels.event_types.append(grooming)
+    labels.events.append(
+        sio.UserEvent(
+            type=grooming,
+            video=labels.videos[0],
+            start_frame=0,
+            end_frame=5,
+            subject=labels.tracks[0],
+        )
+    )
+    save_as(labels, path, "v3")
+    with h5py.File(path, "r+") as f:
+        assert "events" in f and "event_types" in f
+        f.create_dataset("future_table", data=np.arange(3))
+
+
 def make_bad_frame_id_fixture(path: Path) -> None:
     """Write `format3_bad_frame_id.slp`: instance 0 claims to be in frame 1."""
     shutil.copyfile(HERE / "format3_pose.slp", path)
@@ -353,6 +376,7 @@ def main() -> None:
     make_metadata_fixture(HERE / "format3_metadata.slp")
     make_defaults_fixture(HERE / "format3_defaults.slp")
     make_bad_frame_id_fixture(HERE / "format3_bad_frame_id.slp")
+    make_events_fixture(HERE / "format3_events.slp")
     make_embedded_fixture(HERE / "format3_embedded.pkg.slp")
 
     for name in (
@@ -385,6 +409,7 @@ WRITTEN = (
     "format3_metadata.slp",
     "format3_defaults.slp",
     "format3_bad_frame_id.slp",
+    "format3_events.slp",
     "format3_embedded.pkg.slp",
 )
 
