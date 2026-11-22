@@ -951,7 +951,8 @@ export function reconstructColumnarFrameGroups(
       const pts3dStart = num(ig.pts3d_start, g);
       if (pts3dStart >= 0) {
         const pts3dEnd = num(ig.pts3d_end, g);
-        const predicted = num(ig.pts3d_predicted, g) === 1;
+        // Any nonzero flag is true, as Python casts the column to bool.
+        const predicted = num(ig.pts3d_predicted, g) !== 0;
         const src = predicted ? sessionData.predPoints3d : sessionData.points3d;
         if (src) {
           const skeleton = skeletons[0] ?? new Skeleton({ nodes: [] });

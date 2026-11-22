@@ -252,6 +252,27 @@ export function unknownTableColumns(
     .map((name) => `${table}/${name}`);
 }
 
+/** The sub-tables (groups) of each table that this version reads. */
+const KNOWN_SUBTABLES: Readonly<Partial<Record<Format3TableName, string[]>>> = {
+  masks: ["score_maps"],
+  label_images: ["objects", "score_maps"],
+};
+
+/**
+ * The groups inside a 3.0 table group that this version does not read (for
+ * example a sub-table added by a newer writer), as paths like `masks/foo`.
+ * `groups` are the names of the table's member groups.
+ */
+export function unknownTableGroups(
+  table: Format3TableName,
+  groups: readonly string[],
+): string[] {
+  const known = KNOWN_SUBTABLES[table] ?? [];
+  return groups
+    .filter((name) => !known.includes(name))
+    .map((name) => `${table}/${name}`);
+}
+
 /**
  * A table as the readers pass it around: numeric columns as `Float64Array`,
  * string columns as `string[]`, by row, marked as read from the 3.0 layout.
@@ -274,6 +295,8 @@ function decodeString(value: unknown): string {
  * @param columns Column name → values, as read from the group's datasets.
  *   Readers pass the known columns only (see {@link isKnownTableColumn}).
  * @param labelsPath Path or name of the file, for error messages.
+ * @param unknownLengths The length (first dimension) of each column this
+ *   version does not read, which must match too.
  * @throws {SlpTableError} If a required column is missing or the columns
  *   differ in length.
  */
@@ -281,6 +304,7 @@ export function tableFromColumns(
   table: Format3TableName,
   columns: Record<string, ArrayLike<unknown> | undefined>,
   labelsPath: string,
+  unknownLengths: Readonly<Record<string, number>> = {},
 ): ColumnTable {
   const spec = TABLE_SPECS[table];
   const present = Object.keys(columns).filter((k) => columns[k] !== undefined);
@@ -316,6 +340,18 @@ export function tableFromColumns(
       );
     }
     out[name] = values;
+  }
+  // Columns this version does not read must have the same length too, as
+  // Python sleap-io checks every column of a table.
+  for (const [name, length] of Object.entries(unknownLengths)) {
+    if (rows !== -1 && length !== rows) {
+      throw new SlpTableError(
+        labelsPath,
+        `has /${table} columns of different lengths (${first}: ${rows} ` +
+          `values, ${name}: ${length}).`,
+        3,
+      );
+    }
   }
   rows = Math.max(rows, 0);
   for (const [name, value] of Object.entries(spec.defaults)) {

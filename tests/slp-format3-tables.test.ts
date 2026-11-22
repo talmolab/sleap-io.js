@@ -623,6 +623,25 @@ describe("what the streaming reader does not read", () => {
   });
 });
 
+describe("sub-tables this version does not know", () => {
+  it("are listed as unread by every reader", async () => {
+    const file = await editedCopy(V3, (h5) => {
+      // biome-ignore lint/suspicious/noExplicitAny: h5wasm Group
+      (h5.get("masks") as any).create_group("future");
+    });
+    const summaries = [
+      (await readSlp(file, EDIT)).sourceFormat?.summary,
+      (await readSlpLazy(file, EDIT)).sourceFormat?.summary,
+      (await readStreaming(file)).sourceFormat?.summary,
+      (await loadSlpMetadata(new Uint8Array(readFileSync(file)))).format3,
+    ];
+    for (const summary of summaries) {
+      expect(summary?.unreadTables).toContain("masks/future");
+      expect(summary?.lossless).toBe(false);
+    }
+  });
+});
+
 describe("unknown columns of the format 3.0 tables", () => {
   const EXPECTED = [
     "categories/links/extra",
@@ -1167,6 +1186,26 @@ describe("range checks of the format 3.0 tables", () => {
       }
     });
   }
+
+  it("refuse an unknown column of another length, as Python does", async () => {
+    const file = await editedCopy(V3, (h5) => {
+      // biome-ignore lint/suspicious/noExplicitAny: h5wasm Group
+      (h5.get("rois") as any).create_dataset({
+        name: "extra",
+        data: new Float64Array(2),
+        shape: [2],
+        dtype: "<d",
+      });
+    });
+    for (const read of [
+      () => readSlp(file, EDIT),
+      () => readSlpLazy(file, EDIT),
+    ]) {
+      await expect(read()).rejects.toThrow(
+        "/rois columns of different lengths",
+      );
+    }
+  });
 
   it("refuse a 3.0 table whose columns differ in length", async () => {
     const file = await editedCopy(V3, (h5) => {

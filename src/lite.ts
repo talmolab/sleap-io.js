@@ -47,6 +47,7 @@ import {
   TABLE_SPECS,
   tableFromColumns,
   unknownTableColumns,
+  unknownTableGroups,
 } from "./codecs/slp/columnar-tables.js";
 import {
   buildFormat3Summary,
@@ -188,14 +189,22 @@ function readColumnTableJsfive(
 ): ColumnTable | null {
   if (!isGroupPath(file, table)) return null;
   const columns: Record<string, ArrayLike<unknown>> = {};
+  const unknownLengths: Record<string, number> = {};
   for (const name of groupDatasets(file, table)) {
-    if (!isKnownTableColumn(table, name)) continue;
-    const value = getValue(file.get(`${table}/${name}`));
+    const dataset = file.get(`${table}/${name}`);
+    if (!isKnownTableColumn(table, name)) {
+      const shape = getShape(dataset);
+      if (name !== TABLE_SPECS[table].buffer && shape.length) {
+        unknownLengths[name] = shape[0];
+      }
+      continue;
+    }
+    const value = getValue(dataset);
     if (value && typeof value === "object" && "length" in value) {
       columns[name] = value as ArrayLike<unknown>;
     }
   }
-  return tableFromColumns(table, columns, labelsPath);
+  return tableFromColumns(table, columns, labelsPath, unknownLengths);
 }
 
 /** Whether a jsfive dtype is one a metadata `values` column may have. */
@@ -254,16 +263,26 @@ function format3SummaryJsfive(
   ];
   return buildFormat3Summary({
     formatId,
-    unreadTables: unreadMembers({
-      root: file.keys,
-      groups: Object.fromEntries(
-        PARTLY_READ_GROUPS.filter((g) => isGroup(file.get(g))).map((g) => [
-          g,
-          members(g),
-        ]),
+    unreadTables: [
+      ...unreadMembers({
+        root: file.keys,
+        groups: Object.fromEntries(
+          PARTLY_READ_GROUPS.filter((g) => isGroup(file.get(g))).map((g) => [
+            g,
+            members(g),
+          ]),
+        ),
+        provenanceInMetadata,
+      }),
+      ...FORMAT3_TABLES.flatMap((table) =>
+        isGroupPath(file, table)
+          ? unknownTableGroups(
+              table,
+              members(table).filter((n) => isGroup(file.get(`${table}/${n}`))),
+            )
+          : [],
       ),
-      provenanceInMetadata,
-    }),
+    ],
     unlabeledUserPoints: unlabeled("points"),
     unlabeledPredictedPoints: unlabeled("pred_points"),
     metadataKeys: {

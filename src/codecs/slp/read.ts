@@ -28,6 +28,7 @@ import {
   tableFromColumns,
   tableRows,
   unknownTableColumns,
+  unknownTableGroups,
 } from "./columnar-tables.js";
 import { checkSlpFormat } from "./format-check.js";
 import {
@@ -2206,7 +2207,7 @@ function readRoisWithMigration(
     const annotType = Number(annotationTypes[i]);
 
     const isPred =
-      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+      isPredictedCol.length > i ? Number(isPredictedCol[i]) !== 0 : false;
 
     const roiTsVal =
       trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
@@ -2604,7 +2605,7 @@ function readMasks(
 
     // Determine if predicted based on is_predicted column or NaN score fallback
     const isPred =
-      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+      isPredictedCol.length > i ? Number(isPredictedCol[i]) !== 0 : false;
     let mask: SegmentationMask;
 
     if (isPred) {
@@ -2849,7 +2850,7 @@ function readLabelImages(
 
     // Determine if predicted
     const isPred =
-      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+      isPredictedCol.length > i ? Number(isPredictedCol[i]) !== 0 : false;
 
     // v2.1+: spatial metadata
     const liScaleX = liScaleXCol.length > i ? Number(liScaleXCol[i]) : 1;
@@ -2937,11 +2938,16 @@ function readColumnTable(
 ): ColumnTable | null {
   if (!isH5Group(file, table)) return null;
   const columns: Record<string, ArrayLike<unknown>> = {};
+  const unknownLengths: Record<string, number> = {};
   for (const name of h5Members(file, table, "Dataset")) {
-    if (!isKnownTableColumn(table, name)) continue;
-    columns[name] = file.get(`${table}/${name}`).value as ArrayLike<unknown>;
+    const dataset = file.get(`${table}/${name}`);
+    if (isKnownTableColumn(table, name)) {
+      columns[name] = dataset.value as ArrayLike<unknown>;
+    } else if (name !== TABLE_SPECS[table].buffer && dataset.shape?.length) {
+      unknownLengths[name] = dataset.shape[0];
+    }
   }
-  return tableFromColumns(table, columns, labelsPath);
+  return tableFromColumns(table, columns, labelsPath, unknownLengths);
 }
 
 /** The bytes of a flat `uint8` buffer dataset, or none when it is absent. */
@@ -3136,13 +3142,20 @@ function readFormat3(
     : null;
   const summary = buildFormat3Summary({
     formatId,
-    unreadTables: unreadMembers({
-      root: file.keys() as string[],
-      groups: Object.fromEntries(
-        PARTLY_READ_GROUPS.map((g) => [g, h5Members(file, g)]),
+    unreadTables: [
+      ...unreadMembers({
+        root: file.keys() as string[],
+        groups: Object.fromEntries(
+          PARTLY_READ_GROUPS.map((g) => [g, h5Members(file, g)]),
+        ),
+        provenanceInMetadata: tables.provenanceInMetadata ?? false,
+      }),
+      ...FORMAT3_TABLES.flatMap((table) =>
+        isH5Group(file, table)
+          ? unknownTableGroups(table, h5Members(file, table, "Group"))
+          : [],
       ),
-      provenanceInMetadata: tables.provenanceInMetadata ?? false,
-    }),
+    ],
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(predPointsData),
     metadataKeys: {

@@ -32,6 +32,7 @@ import {
   TABLE_SPECS,
   tableFromColumns,
   unknownTableColumns,
+  unknownTableGroups,
 } from "./columnar-tables.js";
 import { checkSlpFormat, SlpFormatError } from "./format-check.js";
 import {
@@ -2091,13 +2092,18 @@ async function readColumnTableStreaming(
 ): Promise<ColumnTable | null> {
   if (!(await isGroupStreaming(file, table))) return null;
   const columns: Record<string, ArrayLike<unknown>> = {};
+  const unknownLengths: Record<string, number> = {};
   for (const name of await membersStreaming(file, table, "Dataset")) {
-    if (!isKnownTableColumn(table, name)) continue;
-    columns[name] = normalizeDatasetArray(
-      (await file.getDatasetValue(`${table}/${name}`)).value,
-    );
+    if (isKnownTableColumn(table, name)) {
+      columns[name] = normalizeDatasetArray(
+        (await file.getDatasetValue(`${table}/${name}`)).value,
+      );
+    } else if (name !== TABLE_SPECS[table].buffer) {
+      const shape = (await file.getDatasetMeta(`${table}/${name}`)).shape;
+      if (shape?.length) unknownLengths[name] = shape[0];
+    }
   }
-  return tableFromColumns(table, columns, labelsPath);
+  return tableFromColumns(table, columns, labelsPath, unknownLengths);
 }
 
 /** An empty table of one of the format 3.0 tables. */
@@ -2326,12 +2332,19 @@ async function readFormat3Streaming(
     );
   }
   unknown.push(...unknownColumns("bboxes", bboxColumns));
+  const unreadGroups: string[] = [];
   for (const table of FORMAT3_TABLES) {
     if (!(await isGroupStreaming(file, table))) continue;
     unknown.push(
       ...unknownTableColumns(
         table,
         await membersStreaming(file, table, "Dataset"),
+      ),
+    );
+    unreadGroups.push(
+      ...unknownTableGroups(
+        table,
+        await membersStreaming(file, table, "Group"),
       ),
     );
   }
@@ -2348,6 +2361,7 @@ async function readFormat3Streaming(
         provenanceInMetadata: tables.provenanceInMetadata ?? false,
       }),
       ...(await unreadByStreaming(file, root)),
+      ...unreadGroups,
     ],
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(
