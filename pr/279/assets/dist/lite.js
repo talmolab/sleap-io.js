@@ -14,7 +14,8 @@ import {
   parseSuggestions,
   parseTracks,
   parseVideosMetadata
-} from "./chunk-TRHMK7B3.js";
+} from "./chunk-Y4L5NRYY.js";
+import "./chunk-3UBNQTMV.js";
 
 // src/codecs/slp/jsfive.ts
 import * as hdf5 from "jsfive";

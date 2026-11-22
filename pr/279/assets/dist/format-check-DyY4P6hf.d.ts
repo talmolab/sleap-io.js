@@ -3524,6 +3524,7 @@ declare const SLP_SUPPORTED_FEATURES: ReadonlySet<string>;
  * {@link SLP_SUPPORTED_FEATURES}.
  *
  * The message names the file and its format and says which tool can read it.
+ * `labelsPath` is the file's path or name, with URL credentials masked.
  * `formatId` is the file's `format_id` (`null` when the file has none);
  * `unsupportedFeatures` lists the required features this version doesn't know
  * (empty when the format number alone caused the refusal).

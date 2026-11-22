@@ -1,3 +1,8 @@
+import {
+  isUrl,
+  redactUrl
+} from "./chunk-3UBNQTMV.js";
+
 // src/model/instance.ts
 var _centroidFactory = null;
 function _registerCentroidFactory(factory) {
@@ -1362,8 +1367,9 @@ function requiredFeatures(attr) {
 function formatLabel(formatId) {
   return Number.isInteger(formatId) ? formatId.toFixed(1) : String(formatId);
 }
-function checkSlpFormat(labelsPath, metadataAttrs) {
+function checkSlpFormat(source, metadataAttrs) {
   const attrs = metadataAttrs ?? {};
+  const labelsPath = isUrl(source) ? redactUrl(source) : source;
   const rawFormatId = attrValue(attrs.format_id);
   const formatId = rawFormatId === void 0 || rawFormatId === null ? null : Number(rawFormatId);
   if (formatId !== null && formatId >= SLP_FORMAT_ID_LIMIT) {

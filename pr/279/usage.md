@@ -404,6 +404,10 @@ import sleap_io as sio
 sio.load_slp("dataset.slp").save("dataset.v2.slp", legacy_format=True)
 ```
 
+The 2.x layout cannot store everything format 3.0 can. If the file holds points
+marked as not labelled, that save raises; pass `unlabeled_as="absent"` as well
+to write them as missing points.
+
 ## Saving with Embedded Frames
 
 Embed video frames directly into the SLP file:
