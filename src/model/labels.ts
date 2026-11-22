@@ -21,6 +21,13 @@ import {
 import type { Identity } from "./identity.js";
 import type { SlpSourceFormat } from "../codecs/slp/format3.js";
 import { hasSkippedInstanceRows } from "../codecs/slp/columnar.js";
+import { copySourceMark } from "./source-mark.js";
+
+/** Give a copied record the source mark of its original, and return it. */
+function withSourceMark<T extends object>(from: object, to: T): T {
+  copySourceMark(from, to);
+  return to;
+}
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
 import { type LazyDataStore, LazyFrameList } from "./lazy.js";
@@ -182,7 +189,13 @@ export class Labels {
    * `format3` choice. With `access: "view"` every writer refuses the labels;
    * with `"edit"` writers save the 2.x layout and drop those fields. `null`
    * for labels from 1.x/2.x files or built in memory. Carried by
-   * {@link copy} and {@link extract}.
+   * {@link copy} and {@link extract}. The choice also travels with each
+   * frame, instance and annotation read from the file (see
+   * `model/source-mark.ts`); writers decide record by record.
+   *
+   * After saving edit-loaded labels over their source file, set this to
+   * `null`: the file is now in the 2.x layout, and the in-place save functions
+   * then patch it again instead of sending every save to a full rewrite.
    */
   sourceFormat: SlpSourceFormat | null = null;
 
@@ -1314,14 +1327,17 @@ export class Labels {
         ? (trackMap.get(inst.track) ?? inst.track)
         : null;
       if (inst instanceof PredictedInstance) {
-        return new PredictedInstance({
-          points: newPoints as any,
-          skeleton: newSkeleton,
-          track: newTrack,
-          score: inst.score,
-          trackingScore: inst.trackingScore,
-          metadata: inst.metadata,
-        });
+        return withSourceMark(
+          inst,
+          new PredictedInstance({
+            points: newPoints as any,
+            skeleton: newSkeleton,
+            track: newTrack,
+            score: inst.score,
+            trackingScore: inst.trackingScore,
+            metadata: inst.metadata,
+          }),
+        );
       }
       const ni = new Instance({
         points: newPoints,
@@ -1332,7 +1348,7 @@ export class Labels {
       });
       // fromPredicted can't be fully remapped (would need global instance identity),
       // so we leave it null on the copy.
-      return ni;
+      return withSourceMark(inst, ni);
     };
 
     // Helper: clone ancillary items by stripping object refs, structuredClone, then remap
@@ -1389,7 +1405,7 @@ export class Labels {
             }
           }
         }
-        return clone;
+        return withSourceMark(item, clone);
       });
 
     let labelsCopy: Labels;
@@ -1409,7 +1425,7 @@ export class Labels {
       if (this._lazyFrameList?._supplementary.length) {
         newLazyFrames._supplementary = this._lazyFrameList._supplementary.map(
           (lf) => {
-            return new LabeledFrame({
+            const frame = new LabeledFrame({
               video: videoMap.get(lf.video) ?? lf.video,
               frameIdx: lf.frameIdx,
               instances: lf.instances.map(cloneInstance),
@@ -1421,6 +1437,7 @@ export class Labels {
               rois: cloneAncillary(lf.rois) as ROI[],
               metadata: lf.metadata,
             });
+            return withSourceMark(lf, frame);
           },
         );
       }
@@ -1475,6 +1492,7 @@ export class Labels {
           rois: cloneAncillary(f.rois) as ROI[],
           metadata: f.metadata,
         });
+        copySourceMark(f, nf);
         frameMap.set(f, nf);
         return nf;
       });
@@ -1879,6 +1897,7 @@ export class Labels {
         metadata: instance.metadata,
       });
     }
+    copySourceMark(instance, newInstance);
     if (memo !== undefined) memo.set(instance, newInstance);
     return newInstance;
   }
@@ -2191,6 +2210,7 @@ export class Labels {
             isNegative: otherFrame.isNegative,
             metadata: otherFrame.metadata,
           });
+          copySourceMark(otherFrame, newFrame);
           const instanceMemo = new Map<object, object>();
           for (const inst of otherFrame.instances) {
             newFrame.instances.push(
@@ -3112,22 +3132,28 @@ export class Labels {
       const newTrack = mapTrack(inst.track);
       if (inst.constructor === PredictedInstance) {
         const predicted = inst as PredictedInstance;
-        return new PredictedInstance({
-          points: newPoints as unknown as PredictedPointsArray,
+        return withSourceMark(
+          inst,
+          new PredictedInstance({
+            points: newPoints as unknown as PredictedPointsArray,
+            skeleton: newSkeleton,
+            track: newTrack,
+            score: predicted.score,
+            trackingScore: predicted.trackingScore,
+            metadata: predicted.metadata,
+          }),
+        );
+      }
+      return withSourceMark(
+        inst,
+        new Instance({
+          points: newPoints,
           skeleton: newSkeleton,
           track: newTrack,
-          score: predicted.score,
-          trackingScore: predicted.trackingScore,
-          metadata: predicted.metadata,
-        });
-      }
-      return new Instance({
-        points: newPoints,
-        skeleton: newSkeleton,
-        track: newTrack,
-        trackingScore: inst.trackingScore,
-        metadata: inst.metadata,
-      });
+          trackingScore: inst.trackingScore,
+          metadata: inst.metadata,
+        }),
+      );
     };
 
     // Clone an ancillary annotation: shallow-clone preserving prototype, then
@@ -3175,11 +3201,12 @@ export class Labels {
           }
           anyClone.objects = newObjects;
         }
-        return clone;
+        return withSourceMark(item, clone);
       });
 
-    return frames.map(
-      (f) =>
+    return frames.map((f) =>
+      withSourceMark(
+        f,
         new LabeledFrame({
           video: mapVideo(f.video),
           frameIdx: f.frameIdx,
@@ -3192,6 +3219,7 @@ export class Labels {
           rois: cloneAncillary(f.rois) as ROI[],
           metadata: f.metadata,
         }),
+      ),
     );
   }
 

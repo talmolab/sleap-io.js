@@ -5,6 +5,7 @@ import { ROI } from "./roi.js";
 import type { Identity } from "./identity.js";
 import type { Embedding } from "./embedding.js";
 import type { RecordMetadata } from "./record-metadata.js";
+import { copySourceMark } from "./source-mark.js";
 import {
   Centroid,
   PredictedCentroid,
@@ -460,6 +461,8 @@ function copyDetectionMetadata(
   to.identityEmbedding = from.identityEmbedding ?? null;
   to.categoryScore = from.categoryScore ?? null;
   to.categoryEmbedding = from.categoryEmbedding ?? null;
+  // A record derived from one loaded from a format 3.0 file keeps its source.
+  copySourceMark(from, to);
 }
 
 /**

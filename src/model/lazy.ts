@@ -13,6 +13,7 @@ import type { Embedding } from "./embedding.js";
 import { type MetadataColumns, metadataRecord } from "./record-metadata.js";
 import type { SlpSourceFormat } from "../codecs/slp/format3.js";
 import { skipsInstanceRow } from "../codecs/slp/columnar.js";
+import { markFrameSource } from "./source-mark.js";
 
 /**
  * Raw data store holding HDF5 dataset arrays for lazy materialization.
@@ -368,6 +369,8 @@ export class LazyDataStore {
     if (this.negativeFrames.has(`${rawVideoId}:${frameIndex}`)) {
       frame.isNegative = true;
     }
+    // Every record carries the open-time choice wherever it goes.
+    markFrameSource(frame, this.sourceFormat);
     return frame;
   }
 

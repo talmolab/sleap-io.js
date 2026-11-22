@@ -140,6 +140,7 @@ export {
   SlpViewOnlyError,
   LOSSLESS_FORMAT3_ASKS,
 } from "./codecs/slp/format3.js";
+export { SlpTableError } from "./codecs/slp/format-check.js";
 export type {
   Format3Access,
   Format3Summary,

@@ -383,13 +383,27 @@ it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
 - `format3: "view"` loads everything and marks the labels view-only
   (`labels.sourceFormat.access === "view"`). Every writer (`saveSlp`,
   `saveSlpToBytes`, `saveSlpStructureToBytes`, `saveSlpSet`, `openSlpWriter`,
-  `SlpStreamWriter.appendStore`, `saveSlpMergedFromStores`,
+  `SlpStreamWriter.appendStore` and `appendFrames`, `saveSlpMergedFromStores`,
   `saveSlpMergedToSink` and the in-place save functions) refuses them with
   `SlpViewOnlyError` before it touches its target.
 - `format3: "edit"` loads the same, and a save writes the 2.x layout and drops
   what that layout cannot store: points marked as not labelled are written as
   hidden points with no location, and metadata and unknown columns are not
   written.
+
+The choice travels with the content, not only with the `Labels` it was loaded
+into. Every labeled frame, instance and annotation read from a 3.0 file carries
+it, and copies keep it (`Labels.copy`, `extract`, `merge`, `BoundingBox.pad` and
+the other conversions). So content from a view-only file is refused by every
+writer wherever it ends up (merged into other labels, passed to
+`new Labels({ labeledFrames })`, or appended to a streaming writer), and content
+from an edit-loaded file is saved as the caller chose wherever it ends up.
+
+After saving edit-loaded labels over their source file, that file is in the
+2.x layout. Set `labels.sourceFormat = null` to say so; the in-place save
+functions then patch it again instead of asking for a full save. The records
+keep their marks, so later saves still drop what the 2.x layout cannot store
+without a warning.
 
 Every 3.0 file asks, even one that holds nothing the 2.x layout cannot store,
 because saving it rewrites it in another layout. The error's `summary` (also
@@ -413,9 +427,16 @@ try {
 What format 3.0 adds is read into the model either way: `point.labeled`
 (`false` with `visible` false means the source did not annotate the node; absent
 means `true`), and `metadata` on instances, labeled frames and bounding boxes.
-Labels built in memory can hold them too. Saving such labels follows Python's
-`legacy_format=True`: unlabelled points throw unless the writer is given
-`unlabeledAs: "absent"`, and metadata is dropped with a warning.
+Labels built in memory can hold them too. Saving records that were not read
+from a 3.0 file follows Python's `legacy_format=True`: unlabelled points throw
+unless the writer is given `unlabeledAs: "absent"`, and metadata is dropped
+with a warning.
+
+A reader learns that a file is in format 3.0, and what it holds, only after it
+has read the file's pose tables, so `loadSlp` without `format3` followed by a
+second `loadSlp` with it reads them twice. For a large or remote file, call the
+lite `loadSlpMetadata` first (it reads only the flags and names it needs), or
+pass `format3` from the start.
 
 Every reader (`loadSlp`, `readSlp`, `readSlpLazy`, `readSlpStreaming`, and
 `loadSlpMetadata` and `validateSlpBuffer` in the lite build) throws
@@ -426,7 +447,11 @@ Every reader (`loadSlp`, `readSlp`, `readSlpLazy`, `readSlpStreaming`, and
   this version doesn't know;
 - a format 3.0 file that holds a table this version does not read in that
   format yet: ROIs, masks, label images, identity and category links, or
-  session data. The message names the tables.
+  session data. The message names the tables;
+- a format 3.0 file whose tables are inconsistent (a missing required column,
+  columns of different lengths, instance or point ranges that do not fit,
+  metadata without one row per record). This is `SlpTableError`, a subclass of
+  `SlpFormatError`, and the message names the table.
 
 The message names the file and its format and says which tool can read it. The
 error also carries `formatId` and `unsupportedFeatures`.

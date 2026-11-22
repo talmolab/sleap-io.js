@@ -37,7 +37,10 @@ import path from "node:path";
 import { ready, File as H5File } from "h5wasm/node";
 import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
 import { readFromStreamingFile } from "../src/codecs/slp/read-streaming.js";
-import { SlpFormatError } from "../src/codecs/slp/format-check.js";
+import {
+  SlpFormatError,
+  SlpTableError,
+} from "../src/codecs/slp/format-check.js";
 import {
   type Format3Access,
   type Format3Summary,
@@ -62,7 +65,7 @@ import {
   writeSlp,
 } from "../src/codecs/slp/write.js";
 import { loadSlp, saveSlp, saveSlpSet } from "../src/index.js";
-import { loadSlpMetadata } from "../src/lite.js";
+import { loadSlpMetadata, validateSlpBuffer } from "../src/lite.js";
 import {
   Instance,
   PredictedInstance,
@@ -225,7 +228,13 @@ describe("a 3.0 file asks for the choice at open time", () => {
         format3: "write" as Format3Access,
       }),
     );
+    expect(error).toBeInstanceOf(TypeError);
     expect((error as Error).message).toContain('"view" or "edit"');
+    // loadSlp refuses it before reading anything (even a missing file).
+    const early = await caught(() =>
+      loadSlp("/no/such/file.slp", { format3: "write" as Format3Access }),
+    );
+    expect(early).toBeInstanceOf(TypeError);
   });
 
   it("the lite reader returns the same summary without throwing", async () => {
@@ -308,6 +317,9 @@ describe("what format 3.0 adds is read into the model", () => {
     it(`${label} refuses inconsistent 3.0 tables, naming the table`, async () => {
       const error = (await caught(() => load(BAD_FRAME_ID, "edit"))) as Error;
       expect(error).not.toBeInstanceOf(SlpFormat3ChoiceError);
+      // A file error, which loadSlp does not retry on the main thread.
+      expect(error).toBeInstanceOf(SlpTableError);
+      expect(error).toBeInstanceOf(SlpFormatError);
       expect(error.message).toContain("inconsistent pose tables");
       expect(error.message).toContain(
         "/instances frame_id disagrees with the /frames ranges",
@@ -375,10 +387,8 @@ describe("3.0 instance rows of another type are skipped, as in Python", () => {
     copyFileSync(slpPath(META), file);
     const h5 = new H5File(file, "a");
     try {
-      // biome-ignore lint/suspicious/noExplicitAny: h5wasm dataset
       const types = h5.get("instances/instance_type") as any;
       types.write_slice([[2, 3]], new Uint8Array([2]));
-      // biome-ignore lint/suspicious/noExplicitAny: h5wasm dataset
       const links = h5.get("bboxes/instance") as any;
       links.write_slice([[0, 1]], new Int32Array([3]));
     } finally {
@@ -427,6 +437,414 @@ describe("3.0 instance rows of another type are skipped, as in Python", () => {
     const compound = { instance_type: [0, 2, 1] };
     expect(skipsInstanceRow(compound, 1)).toBe(false);
     expect(hasSkippedInstanceRows(compound)).toBe(false);
+  });
+});
+
+describe("the open-time choice travels with the records", () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => warn.mockRestore());
+
+  const load = (format3: Format3Access, name = META) =>
+    readSlp(slpPath(name), { openVideos: false, format3 });
+  /** Labels built in memory from the given frames (no source format). */
+  const fresh = (from: Labels, frames = from.labeledFrames) =>
+    new Labels({
+      labeledFrames: frames,
+      videos: from.videos,
+      skeletons: from.skeletons,
+      tracks: from.tracks,
+    });
+
+  const viewMoves: Array<[string, () => Promise<unknown>]> = [
+    [
+      "merged into other labels",
+      async () => {
+        const target = new Labels();
+        await target.merge(await load("view"));
+        expect(target.sourceFormat).toBeNull();
+        return saveSlpToBytes(target, { unlabeledAs: "absent" });
+      },
+    ],
+    [
+      "merged into a 2.x project",
+      async () => {
+        const target = await readSlp(slpPath(V2), { openVideos: false });
+        await target.merge(await load("view"));
+        return saveSlpToBytes(target, { unlabeledAs: "absent" });
+      },
+    ],
+    [
+      "handed to new Labels",
+      async () => saveSlpToBytes(fresh(await load("view"))),
+    ],
+    [
+      "materialized from a lazy load and handed to new Labels",
+      async () => {
+        const lazy = await readSlpLazy(slpPath(META), {
+          openVideos: false,
+          format3: "view",
+        });
+        const frames = Array.from(
+          { length: lazy.length },
+          (_, i) => lazy.frameAt(i) as LabeledFrame,
+        );
+        return saveSlpToBytes(fresh(lazy, frames));
+      },
+    ],
+    [
+      "read by the streaming reader and handed to new Labels",
+      async () => saveSlpToBytes(fresh(await readStreaming(META, "view"))),
+    ],
+    [
+      "appended to a streaming writer with a plain header",
+      async () => {
+        const view = await load("view");
+        const writer = await openSlpWriter({
+          videos: view.videos,
+          skeletons: view.skeletons,
+          tracks: view.tracks,
+        });
+        try {
+          writer.appendFrames(view.labeledFrames);
+        } finally {
+          writer.dispose();
+        }
+      },
+    ],
+    [
+      "copied into an in-place update",
+      async () => buildLabelTableUpdate(fresh(await load("view"))),
+    ],
+    [
+      "as a single box padded into labels built in memory",
+      async () => {
+        const view = await load("view");
+        const video = view.videos[0];
+        const frame = new LabeledFrame({
+          video,
+          frameIdx: 9,
+          bboxes: [view.labeledFrames[0].bboxes[1].pad(1)],
+        });
+        return saveSlpToBytes(
+          new Labels({ labeledFrames: [frame], videos: [video] }),
+        );
+      },
+    ],
+  ];
+  for (const [label, move] of viewMoves) {
+    it(`view-only content is refused when ${label}`, async () => {
+      const error = (await caught(move)) as SlpViewOnlyError;
+      expect(error).toBeInstanceOf(SlpViewOnlyError);
+      expect(error.sourceFormat.access).toBe("view");
+    });
+  }
+
+  it("edit content merged elsewhere is saved as chosen, without a word", async () => {
+    const target = await readSlp(slpPath(V2), { openVideos: false });
+    await target.merge(await load("edit"));
+    expect(target.sourceFormat).toBeNull();
+    const back = await readSlp(await saveSlpToBytes(target), {
+      openVideos: false,
+      h5: { filenameHint: "merged.slp" },
+    });
+    const user = back.labeledFrames[0].instances.find(
+      (i) => !(i instanceof PredictedInstance) && i.points[2].xy[0] !== 50,
+    );
+    expect(user?.points[2].xy).toEqual([Number.NaN, Number.NaN]);
+    expect(warn).not.toHaveBeenCalled();
+  });
+
+  it("edit frames appended to a writer with a plain header are written absent", async () => {
+    const edit = await load("edit");
+    const writer = await openSlpWriter({
+      videos: edit.videos,
+      skeletons: edit.skeletons,
+      tracks: edit.tracks,
+    });
+    writer.appendFrames(edit.labeledFrames);
+    const back = await readSlp(writer.close(), {
+      openVideos: false,
+      h5: { filenameHint: "appended.slp" },
+    });
+    expect(back.labeledFrames[0].instances[0].points[2].xy).toEqual([
+      Number.NaN,
+      Number.NaN,
+    ]);
+  });
+
+  it("records of other origins keep the in-memory rule", async () => {
+    const labels = fresh(await load("edit"));
+    // An instance built in memory with an unlabelled point.
+    const inst = Instance.empty({ skeleton: labels.skeletons[0] });
+    inst.points[0].xy = [1, 2];
+    inst.points[0].visible = true;
+    inst.points[1].labeled = false;
+    inst.metadata.own = "yes";
+    labels.labeledFrames[1].instances.push(inst);
+    const error = (await caught(() => saveSlpToBytes(labels))) as Error;
+    // Only the in-memory point counts; the edit-loaded one is the caller's.
+    expect(error.message).toContain("1 point(s) are unlabelled");
+    await saveSlpToBytes(labels, { unlabeledAs: "absent" });
+    const messages = warn.mock.calls.map((c) => String(c[0]));
+    expect(messages.some((m) => m.includes("1 unlabelled point(s)"))).toBe(
+      true,
+    );
+    // Only the in-memory instance's metadata is named.
+    const dropped = messages.filter((m) => m.includes("metadata"));
+    expect(dropped).toEqual([expect.stringContaining("(instances: own)")]);
+  });
+
+  it('an explicit unlabeledAs: "error" refuses edit content too', async () => {
+    const edit = await load("edit");
+    const refused = (await caught(() =>
+      saveSlpToBytes(edit, { unlabeledAs: "error" }),
+    )) as Error;
+    expect(refused.message).toContain("2 point(s) are unlabelled");
+  });
+
+  it("marks survive copy, extract and a frame merge", async () => {
+    const view = await load("view");
+    for (const copy of [view.copy(), view.extract([0])]) {
+      const plain = fresh(copy);
+      expect(await caught(() => saveSlpToBytes(plain))).toBeInstanceOf(
+        SlpViewOnlyError,
+      );
+    }
+    // A frame of other labels that takes in a view-only frame.
+    const own = await readSlp(slpPath(V2), { openVideos: false });
+    const ownFrame = own.labeledFrames[0];
+    ownFrame.merge(view.labeledFrames[0]);
+    ownFrame.instances = ownFrame.instances.slice(0, 0);
+    ownFrame.bboxes = [];
+    own.labeledFrames = [ownFrame];
+    expect(await caught(() => saveSlpToBytes(own))).toBeInstanceOf(
+      SlpViewOnlyError,
+    );
+  });
+
+  it("labels saved over their source can drop the source format", async () => {
+    const labels = await load("edit");
+    const update = buildLabelTableUpdate(labels);
+    const empty = {
+      tracksJson: null,
+      suggestionsJson: null,
+      metadataJson: null,
+      videos: null,
+    };
+    const sidecars = { onDisk: empty, expected: empty };
+    expect(checkInPlaceWritable(update, {}, sidecars).ok).toBe(false);
+    labels.sourceFormat = null; // saved over the source: now a 2.x file
+    const again = buildLabelTableUpdate(labels);
+    expect(checkInPlaceWritable(again, {}, sidecars).ok).toBe(true);
+    expect(warn).not.toHaveBeenCalled();
+  });
+});
+
+describe("raw-table writers skip the instance rows the readers skip", () => {
+  /** format3_metadata.slp with row 2 of another type; box 0 links row 3. */
+  const skippedFixture = async (): Promise<string> => {
+    await ready;
+    const dir = mkdtempSync(path.join(tmpdir(), "sleap-io-js-format3-"));
+    const file = path.join(dir, "format3_type2.slp");
+    copyFileSync(slpPath(META), file);
+    const h5 = new H5File(file, "a");
+    try {
+      (h5.get("instances/instance_type") as any).write_slice(
+        [[2, 3]],
+        new Uint8Array([2]),
+      );
+      (h5.get("bboxes/instance") as any).write_slice(
+        [[0, 1]],
+        new Int32Array([3]),
+      );
+    } finally {
+      h5.close();
+    }
+    return file;
+  };
+  const saves: Array<[string, (file: string) => Promise<Uint8Array>]> = [
+    [
+      "the lazy fast path",
+      async (file) =>
+        saveSlpToBytes(
+          await readSlpLazy(file, { openVideos: false, format3: "edit" }),
+        ),
+    ],
+    [
+      "SlpStreamWriter.appendStore",
+      async (file) => {
+        const labels = await readSlpLazy(file, {
+          openVideos: false,
+          format3: "edit",
+        });
+        const writer = await openSlpWriter(labels);
+        writer.appendStore(labels._lazyDataStore!);
+        return writer.close();
+      },
+    ],
+    [
+      "saveSlpMergedFromStores",
+      async (file) => {
+        const labels = await readSlpLazy(file, {
+          openVideos: false,
+          format3: "edit",
+        });
+        return saveSlpMergedFromStores([labels._lazyDataStore!]);
+      },
+    ],
+    [
+      "an eager save",
+      async (file) =>
+        saveSlpToBytes(
+          await readSlp(file, { openVideos: false, format3: "edit" }),
+        ),
+    ],
+  ];
+  for (const [label, save] of saves) {
+    it(label, async () => {
+      const back = await readSlp(await save(await skippedFixture()), {
+        openVideos: false,
+        h5: { filenameHint: "skipped.slp" },
+      });
+      expect(back.labeledFrames.map((f) => f.instances.length)).toEqual([
+        2, 1, 1, 0,
+      ]);
+      const corrected = back.labeledFrames[1].instances[0];
+      expect(corrected).not.toBeInstanceOf(PredictedInstance);
+      expect(corrected.points[0].xy).toEqual([13, 23]);
+      expect(back.labeledFrames[0].bboxes[0].instance).toBe(corrected);
+    });
+  }
+});
+
+describe("columns and tables a newer writer may add", () => {
+  it("a column of rank 2 is listed as unknown, not refused", async () => {
+    await ready;
+    const dir = mkdtempSync(path.join(tmpdir(), "sleap-io-js-format3-"));
+    const file = path.join(dir, "format3_cov.slp");
+    copyFileSync(slpPath(POSE), file);
+    const h5 = new H5File(file, "a");
+    try {
+      (h5.get("points") as any).create_dataset({
+        name: "cov",
+        data: new Float64Array(12),
+        shape: [6, 2],
+        dtype: "<d",
+      });
+    } finally {
+      h5.close();
+    }
+    for (const [label, read] of READERS) {
+      const error = (await caught(() => read(file))) as SlpFormat3ChoiceError;
+      expect([label, error.summary?.unknownColumns]).toEqual([
+        label,
+        ["points/cov"],
+      ]);
+      const labels = await read(file, "edit");
+      expect(labels.labeledFrames.length).toBe(4);
+    }
+    const lite = await loadSlpMetadata(new Uint8Array(readFileSync(file)));
+    expect(lite.format3?.unknownColumns).toEqual(["points/cov"]);
+  });
+
+  it("validateSlpBuffer refuses a 3.0 table no reader reads yet", () => {
+    let error: unknown;
+    try {
+      validateSlpBuffer(slpBytes("format3_rois_stub.slp"));
+    } catch (e) {
+      error = e;
+    }
+    expect(error).toBeInstanceOf(SlpFormatError);
+    expect((error as Error).message).toContain("/rois");
+    expect(validateSlpBuffer(slpBytes(POSE))).toBe(true);
+  });
+
+  it("the streaming reader counts unlabelled predictions it does not read", async () => {
+    const { file, close } = await streamingFile(META);
+    try {
+      const error = (await caught(() =>
+        readFromStreamingFile(
+          file,
+          `https://example.com/${META}`,
+          undefined,
+          false,
+          undefined,
+          false,
+          false,
+          false,
+          true, // userInstancesOnly: /pred_points is not read
+        ),
+      )) as SlpFormat3ChoiceError;
+      expect(error.summary).toEqual(META_SUMMARY);
+    } finally {
+      close();
+    }
+  });
+});
+
+describe("a 3.0 package whose embedded group number is not its index", () => {
+  const EMBEDDED = "format3_embedded.pkg.slp";
+
+  it("reads the frame onto the embedded video and its image", async () => {
+    const labels = await readSlp(slpPath(EMBEDDED), {
+      openVideos: true,
+      format3: "edit",
+    });
+    try {
+      expect(labels.videos.length).toBe(1);
+      const video = labels.videos[0];
+      expect(video.hasEmbeddedImages).toBe(true);
+      expect(video.backendMetadata.dataset ?? video.backend?.dataset).toBe(
+        "video2/video",
+      );
+      expect(labels.labeledFrames.length).toBe(1);
+      expect(labels.labeledFrames[0].video).toBe(video);
+      expect(labels.labeledFrames[0].instances.length).toBe(2);
+      const image = await video.getFrame(0);
+      expect(image).toBeTruthy();
+    } finally {
+      for (const video of labels.videos) video.close();
+    }
+  });
+
+  for (const [label, load] of READERS) {
+    it(`${label} puts the frame on video 0`, async () => {
+      const labels = await load(EMBEDDED, "edit");
+      expect(labels.labeledFrames.length).toBe(1);
+      expect(labels.videos.indexOf(labels.labeledFrames[0].video)).toBe(0);
+    });
+  }
+
+  it("an edit save keeps the frame, its poses and its embedded image", async () => {
+    const labels = await readSlp(slpPath(EMBEDDED), {
+      openVideos: true,
+      format3: "edit",
+    });
+    const before = labels.labeledFrames[0].instances.map((i) =>
+      i.points.map((p) => p.xy),
+    );
+    const bytes = await saveSlpToBytes(labels);
+    for (const video of labels.videos) video.close();
+    expect(await formatIdOf(bytes)).toBeLessThan(3);
+    // From a file: the embedded backend reopens the package by path.
+    const dir = mkdtempSync(path.join(tmpdir(), "sleap-io-js-format3-"));
+    const saved = path.join(dir, "saved.pkg.slp");
+    writeFileSync(saved, bytes);
+    const back = await readSlp(saved, { openVideos: true });
+    try {
+      expect(back.labeledFrames.length).toBe(1);
+      expect(back.labeledFrames[0].video).toBe(back.videos[0]);
+      expect(back.videos[0].hasEmbeddedImages).toBe(true);
+      expect(
+        back.labeledFrames[0].instances.map((i) => i.points.map((p) => p.xy)),
+      ).toEqual(before);
+      expect(await back.videos[0].getFrame(0)).toBeTruthy();
+    } finally {
+      for (const video of back.videos) video.close();
+    }
   });
 });
 
@@ -769,6 +1187,20 @@ describe("labels built in memory with 3.0-only content", () => {
     expect(dropped[0]).toContain("bboxes: k");
   });
 
+  it("saveSlpSet refuses unlabelled points before writing any file", async () => {
+    const dir = mkdtempSync(path.join(tmpdir(), "sleap-io-js-format3-"));
+    const set = new LabelsSet();
+    set.set(
+      path.join(dir, "first.slp"),
+      await readSlp(slpPath(V2), { openVideos: false }),
+    );
+    set.set(path.join(dir, "second.slp"), make());
+    const error = (await caught(() => saveSlpSet(set))) as Error;
+    expect(error.message).toContain("1 point(s) are unlabelled");
+    expect(existsSync(path.join(dir, "first.slp"))).toBe(false);
+    expect(existsSync(path.join(dir, "second.slp"))).toBe(false);
+  });
+
   it("hidden points that keep their coordinates need no choice", async () => {
     const points: Point[] = [
       { xy: [1, 2], visible: true, complete: false },
@@ -888,6 +1320,12 @@ function pythons(): Array<{ label: string; cmd: string; args: string[] }> {
   ];
 }
 
+/**
+ * Set `SLEAP_IO_SKIP_PYTHON_TESTS=1` to skip the Python read-backs. Otherwise
+ * they run, and a Python that cannot run fails the test.
+ */
+const SKIP_PYTHON = process.env.SLEAP_IO_SKIP_PYTHON_TESTS === "1";
+
 const READ_BACK_PY = `
 import json, math, sys
 import h5py
@@ -896,6 +1334,11 @@ path = sys.argv[1]
 labels = sio.load_slp(path)
 with h5py.File(path, "r") as f:
     format_id = float(f["metadata"].attrs["format_id"])
+def num(v):
+    if v is None:
+        return None
+    v = float(v)
+    return "nan" if math.isnan(v) else v
 def xy(v):
     return [None if math.isnan(c) else c for c in v]
 frames = []
@@ -905,61 +1348,132 @@ for lf in labels.labeled_frames:
         pts = inst.points
         names = pts.dtype.names
         insts.append({
+            "predicted": type(inst).__name__ == "PredictedInstance",
+            "track": inst.track.name if inst.track else None,
+            "tracking_score": num(inst.tracking_score),
+            "from_predicted": lf.instances.index(inst.from_predicted)
+                if inst.from_predicted is not None else None,
             "xy": [xy(p) for p in pts["xy"].tolist()],
             "visible": [bool(v) for v in pts["visible"]],
             "labeled": [bool(v) for v in pts["labeled"]] if "labeled" in names else None,
             "metadata": dict(getattr(inst, "metadata", {}) or {}),
         })
     frames.append({
+        "video": labels.videos.index(lf.video),
         "frame_idx": lf.frame_idx,
+        "negative": bool(getattr(lf, "is_negative", False)),
+        "bboxes": len(getattr(lf, "bboxes", [])),
         "metadata": dict(getattr(lf, "metadata", {}) or {}),
         "instances": insts,
     })
-print(json.dumps({"version": sio.__version__, "format_id": format_id, "frames": frames}))
+print(json.dumps({
+    "version": sio.__version__,
+    "format_id": format_id,
+    "videos": [v.filename for v in labels.videos],
+    "tracks": [t.name for t in labels.tracks],
+    "frames": frames,
+}))
 `;
 
-describe("an edit save reads back in Python sleap-io", () => {
-  for (const python of pythons()) {
-    it(`with ${python.label}`, async () => {
-      const labels = await readSlp(slpPath(META), {
+/** The edit saves of format3_metadata.slp that Python must read back. */
+const EDIT_SAVES: Array<[string, () => Promise<Uint8Array>]> = [
+  [
+    "an eager save",
+    async () =>
+      saveSlpToBytes(
+        await readSlp(slpPath(META), { openVideos: false, format3: "edit" }),
+      ),
+  ],
+  [
+    "a lazy save",
+    async () =>
+      saveSlpToBytes(
+        await readSlpLazy(slpPath(META), {
+          openVideos: false,
+          format3: "edit",
+        }),
+      ),
+  ],
+  [
+    "a merged-store save",
+    async () => {
+      const labels = await readSlpLazy(slpPath(META), {
         openVideos: false,
         format3: "edit",
       });
-      const dir = mkdtempSync(path.join(tmpdir(), "sleap-io-js-format3-"));
-      const file = path.join(dir, "edited.slp");
-      writeFileSync(file, await saveSlpToBytes(labels));
-      let out: string;
-      try {
-        out = execFileSync(
+      return saveSlpMergedFromStores([labels._lazyDataStore!]);
+    },
+  ],
+];
+
+describe("an edit save reads back in Python sleap-io", () => {
+  for (const python of pythons()) {
+    for (const [what, save] of EDIT_SAVES) {
+      it.skipIf(SKIP_PYTHON)(`${what}, with ${python.label}`, async () => {
+        const dir = mkdtempSync(path.join(tmpdir(), "sleap-io-js-format3-"));
+        const file = path.join(dir, "edited.slp");
+        writeFileSync(file, await save());
+        // Throws (fails the test) if this Python cannot run.
+        const out = execFileSync(
           python.cmd,
           [...python.args, "-c", READ_BACK_PY, file],
           { timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] },
         ).toString();
-      } catch (e) {
-        console.log(`skipped: ${python.label} could not run (${e})`);
-        return;
-      }
-      const result = JSON.parse(out.trim().split("\n").pop()!);
-      console.log(
-        `read back with sleap-io ${result.version} (${python.label})`,
-      );
-      expect(result.format_id).toBeLessThan(3);
-      expect(result.frames.length).toBe(4);
-      const [user, pred] = result.frames[0].instances;
-      expect(user.xy[2]).toEqual([null, null]);
-      expect(user.visible).toEqual([true, true, false]);
-      expect(user.xy[0]).toEqual([10, 20]);
-      expect(pred.xy[0]).toEqual([null, null]);
-      expect(pred.visible[0]).toBe(false);
-      if (user.labeled !== null) {
-        // sleap-io 0.10 reads a 2.x file as fully labelled.
-        expect(user.labeled).toEqual([true, true, true]);
-        expect(pred.labeled).toEqual([true, true, true]);
-      }
-      for (const frame of result.frames) {
-        expect(frame.metadata).toEqual({});
-        for (const inst of frame.instances) expect(inst.metadata).toEqual({});
-      }
-    });
+        const result = JSON.parse(out.trim().split("\n").pop()!);
+        console.log(
+          `${what} read back with sleap-io ${result.version} (${python.label})`,
+        );
+        expect(result.format_id).toBeLessThan(3);
+        expect(result.videos).toEqual(["first.mp4", "second.mp4"]);
+        expect(result.tracks).toEqual(["a", "b"]);
+        expect(
+          result.frames.map(
+            (f: { video: number; frame_idx: number; negative: boolean }) => [
+              f.video,
+              f.frame_idx,
+              f.negative,
+            ],
+          ),
+        ).toEqual([
+          [0, 0, false],
+          [0, 5, false],
+          [1, 2, false],
+          [1, 7, true],
+        ]);
+        const [f0, f5, f2, f7] = result.frames;
+        // Boxes go through the lazy writers' store maps and the eager one.
+        expect(f0.bboxes).toBe(2);
+        expect(f7.instances).toEqual([]);
+        const [user, pred] = f0.instances;
+        expect([user.predicted, user.track]).toEqual([false, "a"]);
+        expect([pred.predicted, pred.track]).toEqual([true, "b"]);
+        expect(pred.tracking_score).toBe(0.5);
+        // No tracking score: NaN on disk, read as None (0.10) or NaN (0.9).
+        expect([null, "nan"]).toContain(user.tracking_score);
+        expect(user.xy).toEqual([
+          [10, 20],
+          [30, 40],
+          [null, null],
+        ]);
+        expect(user.visible).toEqual([true, true, false]);
+        expect(pred.xy[0]).toEqual([null, null]);
+        expect(pred.visible).toEqual([false, true, true]);
+        if (user.labeled !== null) {
+          // sleap-io 0.10 reads a 2.x file as fully labelled.
+          expect(user.labeled).toEqual([true, true, true]);
+          expect(pred.labeled).toEqual([true, true, true]);
+        }
+        // The corrected user instance still points at its source prediction.
+        expect(
+          f5.instances.map((i: { predicted: boolean }) => i.predicted),
+        ).toEqual([true, false]);
+        expect(f5.instances[1].from_predicted).toBe(0);
+        expect(f2.instances[0].track).toBeNull();
+        for (const frame of result.frames) {
+          expect(frame.metadata).toEqual({});
+          for (const inst of frame.instances) expect(inst.metadata).toEqual({});
+        }
+      });
+    }
   }
 });

@@ -62,6 +62,25 @@ export class SlpFormatError extends Error {
 }
 
 /**
+ * Thrown when a file's tables are inconsistent: a format 3.0 table without a
+ * required column, columns of different lengths, ranges that do not fit, or
+ * metadata without one row per record. A subclass of {@link SlpFormatError}, so
+ * callers that already handle unreadable files handle these too (and `loadSlp`
+ * does not retry such a file on the main thread).
+ */
+export class SlpTableError extends SlpFormatError {
+  constructor(labelsPath: string, detail: string, formatId: number | null) {
+    const path = isUrl(labelsPath) ? redactUrl(labelsPath) : labelsPath;
+    super({
+      message: `The SLEAP labels file '${path}' ${detail}`,
+      labelsPath: path,
+      formatId,
+    });
+    this.name = "SlpTableError";
+  }
+}
+
+/**
  * Unwrap an HDF5 attribute as the backends hand it over: h5wasm and the
  * streaming worker give `{ value }`, jsfive and some test doubles give the bare
  * value.
@@ -183,8 +202,8 @@ export function unreadTablesError(
       `The SLEAP labels file '${labelsPath}' is in SLP format ` +
       `${formatLabel(formatId)} and holds tables that this version of ` +
       `sleap-io.js does not read in that format yet ` +
-      `(${tables.map((t) => `/${t}`).join(", ")}). It reads the poses of ` +
-      "format 3 files only. Open the file with Python sleap-io 0.10 or " +
+      `(${tables.map((t) => `/${t}`).join(", ")}). Open the file with ` +
+      "Python sleap-io 0.10 or " +
       "newer, or save a copy there in the 2.x layout with " +
       "`labels.save(new_path, legacy_format=True)`.",
     labelsPath,

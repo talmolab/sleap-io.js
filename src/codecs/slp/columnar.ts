@@ -23,6 +23,8 @@
  * rules live in one place. This module has no HDF5 dependency.
  */
 
+import { SlpTableError } from "./format-check.js";
+
 /** The four pose tables. */
 export type PoseTableName = "frames" | "instances" | "points" | "pred_points";
 
@@ -172,8 +174,10 @@ function numberColumn(values: ArrayLike<unknown> | undefined): Float64Array {
  * @param table Which pose table the columns belong to.
  * @param columns Column name → values, as read from the group's datasets.
  * @param labelsPath Path or name of the file, for error messages.
- * @throws {Error} If a required column is missing or the columns differ in
- *   length; a short or missing column would otherwise shift or drop poses.
+ * @throws {SlpTableError} If a required column is missing or the columns
+ *   differ in length; a short or missing column would otherwise shift or drop
+ *   poses. Readers pass the known columns only (see {@link isKnownPoseColumn}),
+ *   so a column added by a newer writer, of any shape, cannot fail this.
  */
 export function poseTableFromColumns(
   table: PoseTableName,
@@ -183,21 +187,29 @@ export function poseTableFromColumns(
   const present = Object.keys(columns).filter((k) => columns[k] !== undefined);
   const missing = REQUIRED_COLUMNS[table].filter((c) => !present.includes(c));
   if (missing.length > 0) {
-    throw new Error(
-      `The SLEAP labels file '${labelsPath}' has a /${table} table without ` +
-        `the required column(s) ${missing.join(", ")}.`,
+    throw new SlpTableError(
+      labelsPath,
+      `has a /${table} table without the required column(s) ` +
+        `${missing.join(", ")}.`,
+      3,
     );
   }
 
   const out: PoseTable = {};
   let rows = -1;
+  let first = "";
   for (const name of present) {
     const values = numberColumn(columns[name]);
-    if (rows === -1) rows = values.length;
+    if (rows === -1) {
+      rows = values.length;
+      first = name;
+    }
     if (values.length !== rows) {
-      throw new Error(
-        `The SLEAP labels file '${labelsPath}' has /${table} columns of ` +
-          `different lengths (${name}: ${values.length}, expected ${rows}).`,
+      throw new SlpTableError(
+        labelsPath,
+        `has /${table} columns of different lengths (${first}: ${rows} ` +
+          `values, ${name}: ${values.length}).`,
+        3,
       );
     }
     out[name] = values;
@@ -288,7 +300,7 @@ export function countUnlabeledPoints(points: PoseTable | undefined): number {
  *
  * @param nPredPoints Rows of `/pred_points`, or `null` when that table was not
  *   read (the streaming reader's `userInstancesOnly`).
- * @throws {Error} Naming each table that fails a check.
+ * @throws {SlpTableError} Naming each table that fails a check.
  */
 export function checkPoseTables(options: {
   frames: PoseTable;
@@ -371,9 +383,10 @@ export function checkPoseTables(options: {
     }
   }
   if (problems.length > 0) {
-    throw new Error(
-      `The SLEAP labels file '${options.labelsPath}' has inconsistent pose ` +
-        `tables: ${problems.join("; ")}.`,
+    throw new SlpTableError(
+      options.labelsPath,
+      `has inconsistent pose tables: ${problems.join("; ")}.`,
+      3,
     );
   }
 }

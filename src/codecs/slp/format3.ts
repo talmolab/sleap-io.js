@@ -29,7 +29,7 @@ import {
   type MetadataKind,
   metadataKeys,
 } from "../../model/record-metadata.js";
-import { SlpFormatError } from "./format-check.js";
+import { SlpFormatError, SlpTableError } from "./format-check.js";
 
 /** What a caller chooses to do with a format 3.0 file (see the module docs). */
 export type Format3Access = "view" | "edit";
@@ -198,11 +198,7 @@ export function chooseFormat3Access(
   summary: Format3Summary,
   choice: Format3Access | undefined,
 ): SlpSourceFormat {
-  if (choice !== undefined && choice !== "view" && choice !== "edit") {
-    throw new Error(
-      `format3 must be "view" or "edit", got ${JSON.stringify(choice)}.`,
-    );
-  }
+  checkFormat3Option(choice);
   const access =
     choice ?? (summary.lossless && !LOSSLESS_FORMAT3_ASKS ? "edit" : undefined);
   if (access === undefined) {
@@ -214,6 +210,19 @@ export function chooseFormat3Access(
     summary,
     labelsPath: safePath(labelsPath),
   };
+}
+
+/**
+ * Refuse a `format3` option that is neither `"view"` nor `"edit"` (nor unset).
+ *
+ * @throws {TypeError}
+ */
+export function checkFormat3Option(choice: unknown): void {
+  if (choice !== undefined && choice !== "view" && choice !== "edit") {
+    throw new TypeError(
+      `format3 must be "view" or "edit", got ${JSON.stringify(choice)}.`,
+    );
+  }
 }
 
 /** Whether a file's `format_id` is in the 3.x range this version reads. */
@@ -248,10 +257,12 @@ export function metadataKindFromH5(
     case 3:
       return "str";
     case 8: {
+      // h5py's bool; any other enum has an integer base, which Python reads
+      // as integers.
       const names = Object.keys(meta.enum_type?.members ?? {}).sort();
       return names.length === 2 && names[0] === "FALSE" && names[1] === "TRUE"
         ? "bool"
-        : null;
+        : "int";
     }
     default:
       return null;
@@ -262,7 +273,7 @@ export function metadataKindFromH5(
  * Check a table's metadata columns have one row per record, as Python sleap-io
  * does.
  *
- * @throws {Error} Naming the table and key.
+ * @throws {SlpTableError} Naming the table and key.
  */
 export function checkMetadataColumns(
   table: string,
@@ -275,9 +286,10 @@ export function checkMetadataColumns(
       column.values.length !== rows ||
       (column.present !== null && column.present.length !== rows)
     ) {
-      throw new Error(
-        `The SLEAP labels file '${safePath(labelsPath)}' has ` +
-          `/${table}/metadata/${key} without one row per record (${rows}).`,
+      throw new SlpTableError(
+        labelsPath,
+        `has /${table}/metadata/${key} without one row per record (${rows}).`,
+        3,
       );
     }
   }

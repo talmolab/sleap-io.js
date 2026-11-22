@@ -8,10 +8,13 @@ import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
 import {
   writeSlp,
   saveSlpToBytes,
-  refuseViewOnly,
+  checkSlpSavable,
   type UnlabeledAs,
 } from "../codecs/slp/write.js";
-import type { Format3Access } from "../codecs/slp/format3.js";
+import {
+  checkFormat3Option,
+  type Format3Access,
+} from "../codecs/slp/format3.js";
 import { createVideoBackend, type VideoBackendType } from "../video/factory.js";
 import {
   type OpenH5Options,
@@ -66,6 +69,9 @@ function isBrowserWithWorkerSupport(): boolean {
  *   writer refuses the labels), `"edit"` lets a save write the 2.x layout and
  *   drop what it cannot store. Without it such a file throws
  *   `SlpFormat3ChoiceError`, whose `summary` lists what an edit would drop.
+ *   That error comes after the pose tables have been read; to avoid reading
+ *   a large or remote file twice, ask with the lite `loadSlpMetadata` first or
+ *   pass this from the start.
  * @returns Loaded Labels object
  */
 export async function loadSlp(
@@ -85,6 +91,8 @@ export async function loadSlp(
     format3?: Format3Access;
   },
 ): Promise<Labels> {
+  // A wrong option is the caller's error: refuse it before reading anything.
+  checkFormat3Option(options?.format3);
   const streamMode = options?.h5?.stream ?? "auto";
   const openVideos = options?.openVideos ?? true;
   const lazy = options?.lazy ?? false;
@@ -457,7 +465,11 @@ export async function saveSlpSet(
     unlabeledAs?: UnlabeledAs;
   },
 ): Promise<void> {
-  for (const [, labels] of labelsSet) refuseViewOnly(labels);
+  // Refuse the whole set before writing any file: view-only labels or
+  // records, and unlabelled points the `unlabeledAs` mode refuses.
+  for (const [, labels] of labelsSet) {
+    checkSlpSavable(labels, { unlabeledAs: options?.unlabeledAs });
+  }
   const promises: Promise<void>[] = [];
   for (const [filename, labels] of labelsSet) {
     promises.push(saveSlp(labels, filename, options));

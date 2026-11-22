@@ -13,6 +13,7 @@ import {
   UserBoundingBox,
   PredictedBoundingBox,
 } from "./bbox.js";
+import { copySourceMark } from "./source-mark.js";
 
 export function encodeRle(
   mask: Uint8Array,
@@ -587,6 +588,7 @@ export class SegmentationMask {
         ? new PredictedBoundingBox({ ...opts, score: this.score })
         : new UserBoundingBox(opts);
     bb._instanceIdx = this._instanceIdx;
+    copySourceMark(this, bb); // keeps a format 3.0 source, if any
     return bb;
   }
 

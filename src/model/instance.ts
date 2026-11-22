@@ -224,9 +224,12 @@ export class PointView {
     this.#owner._complete[this.#i] = v ? 1 : 0;
   }
 
+  /** Whether the point is labelled; a visible point always is. */
   get labeled(): boolean {
     const labeled = this.#owner._labeled;
-    return labeled ? labeled[this.#i] !== 0 : true;
+    return labeled
+      ? labeled[this.#i] !== 0 || this.#owner._visible[this.#i] !== 0
+      : true;
   }
   set labeled(v: boolean) {
     if (v && !this.#owner._labeled) return; // already all labelled

@@ -13,6 +13,7 @@ import {
   countUnlabeledPoints,
   hasSkippedInstanceRows,
   isColumnarTable,
+  isKnownPoseColumn,
   skipsInstanceRow,
   METADATA_SUBGROUP,
   negativeFrameKeysFromFrames,
@@ -37,6 +38,7 @@ import {
   metadataKeys,
   metadataRecord,
 } from "../../model/record-metadata.js";
+import { markFrameSource, markSource } from "../../model/source-mark.js";
 import {
   openH5Worker,
   type StreamingH5File,
@@ -668,6 +670,13 @@ export async function readFromStreamingFile(
   const predPointsData = userInstancesOnly
     ? {}
     : await readTable("pred_points");
+  // With userInstancesOnly the predicted points are not read, but a 3.0
+  // file's summary must still count their unlabelled points: fetch only the
+  // two flag columns for that.
+  const predPointFlags =
+    userInstancesOnly && formatId >= 3.0
+      ? await readPointFlagsStreaming(file, "pred_points")
+      : null;
   // Format 3.0 keeps the negative flag as a `/frames` column.
   const negativeFrames = framesData.is_negative
     ? negativeFrameKeysFromFrames(framesData)
@@ -681,6 +690,7 @@ export async function readFromStreamingFile(
     instancesData,
     pointsData,
     predPointsData: userInstancesOnly ? null : predPointsData,
+    predPointFlags,
     nVideos: videos.length,
     choice: format3Choice,
   });
@@ -804,16 +814,25 @@ export async function readFromStreamingFile(
     instanceRows,
     userInstancesOnly: rowsByMap,
   };
-  attachAnnotationTuples<Centroid>(await readCentroidsStreaming(file, tracks), {
-    ...attachCommon,
-    frameList: (lf) => lf.centroids,
-    setLazy: (store, byFrame, undistributed) => {
-      store._centroidByFrame = byFrame;
-      store._undistributedCentroids = undistributed;
+  // Every record carries the open-time choice wherever it goes (frames and
+  // instances are marked below, or by the lazy store as they materialize).
+  const markTuples = <T extends object>(tuples: [T, number, number][]) => {
+    for (const [ann] of tuples) markSource(ann, format3?.sourceFormat);
+    return tuples;
+  };
+  attachAnnotationTuples<Centroid>(
+    markTuples(await readCentroidsStreaming(file, tracks)),
+    {
+      ...attachCommon,
+      frameList: (lf) => lf.centroids,
+      setLazy: (store, byFrame, undistributed) => {
+        store._centroidByFrame = byFrame;
+        store._undistributedCentroids = undistributed;
+      },
     },
-  });
+  );
   attachAnnotationTuples<BoundingBox>(
-    await readBboxesStreaming(file, tracks, format3?.bboxMetadata),
+    markTuples(await readBboxesStreaming(file, tracks, format3?.bboxMetadata)),
     {
       ...attachCommon,
       frameList: (lf) => lf.bboxes,
@@ -853,6 +872,11 @@ export async function readFromStreamingFile(
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
   });
   labels.sourceFormat = format3?.sourceFormat ?? null;
+  if (labeledFrames) {
+    for (const frame of labeledFrames) {
+      markFrameSource(frame, format3?.sourceFormat);
+    }
+  }
   if (lazyStore) {
     // Attach the lazy proxies BEFORE injectSessionFrameResolver so the resolver's
     // frameAt() resolves against the lazy list (a single frame on demand, never
@@ -1981,15 +2005,45 @@ async function readPoseTableStreaming(
   labelsPath: string,
   // biome-ignore lint/suspicious/noExplicitAny: matches the 2.x table type
 ): Promise<Record<string, any>> {
-  if (!(formatId >= 3.0)) return readStructDatasetStreaming(file, table);
-  if (!file.keys().includes(table)) return {};
+  // The layout is decided per table by node type, as the eager reader and
+  // Python sleap-io do: a group is read as columns, a dataset as 2.x.
+  const present = file.keys().includes(table);
+  const isGroup = present && !(await isDatasetStreaming(file, table));
+  if (!isGroup) {
+    if (formatId >= 3.0 && !present) return {};
+    return readStructDatasetStreaming(file, table);
+  }
   const columns: Record<string, ArrayLike<unknown>> = {};
   for (const name of await childKeys(file, table)) {
-    if (name === METADATA_SUBGROUP) continue;
+    // Only the columns this version knows are fetched; the others are listed
+    // as unknown (see readFormat3Streaming) and would be dropped by a save.
+    if (!isKnownPoseColumn(table, name)) continue;
     const data = await file.getDatasetValue(`${table}/${name}`);
     columns[name] = data.value as ArrayLike<unknown>;
   }
   return poseTableFromColumns(table, columns, labelsPath);
+}
+
+/**
+ * The `labeled` and `visible` columns of a 3.0 point table, without the rest
+ * of it, or `null` when it has no `labeled` column (every point labelled).
+ */
+async function readPointFlagsStreaming(
+  file: StreamingH5File,
+  table: "points" | "pred_points",
+): Promise<Record<string, ArrayLike<unknown>> | null> {
+  if (!file.keys().includes(table)) return null;
+  const names = await childKeys(file, table);
+  if (!names.includes("labeled")) return null;
+  const flags: Record<string, ArrayLike<unknown>> = {};
+  for (const name of ["labeled", "visible"]) {
+    if (names.includes(name)) {
+      flags[name] = normalizeDatasetArray(
+        (await file.getDatasetValue(`${table}/${name}`)).value,
+      );
+    }
+  }
+  return flags;
 }
 
 /** Whether `path` is a dataset (a group has no shape). */
@@ -2088,6 +2142,8 @@ async function readFormat3Streaming(
     pointsData: Record<string, any>;
     // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTableStreaming
     predPointsData: Record<string, any> | null;
+    /** `labeled`/`visible` of `/pred_points` when the table itself was not read. */
+    predPointFlags?: Record<string, ArrayLike<unknown>> | null;
     nVideos: number;
     choice: Format3Access | undefined;
   },
@@ -2144,7 +2200,9 @@ async function readFormat3Streaming(
   const summary = buildFormat3Summary({
     formatId,
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
-    unlabeledPredictedPoints: countUnlabeledPoints(predPointsData ?? undefined),
+    unlabeledPredictedPoints: countUnlabeledPoints(
+      predPointsData ?? tables.predPointFlags ?? undefined,
+    ),
     metadataKeys: {
       instances: metadataKeys(instanceMetadata),
       frames: metadataKeys(frameMetadata),

@@ -39,12 +39,11 @@ export async function streamingFile(
   const get = (p: string) => h5.get(p) as any;
   const file = {
     keys: () => h5.keys() as string[],
+    // As the worker's getKeys: a missing path throws, a dataset has no keys.
     getKeys: async (p: string) => {
       const node = get(p);
-      if (!node || node.type !== "Group") {
-        throw new Error(`Not a group: ${p}`);
-      }
-      return node.keys() as string[];
+      if (!node) throw new Error(`Path not found: ${p}`);
+      return node.type === "Group" ? (node.keys() as string[]) : [];
     },
     getAttrs: async (p: string) => {
       const node = get(p);

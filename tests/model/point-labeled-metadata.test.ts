@@ -26,10 +26,14 @@ describe("the labeled flag in the model", () => {
     inst.points[1].labeled = false;
     expect(Array.from(inst._labeled!)).toEqual([1, 0, 1]);
     expect(inst.nUnlabeled).toBe(1);
-    // Making a point visible leaves the flag; a visible point counts as labelled.
+    // Making a point visible leaves the stored flag, but a visible point
+    // counts as labelled, as Python sleap-io writes it (`labeled | visible`).
     inst.points[1].visible = true;
-    expect(inst.points[1].labeled).toBe(false);
+    expect(inst._labeled![1]).toBe(0);
+    expect(inst.points[1].labeled).toBe(true);
     expect(inst.nUnlabeled).toBe(0);
+    inst.points[1].visible = false;
+    expect(inst.points[1].labeled).toBe(false);
   });
 
   it("is carried by clonePoint and the points setter", () => {
@@ -111,6 +115,17 @@ describe("record metadata", () => {
       flag: true,
       extra: "x",
     });
+  });
+
+  it("gives boxes merged into another frame their own dictionary", () => {
+    const source = make().labeledFrames[0];
+    const target = new LabeledFrame({ video, frameIdx: 3 });
+    target.merge(source, { frame: "keep_both" });
+    const merged = target.bboxes[0];
+    expect(merged).not.toBe(source.bboxes[0]);
+    expect(merged.metadata).toEqual({ k: 1 });
+    merged.metadata.k = 2;
+    expect(source.bboxes[0].metadata).toEqual({ k: 1 });
   });
 
   it("is kept by BoundingBox.pad", () => {

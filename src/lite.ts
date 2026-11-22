@@ -84,6 +84,7 @@ export {
   SlpViewOnlyError,
   LOSSLESS_FORMAT3_ASKS,
 } from "./codecs/slp/format3.js";
+export { SlpTableError } from "./codecs/slp/format-check.js";
 export type {
   Format3Access,
   Format3Summary,
@@ -141,6 +142,20 @@ export interface SlpMetadata {
    * Absent for files before 3.0.
    */
   format3?: Format3Summary;
+}
+
+/**
+ * A format 3.0 file may hold tables this version does not read in their 3.0
+ * form yet. Refuse it by name, as the full readers do.
+ */
+function refuseUnreadTables(
+  file: ReturnType<typeof openJsfiveFile>,
+  labelsPath: string,
+  formatId: number,
+): void {
+  if (!(formatId >= 3.0)) return;
+  const found = UNREAD_FORMAT_3_TABLES.filter((path) => !!file.get(path));
+  if (found.length > 0) throw unreadTablesError(labelsPath, formatId, found);
 }
 
 /** Whether a jsfive dtype is one a metadata `values` column may have. */
@@ -361,16 +376,7 @@ export async function loadSlpMetadata(
 
     // A format 3.0 file may hold tables this version does not read in their
     // 3.0 form yet; `/session_data` is the one this reader would touch.
-    if (formatId >= 3.0) {
-      const found = UNREAD_FORMAT_3_TABLES.filter((path) => !!file.get(path));
-      if (found.length > 0) {
-        throw unreadTablesError(
-          options?.filename ?? "slp-data.slp",
-          formatId,
-          found,
-        );
-      }
-    }
+    refuseUnreadTables(file, options?.filename ?? "slp-data.slp", formatId);
 
     // Parse skeletons using shared logic
     const skeletons = parseSkeletons(metadataJson);
@@ -530,6 +536,16 @@ export function validateSlpBuffer(source: JsfiveSource): boolean {
     if (!attrs.json) {
       throw new Error("Invalid SLP file: missing metadata.attrs.json");
     }
+    // Nor does a 3.0 file with tables no reader of this version reads yet.
+    refuseUnreadTables(
+      file,
+      "slp-data.slp",
+      Number(
+        (attrs.format_id as { value?: unknown })?.value ??
+          attrs.format_id ??
+          1.0,
+      ),
+    );
 
     return true;
   } finally {

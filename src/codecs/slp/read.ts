@@ -3,6 +3,7 @@ import {
   countUnlabeledPoints,
   hasSkippedInstanceRows,
   isColumnarTable,
+  isKnownPoseColumn,
   skipsInstanceRow,
   METADATA_SUBGROUP,
   negativeFrameKeysFromFrames,
@@ -27,6 +28,7 @@ import {
   metadataKeys,
   metadataRecord,
 } from "../../model/record-metadata.js";
+import { markFrameSource, markSource } from "../../model/source-mark.js";
 import {
   openH5File,
   type OpenH5Options,
@@ -499,6 +501,10 @@ export async function readSlp(
       rois: staticRois,
     });
     labels.sourceFormat = format3?.sourceFormat ?? null;
+    // Every record carries the open-time choice wherever it goes.
+    for (const frame of labels.labeledFrames) {
+      markFrameSource(frame, format3?.sourceFormat);
+    }
     // Sessions are read before the frame store exists; wire the lazy frame
     // resolver now so ref-backed grouping resolves against labels.labeledFrames.
     injectSessionFrameResolver(labels);
@@ -783,6 +789,17 @@ export async function readSlpLazy(
       return { byFrame, undistributed };
     };
 
+    // Every record carries the open-time choice wherever it goes; the store
+    // marks frames and instances as they materialize.
+    for (const tuples of [
+      centroidTuples,
+      bboxTuples,
+      maskTuples,
+      roiTuples,
+      labelImageTuples,
+    ] as Array<Array<[object, number, number]>>) {
+      for (const [ann] of tuples) markSource(ann, format3?.sourceFormat);
+    }
     const cResult = buildAnnByFrame(centroidTuples);
     const bResult = buildAnnByFrame(bboxTuples);
     const mResult = buildAnnByFrame(maskTuples);
@@ -827,17 +844,17 @@ export async function readSlpLazy(
       const vidIdx = Number(vidIdxStr);
       const fidx = Number(fidxStr);
       if (vidIdx >= 0 && vidIdx < videos.length) {
-        lazyFrames._supplementary.push(
-          new LabeledFrame({
-            video: videos[vidIdx],
-            frameIdx: fidx,
-            centroids: store._centroidByFrame.get(key) ?? [],
-            bboxes: store._bboxByFrame.get(key) ?? [],
-            masks: store._maskByFrame.get(key) ?? [],
-            labelImages: store._labelImageByFrame.get(key) ?? [],
-            rois: store._roiByFrame.get(key) ?? [],
-          }),
-        );
+        const frame = new LabeledFrame({
+          video: videos[vidIdx],
+          frameIdx: fidx,
+          centroids: store._centroidByFrame.get(key) ?? [],
+          bboxes: store._bboxByFrame.get(key) ?? [],
+          masks: store._maskByFrame.get(key) ?? [],
+          labelImages: store._labelImageByFrame.get(key) ?? [],
+          rois: store._roiByFrame.get(key) ?? [],
+        });
+        markFrameSource(frame, format3?.sourceFormat);
+        lazyFrames._supplementary.push(frame);
       }
     }
 
@@ -2701,7 +2718,9 @@ function readPoseTable(
   if (node && node.type === "Group") {
     const columns: Record<string, ArrayLike<unknown>> = {};
     for (const name of node.keys() as string[]) {
-      if (name === METADATA_SUBGROUP) continue;
+      // Only the columns this version knows are read; the others are listed
+      // as unknown (see readFormat3) and would be dropped by a save anyway.
+      if (!isKnownPoseColumn(table, name)) continue;
       const child = file.get(`${table}/${name}`);
       if (!child || child.type === "Group") continue;
       columns[name] = child.value as ArrayLike<unknown>;

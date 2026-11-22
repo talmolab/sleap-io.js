@@ -1210,6 +1210,19 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
 // number[][]. Flushes at the end. Never opens a video group.
 function updateLabelsInPlace(payload) {
   if (!currentDestFile) throw new Error('updateLabelsInPlace: no dest file open (call openWrite first)');
+  // Backstops kept in lockstep with writeLabelTablesInPlace (write.ts): refuse
+  // labels loaded view-only, and a file whose pose tables are in the SLP
+  // format 3.0 layout (groups of columns), before anything is written.
+  if (payload.sourceAccess === 'view') {
+    throw new Error('updateLabelsInPlace: these labels were loaded from an SLP format 3.0 file for viewing only (format3: "view") and cannot be saved');
+  }
+  var poseTables = ['frames', 'instances', 'points', 'pred_points'];
+  for (var p = 0; p < poseTables.length; p++) {
+    var node = currentDestFile.get(poseTables[p]);
+    if (node && node.type === 'Group') {
+      throw new Error('in-place save: "' + poseTables[p] + '" is in the SLP format 3.0 layout, which this version cannot patch — re-save the whole file instead');
+    }
+  }
   var tables = payload.tables || [];
   for (var t = 0; t < tables.length; t++) {
     var tb = tables[t];

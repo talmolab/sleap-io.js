@@ -7,6 +7,7 @@ import { LabelImage } from "./label-image.js";
 import { ROI } from "./roi.js";
 import { InstanceMatcher, InstanceMatchMethod } from "./matching.js";
 import type { RecordMetadata } from "./record-metadata.js";
+import { copySourceMark, mergeSourceMark } from "./source-mark.js";
 
 /** Strategy for merging annotation lists between frames. */
 export type MergeStrategy =
@@ -62,6 +63,12 @@ function _copyWithMemo<T extends object>(
   memo: Map<object, object>,
 ): T {
   const itemCopy = _shallowCopy(item);
+  copySourceMark(item, itemCopy); // a copy keeps its format 3.0 source
+  // Per-record metadata (bounding boxes): the copy gets its own dictionary.
+  const meta = (itemCopy as { metadata?: unknown }).metadata;
+  if (meta !== null && typeof meta === "object" && !Array.isArray(meta)) {
+    (itemCopy as { metadata: object }).metadata = { ...meta };
+  }
   memo.set(item, itemCopy);
   return itemCopy;
 }
@@ -684,8 +691,10 @@ export class LabeledFrame {
 
     const conflicts: Array<[Instance, Instance, string]> = [];
     // Frame metadata: this frame's keys win, the other's fill in (Python
-    // `merge_metadata`).
+    // `merge_metadata`). The frame now holds the other's content, so it takes
+    // the stricter format 3.0 source mark of the two.
     this.metadata = { ...other.metadata, ...this.metadata };
+    mergeSourceMark(this, other);
 
     if (frame === "keep_original") {
       this.mergeAnnotations(other, "keep_original");

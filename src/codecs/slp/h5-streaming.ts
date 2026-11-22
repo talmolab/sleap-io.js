@@ -21,6 +21,7 @@ import type {
   LabelTable,
 } from "./write.js";
 import type { EncodeFramePayload } from "./stream-embed.js";
+import { SlpViewOnlyError } from "./format3.js";
 
 /**
  * Options for opening a streaming HDF5 file.
@@ -944,6 +945,11 @@ export class StreamingH5Writer {
   async updateLabelsInPlace(
     update: LabelTableUpdate,
   ): Promise<H5WorkerResponse> {
+    // Same backstops as writeLabelTablesInPlace: labels loaded view-only are
+    // never written (and the worker refuses a file in the 3.0 layout).
+    if (update.sourceFormat?.access === "view") {
+      throw new SlpViewOnlyError(update.sourceFormat);
+    }
     const tables: Array<{
       name: string;
       fields: string[];
@@ -985,7 +991,11 @@ export class StreamingH5Writer {
 
     return this.send(
       "updateLabelsInPlace",
-      { tables, metadataJson: update.metadataJson ?? null },
+      {
+        tables,
+        metadataJson: update.metadataJson ?? null,
+        sourceAccess: update.sourceFormat?.access ?? null,
+      },
       transfer,
     );
   }
