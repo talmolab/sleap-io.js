@@ -639,10 +639,15 @@ describe("the open-time choice travels with the records", () => {
     const target = await readSlp(slpPath(V2), { openVideos: false });
     await target.merge(await load("edit"));
     expect(target.sourceFormat).toBeNull();
-    const back = await readSlp(await saveSlpToBytes(target), {
-      openVideos: false,
-      h5: { filenameHint: "merged.slp" },
-    });
+    // The 2.x layout, asked for ("auto" would keep the frames' metadata in
+    // format 3.0, see slp-version.test.ts).
+    const back = await readSlp(
+      await saveSlpToBytes(target, { slpVersion: "v2" }),
+      {
+        openVideos: false,
+        h5: { filenameHint: "merged.slp" },
+      },
+    );
     const user = back.labeledFrames[0].instances.find(
       (i) => !(i instanceof PredictedInstance) && i.points[2].xy[0] !== 50,
     );
@@ -802,7 +807,7 @@ describe("marks follow content, and can be carried or switched", () => {
       frame: "keep_original",
     });
     expect(sourceMarkOf(frame)).toBeUndefined();
-    await saveSlpToBytes(labels);
+    await saveSlpToBytes(labels, { slpVersion: "v2" });
     const dropped = warn.mock.calls
       .map((c) => String(c[0]))
       .filter((m) => m.includes("metadata"));

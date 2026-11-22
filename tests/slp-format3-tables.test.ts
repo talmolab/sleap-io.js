@@ -1788,11 +1788,6 @@ function describeInPython(
     {
       timeout: 120_000,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        NUMPY_MADVISE_HUGEPAGE: "0",
-        OMP_NUM_THREADS: "8",
-      },
     },
   ).toString();
   return JSON.parse(out.trim().split("\n").pop()!);
@@ -2112,11 +2107,6 @@ print(json.dumps({
           {
             timeout: 120_000,
             stdio: ["ignore", "pipe", "pipe"],
-            env: {
-              ...process.env,
-              NUMPY_MADVISE_HUGEPAGE: "0",
-              OMP_NUM_THREADS: "8",
-            },
           },
         ).toString();
         const result = JSON.parse(out.trim().split("\n").pop()!);
@@ -2420,11 +2410,6 @@ function pythonVersion(python: { cmd: string; args: string[] }): string {
     {
       timeout: 120_000,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        NUMPY_MADVISE_HUGEPAGE: "0",
-        OMP_NUM_THREADS: "8",
-      },
     },
   )
     .toString()
@@ -2445,7 +2430,6 @@ function pythonError(
   return execFileSync(python.cmd, [...python.args, "-c", script, file], {
     timeout: 120_000,
     stdio: ["ignore", "pipe", "pipe"],
-    env: { ...process.env, NUMPY_MADVISE_HUGEPAGE: "0", OMP_NUM_THREADS: "8" },
   })
     .toString()
     .trim();

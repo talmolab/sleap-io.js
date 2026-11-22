@@ -495,7 +495,8 @@ written), with a placeholder and `present` for records lacking the key. h5wasm
 cannot write HDF5 booleans, so flags are written as `uint8`, which Python
 reads as it reads booleans; a boolean metadata key is written as `uint8` with
 the attribute `kind = "bool"`, which sleap-io.js reads back as booleans and
-Python sleap-io reads as the integers 0 and 1. Lazy labels are written from
+Python sleap-io reads as the integers 0 and 1. A format 3.0 save that writes
+boolean metadata says so once (`console.warn`), naming the keys. Lazy labels are written from
 their raw tables without materializing.
 
 **Unknown columns.** Columns a newer writer added to a 3.0 table (the pose

@@ -65,6 +65,7 @@ import {
   writeColumnTable,
   writeMetadataColumns,
   ensureGroup,
+  withBoolMetadataNotice,
 } from "./write-columns.js";
 import {
   type ColumnCarry,
@@ -2582,6 +2583,12 @@ export class SlpStreamWriter {
 
   /** Write pending `negative_frames` and close the HDF5 file (shared finalize). */
   private finalizeFile(): void {
+    withBoolMetadataNotice(() => this.finalizeTables());
+    this.file.close();
+  }
+
+  /** Write the pending annotations, links, metadata and negative frames. */
+  private finalizeTables(): void {
     this.writePendingAnnotations();
     if (this.layout === "v3") {
       // Per-detection identity and category links and embeddings: instances
@@ -2632,7 +2639,6 @@ export class SlpStreamWriter {
         "<i8",
       );
     }
-    this.file.close();
   }
 
   /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
@@ -3161,7 +3167,9 @@ async function writeSlpBytesIn(
         const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
         const file = new module.File(memPath, "w");
         try {
-          writeSlpToFileLazy(file, lazyWriteLabels, layout);
+          withBoolMetadataNotice(() =>
+            writeSlpToFileLazy(file, lazyWriteLabels, layout),
+          );
         } finally {
           file.close();
         }
@@ -3254,7 +3262,9 @@ async function writeSlpBytesIn(
   const file = new module.File(memPath, "w");
   try {
     try {
-      writeSlpToFile(file, writeLabels, plan, layout);
+      withBoolMetadataNotice(() =>
+        writeSlpToFile(file, writeLabels, plan, layout),
+      );
       if (includeEmbeddedData && plan && plan.size > 0) {
         await writeEmbeddedVideoData(file, labels, plan, options?.onProgress);
       }

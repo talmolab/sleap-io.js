@@ -296,6 +296,44 @@ export function metadataColumnsOf(
   return out;
 }
 
+/** Boolean metadata keys written during {@link withBoolMetadataNotice}. */
+let boolKeysWritten: Array<[table: string, key: string]> | null = null;
+
+/**
+ * Run a format 3.0 save, then warn once if it wrote boolean metadata: h5wasm
+ * cannot write HDF5 booleans, so such keys are stored as `uint8` with
+ * `kind = "bool"`, which this library reads back as booleans but Python
+ * sleap-io reads as the integers 0 and 1.
+ */
+export function withBoolMetadataNotice<T>(write: () => T): T {
+  const outer = boolKeysWritten;
+  boolKeysWritten = [];
+  try {
+    const out = write();
+    const written = boolKeysWritten;
+    if (written.length > 0) {
+      const byTable = new Map<string, string[]>();
+      for (const [table, key] of written) {
+        const keys = byTable.get(table) ?? [];
+        if (!keys.includes(key)) keys.push(key);
+        byTable.set(table, keys);
+      }
+      const named = [...byTable]
+        .map(([table, keys]) => `${table}: ${keys.sort().join(", ")}`)
+        .join("; ");
+      console.warn(
+        `Saving boolean metadata (${named}) in SLP format 3.0 as uint8 ` +
+          'values marked kind="bool", since HDF5 booleans cannot be written ' +
+          "here. sleap-io.js reads them back as booleans, but Python " +
+          "sleap-io reads them as the integers 0 and 1.",
+      );
+    }
+    return out;
+  } finally {
+    boolKeysWritten = outer;
+  }
+}
+
 /**
  * Write metadata columns into `<tablePath>/metadata/<key>/{values,present}`.
  * Nothing is written when there are none.
@@ -332,6 +370,7 @@ export function writeMetadataColumns(
           : Array.from(column.values, (v) => Number(v));
     writeDataset(file, `${base}/values`, values, dtype);
     if (column.kind === "bool") {
+      boolKeysWritten?.push([tablePath, key]);
       const ds = file.get(`${base}/values`);
       ds.create_attribute(METADATA_KIND_ATTR, "bool", null, "S4");
     }

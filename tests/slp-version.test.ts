@@ -277,7 +277,14 @@ afterEach(() => {
 /** The messages of `console.warn` since the test began. */
 const warnings = (): string[] => warn.mock.calls.map((c) => String(c[0]));
 const layoutWarnings = (): string[] =>
-  warnings().filter((m) => m.includes("Saving") && m.includes("format 3.0"));
+  warnings().filter(
+    (m) =>
+      m.includes("Saving") &&
+      m.includes("format 3.0") &&
+      !m.includes("boolean metadata"),
+  );
+const boolWarnings = (): string[] =>
+  warnings().filter((m) => m.includes("boolean metadata"));
 
 describe("the slpVersion option", () => {
   it("is refused with a TypeError by every writer before anything is written", async () => {
@@ -644,6 +651,45 @@ describe("format 3.0 saves of the pose tables", () => {
     );
   });
 
+  it("warns once that Python reads boolean metadata as integers", async () => {
+    // Every format 3.0 writer: eager, lazy, merged store, streaming writer.
+    const saves: Array<() => Promise<Uint8Array>> = [
+      async () =>
+        saveSlpToBytes(built({ instanceMetadata: true, frameMetadata: true }), {
+          slpVersion: "v3",
+        }),
+      async () =>
+        saveSlpToBytes(await readSlpLazy(slpPath(META), { openVideos: false })),
+      async () =>
+        saveSlpMergedFromStores([
+          (await readSlpLazy(slpPath(META), { openVideos: false }))
+            ._lazyDataStore!,
+        ]),
+      async () => {
+        const labels = await readSlp(slpPath(META), { openVideos: false });
+        const writer = await openSlpWriter(labels);
+        writer.appendFrames(labels.labeledFrames);
+        return writer.close();
+      },
+    ];
+    for (const save of saves) {
+      warn.mockClear();
+      await save();
+      const notices = boolWarnings();
+      expect(notices).toHaveLength(1);
+      expect(notices[0]).toMatch(/instances: [^;]*(ok|reviewed)/);
+      expect(notices[0]).toContain("frames: flagged");
+      expect(notices[0]).toContain(
+        "Python sleap-io reads them as the integers 0 and 1",
+      );
+    }
+    // No boolean metadata, or the 2.x layout: no notice.
+    warn.mockClear();
+    await saveSlpToBytes(built({ boxMetadata: true }), { slpVersion: "v3" });
+    await saveSlpToBytes(built({ frameMetadata: true }), { slpVersion: "v2" });
+    expect(boolWarnings()).toEqual([]);
+  });
+
   it("refuses a metadata key of mixed kinds before anything is written", async () => {
     const labels = built({ instanceMetadata: true });
     labels.labeledFrames[0].instances[0].metadata.pass = "two";
@@ -967,11 +1013,6 @@ function readInPython(
     {
       timeout: 120_000,
       stdio: ["ignore", "pipe", "pipe"],
-      env: {
-        ...process.env,
-        NUMPY_MADVISE_HUGEPAGE: "0",
-        OMP_NUM_THREADS: "8",
-      },
     },
   ).toString();
   return JSON.parse(out.trim().split("\n").pop()!);
