@@ -44,7 +44,12 @@ import {
   SlpFormat3ChoiceError,
   SlpViewOnlyError,
 } from "../src/codecs/slp/format3.js";
-import { checkPoseTables } from "../src/codecs/slp/columnar.js";
+import {
+  checkPoseTables,
+  hasSkippedInstanceRows,
+  poseTableFromColumns,
+  skipsInstanceRow,
+} from "../src/codecs/slp/columnar.js";
 import {
   buildLabelTableUpdate,
   checkInPlaceWritable,
@@ -353,6 +358,75 @@ describe("what format 3.0 adds is read into the model", () => {
     expect(f0.instances[0].points[2].labeled).toBe(false);
     // Merging is not loading: the target was not opened from a file.
     expect(target.sourceFormat).toBeNull();
+  });
+});
+
+describe("3.0 instance rows of another type are skipped, as in Python", () => {
+  /**
+   * format3_metadata.slp with instance row 2 (the prediction the user instance
+   * of frame 5 was corrected from) given instance type 2, and the first box
+   * linked to row 3 (that user instance). Links are rows, so they must still
+   * resolve past the skipped row.
+   */
+  const skippedFixture = async (): Promise<string> => {
+    await ready;
+    const dir = mkdtempSync(path.join(tmpdir(), "sleap-io-js-format3-"));
+    const file = path.join(dir, "format3_type2.slp");
+    copyFileSync(slpPath(META), file);
+    const h5 = new H5File(file, "a");
+    try {
+      // biome-ignore lint/suspicious/noExplicitAny: h5wasm dataset
+      const types = h5.get("instances/instance_type") as any;
+      types.write_slice([[2, 3]], new Uint8Array([2]));
+      // biome-ignore lint/suspicious/noExplicitAny: h5wasm dataset
+      const links = h5.get("bboxes/instance") as any;
+      links.write_slice([[0, 1]], new Int32Array([3]));
+    } finally {
+      h5.close();
+    }
+    return file;
+  };
+
+  for (const [label, load] of READERS) {
+    it(label, async () => {
+      const labels = await load(await skippedFixture(), "edit");
+      const [f0, f5, f2] = labels.labeledFrames;
+      expect(labels.labeledFrames.map((f) => f.instances.length)).toEqual([
+        2, 1, 1, 0,
+      ]);
+      const corrected = f5.instances[0];
+      expect(corrected).not.toBeInstanceOf(PredictedInstance);
+      expect(corrected.points[0].xy).toEqual([13, 23]);
+      // Its source was the skipped row.
+      expect(corrected.fromPredicted).toBeNull();
+      // Rows after the skipped one keep their metadata and links.
+      expect(f2.instances[0]).toBeInstanceOf(PredictedInstance);
+      expect(f0.instances[0].metadata.annotator).toBe("someone");
+      expect(f0.bboxes[0].instance).toBe(corrected);
+    });
+  }
+
+  it("only 3.0 tables skip them; 2.x rows of any type are read", () => {
+    const columnar = poseTableFromColumns(
+      "instances",
+      {
+        instance_type: [0, 2, 1],
+        frame_id: [0, 0, 0],
+        skeleton: [0, 0, 0],
+        point_id_start: [0, 0, 0],
+        point_id_end: [0, 0, 0],
+      },
+      "a.slp",
+    );
+    expect([0, 1, 2].map((row) => skipsInstanceRow(columnar, row))).toEqual([
+      false,
+      true,
+      false,
+    ]);
+    expect(hasSkippedInstanceRows(columnar)).toBe(true);
+    const compound = { instance_type: [0, 2, 1] };
+    expect(skipsInstanceRow(compound, 1)).toBe(false);
+    expect(hasSkippedInstanceRows(compound)).toBe(false);
   });
 });
 

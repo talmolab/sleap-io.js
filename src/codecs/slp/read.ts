@@ -1,7 +1,9 @@
 import {
   checkPoseTables,
   countUnlabeledPoints,
+  hasSkippedInstanceRows,
   isColumnarTable,
+  skipsInstanceRow,
   METADATA_SUBGROUP,
   negativeFrameKeysFromFrames,
   type PoseTableName,
@@ -292,6 +294,7 @@ export async function readSlp(
       labelsPath,
     });
 
+    const instanceRows = new Map<number, Instance | PredictedInstance>();
     const labeledFrames = buildLabeledFrames({
       framesData,
       instancesData,
@@ -303,7 +306,20 @@ export async function readSlp(
       formatId,
       instanceMetadata: format3?.instanceMetadata,
       frameMetadata: format3?.frameMetadata,
+      instanceRows,
     });
+    // Links to instances (box and centroid `instance`, identity and category
+    // owners) are `/instances` rows. When the reader skipped rows (a 3.0
+    // instance type other than user or predicted), index by row, with a hole
+    // for each skipped one; otherwise the frames' instances in order are the
+    // rows, as before.
+    const instancesByRow = (): Array<Instance | PredictedInstance> =>
+      hasSkippedInstanceRows(instancesData)
+        ? Array.from(
+            { length: (instancesData.instance_type ?? []).length },
+            (_, row) => instanceRows.get(row) as Instance | PredictedInstance,
+          )
+        : labeledFrames.flatMap((f) => f.instances);
 
     // Read negative frames (video ids resolved like /frames', see helper)
     // Format 3.0 keeps the flag as a `/frames` column.
@@ -336,7 +352,7 @@ export async function readSlp(
       readSessionDataEager(file, emscripten),
     );
     report(7); // Reading annotations
-    const allInstances = labeledFrames.flatMap((f) => f.instances);
+    const allInstances = instancesByRow();
     const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
       file,
       videos,
@@ -432,7 +448,7 @@ export async function readSlp(
     // Mirrors Labels.materialize() for eager mode so bboxes/centroids/masks/
     // labelImages get their .instance set on read (ROIs are already resolved
     // in readRoisWithMigration since it receives `instances`).
-    const allInstancesFlat = labeledFrames.flatMap((lf) => lf.instances);
+    const allInstancesFlat = instancesByRow();
     const resolveInstanceRef = (ann: {
       _instanceIdx: number | null;
       instance: Instance | null;
@@ -440,7 +456,8 @@ export async function readSlp(
       if (
         ann._instanceIdx !== null &&
         ann._instanceIdx >= 0 &&
-        ann._instanceIdx < allInstancesFlat.length
+        ann._instanceIdx < allInstancesFlat.length &&
+        allInstancesFlat[ann._instanceIdx]
       ) {
         ann.instance = allInstancesFlat[ann._instanceIdx];
         ann._instanceIdx = null;
@@ -455,7 +472,12 @@ export async function readSlp(
         if (li._objectInstanceIdxs) {
           for (const [labelId, instIdx] of li._objectInstanceIdxs) {
             const obj = li.objects.get(labelId);
-            if (obj && instIdx >= 0 && instIdx < allInstancesFlat.length) {
+            if (
+              obj &&
+              instIdx >= 0 &&
+              instIdx < allInstancesFlat.length &&
+              allInstancesFlat[instIdx]
+            ) {
               obj.instance = allInstancesFlat[instIdx];
             }
           }
@@ -2968,6 +2990,8 @@ function buildLabeledFrames(options: {
   formatId: number;
   instanceMetadata?: MetadataColumns | null;
   frameMetadata?: MetadataColumns | null;
+  /** Filled with each built instance, keyed by its `/instances` row. */
+  instanceRows?: Map<number, Instance | PredictedInstance>;
 }): LabeledFrame[] {
   const frames: LabeledFrame[] = [];
   const {
@@ -2984,7 +3008,8 @@ function buildLabeledFrames(options: {
   } = options;
   const frameIds = framesData.frame_id ?? [];
   const videoIdToIndex = buildVideoIdMap(framesData, videos);
-  const instanceById = new Map<number, Instance | PredictedInstance>();
+  const instanceById =
+    options.instanceRows ?? new Map<number, Instance | PredictedInstance>();
   const fromPredictedPairs: Array<[number, number]> = [];
 
   for (let frameIdx = 0; frameIdx < frameIds.length; frameIdx += 1) {
@@ -2998,6 +3023,8 @@ function buildLabeledFrames(options: {
 
     const instances: Array<Instance | PredictedInstance> = [];
     for (let instIdx = instStart; instIdx < instEnd; instIdx += 1) {
+      // A 3.0 row of another instance type is skipped, as in Python.
+      if (skipsInstanceRow(instancesData, instIdx)) continue;
       const instanceType = Number(instancesData.instance_type?.[instIdx] ?? 0);
       const skeletonId = Number(instancesData.skeleton?.[instIdx] ?? 0);
       const trackId = Number(instancesData.track?.[instIdx] ?? -1);

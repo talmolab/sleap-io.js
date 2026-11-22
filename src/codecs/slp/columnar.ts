@@ -234,6 +234,34 @@ export function isColumnarTable(table: PoseTable | undefined): boolean {
 }
 
 /**
+ * Whether readers skip row `row` of an `/instances` table: in a 3.0 table, a
+ * row whose `instance_type` is neither 0 (user) nor 1 (predicted), as Python
+ * sleap-io skips it. Every row of a 1.x/2.x table is read, as before (any
+ * type other than 0 reads as predicted).
+ */
+export function skipsInstanceRow(
+  instances: PoseTable | undefined,
+  row: number,
+): boolean {
+  if (!isColumnarTable(instances)) return false;
+  const type = Number((instances as PoseTable).instance_type?.[row]);
+  return type !== 0 && type !== 1;
+}
+
+/** Whether any row of an `/instances` table is skipped by the readers. */
+export function hasSkippedInstanceRows(
+  instances: PoseTable | undefined,
+): boolean {
+  if (!isColumnarTable(instances)) return false;
+  const types = ((instances as PoseTable).instance_type ??
+    []) as ArrayLike<number>;
+  for (let i = 0; i < types.length; i += 1) {
+    if (types[i] !== 0 && types[i] !== 1) return true;
+  }
+  return false;
+}
+
+/**
  * Number of unlabelled points (`labeled` and `visible` both false) in a point
  * table. Tables without a `labeled` column (1.x and 2.x) have none.
  */

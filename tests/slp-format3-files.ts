@@ -14,7 +14,8 @@ const slpDir = path.join(
 );
 
 /** Path of a fixture under tests/data/slp. */
-export const slpPath = (name: string) => path.join(slpDir, name);
+export const slpPath = (name: string) =>
+  path.isAbsolute(name) ? name : path.join(slpDir, name);
 
 /** Bytes of a fixture under tests/data/slp. */
 export const slpBytes = (name: string) =>
@@ -33,7 +34,7 @@ export async function streamingFile(
   compound: Record<string, unknown> = {},
 ): Promise<{ file: StreamingH5File; close: () => void }> {
   await ready;
-  const h5 = new H5File(path.isAbsolute(name) ? name : slpPath(name), "r");
+  const h5 = new H5File(slpPath(name), "r");
   // biome-ignore lint/suspicious/noExplicitAny: h5wasm entities
   const get = (p: string) => h5.get(p) as any;
   const file = {

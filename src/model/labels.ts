@@ -20,6 +20,7 @@ import {
 } from "./camera.js";
 import type { Identity } from "./identity.js";
 import type { SlpSourceFormat } from "../codecs/slp/format3.js";
+import { hasSkippedInstanceRows } from "../codecs/slp/columnar.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
 import { type LazyDataStore, LazyFrameList } from "./lazy.js";
@@ -683,8 +684,20 @@ export class Labels {
     this._lazyFrameList = null;
     this._lazyDataStore = null;
 
-    // Resolve deferred instance references on per-frame annotations
-    const allInstances = this.labeledFrames.flatMap((f) => f.instances);
+    // Resolve deferred instance references on per-frame annotations. Links
+    // are `/instances` rows; when the store skipped rows (a 3.0 instance type
+    // other than user or predicted), index by row, with holes.
+    let allInstances: Array<Instance | PredictedInstance> =
+      this.labeledFrames.flatMap((f) => f.instances);
+    if (store && hasSkippedInstanceRows(store.instancesData)) {
+      const byRow: Array<Instance | PredictedInstance> = [];
+      for (const inst of allInstances) {
+        const row = store._instanceRow.get(inst);
+        if (row !== undefined) byRow[row] = inst;
+      }
+      byRow.length = (store.instancesData.instance_type ?? []).length;
+      allInstances = byRow;
+    }
     for (const lf of this.labeledFrames) {
       for (const ann of [
         ...lf.centroids,
@@ -695,7 +708,8 @@ export class Labels {
         if (
           ann._instanceIdx !== null &&
           ann._instanceIdx >= 0 &&
-          ann._instanceIdx < allInstances.length
+          ann._instanceIdx < allInstances.length &&
+          allInstances[ann._instanceIdx]
         ) {
           ann.instance = allInstances[ann._instanceIdx];
           ann._instanceIdx = null;
@@ -705,7 +719,12 @@ export class Labels {
         if (li._objectInstanceIdxs) {
           for (const [labelId, instIdx] of li._objectInstanceIdxs) {
             const obj = li.objects.get(labelId);
-            if (obj && instIdx >= 0 && instIdx < allInstances.length) {
+            if (
+              obj &&
+              instIdx >= 0 &&
+              instIdx < allInstances.length &&
+              allInstances[instIdx]
+            ) {
               obj.instance = allInstances[instIdx];
             }
           }

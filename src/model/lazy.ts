@@ -12,6 +12,7 @@ import type { Identity } from "./identity.js";
 import type { Embedding } from "./embedding.js";
 import { type MetadataColumns, metadataRecord } from "./record-metadata.js";
 import type { SlpSourceFormat } from "../codecs/slp/format3.js";
+import { skipsInstanceRow } from "../codecs/slp/columnar.js";
 
 /**
  * Raw data store holding HDF5 dataset arrays for lazy materialization.
@@ -41,6 +42,14 @@ export class LazyDataStore {
    * view-only file.
    */
   sourceFormat: SlpSourceFormat | null;
+
+  /**
+   * The `/instances` row of each instance this store has materialized, so
+   * links to instances by row resolve when some rows are skipped (see
+   * `Labels.materialize`).
+   * @internal
+   */
+  _instanceRow: WeakMap<Instance, number> = new WeakMap();
 
   /**
    * Memoized raw-`frames.video`-id -> `videos` index map (see
@@ -222,6 +231,8 @@ export class LazyDataStore {
     const fromPredictedPairs: Array<[number, number]> = [];
 
     for (let instIdx = instStart; instIdx < instEnd; instIdx++) {
+      // A 3.0 row of another instance type is skipped, as in Python.
+      if (skipsInstanceRow(this.instancesData, instIdx)) continue;
       const instanceType = Number(
         this.instancesData.instance_type?.[instIdx] ?? 0,
       );
@@ -316,6 +327,7 @@ export class LazyDataStore {
       if (catEmb) instance.categoryEmbedding = catEmb;
 
       instanceById.set(instIdx, instance);
+      this._instanceRow.set(instance, instIdx);
       instances.push(instance);
     }
 
@@ -465,6 +477,7 @@ export class LazyDataStore {
       let localIdx = 0;
 
       for (let instIdx = iStart; instIdx < iEnd; instIdx++) {
+        if (skipsInstanceRow(this.instancesData, instIdx)) continue;
         const isPredicted = Number(instTypes[instIdx]) === 1;
         const trackId = Number(instTracks[instIdx]);
         const trackIndex =

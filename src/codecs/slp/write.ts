@@ -2091,6 +2091,7 @@ async function writeSlpBytes(
           labelImages: frame.labelImages,
           rois: frame.rois,
           metadata: frame.metadata,
+          isNegative: frame.isNegative,
         });
       }),
       videos: restoredVideos,

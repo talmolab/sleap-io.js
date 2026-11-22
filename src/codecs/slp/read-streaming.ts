@@ -11,7 +11,9 @@
 import {
   checkPoseTables,
   countUnlabeledPoints,
+  hasSkippedInstanceRows,
   isColumnarTable,
+  skipsInstanceRow,
   METADATA_SUBGROUP,
   negativeFrameKeysFromFrames,
   type PoseTableName,
@@ -717,6 +719,10 @@ export async function readFromStreamingFile(
   // links and centroid refs point at. Without `userInstancesOnly` that is
   // simply the frames' instances in order.
   const instanceRows = new Map<number, Instance | PredictedInstance>();
+  // Look instances up by `/instances` row through `instanceRows` when the
+  // frames' instances are not every row: predictions dropped, or 3.0 rows of
+  // another instance type skipped.
+  const rowsByMap = userInstancesOnly || hasSkippedInstanceRows(instancesData);
   const labeledFrames = lazyStore
     ? undefined
     : buildLabeledFrames({
@@ -752,7 +758,7 @@ export async function readFromStreamingFile(
         const allInstances = instanceRowLookup(
           labeledFrames,
           instanceRows,
-          userInstancesOnly,
+          rowsByMap,
         );
         for (const [ownerId, [idx, score]] of links) {
           const inst = allInstances(ownerId);
@@ -796,7 +802,7 @@ export async function readFromStreamingFile(
     lazyStore,
     videos,
     instanceRows,
-    userInstancesOnly,
+    userInstancesOnly: rowsByMap,
   };
   attachAnnotationTuples<Centroid>(await readCentroidsStreaming(file, tracks), {
     ...attachCommon,
@@ -2405,6 +2411,8 @@ function buildLabeledFrames(options: {
         (instancesData.instance_type as number[])?.[instIdx] ?? 0,
       );
       if (userInstancesOnly && instanceType !== 0) continue;
+      // A 3.0 row of another instance type is skipped, as in Python.
+      if (skipsInstanceRow(instancesData, instIdx)) continue;
       const skeletonId = Number(
         (instancesData.skeleton as number[])?.[instIdx] ?? 0,
       );
