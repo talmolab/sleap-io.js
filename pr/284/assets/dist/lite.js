@@ -27,12 +27,13 @@ import {
   parseVideosMetadata,
   reportTableProblems,
   sessionProblems,
+  streamingUnreadMembers,
   tableFromColumns,
   unknownColumns,
   unknownTableColumns,
   unknownTableGroups,
   unreadMembers
-} from "./chunk-YX2YBCUQ.js";
+} from "./chunk-5D5WOP56.js";
 import "./chunk-3UBNQTMV.js";
 
 // src/codecs/slp/jsfive.ts
@@ -122,6 +123,50 @@ function readColumnTableJsfive(file, table, labelsPath) {
     }
   }
   return tableFromColumns(table, columns, labelsPath, unknownLengths);
+}
+function columnJsfive(file, path, column) {
+  const node = file.get(path);
+  if (isGroup(node)) {
+    if (!node.keys.includes(column)) return [];
+    const value = getValue(file.get(`${path}/${column}`));
+    return value && typeof value === "object" && "length" in value ? Array.from(value, Number) : null;
+  }
+  const flat = getValue(node);
+  const shape = getShape(node);
+  const raw = getAttrs(node)?.field_names;
+  let fields = [];
+  try {
+    fields = typeof raw === "string" ? JSON.parse(raw) : [];
+  } catch {
+    fields = [];
+  }
+  const j = fields.indexOf(column);
+  if (!flat || shape.length !== 2 || j < 0) return null;
+  const [rows, cols] = shape;
+  return Array.from({ length: rows }, (_, i) => Number(flat[i * cols + j]));
+}
+function streamingUnreadJsfive(file) {
+  const owners = {};
+  for (const group of ["identity", "categories"]) {
+    const node = file.get(group);
+    if (isGroup(node) && node.keys.includes("links")) {
+      owners[`${group}/links`] = columnJsfive(
+        file,
+        `${group}/links`,
+        "owner_type"
+      );
+    }
+  }
+  const embeddings = file.get("embeddings");
+  if (isGroup(embeddings)) {
+    const types = [];
+    for (const column of ["owner_type", "category_owner_type"]) {
+      if (!embeddings.keys.includes(column)) continue;
+      types.push(...columnJsfive(file, "embeddings", column) ?? [Number.NaN]);
+    }
+    owners.embeddings = types;
+  }
+  return streamingUnreadMembers({ root: file.keys, owners });
 }
 function isMetadataDtype(dtype) {
   if (Array.isArray(dtype)) return dtype[0] === "VLEN_STRING";
@@ -362,6 +407,7 @@ async function loadSlpMetadata(source, options) {
       counts,
       hasEmbeddedImages,
       provenance: metadataJson.provenance,
+      streamingUnreadTables: streamingUnreadJsfive(file),
       ...formatId >= 3 ? {
         format3: format3SummaryJsfive(
           file,

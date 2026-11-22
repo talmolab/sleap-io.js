@@ -1,5 +1,5 @@
-import { F as FrameGroup, S as Skeleton, T as Track, a as Format3Summary } from './dictionary-jH4sx7_X.js';
-export { E as Edge, i as Format3Access, L as LOSSLESS_FORMAT3_ASKS, N as Node, d as SLP_FORMAT_ID_LIMIT, e as SLP_SUPPORTED_FEATURES, f as SlpFormat3ChoiceError, c as SlpFormatError, j as SlpSourceFormat, h as SlpTableError, g as SlpViewOnlyError, b as Symmetry } from './dictionary-jH4sx7_X.js';
+import { F as FrameGroup, S as Skeleton, T as Track, a as Format3Summary } from './dictionary-C_SIxKrZ.js';
+export { E as Edge, i as Format3Access, L as LOSSLESS_FORMAT3_ASKS, N as Node, d as SLP_FORMAT_ID_LIMIT, e as SLP_SUPPORTED_FEATURES, f as SlpFormat3ChoiceError, c as SlpFormatError, j as SlpSourceFormat, h as SlpTableError, g as SlpViewOnlyError, b as Symmetry } from './dictionary-C_SIxKrZ.js';
 
 /**
  * jsfive-based HDF5 file interface.
@@ -171,6 +171,17 @@ interface SlpMetadata {
      * Absent for files before 3.0.
      */
     format3?: Format3Summary;
+    /**
+     * What the file holds that the streaming reader (`readSlpStreaming`) does
+     * not read, as paths: ROI, mask and label image tables (in any layout), and
+     * `identity/links`, `categories/links` or `embeddings` when they hold rows
+     * of detections other than instances (or when their owner types cannot be
+     * read here). Empty when that reader reads everything the others read.
+     * `format3` describes `readSlp` and `readSlpLazy`; a 3.0 file read with
+     * `readSlpStreaming` also drops these on an edit. `loadSlp` reads a file
+     * listing any of them with the in-memory reader in its default mode.
+     */
+    streamingUnreadTables: string[];
 }
 declare function loadSlpMetadata(source: JsfiveSource, options?: {
     filename?: string;

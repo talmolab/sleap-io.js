@@ -3047,6 +3047,42 @@ function resolveIdentity(record, identities) {
   return void 0;
 }
 
+// src/codecs/slp/streaming-coverage.ts
+var STREAMING_UNREAD_TOP_LEVEL = [
+  "rois",
+  "roi_wkb",
+  "roi_categories",
+  "roi_names",
+  "roi_sources",
+  "masks",
+  "mask_rle",
+  "mask_categories",
+  "mask_names",
+  "mask_sources",
+  "mask_score_map_index",
+  "mask_score_maps",
+  "label_images",
+  "label_image_objects",
+  "label_image_data",
+  "label_image_sources",
+  "label_image_obj_categories",
+  "label_image_obj_names",
+  "label_image_score_map_index",
+  "label_image_score_maps"
+];
+var OWNER_INSTANCE = 0;
+function streamingUnreadMembers(options) {
+  const out = STREAMING_UNREAD_TOP_LEVEL.filter(
+    (name) => options.root.includes(name)
+  );
+  for (const [path, types] of Object.entries(options.owners)) {
+    if (types === null || types.some((t) => t !== OWNER_INSTANCE)) {
+      out.push(path);
+    }
+  }
+  return out.sort();
+}
+
 export {
   _registerCentroidFactory,
   _registerBboxFactory,
@@ -3151,5 +3187,6 @@ export {
   resolveCameraKey,
   reconstructInstance3D,
   reconstructColumnarFrameGroups,
-  resolveIdentity
+  resolveIdentity,
+  streamingUnreadMembers
 };

@@ -1,4 +1,4 @@
-import { bk as VideoBackend, bz as RangeSource$1, bj as GetFrameOptions, bi as VideoFrame, j as SlpSourceFormat, k as Labels, V as Video, S as Skeleton, T as Track, ay as SuggestionFrame, aH as Identity, aD as RecordingSession, aL as LazyDataStore, l as LabeledFrame, a6 as FsResolver, bq as CropRect, by as Fill, br as FlatPoints, bs as PointPairs, bf as UserLabelImage, i as Format3Access, m as LabelsSet, aP as Geometry, R as ROI, I as Instance, o as SegmentationMask, P as PredictedInstance, n as LabelImage, B as BoundingBox } from './dictionary-jH4sx7_X.js';
+import { bk as VideoBackend, bz as RangeSource$1, bj as GetFrameOptions, bi as VideoFrame, j as SlpSourceFormat, k as Labels, V as Video, S as Skeleton, T as Track, ay as SuggestionFrame, aH as Identity, aD as RecordingSession, aL as LazyDataStore, l as LabeledFrame, a6 as FsResolver, bq as CropRect, by as Fill, br as FlatPoints, bs as PointPairs, bf as UserLabelImage, i as Format3Access, m as LabelsSet, aP as Geometry, R as ROI, I as Instance, o as SegmentationMask, P as PredictedInstance, n as LabelImage, B as BoundingBox } from './dictionary-C_SIxKrZ.js';
 import { CustomVideoDecoder, EncodedPacket } from 'mediabunny';
 
 /**
@@ -803,7 +803,11 @@ declare class SlpStreamWriter {
         videos: Video[];
         skeletons: Skeleton[];
         tracks: Track[];
+        identities?: Identity[];
+        sessions?: RecordingSession[];
     });
+    /** Whether the header written at open holds identities and sessions. */
+    private headerHas;
     /**
      * Append every frame of `store` (in windows), rebasing its ids onto the
      * running file so the store's videos/instances/points/tracks land at the
@@ -2818,7 +2822,11 @@ declare function saveLabelsCsv(labels: Labels, filename: string, options?: CsvEx
  * Load a SLEAP labels file (.slp).
  *
  * Automatically selects the best loading strategy:
- * - Browser with Worker support: uses streaming reader via Web Worker
+ * - Browser with Worker support: uses streaming reader via Web Worker, unless
+ *   the file holds content that reader does not read (ROIs, masks, label
+ *   images, links and embeddings of detections other than instances); in the
+ *   default `"auto"` stream mode such a file is read on the main thread, so
+ *   nothing is lost
  * - Node.js or fallback: uses standard HDF5 reader
  *
  * @param source - Path to .slp file, ArrayBuffer, Uint8Array, File, or FileSystemFileHandle
@@ -4250,7 +4258,8 @@ interface StreamingSlpOptions {
      * no instances to begin with (e.g. negative frames) are kept. A user
      * instance's `fromPredicted` link is left unset, and recording sessions
      * (multi-camera groupings) aren't read. Default `false`. Can't be combined
-     * with `lazy`.
+     * with `lazy`, nor, for a file in SLP format 3.0, with `format3: "edit"`
+     * (a save would lose what the filter skipped).
      */
     userInstancesOnly?: boolean;
     /**
@@ -4277,6 +4286,15 @@ interface StreamingSlpOptions {
      * Without it a 3.0 file throws `SlpFormat3ChoiceError`. See `readSlp`.
      */
     format3?: Format3Access;
+    /**
+     * Throw {@link StreamingIncompleteError}, before reading any table, when the
+     * file holds content this reader does not read (ROIs, masks, label images,
+     * links and embeddings of detections other than instances), so the caller
+     * can use the in-memory reader instead. `loadSlp` does that in its default
+     * (`"auto"`) mode. Default `false`: such content is not read, and a 3.0
+     * file's summary lists it as something an edit drops.
+     */
+    failIfIncomplete?: boolean;
 }
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 

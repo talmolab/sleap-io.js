@@ -385,7 +385,17 @@ byte ranges inside their buffers) raise `SlpTableError`. The streaming reader
 reads, of these tables, the links of instances and the session tables (it
 reads no ROIs, masks or label images in any layout), and the summary it gives
 for a 3.0 file lists the rest in `unreadTables` (below), as something an edit
-drops. The lite `loadSlpMetadata` reads the session tables.
+drops. `loadSlp` in a browser uses the streaming reader only for files it
+reads in full: in its default stream mode (`"auto"`), a file holding ROIs,
+masks, label images, or links or embeddings of detections other than
+instances is read on the main thread instead, so nothing is lost. The lite
+`loadSlpMetadata` reads the session tables, and its `streamingUnreadTables`
+lists what a direct `readSlpStreaming` would leave out (its `format3` summary
+describes `readSlp`, `readSlpLazy` and `loadSlp`). The range checks run in the
+readers that read a table, so the streaming and lite readers do not check the
+tables they leave out. The streaming reader's `userInstancesOnly`, which skips
+predicted instances and sessions, opens a 3.0 file only with
+`format3: "view"`.
 
 A recording session's metadata is stored at the top level of its
 `sessions_json` entry, beside `calibration`, `camcorder_to_video_idx_map`,
@@ -413,7 +423,12 @@ it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
   form stores some numbers in narrower types than 3.0: scores, tracking
   scores, scales and offsets of ROIs, masks, label images and score maps as
   32-bit floats, and their video, track and instance indices as 32-bit
-  integers.
+  integers. The store-merging writers (`SlpStreamWriter.appendStore`,
+  `saveSlpMergedFromStores`, `saveSlpMergedToSink`) write no per-detection
+  identity or category links or embeddings, and only the identities and
+  sessions given in their header; they refuse a store loaded this way that
+  holds any of those, before writing it, and name what would be lost. Save
+  such labels with `saveSlp` or `saveSlpToBytes`.
 
 The choice travels with the content, not only with the `Labels` it was loaded
 into. Every labeled frame, instance and annotation (static ROIs included), and

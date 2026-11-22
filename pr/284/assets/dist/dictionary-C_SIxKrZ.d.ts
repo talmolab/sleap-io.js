@@ -2951,6 +2951,12 @@ declare class LazyDataStore {
         instanceCategoryLinks?: Map<number, [number, number | null]>;
         instanceCategoryEmbeddings?: Map<number, Embedding>;
     });
+    /**
+     * Recording sessions of the file the store was read from (they are kept on
+     * the labels, not in the store), so writers of stores alone can tell they
+     * would drop them. @internal
+     */
+    sourceSessionCount: number;
     /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
     identities?: Identity[];
     /** owner_id (global instance_id) → [identity_idx, score|null], OWNER_INSTANCE. @internal */

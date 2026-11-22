@@ -80,6 +80,7 @@ import {
   sessionsReadError,
   skipsInstanceRow,
   sourceMarkOf,
+  streamingUnreadMembers,
   tableFromColumns,
   tableRows,
   takeViewMark,
@@ -87,7 +88,7 @@ import {
   unknownTableColumns,
   unknownTableGroups,
   unreadMembers
-} from "./chunk-YX2YBCUQ.js";
+} from "./chunk-5D5WOP56.js";
 import {
   openGdrive
 } from "./chunk-RC2FIFDH.js";
@@ -6623,6 +6624,12 @@ var LazyDataStore = class _LazyDataStore {
     this._instanceCategoryLinks = options.instanceCategoryLinks;
     this._instanceCategoryEmbeddings = options.instanceCategoryEmbeddings;
   }
+  /**
+   * Recording sessions of the file the store was read from (they are kept on
+   * the labels, not in the store), so writers of stores alone can tell they
+   * would drop them. @internal
+   */
+  sourceSessionCount = 0;
   /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
   identities;
   /** owner_id (global instance_id) → [identity_idx, score|null], OWNER_INSTANCE. @internal */
@@ -6679,6 +6686,7 @@ var LazyDataStore = class _LazyDataStore {
       instanceCategoryLinks: this._instanceCategoryLinks,
       instanceCategoryEmbeddings: this._instanceCategoryEmbeddings
     });
+    newStore.sourceSessionCount = this.sourceSessionCount;
     newStore._centroidByFrame = copyAnnMap(this._centroidByFrame);
     newStore._bboxByFrame = copyAnnMap(this._bboxByFrame);
     newStore._maskByFrame = copyAnnMap(this._maskByFrame);
@@ -16070,7 +16078,10 @@ function buildCentroidTuples(data, categories, names, sources, tracks) {
       // etc.). `anchor:*` and arbitrary sources pass through unchanged.
       source: normalizeCentroidSource(sources[i] ?? "")
     };
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const isPred = (
+      // Any nonzero flag is predicted, as Python's bool().
+      isPredictedCol.length > i ? Number(isPredictedCol[i]) !== 0 : false
+    );
     let centroid;
     if (isPred) {
       const scoreVal = Number(scores[i]);
@@ -16165,7 +16176,7 @@ function buildBboxTuples(data, categories, names, sources, tracks) {
       source: sources[i] ?? ""
     };
     const scoreVal = scores.length > i ? Number(scores[i]) : Number.NaN;
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : !Number.isNaN(scoreVal);
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) !== 0 : !Number.isNaN(scoreVal);
     let bbox;
     if (isPred) {
       bbox = new PredictedBoundingBox({
@@ -16229,6 +16240,17 @@ function resolveSourceFrameCount(opts) {
 }
 
 // src/codecs/slp/read-streaming.ts
+var StreamingIncompleteError = class extends Error {
+  unread;
+  constructor(labelsPath, unread) {
+    super(
+      `The streaming reader does not read ${unread.join(", ")} of '${labelsPath}'; read it with readSlp or readSlpLazy instead.`
+    );
+    this.name = "StreamingIncompleteError";
+    this.unread = unread;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
 async function readCentroidsStreaming(file, tracks) {
   try {
     if (!file.keys().includes("centroids")) return [];
@@ -16440,7 +16462,8 @@ async function readSlpStreaming(source, options) {
       lazyVideoMetadata,
       options?.userInstancesOnly ?? false,
       options?.repairPointSpans ?? false,
-      options?.format3
+      options?.format3,
+      options?.failIfIncomplete ?? false
     );
   } catch (e) {
     await file.close().catch(() => {
@@ -16452,7 +16475,7 @@ async function readSlpStreaming(source, options) {
   }
   return labels;
 }
-async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false, lazyVideoMetadata = false, userInstancesOnly = false, repairPointSpans = false, format3Choice) {
+async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false, lazyVideoMetadata = false, userInstancesOnly = false, repairPointSpans = false, format3Choice, failIfIncomplete = false) {
   checkFormat3Option(format3Choice);
   if (lazy && userInstancesOnly) {
     throw new Error(
@@ -16500,6 +16523,17 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     labelsPath
   );
   const skeletons = parseSkeletons(metadataJson);
+  if (userInstancesOnly && format3Choice === "edit" && isFormat3(formatId)) {
+    throw new Error(
+      `readSlpStreaming: '${labelsPath}' is in SLP format 3.0; userInstancesOnly drops its predicted instances and sessions, so it can only be opened with format3: "view" (or without the filter).`
+    );
+  }
+  if (failIfIncomplete) {
+    const unread = await unreadByStreaming(file, file.keys());
+    if (unread.length > 0) {
+      throw new StreamingIncompleteError(labelsPath, unread);
+    }
+  }
   report(1);
   const tracks = await readTracksStreaming(file);
   report(2);
@@ -16690,6 +16724,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   if (lazyStore) {
     labels._lazyFrameList = new LazyFrameList(lazyStore);
     labels._lazyDataStore = lazyStore;
+    lazyStore.sourceSessionCount = sessions.length;
   }
   injectSessionFrameResolver(labels);
   return labels;
@@ -17644,28 +17679,6 @@ async function readFormat3Streaming(file, labelsPath, formatId, tables) {
     bboxMetadata
   };
 }
-var STREAMING_UNREAD_TOP_LEVEL = [
-  "rois",
-  "roi_wkb",
-  "roi_categories",
-  "roi_names",
-  "roi_sources",
-  "masks",
-  "mask_rle",
-  "mask_categories",
-  "mask_names",
-  "mask_sources",
-  "mask_score_map_index",
-  "mask_score_maps",
-  "label_images",
-  "label_image_objects",
-  "label_image_data",
-  "label_image_sources",
-  "label_image_obj_categories",
-  "label_image_obj_names",
-  "label_image_score_map_index",
-  "label_image_score_maps"
-];
 async function ownerTypesStreaming(file, path, column) {
   const group = await isGroupStreaming(file, path);
   if (group) {
@@ -17677,16 +17690,15 @@ async function ownerTypesStreaming(file, path, column) {
   return Array.from(cols[column] ?? [], Number);
 }
 async function unreadByStreaming(file, root) {
-  const out = STREAMING_UNREAD_TOP_LEVEL.filter((name) => root.includes(name));
+  const owners = {};
   for (const group of ["identity", "categories"]) {
     if (!root.includes(group)) continue;
     if (!(await childKeys(file, group)).includes("links")) continue;
-    const types = await ownerTypesStreaming(
+    owners[`${group}/links`] = await ownerTypesStreaming(
       file,
       `${group}/links`,
       "owner_type"
     );
-    if (types.some((t) => t !== 0)) out.push(`${group}/links`);
   }
   if (root.includes("embeddings")) {
     const children = await childKeys(file, "embeddings");
@@ -17696,9 +17708,9 @@ async function unreadByStreaming(file, root) {
       const value = (await file.getDatasetValue(`embeddings/${column}`)).value;
       types.push(...normalizeDatasetArray(value).map(Number));
     }
-    if (types.some((t) => t !== 0)) out.push("embeddings");
+    owners.embeddings = types;
   }
-  return out;
+  return streamingUnreadMembers({ root, owners });
 }
 async function readStructDatasetStreaming(file, path, assumePresent = false) {
   try {
@@ -17957,6 +17969,41 @@ function refuseViewOnly(source) {
   for (const record of sessionRecords(source?.sessions ?? [])) {
     const mark = sourceMarkOf(record);
     if (mark?.access === "view") throw new SlpViewOnlyError(mark);
+  }
+}
+function refuseFormat3StoreLosses(store, header) {
+  const source = store.sourceFormat;
+  if (!source) return;
+  const lost = [];
+  if ((store.identities ?? []).length > 0 && !header.identities) {
+    lost.push("its identities");
+  }
+  if (store._instanceIdentityLinks?.size || store._instanceCategoryLinks?.size || store._instanceEmbeddings?.size || store._instanceCategoryEmbeddings?.size) {
+    lost.push("the identities, categories or embeddings of its instances");
+  }
+  const annotations = [];
+  for (const [byFrame, undistributed] of [
+    [store._centroidByFrame, store._undistributedCentroids],
+    [store._bboxByFrame, store._undistributedBboxes],
+    [store._maskByFrame, store._undistributedMasks],
+    [store._roiByFrame, store._undistributedRois]
+  ]) {
+    annotations.push(...undistributed, ...[...byFrame.values()].flat());
+  }
+  if (annotations.some(
+    (d) => d.identity != null || d.identityEmbedding != null || d.category != null && d.category !== "" || d.categoryEmbedding != null
+  )) {
+    lost.push(
+      "the identities, categories or embeddings of its centroids, boxes, masks or ROIs"
+    );
+  }
+  if (store.sourceSessionCount > 0 && !header.sessions) {
+    lost.push("its recording sessions");
+  }
+  if (lost.length > 0) {
+    throw new Error(
+      `The labels loaded from '${source.labelsPath}' (SLP format ${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ${lost.join(", ")}, which the streaming writer (appendStore, saveSlpMergedFromStores, saveSlpMergedToSink) does not write. Save them with saveSlp or saveSlpToBytes, which keep them, or pass the identities and sessions in the writer's header.`
+    );
   }
 }
 function tablesWithKeys(tables) {
@@ -18559,7 +18606,13 @@ var SlpStreamWriter = class {
     this.videos = header.videos;
     this.skeletons = header.skeletons;
     this.tracks = header.tracks;
+    this.headerHas = {
+      identities: (header.identities ?? []).length > 0,
+      sessions: (header.sessions ?? []).length > 0
+    };
   }
+  /** Whether the header written at open holds identities and sessions. */
+  headerHas;
   /**
    * Append every frame of `store` (in windows), rebasing its ids onto the
    * running file so the store's videos/instances/points/tracks land at the
@@ -18578,6 +18631,7 @@ var SlpStreamWriter = class {
   appendStore(store, opts) {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
     refuseViewOnly(store);
+    refuseFormat3StoreLosses(store, this.headerHas);
     enforceLegacyLayout(storeLegacyLosses(store), opts?.unlabeledAs);
     const windowFrames = opts?.windowFrames ?? DEFAULT_WRITE_WINDOW_FRAMES;
     const vOff = opts?.videoIndexOffset ?? 0;
@@ -19206,7 +19260,9 @@ async function openSlpWriter(header) {
   return new SlpStreamWriter(module, file, memPath, {
     videos: header.videos,
     skeletons: header.skeletons,
-    tracks: header.tracks ?? []
+    tracks: header.tracks ?? [],
+    identities: header.identities ?? [],
+    sessions: header.sessions ?? []
   });
 }
 function skeletonSignature(skeletons) {
@@ -19223,6 +19279,12 @@ async function buildMergedWriter(stores, options) {
     throw new Error("merging SLP stores requires at least one store");
   }
   for (const store of stores) refuseViewOnly(store);
+  for (const store of stores) {
+    refuseFormat3StoreLosses(store, {
+      identities: (options?.identities ?? []).length > 0,
+      sessions: (options?.sessions ?? []).length > 0
+    });
+  }
   const sig = skeletonSignature(stores[0].skeletons);
   for (let i = 1; i < stores.length; i++) {
     if (skeletonSignature(stores[i].skeletons) !== sig) {
@@ -24107,6 +24169,7 @@ async function readSlpLazy(source, options) {
       provenance: metadataJson?.provenance ?? {}
     });
     markSessionSource(sessions, format3?.sourceFormat);
+    store.sourceSessionCount = sessions.length;
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;
     labels.sourceFormat = format3?.sourceFormat ?? null;
@@ -25869,6 +25932,23 @@ function readCentroids(file, _videos, tracks) {
   return buildCentroidTuples(data, categories, names, sources, tracks);
 }
 
+// src/io/load-route.ts
+async function readStreamingOrNull(source, options, streamMode, read) {
+  const auto = streamMode === "auto";
+  try {
+    return await read(source, { ...options, failIfIncomplete: auto });
+  } catch (e) {
+    if (e instanceof StreamingIncompleteError) return null;
+    if (e instanceof SlpPointSpanError || e instanceof SlpFormatError) throw e;
+    if (!auto) throw e;
+    console.warn(
+      "[sleap-io] Worker-based loading failed, falling back to main thread:",
+      redactedCauseSummary(e)
+    );
+    return null;
+  }
+}
+
 // src/io/main.ts
 function isNode() {
   return typeof process !== "undefined" && !!process.versions?.node;
@@ -25895,8 +25975,9 @@ async function loadSlp(source, options) {
       streamingSource = null;
     }
     if (streamingSource !== null) {
-      try {
-        return await readSlpStreaming(streamingSource, {
+      const labels = await readStreamingOrNull(
+        streamingSource,
+        {
           filenameHint: options?.h5?.filenameHint,
           headers: options?.h5?.headers,
           h5wasmUrl: options?.h5?.h5wasmUrl,
@@ -25905,19 +25986,11 @@ async function loadSlp(source, options) {
           lazy,
           repairPointSpans: options?.repairPointSpans,
           format3: options?.format3
-        });
-      } catch (e) {
-        if (e instanceof SlpPointSpanError || e instanceof SlpFormatError)
-          throw e;
-        if (streamMode === "auto") {
-          console.warn(
-            "[sleap-io] Worker-based loading failed, falling back to main thread:",
-            redactedCauseSummary(e)
-          );
-        } else {
-          throw e;
-        }
-      }
+        },
+        streamMode,
+        readSlpStreaming
+      );
+      if (labels) return labels;
     }
   }
   if (lazy) {

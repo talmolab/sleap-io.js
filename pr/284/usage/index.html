@@ -1079,7 +1079,17 @@ byte ranges inside their buffers) raise <code>SlpTableError</code>. The streamin
 reads, of these tables, the links of instances and the session tables (it
 reads no ROIs, masks or label images in any layout), and the summary it gives
 for a 3.0 file lists the rest in <code>unreadTables</code> (below), as something an edit
-drops. The lite <code>loadSlpMetadata</code> reads the session tables.</p>
+drops. <code>loadSlp</code> in a browser uses the streaming reader only for files it
+reads in full: in its default stream mode (<code>"auto"</code>), a file holding ROIs,
+masks, label images, or links or embeddings of detections other than
+instances is read on the main thread instead, so nothing is lost. The lite
+<code>loadSlpMetadata</code> reads the session tables, and its <code>streamingUnreadTables</code>
+lists what a direct <code>readSlpStreaming</code> would leave out (its <code>format3</code> summary
+describes <code>readSlp</code>, <code>readSlpLazy</code> and <code>loadSlp</code>). The range checks run in the
+readers that read a table, so the streaming and lite readers do not check the
+tables they leave out. The streaming reader's <code>userInstancesOnly</code>, which skips
+predicted instances and sessions, opens a 3.0 file only with
+<code>format3: "view"</code>.</p>
 <p>A recording session's metadata is stored at the top level of its
 <code>sessions_json</code> entry, beside <code>calibration</code>, <code>camcorder_to_video_idx_map</code>,
 <code>fg_start</code> and <code>fg_end</code>, as Python sleap-io stores it. A metadata key with one
@@ -1105,7 +1115,12 @@ it throws <code>SlpFormat3ChoiceError</code> (a subclass of <code>SlpFormatError
   form stores some numbers in narrower types than 3.0: scores, tracking
   scores, scales and offsets of ROIs, masks, label images and score maps as
   32-bit floats, and their video, track and instance indices as 32-bit
-  integers.</li>
+  integers. The store-merging writers (<code>SlpStreamWriter.appendStore</code>,
+  <code>saveSlpMergedFromStores</code>, <code>saveSlpMergedToSink</code>) write no per-detection
+  identity or category links or embeddings, and only the identities and
+  sessions given in their header; they refuse a store loaded this way that
+  holds any of those, before writing it, and name what would be lost. Save
+  such labels with <code>saveSlp</code> or <code>saveSlpToBytes</code>.</li>
 </ul>
 <p>The choice travels with the content, not only with the <code>Labels</code> it was loaded
 into. Every labeled frame, instance and annotation (static ROIs included), and
