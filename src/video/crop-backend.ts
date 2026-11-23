@@ -15,7 +15,7 @@
 // `import("skia-canvas")` (Node), exactly like `seq-video.ts`.
 
 import type { VideoBackend, VideoFrame, GetFrameOptions } from "./backend.js";
-import { cropFrame, type Fill, type RawFrame } from "../transform/frame.js";
+import { cropFrame, type Fill } from "../transform/frame.js";
 import {
   cropPoints,
   uncropPoints,
@@ -23,7 +23,7 @@ import {
   type FlatPoints,
   type PointPairs,
 } from "../transform/points.js";
-import { decodeEncoded, rasterizeBitmap } from "./image-decode.js";
+import { toReadableFrame } from "./image-decode.js";
 
 export type { CropRect };
 
@@ -51,61 +51,6 @@ function normFill(fill: Fill): string {
     return "[" + fill.map((v) => String(Math.trunc(v))).join(",") + "]";
   }
   return String(Math.trunc(fill));
-}
-
-/** Detect an opaque `ImageBitmap` (pixels not synchronously readable here). */
-function isImageBitmap(value: unknown): boolean {
-  if (
-    typeof ImageBitmap !== "undefined" &&
-    value instanceof (ImageBitmap as unknown as { new (): object })
-  ) {
-    return true;
-  }
-  // Fallback duck-type: an ImageBitmap exposes width/height + close() but has no
-  // readable `data` buffer.
-  const v = value as {
-    width?: unknown;
-    height?: unknown;
-    close?: unknown;
-    data?: unknown;
-  };
-  return (
-    v != null &&
-    typeof v.width === "number" &&
-    typeof v.height === "number" &&
-    typeof v.close === "function" &&
-    (v as { data?: unknown }).data === undefined
-  );
-}
-
-/** Detect an `ImageData`-shaped object (RGBA buffer with width/height). */
-function isImageDataLike(
-  value: unknown,
-): value is { data: Uint8ClampedArray; width: number; height: number } {
-  const v = value as {
-    data?: unknown;
-    width?: unknown;
-    height?: unknown;
-  };
-  return (
-    v != null &&
-    typeof v.width === "number" &&
-    typeof v.height === "number" &&
-    (v.data instanceof Uint8ClampedArray || v.data instanceof Uint8Array)
-  );
-}
-
-/** PNG / JPEG magic-byte sniff for undecoded encoded frame bytes. */
-function isEncodedBytes(bytes: Uint8Array): boolean {
-  if (bytes.length < 4) return false;
-  // JPEG: FF D8 FF; PNG: 89 50 4E 47.
-  const jpeg = bytes[0] === 0xff && bytes[1] === 0xd8 && bytes[2] === 0xff;
-  const png =
-    bytes[0] === 0x89 &&
-    bytes[1] === 0x50 &&
-    bytes[2] === 0x4e &&
-    bytes[3] === 0x47;
-  return jpeg || png;
 }
 
 /**
@@ -279,10 +224,11 @@ export class CropVideoBackend implements VideoBackend {
    * returned as-is. `null` (the default for every shipping backend — encoded
    * blobs / per-frame rows cannot be spatially hyperslabbed) means fall back.
    *
-   * Fallback: decode the inner full frame, normalize it to readable pixels
+   * Fallback: decode the inner full frame, normalize it to readable RGB pixels
    * (rasterizing an opaque `ImageBitmap`, decoding undecoded encoded bytes, or
-   * wrapping raw pixel bytes), then apply {@link cropFrame} with this wrapper's
-   * crop/fill. Returns `null` when the inner returns `null` (no such frame).
+   * wrapping raw pixel bytes, in the inner's `embeddedChannelOrder`), then
+   * apply {@link cropFrame} with this wrapper's crop/fill. Returns `null` when
+   * the inner returns `null` (no such frame).
    */
   async getFrame(
     frameIndex: number,
@@ -299,53 +245,12 @@ export class CropVideoBackend implements VideoBackend {
     }
     const src = await this.inner.getFrame(frameIndex, opts);
     if (src == null) return null;
-    const readable = await this.toReadable(src);
+    const readable = await toReadableFrame(
+      src,
+      this.inner.shape,
+      this.inner.embeddedChannelOrder,
+    );
     return cropFrame(readable as ImageData, this.crop, this.fill);
-  }
-
-  /**
-   * Normalize any {@link VideoFrame} into something {@link cropFrame} can read
-   * pixels from synchronously: an `ImageData` or a {@link RawFrame}.
-   *
-   * - `ImageData`-shaped: returned as-is.
-   * - `ImageBitmap`: rasterized to `ImageData` (OffscreenCanvas / skia-canvas).
-   * - Encoded bytes (PNG/JPEG): decoded to `ImageData`.
-   * - Raw pixel bytes: wrapped as a {@link RawFrame} using the inner shape's
-   *   width/height/channels.
-   */
-  private async toReadable(frame: VideoFrame): Promise<ImageData | RawFrame> {
-    if (isImageBitmap(frame)) {
-      return rasterizeBitmap(frame as ImageBitmap);
-    }
-    if (isImageDataLike(frame)) {
-      return frame as unknown as ImageData;
-    }
-    // Raw bytes (Uint8Array or ArrayBuffer) from a Node backend: either
-    // undecoded encoded frames or raw interleaved pixel data.
-    const bytes =
-      frame instanceof ArrayBuffer
-        ? new Uint8Array(frame)
-        : (frame as Uint8Array);
-    if (isEncodedBytes(bytes)) {
-      return decodeEncoded(bytes);
-    }
-    // Raw pixel buffer: reconstruct dimensions from the inner's shape.
-    const innerShape = this.inner.shape;
-    if (!innerShape) {
-      throw new Error(
-        "CropVideoBackend.getFrame received raw pixel bytes but the inner " +
-          "backend has no resolved shape to interpret them. Provide a shape on " +
-          "the inner backend, or use a backend that returns decoded frames.",
-      );
-    }
-    const [, height, width, channels] = innerShape;
-    const raw: RawFrame = {
-      data: bytes,
-      width,
-      height,
-      channels,
-    };
-    return raw;
   }
 
   /** Inner backend's per-frame presentation times (delegated; a crop is spatial). */
