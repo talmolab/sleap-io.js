@@ -67,18 +67,19 @@ function setStringAttr(target: any, name: string, value: string): void {
   target.create_attribute(name, value, null, `S${byteLength}`);
 }
 
-/** Write a string array as a JSON-encoded string attribute dataset at root level. */
+/**
+ * Write a string array as a native variable-length string dataset at root level
+ * (e.g. `mask_categories`), the layout Python sleap-io writes and reads
+ * (`f[name][:]` → one string per annotation).
+ *
+ * The list is also kept as a JSON `json` attribute so sleap-io.js readers older
+ * than this layout, which read that attribute first, still load these files.
+ * (Before, the dataset itself held the JSON as `<B` bytes, which Python read as
+ * a uint8 array and rejected.)
+ */
 function writeStringDataset(file: any, name: string, values: string[]): void {
-  const json = JSON.stringify(values);
-  const bytes = textEncoder.encode(json);
-  file.create_dataset({
-    name,
-    data: bytes,
-    shape: [bytes.length],
-    dtype: "<B",
-  });
-  const ds = file.get(name);
-  setStringAttr(ds, "json", json);
+  file.create_dataset({ name, data: values });
+  setStringAttr(file.get(name), "json", JSON.stringify(values));
 }
 
 const SPAWNED_ON = 0;
