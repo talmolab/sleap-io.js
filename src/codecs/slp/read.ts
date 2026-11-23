@@ -56,6 +56,7 @@ import {
   RecordingSession,
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
+import { type Category, categoryFromStored } from "../../model/category.js";
 import { Embedding } from "../../model/embedding.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
@@ -63,33 +64,19 @@ import {
   markNegativeFrames,
   negativeFrameKeys,
 } from "../../model/negative-frames.js";
-import {
-  type ROI,
-  UserROI,
-  PredictedROI,
-  AnnotationType,
-  decodeWkb,
-} from "../../model/roi.js";
-import {
-  type SegmentationMask,
-  UserSegmentationMask,
-  PredictedSegmentationMask,
-} from "../../model/mask.js";
-import {
-  type BoundingBox,
-  UserBoundingBox,
-  PredictedBoundingBox,
-} from "../../model/bbox.js";
+import type { ROI } from "../../model/roi.js";
+import type { BoundingBox } from "../../model/bbox.js";
 import type { Centroid } from "../../model/centroid.js";
 import { buildCentroidTuples } from "./centroids.js";
 import { BBOX_NUMERIC_COLUMNS, buildBboxTuples } from "./bboxes.js";
 import {
-  type LabelImage,
-  UserLabelImage,
-  PredictedLabelImage,
-} from "../../model/label-image.js";
-import type { LabelImageObjectInfo } from "../../model/label-image.js";
-import { inflate } from "pako";
+  type AnnotationDatasets,
+  type PerDetectionMaps,
+  attachOwnerType,
+  readLabelImageTuples,
+  readMaskTuples,
+  readRoiTuples,
+} from "./annotations.js";
 import { checkPointSpans, columnLength } from "./point-spans.js";
 
 const textDecoder = new TextDecoder();
@@ -282,11 +269,10 @@ export async function readSlp(
       tracks,
       allInstances,
     );
-    const maskTuples = readMasks(file, videos, tracks);
+    const maskTuples = readMaskTuples(h5AnnotationDatasets(file), tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
-    const labelImageTuples = readLabelImages(
-      file,
-      videos,
+    const labelImageTuples = readLabelImageTuples(
+      h5AnnotationDatasets(file),
       tracks,
       allInstances,
     );
@@ -369,7 +355,7 @@ export async function readSlp(
     // Resolve deferred instance references (_instanceIdx) to live instances.
     // Mirrors Labels.materialize() for eager mode so bboxes/centroids/masks/
     // labelImages get their .instance set on read (ROIs are already resolved
-    // in readRoisWithMigration since it receives `instances`).
+    // in readRoiTuples since it receives `instances`).
     const allInstancesFlat = labeledFrames.flatMap((lf) => lf.instances);
     const resolveInstanceRef = (ann: {
       _instanceIdx: number | null;
@@ -411,6 +397,7 @@ export async function readSlp(
       suggestions,
       sessions,
       identities,
+      categories: readCategoryGroup(file),
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
       rois: staticRois,
     });
@@ -606,9 +593,12 @@ export async function readSlpLazy(
       videos,
       tracks,
     );
-    const maskTuples = readMasks(file, videos, tracks);
+    const maskTuples = readMaskTuples(h5AnnotationDatasets(file), tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
-    const labelImageTuples = readLabelImages(file, videos, tracks);
+    const labelImageTuples = readLabelImageTuples(
+      h5AnnotationDatasets(file),
+      tracks,
+    );
 
     // Per-detection identity (SLP 2.5) + category (SLP 2.7). Instances materialize
     // lazily, so the OWNER_INSTANCE maps + catalogs are handed to the store and
@@ -731,6 +721,7 @@ export async function readSlpLazy(
       suggestions,
       sessions,
       identities,
+      categories: readCategoryGroup(file),
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
     });
 
@@ -1302,16 +1293,6 @@ function readIdentityCatalog(file: any): Identity[] {
   return readIdentityGroup(file);
 }
 
-/** A detection that can carry a per-detection identity/embedding (SLP 2.5). */
-interface IdentityBearingRead {
-  identity?: Identity | null;
-  identityScore?: number | null;
-  identityEmbedding?: Embedding | null;
-  category?: string | null;
-  categoryScore?: number | null;
-  categoryEmbedding?: Embedding | null;
-}
-
 /**
  * Read a per-detection links table — `/identity/links` (SLP 2.5) or
  * `/categories/links` (SLP 2.7) — a genuine compound (Python) or a
@@ -1375,6 +1356,28 @@ function readCategoryCatalog(file: any): string[] {
 }
 
 /**
+ * Read the `/categories` group (SLP 2.7) as `Category` objects for
+ * `Labels.categories`: the `name` catalog plus the optional `meta_owner` /
+ * `meta_key` / `meta_val` table (Python's `read_categories`), with
+ * `metadata["color"]` lifted into `color`. Empty when absent.
+ */
+function readCategoryGroup(file: any): Category[] {
+  const names = readCategoryCatalog(file);
+  if (!names.length) return [];
+  const metadata: Record<string, unknown>[] = names.map(() => ({}));
+  const ownerDs = file.get("categories/meta_owner");
+  if (ownerDs) {
+    const owners = Array.from(ownerDs.value ?? []).map(Number);
+    const keys = (file.get("categories/meta_key")?.value ?? []).map(decodeStr);
+    const vals = (file.get("categories/meta_val")?.value ?? []).map(decodeStr);
+    owners.forEach((o: number, i: number) => {
+      if (metadata[o]) metadata[o][keys[i]] = vals[i];
+    });
+  }
+  return names.map((name, i) => categoryFromStored(name, metadata[i]));
+}
+
+/**
  * Read one `/embeddings` triple — `(vectors, owner_type, owner_id)` (identity, SLP
  * 2.5) or `(category_vectors, category_owner_type, category_owner_id)` (category,
  * SLP 2.7) — a plain `(N, D)` float matrix + parallel join columns. Returns
@@ -1423,72 +1426,6 @@ const readCategoryEmbeddings = (file: any) =>
     "category_owner_id",
   );
 
-/**
- * Attach per-detection identity + score + embedding onto a modality's ordered
- * detection list (index == `owner_id`), from the `/identity/links` + `/embeddings`
- * maps for one owner type. Mutates the detection objects in place.
- */
-function attachIdentityToOwners(
-  owners: IdentityBearingRead[],
-  identities: Identity[],
-  links: Map<number, [number, number | null]> | undefined,
-  embs: Map<number, Embedding> | undefined,
-): void {
-  if (links) {
-    for (const [ownerId, [idx, score]] of links) {
-      const det = owners[ownerId];
-      if (det && idx >= 0 && idx < identities.length) {
-        det.identity = identities[idx];
-        det.identityScore = score;
-      }
-    }
-  }
-  if (embs) {
-    for (const [ownerId, emb] of embs) {
-      const det = owners[ownerId];
-      if (det) det.identityEmbedding = emb;
-    }
-  }
-}
-
-/**
- * Attach per-detection category (string) + score + embedding onto a modality's
- * ordered detection list (index == `owner_id`), from the `/categories` catalog +
- * `/categories/links` + category embeddings for one owner type.
- */
-function attachCategoryToOwners(
-  owners: IdentityBearingRead[],
-  catalog: string[],
-  links: Map<number, [number, number | null]> | undefined,
-  embs: Map<number, Embedding> | undefined,
-): void {
-  if (links) {
-    for (const [ownerId, [idx, score]] of links) {
-      const det = owners[ownerId];
-      if (det && idx >= 0 && idx < catalog.length) {
-        det.category = catalog[idx];
-        det.categoryScore = score;
-      }
-    }
-  }
-  if (embs) {
-    for (const [ownerId, emb] of embs) {
-      const det = owners[ownerId];
-      if (det) det.categoryEmbedding = emb;
-    }
-  }
-}
-
-/** All per-detection identity (SLP 2.5) + category (SLP 2.7) join maps + the
- * category catalog, read once. Empty maps on pre-2.5/2.7 files. */
-interface PerDetectionMaps {
-  idLinks: Map<number, Map<number, [number, number | null]>>;
-  idEmbs: Map<number, Map<number, Embedding>>;
-  catLinks: Map<number, Map<number, [number, number | null]>>;
-  catEmbs: Map<number, Map<number, Embedding>>;
-  categoryCatalog: string[];
-}
-
 function readPerDetectionMaps(
   file: any,
   emscripten?: unknown,
@@ -1500,27 +1437,6 @@ function readPerDetectionMaps(
     catEmbs: readCategoryEmbeddings(file),
     categoryCatalog: readCategoryCatalog(file),
   };
-}
-
-/** Attach identity + category for one owner type onto its ordered detection list. */
-function attachOwnerType(
-  maps: PerDetectionMaps,
-  ownerType: number,
-  owners: IdentityBearingRead[],
-  identities: Identity[],
-): void {
-  attachIdentityToOwners(
-    owners,
-    identities,
-    maps.idLinks.get(ownerType),
-    maps.idEmbs.get(ownerType),
-  );
-  attachCategoryToOwners(
-    owners,
-    maps.categoryCatalog,
-    maps.catLinks.get(ownerType),
-    maps.catEmbs.get(ownerType),
-  );
 }
 
 /**
@@ -1840,14 +1756,45 @@ function readAttrString(dataset: any, name: string): string[] {
   return [];
 }
 
+/**
+ * {@link AnnotationDatasets} over an open h5wasm file: struct tables go through
+ * `normalizeStructDataset`, string lists through `readStringMetadata`.
+ */
+function h5AnnotationDatasets(file: any): AnnotationDatasets {
+  return {
+    struct: (path) => {
+      const ds = file.get(path);
+      return ds ? normalizeStructDataset(ds) : null;
+    },
+    bytes: (path) => {
+      const ds = file.get(path);
+      if (!ds) return null;
+      return ds.value instanceof Uint8Array
+        ? ds.value
+        : new Uint8Array(ds.value ?? []);
+    },
+    strings: (rootPath, structPath, attrName) => {
+      const structDs = file.get(structPath);
+      if (!file.get(rootPath)) {
+        return structDs ? readAttrString(structDs, attrName) : [];
+      }
+      return readStringMetadata(file, rootPath, structDs ?? {}, attrName);
+    },
+    raw: (path) => {
+      const ds = file.get(path);
+      return ds ? { value: ds.value, shape: ds.shape ?? [] } : null;
+    },
+  };
+}
+
 function readRoisAndBboxes(
   file: any,
   videos: Video[],
   tracks: Track[],
   instances?: Array<Instance | PredictedInstance>,
 ): { rois: [ROI, number, number][]; bboxes: [BoundingBox, number, number][] } {
-  const { rois, migratedBboxes } = readRoisWithMigration(
-    file,
+  const { rois, migratedBboxes } = readRoiTuples(
+    h5AnnotationDatasets(file),
     videos,
     tracks,
     instances,
@@ -1857,161 +1804,6 @@ function readRoisAndBboxes(
     bboxes = migratedBboxes;
   }
   return { rois, bboxes };
-}
-
-function readRoisWithMigration(
-  file: any,
-  videos: Video[],
-  tracks: Track[],
-  instances?: Array<Instance | PredictedInstance>,
-): {
-  rois: [ROI, number, number][];
-  migratedBboxes: [BoundingBox, number, number][];
-} {
-  const roisDs = file.get("rois");
-  if (!roisDs) return { rois: [], migratedBboxes: [] };
-  const roisData = normalizeStructDataset(roisDs);
-  const annotationTypes = roisData.annotation_type ?? [];
-  if (!annotationTypes.length) return { rois: [], migratedBboxes: [] };
-
-  const wkbDs = file.get("roi_wkb");
-  if (!wkbDs) return { rois: [], migratedBboxes: [] };
-  const wkbFlat: Uint8Array =
-    wkbDs.value instanceof Uint8Array
-      ? wkbDs.value
-      : new Uint8Array(wkbDs.value ?? []);
-
-  // v1.9+: string datasets; fallback to JSON attrs
-  const categories = readStringMetadata(
-    file,
-    "roi_categories",
-    roisDs,
-    "categories",
-  );
-  const names = readStringMetadata(file, "roi_names", roisDs, "names");
-  const sources = readStringMetadata(file, "roi_sources", roisDs, "sources");
-
-  const videoIndices = roisData.video ?? [];
-  const frameIndices = roisData.frame_idx ?? [];
-  const trackIndices = roisData.track ?? [];
-  const scores = roisData.score ?? [];
-  const wkbStarts = roisData.wkb_start ?? [];
-  const wkbEnds = roisData.wkb_end ?? [];
-  const instanceIndices = roisData.instance ?? [];
-  // v1.9+ column (may not exist in older files)
-  const isPredictedCol = roisData.is_predicted ?? [];
-  const trackingScoresCol = roisData.tracking_score ?? [];
-
-  const rois: [ROI, number, number][] = [];
-  const migratedBboxes: [BoundingBox, number, number][] = [];
-
-  for (let i = 0; i < annotationTypes.length; i++) {
-    const wkbStart = Number(wkbStarts[i]);
-    const wkbEnd = Number(wkbEnds[i]);
-    const wkbBytes = wkbFlat.slice(wkbStart, wkbEnd);
-    const geometry = decodeWkb(wkbBytes);
-
-    const videoIdx = Number(videoIndices[i]);
-    const video =
-      videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
-
-    const frameIdxVal = Number(frameIndices[i]);
-
-    const trackIdx = Number(trackIndices[i]);
-    const track =
-      trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-
-    const annotType = Number(annotationTypes[i]);
-
-    const isPred =
-      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
-
-    const roiTsVal =
-      trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
-    const roiTrackingScore = Number.isNaN(roiTsVal) ? null : roiTsVal;
-
-    // Migration: annotation_type === 1 (BOUNDING_BOX) -> BoundingBox object
-    // Skip predicted ROIs during bbox migration (only migrate user-type box-shaped ROIs)
-    if (annotType === AnnotationType.BOUNDING_BOX && !isPred) {
-      const tmpRoi = new UserROI({
-        geometry,
-        name: names[i] ?? "",
-        category: categories[i] ?? "",
-        source: sources[i] ?? "",
-        video,
-        track,
-      });
-      const b = tmpRoi.bounds;
-      const scoreVal = Number(scores[i]);
-      const bboxScore = Number.isNaN(scoreVal) ? null : scoreVal;
-
-      const bboxOptions = {
-        x1: b.minX,
-        y1: b.minY,
-        x2: b.maxX,
-        y2: b.maxY,
-        track,
-        trackingScore: roiTrackingScore,
-        category: categories[i] ?? "",
-        name: names[i] ?? "",
-        source: sources[i] ?? "",
-      };
-
-      let bbox: BoundingBox;
-      if (bboxScore !== null) {
-        bbox = new PredictedBoundingBox({ ...bboxOptions, score: bboxScore });
-      } else {
-        bbox = new UserBoundingBox(bboxOptions);
-      }
-
-      // Format >= 1.6: resolve instance references for migrated bboxes
-      if (instanceIndices.length > 0) {
-        const instIdx = Number(instanceIndices[i]);
-        if (instances && instIdx >= 0 && instIdx < instances.length) {
-          bbox.instance = instances[instIdx];
-        } else if (instIdx >= 0) {
-          bbox._instanceIdx = instIdx;
-        }
-      }
-
-      migratedBboxes.push([bbox, videoIdx, frameIdxVal]);
-    } else {
-      const roiOptions = {
-        geometry,
-        name: names[i] ?? "",
-        category: categories[i] ?? "",
-        source: sources[i] ?? "",
-        video,
-        track,
-        trackingScore: roiTrackingScore,
-      };
-
-      let roi: ROI;
-      if (isPred) {
-        const scoreVal = Number(scores[i]);
-        roi = new PredictedROI({
-          ...roiOptions,
-          score: Number.isNaN(scoreVal) ? 0 : scoreVal,
-        });
-      } else {
-        roi = new UserROI(roiOptions);
-      }
-
-      // Format >= 1.6: resolve instance references
-      if (instanceIndices.length > 0) {
-        const instIdx = Number(instanceIndices[i]);
-        if (instances && instIdx >= 0 && instIdx < instances.length) {
-          roi.instance = instances[instIdx];
-        } else if (instIdx >= 0) {
-          roi._instanceIdx = instIdx;
-        }
-      }
-
-      rois.push([roi, videoIdx, frameIdxVal]);
-    }
-  }
-
-  return { rois, migratedBboxes };
 }
 
 function readBboxes(
@@ -2094,446 +1886,6 @@ function readStringMetadata(
     }
   }
   return readAttrString(dataset, attrName);
-}
-
-/**
- * Read score maps from index + data datasets.
- * Returns a Map from annotation index to { scoreMap, height, width }.
- */
-function readScoreMaps(
-  file: any,
-  indexPath: string,
-  dataPath: string,
-): Map<number, { scoreMap: Float32Array; height: number; width: number }> {
-  const result = new Map<
-    number,
-    { scoreMap: Float32Array; height: number; width: number }
-  >();
-  const indexDs = file.get(indexPath);
-  const dataDs = file.get(dataPath);
-  if (!indexDs || !dataDs) return result;
-
-  const indexData = normalizeStructDataset(indexDs);
-  const idxCol = indexData.mask_idx ?? indexData.li_idx ?? [];
-  const starts = indexData.data_start ?? [];
-  const ends = indexData.data_end ?? [];
-  const smHeights = indexData.height ?? [];
-  const smWidths = indexData.width ?? [];
-
-  const dataFlat: Uint8Array =
-    dataDs.value instanceof Uint8Array
-      ? dataDs.value
-      : new Uint8Array(dataDs.value ?? []);
-
-  for (let i = 0; i < idxCol.length; i++) {
-    const annotIdx = Number(idxCol[i]);
-    const start = Number(starts[i]);
-    const end = Number(ends[i]);
-    const h = Number(smHeights[i]);
-    const w = Number(smWidths[i]);
-
-    const compressed = dataFlat.slice(start, end);
-    const decompressed = inflate(compressed);
-    const expectedBytes = h * w * 4; // Float32 = 4 bytes per element
-    if (decompressed.byteLength !== expectedBytes) {
-      throw new Error(
-        `Score map decompression size mismatch: expected ${expectedBytes} bytes, got ${decompressed.byteLength}`,
-      );
-    }
-    const scoreMap = new Float32Array(
-      decompressed.buffer.slice(
-        decompressed.byteOffset,
-        decompressed.byteOffset + decompressed.byteLength,
-      ),
-    );
-
-    result.set(annotIdx, { scoreMap, height: h, width: w });
-  }
-  return result;
-}
-
-function readMasks(
-  file: any,
-  _videos: Video[],
-  tracks: Track[],
-): [SegmentationMask, number, number][] {
-  const masksDs = file.get("masks");
-  if (!masksDs) return [];
-  const masksData = normalizeStructDataset(masksDs);
-  const heights = masksData.height ?? [];
-  if (!heights.length) return [];
-
-  const rleDs = file.get("mask_rle");
-  if (!rleDs) return [];
-  const rleFlat: Uint8Array =
-    rleDs.value instanceof Uint8Array
-      ? rleDs.value
-      : new Uint8Array(rleDs.value ?? []);
-
-  // v1.9+: string datasets at root level; fallback to JSON attrs on mask dataset
-  const categories = readStringMetadata(
-    file,
-    "mask_categories",
-    masksDs,
-    "categories",
-  );
-  const names = readStringMetadata(file, "mask_names", masksDs, "names");
-  const sources = readStringMetadata(file, "mask_sources", masksDs, "sources");
-
-  const widths = masksData.width ?? [];
-  const videoIndices = masksData.video ?? [];
-  const frameIndices = masksData.frame_idx ?? [];
-  const trackIndices = masksData.track ?? [];
-  const rleStarts = masksData.rle_start ?? [];
-  const rleEnds = masksData.rle_end ?? [];
-  // v1.9+ columns (may not exist in older files)
-  const isPredictedCol = masksData.is_predicted ?? [];
-  const scoreCol = masksData.score ?? [];
-  const instanceCol = masksData.instance ?? [];
-  const maskTrackingScoreCol = masksData.tracking_score ?? [];
-  // v2.4+: from_predicted provenance index into the flat mask list. Absent in
-  // pre-2.4 files (presence-gated by name) -> [] -> per-row fallback -1.
-  const fromPredictedCol = masksData.from_predicted ?? [];
-
-  // v2.1+: spatial metadata columns (default to 1.0/0.0 for old files)
-  const scaleXCol = masksData.scale_x ?? [];
-  const scaleYCol = masksData.scale_y ?? [];
-  const offsetXCol = masksData.offset_x ?? [];
-  const offsetYCol = masksData.offset_y ?? [];
-
-  // Read score maps if present
-  const scoreMaps = readScoreMaps(
-    file,
-    "mask_score_map_index",
-    "mask_score_maps",
-  );
-
-  const masks: [SegmentationMask, number, number][] = [];
-  // Deferred from_predicted re-link: collect (userMaskIdx, srcIdx) pairs and
-  // resolve after ALL masks are built, since a source prediction can appear
-  // later in the flat list (mirrors instance from_predicted).
-  const fromPredictedPairs: Array<[number, number]> = [];
-  for (let i = 0; i < heights.length; i++) {
-    const rleStart = Number(rleStarts[i]);
-    const rleEnd = Number(rleEnds[i]);
-    const rleRaw = rleFlat.slice(rleStart, rleEnd);
-
-    // Convert packed uint8 bytes back to Uint32Array (4 bytes per count, little-endian)
-    const numCounts = rleRaw.byteLength / 4;
-    const rleCounts = new Uint32Array(numCounts);
-    const rleView = new DataView(
-      rleRaw.buffer,
-      rleRaw.byteOffset,
-      rleRaw.byteLength,
-    );
-    for (let j = 0; j < numCounts; j++) {
-      rleCounts[j] = rleView.getUint32(j * 4, true);
-    }
-
-    const videoIdx = Number(videoIndices[i]);
-
-    const frameIdxVal = Number(frameIndices[i]);
-
-    const trackIdx = Number(trackIndices[i]);
-    const track =
-      trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-
-    const scaleX = scaleXCol.length > i ? Number(scaleXCol[i]) : 1;
-    const scaleY = scaleYCol.length > i ? Number(scaleYCol[i]) : 1;
-    const offsetX = offsetXCol.length > i ? Number(offsetXCol[i]) : 0;
-    const offsetY = offsetYCol.length > i ? Number(offsetYCol[i]) : 0;
-
-    const maskTsVal =
-      maskTrackingScoreCol.length > i
-        ? Number(maskTrackingScoreCol[i])
-        : Number.NaN;
-    const maskTrackingScore = Number.isNaN(maskTsVal) ? null : maskTsVal;
-
-    const baseOptions = {
-      rleCounts,
-      height: Number(heights[i]),
-      width: Number(widths[i]),
-      name: names[i] ?? "",
-      category: categories[i] ?? "",
-      source: sources[i] ?? "",
-      track,
-      trackingScore: maskTrackingScore,
-      scale: [scaleX, scaleY] as [number, number],
-      offset: [offsetX, offsetY] as [number, number],
-    };
-
-    // Determine if predicted based on is_predicted column or NaN score fallback
-    const isPred =
-      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
-    let mask: SegmentationMask;
-
-    if (isPred) {
-      const scoreVal = scoreCol.length > i ? Number(scoreCol[i]) : 0;
-      const sm = scoreMaps.get(i);
-      mask = new PredictedSegmentationMask({
-        ...baseOptions,
-        score: scoreVal,
-        scoreMap: sm?.scoreMap ?? null,
-      });
-    } else {
-      mask = new UserSegmentationMask(baseOptions);
-      // Collect from_predicted link for deferred re-link (user masks only).
-      const fpIdx =
-        fromPredictedCol.length > i ? Number(fromPredictedCol[i]) : -1;
-      if (fpIdx >= 0) fromPredictedPairs.push([i, fpIdx]);
-    }
-
-    // Resolve instance reference
-    const instIdx = instanceCol.length > i ? Number(instanceCol[i]) : -1;
-    if (instIdx >= 0) {
-      mask._instanceIdx = instIdx;
-    }
-
-    masks.push([mask, videoIdx, frameIdxVal]);
-  }
-
-  // Deferred from_predicted re-link pass. Bounds-checked so out-of-range or -1
-  // indices leave fromPredicted at its constructor default (null).
-  for (const [i, fpIdx] of fromPredictedPairs) {
-    if (fpIdx >= 0 && fpIdx < masks.length) {
-      (masks[i][0] as UserSegmentationMask).fromPredicted = masks[
-        fpIdx
-      ][0] as PredictedSegmentationMask;
-    }
-  }
-
-  return masks;
-}
-
-// Pixel data is eagerly materialized into a standalone Int32Array per
-// LabelImage; the h5wasm File is closed by readSlp's finally block before
-// Labels is returned. label-image .data therefore has no dependency on the
-// source file lifetime — the Python issue addressed by PR #419 (h5py
-// Dataset closure invalidated by Labels.__del__) does not apply here.
-function readLabelImages(
-  file: any,
-  _videos: Video[],
-  tracks: Track[],
-  instances?: Array<Instance | PredictedInstance>,
-): [LabelImage, number, number][] {
-  const liDs = file.get("label_images");
-  if (!liDs) return [];
-  const liData = normalizeStructDataset(liDs);
-  const videoIndices = liData.video ?? [];
-  if (!videoIndices.length) return [];
-
-  const frameIndices = liData.frame_idx ?? [];
-  const heights = liData.height ?? [];
-  const widths = liData.width ?? [];
-  const nObjectsList = liData.n_objects ?? [];
-  const objectsStarts = liData.objects_start ?? [];
-  const dataStarts = liData.data_start ?? [];
-  const dataEnds = liData.data_end ?? [];
-
-  // v1.9+: string datasets; fallback to JSON attrs
-  const sources = readStringMetadata(
-    file,
-    "label_image_sources",
-    liDs,
-    "sources",
-  );
-
-  // v1.9+ columns (may not exist in older files)
-  const isPredictedCol = liData.is_predicted ?? [];
-  const liScoreCol = liData.score ?? [];
-
-  // v2.1+: spatial metadata columns (default to 1.0/0.0 for old files)
-  const liScaleXCol = liData.scale_x ?? [];
-  const liScaleYCol = liData.scale_y ?? [];
-  const liOffsetXCol = liData.offset_x ?? [];
-  const liOffsetYCol = liData.offset_y ?? [];
-
-  // Read pixel data: either blob (1D, v1.8-v2.1) or chunked (3D, v2.2+)
-  const dataDs = file.get("label_image_data");
-  if (!dataDs) return [];
-  const dataShape = dataDs.shape ?? [];
-  const isChunked = dataShape.length === 3;
-  // For blob format: flat Uint8Array of concatenated zlib-compressed frames
-  // For chunked format: 3D Int32Array [T, H, W] (decompression handled by HDF5 lib)
-  let dataFlat: Uint8Array = new Uint8Array(0);
-  let dataChunked: any = null;
-  if (isChunked) {
-    dataChunked = dataDs.value; // 3D array or flat typed array with shape metadata
-  } else {
-    dataFlat =
-      dataDs.value instanceof Uint8Array
-        ? dataDs.value
-        : new Uint8Array(dataDs.value ?? []);
-  }
-
-  // Read objects table (may not exist if all label images have 0 objects)
-  let objLabelIds: any[] = [];
-  let objTrackIndices: any[] = [];
-  let objInstanceIndices: any[] = [];
-  let objCategories: string[] = [];
-  let objNames: string[] = [];
-  let objScoreCol: any[] = [];
-  let objTrackingScoreCol: any[] = [];
-
-  const objDs = file.get("label_image_objects");
-  if (objDs) {
-    const objData = normalizeStructDataset(objDs);
-    objLabelIds = objData.label_id ?? [];
-    objTrackIndices = objData.track ?? [];
-    objInstanceIndices = objData.instance ?? [];
-    // v1.9+: string datasets at root level
-    objCategories = readStringMetadata(
-      file,
-      "label_image_obj_categories",
-      objDs,
-      "categories",
-    );
-    objNames = readStringMetadata(
-      file,
-      "label_image_obj_names",
-      objDs,
-      "names",
-    );
-    objScoreCol = objData.score ?? [];
-    objTrackingScoreCol = objData.tracking_score ?? [];
-  }
-
-  // Read score maps if present
-  const liScoreMaps = readScoreMaps(
-    file,
-    "label_image_score_map_index",
-    "label_image_score_maps",
-  );
-
-  const labelImages: [LabelImage, number, number][] = [];
-  for (let i = 0; i < videoIndices.length; i++) {
-    const videoIdx = Number(videoIndices[i]);
-    const frameIdxVal = Number(frameIndices[i]);
-    const height = Number(heights[i]);
-    const width = Number(widths[i]);
-
-    // Extract pixel data from blob or chunked format
-    let pixelData: Int32Array;
-    if (isChunked && dataChunked) {
-      // v2.2+: 3D chunked dataset [T, H, W] — frames stored sequentially by the
-      // Python writer, so loop index i maps directly to the i-th frame slice.
-      const frameSize = height * width;
-      if (dataChunked instanceof Int32Array) {
-        // Flat typed array with shape [T, H, W] — slice by frame index
-        pixelData = new Int32Array(
-          dataChunked.buffer,
-          dataChunked.byteOffset + i * frameSize * 4,
-          frameSize,
-        );
-      } else if (ArrayBuffer.isView(dataChunked)) {
-        // Other typed array — convert to Int32Array
-        const offset = i * frameSize;
-        pixelData = new Int32Array(frameSize);
-        for (let p = 0; p < frameSize; p++) {
-          pixelData[p] = (dataChunked as any)[offset + p];
-        }
-      } else {
-        // Fallback: array of arrays or similar
-        pixelData = new Int32Array(frameSize);
-      }
-    } else {
-      // v1.8-v2.1: blob format — decompress from flat byte array
-      const dataStart = Number(dataStarts[i]);
-      const dataEnd = Number(dataEnds[i]);
-      const compressed = dataFlat.slice(dataStart, dataEnd);
-      const decompressed = inflate(compressed);
-      // Convert bytes back to Int32Array (little-endian, matches native).
-      // Use buffer.slice() to guarantee 4-byte alignment for Int32Array.
-      pixelData = new Int32Array(
-        decompressed.buffer.slice(
-          decompressed.byteOffset,
-          decompressed.byteOffset + decompressed.byteLength,
-        ),
-      );
-    }
-
-    // Build objects map
-    const nObj = Number(nObjectsList[i]);
-    const objStart = Number(objectsStarts[i]);
-    const objects = new Map<number, LabelImageObjectInfo>();
-    const deferredInstances = new Map<number, number>();
-
-    for (let j = objStart; j < objStart + nObj; j++) {
-      const labelId = Number(objLabelIds[j]);
-      const trackIdx = Number(objTrackIndices[j]);
-      const track =
-        trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-      const instIdx = Number(objInstanceIndices[j]);
-      let instance: Instance | null = null;
-
-      if (instances && instIdx >= 0 && instIdx < instances.length) {
-        instance = instances[instIdx] as Instance;
-      } else if (instIdx >= 0) {
-        deferredInstances.set(labelId, instIdx);
-      }
-
-      const objScore = objScoreCol.length > j ? Number(objScoreCol[j]) : null;
-      const objTsVal =
-        objTrackingScoreCol.length > j ? Number(objTrackingScoreCol[j]) : null;
-
-      objects.set(labelId, {
-        track,
-        category: objCategories[j] ?? "",
-        name: objNames[j] ?? "",
-        instance,
-        score: objScore !== null && !Number.isNaN(objScore) ? objScore : null,
-        trackingScore:
-          objTsVal !== null && !Number.isNaN(objTsVal) ? objTsVal : null,
-        _instanceIdx: instIdx >= 0 ? instIdx : -1,
-      });
-    }
-
-    // Determine if predicted
-    const isPred =
-      isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
-
-    // v2.1+: spatial metadata
-    const liScaleX = liScaleXCol.length > i ? Number(liScaleXCol[i]) : 1;
-    const liScaleY = liScaleYCol.length > i ? Number(liScaleYCol[i]) : 1;
-    const liOffsetX = liOffsetXCol.length > i ? Number(liOffsetXCol[i]) : 0;
-    const liOffsetY = liOffsetYCol.length > i ? Number(liOffsetYCol[i]) : 0;
-    const liScale: [number, number] = [liScaleX, liScaleY];
-    const liOffset: [number, number] = [liOffsetX, liOffsetY];
-
-    let li: LabelImage;
-    if (isPred) {
-      const liScore = liScoreCol.length > i ? Number(liScoreCol[i]) : 0;
-      const sm = liScoreMaps.get(i);
-      li = new PredictedLabelImage({
-        data: pixelData,
-        height,
-        width,
-        objects,
-        source: sources[i] ?? "",
-        score: liScore,
-        scoreMap: sm?.scoreMap ?? null,
-        scale: liScale,
-        offset: liOffset,
-      });
-    } else {
-      li = new UserLabelImage({
-        data: pixelData,
-        height,
-        width,
-        objects,
-        source: sources[i] ?? "",
-        scale: liScale,
-        offset: liOffset,
-      });
-    }
-
-    if (deferredInstances.size > 0) {
-      li._objectInstanceIdxs = deferredInstances;
-    }
-
-    labelImages.push([li, videoIdx, frameIdxVal]);
-  }
-  return labelImages;
 }
 
 function normalizeStructDataset(

@@ -232,6 +232,7 @@ Key types:
 - `Video`, `SuggestionFrame`, `LabelsSet`
 - `Camera`, `CameraGroup`, `RecordingSession`, `InstanceGroup` (camera/3D utilities)
 - `Identity` (ground-truth animal identity across sessions)
+- `Category` (project-level class catalog, e.g. species or "arena")
 - `Instance3D`, `PredictedInstance3D` (3D keypoint data)
 - `LazyDataStore`, `LazyFrameList` (lazy loading)
 - `ROI`, `UserROI`, `PredictedROI` (spatial annotations)
@@ -685,6 +686,7 @@ labels.bboxes;         // BoundingBox[]
 labels.centroids;      // Centroid[]
 labels.labelImages;    // LabelImage[]
 labels.identities;     // Identity[]
+labels.categories;     // Category[] (project class catalog; mutable list)
 labels.staticRois;     // Static (video-level) ROIs, e.g. arena boundaries
 labels.temporalRois;   // Frame-bound ROIs (flat view across frames)
 
@@ -919,6 +921,30 @@ id.name;      // "mouse_A"
 id.color;     // "#ff0000"
 id.metadata;  // Record<string, unknown>
 ```
+
+### `Category`
+
+A class that detections belong to (species, sex, condition, "arena"). The
+project-level catalog is `labels.categories`; each detection (instance, mask,
+bbox, centroid, ROI) keeps `category` as a plain string naming a catalog entry.
+The catalog can hold classes no detection uses yet, so a class list defined
+before labeling survives a save.
+
+```ts
+labels.categories.push(
+  new Category({ name: "mouse", color: "#e6194b" }),
+  new Category({ name: "arena", metadata: { supercategory: "env" } }),
+);
+mask.category = "mouse";
+```
+
+Stored in the SLP `/categories` group (format 2.7) like Python's
+`Labels.categories`: a `name` catalog plus a `meta_owner` / `meta_key` /
+`meta_val` metadata table. `color` is written as `metadata["color"]` (Python's
+`Category` has no color field) and read back into `color`. On write, category
+strings that detections use but the catalog lacks are appended after the
+declared entries, so nothing is dropped. `Labels.merge` unions catalogs by name
+(the target's entries win); `Labels.copy` deep-copies them.
 
 ### `Instance3D` and `PredictedInstance3D`
 

@@ -43,6 +43,22 @@ import type { Centroid } from "../../model/centroid.js";
 import { buildCentroidTuples } from "./centroids.js";
 import type { BoundingBox } from "../../model/bbox.js";
 import { BBOX_NUMERIC_COLUMNS, buildBboxTuples } from "./bboxes.js";
+import {
+  ANNOTATION_BYTES_PATHS,
+  ANNOTATION_STRING_LISTS,
+  ANNOTATION_STRUCT_PATHS,
+  type AnnotationDatasets,
+  type PerDetectionMaps,
+  attachOwnerType,
+  decodeStringListValue,
+  parseJsonStringList,
+  readLabelImageTuples,
+  readMaskTuples,
+  readRoiTuples,
+} from "./annotations.js";
+import type { ROI } from "../../model/roi.js";
+import type { SegmentationMask } from "../../model/mask.js";
+import type { LabelImage } from "../../model/label-image.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
 import {
@@ -67,6 +83,7 @@ import {
   RecordingSession,
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
+import { type Category, categoryFromStored } from "../../model/category.js";
 import { Embedding } from "../../model/embedding.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
@@ -371,12 +388,7 @@ async function readBboxesStreaming(
  * deferred `_instanceIdx` against the `instances` table rows. Lazy: hand the
  * per-frame map + undistributed list to the store for materializeFrame.
  */
-function attachAnnotationTuples<
-  T extends {
-    instance: Instance | null;
-    _instanceIdx: number | null;
-  },
->(
+function attachAnnotationTuples<T>(
   tuples: [T, number, number][],
   opts: {
     labeledFrames: LabeledFrame[] | undefined;
@@ -390,6 +402,16 @@ function attachAnnotationTuples<
       byFrame: Map<string, T[]>,
       undistributed: T[],
     ) => void;
+    /**
+     * Resolve an attached annotation's deferred instance refs (eager only).
+     * Defaults to the `_instanceIdx` → `instance` link most modalities carry.
+     */
+    resolve?: (
+      ann: T,
+      lookup: (instanceId: number) => Instance | PredictedInstance | undefined,
+    ) => void;
+    /** Eager only: receives tuples with no valid frame (e.g. static ROIs). */
+    onUnrouted?: (ann: T) => void;
   },
 ): void {
   if (!tuples.length) return;
@@ -414,6 +436,8 @@ function attachAnnotationTuples<
       if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
         opts.frameList(getOrCreate(vidIdx, frameIdx)).push(ann);
         attached.push(ann);
+      } else {
+        opts.onUnrouted?.(ann);
       }
     }
     // Resolve deferred instance refs (mirrors the eager reader).
@@ -422,15 +446,8 @@ function attachAnnotationTuples<
       opts.instanceRows,
       opts.userInstancesOnly,
     );
-    for (const ann of attached) {
-      if (ann._instanceIdx !== null && ann._instanceIdx >= 0) {
-        const inst = allInst(ann._instanceIdx);
-        if (inst) {
-          ann.instance = inst;
-          ann._instanceIdx = null;
-        }
-      }
-    }
+    const resolve = opts.resolve ?? resolveInstanceIdx;
+    for (const ann of attached) resolve(ann, allInst);
   } else if (lazyStore) {
     const byFrame = new Map<string, T[]>();
     const undistributed: T[] = [];
@@ -446,6 +463,123 @@ function attachAnnotationTuples<
     }
     opts.setLazy(lazyStore, byFrame, undistributed);
   }
+}
+
+/** Default deferred-instance resolution: `_instanceIdx` → `instance`. */
+function resolveInstanceIdx(
+  ann: unknown,
+  lookup: (instanceId: number) => Instance | PredictedInstance | undefined,
+): void {
+  const a = ann as {
+    instance?: Instance | PredictedInstance | null;
+    _instanceIdx?: number | null;
+  };
+  if (a._instanceIdx != null && a._instanceIdx >= 0) {
+    const inst = lookup(a._instanceIdx);
+    if (inst) {
+      a.instance = inst;
+      a._instanceIdx = null;
+    }
+  }
+}
+
+/** Resolve a label image's per-object deferred instance refs. */
+function resolveLabelImageInstances(
+  li: LabelImage,
+  lookup: (instanceId: number) => Instance | PredictedInstance | undefined,
+): void {
+  if (!li._objectInstanceIdxs) return;
+  for (const [labelId, instIdx] of li._objectInstanceIdxs) {
+    const obj = li.objects.get(labelId);
+    const inst = instIdx >= 0 ? lookup(instIdx) : undefined;
+    if (obj && inst) obj.instance = inst as Instance;
+  }
+  li._objectInstanceIdxs = null;
+}
+
+/**
+ * Prefetch the mask / ROI / label-image datasets over the streaming API into an
+ * {@link AnnotationDatasets}, so the streaming reader parses them with the same
+ * code as the eager reader (`annotations.ts`). Each present dataset is one
+ * worker read; absent ones are skipped. Without this, a browser/Tauri load
+ * (which uses the streaming reader) silently dropped every mask, ROI and label
+ * image, and a later save erased them from the file.
+ */
+async function prefetchAnnotationDatasets(
+  file: StreamingH5File,
+): Promise<AnnotationDatasets> {
+  const keys = new Set(file.keys());
+  const structs = new Map<string, Record<string, any[]>>();
+  const structAttrs = new Map<string, Record<string, unknown>>();
+  const bytes = new Map<string, Uint8Array>();
+  const strings = new Map<string, string[]>();
+  let labelImageData: { value: any; shape: number[] } | null = null;
+
+  const attrsOf = async (path: string): Promise<Record<string, unknown>> => {
+    try {
+      return await file.getAttrs(path);
+    } catch {
+      return {};
+    }
+  };
+
+  for (const path of ANNOTATION_STRUCT_PATHS) {
+    if (!keys.has(path)) continue;
+    structs.set(path, await readStructDatasetStreaming(file, path, true));
+    structAttrs.set(path, await attrsOf(path));
+  }
+  for (const path of ANNOTATION_BYTES_PATHS) {
+    if (!keys.has(path)) continue;
+    try {
+      const v = (await file.getDatasetValue(path)).value;
+      bytes.set(
+        path,
+        v instanceof Uint8Array
+          ? v
+          : ArrayBuffer.isView(v)
+            ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength)
+            : Uint8Array.from((v ?? []) as ArrayLike<number>),
+      );
+    } catch {
+      /* unreadable: treated as absent */
+    }
+  }
+  for (const [root] of ANNOTATION_STRING_LISTS) {
+    if (!keys.has(root)) continue;
+    // The `json` attr (JS-written files) is authoritative when present; else
+    // decode the dataset (Python vlen strings, or old JS JSON bytes).
+    const fromAttr = parseJsonStringList((await attrsOf(root)).json);
+    if (fromAttr) {
+      strings.set(root, fromAttr);
+      continue;
+    }
+    try {
+      strings.set(
+        root,
+        decodeStringListValue((await file.getDatasetValue(root)).value),
+      );
+    } catch {
+      /* unreadable: fall back to the struct attr */
+    }
+  }
+  if (keys.has("label_image_data")) {
+    try {
+      const d = await file.getDatasetValue("label_image_data");
+      labelImageData = { value: d.value, shape: d.shape ?? [] };
+    } catch {
+      labelImageData = null;
+    }
+  }
+
+  return {
+    struct: (path) => structs.get(path) ?? null,
+    bytes: (path) => bytes.get(path) ?? null,
+    strings: (rootPath, structPath, attrName) =>
+      strings.get(rootPath) ??
+      parseJsonStringList(structAttrs.get(structPath)?.[attrName]) ??
+      [],
+    raw: (path) => (path === "label_image_data" ? labelImageData : null),
+  };
 }
 
 export async function readSlpStreaming(
@@ -676,13 +810,19 @@ export async function readFromStreamingFile(
   // Read identities
   report(8);
   const identities = await readIdentitiesStreaming(file);
+  const categories = await readCategoriesStreaming(file);
 
-  // Per-detection identity (SLP 2.5) + category (SLP 2.7), OWNER_INSTANCE. Applied
-  // directly to concrete instances (non-lazy) or handed to the lazy store for
-  // on-demand attach in materializeFrame.
+  // Per-detection identity (SLP 2.5) + category (SLP 2.7). OWNER_INSTANCE rows go
+  // directly onto concrete instances (non-lazy) or to the lazy store for
+  // on-demand attach in materializeFrame; the other owner types attach to the
+  // annotation lists parsed below.
+  const pdMaps = await readStreamingPerDetectionMaps(file);
+  const { categoryCatalog } = pdMaps;
   if (labeledFrames || lazyStore) {
-    const { links, embs, catLinks, catEmbs, categoryCatalog } =
-      await readStreamingInstanceIdentity(file);
+    const links = pdMaps.idLinks.get(0) ?? new Map();
+    const embs = pdMaps.idEmbs.get(0) ?? new Map();
+    const catLinks = pdMaps.catLinks.get(0) ?? new Map();
+    const catEmbs = pdMaps.catEmbs.get(0) ?? new Map();
     if (links.size || embs.size || catLinks.size || catEmbs.size) {
       if (labeledFrames) {
         const allInstances = instanceRowLookup(
@@ -724,9 +864,53 @@ export async function readFromStreamingFile(
     }
   }
 
-  // Centroids (`/centroids` group) and bounding boxes (`/bboxes`). The eager and
-  // lazy readers read these; the streaming reader (browser/Tauri WebView) must
-  // too, or a loaded project silently drops its centroid / box annotations.
+  // Centroids, bounding boxes, ROIs, masks and label images. The eager and lazy
+  // readers read these; the streaming reader (browser/Tauri WebView) must too,
+  // or a loaded project silently drops them (and a later save erases them).
+  // Masks / ROIs / label images are parsed by the same code as the eager reader
+  // (annotations.ts) from prefetched datasets.
+  const annDatasets = await prefetchAnnotationDatasets(file);
+  const centroidTuples = await readCentroidsStreaming(file, tracks);
+  const { rois: roiTuples, migratedBboxes } = readRoiTuples(
+    annDatasets,
+    videos,
+    tracks,
+  );
+  let bboxTuples = await readBboxesStreaming(file, tracks);
+  // Pre-2.0 files stored boxes as box-shaped ROIs (mirrors readRoisAndBboxes).
+  if (bboxTuples.length === 0 && migratedBboxes.length > 0) {
+    bboxTuples = migratedBboxes;
+  }
+  const maskTuples = readMaskTuples(annDatasets, tracks);
+  const labelImageTuples = readLabelImageTuples(annDatasets, tracks);
+
+  // Per-detection identity / category on the non-instance detections, by their
+  // index in each modality's table (owner_id), as the eager reader does.
+  attachOwnerType(
+    pdMaps,
+    2,
+    centroidTuples.map((t) => t[0]),
+    identities,
+  );
+  attachOwnerType(
+    pdMaps,
+    3,
+    maskTuples.map((t) => t[0]),
+    identities,
+  );
+  attachOwnerType(
+    pdMaps,
+    4,
+    bboxTuples.map((t) => t[0]),
+    identities,
+  );
+  attachOwnerType(
+    pdMaps,
+    5,
+    roiTuples.map((t) => t[0]),
+    identities,
+  );
+
   const attachCommon = {
     labeledFrames,
     lazyStore,
@@ -734,7 +918,7 @@ export async function readFromStreamingFile(
     instanceRows,
     userInstancesOnly,
   };
-  attachAnnotationTuples<Centroid>(await readCentroidsStreaming(file, tracks), {
+  attachAnnotationTuples<Centroid>(centroidTuples, {
     ...attachCommon,
     frameList: (lf) => lf.centroids,
     setLazy: (store, byFrame, undistributed) => {
@@ -742,13 +926,41 @@ export async function readFromStreamingFile(
       store._undistributedCentroids = undistributed;
     },
   });
-  attachAnnotationTuples<BoundingBox>(await readBboxesStreaming(file, tracks), {
+  attachAnnotationTuples<BoundingBox>(bboxTuples, {
     ...attachCommon,
     frameList: (lf) => lf.bboxes,
     setLazy: (store, byFrame, undistributed) => {
       store._bboxByFrame = byFrame;
       store._undistributedBboxes = undistributed;
     },
+  });
+  // ROIs with no frame are static (video-level) ROIs, e.g. arena outlines.
+  const staticRois: ROI[] = [];
+  attachAnnotationTuples<ROI>(roiTuples, {
+    ...attachCommon,
+    frameList: (lf) => lf.rois,
+    setLazy: (store, byFrame, undistributed) => {
+      store._roiByFrame = byFrame;
+      store._undistributedRois = undistributed;
+    },
+    onUnrouted: (roi) => staticRois.push(roi),
+  });
+  attachAnnotationTuples<SegmentationMask>(maskTuples, {
+    ...attachCommon,
+    frameList: (lf) => lf.masks,
+    setLazy: (store, byFrame, undistributed) => {
+      store._maskByFrame = byFrame;
+      store._undistributedMasks = undistributed;
+    },
+  });
+  attachAnnotationTuples<LabelImage>(labelImageTuples, {
+    ...attachCommon,
+    frameList: (lf) => lf.labelImages,
+    setLazy: (store, byFrame, undistributed) => {
+      store._labelImageByFrame = byFrame;
+      store._undistributedLabelImages = undistributed;
+    },
+    resolve: resolveLabelImageInstances,
   });
 
   // Read sessions — grouping captured as index refs (no frame materialization).
@@ -777,7 +989,9 @@ export async function readFromStreamingFile(
     suggestions,
     sessions,
     identities,
+    categories,
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
+    rois: staticRois,
   });
   if (lazyStore) {
     // Attach the lazy proxies BEFORE injectSessionFrameResolver so the resolver's
@@ -1414,28 +1628,72 @@ async function readIdentitiesStreaming(
 }
 
 /**
- * Read the OWNER_INSTANCE per-detection identity links + embeddings (SLP 2.5) over
- * the streaming API, keyed by global instance_id. Returns empty maps on pre-2.5
- * files. Streaming builds only `Instance`s, so only OWNER_INSTANCE is read; the
- * result is applied either to a concrete instance list (non-lazy) or handed to the
- * `LazyDataStore` for on-demand attach (lazy).
+ * Read the `/categories` group (SLP 2.7) as `Category` objects: the `name`
+ * catalog plus the optional `meta_owner` / `meta_key` / `meta_val` table, with
+ * `metadata["color"]` lifted into `color`. Empty when absent or unreadable.
  */
-async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
-  links: Map<number, [number, number | null]>;
-  embs: Map<number, Embedding>;
-  catLinks: Map<number, [number, number | null]>;
-  catEmbs: Map<number, Embedding>;
-  categoryCatalog: string[];
-}> {
-  const rootKeys = file.keys();
+async function readCategoriesStreaming(
+  file: StreamingH5File,
+): Promise<Category[]> {
+  try {
+    const keys = file.keys();
+    if (!keys.includes("categories")) return [];
+    const children = await file.getKeys("categories");
+    if (!children.includes("name")) return [];
+    const names = normalizeDatasetArray(
+      (await file.getDatasetValue("categories/name")).value,
+    ).map((n) => decodeEntryText(n) ?? "");
+    const metadata: Record<string, unknown>[] = names.map(() => ({}));
+    if (children.includes("meta_owner")) {
+      const owners = normalizeDatasetArray(
+        (await file.getDatasetValue("categories/meta_owner")).value,
+      ).map(Number);
+      const mkeys = normalizeDatasetArray(
+        (await file.getDatasetValue("categories/meta_key")).value,
+      ).map((k) => decodeEntryText(k) ?? "");
+      const mvals = normalizeDatasetArray(
+        (await file.getDatasetValue("categories/meta_val")).value,
+      ).map((v) => decodeEntryText(v) ?? "");
+      owners.forEach((o, i) => {
+        if (metadata[o]) metadata[o][mkeys[i]] = mvals[i];
+      });
+    }
+    return names.map((name, i) => categoryFromStored(name, metadata[i]));
+  } catch {
+    return [];
+  }
+}
 
-  // OWNER_INSTANCE rows of a links table (identity or categories).
-  const readOwnerInstanceLinks = async (
+/**
+ * Read the per-detection identity (SLP 2.5) + category (SLP 2.7) links and
+ * embeddings over the streaming API, keyed owner_type → owner_id, plus the
+ * category catalog. Empty maps on older files. OWNER_INSTANCE entries (keyed by
+ * global instance_id) go onto concrete instances or the `LazyDataStore`; the
+ * other owner types attach to the parsed centroid / mask / bbox / ROI lists.
+ */
+async function readStreamingPerDetectionMaps(
+  file: StreamingH5File,
+): Promise<PerDetectionMaps> {
+  const rootKeys = file.keys();
+  const ownerMap = <V>(
+    out: Map<number, Map<number, V>>,
+    ownerType: number,
+  ): Map<number, V> => {
+    let sub = out.get(ownerType);
+    if (!sub) {
+      sub = new Map();
+      out.set(ownerType, sub);
+    }
+    return sub;
+  };
+
+  // Rows of a links table (identity or categories), keyed owner_type → owner_id.
+  const readLinks = async (
     group: string,
     idxField: string,
     scoreField: string,
-  ): Promise<Map<number, [number, number | null]>> => {
-    const out = new Map<number, [number, number | null]>();
+  ): Promise<Map<number, Map<number, [number, number | null]>>> => {
+    const out = new Map<number, Map<number, [number, number | null]>>();
     try {
       if (!rootKeys.includes(group)) return out;
       if (!(await file.getKeys(group)).includes("links")) return out;
@@ -1449,9 +1707,8 @@ async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
       const idx = cols[idxField] ?? [];
       const sc = cols[scoreField] ?? [];
       for (let i = 0; i < ot.length; i += 1) {
-        if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
         const score = Number(sc[i]);
-        out.set(Number(oid[i]), [
+        ownerMap(out, Number(ot[i])).set(Number(oid[i]), [
           Number(idx[i]),
           Number.isNaN(score) ? null : score,
         ]);
@@ -1462,13 +1719,13 @@ async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
     return out;
   };
 
-  // OWNER_INSTANCE rows of an /embeddings triple (identity or category).
-  const readOwnerInstanceEmbs = async (
+  // Rows of an /embeddings triple (identity or category), owner_type → owner_id.
+  const readEmbs = async (
     vecName: string,
     otName: string,
     oidName: string,
-  ): Promise<Map<number, Embedding>> => {
-    const out = new Map<number, Embedding>();
+  ): Promise<Map<number, Map<number, Embedding>>> => {
+    const out = new Map<number, Map<number, Embedding>>();
     try {
       if (!rootKeys.includes("embeddings")) return out;
       if (!(await file.getKeys("embeddings")).includes(vecName)) return out;
@@ -1484,10 +1741,9 @@ async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
         (await file.getDatasetValue(`embeddings/${oidName}`)).value,
       );
       for (let i = 0; i < rows; i += 1) {
-        if (Number(ot[i]) !== 0) continue; // OWNER_INSTANCE only
         const vec = new Array<number>(dim);
         for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
-        out.set(Number(oid[i]), new Embedding(vec));
+        ownerMap(out, Number(ot[i])).set(Number(oid[i]), new Embedding(vec));
       }
     } catch {
       /* optional */
@@ -1510,18 +1766,10 @@ async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
   }
 
   return {
-    links: await readOwnerInstanceLinks(
-      "identity",
-      "identity_idx",
-      "identity_score",
-    ),
-    embs: await readOwnerInstanceEmbs("vectors", "owner_type", "owner_id"),
-    catLinks: await readOwnerInstanceLinks(
-      "categories",
-      "category_idx",
-      "category_score",
-    ),
-    catEmbs: await readOwnerInstanceEmbs(
+    idLinks: await readLinks("identity", "identity_idx", "identity_score"),
+    idEmbs: await readEmbs("vectors", "owner_type", "owner_id"),
+    catLinks: await readLinks("categories", "category_idx", "category_score"),
+    catEmbs: await readEmbs(
       "category_vectors",
       "category_owner_type",
       "category_owner_id",

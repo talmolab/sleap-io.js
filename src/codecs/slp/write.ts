@@ -34,6 +34,7 @@ import type {
 } from "../../model/label-image.js";
 import { deflate } from "pako";
 import type { Identity } from "../../model/identity.js";
+import { Category } from "../../model/category.js";
 import { PredictedInstance3D } from "../../model/instance3d.js";
 import type { LazyDataStore } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
@@ -66,18 +67,19 @@ function setStringAttr(target: any, name: string, value: string): void {
   target.create_attribute(name, value, null, `S${byteLength}`);
 }
 
-/** Write a string array as a JSON-encoded string attribute dataset at root level. */
+/**
+ * Write a string array as a native variable-length string dataset at root level
+ * (e.g. `mask_categories`), the layout Python sleap-io writes and reads
+ * (`f[name][:]` → one string per annotation).
+ *
+ * The list is also kept as a JSON `json` attribute so sleap-io.js readers older
+ * than this layout, which read that attribute first, still load these files.
+ * (Before, the dataset itself held the JSON as `<B` bytes, which Python read as
+ * a uint8 array and rejected.)
+ */
 function writeStringDataset(file: any, name: string, values: string[]): void {
-  const json = JSON.stringify(values);
-  const bytes = textEncoder.encode(json);
-  file.create_dataset({
-    name,
-    data: bytes,
-    shape: [bytes.length],
-    dtype: "<B",
-  });
-  const ds = file.get(name);
-  setStringAttr(ds, "json", json);
+  file.create_dataset({ name, data: values });
+  setStringAttr(file.get(name), "json", JSON.stringify(values));
 }
 
 const SPAWNED_ON = 0;
@@ -277,7 +279,9 @@ function writeSlpToFile(
     roi: allRois,
   };
   writeIdentityLinks(file, labels.identities, detections);
-  writeCategoryLinks(file, detections);
+  const categoryCatalog = buildCategoryCatalog(labels.categories, detections);
+  writeCategories(file, categoryCatalog);
+  writeCategoryLinks(file, detections, categoryCatalog);
   writeEmbeddings(file, detections);
 }
 
@@ -588,6 +592,19 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
     [],
     liCtx,
   );
+
+  // Category catalog (SLP 2.7): the declared catalog plus the strings the lazy
+  // store's category catalog and the non-instance annotations use. Per-detection
+  // links are not written on this path (instance links stay in the store).
+  const lazyCatalog = buildCategoryCatalog(labels.categories, {
+    instance: [],
+    centroid: allCentroids,
+    mask: allMasks,
+    bbox: allBboxes,
+    roi: allRois,
+  });
+  mergeCategoryNames(lazyCatalog, store.categoryCatalog ?? []);
+  writeCategories(file, lazyCatalog);
 }
 
 /**
@@ -745,6 +762,8 @@ export interface SlpWriteHeader {
   tracks?: Track[];
   suggestions?: SuggestionFrame[];
   identities?: Identity[];
+  /** Project-level category catalog (SLP 2.7 `/categories`). */
+  categories?: Category[];
   sessions?: RecordingSession[];
   provenance?: Record<string, unknown>;
 }
@@ -1554,6 +1573,7 @@ export async function openSlpWriter(
       suggestions: header.suggestions ?? [],
       sessions: header.sessions ?? [],
       identities: header.identities ?? [],
+      categories: header.categories ?? [],
       provenance: header.provenance ?? {},
     });
 
@@ -1563,6 +1583,7 @@ export async function openSlpWriter(
     writeTracks(file, headerLabels.tracks);
     writeSuggestions(file, headerLabels.suggestions, headerLabels.videos);
     writeIdentities(file, headerLabels.identities);
+    writeCategories(file, buildCategoryCatalog(headerLabels.categories));
     writeSessions(
       file,
       headerLabels.sessions,
@@ -1651,6 +1672,7 @@ function skeletonSignature(skeletons: Skeleton[]): string {
 export interface MergeStoresOptions {
   sessions?: RecordingSession[];
   identities?: Identity[];
+  categories?: Category[];
   suggestions?: SuggestionFrame[];
   provenance?: Record<string, unknown>;
   windowFrames?: number;
@@ -1688,6 +1710,7 @@ async function buildMergedWriter(
     tracks,
     suggestions: options?.suggestions,
     identities: options?.identities,
+    categories: options?.categories,
     sessions: options?.sessions,
     provenance: options?.provenance,
   });
@@ -2038,8 +2061,9 @@ function writeMetadata(file: any, labels: Labels): void {
   }
 
   // v2.7: class/category subsystem (/categories catalog + /categories/links +
-  // category_* embeddings), gated on a detection actually carrying a category.
-  if (hasPerDetectionCategory(labels)) {
+  // category_* embeddings), gated on a declared catalog or a detection actually
+  // carrying a category (Python's `has_category_data`).
+  if (labels.categories.length > 0 || hasPerDetectionCategory(labels)) {
     formatId = Math.max(formatId, 2.7);
   }
 
@@ -2566,51 +2590,111 @@ function writeEmbeddings(file: any, c: DetectionCollections): void {
   );
 }
 
-/** Distinct non-empty category strings across all detections, in first-seen order
- * (the `/categories/name` catalog). JS categories are plain strings, so the catalog
- * is derived from the strings themselves (no per-category metadata). */
-function collectCategoryCatalog(c: DetectionCollections): string[] {
+/**
+ * Build the `/categories/name` catalog: the declared `Labels.categories` first
+ * (deduped by name, first wins), then any category string a detection uses that
+ * the catalog lacks, in first-seen order. JS detections carry category NAMES, so
+ * this guarantees every link resolves and no class is dropped on write.
+ */
+function buildCategoryCatalog(
+  declared: Category[],
+  c?: DetectionCollections,
+): Category[] {
+  const catalog: Category[] = [];
   const seen = new Set<string>();
-  const catalog: string[] = [];
-  for (const [, list] of ownerCollections(c)) {
-    for (const det of list) {
-      const cat = det.category;
-      if (cat && !seen.has(cat)) {
-        seen.add(cat);
-        catalog.push(cat);
-      }
+  for (const cat of declared) {
+    if (seen.has(cat.name)) continue;
+    seen.add(cat.name);
+    catalog.push(cat);
+  }
+  if (c) {
+    const used: string[] = [];
+    for (const [, list] of ownerCollections(c)) {
+      for (const det of list) if (det.category) used.push(det.category);
     }
+    mergeCategoryNames(catalog, used, seen);
   }
   return catalog;
 }
 
+/** Append a bare `Category` for each name in `names` the catalog lacks. */
+function mergeCategoryNames(
+  catalog: Category[],
+  names: string[],
+  seen: Set<string> = new Set(catalog.map((cat) => cat.name)),
+): void {
+  for (const name of names) {
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    catalog.push(new Category({ name }));
+  }
+}
+
 /**
- * Write the class/category subsystem (SLP 2.7): the `/categories/name` catalog
- * (distinct category strings) + `/categories/links` (owner_type, owner_id,
- * category_idx, category_score) — one row per detection with a non-empty category,
- * flat-2-D `<d`+field_names (the Python reader converts it, sleap-io#548). No-op
- * when no detection carries a category.
+ * Write the `/categories` catalog group (SLP 2.7): a native vlen `name` dataset
+ * plus the optional `meta_owner` / `meta_key` / `meta_val` entity-attribute-value
+ * table, matching Python's `write_categories`. `color` is folded into
+ * `metadata["color"]` (Python's `Category` has no first-class color) and values
+ * are stringified to match Python's string-only EAV. No-op on an empty catalog.
  */
-function writeCategoryLinks(file: any, c: DetectionCollections): void {
-  const catalog = collectCategoryCatalog(c);
+function writeCategories(file: any, catalog: Category[]): void {
   if (!catalog.length) return;
-  const catToIdx = new Map<string, number>(catalog.map((n, i) => [n, i]));
+  file.create_group("categories");
+  file.create_dataset({
+    name: "categories/name",
+    data: catalog.map((cat) => cat.name),
+  });
+  const metaOwner: number[] = [];
+  const metaKey: string[] = [];
+  const metaVal: string[] = [];
+  catalog.forEach((cat, idx) => {
+    const meta: Record<string, unknown> = { ...cat.metadata };
+    if (cat.color != null && meta.color == null) meta.color = cat.color;
+    for (const [k, v] of Object.entries(meta)) {
+      metaOwner.push(idx);
+      metaKey.push(String(k));
+      metaVal.push(String(v));
+    }
+  });
+  if (metaOwner.length) {
+    file.create_dataset({
+      name: "categories/meta_owner",
+      data: new Int32Array(metaOwner),
+      shape: [metaOwner.length],
+      dtype: "<i", // int32 (see the dtype-char note above)
+    });
+    file.create_dataset({ name: "categories/meta_key", data: metaKey });
+    file.create_dataset({ name: "categories/meta_val", data: metaVal });
+  }
+}
+
+/**
+ * Write `/categories/links` (SLP 2.7): (owner_type, owner_id, category_idx,
+ * category_score), one row per detection with a non-empty category, indexed into
+ * `catalog` (from {@link buildCategoryCatalog}, already written by
+ * {@link writeCategories}). Flat-2-D `<d`+field_names (the Python reader converts
+ * it, sleap-io#548). No-op when no detection carries a category.
+ */
+function writeCategoryLinks(
+  file: any,
+  c: DetectionCollections,
+  catalog: Category[],
+): void {
+  const catToIdx = new Map<string, number>();
+  catalog.forEach((cat, i) => {
+    if (!catToIdx.has(cat.name)) catToIdx.set(cat.name, i);
+  });
   const rows: number[][] = [];
   for (const [ownerType, list] of ownerCollections(c)) {
     list.forEach((det, ownerId) => {
       const cat = det.category;
       if (!cat) return;
-      rows.push([
-        ownerType,
-        ownerId,
-        catToIdx.get(cat) as number,
-        det.categoryScore ?? Number.NaN,
-      ]);
+      const idx = catToIdx.get(cat);
+      if (idx === undefined) return;
+      rows.push([ownerType, ownerId, idx, det.categoryScore ?? Number.NaN]);
     });
   }
   if (!rows.length) return;
-  file.create_group("categories");
-  file.create_dataset({ name: "categories/name", data: catalog });
   createMatrixDataset(
     file,
     "categories/links",
