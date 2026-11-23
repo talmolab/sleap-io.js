@@ -9,9 +9,7 @@ import {
   isEncodedFormat,
   readEmbeddedFrameBytes,
 } from "./embedded-frame.js";
-
-const isBrowser =
-  typeof window !== "undefined" && typeof document !== "undefined";
+import { decodeEmbeddedImage, decodeEmbeddedRaw } from "./image-decode.js";
 
 /**
  * Video backend for embedded images in HDF5 files accessed via streaming.
@@ -175,7 +173,7 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
     if (!rawBytes || rawBytes.length === 0) return null;
 
     if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes(
+      const decoded = await decodeEmbeddedImage(
         rawBytes,
         this.format,
         this.channelOrder,
@@ -183,7 +181,7 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
       return decoded ?? rawBytes;
     }
 
-    const image = decodeRawFrame(rawBytes, this.shape, this.channelOrder);
+    const image = decodeEmbeddedRaw(rawBytes, this.shape, this.channelOrder);
     return image ?? rawBytes;
   }
 
@@ -217,7 +215,7 @@ export class StreamingHdf5VideoBackend implements VideoBackend {
       if (!rawBytes || rawBytes.length === 0) return;
 
       if (isEncodedFormat(this.format)) {
-        const decoded = await decodeImageBytes(
+        const decoded = await decodeEmbeddedImage(
           rawBytes,
           this.format,
           this.channelOrder,
@@ -327,74 +325,4 @@ function attrToNum(attr: unknown): number | undefined {
       : attr;
   const n = Number(Array.isArray(v) ? v[0] : v);
   return Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
-async function decodeImageBytes(
-  bytes: Uint8Array,
-  format: string,
-  channelOrder: string,
-): Promise<VideoFrame | null> {
-  if (!isBrowser || typeof createImageBitmap === "undefined") return null;
-  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
-  const safeBytes = new Uint8Array(bytes);
-  const blob = new Blob([safeBytes.buffer], { type: mime });
-  const bitmap = await createImageBitmap(blob);
-
-  // If channel order is BGR, we need to swap R and B channels
-  // This happens when images were encoded with OpenCV (which uses BGR order)
-  // but the PNG/JPEG bytes were written directly without RGB conversion
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  if (!useBgr) {
-    return bitmap;
-  }
-
-  // Swap R and B channels by drawing to canvas and manipulating pixel data
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return bitmap;
-
-  ctx.drawImage(bitmap, 0, 0);
-  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  const data = imageData.data;
-
-  // Swap R and B for each pixel (RGBA format: indices 0=R, 1=G, 2=B, 3=A)
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const b = data[i + 2];
-    data[i] = b;
-    data[i + 2] = r;
-  }
-
-  return imageData;
-}
-
-function decodeRawFrame(
-  bytes: Uint8Array,
-  shape: [number, number, number, number] | undefined,
-  channelOrder: string,
-): VideoFrame | null {
-  if (!isBrowser || !shape) return null;
-  const [, height, width, channels] = shape;
-  if (!height || !width || !channels) return null;
-
-  const expectedLength = height * width * channels;
-  if (bytes.length < expectedLength) return null;
-
-  const rgba = new Uint8ClampedArray(width * height * 4);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-
-  for (let i = 0; i < width * height; i += 1) {
-    const base = i * channels;
-    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
-    const g = bytes[base + 1] ?? 0;
-    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
-    const a = channels === 4 ? (bytes[base + 3] ?? 255) : 255;
-    const out = i * 4;
-    rgba[out] = r;
-    rgba[out + 1] = g;
-    rgba[out + 2] = b;
-    rgba[out + 3] = a;
-  }
-
-  return new ImageData(rgba, width, height);
 }

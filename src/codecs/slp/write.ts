@@ -13,10 +13,12 @@ import { SuggestionFrame } from "../../model/suggestions.js";
 import type { Video } from "../../model/video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
 import {
+  decodeEncoded,
   encodeBitmapToPng,
   encodeImageDataToPng,
   isImageBitmapLike,
   isImageDataLike,
+  needsRedBlueSwap,
 } from "../../video/image-decode.js";
 import { getH5Module, getH5FileSystem, ensureH5StagingDir } from "./h5.js";
 import { type ROI, type PredictedROI, encodeWkb } from "../../model/roi.js";
@@ -4774,6 +4776,14 @@ async function collectEncodedFrames(
       continue;
     }
     let bytes = frameToBytes(frame);
+    const channelOrder = video.backend?.embeddedChannelOrder;
+    if (bytes && needsRedBlueSwap(bytes, channelOrder)) {
+      // A color image stored BGR (e.g. encoded by OpenCV); the new embed records RGB.
+      bytes = await encodeImageDataToPng(
+        await decodeEncoded(bytes, channelOrder),
+      );
+      encodedToPng = true;
+    }
     if (!bytes) {
       // The MediaBunny/Mp4Box (and image/seq) backends return raw pixels
       // (ImageBitmap / ImageData) rather than encoded bytes; PNG-encode them

@@ -699,3 +699,89 @@ describe("appendEncodedVideos frameReader (frames from outside the backend, e.g.
     expect(closed).toBe(2);
   });
 });
+
+describe("appendEncodedVideos — source stored with BGR channel order", () => {
+  // One 32x32 frame with four solid quadrants, written by Python sleap-io
+  // (tests/data/slp/gen_channel_order_fixture.py). Quadrant centers, RGB.
+  const QUADRANTS: [number, number, [number, number, number]][] = [
+    [8, 8, [220, 30, 40]],
+    [24, 8, [30, 200, 60]],
+    [8, 24, [40, 50, 210]],
+    [24, 24, [240, 160, 20]],
+  ];
+  const fixture = (name: string) =>
+    path.join(
+      fileURLToPath(new URL("../data/slp", import.meta.url)),
+      `channel_order_bgr_${name}.pkg.slp`,
+    );
+
+  /** A video that isn't marked embedded, over the BGR package's backend. */
+  async function bgrSource(name: string): Promise<VideoBackend> {
+    const src = await readSlp(fixture(name), { openVideos: true });
+    let backend = src.videos[0].backend!;
+    if (backend instanceof GrayscaleVideoBackend) backend = backend.inner;
+    expect(backend.embeddedChannelOrder).toBe("BGR");
+    return backend;
+  }
+
+  // The first skia-canvas decode in a fresh test worker can take seconds on a
+  // busy machine.
+  const DECODE_TIMEOUT = 60_000;
+
+  for (const [name, tol] of [
+    ["png", 0],
+    ["jpg", 12],
+  ] as const) {
+    it(
+      `re-embeds a BGR ${name} source as RGB`,
+      async () => {
+        const backend = await bgrSource(name);
+        const video = new Video({ filename: "source.h5", backend });
+        const { file } = await streamSave(
+          labelsOn([video], [0]),
+          "user",
+          `bgr-${name}`,
+        );
+        const r = await readSlp(file, { openVideos: true });
+        expect(r.videos[0].backend!.embeddedChannelOrder).toBe("RGB");
+        const png = readPng((await r.videos[0].getFrameBuffer(0))!);
+        expect(png.colorType).toBe(2);
+        for (const [x, y, rgb] of QUADRANTS) {
+          const at = (y * 32 + x) * 3;
+          for (let c = 0; c < 3; c++) {
+            expect(Math.abs(png.pixels[at + c] - rgb[c])).toBeLessThanOrEqual(
+              tol,
+            );
+          }
+        }
+      },
+      DECODE_TIMEOUT,
+    );
+
+    it(
+      `collapses a grayscale-wrapped BGR ${name} source to the red channel`,
+      async () => {
+        const inner = await bgrSource(name);
+        const video = new Video({
+          filename: "source.h5",
+          backend: GrayscaleVideoBackend.wrap({ inner, grayscale: true }),
+        });
+        const { file, calls } = await streamSave(
+          labelsOn([video], [0]),
+          "user",
+          `bgr-gray-${name}`,
+        );
+        expect(calls.collapseToGray).toEqual([true]);
+        const r = await readSlp(file, { openVideos: true });
+        const png = readPng((await r.videos[0].getFrameBuffer(0))!);
+        expect(png.colorType).toBe(0);
+        for (const [x, y, rgb] of QUADRANTS) {
+          expect(Math.abs(png.pixels[y * 32 + x] - rgb[0])).toBeLessThanOrEqual(
+            tol,
+          );
+        }
+      },
+      DECODE_TIMEOUT,
+    );
+  }
+});
