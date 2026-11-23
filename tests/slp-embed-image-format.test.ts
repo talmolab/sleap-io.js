@@ -6,8 +6,9 @@
  * the streaming (worker) paths, and read-backs in JS and in Python.
  *
  * Python read-backs run each interpreter listed (comma-separated) in
- * `SLEAP_IO_TEST_PYTHONS`, or `uv run --with sleap-io python` when unset, and
- * print the sleap-io version each one ran. `SLEAP_IO_SKIP_PYTHON_TESTS=1`
+ * `SLEAP_IO_TEST_PYTHONS`, or `uv run --with "$SLEAP_IO_REQUIREMENT" python`
+ * (`sleap-io` when that is unset) otherwise, and print the sleap-io version
+ * each one ran. `SLEAP_IO_SKIP_PYTHON_TESTS=1`
  * skips them; otherwise a Python that cannot run fails the test.
  */
 import { describe, it, expect, setDefaultTimeout } from "./bun-test";
@@ -49,6 +50,10 @@ import type { VideoBackend, VideoFrame } from "../src/video/backend.js";
 import { readPng } from "./png-read";
 import { encodePngPixels } from "../src/video/png-encode.js";
 import { fileURLToPath } from "node:url";
+import {
+  type SleapIoPython,
+  UV_SLEAP_IO_PYTHON,
+} from "./sleap-io-requirement.js";
 
 setDefaultTimeout(120_000);
 
@@ -1253,7 +1258,7 @@ describe("already-embedded videos with imageFormat (as Python)", () => {
 
 // --- Python read-back -------------------------------------------------------
 
-function pythons(): Array<{ label: string; cmd: string; args: string[] }> {
+function pythons(): SleapIoPython[] {
   const listed = process.env.SLEAP_IO_TEST_PYTHONS;
   if (listed) {
     return listed
@@ -1261,13 +1266,7 @@ function pythons(): Array<{ label: string; cmd: string; args: string[] }> {
       .filter(Boolean)
       .map((exe) => ({ label: exe, cmd: exe, args: [] }));
   }
-  return [
-    {
-      label: "uv run --with sleap-io",
-      cmd: "uv",
-      args: ["run", "--with", "sleap-io", "python"],
-    },
-  ];
+  return [UV_SLEAP_IO_PYTHON];
 }
 
 const SKIP_PYTHON = process.env.SLEAP_IO_SKIP_PYTHON_TESTS === "1";
