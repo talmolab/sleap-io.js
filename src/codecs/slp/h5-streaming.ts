@@ -945,63 +945,20 @@ export class StreamingH5Writer {
    * structured-cloning a nested array), which packs them into the on-disk layout
    * (flat matrix or compound record) and replaces the `/metadata` json attr when
    * `update.metadataJson` is set. Never touches any `video{i}/video` group.
+   * If it rejects, the file may be partly written: do a full save to the
+   * same target (see `writeLabelTablesInPlace`).
    */
   async updateLabelsInPlace(
     update: LabelTableUpdate,
   ): Promise<H5WorkerResponse> {
     // Same backstops as writeLabelTablesInPlace: labels loaded view-only are
-    // never written (and the worker refuses a file in the 3.0 layout).
+    // never written. A 2.x update refuses a file in the 3.0 layout, and a 3.0
+    // update one in the 2.x layout.
     if (update.sourceFormat?.access === "view") {
       throw new SlpViewOnlyError(update.sourceFormat);
     }
-    const tables: Array<{
-      name: string;
-      fields: string[];
-      flat: Float64Array;
-      rowCount: number;
-      colCount: number;
-      dtype: string;
-    }> = [];
-    const transfer: Transferable[] = [];
-    const push = (
-      name: string,
-      dtype: string,
-      table: LabelTable | undefined,
-    ): void => {
-      if (!table) return;
-      const rowCount = table.rows.length;
-      const colCount = table.fields.length;
-      const flat = new Float64Array(rowCount * colCount);
-      for (let i = 0; i < rowCount; i++) {
-        const row = table.rows[i];
-        const off = i * colCount;
-        for (let j = 0; j < colCount; j++) flat[off + j] = row[j];
-      }
-      tables.push({
-        name,
-        fields: table.fields,
-        flat,
-        rowCount,
-        colCount,
-        dtype,
-      });
-      transfer.push(flat.buffer);
-    };
-    push("frames", "<i8", update.frames);
-    push("instances", "<f8", update.instances);
-    push("points", "<f8", update.points);
-    push("pred_points", "<f8", update.predPoints);
-    push("negative_frames", "<i8", update.negativeFrames);
-
-    return this.send(
-      "updateLabelsInPlace",
-      {
-        tables,
-        metadataJson: update.metadataJson ?? null,
-        sourceAccess: update.sourceFormat?.access ?? null,
-      },
-      transfer,
-    );
+    const { payload, transfer } = inPlacePayload(update);
+    return this.send("updateLabelsInPlace", payload, transfer);
   }
 
   /**
@@ -1148,4 +1105,127 @@ export async function openH5Worker(
     throw e;
   }
   return file;
+}
+
+/**
+ * The message the worker's `updateLabelsInPlace` takes for `update`: each
+ * table's rows flattened to a row-major `Float64Array` (2.x), or one
+ * `Float64Array` per column with the record metadata to write or check (3.0),
+ * and the buffers to transfer.
+ */
+export function inPlacePayload(update: LabelTableUpdate): {
+  payload: Record<string, unknown>;
+  transfer: Transferable[];
+} {
+  const tables: Array<{
+    name: string;
+    fields: string[];
+    flat: Float64Array;
+    rowCount: number;
+    colCount: number;
+    dtype: string;
+  }> = [];
+  const transfer: Transferable[] = [];
+  const push = (
+    name: string,
+    dtype: string,
+    table: LabelTable | undefined,
+  ): void => {
+    if (!table) return;
+    const rowCount = table.rows.length;
+    const colCount = table.fields.length;
+    const flat = new Float64Array(rowCount * colCount);
+    for (let i = 0; i < rowCount; i++) {
+      const row = table.rows[i];
+      const off = i * colCount;
+      for (let j = 0; j < colCount; j++) flat[off + j] = row[j];
+    }
+    tables.push({
+      name,
+      fields: table.fields,
+      flat,
+      rowCount,
+      colCount,
+      dtype,
+    });
+    transfer.push(flat.buffer);
+  };
+  if (update.layout === "v3") {
+    // Format 3.0: one Float64Array per column, and the metadata to check
+    // (string values are compared, never rewritten) or write.
+    const columns: Array<{ path: string; values: Float64Array }> = [];
+    const pushColumns = (name: string, table: LabelTable): void => {
+      table.fields.forEach((field, j) => {
+        const values = Float64Array.from(table.rows, (row) => row[j]);
+        columns.push({ path: `${name}/${field}`, values });
+        transfer.push(values.buffer);
+      });
+    };
+    pushColumns("frames", update.frames);
+    pushColumns("instances", update.instances);
+    pushColumns("points", update.points);
+    pushColumns("pred_points", update.predPoints);
+    const metadataKeys: Record<string, string[]> = {};
+    const metadataStrings: Array<{
+      path: string;
+      values: string[];
+      present: number[] | null;
+    }> = [];
+    const metadataPresence: Array<{ path: string; present: boolean }> = [];
+    for (const name of ["instances", "frames"] as const) {
+      const meta = update.metadata?.[name] ?? {};
+      metadataKeys[name] = Object.keys(meta);
+      for (const [key, column] of Object.entries(meta)) {
+        const base = `${name}/metadata/${key}`;
+        const present = column.present
+          ? Array.from(column.present, Number)
+          : null;
+        metadataPresence.push({ path: `${base}/present`, present: !!present });
+        if (column.kind === "str") {
+          metadataStrings.push({
+            path: `${base}/values`,
+            values: Array.from(column.values, (v) => String(v)),
+            present,
+          });
+        } else {
+          const values = Float64Array.from(column.values, (v) =>
+            column.kind === "bool" ? (v ? 1 : 0) : Number(v),
+          );
+          columns.push({ path: `${base}/values`, values });
+          transfer.push(values.buffer);
+        }
+        if (present) {
+          const values = Float64Array.from(present);
+          columns.push({ path: `${base}/present`, values });
+          transfer.push(values.buffer);
+        }
+      }
+    }
+    return {
+      payload: {
+        layout: "v3",
+        columns,
+        metadataKeys,
+        metadataStrings,
+        metadataPresence,
+        metadataJson: update.metadataJson ?? null,
+        sourceAccess: update.sourceFormat?.access ?? null,
+      },
+      transfer,
+    };
+  }
+  push("frames", "<i8", update.frames);
+  push("instances", "<f8", update.instances);
+  push("points", "<f8", update.points);
+  push("pred_points", "<f8", update.predPoints);
+  push("negative_frames", "<i8", update.negativeFrames);
+
+  return {
+    payload: {
+      tables,
+      metadataJson: update.metadataJson ?? null,
+      sourceAccess: update.sourceFormat?.access ?? null,
+    },
+    transfer,
+  };
 }

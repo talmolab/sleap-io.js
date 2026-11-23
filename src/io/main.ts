@@ -7,14 +7,17 @@ import {
   writeSlp,
   saveSlpToBytes,
   checkSlpSavable,
+  resolveSlpVersion,
+  refuseViewOnlyLabels,
   type EmbedOption,
   type SlpWriteOptions,
   type UnlabeledAs,
 } from "../codecs/slp/write.js";
+import { checkSlpVersion, type SlpVersion } from "../codecs/slp/slp-version.js";
 import { checkEmbedImageFormat } from "../codecs/slp/embed-format.js";
 import {
   checkFormat3Option,
-  type Format3Access,
+  type Format3Option,
 } from "../codecs/slp/format3.js";
 import { createVideoBackend, type VideoBackendType } from "../video/factory.js";
 import {
@@ -75,14 +78,16 @@ function isBrowserWithWorkerSupport(): boolean {
  *   stages and message labels the stage about to run. Emitted by all reader
  *   paths (streaming, eager, and lazy); the final call is (total, total,
  *   "Finalizing"). Stage counts differ by path (streaming is finer-grained).
- * @param options.format3 - For a file in SLP format 3.0, which this version
- *   reads but saves only in the 2.x layout: `"view"` loads it read-only (every
- *   writer refuses the labels), `"edit"` lets a save write the 2.x layout and
- *   drop what it cannot store. Without it such a file throws
- *   `SlpFormat3ChoiceError`, whose `summary` lists what an edit would drop.
- *   That error comes after the pose tables have been read; to avoid reading
- *   a large or remote file twice, ask with the lite `loadSlpMetadata` first or
- *   pass this from the start.
+ * @param options.format3 - What a later save may do with a file in SLP format
+ *   3.0. `"keep"` (the default): load it editable, and saves keep format
+ *   3.0; without the option, a file holding what this version does not read
+ *   throws as `"ask"` does, since a save would drop it.
+ *   `"view"` loads it read-only (every writer refuses the labels), `"edit"`
+ *   lets a save write the 2.x layout and drop what it cannot store, and
+ *   `"ask"` throws `SlpFormat3ChoiceError`, whose `summary` lists what an
+ *   edit would drop. That error comes after the pose tables have been read; to
+ *   avoid reading a large or remote file twice, ask with the lite
+ *   `loadSlpMetadata` first.
  * @returns Loaded Labels object
  */
 export async function loadSlp(
@@ -99,7 +104,7 @@ export async function loadSlp(
      */
     repairPointSpans?: boolean;
     onProgress?: (current: number, total: number, message?: string) => void;
-    format3?: Format3Access;
+    format3?: Format3Option;
   },
 ): Promise<Labels> {
   // A wrong option is the caller's error: refuse it before reading anything.
@@ -186,9 +191,13 @@ export async function loadSlp(
  *   "jpg" ("jpeg" is stored as "jpg"); see `SlpWriteOptions.imageFormat`.
  * @param options.imageQuality - JPEG quality (0-100) or PNG compression level
  *   (0-9), with an explicit `imageFormat`.
- * @param options.unlabeledAs - How to save unlabelled points, which the 2.x
- *   layout cannot store (see `SlpWriteOptions.unlabeledAs`).
+ * @param options.unlabeledAs - How the 2.x layout saves unlabelled points,
+ *   which it cannot store (see `SlpWriteOptions.unlabeledAs`).
+ * @param options.slpVersion - The layout: `"auto"` (default) writes the 2.x
+ *   layout unless the labels need format 3.0, `"v2"` always the 2.x layout,
+ *   `"v3"` always format 3.0 (see `resolveSlpVersion`).
  * @throws {SlpViewOnlyError} For labels loaded with `format3: "view"`.
+ * @throws {TypeError} For an invalid `slpVersion`, before anything is written.
  */
 export async function saveSlp(
   labels: Labels,
@@ -201,6 +210,7 @@ export async function saveSlp(
     imageFormat?: SlpWriteOptions["imageFormat"];
     imageQuality?: number | null;
     unlabeledAs?: UnlabeledAs;
+    slpVersion?: SlpVersion;
   },
 ): Promise<void> {
   await writeSlp(filename, labels, {
@@ -211,10 +221,18 @@ export async function saveSlp(
     imageFormat: options?.imageFormat,
     imageQuality: options?.imageQuality,
     unlabeledAs: options?.unlabeledAs,
+    slpVersion: options?.slpVersion,
   });
 }
 
-export { saveSlpToBytes } from "../codecs/slp/write.js";
+export { saveSlpToBytes, resolveSlpVersion } from "../codecs/slp/write.js";
+export {
+  setV3Defaults,
+  getV3Defaults,
+  V3_DEFAULTS_ENV,
+  type SlpVersion,
+  type SlpLayout,
+} from "../codecs/slp/slp-version.js";
 export { ExportCancelled } from "../codecs/slp/write.js";
 export type { EmbedOption, SlpWriteOptions } from "../codecs/slp/write.js";
 export {
@@ -274,6 +292,8 @@ export {
   buildExpectedSidecars,
   checkInPlaceWritable,
   onDiskTableFromMeta,
+  onDiskColumnTableFromMeta,
+  onDiskTablesFromFile,
   writeLabelTablesInPlace,
 } from "../codecs/slp/write.js";
 export type {
@@ -448,7 +468,7 @@ export async function loadSlpSet(
   options?: {
     openVideos?: boolean;
     h5?: OpenH5Options;
-    format3?: Format3Access;
+    format3?: Format3Option;
   },
 ): Promise<LabelsSet> {
   const set = new LabelsSet();
@@ -479,12 +499,17 @@ export async function loadSlpSet(
  * Each key in the set is used as the output filename, so keys should be
  * valid file paths.
  *
+ * The files share one layout, decided once before any is written: with
+ * `slpVersion: "auto"` (the default), format 3.0 if any of them needs it, with
+ * one warning (see `resolveSlpVersion`).
+ *
  * @param labelsSet - LabelsSet to save
  * @param options - Save options (forwarded to saveSlp)
  * @throws {SlpViewOnlyError} If any of the labels were loaded with
  *   `format3: "view"`; checked before any file is written.
  * @throws Error If `imageFormat` / `imageQuality` are invalid; checked before
  *   any file is written.
+ * @throws {TypeError} For an invalid `slpVersion`, before any file is written.
  */
 export async function saveSlpSet(
   labelsSet: LabelsSet,
@@ -494,18 +519,29 @@ export async function saveSlpSet(
     imageFormat?: SlpWriteOptions["imageFormat"];
     imageQuality?: number | null;
     unlabeledAs?: UnlabeledAs;
+    slpVersion?: SlpVersion;
   },
 ): Promise<void> {
-  // Refuse the whole set before writing any file: bad image options,
-  // view-only labels or records, and unlabelled points the `unlabeledAs`
-  // mode refuses.
+  // Refuse the whole set before writing any file: bad image options, an
+  // invalid `slpVersion`, view-only labels, unlabelled points the
+  // `unlabeledAs` mode refuses (2.x layout), metadata of mixed kinds (3.0).
   checkEmbedImageFormat(options?.imageFormat, options?.imageQuality);
-  for (const [, labels] of labelsSet) {
-    checkSlpSavable(labels, { unlabeledAs: options?.unlabeledAs });
+  const version = checkSlpVersion(options?.slpVersion);
+  const all = [...labelsSet].map(([, labels]) => labels);
+  // Refuse view-only labels first, then decide one layout for every file.
+  for (const labels of all) refuseViewOnlyLabels(labels);
+  const layout = resolveSlpVersion(all, version);
+  for (const labels of all) {
+    checkSlpSavable(labels, {
+      unlabeledAs: options?.unlabeledAs,
+      slpVersion: layout,
+    });
   }
   const promises: Promise<void>[] = [];
   for (const [filename, labels] of labelsSet) {
-    promises.push(saveSlp(labels, filename, options));
+    promises.push(
+      saveSlp(labels, filename, { ...options, slpVersion: layout }),
+    );
   }
   await Promise.all(promises);
 }

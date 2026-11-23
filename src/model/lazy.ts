@@ -1,7 +1,7 @@
 import { LabeledFrame } from "./labeled-frame.js";
-import { Instance, PredictedInstance, Track } from "./instance.js";
-import { Skeleton } from "./skeleton.js";
-import { Video } from "./video.js";
+import { Instance, PredictedInstance, type Track } from "./instance.js";
+import type { Skeleton } from "./skeleton.js";
+import type { Video } from "./video.js";
 import { buildVideoIdMap } from "./video-id-map.js";
 import type { Centroid } from "./centroid.js";
 import type { BoundingBox } from "./bbox.js";
@@ -13,7 +13,9 @@ import type { Embedding } from "./embedding.js";
 import { type MetadataColumns, metadataRecord } from "./record-metadata.js";
 import type { SlpSourceFormat } from "../codecs/slp/format3.js";
 import { skipsInstanceRow } from "../codecs/slp/columnar.js";
+import type { CarriedColumn, ColumnCarry } from "../codecs/slp/column-carry.js";
 import { markSource } from "./source-mark.js";
+import { markNanTrackingScore } from "./stored-nan.js";
 
 /**
  * Raw data store holding HDF5 dataset arrays for lazy materialization.
@@ -43,6 +45,25 @@ export class LazyDataStore {
    * view-only file.
    */
   sourceFormat: SlpSourceFormat | null;
+
+  /**
+   * Unknown columns of the format 3.0 pose tables, by table and column, one
+   * value per raw row. A lazy format 3.0 save writes them back with the raw
+   * rows (see `codecs/slp/column-carry.ts`). Read-only after loading.
+   */
+  unknownColumns: Partial<
+    Record<
+      "frames" | "instances" | "points" | "pred_points",
+      Record<string, CarriedColumn>
+    >
+  > | null = null;
+
+  /**
+   * Unknown columns of the other format 3.0 tables (ROIs, masks, label
+   * images, links, session tables), written back while the store's
+   * annotations are the ones loaded. Read-only after loading.
+   */
+  annotationCarry: ColumnCarry | null = null;
 
   /**
    * The `/instances` row of each instance this store has materialized, so
@@ -185,6 +206,9 @@ export class LazyDataStore {
     });
 
     newStore.sourceSessionCount = this.sourceSessionCount;
+    newStore.unknownColumns = this.unknownColumns;
+    newStore.annotationCarry = this.annotationCarry;
+
     // Copy per-frame annotation dicts
     newStore._centroidByFrame = copyAnnMap(this._centroidByFrame);
     newStore._bboxByFrame = copyAnnMap(this._bboxByFrame);
@@ -337,6 +361,9 @@ export class LazyDataStore {
 
       instanceById.set(instIdx, instance);
       this._instanceRow.set(instance, instIdx);
+      if (Number.isNaN(rawTrackingScore) && this.formatId < 3) {
+        markNanTrackingScore(instance);
+      }
       instances.push(instance);
     }
 

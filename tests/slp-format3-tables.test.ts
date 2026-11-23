@@ -112,7 +112,7 @@ const VIEW = { openVideos: false, format3: "view" } as const;
 /** Load a fixture (or a file) through the streaming reader stand-in. */
 async function readStreaming(
   name: string,
-  options: { lazy?: boolean; format3?: "view" | "edit" } = {},
+  options: { lazy?: boolean; format3?: "view" | "edit" | "keep" } = {},
 ): Promise<Labels> {
   let compound: Record<string, unknown> = {};
   // The stand-in has no fast path for 2.x compound pose tables; hand them over.
@@ -612,7 +612,19 @@ describe("what the streaming reader does not read", () => {
     try {
       let error: unknown;
       try {
-        await readFromStreamingFile(file, `https://example.com/${V3}`);
+        await readFromStreamingFile(
+          file,
+          `https://example.com/${V3}`,
+          undefined,
+          false,
+          undefined,
+          false,
+          false,
+          false,
+          false,
+          false,
+          "ask",
+        );
       } catch (e) {
         error = e;
       }
@@ -904,6 +916,41 @@ describe("the store-merging writers and stores from 3.0 files", () => {
     expect((error as Error).message).toContain("of its instances");
   });
 
+  it("in format 3.0, write the links and embeddings instead of refusing them", async () => {
+    // A store kept in format 3.0 (the default) is merged in format 3.0, which
+    // writes the links of its instances and annotations; identities and
+    // sessions come from the header.
+    const labels = await readSlpLazy(slpPath(V3), {
+      openVideos: false,
+      format3: "keep",
+    });
+    const store = labels._lazyDataStore!;
+    const bytes = await saveSlpMergedFromStores([store], {
+      identities: labels.identities,
+      sessions: labels.sessions,
+    });
+    const back = await readSlp(tempFile(bytes), { openVideos: false });
+    const linked = (l: Labels) =>
+      describe3(l).frames.map((f) => [
+        f.instances.map((i) => i.slice(0, 2)),
+        f.centroids.map((c) => c[2]),
+        f.bboxes.map((b) => b[3]),
+      ]);
+    expect(describe3(back).instances).toEqual(
+      describe3(await readSlp(slpPath(V3), EDIT)).instances,
+    );
+    expect(linked(back)).toEqual(linked(await readSlp(slpPath(V3), EDIT)));
+    // Without the identities in the header, they are still refused.
+    let error: unknown;
+    try {
+      await saveSlpMergedFromStores([store]);
+    } catch (e) {
+      error = e;
+    }
+    expect((error as Error).message).toContain("its identities");
+    expect((error as Error).message).not.toContain("of its instances");
+  });
+
   it("write stores of 3.0 files without such content, and of 2.x files, as before", async () => {
     const pose = (await lazyEdit("format3_pose.slp")).store;
     const bytes = await saveSlpMergedFromStores([pose]);
@@ -1096,7 +1143,10 @@ describe("unknown columns of the format 3.0 tables", () => {
         "readSlp (the choice error)",
         async () => {
           try {
-            await readSlp(slpPath(UNKNOWN), { openVideos: false });
+            await readSlp(slpPath(UNKNOWN), {
+              openVideos: false,
+              format3: "ask",
+            });
           } catch (e) {
             if (e instanceof SlpFormat3ChoiceError) return e.summary;
             throw e;
@@ -1134,7 +1184,7 @@ describe("unknown columns of the format 3.0 tables", () => {
   it("the choice error names them as what an edit drops", async () => {
     let error: unknown;
     try {
-      await readSlp(slpPath(UNKNOWN), { openVideos: false });
+      await readSlp(slpPath(UNKNOWN), { openVideos: false, format3: "ask" });
     } catch (e) {
       error = e;
     }
@@ -2249,3 +2299,293 @@ print(json.dumps({
     );
   }
 });
+
+// ---- Format 3.0 saves --------------------------------------------------------
+
+/**
+ * Loaded to be kept in format 3.0. These fixtures hold category metadata,
+ * which this version does not read, so they ask without the option.
+ */
+const KEEP = { openVideos: false, format3: "keep" } as const;
+
+/** Format 3.0 saves of a fixture loaded without a choice (kept in 3.0). */
+const V3_SAVES: Array<[string, (name: string) => Promise<Uint8Array>]> = [
+  [
+    "an eager save",
+    async (n) => saveSlpToBytes(await readSlp(slpPath(n), KEEP)),
+  ],
+  [
+    "a lazy save",
+    async (n) => saveSlpToBytes(await readSlpLazy(slpPath(n), KEEP)),
+  ],
+  [
+    'a slpVersion: "v3" save of edit-loaded labels',
+    async (n) =>
+      saveSlpToBytes(await readSlp(slpPath(n), EDIT), { slpVersion: "v3" }),
+  ],
+];
+
+/** Every reader, on a saved file. */
+const FILE_READERS: Array<[string, (file: string) => Promise<Labels>]> = [
+  ["readSlp", (f) => readSlp(f, KEEP)],
+  [
+    "readSlpLazy",
+    async (f) => {
+      const labels = await readSlpLazy(f, KEEP);
+      labels.materialize();
+      return labels;
+    },
+  ],
+  ["readFromStreamingFile", (f) => readStreaming(f, { format3: "keep" })],
+  [
+    "readFromStreamingFile (lazy)",
+    (f) => readStreaming(f, { lazy: true, format3: "keep" }),
+  ],
+];
+
+/** The datasets under `/rois`, `/masks`, ... named `extra`, and their values. */
+async function extraColumns(file: string): Promise<Record<string, number[]>> {
+  await ready;
+  const h5 = new H5File(file, "r");
+  const out: Record<string, number[]> = {};
+  try {
+    const walk = (p: string) => {
+      const node = h5.get(p) as any;
+      if (!node) return;
+      if (node.type === "Group") {
+        for (const k of node.keys() as string[]) walk(p ? `${p}/${k}` : k);
+      } else if (p.endsWith("/extra")) {
+        out[p] = Array.from(node.value as ArrayLike<unknown>, Number);
+      }
+    };
+    for (const k of h5.keys() as string[]) walk(k);
+  } finally {
+    h5.close();
+  }
+  return out;
+}
+
+/** A links table's `extra` column by `owner_type:owner_id:catalog index`. */
+async function linkExtras(
+  file: string,
+  column: string,
+): Promise<Record<string, number>> {
+  await ready;
+  const h5 = new H5File(file, "r");
+  try {
+    const table = column.slice(0, -"/extra".length);
+    const index = table.startsWith("identity")
+      ? "identity_idx"
+      : "category_idx";
+    const col = (n: string) =>
+      Array.from((h5.get(`${table}/${n}`) as any).value, Number);
+    const [type, owner, idx, extra] = [
+      col("owner_type"),
+      col("owner_id"),
+      col(index),
+      col("extra"),
+    ];
+    return Object.fromEntries(
+      type.map((t, i) => [`${t}:${owner[i]}:${idx[i]}`, extra[i]]),
+    );
+  } finally {
+    h5.close();
+  }
+}
+
+/** The `format_id` of a file and whether `/points` is a group. */
+async function layoutOf(file: string): Promise<[number, boolean]> {
+  await ready;
+  const h5 = new H5File(file, "r");
+  try {
+    const attrs = (h5.get("metadata") as any).attrs;
+    return [
+      Number(attrs.format_id.value),
+      (h5.get("points") as any).type === "Group",
+    ];
+  } finally {
+    h5.close();
+  }
+}
+
+describe("format 3.0 saves of the tables", () => {
+  for (const [what, save] of V3_SAVES) {
+    for (const name of [V3, BLOB, UNKNOWN, DEFAULTS]) {
+      it(`${what} of ${name} writes format 3.0 that every reader reads back`, async () => {
+        const file = tempFile(await save(name));
+        expect(await layoutOf(file)).toEqual([3, true]);
+        // As each reader reads the fixture itself (the streaming reader reads
+        // no ROIs, masks or label images).
+        for (const [label, read] of FILE_READERS) {
+          expect([label, describe3(await read(file))]).toEqual([
+            label,
+            describe3(await read(slpPath(name))),
+          ]);
+        }
+        // Saving the read-back labels again keeps format 3.0.
+        const again = tempFile(await saveSlpToBytes(await readSlp(file, KEEP)));
+        expect(await layoutOf(again)).toEqual([3, true]);
+      });
+    }
+  }
+
+  it("writes no compound dataset", async () => {
+    const file = tempFile(
+      await saveSlpToBytes(await readSlp(slpPath(V3), KEEP)),
+    );
+    await ready;
+    const h5 = new H5File(file, "r");
+    const compound: string[] = [];
+    try {
+      const walk = (p: string) => {
+        const node = h5.get(p) as any;
+        if (node?.type === "Group") {
+          for (const k of node.keys() as string[]) walk(p ? `${p}/${k}` : k);
+        } else if (node?.metadata?.compound_type) {
+          compound.push(p);
+        }
+      };
+      for (const k of h5.keys() as string[]) walk(k);
+    } finally {
+      h5.close();
+    }
+    expect(compound).toEqual([]);
+  });
+
+  for (const [what, load] of [
+    ["eager", (n: string) => readSlp(slpPath(n), KEEP)],
+    ["lazy", (n: string) => readSlpLazy(slpPath(n), KEEP)],
+  ] as const) {
+    it(`keeps the unknown columns of every table (${what})`, async () => {
+      const warns: string[] = [];
+      const original = console.warn;
+      console.warn = (m: unknown) => warns.push(String(m));
+      try {
+        const file = tempFile(await saveSlpToBytes(await load(UNKNOWN)));
+        expect(warns).toEqual([]);
+        const kept = await extraColumns(file);
+        const original = await extraColumns(slpPath(UNKNOWN));
+        expect(Object.keys(kept).sort()).toEqual(Object.keys(original).sort());
+        expect(Object.keys(kept).length).toBe(11);
+        for (const [column, values] of Object.entries(original)) {
+          if (column.endsWith("links/extra")) {
+            // Link rows follow their (owner type, owner id, catalog index),
+            // which the writer may order differently.
+            expect(await linkExtras(file, column)).toEqual(
+              await linkExtras(slpPath(UNKNOWN), column),
+            );
+          } else {
+            expect([column, kept[column]]).toEqual([column, values]);
+          }
+        }
+      } finally {
+        console.warn = original;
+      }
+    });
+  }
+
+  it("drops unknown columns with a warning once their records change", async () => {
+    const labels = await readSlp(slpPath(UNKNOWN), KEEP);
+    const frame = labels.labeledFrames.find((f) => f.rois.length > 0)!;
+    frame.rois.reverse();
+    if (frame.rois.length < 2) frame.rois.pop();
+    const warns: string[] = [];
+    const original = console.warn;
+    console.warn = (m: unknown) => warns.push(String(m));
+    try {
+      const file = tempFile(await saveSlpToBytes(labels));
+      expect(Object.keys(await extraColumns(file))).not.toContain("rois/extra");
+      expect(warns.some((w) => w.includes("/rois were not saved"))).toBe(true);
+    } finally {
+      console.warn = original;
+    }
+  });
+
+  it('slpVersion: "v2" writes the 2.x layout and drops the unknown columns with a warning', async () => {
+    const labels = await readSlp(slpPath(UNKNOWN), KEEP);
+    const warns: string[] = [];
+    const original = console.warn;
+    console.warn = (m: unknown) => warns.push(String(m));
+    try {
+      const file = tempFile(await saveSlpToBytes(labels, { slpVersion: "v2" }));
+      const [formatId, columnar] = await layoutOf(file);
+      expect(formatId).toBeLessThan(3);
+      expect(columnar).toBe(false);
+      expect(await extraColumns(file)).toEqual({});
+      expect(warns.filter((w) => w.includes("cannot store them")).length).toBe(
+        11,
+      );
+    } finally {
+      console.warn = original;
+    }
+  });
+});
+
+describe("a format 3.0 save of the tables reads back in Python", () => {
+  for (const python of pythons()) {
+    for (const [what, save] of V3_SAVES) {
+      for (const name of [V3, UNKNOWN, BLOB]) {
+        it.skipIf(SKIP_PYTHON)(
+          `${what} of ${name}, with ${python.label}`,
+          async () => {
+            const file = tempFile(await save(name));
+            const version = pythonVersion(python);
+            if (!version.startsWith("0.10")) {
+              // Older sleap-io refuses format 3.0, saying so.
+              const error = pythonError(python, file);
+              console.log(
+                `${what} of ${name} refused by sleap-io ${version} (${python.label})`,
+              );
+              expect(error).toMatch(/format|3\.0/i);
+              return;
+            }
+            const saved = describeInPython(python, file);
+            console.log(
+              `${what} of ${name} read back with sleap-io ${saved.version} (${python.label})`,
+            );
+            expect(saved.format_id).toBe(3);
+            const { format_id: _a, ...rest } = saved;
+            const { format_id: _b, ...fixture } = describeInPython(
+              python,
+              slpPath(name),
+            );
+            expect(rest).toEqual(fixture);
+          },
+        );
+      }
+    }
+  }
+});
+
+/** The sleap-io version a Python runs. */
+function pythonVersion(python: { cmd: string; args: string[] }): string {
+  return execFileSync(
+    python.cmd,
+    [...python.args, "-c", "import sleap_io; print(sleap_io.__version__)"],
+    {
+      timeout: 120_000,
+      stdio: ["ignore", "pipe", "pipe"],
+    },
+  )
+    .toString()
+    .trim()
+    .split("\n")
+    .pop()!;
+}
+
+/** The error a Python's `load_slp` raises for `file`, or "" when it loads. */
+function pythonError(
+  python: { cmd: string; args: string[] },
+  file: string,
+): string {
+  const script =
+    "import sys, sleap_io as sio\n" +
+    "try:\n    sio.load_slp(sys.argv[1])\n    print('')\n" +
+    "except Exception as e:\n    print(repr(e))";
+  return execFileSync(python.cmd, [...python.args, "-c", script, file], {
+    timeout: 120_000,
+    stdio: ["ignore", "pipe", "pipe"],
+  })
+    .toString()
+    .trim();
+}

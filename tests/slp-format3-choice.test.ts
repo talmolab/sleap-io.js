@@ -44,6 +44,7 @@ import {
 } from "../src/codecs/slp/format-check.js";
 import {
   type Format3Access,
+  type Format3Option,
   type Format3Summary,
   SlpFormat3ChoiceError,
   SlpViewOnlyError,
@@ -105,7 +106,7 @@ const V2 = "format3_pose.v2.slp";
 /** Load a fixture through the streaming reader (see slp-format3-files.ts). */
 async function readStreaming(
   name: string,
-  format3?: Format3Access,
+  format3?: Format3Option,
   lazy = false,
 ): Promise<Labels> {
   const { file, close } = await streamingFile(name);
@@ -130,7 +131,7 @@ async function readStreaming(
   }
 }
 
-type Reader = (name: string, format3?: Format3Access) => Promise<Labels>;
+type Reader = (name: string, format3?: Format3Option) => Promise<Labels>;
 
 /** Every reader that returns labels, as calls that load the named fixture. */
 const READERS: Array<[string, Reader]> = [
@@ -188,7 +189,12 @@ const META_SUMMARY: Format3Summary = {
     "points/extra",
     "pred_points/extra",
   ],
-  unreadTables: [],
+  // Members of metadata/ the readers ignore: a save does not write them.
+  unreadTables: [
+    "frames/metadata/no_values",
+    "instances/metadata/loose",
+    "instances/metadata/two_d",
+  ],
   lossless: false,
 };
 
@@ -200,7 +206,9 @@ describe("what a 3.0 file holds that this version does not read", () => {
 
   for (const [label, load] of READERS) {
     it(`is in the summary of ${label}`, async () => {
-      const error = (await caught(() => load(EVENTS))) as SlpFormat3ChoiceError;
+      const error = (await caught(() =>
+        load(EVENTS, "ask"),
+      )) as SlpFormat3ChoiceError;
       expect(error).toBeInstanceOf(SlpFormat3ChoiceError);
       expect(error.summary.unreadTables).toEqual(UNREAD);
       expect(error.summary.lossless).toBe(false);
@@ -241,7 +249,7 @@ describe("what a 3.0 file holds that this version does not read", () => {
   });
 
   it("files without such members have none", async () => {
-    for (const name of [POSE, META, "format3_embedded.pkg.slp"]) {
+    for (const name of [POSE, "format3_embedded.pkg.slp"]) {
       const labels = await readSlp(slpPath(name), {
         openVideos: false,
         format3: "view",
@@ -254,22 +262,27 @@ describe("what a 3.0 file holds that this version does not read", () => {
   });
 });
 
-describe("a 3.0 file asks for the choice at open time", () => {
+describe("a 3.0 file opened to ask throws the choice error", () => {
   for (const [label, load] of READERS) {
     it(`${label} throws SlpFormat3ChoiceError for a lossless file`, async () => {
-      const error = (await caught(() => load(POSE))) as SlpFormat3ChoiceError;
+      const error = (await caught(() =>
+        load(POSE, "ask"),
+      )) as SlpFormat3ChoiceError;
       expect(error).toBeInstanceOf(SlpFormat3ChoiceError);
       expect(error).toBeInstanceOf(SlpFormatError);
       expect(error.formatId).toBe(3);
       expect(error.summary).toEqual(POSE_SUMMARY);
       expect(error.message).toContain("SLP format 3.0");
-      expect(error.message).toContain("nothing in it would be dropped");
+      expect(error.message).toContain("would drop nothing");
+      expect(error.message).toContain('format3: "keep"');
       expect(error.message).toContain('format3: "view"');
       expect(error.message).toContain('format3: "edit"');
     });
 
     it(`${label} names what an edit would drop`, async () => {
-      const error = (await caught(() => load(META))) as SlpFormat3ChoiceError;
+      const error = (await caught(() =>
+        load(META, "ask"),
+      )) as SlpFormat3ChoiceError;
       expect(error).toBeInstanceOf(SlpFormat3ChoiceError);
       expect(error.summary).toEqual(META_SUMMARY);
       expect(error.message).toContain("2 unlabelled point(s)");
@@ -286,6 +299,15 @@ describe("a 3.0 file asks for the choice at open time", () => {
       for (const labels of [plain, edit, view]) {
         expect(labels.sourceFormat).toBeNull();
         expect(labels.labeledFrames.length).toBe(4);
+      }
+    });
+
+    it(`${label} loads a 3.0 file without the option to keep format 3.0`, async () => {
+      for (const labels of [await load(POSE), await load(META, "keep")]) {
+        expect(labels.sourceFormat?.access).toBe("keep");
+        expect(labels.sourceFormat?.formatId).toBe(3);
+        expect(labels.labeledFrames.length).toBe(4);
+        expect(sourceMarkOf(labels.labeledFrames[0])?.access).toBe("keep");
       }
     });
 
@@ -308,7 +330,9 @@ describe("a 3.0 file asks for the choice at open time", () => {
       }),
     );
     expect(error).toBeInstanceOf(TypeError);
-    expect((error as Error).message).toContain('"view" or "edit"');
+    expect((error as Error).message).toContain(
+      '"keep", "view", "edit" or "ask"',
+    );
     // loadSlp refuses it before reading anything (even a missing file).
     const early = await caught(() =>
       loadSlp("/no/such/file.slp", { format3: "write" as Format3Access }),
@@ -625,10 +649,15 @@ describe("the open-time choice travels with the records", () => {
     const target = await readSlp(slpPath(V2), { openVideos: false });
     await target.merge(await load("edit"));
     expect(target.sourceFormat).toBeNull();
-    const back = await readSlp(await saveSlpToBytes(target), {
-      openVideos: false,
-      h5: { filenameHint: "merged.slp" },
-    });
+    // The 2.x layout, asked for ("auto" would keep the frames' metadata in
+    // format 3.0, see slp-version.test.ts).
+    const back = await readSlp(
+      await saveSlpToBytes(target, { slpVersion: "v2" }),
+      {
+        openVideos: false,
+        h5: { filenameHint: "merged.slp" },
+      },
+    );
     const user = back.labeledFrames[0].instances.find(
       (i) => !(i instanceof PredictedInstance) && i.points[2].xy[0] !== 50,
     );
@@ -670,10 +699,14 @@ describe("the open-time choice travels with the records", () => {
     inst.points[1].labeled = false;
     inst.metadata.own = "yes";
     labels.labeledFrames[1].instances.push(inst);
-    const error = (await caught(() => saveSlpToBytes(labels))) as Error;
+    // The 2.x layout, asked for: the "auto" rule would write format 3.0 for
+    // the in-memory content (see slp-version.test.ts).
+    const error = (await caught(() =>
+      saveSlpToBytes(labels, { slpVersion: "v2" }),
+    )) as Error;
     // Only the in-memory point counts; the edit-loaded one is the caller's.
     expect(error.message).toContain("1 point(s) are unlabelled");
-    await saveSlpToBytes(labels, { unlabeledAs: "absent" });
+    await saveSlpToBytes(labels, { unlabeledAs: "absent", slpVersion: "v2" });
     const messages = warn.mock.calls.map((c) => String(c[0]));
     expect(messages.some((m) => m.includes("1 unlabelled point(s)"))).toBe(
       true,
@@ -784,7 +817,7 @@ describe("marks follow content, and can be carried or switched", () => {
       frame: "keep_original",
     });
     expect(sourceMarkOf(frame)).toBeUndefined();
-    await saveSlpToBytes(labels);
+    await saveSlpToBytes(labels, { slpVersion: "v2" });
     const dropped = warn.mock.calls
       .map((c) => String(c[0]))
       .filter((m) => m.includes("metadata"));
@@ -1136,7 +1169,9 @@ describe("columns and tables a newer writer may add", () => {
       h5.close();
     }
     for (const [label, read] of READERS) {
-      const error = (await caught(() => read(file))) as SlpFormat3ChoiceError;
+      const error = (await caught(() =>
+        read(file, "ask"),
+      )) as SlpFormat3ChoiceError;
       expect([label, error.summary?.unknownColumns]).toEqual([
         label,
         ["points/cov"],
@@ -1167,6 +1202,8 @@ describe("columns and tables a newer writer may add", () => {
           false,
           false,
           true, // userInstancesOnly: /pred_points is not read
+          false,
+          "ask",
         ),
       )) as SlpFormat3ChoiceError;
       expect(error.summary).toEqual(META_SUMMARY);
@@ -1531,14 +1568,16 @@ describe("labels built in memory with 3.0-only content", () => {
     return new Labels({ labeledFrames: [frame], videos: [video] });
   };
 
-  it("unlabelled points are refused by default, before anything is written", async () => {
+  it('slpVersion: "v2" refuses unlabelled points, before anything is written', async () => {
     const labels = make();
-    const error = (await caught(() => saveSlpToBytes(labels))) as Error;
+    const error = (await caught(() =>
+      saveSlpToBytes(labels, { slpVersion: "v2" }),
+    )) as Error;
     expect(error.message).toContain("1 point(s) are unlabelled");
     expect(error.message).toContain('unlabeledAs: "absent"');
-    expect(await caught(() => buildLabelTableUpdate(labels))).toBeInstanceOf(
-      Error,
-    );
+    expect(
+      await caught(() => buildLabelTableUpdate(labels, { slpVersion: "v2" })),
+    ).toBeInstanceOf(Error);
     const writer = await openSlpWriter(labels);
     expect(
       await caught(() => writer.appendFrames(labels.labeledFrames)),
@@ -1556,7 +1595,10 @@ describe("labels built in memory with 3.0-only content", () => {
   });
 
   it('unlabeledAs: "absent" writes them as hidden with no location, with warnings', async () => {
-    const bytes = await saveSlpToBytes(make(), { unlabeledAs: "absent" });
+    const bytes = await saveSlpToBytes(make(), {
+      unlabeledAs: "absent",
+      slpVersion: "v2",
+    });
     const back = await readSlp(bytes, {
       openVideos: false,
       h5: { filenameHint: "memory.slp" },
@@ -1578,7 +1620,7 @@ describe("labels built in memory with 3.0-only content", () => {
     expect(dropped[0]).toContain("bboxes: k");
   });
 
-  it("saveSlpSet refuses unlabelled points before writing any file", async () => {
+  it('saveSlpSet with slpVersion: "v2" refuses unlabelled points before writing any file', async () => {
     const dir = mkdtempSync(path.join(tmpdir(), "sleap-io-js-format3-"));
     const set = new LabelsSet();
     set.set(
@@ -1586,7 +1628,9 @@ describe("labels built in memory with 3.0-only content", () => {
       await readSlp(slpPath(V2), { openVideos: false }),
     );
     set.set(path.join(dir, "second.slp"), make());
-    const error = (await caught(() => saveSlpSet(set))) as Error;
+    const error = (await caught(() =>
+      saveSlpSet(set, { slpVersion: "v2" }),
+    )) as Error;
     expect(error.message).toContain("1 point(s) are unlabelled");
     expect(existsSync(path.join(dir, "first.slp"))).toBe(false);
     expect(existsSync(path.join(dir, "second.slp"))).toBe(false);

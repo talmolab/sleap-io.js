@@ -1,23 +1,26 @@
 /**
- * Opening SLP format 3.0 files when only the 2.x layout can be written.
+ * Opening SLP format 3.0 files: what the caller wants a save to do with them.
  *
  * Format 3.0 (Python sleap-io 0.10) can store what the 2.x layout cannot:
  * points marked as not labelled, metadata on instances, frames and bounding
- * boxes, and columns added by newer writers. This version of sleap-io.js reads
- * 3.0 but writes only the 2.x layout, so saving a loaded 3.0 file rewrites it
- * in another layout and may drop those fields. That never happens silently:
- * every reader asks the caller to choose at open time, with the `format3`
- * option.
+ * boxes, and columns added by newer writers. sleap-io.js reads and writes both
+ * layouts, and a save writes the 2.x layout unless the labels need format 3.0
+ * (see `slpVersion` on the writers). Every reader takes a `format3` option
+ * that says what a later save may do with a 3.0 file:
  *
+ * - `format3: "keep"`, or no option: load it editable; a save keeps format
+ *   3.0 (the labels and their records are marked `access: "keep"`). Without
+ *   the option, a file holding what this version does not read (its
+ *   summary's `unreadTables`) throws as `"ask"` does, since any save would
+ *   drop that.
  * - `format3: "view"` loads everything and marks the labels view-only; every
  *   writer refuses them with {@link SlpViewOnlyError}.
  * - `format3: "edit"` loads the same and lets writers save the 2.x layout,
  *   dropping what it cannot store: unlabelled points become hidden points with
  *   no location, and metadata and unknown columns are not written.
- *
- * Without the option, a 3.0 file throws {@link SlpFormat3ChoiceError}, whose
- * `summary` says what an edit would drop. The lite reader's `loadSlpMetadata`
- * returns the same summary, so an application can ask before a full read.
+ * - `format3: "ask"` throws {@link SlpFormat3ChoiceError}, whose `summary` says
+ *   what an edit would drop, for applications that ask the user first. The
+ *   lite reader's `loadSlpMetadata` returns the same summary without throwing.
  *
  * This module has no HDF5 dependency.
  */
@@ -31,14 +34,25 @@ import {
 } from "../../model/record-metadata.js";
 import { SlpFormatError, SlpTableError } from "./format-check.js";
 
-/** What a caller chooses to do with a format 3.0 file (see the module docs). */
-export type Format3Access = "view" | "edit";
+/**
+ * What a caller chose to do with a format 3.0 file (see the module docs), as
+ * the labels and their records carry it: `"keep"` (saves keep format 3.0),
+ * `"view"` (never saved) or `"edit"` (saved in the 2.x layout).
+ */
+export type Format3Access = "view" | "edit" | "keep";
+
+/**
+ * The `format3` option of every reader: a {@link Format3Access}, or `"ask"` to
+ * throw {@link SlpFormat3ChoiceError} for a 3.0 file. Unset means `"keep"`,
+ * or `"ask"` for a file holding what the reader does not read.
+ */
+export type Format3Option = Format3Access | "ask";
 
 /**
  * Whether a 3.0 file that holds nothing the 2.x layout cannot store still asks
- * for the choice. `true`: it does, because saving it still rewrites it in
- * another layout. Set to `false` to load such files editable without the
- * option.
+ * for the choice when opened with `format3: "ask"`. `true`: it does, since an
+ * application asking wants to know about every 3.0 file. When `false`, such
+ * files load as `"keep"` without asking.
  */
 export const LOSSLESS_FORMAT3_ASKS = true;
 
@@ -77,6 +91,19 @@ export interface SlpSourceFormat {
   summary: Format3Summary;
   /** Path or name of the file, with URL credentials masked. */
   labelsPath: string;
+  /**
+   * The kind of each metadata key read, per table, so a save writes it back
+   * as the kind it was read (a float key whose values are whole numbers stays
+   * float). Absent for files without metadata.
+   */
+  metadataKinds?: MetadataKindsByTable;
+}
+
+/** The kind of each metadata key, per table. */
+export interface MetadataKindsByTable {
+  instances: Record<string, MetadataKind>;
+  frames: Record<string, MetadataKind>;
+  bboxes: Record<string, MetadataKind>;
 }
 
 /** `3` → `"3.0"`, so messages name formats the usual way. */
@@ -117,9 +144,9 @@ export function describeDrops(summary: Format3Summary): string[] {
 }
 
 /**
- * Thrown by every reader for a file in SLP format 3.0 when the caller did not
- * pass `format3: "view"` or `format3: "edit"`. `summary` says what the file
- * holds that the 2.x layout (the only one this version writes) cannot store.
+ * Thrown by every reader for a file in SLP format 3.0 opened with
+ * `format3: "ask"`. `summary` says what the file holds that the 2.x layout
+ * cannot store, so what a save with `format3: "edit"` would drop.
  */
 export class SlpFormat3ChoiceError extends SlpFormatError {
   readonly summary: Format3Summary;
@@ -127,16 +154,22 @@ export class SlpFormat3ChoiceError extends SlpFormatError {
   constructor(labelsPath: string, summary: Format3Summary) {
     const path = safePath(labelsPath);
     const drops = describeDrops(summary);
+    const unread = summary.unreadTables;
     super({
       message:
         `The SLEAP labels file '${path}' is in SLP format ` +
-        `${formatLabel(summary.formatId)}. This version of sleap-io.js saves ` +
-        "only the 2.x layout, so saving it would rewrite it in that layout" +
-        (drops.length > 0
-          ? ` and drop ${drops.join("; ")}.`
-          : "; nothing in it would be dropped.") +
-        ' Open it with the option format3: "view" to load it read-only, or ' +
-        'format3: "edit" to allow saving in the 2.x layout.',
+        `${formatLabel(summary.formatId)}, which SLEAP and sleap-io < 0.10 ` +
+        "cannot open." +
+        (unread.length > 0
+          ? ` It holds what this version does not read (${unread.join(", ")}), ` +
+            "which a save in either layout would drop, so it is not opened " +
+            "without the format3 option."
+          : "") +
+        " Saving it in the 2.x layout would " +
+        (drops.length > 0 ? `drop ${drops.join("; ")}.` : "drop nothing.") +
+        ' Open it with the option format3: "keep" to save it in format ' +
+        `${formatLabel(summary.formatId)}, format3: "view" to load it ` +
+        'read-only, or format3: "edit" to save it in the 2.x layout.',
       labelsPath: path,
       formatId: summary.formatId,
     });
@@ -153,14 +186,18 @@ export class SlpViewOnlyError extends Error {
   readonly sourceFormat: SlpSourceFormat;
 
   constructor(sourceFormat: SlpSourceFormat) {
-    const drops = describeDrops(sourceFormat.summary);
     super(
       `These labels were loaded from '${sourceFormat.labelsPath}' (SLP format ` +
         `${formatLabel(sourceFormat.formatId)}) for viewing only ` +
-        '(format3: "view"), so they cannot be saved. This version of ' +
-        "sleap-io.js saves only the 2.x layout" +
-        (drops.length > 0 ? `, which would drop ${drops.join("; ")}` : "") +
-        '. Load the file with format3: "edit" to save it in the 2.x layout.',
+        '(format3: "view"), so they cannot be saved. Load the file without ' +
+        'format3 (or with format3: "keep") to save it in format ' +
+        `${formatLabel(sourceFormat.formatId)}, or with format3: "edit" to ` +
+        "save it in the 2.x layout" +
+        (() => {
+          const drops = describeDrops(sourceFormat.summary);
+          return drops.length > 0 ? `, which drops ${drops.join("; ")}` : "";
+        })() +
+        ".",
     );
     this.name = "SlpViewOnlyError";
     this.sourceFormat = sourceFormat;
@@ -331,43 +368,77 @@ export function buildFormat3Summary(options: {
 }
 
 /**
- * Apply the caller's `format3` choice to a 3.0 file, once its summary is known
- * and before frames are built.
+ * Apply the caller's `format3` option to a 3.0 file, once its summary is known
+ * and before frames are built: `"keep"` loads it to be saved in format 3.0,
+ * `"view"` and `"edit"` as chosen, and `"ask"` throws. Unset means `"keep"`
+ * when the reader reads everything in the file, and `"ask"` when the summary
+ * lists what it does not read (`unreadTables`), which any save would drop.
  *
  * @returns The labels' source format, to set on `labels.sourceFormat`.
- * @throws {SlpFormat3ChoiceError} When `choice` is not given (and the file
- *   asks, see {@link LOSSLESS_FORMAT3_ASKS}).
+ * @throws {SlpFormat3ChoiceError} For `"ask"` (unless the file is lossless and
+ *   {@link LOSSLESS_FORMAT3_ASKS} is `false`), and for no option when the
+ *   file holds what the reader does not read.
  */
 export function chooseFormat3Access(
   labelsPath: string,
   summary: Format3Summary,
-  choice: Format3Access | undefined,
+  choice: Format3Option | undefined,
+  metadataKinds?: MetadataKindsByTable,
 ): SlpSourceFormat {
   checkFormat3Option(choice);
-  const access =
-    choice ?? (summary.lossless && !LOSSLESS_FORMAT3_ASKS ? "edit" : undefined);
-  if (access === undefined) {
+  let access: Format3Access;
+  if (choice === undefined && summary.unreadTables.length > 0) {
+    // A save would drop what is not read: the caller chooses.
     throw new SlpFormat3ChoiceError(labelsPath, summary);
+  }
+  if (choice === "ask") {
+    if (!(summary.lossless && !LOSSLESS_FORMAT3_ASKS)) {
+      throw new SlpFormat3ChoiceError(labelsPath, summary);
+    }
+    access = "keep";
+  } else {
+    access = choice ?? "keep";
   }
   // Shared by the labels and every record's mark, so frozen: the choice is
   // changed with setSourceAccess, never by mutating this object.
+  const kinds =
+    metadataKinds &&
+    Object.keys(metadataKinds.instances).length +
+      Object.keys(metadataKinds.frames).length +
+      Object.keys(metadataKinds.bboxes).length >
+      0
+      ? Object.freeze({
+          instances: Object.freeze({ ...metadataKinds.instances }),
+          frames: Object.freeze({ ...metadataKinds.frames }),
+          bboxes: Object.freeze({ ...metadataKinds.bboxes }),
+        })
+      : undefined;
   return Object.freeze({
     formatId: summary.formatId,
     access,
     summary: freezeSummary(summary),
     labelsPath: safePath(labelsPath),
+    ...(kinds ? { metadataKinds: kinds } : {}),
   });
 }
 
 /**
- * Refuse a `format3` option that is neither `"view"` nor `"edit"` (nor unset).
+ * Refuse a `format3` option that is not `"keep"`, `"view"`, `"edit"` or
+ * `"ask"` (nor unset).
  *
  * @throws {TypeError}
  */
 export function checkFormat3Option(choice: unknown): void {
-  if (choice !== undefined && choice !== "view" && choice !== "edit") {
+  if (
+    choice !== undefined &&
+    choice !== "keep" &&
+    choice !== "view" &&
+    choice !== "edit" &&
+    choice !== "ask"
+  ) {
     throw new TypeError(
-      `format3 must be "view" or "edit", got ${JSON.stringify(choice)}.`,
+      'format3 must be "keep", "view", "edit" or "ask", got ' +
+        `${JSON.stringify(choice)}.`,
     );
   }
 }
@@ -381,7 +452,9 @@ export function isFormat3(formatId: number): boolean {
  * The kind of a metadata `values` dataset from its HDF5 type, as h5wasm (and
  * the streaming worker) describe it in `dataset.metadata`, or `null` for a
  * dataset readers ignore (not 1-D, or not bool, integer, float or string).
- * h5py stores bool as an enum of int8 with the members FALSE and TRUE.
+ * h5py stores bool as an enum of int8 with the members FALSE and TRUE; h5wasm
+ * cannot write that type, so this library writes a boolean key as `uint8`
+ * with the attribute `kind` set to `"bool"` (`kindAttr`).
  */
 export function metadataKindFromH5(
   meta:
@@ -392,13 +465,14 @@ export function metadataKindFromH5(
       }
     | null
     | undefined,
+  kindAttr?: unknown,
 ): MetadataKind | null {
   if (!meta || !Array.isArray(meta.shape) || meta.shape.length !== 1) {
     return null;
   }
   switch (meta.type) {
     case 0:
-      return "int";
+      return kindAttrValue(kindAttr) === "bool" ? "bool" : "int";
     case 1:
       return "float";
     case 3:
@@ -414,6 +488,19 @@ export function metadataKindFromH5(
     default:
       return null;
   }
+}
+
+/** The text of a `kind` attribute as h5wasm or the worker hand it over. */
+function kindAttrValue(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  if (typeof value === "string") return value.replace(/\0+$/, "");
+  if (value instanceof Uint8Array) {
+    return new TextDecoder().decode(value).replace(/\0+$/, "");
+  }
+  if (typeof value === "object" && "value" in (value as object)) {
+    return kindAttrValue((value as { value: unknown }).value);
+  }
+  return null;
 }
 
 /**
@@ -463,6 +550,17 @@ export function metadataColumn(
         ? null
         : (present as ArrayLike<unknown>),
   };
+}
+
+/** The kind of each key of `columns`. */
+export function metadataKindsOf(
+  columns: MetadataColumns | null | undefined,
+): Record<string, MetadataKind> {
+  const out: Record<string, MetadataKind> = {};
+  for (const [key, column] of Object.entries(columns ?? {})) {
+    out[key] = column.kind;
+  }
+  return out;
 }
 
 export { metadataKeys };

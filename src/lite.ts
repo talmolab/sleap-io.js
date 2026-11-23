@@ -56,6 +56,13 @@ import {
   unreadMembers,
 } from "./codecs/slp/format3.js";
 import { checkSlpFormat } from "./codecs/slp/format-check.js";
+import {
+  CARRIED_TABLES,
+  type DatasetInfo,
+  METADATA_TABLES,
+  unreadMetadataMembers,
+  unreadTableMembers,
+} from "./codecs/slp/carry-read.js";
 import { streamingUnreadMembers } from "./codecs/slp/streaming-coverage.js";
 import {
   parseJsonAttr,
@@ -98,6 +105,8 @@ export {
 export { SlpTableError } from "./codecs/slp/format-check.js";
 export type {
   Format3Access,
+  Format3Option,
+  MetadataKindsByTable,
   Format3Summary,
   SlpSourceFormat,
 } from "./codecs/slp/format3.js";
@@ -146,10 +155,10 @@ export interface SlpMetadata {
   provenance?: Record<string, unknown>;
 
   /**
-   * For a file in SLP format 3.0: what it holds that the 2.x layout (the only
-   * one this version writes) cannot store. The full readers throw
-   * `SlpFormat3ChoiceError` with this same summary unless given the `format3`
-   * option, so an application can read it here first and ask the user.
+   * For a file in SLP format 3.0: what it holds that the 2.x layout cannot
+   * store. The full readers throw `SlpFormat3ChoiceError` with this same
+   * summary when given `format3: "ask"`, so an application can read it here
+   * first and ask the user.
    * Absent for files before 3.0.
    */
   format3?: Format3Summary;
@@ -293,6 +302,33 @@ function isMetadataDtype(dtype: unknown): boolean {
 }
 
 /**
+ * A jsfive dataset described as the HDF5 readers describe it (see
+ * `DatasetInfo` in carry-read.ts), or `null` for a type this reader cannot
+ * tell.
+ */
+function jsfiveInfo(node: Parameters<typeof isDataset>[0]): DatasetInfo | null {
+  if (!isDataset(node)) return null;
+  const shape = getShape(node);
+  const dtype = (node as { dtype?: unknown }).dtype;
+  if (Array.isArray(dtype)) {
+    return dtype[0] === "VLEN_STRING" ? { type: 3, shape } : null;
+  }
+  if (typeof dtype !== "string") return null;
+  if (/^\|?S\d+$/.test(dtype)) return { type: 3, shape };
+  const m = /^[<>|=]?([biuf])(\d+)$/.exec(dtype);
+  if (!m) return null;
+  const size = Number(m[2]);
+  switch (m[1]) {
+    case "b":
+      return { type: 8, size: 1, shape };
+    case "f":
+      return { type: 1, size, shape };
+    default:
+      return { type: 0, size, signed: m[1] === "i", shape };
+  }
+}
+
+/**
  * The summary of a format 3.0 file (see `Format3Summary`), read with jsfive.
  * Reads only the `labeled` and `visible` columns of the point tables and the
  * names of the tables' members.
@@ -357,6 +393,29 @@ function format3SummaryJsfive(
           ? unknownTableGroups(
               table,
               members(table).filter((n) => isGroup(file.get(`${table}/${n}`))),
+            )
+          : [],
+      ),
+      // What a format 3.0 save would not write back (see carry-read.ts).
+      ...CARRIED_TABLES.flatMap((table) =>
+        isGroupPath(file, table)
+          ? unreadTableMembers(
+              table,
+              members(table).map((name) => {
+                const node = file.get(`${table}/${name}`);
+                return isGroup(node)
+                  ? { name, group: true }
+                  : { name, group: false, info: jsfiveInfo(node) };
+              }),
+            )
+          : [],
+      ),
+      ...METADATA_TABLES.flatMap((table) =>
+        isGroupPath(file, `${table}/${METADATA_SUBGROUP}`)
+          ? unreadMetadataMembers(
+              table,
+              members(`${table}/${METADATA_SUBGROUP}`),
+              keys(table),
             )
           : [],
       ),

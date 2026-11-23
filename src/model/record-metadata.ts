@@ -4,8 +4,8 @@
  *
  * SLP format 3.0 (Python sleap-io 0.10) stores each key as a column of its
  * table (`/instances/metadata/<key>`, `/frames/metadata/<key>`,
- * `/bboxes/metadata/<key>`). The 2.x layout, which is the only one this version
- * of sleap-io.js writes, has no place for it.
+ * `/bboxes/metadata/<key>`). The 2.x layout has no place for it, so a save
+ * with `slpVersion: "auto"` writes format 3.0 when there is any.
  */
 
 /** A metadata value: one of the kinds format 3.0 can store. */

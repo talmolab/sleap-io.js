@@ -394,8 +394,8 @@ export class LabeledFrame {
   rois: ROI[];
   /**
    * Per-frame values (bool, number or string), stored by SLP format 3.0 in
-   * `/frames/metadata`. The 2.x layout this version writes cannot store them,
-   * so a save drops them (see `saveSlpToBytes`).
+   * `/frames/metadata`. The 2.x layout cannot store them, so a save writes
+   * format 3.0 for them (see `slpVersion` on `saveSlpToBytes`).
    */
   metadata: RecordMetadata;
 

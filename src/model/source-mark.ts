@@ -1,8 +1,9 @@
 /**
  * The open-time choice for a format 3.0 file, carried by its records.
  *
- * A file in SLP format 3.0 is opened with `format3: "view"` or `"edit"` (see
- * `codecs/slp/format3.ts`). The choice must hold wherever the file's content
+ * A file in SLP format 3.0 is opened to be kept in format 3.0 (the default,
+ * `"keep"`), viewed (`format3: "view"`) or edited in the 2.x layout
+ * (`"edit"`); see `codecs/slp/format3.ts`. The choice must hold wherever the file's content
  * goes, not only on the `Labels` it was loaded into: frames merged into other
  * labels, frames handed to `new Labels(...)` or to a streaming writer. So the
  * readers mark every labeled frame, instance and annotation they load from a
@@ -21,6 +22,13 @@ import type { SlpSourceFormat } from "../codecs/slp/format3.js";
 import type { Labels } from "./labels.js";
 
 const marks = new WeakMap<object, SlpSourceFormat>();
+
+/** How strict each choice is, for compositions (see {@link markFromSources}). */
+const ACCESS_RANK: Record<SlpSourceFormat["access"], number> = {
+  edit: 0,
+  keep: 1,
+  view: 2,
+};
 
 /** The source format a record was loaded with, if it came from a 3.0 file. */
 export function sourceMarkOf(
@@ -138,7 +146,8 @@ export function keepSourceMark<T>(from: object, out: T): T {
 
 /**
  * Give `target`, built from several records (a composition), the strictest
- * mark among them: view-only if any is, else edit if any is.
+ * mark among them: view-only if any is, else keep (saved in format 3.0) if any
+ * is, else edit.
  */
 export function markFromSources(
   target: object,
@@ -148,7 +157,10 @@ export function markFromSources(
   for (const source of sources) {
     const mark = sourceMarkOf(source);
     if (!mark) continue;
-    if (!strictest || (strictest.access === "edit" && mark.access === "view")) {
+    if (
+      !strictest ||
+      ACCESS_RANK[mark.access] > ACCESS_RANK[strictest.access]
+    ) {
       strictest = mark;
     }
   }
@@ -175,15 +187,15 @@ export function markFromSources(
  *
  * @returns The number of records whose choice changed (`labels.sourceFormat`
  *   and a lazy store not counted).
- * @throws {TypeError} If `access` is not `"view"` or `"edit"`.
+ * @throws {TypeError} If `access` is not `"keep"`, `"view"` or `"edit"`.
  */
 export function setSourceAccess(
   labels: Labels,
   access: SlpSourceFormat["access"],
 ): number {
-  if (access !== "view" && access !== "edit") {
+  if (access !== "keep" && access !== "view" && access !== "edit") {
     throw new TypeError(
-      `access must be "view" or "edit", got ${JSON.stringify(access)}.`,
+      `access must be "keep", "view" or "edit", got ${JSON.stringify(access)}.`,
     );
   }
   // One new frozen source per old one, so records of one file still share it.

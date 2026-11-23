@@ -1131,7 +1131,9 @@ var H5T_FLOAT_CLASS = 1;
 function memberColumnTypedArrayWorker(member, values) {
   var size = member.size == null ? 8 : member.size;
   if (member.type === H5T_ENUM_CLASS) {
-    throw new Error('cannot write enum/bool compound member ' + member.name + ' in place');
+    // h5py's bool (the only enum written): 0 or 1.
+    var flags = values.map(function (v) { return v ? 1 : 0; });
+    return memberColumnTypedArrayWorker({ name: member.name, type: 0, size: size, signed: member.signed }, flags);
   }
   if (member.type === H5T_FLOAT_CLASS) {
     return size === 4 ? Float32Array.from(values) : Float64Array.from(values);
@@ -1144,6 +1146,156 @@ function memberColumnTypedArrayWorker(member, values) {
   if (size === 1) return (signed ? Int8Array : Uint8Array).from(values);
   if (size === 2) return (signed ? Int16Array : Uint16Array).from(values);
   return (signed ? Int32Array : Uint32Array).from(values);
+}
+
+// Worker port of writeWithFileType (write.ts — KEEP IN LOCKSTEP): h5wasm's
+// writer refuses an HDF5 enum (h5py's bool), so for the write the dataset's
+// cached description names each enum as its base integer; the bytes go to the
+// file with the dataset's own type, so they are stored as the enum values.
+function writeWithFileTypeWorker(ds, write) {
+  var md = ds.metadata;
+  var asInt = function (m) {
+    if (m.type !== H5T_ENUM_CLASS) return m;
+    var out = Object.assign({}, m, { type: 0, signed: m.signed !== false });
+    delete out.enum_type;
+    return out;
+  };
+  var members = md && md.compound_type && md.compound_type.members;
+  var enums = members
+    ? members.filter(function (m) { return m.type === H5T_ENUM_CLASS; })
+    : (md && md.type === H5T_ENUM_CLASS ? [md] : []);
+  if (enums.length === 0) { write(); return; }
+  // Only h5py's bool (write.ts isH5pyBool — KEEP IN LOCKSTEP).
+  for (var q = 0; q < enums.length; q++) {
+    if (!isH5pyBoolWorker(enums[q].size, enums[q].enum_type && enums[q].enum_type.members)) {
+      throw new Error('in-place save: ' + ds.path + ' holds an enum other than a boolean, which this writer does not write - re-save the whole file instead');
+    }
+  }
+  ds._metadata = members
+    ? Object.assign({}, md, { compound_type: Object.assign({}, md.compound_type, { members: members.map(asInt) }) })
+    : asInt(md);
+  try { write(); } finally { delete ds._metadata; }
+}
+
+// Worker port of isH5pyBool (write.ts — KEEP IN LOCKSTEP).
+function isH5pyBoolWorker(size, members) {
+  var names = Object.keys(members || {}).sort();
+  return (size == null ? 1 : size) === 1 && names.length === 2 &&
+    names[0] === 'FALSE' && names[1] === 'TRUE' &&
+    Number(members.FALSE) === 0 && Number(members.TRUE) === 1;
+}
+
+// Worker port of forEachSlice (write.ts — KEEP IN LOCKSTEP): read rows
+// [0, n) in bounded slices.
+var VERIFY_CHUNK_ROWS = 65536;
+function forEachSliceWorker(ds, n, visit) {
+  for (var start = 0; start < n; start += VERIFY_CHUNK_ROWS) {
+    var end = Math.min(n, start + VERIFY_CHUNK_ROWS);
+    visit(ds.slice([[start, end]]), start);
+  }
+}
+
+// Worker port of verifyEnumMembers (write.ts — KEEP IN LOCKSTEP): read an
+// enum-holding compound back, a bounded slice at a time, and check each enum
+// member holds what was written.
+function verifyEnumMembersWorker(ds, diskName, members, fields, flat, rowCount, colCount) {
+  var checks = [];
+  for (var k = 0; k < members.length; k++) {
+    if (members[k].type === H5T_ENUM_CLASS) checks.push([k, fields.indexOf(members[k].name)]);
+  }
+  if (checks.length === 0) return;
+  forEachSliceWorker(ds, rowCount, function (rows, start) {
+    for (var r = 0; r < rows.length; r++) {
+      for (var e = 0; e < checks.length; e++) {
+        var mi = checks[e][0], ci = checks[e][1];
+        var got = Number(rows[r] && rows[r][mi]);
+        var want = flat[(start + r) * colCount + ci] ? 1 : 0;
+        if (got !== want) {
+          throw new Error('in-place write of ' + diskName + ' member ' + members[mi].name + ' did not take effect (row ' + (start + r) + ') - re-save the whole file instead');
+        }
+      }
+    }
+  });
+}
+
+// Worker port of writeColumnInPlace (write.ts — KEEP IN LOCKSTEP): write one
+// 1-D numeric column (format 3.0) with its own type, an enum as its base int.
+function writeColumnInPlaceWorker(ds, values) {
+  var md = ds.metadata;
+  var n = values.length;
+  if (n === 0) return;
+  var data = memberColumnTypedArrayWorker({ name: ds.path, type: md.type, size: md.size, signed: md.signed }, Array.from(values, Number));
+  writeWithFileTypeWorker(ds, function () { ds.write_slice([[0, n]], data); });
+  if (md.type === H5T_ENUM_CLASS) {
+    forEachSliceWorker(ds, n, function (rows, start) {
+      for (var i = 0; i < rows.length; i++) {
+        if (Number(rows[i]) !== (values[start + i] ? 1 : 0)) {
+          throw new Error('in-place write of ' + ds.path + ' did not take effect (row ' + (start + i) + ') - re-save the whole file instead');
+        }
+      }
+    });
+  }
+}
+
+// Worker port of writeLabelColumnsInPlace (write.ts — KEEP IN LOCKSTEP): patch
+// the format 3.0 pose tables column by column (values only). Every column and
+// metadata key is checked before anything is written.
+function writeLabelColumnsInPlaceWorker(file, payload) {
+  var node = function (p) { try { return file.get(p) || null; } catch (e) { return null; } };
+  var fail = function (why) { throw new Error('in-place save: ' + why + ' - re-save the whole file instead'); };
+  var writes = [];
+  var columns = payload.columns || [];
+  for (var c = 0; c < columns.length; c++) {
+    var col = columns[c];
+    var group = col.path.split('/')[0];
+    if (!node(group) || node(group).type !== 'Group') fail(group + ' is not in the SLP format 3.0 layout');
+    var ds = node(col.path);
+    if (!ds || ds.type === 'Group') fail(col.path + ' is missing');
+    if (!ds.shape || ds.shape.length !== 1 || ds.shape[0] !== col.values.length) fail(col.path + ' changed length');
+    writes.push([ds, col.values]);
+  }
+  var keyLists = payload.metadataKeys || {};
+  var tables = Object.keys(keyLists);
+  for (var t = 0; t < tables.length; t++) {
+    var onDisk = metadataKeysWorker(file, tables[t]).sort().join('|');
+    var want = keyLists[tables[t]].slice().sort().join('|');
+    if (onDisk !== want) fail('the metadata keys of ' + tables[t] + ' changed');
+  }
+  var strings = payload.metadataStrings || [];
+  for (var si = 0; si < strings.length; si++) {
+    var sc = strings[si];
+    var sds = node(sc.path);
+    if (!sds || !sds.shape || sds.shape[0] !== sc.values.length) fail(sc.path + ' changed length');
+    var stored = Array.from(sds.value, function (v) { return v instanceof Uint8Array ? new TextDecoder().decode(v) : String(v); });
+    for (var r = 0; r < stored.length; r++) {
+      if (sc.present && sc.present[r] === 0) continue;
+      if (stored[r] !== sc.values[r]) fail('a string value of ' + sc.path + ' changed');
+    }
+  }
+  var presence = payload.metadataPresence || [];
+  for (var pi = 0; pi < presence.length; pi++) {
+    if (!!node(presence[pi].path) !== presence[pi].present) fail('which records hold ' + presence[pi].path + ' changed');
+  }
+  for (var w = 0; w < writes.length; w++) writeColumnInPlaceWorker(writes[w][0], writes[w][1]);
+}
+
+// The metadata keys of a 3.0 table that readers read (write.ts
+// readMetadataKeysInPlace — KEEP IN LOCKSTEP).
+function metadataKeysWorker(file, table) {
+  var get = function (p) { try { return file.get(p) || null; } catch (e) { return null; } };
+  var md = get(table + '/metadata');
+  if (!md || md.type !== 'Group') return [];
+  var out = [];
+  var keys = md.keys();
+  for (var i = 0; i < keys.length; i++) {
+    var g = get(table + '/metadata/' + keys[i]);
+    if (!g || g.type !== 'Group' || g.keys().indexOf('values') < 0) continue;
+    var v = get(table + '/metadata/' + keys[i] + '/values');
+    if (!v || v.type === 'Group' || !v.shape || v.shape.length !== 1) continue;
+    var ty = v.metadata && v.metadata.type;
+    if (ty === 0 || ty === 1 || ty === 3 || ty === 8) out.push(keys[i]);
+  }
+  return out;
 }
 
 // Worker port of writeOneTableInPlace (write.ts — KEEP IN LOCKSTEP): overwrite
@@ -1171,6 +1323,7 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
   var members = md && md.compound_type && md.compound_type.members;
   var isCompound = !!(members && members.length > 0);
   var curRows = (ds.shape && ds.shape[0]) || 0;
+
   if (curRows !== rowCount) {
     ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
     // h5wasm silently no-ops resize on a non-resizable dataset — read the shape
@@ -1195,9 +1348,11 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
       }
       var colVals = new Array(rowCount);
       for (var r = 0; r < rowCount; r++) colVals[r] = flat[r * colCount + ci];
+
       columns.set(m.name, memberColumnTypedArrayWorker(m, colVals));
     }
-    ds.write_slice([[0, rowCount]], columns);
+    writeWithFileTypeWorker(ds, function () { ds.write_slice([[0, rowCount]], columns); });
+    verifyEnumMembersWorker(ds, diskName, members, fields, flat, rowCount, colCount);
   } else {
     ds.write_slice([[0, rowCount], [0, colCount]], flat);
   }
@@ -1215,6 +1370,18 @@ function updateLabelsInPlace(payload) {
   // format 3.0 layout (groups of columns), before anything is written.
   if (payload.sourceAccess === 'view') {
     throw new Error('updateLabelsInPlace: these labels were loaded from an SLP format 3.0 file for viewing only (format3: "view") and cannot be saved');
+  }
+  if (payload.layout === 'v3') {
+    writeLabelColumnsInPlaceWorker(currentDestFile, payload);
+    if (payload.metadataJson !== undefined && payload.metadataJson !== null) {
+      var mg3 = currentDestFile.get('metadata');
+      if (mg3) {
+        try { mg3.delete_attribute('json'); } catch (e) {}
+        setStringAttrWorker(mg3, 'json', payload.metadataJson);
+      }
+    }
+    currentDestFile.flush();
+    return { success: true };
   }
   var poseTables = ['frames', 'instances', 'points', 'pred_points'];
   for (var p = 0; p < poseTables.length; p++) {

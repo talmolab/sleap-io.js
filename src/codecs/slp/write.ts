@@ -40,14 +40,53 @@ import type { Identity } from "../../model/identity.js";
 import { PredictedInstance3D } from "../../model/instance3d.js";
 import type { LazyDataStore } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
-import { metadataKeys, metadataKeysOf } from "../../model/record-metadata.js";
-import { type SlpSourceFormat, SlpViewOnlyError } from "./format3.js";
+import {
+  type MetadataColumn,
+  type MetadataKind,
+  type RecordMetadata,
+  metadataKeys,
+  metadataKeysOf,
+  metadataRecord,
+} from "../../model/record-metadata.js";
+import {
+  type SlpSourceFormat,
+  SlpViewOnlyError,
+  metadataKindFromH5,
+} from "./format3.js";
+import {
+  type SlpLayout,
+  type SlpVersion,
+  checkSlpVersion,
+  getV3Defaults,
+  SLP_FORMAT3_ID,
+} from "./slp-version.js";
+import {
+  type Column,
+  type ColumnType,
+  metadataColumnsOf,
+  writeByteBuffer,
+  writeColumnTable,
+  writeMetadataColumns,
+  ensureGroup,
+  withBoolMetadataNotice,
+} from "./write-columns.js";
+import {
+  type ColumnCarry,
+  CarrySession,
+  warnDropped,
+  warnDroppedCarry,
+} from "./column-carry.js";
 import {
   countUnlabeledPoints,
   hasSkippedInstanceRows,
   skipsInstanceRow,
 } from "./columnar.js";
-import { sessionRecords, sourceMarkOf } from "../../model/source-mark.js";
+import {
+  keepSourceMark,
+  sessionRecords,
+  sourceMarkOf,
+} from "../../model/source-mark.js";
+import { hadNanTrackingScore } from "../../model/stored-nan.js";
 import {
   checkEmbedImageFormat,
   embedQuality,
@@ -155,8 +194,9 @@ export type SlpWriteOptions = {
    */
   imageQuality?: number | null;
   /**
-   * How to save unlabelled points (`labeled` and `visible` both false), which
-   * the 2.x layout this version writes cannot store; see {@link UnlabeledAs}.
+   * How the 2.x layout saves unlabelled points (`labeled` and `visible` both
+   * false), which it cannot store; see {@link UnlabeledAs}. Ignored when
+   * format 3.0 is written, which stores them.
    * Decided record by record: points of instances loaded from a format 3.0
    * file with `format3: "edit"` (wherever they have been merged or copied
    * since) are written as absent unless this is `"error"`; points of any other
@@ -164,6 +204,14 @@ export type SlpWriteOptions = {
    * `format3: "view"` are never written.
    */
   unlabeledAs?: UnlabeledAs;
+  /**
+   * The layout to write: `"auto"` (the default) writes the SLP 2.x layout that
+   * SLEAP and sleap-io < 0.10 open, unless the labels need format 3.0 (see
+   * {@link resolveSlpVersion}); `"v2"` always writes the 2.x layout, with
+   * `unlabeledAs` and dropping metadata with a warning; `"v3"` always writes
+   * format 3.0, which stores everything (`unlabeledAs` is ignored).
+   */
+  slpVersion?: SlpVersion;
 };
 
 /**
@@ -279,6 +327,41 @@ function refuseFormat3FrameLosses(frames: Iterable<LabeledFrame>): void {
 }
 
 /**
+ * A format 3.0 streaming writer writes the links of appended frames, but only
+ * to the identities in its header. Frames whose instances or annotations were
+ * loaded from a 3.0 file and hold an identity are refused, before anything is
+ * written, when the header has none, as {@link refuseFormat3StoreLosses}
+ * refuses stores.
+ *
+ * @throws {Error} Naming what would be lost.
+ */
+function refuseFormat3FrameIdentities(
+  frames: Iterable<LabeledFrame>,
+  headerHasIdentities: boolean,
+): void {
+  if (headerHasIdentities) return;
+  for (const frame of frames) {
+    for (const record of [
+      ...frame.instances,
+      ...frame.centroids,
+      ...frame.bboxes,
+      ...frame.masks,
+      ...frame.rois,
+    ] as Array<IdentityBearing & object>) {
+      const source = sourceMarkOf(record);
+      if (!source || record.identity == null) continue;
+      throw new Error(
+        `Frames loaded from '${source.labelsPath}' (SLP format ` +
+          `${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ` +
+          "identities, which SlpStreamWriter.appendFrames writes only when " +
+          "the writer's header holds them. Pass the identities in the " +
+          "header, or save the labels with saveSlp or saveSlpToBytes.",
+      );
+    }
+  }
+}
+
+/**
  * The streaming writer (`SlpStreamWriter.appendStore`, and so
  * `saveSlpMergedFromStores` and `saveSlpMergedToSink`) writes a store's
  * poses and annotations, but no per-detection identity or category links or
@@ -286,13 +369,16 @@ function refuseFormat3FrameLosses(frames: Iterable<LabeledFrame>): void {
  * store loaded from a format 3.0 file for editing promised that a save drops
  * only what its summary lists, so such a store holding any of those is refused
  * before it is written, naming what would be lost. Stores from files before 3.0
- * are written as before.
+ * are written as before. A writer of format 3.0 (`writesLinks`) writes the
+ * links and embeddings of the store's instances and annotations, so only
+ * identities and sessions missing from its header are refused there.
  *
  * @throws {Error} Naming what would be lost and the writers that keep it.
  */
 export function refuseFormat3StoreLosses(
   store: LazyDataStore,
   header: { identities: boolean; sessions: boolean },
+  writesLinks = false,
 ): void {
   const source = store.sourceFormat;
   if (!source) return;
@@ -301,10 +387,11 @@ export function refuseFormat3StoreLosses(
     lost.push("its identities");
   }
   if (
-    store._instanceIdentityLinks?.size ||
-    store._instanceCategoryLinks?.size ||
-    store._instanceEmbeddings?.size ||
-    store._instanceCategoryEmbeddings?.size
+    !writesLinks &&
+    (store._instanceIdentityLinks?.size ||
+      store._instanceCategoryLinks?.size ||
+      store._instanceEmbeddings?.size ||
+      store._instanceCategoryEmbeddings?.size)
   ) {
     lost.push("the identities, categories or embeddings of its instances");
   }
@@ -317,7 +404,7 @@ export function refuseFormat3StoreLosses(
   ] as Array<[Map<string, IdentityBearing[]>, IdentityBearing[]]>) {
     annotations.push(...undistributed, ...[...byFrame.values()].flat());
   }
-  if (annotations.some(annotationLinkLoss)) {
+  if (!writesLinks && annotations.some(annotationLinkLoss)) {
     lost.push(
       "the identities, category scores or embeddings of its centroids, " +
         "boxes, masks or ROIs",
@@ -328,6 +415,7 @@ export function refuseFormat3StoreLosses(
   }
   if (lost.length > 0) {
     throw new Error(
+      // (A format 3.0 writer writes the links and embeddings itself.)
       `The labels loaded from '${source.labelsPath}' (SLP format ` +
         `${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ${lost.join(", ")}, which the streaming ` +
         "writer (appendStore, saveSlpMergedFromStores, saveSlpMergedToSink) " +
@@ -347,10 +435,15 @@ interface LegacyLosses {
   viewOnly: SlpSourceFormat | null;
   /** Unlabelled points of records loaded with `format3: "edit"`. */
   unlabeledEdit: number;
-  /** Unlabelled points of records not loaded from a 3.0 file. */
+  /**
+   * Unlabelled points of other records: not loaded from a 3.0 file, or loaded
+   * to be kept in format 3.0 (`"keep"`).
+   */
   unlabeledOwn: number;
-  /** Metadata keys of records not loaded from a 3.0 file, per table. */
+  /** Metadata keys of those other records, per table. */
   metadataKeys: Array<[table: string, keys: string[]]>;
+  /** Whether some record was loaded from a 3.0 file to be kept in 3.0. */
+  keep: boolean;
 }
 
 /** Keep the tables that have keys. */
@@ -360,12 +453,23 @@ function tablesWithKeys(
   return tables.filter(([, keys]) => keys.length > 0);
 }
 
+/**
+ * Whether a record's mark leaves its content to the caller's 2.x rules: no
+ * mark, or one of a file loaded to be kept in format 3.0 (when such a record
+ * is written in the 2.x layout, which only an explicit choice or a remembered
+ * layout does, it follows the strict rules of the caller's own records).
+ */
+function ownContent(mark: SlpSourceFormat | undefined): boolean {
+  return !mark || mark.access === "keep";
+}
+
 /** The {@link LegacyLosses} of materialized frames, record by record. */
 function framesLegacyLosses(
   frames: Iterable<LabeledFrame>,
   staticRois: Iterable<object> = [],
 ): LegacyLosses {
   let viewOnly: SlpSourceFormat | null = null;
+  let keep = false;
   let unlabeledEdit = 0;
   let unlabeledOwn = 0;
   const ownInstances: Instance[] = [];
@@ -374,21 +478,24 @@ function framesLegacyLosses(
   const markOf = (record: object): SlpSourceFormat | undefined => {
     const mark = sourceMarkOf(record);
     if (mark?.access === "view") viewOnly ??= mark;
+    else if (mark?.access === "keep") keep = true;
     return mark;
   };
   // Static ROIs (not on any frame) are written too.
   for (const roi of staticRois) markOf(roi);
   for (const frame of frames) {
-    if (!markOf(frame)) ownFrames.push(frame);
+    if (ownContent(markOf(frame))) ownFrames.push(frame);
     for (const inst of frame.instances) {
       const mark = markOf(inst);
       if (mark?.access === "edit") unlabeledEdit += inst.nUnlabeled;
-      else if (!mark) {
+      else if (ownContent(mark)) {
         unlabeledOwn += inst.nUnlabeled;
         ownInstances.push(inst);
       }
     }
-    for (const box of frame.bboxes) if (!markOf(box)) ownBoxes.push(box);
+    for (const box of frame.bboxes) {
+      if (ownContent(markOf(box))) ownBoxes.push(box);
+    }
     for (const list of [
       frame.centroids,
       frame.masks,
@@ -407,6 +514,7 @@ function framesLegacyLosses(
       ["frames", metadataKeysOf(ownFrames)],
       ["bboxes", metadataKeysOf(ownBoxes)],
     ]),
+    keep,
   };
 }
 
@@ -445,13 +553,15 @@ function refuseViewOnlyRecords(
 function storeLegacyLosses(store: LazyDataStore): LegacyLosses {
   let viewOnly: SlpSourceFormat | null =
     store.sourceFormat?.access === "view" ? store.sourceFormat : null;
+  let keep = store.sourceFormat?.access === "keep";
   const ownBoxes: BoundingBox[] = [];
   const boxes: BoundingBox[] = [...store._undistributedBboxes];
   for (const list of store._bboxByFrame.values()) boxes.push(...list);
   for (const box of boxes) {
     const mark = sourceMarkOf(box);
     if (mark?.access === "view") viewOnly ??= mark;
-    if (!mark) ownBoxes.push(box);
+    if (mark?.access === "keep") keep = true;
+    if (ownContent(mark)) ownBoxes.push(box);
   }
   // The other annotations the lazy writers write from the store's maps.
   for (const [byFrame, undistributed] of [
@@ -463,21 +573,23 @@ function storeLegacyLosses(store: LazyDataStore): LegacyLosses {
     for (const record of [...undistributed, ...[...byFrame.values()].flat()]) {
       const mark = sourceMarkOf(record);
       if (mark?.access === "view") viewOnly ??= mark;
+      if (mark?.access === "keep") keep = true;
     }
   }
   const unlabeled =
     countUnlabeledPoints(store.pointsData) +
     countUnlabeledPoints(store.predPointsData);
-  const chosen = !!store.sourceFormat;
+  const edit = store.sourceFormat?.access === "edit";
   return {
     viewOnly,
-    unlabeledEdit: chosen ? unlabeled : 0,
-    unlabeledOwn: chosen ? 0 : unlabeled,
+    unlabeledEdit: edit ? unlabeled : 0,
+    unlabeledOwn: edit ? 0 : unlabeled,
     metadataKeys: tablesWithKeys([
-      ["instances", chosen ? [] : metadataKeys(store.instanceMetadata)],
-      ["frames", chosen ? [] : metadataKeys(store.frameMetadata)],
+      ["instances", edit ? [] : metadataKeys(store.instanceMetadata)],
+      ["frames", edit ? [] : metadataKeys(store.frameMetadata)],
       ["bboxes", metadataKeysOf(ownBoxes)],
     ]),
+    keep,
   };
 }
 
@@ -503,15 +615,7 @@ function enforceLegacyLayout(
   options?: { warn?: boolean },
 ): void {
   if (losses.viewOnly) throw new SlpViewOnlyError(losses.viewOnly);
-  if (
-    unlabeledAs !== undefined &&
-    unlabeledAs !== "error" &&
-    unlabeledAs !== "absent"
-  ) {
-    throw new Error(
-      `unlabeledAs must be "error" or "absent", got ${JSON.stringify(unlabeledAs)}.`,
-    );
-  }
+  checkUnlabeledAs(unlabeledAs);
   const own = losses.unlabeledOwn;
   const refused =
     unlabeledAs === "error"
@@ -521,10 +625,10 @@ function enforceLegacyLayout(
         : 0;
   if (refused > 0) {
     throw new Error(
-      `${refused} point(s) are unlabelled, but the SLP 2.x layout this ` +
-        "version writes cannot store unlabelled points: they would read back " +
-        'as labelled hidden points. Pass unlabeledAs: "absent" to save them ' +
-        "as hidden points with no location.",
+      `${refused} point(s) are unlabelled, but the SLP 2.x layout cannot ` +
+        "store unlabelled points: they would read back as labelled hidden " +
+        'points. Pass unlabeledAs: "absent" to save them as hidden points ' +
+        'with no location, or slpVersion: "v3" to save them in format 3.0.',
     );
   }
   if (options?.warn === false) return;
@@ -547,25 +651,328 @@ function enforceLegacyLayout(
 }
 
 /**
- * Check, without writing or warning, that `labels` can be saved with
- * `options`: not view-only (labels or any record), and no unlabelled points
- * the `unlabeledAs` mode refuses. Lets a caller saving several files refuse
- * them all before writing any.
- *
- * @throws {SlpViewOnlyError} For view-only labels or records.
- * @throws {Error} For unlabelled points the mode refuses.
+ * Throw {@link SlpViewOnlyError} for labels, or any record they hold, loaded
+ * with `format3: "view"`.
  */
-export function checkSlpSavable(
-  labels: Labels,
-  options?: { unlabeledAs?: UnlabeledAs },
-): void {
+export function refuseViewOnlyLabels(labels: Labels): void {
   refuseViewOnly(labels);
   const store = labels._lazyDataStore;
   const losses =
     labels.isLazy && store
       ? storeLegacyLosses(store)
       : framesLegacyLosses(labels.labeledFrames, labels._staticRois);
+  if (losses.viewOnly) throw new SlpViewOnlyError(losses.viewOnly);
+}
+
+/**
+ * Check, without writing or warning, that `labels` can be saved with
+ * `options`: not view-only (labels or any record); and, for the 2.x layout,
+ * no unlabelled points the `unlabeledAs` mode refuses; for format 3.0, one
+ * kind per metadata key. Lets a caller saving several files refuse them all
+ * before writing any. `slpVersion` defaults to `"auto"`, decided without a
+ * warning.
+ *
+ * @throws {SlpViewOnlyError} For view-only labels or records.
+ * @throws {Error} For unlabelled points the mode refuses.
+ * @throws {TypeError} For an invalid `slpVersion`, or (format 3.0) a metadata
+ *   key that mixes kinds.
+ */
+export function checkSlpSavable(
+  labels: Labels,
+  options?: { unlabeledAs?: UnlabeledAs; slpVersion?: SlpVersion },
+): void {
+  refuseViewOnly(labels);
+  const layout = resolveSlpVersion(
+    labels,
+    checkSlpVersion(options?.slpVersion),
+    {
+      warn: false,
+    },
+  );
+  const store = labels._lazyDataStore;
+  const losses =
+    labels.isLazy && store
+      ? storeLegacyLosses(store)
+      : framesLegacyLosses(labels.labeledFrames, labels._staticRois);
+  if (layout === "v3") {
+    enforceV3Layout(losses, options?.unlabeledAs);
+    if (!labels.isLazy) checkV3Metadata(labels.labeledFrames);
+    return;
+  }
   enforceLegacyLayout(losses, options?.unlabeledAs, { warn: false });
+}
+
+// ===========================================================================
+// Which layout a save writes (`slpVersion`)
+//
+// "auto" writes the 2.x layout unless the labels need format 3.0, as Python
+// sleap-io's `resolve_slp_version` (see `resolveSlpVersion`). The decision is
+// made once, before anything is written, from the eager labels or the lazy
+// store's raw tables; every table writer then follows it.
+// ===========================================================================
+
+/** What the "auto" rule looks at in one set of labels (or a lazy store). */
+interface LayoutFacts {
+  /** The layout the labels were last saved in, if remembered. */
+  remembered: SlpLayout | null;
+  /** The labels were loaded from a 3.0 file with `format3: "edit"`. */
+  editChoice: boolean;
+  /** Some content was loaded from a 3.0 file to be kept in format 3.0. */
+  keep: boolean;
+  /** What only format 3.0 can store, outside content loaded for editing. */
+  reasons: string[];
+}
+
+/** Describe what in `losses` only format 3.0 can store. */
+function contentReasons(
+  losses: LegacyLosses,
+  carriedTables: readonly string[],
+): string[] {
+  const reasons: string[] = [];
+  if (losses.unlabeledOwn > 0) {
+    reasons.push(`${losses.unlabeledOwn} point(s) marked as not labelled`);
+  }
+  if (losses.metadataKeys.length > 0) {
+    const named = losses.metadataKeys
+      .map(([table, keys]) => `${table}: ${keys.join(", ")}`)
+      .join("; ");
+    reasons.push(`metadata on instances, frames or bounding boxes (${named})`);
+  }
+  if (carriedTables.length > 0) {
+    reasons.push(
+      `unknown columns kept from a newer file (${carriedTables.join(", ")})`,
+    );
+  }
+  return reasons;
+}
+
+/** Whether a recording session's frame or instance group is kept in 3.0. */
+function sessionsKeep(sessions: Iterable<RecordingSession>): boolean {
+  for (const record of sessionRecords(sessions)) {
+    if (sourceMarkOf(record)?.access === "keep") return true;
+  }
+  return false;
+}
+
+/** The {@link LayoutFacts} of eager or lazy labels. */
+function labelsLayoutFacts(labels: Labels): LayoutFacts {
+  const store = labels.isLazy ? labels._lazyDataStore : null;
+  const losses = store
+    ? storeLegacyLosses(store)
+    : framesLegacyLosses(labels.labeledFrames, labels._staticRois);
+  const carried = [
+    ...carriedNotEdited(labels._carriedColumns),
+    ...(store && store.sourceFormat?.access !== "edit"
+      ? storeCarriedTables(store)
+      : []),
+  ];
+  const access = labels.sourceFormat?.access ?? store?.sourceFormat?.access;
+  return {
+    remembered: labels._slpLayout ?? null,
+    editChoice: access === "edit",
+    keep: access === "keep" || losses.keep || sessionsKeep(labels.sessions),
+    reasons: contentReasons(losses, carried),
+  };
+}
+
+/**
+ * The tables of a carry with unknown columns, as paths, except those whose
+ * records were loaded with `format3: "edit"` (which chose to drop them).
+ */
+function carriedNotEdited(carry: ColumnCarry | null | undefined): string[] {
+  if (!carry) return [];
+  const out: string[] = [];
+  for (const [table, carried] of carry.tables) {
+    const owner = carried.owners
+      ?.flat()
+      .find((o): o is object => typeof o === "object" && o !== null);
+    if (owner && sourceMarkOf(owner)?.access === "edit") continue;
+    out.push(`/${table}`);
+  }
+  return out;
+}
+
+/** The tables of a lazy store with unknown columns, as paths. */
+function storeCarriedTables(store: LazyDataStore): string[] {
+  return [
+    ...Object.entries(store.unknownColumns ?? {})
+      .filter(([, columns]) => Object.keys(columns ?? {}).length > 0)
+      .map(([table]) => `/${table}`),
+    ...(store.annotationCarry?.tablePaths() ?? []),
+  ];
+}
+
+/** The {@link LayoutFacts} of a lazy store given to a streaming writer. */
+function storeLayoutFacts(store: LazyDataStore): LayoutFacts {
+  const losses = storeLegacyLosses(store);
+  return {
+    remembered: null,
+    editChoice: store.sourceFormat?.access === "edit",
+    keep: losses.keep,
+    reasons: contentReasons(losses, storeCarriedTables(store)),
+  };
+}
+
+/** The {@link LayoutFacts} of frames given to a streaming writer. */
+function framesLayoutFacts(frames: Iterable<LabeledFrame>): LayoutFacts {
+  const losses = framesLegacyLosses(frames);
+  return {
+    remembered: null,
+    editChoice: false,
+    keep: losses.keep,
+    reasons: contentReasons(losses, []),
+  };
+}
+
+/**
+ * Decide the layout of a save from the facts of every set of labels written
+ * together (see {@link resolveSlpVersion}), warning once when "auto" picks
+ * format 3.0 because of content.
+ */
+function decideLayout(
+  facts: readonly LayoutFacts[],
+  slpVersion: unknown,
+  warn = true,
+): SlpLayout {
+  const version = checkSlpVersion(slpVersion);
+  if (version !== "auto") return version;
+  // Per set of labels: "v3" (a format 3.0 file, which keeps its layout),
+  // "edit" (the caller chose the 2.x layout for it) or "content".
+  const kinds = facts.map((f) =>
+    f.remembered === "v3"
+      ? "v3"
+      : f.editChoice
+        ? "edit"
+        : f.keep && f.remembered !== "v2"
+          ? "v3"
+          : "content",
+  );
+  if (kinds.length > 0 && kinds.every((k) => k === "v3")) return "v3";
+  if (
+    getV3Defaults() &&
+    !(kinds.length > 0 && kinds.every((k) => k === "edit"))
+  ) {
+    return "v3";
+  }
+  if (kinds.some((k) => k === "v3")) {
+    // Files written together share a layout, so the others change layout.
+    if (warn) {
+      console.warn(
+        "Saving these files in SLP format 3.0, which SLEAP and sleap-io < 0.10 " +
+          "cannot open, because some of them come from format 3.0 files and " +
+          'files written together share one layout. Pass slpVersion: "v2" ' +
+          "to write the 2.x layout instead.",
+      );
+    }
+    return "v3";
+  }
+  const reasons: string[] = [];
+  facts.forEach((f, i) => {
+    if (kinds[i] === "edit") return;
+    for (const reason of f.reasons) {
+      if (!reasons.includes(reason)) reasons.push(reason);
+    }
+  });
+  if (reasons.length === 0) return "v2";
+  if (warn) {
+    console.warn(
+      "Saving in SLP format 3.0, which SLEAP and sleap-io < 0.10 cannot open, " +
+        `because the 2.x layout cannot store: ${reasons.join("; ")}. Pass ` +
+        'slpVersion: "v3" to choose format 3.0 without this warning, or ' +
+        'slpVersion: "v2" to write the 2.x layout, which drops that content ' +
+        "or refuses it.",
+    );
+  }
+  return "v3";
+}
+
+/**
+ * Decide the SLP layout of a save: `"v2"` (the 2.x layout) or `"v3"` (format
+ * 3.0), as every SLP writer does before it writes anything.
+ *
+ * With `slpVersion: "auto"` (the default of every writer), the layout is:
+ *
+ * 1. the layout the labels were last saved in, when that was format 3.0;
+ * 2. the 2.x layout for labels loaded from a 3.0 file with `format3: "edit"`
+ *    (the caller chose to save that layout and drop what it cannot store);
+ * 3. format 3.0 when the format 3.0 defaults are on ({@link setV3Defaults});
+ * 4. format 3.0 when the labels, or any of their records, were loaded from a
+ *    3.0 file without `"edit"`, so a file never changes layout silently
+ *    (copies, extracts and materialized labels keep this) — unless the labels
+ *    were since saved in the 2.x layout;
+ * 5. format 3.0 when the labels hold what only format 3.0 can store: points
+ *    marked as not labelled, metadata on instances, frames or bounding boxes,
+ *    or unknown columns kept from a newer file. This warns once
+ *    (`console.warn`), naming the content;
+ * 6. the 2.x layout otherwise.
+ *
+ * Several files written together share one layout: format 3.0 if any of them
+ * needs it. Pass all their labels to decide them together.
+ *
+ * @param labels The labels of one file, or of every file written together.
+ * @param slpVersion `"auto"`, `"v2"` or `"v3"`; `"v2"` and `"v3"` are
+ *   returned as they are.
+ * @param options.warn Warn when `"auto"` picks format 3.0 because of content
+ *   (default `true`).
+ * @throws {TypeError} If `slpVersion` is not one of the three values.
+ */
+export function resolveSlpVersion(
+  labels: Labels | Iterable<Labels>,
+  slpVersion: SlpVersion = "auto",
+  options?: { warn?: boolean },
+): SlpLayout {
+  const list = labels instanceof Labels ? [labels] : [...labels];
+  return decideLayout(
+    list.map(labelsLayoutFacts),
+    slpVersion,
+    options?.warn ?? true,
+  );
+}
+
+/**
+ * Refuse records loaded with `format3: "view"` before a format 3.0 write, and
+ * check the `unlabeledAs` value (ignored by format 3.0, which stores
+ * unlabelled points).
+ */
+function enforceV3Layout(
+  losses: LegacyLosses,
+  unlabeledAs: UnlabeledAs | undefined,
+): void {
+  if (losses.viewOnly) throw new SlpViewOnlyError(losses.viewOnly);
+  checkUnlabeledAs(unlabeledAs);
+}
+
+/**
+ * Warn that a 2.x save of a lazy store drops its unknown columns (unless it
+ * was loaded with `format3: "edit"`, which chose to drop them).
+ */
+function dropCarryForV2(store: LazyDataStore): void {
+  if (store.sourceFormat?.access === "edit") return;
+  const tables: Array<[string, Record<string, unknown>]> = Object.entries(
+    store.unknownColumns ?? {},
+  ).filter(([, columns]) => Object.keys(columns ?? {}).length > 0) as Array<
+    [string, Record<string, unknown>]
+  >;
+  for (const [table, columns] of tables) {
+    console.warn(
+      `Unknown column(s) ${Object.keys(columns).join(", ")} of /${table} ` +
+        "were not saved: the SLP 2.x layout cannot store them.",
+    );
+  }
+  warnDroppedCarry(store.annotationCarry);
+}
+
+/** Refuse an `unlabeledAs` value that is not `"error"` or `"absent"`. */
+function checkUnlabeledAs(unlabeledAs: unknown): void {
+  if (
+    unlabeledAs !== undefined &&
+    unlabeledAs !== "error" &&
+    unlabeledAs !== "absent"
+  ) {
+    throw new Error(
+      `unlabeledAs must be "error" or "absent", got ${JSON.stringify(unlabeledAs)}.`,
+    );
+  }
 }
 
 /**
@@ -638,8 +1045,13 @@ function writeSlpToFile(
   file: any,
   labels: Labels,
   plan?: EmbedPlan | null,
+  layout: SlpLayout = "v2",
 ): void {
-  writeMetadata(file, labels);
+  const v3: V3Write | null =
+    layout === "v3"
+      ? { carry: new CarrySession(labels._carriedColumns) }
+      : null;
+  writeMetadata(file, labels, layout);
 
   if (plan && plan.size > 0) {
     writeEmbeddedVideosJson(file, labels, plan);
@@ -657,9 +1069,14 @@ function writeSlpToFile(
     labels.videos,
     labels.labeledFrames,
     labels.identities,
+    v3,
   );
-  writeLabeledFrames(file, labels);
-  writeNegativeFrames(file, labels);
+  if (v3) {
+    writePoseTablesV3(file, labels, v3.carry);
+  } else {
+    writeLabeledFrames(file, labels);
+    writeNegativeFrames(file, labels);
+  }
   const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
 
   // Build flat annotation lists with routing contexts from parent LabeledFrames
@@ -703,7 +1120,15 @@ function writeSlpToFile(
     roiCtx.push([r.video ? labels.videos.indexOf(r.video) : -1, -1]);
   }
 
-  writeRois(file, allRois, labels.videos, labels.tracks, allInstances, roiCtx);
+  writeRois(
+    file,
+    allRois,
+    labels.videos,
+    labels.tracks,
+    allInstances,
+    roiCtx,
+    v3,
+  );
   writeMasks(
     file,
     allMasks,
@@ -711,6 +1136,7 @@ function writeSlpToFile(
     labels.tracks,
     allInstances,
     maskCtx,
+    v3,
   );
   writeBboxes(
     file,
@@ -719,6 +1145,7 @@ function writeSlpToFile(
     labels.tracks,
     allInstances,
     bboxCtx,
+    v3,
   );
   writeCentroids(
     file,
@@ -735,6 +1162,7 @@ function writeSlpToFile(
     labels.tracks,
     allInstances,
     liCtx,
+    v3,
   );
 
   // Per-detection re-ID identity (SLP 2.5): /identity/links + /embeddings. The flat
@@ -747,9 +1175,10 @@ function writeSlpToFile(
     bbox: allBboxes,
     roi: allRois,
   };
-  writeIdentityLinks(file, labels.identities, detections);
-  writeCategoryLinks(file, detections);
+  writeIdentityLinks(file, labels.identities, detections, v3);
+  writeCategoryLinks(file, detections, v3);
   writeEmbeddings(file, detections);
+  v3?.carry.finish();
 }
 
 /**
@@ -955,15 +1384,23 @@ function writeLazyNegativeFrames(file: any, store: LazyDataStore): void {
  *
  * @throws Error if `labels.isLazy` is false or the lazy store is missing.
  */
-function writeSlpToFileLazy(file: any, labels: Labels): void {
+function writeSlpToFileLazy(
+  file: any,
+  labels: Labels,
+  layout: SlpLayout = "v2",
+): void {
   const store = labels._lazyDataStore;
   if (!labels.isLazy || !store) {
     throw new Error(
       "writeSlpToFileLazy requires lazy Labels with a data store",
     );
   }
+  // The pose tables' unknown columns are written from the store; the other
+  // tables' while the store's annotations are the ones loaded.
+  const v3: V3Write | null =
+    layout === "v3" ? { carry: new CarrySession(store.annotationCarry) } : null;
 
-  writeMetadata(file, labels);
+  writeMetadata(file, labels, layout);
   writeVideos(file, labels.videos);
   writeVideoCrops(file, labels.videos);
   writeTracks(file, labels.tracks);
@@ -971,10 +1408,21 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
   writeIdentities(file, labels.identities);
   // Sessions: pass empty labeledFrames since they aren't materialized.
   // Frame-group refs resolved by lf index will be lost — matches Python.
-  writeSessions(file, labels.sessions, labels.videos, [], labels.identities);
+  writeSessions(
+    file,
+    labels.sessions,
+    labels.videos,
+    [],
+    labels.identities,
+    v3,
+  );
 
-  writeLazyFramesAndInstances(file, store);
-  writeLazyNegativeFrames(file, store);
+  if (v3) {
+    writeLazyPoseTablesV3(file, store);
+  } else {
+    writeLazyFramesAndInstances(file, store);
+    writeLazyNegativeFrames(file, store);
+  }
 
   // Build per-type (annotation, context) pairs from the lazy store maps.
   // Per-frame Map keys are "vidIdx:frameIdx" strings (see read.ts).
@@ -1042,9 +1490,9 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
 
   // Pass undefined for `instances` so each writer uses the _instanceIdx
   // fallback (Side fix A) for any annotations with deferred instance links.
-  writeRois(file, allRois, labels.videos, labels.tracks, undefined, roiCtx);
-  writeMasks(file, allMasks, labels.videos, labels.tracks, [], maskCtx);
-  writeBboxes(file, allBboxes, labels.videos, labels.tracks, [], bboxCtx);
+  writeRois(file, allRois, labels.videos, labels.tracks, undefined, roiCtx, v3);
+  writeMasks(file, allMasks, labels.videos, labels.tracks, [], maskCtx, v3);
+  writeBboxes(file, allBboxes, labels.videos, labels.tracks, [], bboxCtx, v3);
   writeCentroids(
     file,
     allCentroids,
@@ -1060,6 +1508,7 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
     labels.tracks,
     [],
     liCtx,
+    v3,
   );
 
   // Per-detection identity and category links (and embeddings), as the eager
@@ -1073,9 +1522,10 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
     bbox: allBboxes,
     roi: allRois,
   };
-  writeIdentityLinks(file, labels.identities, detections);
-  writeCategoryLinks(file, detections);
+  writeIdentityLinks(file, labels.identities, detections, v3);
+  writeCategoryLinks(file, detections, v3);
   writeEmbeddings(file, detections);
+  v3?.carry.finish();
 }
 
 /**
@@ -1261,6 +1711,72 @@ function appendMatrixRows(
   );
 }
 
+/** The 3.0 column types of the pose tables, by table and column. */
+function v3PoseColumnTypes(table: string): Array<[string, ColumnType]> {
+  return table === "frames"
+    ? V3_FRAME_COLUMNS
+    : table === "instances"
+      ? V3_INSTANCE_COLUMNS
+      : table === "points"
+        ? V3_POINT_COLUMNS
+        : V3_PRED_POINT_COLUMNS;
+}
+
+/** Create a 3.0 pose table as empty, appendable (chunked) columns. */
+function createAppendableColumnTable(file: any, table: string): void {
+  ensureGroup(file, table);
+  for (const [name, type] of v3PoseColumnTypes(table)) {
+    const dtype = type === "f8" ? "<d" : type === "i8" ? "<q" : "<B";
+    file.create_dataset({
+      name: `${table}/${name}`,
+      data: type === "i8" ? new BigInt64Array(0) : new Float64Array(0),
+      shape: [0],
+      maxshape: [null],
+      chunks: [WRITE_CHUNK_ROWS],
+      dtype,
+    });
+  }
+}
+
+/** Append `n` rows to the columns of a 3.0 pose table holding `current`. */
+function appendColumnRows(
+  file: any,
+  table: string,
+  current: number,
+  n: number,
+  columns: Record<string, ArrayLike<number>>,
+): void {
+  if (n === 0) return;
+  for (const [name, type] of v3PoseColumnTypes(table)) {
+    const ds = file.get(`${table}/${name}`);
+    ds.resize([current + n]);
+    const values = columns[name];
+    const data =
+      type === "i8"
+        ? BigInt64Array.from(Array.from(values, (v) => BigInt(Math.trunc(v))))
+        : type === "f8"
+          ? Float64Array.from(values)
+          : Uint8Array.from(values, (v) => (v ? 1 : 0));
+    ds.write_slice([[current, current + n]], data);
+  }
+}
+
+/** Push the `labeled` flag of each of `instance`'s node rows (format 3.0). */
+function pushLabeled(
+  target: number[],
+  instance: Instance | PredictedInstance,
+): void {
+  const nNodes = instance.skeleton.nodeNames.length;
+  const labeled = instance._labeled;
+  for (let i = 0; i < nNodes; i++) {
+    target.push(
+      i < instance._n && labeled && !labeled[i] && !instance._visible[i]
+        ? 0
+        : 1,
+    );
+  }
+}
+
 /** Static header (everything except the pose frames) for {@link openSlpWriter}. */
 export interface SlpWriteHeader {
   skeletons: Skeleton[];
@@ -1288,6 +1804,16 @@ export interface AppendStoreOptions {
    * `"error"`; any other store's are refused unless this is `"absent"`.
    */
   unlabeledAs?: UnlabeledAs;
+  /**
+   * The layout this append may write, which must be the writer's (see
+   * {@link openSlpWriter}): `"auto"` (the default) writes the writer's layout,
+   * but a writer of the 2.x layout refuses a store loaded from a format 3.0
+   * file to be kept in 3.0, so its layout never changes silently; `"v2"`
+   * writes such a store in the 2.x layout anyway (unlabelled points follow
+   * `unlabeledAs`, metadata is dropped with a warning); `"v3"` requires a
+   * format 3.0 writer.
+   */
+  slpVersion?: SlpVersion;
 }
 
 /**
@@ -1348,6 +1874,25 @@ export class SlpStreamWriter {
   private predPointRows = 0;
   private negativeFrames = new Set<string>();
   private closed = false;
+  /** The layout of the file, decided at open. */
+  readonly layout: SlpLayout;
+  /** Format 3.0: metadata of frame and instance rows, by output row. */
+  private frameMeta = new Map<number, RecordMetadata>();
+  private instanceMeta = new Map<number, RecordMetadata>();
+  private metaKinds = {
+    instances: new Map<string, MetadataKind>(),
+    frames: new Map<string, MetadataKind>(),
+    bboxes: new Map<string, MetadataKind>(),
+  };
+  /** The header labels, which remember the layout once the file is done. */
+  private headerLabels: Labels | null = null;
+  /** The identity catalog written in the header. */
+  private identities: Identity[] = [];
+  /**
+   * Format 3.0: the identity and category of each output instance row that
+   * has any (links and embeddings are written at finalize).
+   */
+  private instanceDetections = new Map<number, IdentityBearing>();
   // Combined `${videoIndex}:${frameIdx}` keys already written, for dedup across
   // appendStore/appendFrames. First write wins: a later append that repeats a
   // key skips that frame entirely. Append overlays (appendFrames) BEFORE bulk
@@ -1382,6 +1927,8 @@ export class SlpStreamWriter {
       identities?: Identity[];
       sessions?: RecordingSession[];
     },
+    layout: SlpLayout = "v2",
+    headerLabels: Labels | null = null,
   ) {
     this.module = module;
     this.file = file;
@@ -1393,6 +1940,138 @@ export class SlpStreamWriter {
       identities: (header.identities ?? []).length > 0,
       sessions: (header.sessions ?? []).length > 0,
     };
+    this.identities = header.identities ?? [];
+    this.layout = layout;
+    this.headerLabels = headerLabels;
+  }
+
+  /**
+   * Check, before anything of an append is written, that its content may go
+   * into this writer's layout (see {@link AppendStoreOptions.slpVersion}).
+   */
+  private checkAppendLayout(
+    slpVersion: unknown,
+    facts: LayoutFacts,
+  ): "v2" | "v3" {
+    const version = checkSlpVersion(slpVersion);
+    if (version !== "auto" && version !== this.layout) {
+      throw new Error(
+        `This writer writes ${this.layout === "v3" ? "SLP format 3.0" : "the SLP 2.x layout"}, ` +
+          `so it cannot append with slpVersion: "${version}". Open it with ` +
+          `slpVersion: "${version}" instead.`,
+      );
+    }
+    if (
+      version === "auto" &&
+      this.layout === "v2" &&
+      facts.keep &&
+      !facts.editChoice
+    ) {
+      throw new Error(
+        "This content was loaded from an SLP format 3.0 file, but this writer " +
+          "writes the SLP 2.x layout, which would change its layout. Open the " +
+          'writer with slpVersion: "v3" to keep format 3.0, or append with ' +
+          'slpVersion: "v2" to write the 2.x layout.',
+      );
+    }
+    return this.layout;
+  }
+
+  /** Format 3.0: remember metadata kinds read from a source. */
+  private noteKinds(mark: SlpSourceFormat | null | undefined): void {
+    const kinds = mark?.metadataKinds;
+    if (!kinds) return;
+    for (const table of ["instances", "frames", "bboxes"] as const) {
+      for (const [key, kind] of Object.entries(kinds[table])) {
+        if (this.metaKinds[table].get(key) !== "float") {
+          this.metaKinds[table].set(key, kind);
+        }
+      }
+    }
+  }
+
+  /**
+   * Append rows to the pose tables, from row-major buffers in the 2.x column
+   * order (frames: id, video, frame_idx, start, end; instances: the 10
+   * columns of `INSTANCES_FIELDS`; points: x, y, visible, complete[, score]).
+   * Format 3.0 drops the id columns and takes `is_negative` per frame and
+   * `labeled` per point.
+   */
+  private appendPoseRows(
+    frames: Float64Array,
+    instances: Float64Array,
+    userPoints: Float64Array,
+    predPoints: Float64Array,
+    v3?: { isNegative: number[]; userLabeled: number[]; predLabeled: number[] },
+  ): void {
+    const nF = frames.length / 5;
+    const nI = instances.length / 10;
+    const nU = userPoints.length / 4;
+    const nP = predPoints.length / 5;
+    if (this.layout === "v2" || !v3) {
+      appendMatrixRows(this.file, "frames", frames, nF, 5, this.frameRows);
+      appendMatrixRows(
+        this.file,
+        "instances",
+        instances,
+        nI,
+        10,
+        this.instRows,
+      );
+      appendMatrixRows(this.file, "points", userPoints, nU, 4, this.pointRows);
+      appendMatrixRows(
+        this.file,
+        "pred_points",
+        predPoints,
+        nP,
+        5,
+        this.predPointRows,
+      );
+    } else {
+      const pick = (flat: Float64Array, width: number, j: number) => {
+        const n = flat.length / width;
+        const out = new Float64Array(n);
+        for (let i = 0; i < n; i++) out[i] = flat[i * width + j];
+        return out;
+      };
+      appendColumnRows(this.file, "frames", this.frameRows, nF, {
+        video: pick(frames, 5, 1),
+        frame_idx: pick(frames, 5, 2),
+        instance_id_start: pick(frames, 5, 3),
+        instance_id_end: pick(frames, 5, 4),
+        is_negative: v3.isNegative,
+      });
+      appendColumnRows(this.file, "instances", this.instRows, nI, {
+        instance_type: pick(instances, 10, 1),
+        frame_id: pick(instances, 10, 2),
+        skeleton: pick(instances, 10, 3),
+        track: pick(instances, 10, 4),
+        from_predicted: pick(instances, 10, 5),
+        score: pick(instances, 10, 6),
+        point_id_start: pick(instances, 10, 7),
+        point_id_end: pick(instances, 10, 8),
+        tracking_score: pick(instances, 10, 9),
+      });
+      appendColumnRows(this.file, "points", this.pointRows, nU, {
+        x: pick(userPoints, 4, 0),
+        y: pick(userPoints, 4, 1),
+        visible: pick(userPoints, 4, 2),
+        verified: pick(userPoints, 4, 3),
+        labeled: v3.userLabeled,
+      });
+      appendColumnRows(this.file, "pred_points", this.predPointRows, nP, {
+        x: pick(predPoints, 5, 0),
+        y: pick(predPoints, 5, 1),
+        visible: pick(predPoints, 5, 2),
+        verified: pick(predPoints, 5, 3),
+        labeled: v3.predLabeled,
+        score: pick(predPoints, 5, 4),
+      });
+    }
+    this.frameRows += nF;
+    this.instRows += nI;
+    this.pointRows += nU;
+    this.predPointRows += nP;
   }
 
   /** Whether the header written at open holds identities and sessions. */
@@ -1415,11 +2094,34 @@ export class SlpStreamWriter {
    */
   appendStore(store: LazyDataStore, opts?: AppendStoreOptions): void {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
-    // Before any row is written: a view-only store is refused, and unlabelled
-    // points are refused or written as absent.
+    // Before any row is written: a view-only store is refused, the layout is
+    // checked, and (2.x layout) unlabelled points are refused or written as
+    // absent.
     refuseViewOnly(store);
-    refuseFormat3StoreLosses(store, this.headerHas);
-    enforceLegacyLayout(storeLegacyLosses(store), opts?.unlabeledAs);
+    const v3 =
+      this.checkAppendLayout(opts?.slpVersion, storeLayoutFacts(store)) ===
+      "v3";
+    // A format 3.0 file writes the links and embeddings of the store's
+    // instances and annotations; either layout writes only the identities
+    // and sessions of the header.
+    refuseFormat3StoreLosses(store, this.headerHas, v3);
+    // Format 3.0: the identities and categories of the store's instances, by
+    // store row, kept by output row as the rows are written.
+    const storeDetections = v3
+      ? lazyInstanceDetections(store, this.identities)
+      : null;
+    if (v3) {
+      enforceV3Layout(storeLegacyLosses(store), opts?.unlabeledAs);
+      this.noteKinds(store.sourceFormat);
+    } else {
+      enforceLegacyLayout(storeLegacyLosses(store), opts?.unlabeledAs);
+    }
+    if (storeCarriedTables(store).length > 0) {
+      console.warn(
+        `Unknown columns (${storeCarriedTables(store).join(", ")}) were not ` +
+          "saved: the streaming writer rebuilds the tables they belong to.",
+      );
+    }
     const windowFrames = opts?.windowFrames ?? DEFAULT_WRITE_WINDOW_FRAMES;
     const vOff = opts?.videoIndexOffset ?? 0;
     const tOff = opts?.trackOffset ?? 0;
@@ -1455,6 +2157,11 @@ export class SlpStreamWriter {
       qv = predPoints.visible,
       qc = predPoints.complete,
       qs = predPoints.score;
+    // Format 3.0: `labeled` (default true) per point.
+    const pl = store.pointsData.labeled;
+    const ql = store.predPointsData.labeled;
+    const labeledAt = (col: any, vis: any, p: number) =>
+      !col || Number(col[p]) || numAt(vis, p) ? 1 : 0;
 
     // Pre-pass: the instance ranges of frames that will be SKIPPED (their
     // `(video, frameIdx)` was already written). Sorted by construction (frames
@@ -1526,6 +2233,13 @@ export class SlpStreamWriter {
         let ii = 0;
         let upi = 0;
         let ppi = 0;
+        const extra = v3
+          ? {
+              isNegative: [] as number[],
+              userLabeled: [] as number[],
+              predLabeled: [] as number[],
+            }
+          : undefined;
 
         // Pass 2: emit rows for non-skipped frames, assigning ids from the
         // running output counters.
@@ -1552,8 +2266,19 @@ export class SlpStreamWriter {
           framesFlat[fi++] = instBase + outInsts; // instance range start
           framesFlat[fi++] = instBase + outInsts + kept; // end
 
-          if (store.negativeFrames.has(`${numAt(fd.video, r)}:${frameIdx}`)) {
+          const negative = store.negativeFrames.has(
+            `${numAt(fd.video, r)}:${frameIdx}`,
+          );
+          if (negative && !v3) {
             this.negativeFrames.add(`${combinedVideo}:${frameIdx}`);
+          }
+          if (extra) {
+            extra.isNegative.push(negative ? 1 : 0);
+            if (store.frameMetadata) {
+              const md = metadataRecord(store.frameMetadata, r);
+              if (Object.keys(md).length > 0)
+                this.frameMeta.set(newFrameId, md);
+            }
           }
 
           for (let j = iStart; j < iEnd; j++) {
@@ -1565,6 +2290,16 @@ export class SlpStreamWriter {
             const fp = numAt(idn.from_predicted, j, -1);
             const fpOut = fp >= 0 ? outIdxOf(fp) : null;
 
+            const det = storeDetections?.[j];
+            if (det && Object.keys(det).length > 0) {
+              this.instanceDetections.set(instBase + outInsts, det);
+            }
+            if (extra && store.instanceMetadata) {
+              const md = metadataRecord(store.instanceMetadata, j);
+              if (Object.keys(md).length > 0) {
+                this.instanceMeta.set(instBase + outInsts, md);
+              }
+            }
             instFlat[ii++] = instBase + outInsts; // instance_id
             instFlat[ii++] = type; // instance_type
             instFlat[ii++] = newFrameId; // frame_id
@@ -1582,6 +2317,7 @@ export class SlpStreamWriter {
                 predPtsFlat[ppi++] = numAt(qv, p);
                 predPtsFlat[ppi++] = numAt(qc, p);
                 predPtsFlat[ppi++] = numAt(qs, p);
+                extra?.predLabeled.push(labeledAt(ql, qv, p));
               }
               predWritten += ptEnd - ptStart;
             } else {
@@ -1592,56 +2328,26 @@ export class SlpStreamWriter {
                 userPtsFlat[upi++] = numAt(py, p);
                 userPtsFlat[upi++] = numAt(pv, p);
                 userPtsFlat[upi++] = numAt(pc, p);
+                extra?.userLabeled.push(labeledAt(pl, pv, p));
               }
               userWritten += ptEnd - ptStart;
             }
-            instFlat[ii++] = numAt(idn.tracking_score, j); // tracking_score
+            const ts = numAt(idn.tracking_score, j);
+            // Format 3.0 stores a user instance's "none" (0) as NaN.
+            instFlat[ii++] = v3 && type === 0 && !ts ? Number.NaN : ts; // tracking_score
             outInsts++;
           }
           this.writtenFrames.add(key);
         }
 
         // Write only the actually-filled slice of each (max-sized) buffer.
-        const emFrames = fi / 5;
-        const emInsts = ii / 10;
-        const emUserPts = upi / 4;
-        const emPredPts = ppi / 5;
-        appendMatrixRows(
-          this.file,
-          "frames",
+        this.appendPoseRows(
           framesFlat.subarray(0, fi),
-          emFrames,
-          5,
-          this.frameRows,
-        );
-        this.frameRows += emFrames;
-        appendMatrixRows(
-          this.file,
-          "instances",
           instFlat.subarray(0, ii),
-          emInsts,
-          10,
-          this.instRows,
-        );
-        this.instRows += emInsts;
-        appendMatrixRows(
-          this.file,
-          "points",
           userPtsFlat.subarray(0, upi),
-          emUserPts,
-          4,
-          this.pointRows,
-        );
-        this.pointRows += emUserPts;
-        appendMatrixRows(
-          this.file,
-          "pred_points",
           predPtsFlat.subarray(0, ppi),
-          emPredPts,
-          5,
-          this.predPointRows,
+          extra,
         );
-        this.predPointRows += emPredPts;
       }
       // Per-frame + undistributed annotations (masks/rois/…), video + instance
       // remapped, skipping any that belong to a skipped (overlaid) frame.
@@ -1676,12 +2382,35 @@ export class SlpStreamWriter {
    */
   appendFrames(
     frames: LabeledFrame[],
-    options?: { unlabeledAs?: UnlabeledAs },
+    options?: { unlabeledAs?: UnlabeledAs; slpVersion?: SlpVersion },
   ): void {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
     if (frames.length === 0) return;
-    enforceLegacyLayout(framesLegacyLosses(frames), options?.unlabeledAs);
-    refuseFormat3FrameLosses(frames);
+    const v3 =
+      this.checkAppendLayout(options?.slpVersion, framesLayoutFacts(frames)) ===
+      "v3";
+    if (v3) {
+      enforceV3Layout(framesLegacyLosses(frames), options?.unlabeledAs);
+      checkV3Metadata(frames);
+      refuseFormat3FrameIdentities(frames, this.headerHas.identities);
+      for (const frame of frames) {
+        this.noteKinds(sourceMarkOf(frame));
+        for (const inst of frame.instances) this.noteKinds(sourceMarkOf(inst));
+        for (const box of frame.bboxes) this.noteKinds(sourceMarkOf(box));
+      }
+    } else {
+      enforceLegacyLayout(framesLegacyLosses(frames), options?.unlabeledAs);
+      // A format 3.0 writer writes the links and embeddings of the frames'
+      // instances and annotations; the 2.x layout does not.
+      refuseFormat3FrameLosses(frames);
+    }
+    const extra = v3
+      ? {
+          isNegative: [] as number[],
+          userLabeled: [] as number[],
+          predLabeled: [] as number[],
+        }
+      : undefined;
     try {
       const frameBase = this.frameRows;
       const instBase = this.instRows;
@@ -1708,7 +2437,11 @@ export class SlpStreamWriter {
           localId.set(inst as Instance, localInstId);
           const skeletonId = skeletonIdForWrite(this.skeletons, inst, frame);
           const trackId = inst.track ? this.tracks.indexOf(inst.track) : -1;
-          const trackingScore = inst.trackingScore ?? 0;
+          // Format 3.0 stores a user instance's "none" (0 here) as NaN.
+          const trackingScore =
+            v3 && !(inst instanceof PredictedInstance) && !inst.trackingScore
+              ? Number.NaN
+              : (inst.trackingScore ?? 0);
           let type = 0;
           let score = 0;
           let ptStart = 0;
@@ -1719,12 +2452,23 @@ export class SlpStreamWriter {
             ptStart = predPts.length;
             emitInstancePoints(predPts, inst, true);
             ptEnd = predPts.length;
+            if (extra) pushLabeled(extra.predLabeled, inst);
           } else {
             ptStart = userPts.length;
             emitInstancePoints(userPts, inst as Instance, false);
             ptEnd = userPts.length;
+            if (extra) pushLabeled(extra.userLabeled, inst);
             if (inst.fromPredicted)
               links.push([localInstId, inst.fromPredicted]);
+          }
+          if (extra && Object.keys(inst.metadata ?? {}).length > 0) {
+            this.instanceMeta.set(instBase + localInstId, inst.metadata);
+          }
+          if (extra) {
+            this.instanceDetections.set(
+              instBase + localInstId,
+              inst as IdentityBearing,
+            );
           }
           instRows.push([
             localInstId,
@@ -1746,7 +2490,12 @@ export class SlpStreamWriter {
           instanceStart,
           instRows.length,
         ]);
-        if (frame.isNegative) {
+        if (extra) {
+          extra.isNegative.push(frame.isNegative ? 1 : 0);
+          if (Object.keys(frame.metadata ?? {}).length > 0) {
+            this.frameMeta.set(frameBase + localFrameId, frame.metadata);
+          }
+        } else if (frame.isNegative) {
           this.negativeFrames.add(`${videoIndex}:${frame.frameIdx}`);
         }
         this.collectFrameAnnotations(frame, videoIndex, instBase, localId);
@@ -1810,21 +2559,7 @@ export class SlpStreamWriter {
         predFlat[o + 4] = r[4];
       }
 
-      appendMatrixRows(this.file, "frames", framesFlat, nF, 5, this.frameRows);
-      this.frameRows += nF;
-      appendMatrixRows(this.file, "instances", instFlat, nI, 10, this.instRows);
-      this.instRows += nI;
-      appendMatrixRows(this.file, "points", userFlat, nU, 4, this.pointRows);
-      this.pointRows += nU;
-      appendMatrixRows(
-        this.file,
-        "pred_points",
-        predFlat,
-        nP,
-        5,
-        this.predPointRows,
-      );
-      this.predPointRows += nP;
+      this.appendPoseRows(framesFlat, instFlat, userFlat, predFlat, extra);
     } catch (e) {
       this.dispose();
       throw e;
@@ -1947,6 +2682,10 @@ export class SlpStreamWriter {
    * contained mutate→write→restore (source annotations are left unchanged).
    */
   private writePendingAnnotations(): void {
+    // Format 3.0: the streaming writer rebuilds these tables, so it carries
+    // no unknown columns (appendStore warned about any).
+    const v3: V3Write | null =
+      this.layout === "v3" ? { carry: new CarrySession(null) } : null;
     const writeBucket = <T extends AnnLinked>(
       bucket: AnnBucket<T>,
       fn: (
@@ -1956,6 +2695,7 @@ export class SlpStreamWriter {
         tracks: Track[],
         instances: never[],
         ctx: [number, number][],
+        v3?: V3Write | null,
       ) => void,
     ): void => {
       if (bucket.anns.length === 0) return;
@@ -1968,7 +2708,15 @@ export class SlpStreamWriter {
           bucket.anns[i]._instanceIdx =
             bucket.inst[i] >= 0 ? bucket.inst[i] : null;
         }
-        fn(this.file, bucket.anns, this.videos, this.tracks, [], bucket.ctx);
+        fn(
+          this.file,
+          bucket.anns,
+          this.videos,
+          this.tracks,
+          [],
+          bucket.ctx,
+          v3,
+        );
       } finally {
         for (let i = 0; i < bucket.anns.length; i++) {
           bucket.anns[i].instance = saved[i][0];
@@ -1988,13 +2736,54 @@ export class SlpStreamWriter {
         this.tracks,
         [],
         this.pendingLabelImages.ctx,
+        v3,
       );
     }
   }
 
   /** Write pending `negative_frames` and close the HDF5 file (shared finalize). */
   private finalizeFile(): void {
+    withBoolMetadataNotice(() => this.finalizeTables());
+    this.file.close();
+  }
+
+  /** Write the pending annotations, links, metadata and negative frames. */
+  private finalizeTables(): void {
     this.writePendingAnnotations();
+    if (this.layout === "v3") {
+      // Per-detection identity and category links and embeddings: instances
+      // by output row, annotations in the order their tables were written.
+      const detections: DetectionCollections = {
+        instance: Array.from(
+          { length: this.instRows },
+          (_, i) => this.instanceDetections.get(i) ?? {},
+        ),
+        centroid: this.pendingCentroids.anns,
+        mask: this.pendingMasks.anns,
+        bbox: this.pendingBboxes.anns,
+        roi: this.pendingRois.anns,
+      };
+      const v3: V3Write = { carry: new CarrySession(null) };
+      writeIdentityLinks(this.file, this.identities, detections, v3);
+      writeCategoryLinks(this.file, detections, v3);
+      writeEmbeddings(this.file, detections);
+      // Record metadata of the rows appended, by output row.
+      for (const [table, map, rows] of [
+        ["frames", this.frameMeta, this.frameRows],
+        ["instances", this.instanceMeta, this.instRows],
+      ] as const) {
+        if (map.size === 0) continue;
+        const records = Array.from({ length: rows }, (_, i) => ({
+          metadata: map.get(i),
+        }));
+        const kinds = this.metaKinds[table];
+        writeMetadataColumns(
+          this.file,
+          table,
+          metadataColumnsOf(records, table, (key) => kinds.get(key)),
+        );
+      }
+    }
     if (this.negativeFrames.size > 0) {
       const rows: number[][] = [];
       for (const key of this.negativeFrames) {
@@ -2010,7 +2799,6 @@ export class SlpStreamWriter {
         "<i8",
       );
     }
-    this.file.close();
   }
 
   /** Finalize the file (writes `negative_frames` if any) and return its bytes. */
@@ -2021,6 +2809,7 @@ export class SlpStreamWriter {
     const fs = getH5FileSystem(this.module);
     const bytes = fs.readFile!(this.memPath);
     fs.unlink!(this.memPath);
+    if (this.headerLabels) this.headerLabels._slpLayout = this.layout;
     return bytes;
   }
 
@@ -2074,6 +2863,7 @@ export class SlpStreamWriter {
         }
       }
       if (sink.close) await sink.close();
+      if (this.headerLabels) this.headerLabels._slpLayout = this.layout;
     } finally {
       fs.unlink!(this.memPath);
     }
@@ -2111,10 +2901,28 @@ export class SlpStreamWriter {
  */
 export async function openSlpWriter(
   header: SlpWriteHeader,
+  options?: { slpVersion?: SlpVersion },
 ): Promise<SlpStreamWriter> {
   const sourceFormat = (header as { sourceFormat?: SlpSourceFormat | null })
     .sourceFormat;
   refuseViewOnly({ sourceFormat, sessions: header.sessions });
+  // The layout is decided now, from what the header says: the frames come
+  // later. "auto" writes format 3.0 when the format 3.0 defaults are on, or
+  // when the header is labels loaded from (or last saved in) format 3.0.
+  const headerLabels = header instanceof Labels ? header : null;
+  const layout = decideLayout(
+    [
+      {
+        remembered: headerLabels?._slpLayout ?? null,
+        editChoice: sourceFormat?.access === "edit",
+        keep:
+          sourceFormat?.access === "keep" ||
+          sessionsKeep(header.sessions ?? []),
+        reasons: [],
+      },
+    ],
+    options?.slpVersion,
+  );
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_stream_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
@@ -2125,7 +2933,7 @@ export async function openSlpWriter(
     // only header fields). Sessions are written with an empty labeled-frame list,
     // so frame-group refs that resolve by labeled-frame index are dropped — matches
     // the lazy fast-path (`writeSlpToFileLazy`).
-    const headerLabels = new Labels({
+    const frameless = new Labels({
       labeledFrames: [],
       videos: header.videos,
       skeletons: header.skeletons,
@@ -2136,19 +2944,40 @@ export async function openSlpWriter(
       provenance: header.provenance ?? {},
     });
 
-    writeMetadata(file, headerLabels);
-    writeVideos(file, headerLabels.videos);
-    writeVideoCrops(file, headerLabels.videos);
-    writeTracks(file, headerLabels.tracks);
-    writeSuggestions(file, headerLabels.suggestions, headerLabels.videos);
-    writeIdentities(file, headerLabels.identities);
+    writeMetadata(file, frameless, layout);
+    writeVideos(file, frameless.videos);
+    writeVideoCrops(file, frameless.videos);
+    writeTracks(file, frameless.tracks);
+    writeSuggestions(file, frameless.suggestions, frameless.videos);
+    writeIdentities(file, frameless.identities);
     writeSessions(
       file,
-      headerLabels.sessions,
-      headerLabels.videos,
+      frameless.sessions,
+      frameless.videos,
       [],
-      headerLabels.identities,
+      frameless.identities,
+      layout === "v3" ? { carry: new CarrySession(null) } : null,
     );
+
+    if (layout === "v3") {
+      for (const table of ["frames", "instances", "points", "pred_points"]) {
+        createAppendableColumnTable(file, table);
+      }
+      return new SlpStreamWriter(
+        module,
+        file,
+        memPath,
+        {
+          videos: header.videos,
+          skeletons: header.skeletons,
+          tracks: header.tracks ?? [],
+          identities: header.identities ?? [],
+          sessions: header.sessions ?? [],
+        },
+        layout,
+        headerLabels,
+      );
+    }
 
     // dtype chars matter: h5wasm keys off the type CHAR and IGNORES the trailing
     // digit, so "<f8" resolves to float32 (char 'f'=4 bytes) and "<i8" to int32
@@ -2194,13 +3023,20 @@ export async function openSlpWriter(
     throw e;
   }
 
-  return new SlpStreamWriter(module, file, memPath, {
-    videos: header.videos,
-    skeletons: header.skeletons,
-    tracks: header.tracks ?? [],
-    identities: header.identities ?? [],
-    sessions: header.sessions ?? [],
-  });
+  return new SlpStreamWriter(
+    module,
+    file,
+    memPath,
+    {
+      videos: header.videos,
+      skeletons: header.skeletons,
+      tracks: header.tracks ?? [],
+      identities: header.identities ?? [],
+      sessions: header.sessions ?? [],
+    },
+    layout,
+    headerLabels,
+  );
 }
 
 /**
@@ -2230,6 +3066,13 @@ function skeletonSignature(skeletons: Skeleton[]): string {
  * @returns the SLP file bytes (round-trips via `readSlpStreaming` / `readSlp`).
  */
 export interface MergeStoresOptions {
+  /**
+   * The layout of the merged file: `"auto"` (the default) writes the 2.x
+   * layout unless a store needs format 3.0 (loaded from a 3.0 file without
+   * `format3: "edit"`, or holding content only 3.0 can store), `"v2"` or
+   * `"v3"`. See {@link resolveSlpVersion}.
+   */
+  slpVersion?: SlpVersion;
   sessions?: RecordingSession[];
   identities?: Identity[];
   suggestions?: SuggestionFrame[];
@@ -2250,14 +3093,23 @@ async function buildMergedWriter(
   if (stores.length === 0) {
     throw new Error("merging SLP stores requires at least one store");
   }
-  // Refuse a view-only store, and a store from a 3.0 file holding what this
-  // writer would drop, before the writer is opened.
+  // Refuse a view-only store before the writer is opened, decide the file's
+  // layout once for every store, and refuse a store from a 3.0 file holding
+  // what this writer would drop in that layout.
   for (const store of stores) refuseViewOnly(store);
+  const layout = decideLayout(
+    stores.map(storeLayoutFacts),
+    options?.slpVersion,
+  );
   for (const store of stores) {
-    refuseFormat3StoreLosses(store, {
-      identities: (options?.identities ?? []).length > 0,
-      sessions: (options?.sessions ?? []).length > 0,
-    });
+    refuseFormat3StoreLosses(
+      store,
+      {
+        identities: (options?.identities ?? []).length > 0,
+        sessions: (options?.sessions ?? []).length > 0,
+      },
+      layout === "v3",
+    );
   }
   const sig = skeletonSignature(stores[0].skeletons);
   for (let i = 1; i < stores.length; i++) {
@@ -2272,15 +3124,18 @@ async function buildMergedWriter(
   const videos: Video[] = stores.flatMap((s) => s.videos);
   const tracks: Track[] = stores.flatMap((s) => s.tracks);
 
-  const writer = await openSlpWriter({
-    skeletons: stores[0].skeletons,
-    videos,
-    tracks,
-    suggestions: options?.suggestions,
-    identities: options?.identities,
-    sessions: options?.sessions,
-    provenance: options?.provenance,
-  });
+  const writer = await openSlpWriter(
+    {
+      skeletons: stores[0].skeletons,
+      videos,
+      tracks,
+      suggestions: options?.suggestions,
+      identities: options?.identities,
+      sessions: options?.sessions,
+      provenance: options?.provenance,
+    },
+    { slpVersion: layout },
+  );
 
   try {
     let videoOffset = 0;
@@ -2291,6 +3146,7 @@ async function buildMergedWriter(
         trackOffset,
         skeletonOffset: 0, // shared skeletons (validated)
         windowFrames: options?.windowFrames,
+        slpVersion: layout,
       });
       videoOffset += store.videos.length;
       trackOffset += store.tracks.length;
@@ -2388,6 +3244,30 @@ async function writeSlpBytes(
     options?.imageFormat,
     options?.imageQuality,
   );
+  // Decide the layout once, before anything is written (or materialized):
+  // every table writer below follows it.
+  const layout = resolveSlpVersion(
+    labels,
+    checkSlpVersion(options?.slpVersion),
+  );
+  const bytes = await writeSlpBytesIn(labels, options, layout, {
+    includeEmbeddedData,
+    imageFormat,
+  });
+  // The next "auto" save of these labels keeps the layout just written.
+  labels._slpLayout = layout;
+  return bytes;
+}
+
+async function writeSlpBytesIn(
+  labels: Labels,
+  options: SlpWriteOptions | undefined,
+  layout: SlpLayout,
+  {
+    includeEmbeddedData,
+    imageFormat,
+  }: { includeEmbeddedData: boolean; imageFormat: EmbedImageFormat | null },
+): Promise<Uint8Array> {
   const embedMode = options?.embed ?? false;
 
   // Auto-preserve already-embedded videos unless the caller externalizes them.
@@ -2407,7 +3287,11 @@ async function writeSlpBytes(
     // skip (another instance type) is written from its frames instead, so the
     // saved file holds what was read.
     const store = labels._lazyDataStore;
-    if (doEmbed || (store && hasSkippedInstanceRows(store.instancesData))) {
+    if (
+      doEmbed ||
+      (store && hasSkippedInstanceRows(store.instancesData)) ||
+      (layout === "v3" && store && !lazyStoreWritableAsV3(store))
+    ) {
       labels.materialize();
     } else {
       let lazyWriteLabels: Labels = labels;
@@ -2430,18 +3314,31 @@ async function writeSlpBytes(
 
       if (proceedWithFastPath) {
         const lazyStore = lazyWriteLabels._lazyDataStore;
-        if (lazyStore) {
+        if (lazyStore && layout === "v3") {
+          const losses = storeLegacyLosses(lazyStore);
+          enforceV3Layout(losses, options?.unlabeledAs);
+          metadataColumnsOf(
+            [
+              ...lazyStore._undistributedBboxes,
+              ...[...lazyStore._bboxByFrame.values()].flat(),
+            ],
+            "bboxes",
+          );
+        } else if (lazyStore) {
           enforceLegacyLayout(
             storeLegacyLosses(lazyStore),
             options?.unlabeledAs,
           );
+          dropCarryForV2(lazyStore);
         }
         const module = await getH5Module();
         ensureH5StagingDir(module);
         const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
         const file = new module.File(memPath, "w");
         try {
-          writeSlpToFileLazy(file, lazyWriteLabels);
+          withBoolMetadataNotice(() =>
+            writeSlpToFileLazy(file, lazyWriteLabels, layout),
+          );
         } finally {
           file.close();
         }
@@ -2453,10 +3350,22 @@ async function writeSlpBytes(
     }
   }
 
-  enforceLegacyLayout(
-    framesLegacyLosses(labels.labeledFrames, labels._staticRois),
-    options?.unlabeledAs,
-  );
+  if (layout === "v3") {
+    enforceV3Layout(
+      framesLegacyLosses(labels.labeledFrames, labels._staticRois),
+      options?.unlabeledAs,
+    );
+    checkV3Metadata(labels.labeledFrames);
+  } else {
+    enforceLegacyLayout(
+      framesLegacyLosses(labels.labeledFrames, labels._staticRois),
+      options?.unlabeledAs,
+    );
+    for (const table of carriedNotEdited(labels._carriedColumns)) {
+      const carried = labels._carriedColumns?.tables.get(table.slice(1));
+      if (carried) warnDropped(table.slice(1), carried, "legacy");
+    }
+  }
 
   // Source mode: restore original video paths before writing
   let writeLabels = labels;
@@ -2470,18 +3379,21 @@ async function writeSlpBytes(
         const videoIdx = labels.videos.indexOf(frame.video);
         const restoredVideo =
           videoIdx >= 0 ? restoredVideos[videoIdx] : frame.video;
-        return new LabeledFrame({
-          video: restoredVideo,
-          frameIdx: frame.frameIdx,
-          instances: frame.instances,
-          centroids: frame.centroids,
-          bboxes: frame.bboxes,
-          masks: frame.masks,
-          labelImages: frame.labelImages,
-          rois: frame.rois,
-          metadata: frame.metadata,
-          isNegative: frame.isNegative,
-        });
+        return keepSourceMark(
+          frame,
+          new LabeledFrame({
+            video: restoredVideo,
+            frameIdx: frame.frameIdx,
+            instances: frame.instances,
+            centroids: frame.centroids,
+            bboxes: frame.bboxes,
+            masks: frame.masks,
+            labelImages: frame.labelImages,
+            rois: frame.rois,
+            metadata: frame.metadata,
+            isNegative: frame.isNegative,
+          }),
+        );
       }),
       videos: restoredVideos,
       skeletons: labels.skeletons,
@@ -2492,6 +3404,8 @@ async function writeSlpBytes(
       rois: labels._staticRois,
       identities: labels.identities,
     });
+    // The rebuilt frames hold the same records, so the same unknown columns.
+    writeLabels._carriedColumns = labels._carriedColumns;
   }
 
   const module = await getH5Module();
@@ -2521,7 +3435,9 @@ async function writeSlpBytes(
   const file = new module.File(memPath, "w");
   try {
     try {
-      writeSlpToFile(file, writeLabels, plan);
+      withBoolMetadataNotice(() =>
+        writeSlpToFile(file, writeLabels, plan, layout),
+      );
       if (includeEmbeddedData && plan && plan.size > 0) {
         await writeEmbeddedVideoData(file, labels, plan, options?.onProgress);
       }
@@ -2578,7 +3494,11 @@ export function buildMetadataJson(labels: Labels): string {
   return JSON.stringify(metadata);
 }
 
-function writeMetadata(file: any, labels: Labels): void {
+function writeMetadata(
+  file: any,
+  labels: Labels,
+  layout: SlpLayout = "v2",
+): void {
   const metadataJson = buildMetadataJson(labels);
 
   const hasRoiInstance = labels.rois.some((roi) => roi.instance !== null);
@@ -2671,9 +3591,17 @@ function writeMetadata(file: any, labels: Labels): void {
     formatId = Math.max(formatId, 2.8);
   }
 
+  // Format 3.0: every table a group of columns.
+  if (layout === "v3") formatId = Math.max(formatId, SLP_FORMAT3_ID);
+
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
-  metadataGroup.create_attribute("format_id", formatId);
+  if (layout === "v3") {
+    // A float, as Python writes it (h5wasm would guess an integer for 3.0).
+    metadataGroup.create_attribute("format_id", formatId, null, "<d");
+  } else {
+    metadataGroup.create_attribute("format_id", formatId);
+  }
   setStringAttr(metadataGroup, "json", metadataJson);
 }
 
@@ -3085,6 +4013,7 @@ function writeIdentityLinks(
   file: any,
   identities: Identity[],
   c: DetectionCollections,
+  v3?: V3Write | null,
 ): void {
   if (!identities.length) return;
   const idToIdx = new Map<Identity, number>(identities.map((id, i) => [id, i]));
@@ -3106,6 +4035,10 @@ function writeIdentityLinks(
   // The /identity group is created by writeIdentities (runs earlier when
   // identities exist); create defensively in case it does not.
   if (!file.get("identity")) file.create_group("identity");
+  if (v3) {
+    writeLinkTableV3(file, "identity", rows, v3);
+    return;
+  }
   createMatrixDataset(
     file,
     "identity/links",
@@ -3210,7 +4143,11 @@ function collectCategoryCatalog(c: DetectionCollections): string[] {
  * flat-2-D `<d`+field_names (the Python reader converts it, sleap-io#548). No-op
  * when no detection carries a category.
  */
-function writeCategoryLinks(file: any, c: DetectionCollections): void {
+function writeCategoryLinks(
+  file: any,
+  c: DetectionCollections,
+  v3?: V3Write | null,
+): void {
   const catalog = collectCategoryCatalog(c);
   if (!catalog.length) return;
   const catToIdx = new Map<string, number>(catalog.map((n, i) => [n, i]));
@@ -3230,12 +4167,47 @@ function writeCategoryLinks(file: any, c: DetectionCollections): void {
   if (!rows.length) return;
   file.create_group("categories");
   file.create_dataset({ name: "categories/name", data: catalog });
+  if (v3) {
+    writeLinkTableV3(file, "categories", rows, v3);
+    return;
+  }
   createMatrixDataset(
     file,
     "categories/links",
     rows,
     ["owner_type", "owner_id", "category_idx", "category_score"],
     "<d",
+  );
+}
+
+/**
+ * Write `/identity/links` or `/categories/links` in format 3.0: a group of
+ * resizable columns, as Python writes it. Unknown columns kept from loading
+ * are matched to rows by their `(owner_type, owner_id, catalog index)`.
+ */
+function writeLinkTableV3(
+  file: any,
+  catalog: "identity" | "categories",
+  rows: number[][],
+  v3: V3Write,
+): void {
+  const index = catalog === "identity" ? "identity" : "category";
+  const table = `${catalog}/links`;
+  writeColumnTable(
+    file,
+    table,
+    rowColumns(
+      rows,
+      ["owner_type", "owner_id", `${index}_idx`, `${index}_score`],
+      v3LinkColumns(index),
+    ),
+    {
+      resizable: true,
+      carried: v3.carry.columnsFor(
+        table,
+        rows.map((row) => [row[0], row[1], row[2]]),
+      ),
+    },
   );
 }
 
@@ -3477,6 +4449,7 @@ function writeSessions(
   videos: Video[],
   labeledFrames: LabeledFrame[],
   identities?: Identity[],
+  v3?: V3Write | null,
 ): void {
   const labeledFrameIndex = new Map<LabeledFrame, number>();
   labeledFrames.forEach((lf, idx) => {
@@ -3492,6 +4465,10 @@ function writeSessions(
   const igMeta: string[] = [];
   const pts3dRows: number[][] = []; // [x, y, z]
   const predPts3dRows: number[][] = []; // [x, y, z, score]
+  // The records owning each row, for unknown columns (format 3.0).
+  const fgOwners: unknown[][] = [];
+  const igOwners: unknown[][] = [];
+  const memberOwners: unknown[][] = [];
 
   const sessionsJson: string[] = [];
   for (const session of sessions) {
@@ -3514,6 +4491,7 @@ function writeSessions(
           labeledFrameIndex,
         )) {
           memberRows.push(m);
+          memberOwners.push([group, session.cameraGroup.cameras[m[0]]]);
         }
         const memberEnd = memberRows.length;
 
@@ -3564,6 +4542,7 @@ function writeSessions(
           if (inst3d?.score != null) i3dScore = inst3d.score;
         }
 
+        igOwners.push([group]);
         igRows.push([
           identityIdx,
           score,
@@ -3582,6 +4561,7 @@ function writeSessions(
       }
       const igEnd = igRows.length;
       fgRows.push([frameGroup.frameIdx, igStart, igEnd]);
+      fgOwners.push([frameGroup]);
       fgMeta.push(
         frameGroup.metadata && Object.keys(frameGroup.metadata).length
           ? JSON.stringify(frameGroup.metadata)
@@ -3609,6 +4589,42 @@ function writeSessions(
   // Columnar /session_data group — only when some session has frame groups.
   if (fgRows.length > 0) {
     file.create_group("session_data");
+  }
+  if (fgRows.length > 0 && v3) {
+    // Format 3.0: the three tables as groups of resizable columns.
+    const tables: Array<
+      [string, number[][], string[], Array<[string, ColumnType]>, unknown[][]]
+    > = [
+      [
+        "frame_groups",
+        fgRows,
+        SESSION_FRAME_GROUP_FIELDS,
+        V3_FRAME_GROUP_COLUMNS,
+        fgOwners,
+      ],
+      [
+        "instance_groups",
+        igRows,
+        SESSION_INSTANCE_GROUP_FIELDS,
+        V3_INSTANCE_GROUP_COLUMNS,
+        igOwners,
+      ],
+      [
+        "instance_group_members",
+        memberRows,
+        SESSION_INSTANCE_GROUP_MEMBER_FIELDS,
+        V3_MEMBER_COLUMNS,
+        memberOwners,
+      ],
+    ];
+    for (const [name, rows, fields, spec, owners] of tables) {
+      const table = `session_data/${name}`;
+      writeColumnTable(file, table, rowColumns(rows, fields, spec), {
+        resizable: true,
+        carried: v3.carry.columnsFor(table, owners),
+      });
+    }
+  } else if (fgRows.length > 0) {
     createMatrixDataset(
       file,
       "session_data/frame_groups",
@@ -3630,6 +4646,8 @@ function writeSessions(
       SESSION_INSTANCE_GROUP_MEMBER_FIELDS,
       "<d",
     );
+  }
+  if (fgRows.length > 0) {
     if (pts3dRows.length > 0) {
       createGzipFloatMatrix(file, "session_data/points_3d", pts3dRows, 3);
     }
@@ -3866,6 +4884,487 @@ function writeNegativeFrames(file: any, labels: Labels): void {
 }
 
 // ===========================================================================
+// Format 3.0 pose tables
+//
+// `/frames`, `/instances`, `/points` and `/pred_points` as groups of 1-D
+// columns, exactly as Python sleap-io 0.10 lays them out: no id columns (the
+// row number is the id), `frames/video` as the index into the videos list,
+// `frames/is_negative` in place of `/negative_frames`, points with `verified`
+// (the 2.x `complete`) and `labeled` written as `labeled | visible`, and the
+// coordinates of unlabelled points as NaN. Flags are uint8 (see
+// write-columns.ts). Record metadata goes to `<table>/metadata/`.
+// ===========================================================================
+
+/** Column names and types of the 3.0 pose tables (Python's raw layouts). */
+const V3_FRAME_COLUMNS: Array<[string, ColumnType]> = [
+  ["video", "i8"],
+  ["frame_idx", "i8"],
+  ["instance_id_start", "i8"],
+  ["instance_id_end", "i8"],
+  ["is_negative", "bool"],
+];
+const V3_INSTANCE_COLUMNS: Array<[string, ColumnType]> = [
+  ["instance_type", "u1"],
+  ["frame_id", "i8"],
+  ["skeleton", "i8"],
+  ["track", "i8"],
+  ["from_predicted", "i8"],
+  ["score", "f8"],
+  ["point_id_start", "i8"],
+  ["point_id_end", "i8"],
+  ["tracking_score", "f8"],
+];
+const V3_POINT_COLUMNS: Array<[string, ColumnType]> = [
+  ["x", "f8"],
+  ["y", "f8"],
+  ["visible", "bool"],
+  ["verified", "bool"],
+  ["labeled", "bool"],
+];
+const V3_PRED_POINT_COLUMNS: Array<[string, ColumnType]> = [
+  ...V3_POINT_COLUMNS,
+  ["score", "f8"],
+];
+
+/** The pose tables of a format 3.0 file, as columns of numbers. */
+interface PoseColumnsV3 {
+  frames: Record<string, number[]>;
+  instances: Record<string, number[]>;
+  points: Record<string, number[]>;
+  predPoints: Record<string, number[]>;
+}
+
+/** Empty columns for each name of `spec`. */
+function emptyColumns(
+  spec: Array<[string, ColumnType]>,
+): Record<string, number[]> {
+  return Object.fromEntries(spec.map(([name]) => [name, [] as number[]]));
+}
+
+/**
+ * Push the points of `instance` onto 3.0 point columns, exactly `nNodes`
+ * rows, as {@link emitInstancePoints} does for the 2.x layout: missing points
+ * are absent (labelled, hidden, no location), extras are dropped.
+ */
+function emitInstancePointsV3(
+  target: Record<string, number[]>,
+  instance: Instance | PredictedInstance,
+  predicted: boolean,
+): void {
+  const nNodes = instance.skeleton.nodeNames.length;
+  const n = instance._n;
+  if (n !== nNodes && !_spanWarned.has(instance.skeleton.name ?? "")) {
+    _spanWarned.add(instance.skeleton.name ?? "");
+    console.warn(
+      `Instance has ${n} point(s) but its skeleton "${instance.skeleton.name ?? "?"}" has ${nNodes} node(s); ` +
+        "padding/truncating to the node count so the written SLP stays self-consistent (a mismatch would break the Python reader).",
+    );
+  }
+  const xy = instance._xy;
+  const visible = instance._visible;
+  const complete = instance._complete;
+  const labeledCol = instance._labeled;
+  const score = instance._score;
+  for (let i = 0; i < nNodes; i++) {
+    if (i < n) {
+      const vis = visible[i] ? 1 : 0;
+      const labeled = labeledCol && !labeledCol[i] && !vis ? 0 : 1;
+      target.x.push(labeled ? xy[2 * i] : Number.NaN);
+      target.y.push(labeled ? xy[2 * i + 1] : Number.NaN);
+      target.visible.push(vis);
+      target.verified.push(complete[i] ? 1 : 0);
+      target.labeled.push(labeled);
+      // A missing point score is NaN in format 3.0, as Python's "none".
+      if (predicted) target.score.push(score ? score[i] : Number.NaN);
+    } else {
+      target.x.push(Number.NaN);
+      target.y.push(Number.NaN);
+      target.visible.push(0);
+      target.verified.push(0);
+      target.labeled.push(1);
+      if (predicted) target.score.push(0);
+    }
+  }
+}
+
+/**
+ * Build the format 3.0 pose tables of eager labels, in the order the 2.x
+ * writer uses (frames, and their instances, as `labels.labeledFrames` holds
+ * them).
+ */
+function buildPoseColumnsV3(labels: Labels): PoseColumnsV3 {
+  const frames = emptyColumns(V3_FRAME_COLUMNS);
+  const instances = emptyColumns(V3_INSTANCE_COLUMNS);
+  const points = emptyColumns(V3_POINT_COLUMNS);
+  const predPoints = emptyColumns(V3_PRED_POINT_COLUMNS);
+  const instanceIndex = new Map<Instance, number>();
+  const predictedLinks: Array<[number, PredictedInstance]> = [];
+  let nInstances = 0;
+  for (const labeledFrame of labels.labeledFrames) {
+    const frameId = frames.video.length;
+    const instanceStart = nInstances;
+    for (const instance of labeledFrame.instances) {
+      const instanceId = nInstances++;
+      instanceIndex.set(instance as Instance, instanceId);
+      const predicted = instance instanceof PredictedInstance;
+      const target = predicted ? predPoints : points;
+      const pointStart = target.x.length;
+      emitInstancePointsV3(target, instance, predicted);
+      if (!predicted && instance.fromPredicted) {
+        predictedLinks.push([instanceId, instance.fromPredicted]);
+      }
+      instances.instance_type.push(predicted ? 1 : 0);
+      instances.frame_id.push(frameId);
+      instances.skeleton.push(
+        skeletonIdForWrite(labels.skeletons, instance, labeledFrame),
+      );
+      instances.track.push(
+        instance.track ? labels.tracks.indexOf(instance.track) : -1,
+      );
+      instances.from_predicted.push(-1);
+      instances.score.push(
+        predicted ? ((instance as PredictedInstance).score ?? 0) : 0,
+      );
+      instances.point_id_start.push(pointStart);
+      instances.point_id_end.push(target.x.length);
+      // A user instance's tracking score of 0 is this model's "none", which
+      // format 3.0 stores as NaN, as Python does.
+      instances.tracking_score.push(
+        !predicted && !instance.trackingScore
+          ? Number.NaN
+          : (instance.trackingScore ?? Number.NaN),
+      );
+    }
+    frames.video.push(Math.max(0, labels.videos.indexOf(labeledFrame.video)));
+    frames.frame_idx.push(labeledFrame.frameIdx);
+    frames.instance_id_start.push(instanceStart);
+    frames.instance_id_end.push(nInstances);
+    frames.is_negative.push(labeledFrame.isNegative ? 1 : 0);
+  }
+  for (const [instanceId, source] of predictedLinks) {
+    instances.from_predicted[instanceId] =
+      instanceIndex.get(source as unknown as Instance) ?? -1;
+  }
+  return { frames, instances, points, predPoints };
+}
+
+/**
+ * The kind each metadata key of `table` was read as, from the source formats
+ * of `records` (a key read as float stays float).
+ */
+function metadataKindHint(
+  records: Iterable<object>,
+  table: "instances" | "frames" | "bboxes",
+): (key: string) => MetadataKind | undefined {
+  const kinds = new Map<string, MetadataKind>();
+  const seen = new Set<SlpSourceFormat>();
+  for (const record of records) {
+    const mark = sourceMarkOf(record);
+    if (!mark?.metadataKinds || seen.has(mark)) continue;
+    seen.add(mark);
+    for (const [key, kind] of Object.entries(mark.metadataKinds[table])) {
+      if (kinds.get(key) !== "float") kinds.set(key, kind);
+    }
+  }
+  return (key) => kinds.get(key);
+}
+
+/** Columns of `spec`, with `values` from `columns`, ready to write. */
+function specColumns(
+  spec: Array<[string, ColumnType]>,
+  columns: Record<string, ArrayLike<number>>,
+): Column[] {
+  return spec.map(([name, type]) => ({ name, type, values: columns[name] }));
+}
+
+/**
+ * The per-row owner keys of the 3.0 pose tables of eager labels, for unknown
+ * columns (see column-carry.ts): frames, instances, and the instances owning
+ * the point rows (with their point arrays).
+ */
+function poseCarryKeys(labels: Labels): {
+  frames: unknown[][];
+  instances: unknown[][];
+  points: unknown[][];
+  predPoints: unknown[][];
+} {
+  const frames: unknown[][] = [];
+  const instances: unknown[][] = [];
+  const points: unknown[][] = [];
+  const predPoints: unknown[][] = [];
+  for (const frame of labels.labeledFrames) {
+    frames.push([frame]);
+    for (const instance of frame.instances) {
+      instances.push([instance]);
+      (instance instanceof PredictedInstance ? predPoints : points).push([
+        instance,
+        instance._xy,
+      ]);
+    }
+  }
+  return { frames, instances, points, predPoints };
+}
+
+/**
+ * Write the 3.0 pose tables of eager labels, with their record metadata and
+ * any unknown columns kept from the file they were loaded from.
+ *
+ * @throws {TypeError} If a metadata key mixes kinds (checked before writing
+ *   by the caller, see {@link checkV3Metadata}).
+ */
+function writePoseTablesV3(
+  file: any,
+  labels: Labels,
+  carry: CarrySession,
+): void {
+  const pose = buildPoseColumnsV3(labels);
+  const keys = poseCarryKeys(labels);
+  const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
+  writeColumnTable(file, "points", specColumns(V3_POINT_COLUMNS, pose.points), {
+    carried: carry.columnsFor("points", keys.points),
+  });
+  writeColumnTable(
+    file,
+    "pred_points",
+    specColumns(V3_PRED_POINT_COLUMNS, pose.predPoints),
+    { carried: carry.columnsFor("pred_points", keys.predPoints) },
+  );
+  writeColumnTable(
+    file,
+    "instances",
+    specColumns(V3_INSTANCE_COLUMNS, pose.instances),
+    { carried: carry.columnsFor("instances", keys.instances) },
+  );
+  writeMetadataColumns(
+    file,
+    "instances",
+    metadataColumnsOf(
+      allInstances,
+      "instances",
+      metadataKindHint(allInstances, "instances"),
+    ),
+  );
+  writeColumnTable(file, "frames", specColumns(V3_FRAME_COLUMNS, pose.frames), {
+    carried: carry.columnsFor("frames", keys.frames),
+  });
+  writeMetadataColumns(
+    file,
+    "frames",
+    metadataColumnsOf(
+      labels.labeledFrames,
+      "frames",
+      metadataKindHint(labels.labeledFrames, "frames"),
+    ),
+  );
+}
+
+/**
+ * Check the record metadata of eager labels can be written in format 3.0
+ * (one kind per key), before anything is written.
+ *
+ * @throws {TypeError} Naming the table and key of a key that mixes kinds.
+ */
+function checkV3Metadata(
+  frames: readonly LabeledFrame[],
+  extraBoxes: readonly BoundingBox[] = [],
+): void {
+  metadataColumnsOf(frames, "frames");
+  metadataColumnsOf(
+    frames.flatMap((f) => f.instances),
+    "instances",
+  );
+  metadataColumnsOf(
+    [...frames.flatMap((f) => f.bboxes), ...extraBoxes],
+    "bboxes",
+  );
+}
+
+/**
+ * Whether the raw pose tables of a lazy store can be written as format 3.0
+ * columns row for row: the ids are the row numbers, every instance row lies
+ * in its frame's range, and the coordinates need no conversion. Otherwise the
+ * lazy save materializes and writes the frames.
+ */
+function lazyStoreWritableAsV3(store: LazyDataStore): boolean {
+  if (store.formatId < 1.1) return false;
+  const fd = store.framesData;
+  const idn = store.instancesData;
+  const nFrames = (fd.frame_idx ?? []).length;
+  const nInst = (idn.instance_type ?? []).length;
+  const frameIds = fd.frame_id ?? [];
+  const instIds = idn.instance_id ?? [];
+  for (let i = 0; i < frameIds.length; i++) {
+    if (Number(frameIds[i]) !== i) return false;
+  }
+  for (let i = 0; i < instIds.length; i++) {
+    if (Number(instIds[i]) !== i) return false;
+  }
+  let expected = 0;
+  for (let r = 0; r < nFrames; r++) {
+    const start = numAt(fd.instance_id_start, r);
+    const end = numAt(fd.instance_id_end, r);
+    if (start !== expected || end < start) return false;
+    for (let j = start; j < end; j++) {
+      if (numAt(idn.frame_id, j) !== r) return false;
+    }
+    expected = end;
+  }
+  if (expected !== nInst) return false;
+  // Negative frames without a frame row would need rows of their own.
+  if (store.negativeFrames.size > 0) {
+    const rows = new Set<string>();
+    for (let r = 0; r < nFrames; r++) {
+      rows.add(`${numAt(fd.video, r)}:${numAt(fd.frame_idx, r)}`);
+    }
+    for (const key of store.negativeFrames) if (!rows.has(key)) return false;
+  }
+  return true;
+}
+
+/**
+ * Write the 3.0 pose tables of a lazy store from its raw rows, without
+ * materializing: the store's metadata columns and unknown columns are written
+ * back as they were read. Call only when {@link lazyStoreWritableAsV3}.
+ */
+function writeLazyPoseTablesV3(file: any, store: LazyDataStore): void {
+  const fd = store.framesData;
+  const idn = store.instancesData;
+  const nFrames = (fd.frame_idx ?? []).length;
+  const nInst = (idn.instance_type ?? []).length;
+  const videoIdMap = buildVideoIdMap(fd, store.videos);
+  const isNegative = new Uint8Array(nFrames);
+  const video = new Float64Array(nFrames);
+  for (let r = 0; r < nFrames; r++) {
+    const raw = numAt(fd.video, r);
+    video[r] = videoIdMap.get(raw) ?? raw;
+    if (store.negativeFrames.has(`${raw}:${numAt(fd.frame_idx, r)}`)) {
+      isNegative[r] = 1;
+    }
+  }
+  const formatId = store.formatId;
+  const trackingScore = new Float64Array(nInst);
+  for (let i = 0; i < nInst; i++) {
+    const raw = formatId < 1.2 ? 0 : numAt(idn.tracking_score, i);
+    // As the readers: NaN reads as 0 before 3.0. A user instance's 0 (no
+    // score) is NaN in format 3.0, as the eager writer writes it.
+    const read = Number.isNaN(raw) && formatId < 3 ? 0 : raw;
+    trackingScore[i] =
+      numAt(idn.instance_type, i) === 0 && !read ? Number.NaN : read;
+  }
+  const col = (table: Record<string, any>, name: string, def: number) => {
+    const values = table[name];
+    if (values && values.length === (table === fd ? nFrames : nInst)) {
+      return values as ArrayLike<number>;
+    }
+    return new Float64Array(table === fd ? nFrames : nInst).fill(def);
+  };
+  const pointColumns = (
+    table: Record<string, any>,
+    predicted: boolean,
+  ): Column[] => {
+    const n = (table.x ?? []).length;
+    const x = Float64Array.from(table.x ?? [], Number);
+    const y = Float64Array.from(table.y ?? [], Number);
+    const visible = new Uint8Array(n);
+    const verified = new Uint8Array(n);
+    const labeled = new Uint8Array(n);
+    const vis = table.visible ?? [];
+    const ver = table.verified ?? table.complete ?? [];
+    const lab = table.labeled;
+    for (let i = 0; i < n; i++) {
+      visible[i] = Number(vis[i] ?? 0) ? 1 : 0;
+      verified[i] = Number(ver[i] ?? 0) ? 1 : 0;
+      labeled[i] = !lab || Number(lab[i]) || visible[i] ? 1 : 0;
+      if (!labeled[i]) {
+        x[i] = Number.NaN;
+        y[i] = Number.NaN;
+      }
+    }
+    const out: Column[] = [
+      { name: "x", type: "f8", values: x },
+      { name: "y", type: "f8", values: y },
+      { name: "visible", type: "bool", values: visible },
+      { name: "verified", type: "bool", values: verified },
+      { name: "labeled", type: "bool", values: labeled },
+    ];
+    if (predicted) {
+      const score = table.score;
+      out.push({
+        name: "score",
+        type: "f8",
+        values:
+          score && score.length === n
+            ? Float64Array.from(score, Number)
+            : new Float64Array(n).fill(Number.NaN),
+      });
+    }
+    return out;
+  };
+  const unknown = store.unknownColumns ?? {};
+  writeColumnTable(file, "points", pointColumns(store.pointsData, false), {
+    carried: unknown.points,
+  });
+  writeColumnTable(
+    file,
+    "pred_points",
+    pointColumns(store.predPointsData, true),
+    {
+      carried: unknown.pred_points,
+    },
+  );
+  writeColumnTable(
+    file,
+    "instances",
+    [
+      {
+        name: "instance_type",
+        type: "u1",
+        values: col(idn, "instance_type", 0),
+      },
+      { name: "frame_id", type: "i8", values: col(idn, "frame_id", 0) },
+      { name: "skeleton", type: "i8", values: col(idn, "skeleton", 0) },
+      { name: "track", type: "i8", values: col(idn, "track", -1) },
+      {
+        name: "from_predicted",
+        type: "i8",
+        values: col(idn, "from_predicted", -1),
+      },
+      { name: "score", type: "f8", values: col(idn, "score", 0) },
+      {
+        name: "point_id_start",
+        type: "i8",
+        values: col(idn, "point_id_start", 0),
+      },
+      { name: "point_id_end", type: "i8", values: col(idn, "point_id_end", 0) },
+      { name: "tracking_score", type: "f8", values: trackingScore },
+    ],
+    { carried: unknown.instances },
+  );
+  writeMetadataColumns(file, "instances", store.instanceMetadata);
+  writeColumnTable(
+    file,
+    "frames",
+    [
+      { name: "video", type: "i8", values: video },
+      { name: "frame_idx", type: "i8", values: col(fd, "frame_idx", 0) },
+      {
+        name: "instance_id_start",
+        type: "i8",
+        values: col(fd, "instance_id_start", 0),
+      },
+      {
+        name: "instance_id_end",
+        type: "i8",
+        values: col(fd, "instance_id_end", 0),
+      },
+      { name: "is_negative", type: "bool", values: isNegative },
+    ],
+    { carried: unknown.frames },
+  );
+  writeMetadataColumns(file, "frames", store.frameMetadata);
+}
+
+// ===========================================================================
 // Fast in-place label save (edit re-save)
 //
 // Re-save an existing `.pkg.slp` by patching ONLY the small label tables
@@ -3908,10 +5407,102 @@ export interface LabelTableUpdate {
   /**
    * The `sourceFormat` of the labels the update was built from (see
    * `Labels.sourceFormat`). A view-only source is refused by every in-place
-   * function; a format 3.0 source is never patched in place (its file is in
-   * the 3.0 layout), so {@link checkInPlaceWritable} sends it to a full save.
+   * function; labels loaded from a 3.0 file with `format3: "edit"` build a
+   * 2.x update, which never patches their 3.0 file.
    */
   sourceFormat?: SlpSourceFormat | null;
+  /**
+   * The layout of the update: absent or `"v2"` for the 2.x tables
+   * (`fields` as the 2.x columns, plus `negativeFrames`), `"v3"` for format
+   * 3.0 (`fields` as the 3.0 columns of each pose table, `is_negative` in
+   * `frames`, and {@link metadata}). A 3.0 update patches a 3.0 file column by
+   * column.
+   */
+  layout?: SlpLayout;
+  /** Format 3.0: the record metadata of `/instances` and `/frames`. */
+  metadata?: {
+    instances: Record<string, MetadataColumn>;
+    frames: Record<string, MetadataColumn>;
+  };
+  /**
+   * Format 3.0: `false` when the labels carry unknown columns of the pose
+   * tables whose rows no longer line up with the records (see
+   * column-carry.ts); the file then needs a full save, which drops them.
+   */
+  unknownColumnsAligned?: boolean;
+}
+
+/** Rows of `columns` (one per row) in the order of `spec`. */
+function columnsToRows(
+  spec: ReadonlyArray<[string, ColumnType]>,
+  columns: Record<string, number[]>,
+): { fields: string[]; rows: number[][] } {
+  const fields = spec.map(([name]) => name);
+  const n = (columns[fields[0]] ?? []).length;
+  const rows: number[][] = new Array(n);
+  for (let i = 0; i < n; i++) rows[i] = fields.map((f) => columns[f][i]);
+  return { fields, rows };
+}
+
+/** The format 3.0 {@link LabelTableUpdate} of `labels`. */
+function buildLabelTableUpdateV3(
+  labels: Labels,
+  opts?: { metadataJson?: string; unlabeledAs?: UnlabeledAs },
+): LabelTableUpdate {
+  if (labels.isLazy) labels.materialize();
+  enforceV3Layout(
+    framesLegacyLosses(labels.labeledFrames, labels._staticRois),
+    opts?.unlabeledAs,
+  );
+  const pose = buildPoseColumnsV3(labels);
+  const allInstances = labels.labeledFrames.flatMap((f) => f.instances);
+  // Unknown pose columns stay where they are on disk, so the records must
+  // still be the ones they were read with.
+  const keys = poseCarryKeys(labels);
+  let aligned = true;
+  const carry = labels._carriedColumns;
+  for (const [table, k] of [
+    ["frames", keys.frames],
+    ["instances", keys.instances],
+    ["points", keys.points],
+    ["pred_points", keys.predPoints],
+  ] as const) {
+    const carried = carry?.tables.get(table);
+    if (!carried) continue;
+    const owners = carried.owners;
+    if (
+      !owners ||
+      owners.length !== k.length ||
+      !owners.every(
+        (o, i) => o.length === k[i].length && o.every((x, j) => x === k[i][j]),
+      )
+    ) {
+      aligned = false;
+    }
+  }
+  const update: LabelTableUpdate = {
+    frames: columnsToRows(V3_FRAME_COLUMNS, pose.frames),
+    instances: columnsToRows(V3_INSTANCE_COLUMNS, pose.instances),
+    points: columnsToRows(V3_POINT_COLUMNS, pose.points),
+    predPoints: columnsToRows(V3_PRED_POINT_COLUMNS, pose.predPoints),
+    layout: "v3",
+    metadata: {
+      instances: metadataColumnsOf(
+        allInstances,
+        "instances",
+        metadataKindHint(allInstances, "instances"),
+      ),
+      frames: metadataColumnsOf(
+        labels.labeledFrames,
+        "frames",
+        metadataKindHint(labels.labeledFrames, "frames"),
+      ),
+    },
+    unknownColumnsAligned: aligned,
+  };
+  if (opts?.metadataJson !== undefined) update.metadataJson = opts.metadataJson;
+  if (labels.sourceFormat) update.sourceFormat = labels.sourceFormat;
+  return update;
 }
 
 /**
@@ -3922,20 +5513,47 @@ export interface LabelTableUpdate {
  * table when the user removed all negative frames. Pass `opts.metadataJson`
  * (e.g. from {@link buildMetadataJson}) only when metadata changed.
  *
+ * The layout follows `opts.slpVersion` (default `"auto"`, decided without a
+ * warning, see {@link resolveSlpVersion}): labels loaded from a format 3.0 file
+ * (without `format3: "edit"`) build a 3.0 update, patched into their file
+ * column by column. A 3.0 update of lazy labels materializes them.
+ *
+ * @returns The update. For a 3.0 update of lazy labels, the labels are
+ *   materialized first (`labels.materialize()`), so they are eager afterwards.
  * @throws {SlpViewOnlyError} For labels loaded with `format3: "view"`.
  * @throws {Error} For unlabelled points with `unlabeledAs: "error"` (see
- *   {@link UnlabeledAs}).
+ *   {@link UnlabeledAs}), in the 2.x layout.
  */
 export function buildLabelTableUpdate(
   labels: Labels,
-  opts?: { metadataJson?: string; unlabeledAs?: UnlabeledAs },
+  opts?: {
+    metadataJson?: string;
+    unlabeledAs?: UnlabeledAs;
+    slpVersion?: SlpVersion;
+  },
 ): LabelTableUpdate {
   refuseViewOnly(labels);
+  const layout = resolveSlpVersion(labels, checkSlpVersion(opts?.slpVersion), {
+    warn: false,
+  });
+  if (layout === "v3") return buildLabelTableUpdateV3(labels, opts);
   enforceLegacyLayout(
     framesLegacyLosses(labels.labeledFrames, labels._staticRois),
     opts?.unlabeledAs,
   );
   const r = buildLabelTableRows(labels);
+  // The NaN tracking scores the readers read as 0 are patched back as NaN,
+  // for the instances read with one (by record, so an edit that replaces an
+  // instance does not give its NaN to another).
+  let row = 0;
+  for (const frame of labels.labeledFrames) {
+    for (const instance of frame.instances) {
+      if (instance.trackingScore === 0 && hadNanTrackingScore(instance)) {
+        r.instances[row][9] = Number.NaN;
+      }
+      row += 1;
+    }
+  }
   const update: LabelTableUpdate = {
     frames: { fields: FRAMES_FIELDS, rows: r.frames },
     instances: { fields: INSTANCES_FIELDS, rows: r.instances },
@@ -3957,6 +5575,10 @@ export interface OnDiskMember {
   size?: number;
   /** Whether the integer member is signed (h5wasm reports float as unsigned). */
   signed?: boolean;
+  /** Rows of the column (`layout: "columns"` only). */
+  rows?: number;
+  /** For an enum member, its members' names and values. */
+  enumMembers?: Record<string, number>;
 }
 
 /** On-disk shape/layout of one label table, as seen by the writability gate. */
@@ -3965,12 +5587,23 @@ export interface OnDiskTable {
   rows: number;
   /** Column count (matrix width, or compound member count). */
   cols: number;
-  /** Storage layout: a 2-D numeric matrix, or a 1-D compound record dataset. */
-  layout: "flat" | "compound";
+  /**
+   * Storage layout: a 2-D numeric matrix, a 1-D compound record dataset, or
+   * (format 3.0) a group of 1-D columns.
+   */
+  layout: "flat" | "compound" | "columns";
   /** Whether the dataset is chunked (⇒ resizable on axis 0). */
   chunked?: boolean;
-  /** Compound members (only for `layout: "compound"`). */
+  /**
+   * Compound members (`layout: "compound"`), or the group's columns
+   * (`layout: "columns"`).
+   */
   members?: OnDiskMember[];
+  /**
+   * Format 3.0: the record metadata on disk, by key (the kind of its
+   * `values`, and whether it has a `present` column).
+   */
+  metadata?: Record<string, { kind: MetadataKind | null; present: boolean }>;
 }
 
 /** The on-disk state of the label tables the gate inspects. */
@@ -3996,6 +5629,7 @@ export interface DatasetMetaLike {
         type: number;
         size?: number;
         signed?: boolean;
+        enum_type?: { members?: Record<string, number> } | null;
       }>;
     };
   };
@@ -4025,6 +5659,9 @@ export function onDiskTableFromMeta(
         typeClass: m.type,
         size: m.size,
         signed: m.signed,
+        ...(m.enum_type?.members
+          ? { enumMembers: { ...m.enum_type.members } }
+          : {}),
       })),
     };
   }
@@ -4033,6 +5670,132 @@ export function onDiskTableFromMeta(
     cols: meta.shape[1] ?? 1,
     layout: "flat",
     chunked,
+  };
+}
+
+/**
+ * Describe a format 3.0 table (a group of 1-D columns) for the writability
+ * gate, from the `getDatasetMeta` result of each column (the worker's, or
+ * h5wasm's `{ shape, metadata }`) and, for `/instances` and `/frames`, of each
+ * metadata key's `values` (with its `kind` attribute, if any) and whether it
+ * has `present`.
+ */
+export function onDiskColumnTableFromMeta(
+  columns: Readonly<Record<string, DatasetMetaLike>>,
+  metadata?: Readonly<
+    Record<
+      string,
+      { values: DatasetMetaLike; kindAttr?: unknown; present: boolean }
+    >
+  >,
+): OnDiskTable {
+  const members: OnDiskMember[] = [];
+  let rows = 0;
+  for (const [name, meta] of Object.entries(columns)) {
+    const md = meta.metadata as
+      | {
+          type?: number;
+          size?: number;
+          signed?: boolean;
+          enum_type?: { members?: Record<string, number> } | null;
+        }
+      | undefined;
+    if (!Array.isArray(meta.shape) || meta.shape.length !== 1) continue;
+    rows = Math.max(rows, meta.shape[0] ?? 0);
+    members.push({
+      name,
+      typeClass: md?.type ?? -1,
+      size: md?.size,
+      signed: md?.signed,
+      rows: meta.shape[0] ?? 0,
+      ...(md?.enum_type?.members
+        ? { enumMembers: { ...md.enum_type.members } }
+        : {}),
+    });
+  }
+  const out: OnDiskTable = {
+    rows,
+    cols: members.length,
+    layout: "columns",
+    chunked: false,
+    members,
+  };
+  if (metadata) {
+    out.metadata = {};
+    for (const [key, m] of Object.entries(metadata)) {
+      const kind = metadataKindFromH5(
+        {
+          ...((m.values.metadata ?? {}) as object),
+          shape: m.values.shape ?? null,
+        } as Parameters<typeof metadataKindFromH5>[0],
+        m.kindAttr,
+      );
+      // Readers ignore members they cannot read, and so does the gate.
+      if (kind !== null) out.metadata[key] = { kind, present: m.present };
+    }
+  }
+  return out;
+}
+
+/**
+ * Describe the label tables of an open h5wasm file for the writability gate,
+ * in whichever layout each is stored (see {@link onDiskTableFromMeta} and
+ * {@link onDiskColumnTableFromMeta}).
+ */
+export function onDiskTablesFromFile(file: any): OnDiskTables {
+  const node = (path: string): any => {
+    try {
+      return file.get(path) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const describe = (name: string): OnDiskTable | undefined => {
+    const n = node(name);
+    if (!n) return undefined;
+    if (n.type !== "Group") {
+      return onDiskTableFromMeta({ shape: n.shape, metadata: n.metadata });
+    }
+    const columns: Record<string, DatasetMetaLike> = {};
+    for (const child of n.keys() as string[]) {
+      const ds = node(`${name}/${child}`);
+      if (ds && ds.type !== "Group") {
+        columns[child] = { shape: ds.shape, metadata: ds.metadata };
+      }
+    }
+    let metadata:
+      | Record<
+          string,
+          { values: DatasetMetaLike; kindAttr?: unknown; present: boolean }
+        >
+      | undefined;
+    if (name === "instances" || name === "frames") {
+      metadata = {};
+      for (const key of readMetadataKeysInPlace(file, name)) {
+        {
+          const values = node(`${name}/metadata/${key}/values`);
+          let kindAttr: unknown;
+          try {
+            kindAttr = values.attrs?.kind?.value;
+          } catch {
+            kindAttr = undefined;
+          }
+          metadata[key] = {
+            values: { shape: values.shape, metadata: values.metadata },
+            kindAttr,
+            present: !!node(`${name}/metadata/${key}/present`),
+          };
+        }
+      }
+    }
+    return onDiskColumnTableFromMeta(columns, metadata);
+  };
+  return {
+    frames: describe("frames"),
+    instances: describe("instances"),
+    points: describe("points"),
+    predPoints: describe("pred_points"),
+    negativeFrames: describe("negative_frames"),
   };
 }
 
@@ -4132,12 +5895,138 @@ export function checkInPlaceWritable(
   sidecars: { onDisk: OnDiskSidecars; expected: OnDiskSidecars },
 ): InPlaceWritable {
   refuseViewOnly(update);
-  if (update.sourceFormat && update.sourceFormat.formatId >= 3) {
+  const tables = checkTablesWritable(update, onDisk);
+  if (!tables.ok) return tables;
+  return checkSidecarsUnchanged(update, sidecars);
+}
+
+/**
+ * Whether an enum is h5py's bool: a one-byte enum whose only members are
+ * `FALSE = 0` and `TRUE = 1`.
+ */
+function isH5pyBool(
+  size: number | undefined,
+  members: Record<string, unknown> | null | undefined,
+): boolean {
+  const names = Object.keys(members ?? {}).sort();
+  return (
+    (size ?? 1) === 1 &&
+    names.length === 2 &&
+    names[0] === "FALSE" &&
+    names[1] === "TRUE" &&
+    Number(members?.FALSE) === 0 &&
+    Number(members?.TRUE) === 1
+  );
+}
+
+/** Whether an integer, float or h5py bool column can be patched. */
+function writableNumeric(member: OnDiskMember): boolean {
+  if (member.typeClass === 0 || member.typeClass === H5T_FLOAT_CLASS) {
+    return true;
+  }
+  // h5py's bool is written as 0/1 with the dataset's own type, which h5wasm
+  // can do (see writeWithFileType). Other enums are refused: a value written
+  // through their base integer might name no member.
+  return (
+    member.typeClass === H5T_ENUM_CLASS &&
+    isH5pyBool(member.size, member.enumMembers)
+  );
+}
+
+/** The table checks of {@link checkInPlaceWritable}. */
+function checkTablesWritable(
+  update: LabelTableUpdate,
+  onDisk: OnDiskTables,
+): InPlaceWritable {
+  const pose: Array<[string, LabelTable, OnDiskTable | undefined]> = [
+    ["frames", update.frames, onDisk.frames],
+    ["instances", update.instances, onDisk.instances],
+    ["points", update.points, onDisk.points],
+    ["pred_points", update.predPoints, onDisk.predPoints],
+  ];
+  if (update.layout === "v3") {
+    if (update.unknownColumnsAligned === false) {
+      return {
+        ok: false,
+        reason:
+          "the records changed since loading, so the unknown columns kept from the file no longer line up — re-save the whole file instead",
+      };
+    }
+    for (const [name, table, od] of pose) {
+      if (!od || od.layout !== "columns") {
+        return {
+          ok: false,
+          reason: `table "${name}" is ${od ? "in the SLP 2.x layout" : "absent"} on disk but the update is in format 3.0 — re-save the whole file instead`,
+        };
+      }
+      if (table.rows.length !== od.rows) {
+        return {
+          ok: false,
+          reason: `table "${name}" row count changed (${od.rows} → ${table.rows.length}); format 3.0 columns are patched value by value only — re-save the whole file instead`,
+        };
+      }
+      for (const field of table.fields) {
+        const member = od.members?.find((m) => m.name === field);
+        if (!member) {
+          return {
+            ok: false,
+            reason: `table "${name}" has no column "${field}" on disk — re-save the whole file instead`,
+          };
+        }
+        if (!writableNumeric(member) || (member.rows ?? od.rows) !== od.rows) {
+          return {
+            ok: false,
+            reason: `column "${name}/${field}" cannot be patched in place (HDF5 type class ${member.typeClass}) — re-save the whole file instead`,
+          };
+        }
+      }
+    }
+    for (const [name, od] of [
+      ["instances", onDisk.instances],
+      ["frames", onDisk.frames],
+    ] as const) {
+      const want = update.metadata?.[name] ?? {};
+      const have = od?.metadata ?? {};
+      const wantKeys = Object.keys(want).sort();
+      const haveKeys = Object.keys(have).sort();
+      if (wantKeys.join("\0") !== haveKeys.join("\0")) {
+        return {
+          ok: false,
+          reason: `the metadata keys of "${name}" changed — re-save the whole file instead`,
+        };
+      }
+      for (const key of wantKeys) {
+        if (
+          want[key].kind !== have[key].kind ||
+          (want[key].present !== null) !== have[key].present
+        ) {
+          return {
+            ok: false,
+            reason: `the metadata "${name}/${key}" changed kind or which records hold it — re-save the whole file instead`,
+          };
+        }
+      }
+    }
+    return { ok: true };
+  }
+  if (
+    update.sourceFormat?.formatId !== undefined &&
+    update.sourceFormat.formatId >= 3
+  ) {
+    // Labels loaded from a 3.0 file to be saved in the 2.x layout.
     return {
       ok: false,
       reason:
-        "the labels were loaded from a file in SLP format 3.0, whose tables an in-place save cannot patch; this version saves the 2.x layout only — re-save the whole file instead",
+        "the labels were loaded from a file in SLP format 3.0 and the update is in the 2.x layout, which an in-place save cannot write into that file — re-save the whole file instead",
     };
+  }
+  for (const [name, , od] of pose) {
+    if (od?.layout === "columns") {
+      return {
+        ok: false,
+        reason: `table "${name}" is in SLP format 3.0 on disk but the update is in the 2.x layout — re-save the whole file instead`,
+      };
+    }
   }
   const checks: Array<
     [string, LabelTable | undefined, OnDiskTable | undefined]
@@ -4151,11 +6040,11 @@ export function checkInPlaceWritable(
   for (const [name, table, od] of checks) {
     if (!od) continue; // absent on disk → writer creates it (resizable)
     if (od.layout === "compound" && od.members) {
-      const enumMember = od.members.find((m) => m.typeClass === H5T_ENUM_CLASS);
-      if (enumMember) {
+      const bad = od.members.find((m) => !writableNumeric(m));
+      if (bad) {
         return {
           ok: false,
-          reason: `table "${name}" member "${enumMember.name}" is an HDF5 enum/bool (typeClass ${H5T_ENUM_CLASS}); h5wasm cannot write it — re-save the whole file instead`,
+          reason: `table "${name}" member "${bad.name}" (HDF5 type class ${bad.typeClass}) cannot be written in place — re-save the whole file instead`,
         };
       }
     }
@@ -4166,7 +6055,14 @@ export function checkInPlaceWritable(
       };
     }
   }
+  return { ok: true };
+}
 
+/** The confinement checks of {@link checkInPlaceWritable}. */
+function checkSidecarsUnchanged(
+  update: LabelTableUpdate,
+  sidecars: { onDisk: OnDiskSidecars; expected: OnDiskSidecars },
+): InPlaceWritable {
   // Confinement: the label tables index into tracks_json / suggestions_json /
   // metadata, which the in-place writer does NOT rewrite (except the /metadata
   // attr, and only when update.metadataJson is set). If any changed, an in-place
@@ -4226,8 +6122,11 @@ function memberColumnTypedArray(
 ): ArrayBufferView {
   const size = member.size ?? 8;
   if (member.type === H5T_ENUM_CLASS) {
-    throw new Error(
-      `cannot write enum/bool compound member "${member.name}" in place`,
+    // h5py's bool (the only enum written, see writeWithFileType): 0 or 1.
+    const flags = values.map((v) => (v ? 1 : 0));
+    return memberColumnTypedArray(
+      { name: member.name, type: 0, size, signed: member.signed },
+      flags,
     );
   }
   if (member.type === H5T_FLOAT_CLASS) {
@@ -4243,6 +6142,137 @@ function memberColumnTypedArray(
   if (size === 1) return (signed ? Int8Array : Uint8Array).from(values);
   if (size === 2) return (signed ? Int16Array : Uint16Array).from(values);
   return (signed ? Int32Array : Uint32Array).from(values);
+}
+
+/**
+ * Run `write` (an h5wasm `write_slice`) on a dataset whose type holds an HDF5
+ * enum (h5py's bool), which h5wasm's high-level writer refuses: for the
+ * write, the dataset's cached description names each enum as its base
+ * integer, so h5wasm packs the values at the members' offsets, and the bytes
+ * go to the file with the dataset's own type (h5wasm writes with the file
+ * type), so they are stored as the enum values they are. Datasets without an
+ * enum are written as they are.
+ */
+function writeWithFileType(ds: any, write: () => void): void {
+  const md = ds.metadata;
+  const asInt = (m: any) =>
+    m.type === H5T_ENUM_CLASS
+      ? {
+          ...m,
+          type: 0,
+          signed: m.signed !== false,
+          enum_type: undefined,
+        }
+      : m;
+  const members = md?.compound_type?.members as any[] | undefined;
+  const enums = members
+    ? members.filter((m) => m.type === H5T_ENUM_CLASS)
+    : md?.type === H5T_ENUM_CLASS
+      ? [md]
+      : [];
+  if (enums.length === 0) {
+    write();
+    return;
+  }
+  // Backstop for a caller that skipped the gate: only h5py's bool.
+  for (const m of enums) {
+    if (!isH5pyBool(m.size, m.enum_type?.members)) {
+      throw new Error(
+        `in-place save: "${ds.path}" holds an enum other than a boolean, which this writer does not write — re-save the whole file instead`,
+      );
+    }
+  }
+  ds._metadata = members
+    ? {
+        ...md,
+        compound_type: { ...md.compound_type, members: members.map(asInt) },
+      }
+    : asInt(md);
+  try {
+    write();
+  } finally {
+    delete ds._metadata;
+  }
+}
+
+/** Rows per slice when an in-place write reads a table back. */
+const VERIFY_CHUNK_ROWS = 65536;
+
+/**
+ * Read rows `[0, n)` of a dataset in bounded slices, calling `visit` with each
+ * slice (an array of records for a compound dataset, a typed array for a 1-D
+ * one) and its first row.
+ */
+function forEachSlice(
+  ds: any,
+  n: number,
+  visit: (rows: ArrayLike<unknown>, start: number) => void,
+): void {
+  for (let start = 0; start < n; start += VERIFY_CHUNK_ROWS) {
+    const end = Math.min(n, start + VERIFY_CHUNK_ROWS);
+    visit(ds.slice([[start, end]]) as ArrayLike<unknown>, start);
+  }
+}
+
+/**
+ * After an enum write, read the dataset back, a bounded slice at a time, and
+ * check each enum member holds what was written (0/1 for a flag), so a wrong
+ * write is never left unnoticed.
+ *
+ * @throws {Error} If a value differs.
+ */
+function verifyEnumMembers(
+  ds: any,
+  diskName: string,
+  members: Array<{ name: string; type: number }>,
+  table: LabelTable,
+  rowCount: number,
+): void {
+  const checks = members
+    .map((m, mi) => [mi, table.fields.indexOf(m.name), m] as const)
+    .filter(([, , m]) => m.type === H5T_ENUM_CLASS);
+  if (checks.length === 0) return;
+  forEachSlice(ds, rowCount, (rows, start) => {
+    for (let k = 0; k < rows.length; k++) {
+      const row = rows[k] as ArrayLike<unknown>;
+      for (const [mi, ci, m] of checks) {
+        const got = Number(row?.[mi]);
+        const want = table.rows[start + k][ci] ? 1 : 0;
+        if (got !== want) {
+          throw new Error(
+            `in-place write of "${diskName}" member "${m.name}" did not take effect (row ${start + k}: wrote ${want}, read ${got}) — re-save the whole file instead`,
+          );
+        }
+      }
+    }
+  });
+}
+
+/**
+ * Write one 1-D numeric dataset (format 3.0 column) in place with `values`,
+ * in the dataset's own type (an enum as its base integer, see
+ * {@link writeWithFileType}).
+ */
+function writeColumnInPlace(ds: any, values: ArrayLike<number>): void {
+  const md = ds.metadata;
+  const n = values.length;
+  if (n === 0) return;
+  const data = memberColumnTypedArray(
+    { name: ds.path, type: md.type, size: md.size, signed: md.signed },
+    Array.from(values, Number),
+  );
+  writeWithFileType(ds, () => ds.write_slice([[0, n]], data));
+  if (md.type === H5T_ENUM_CLASS) {
+    forEachSlice(ds, n, (rows, start) => {
+      for (let k = 0; k < rows.length; k++) {
+        if (Number(rows[k]) !== (values[start + k] ? 1 : 0)) {
+          throw new Error(
+            `in-place write of "${ds.path}" did not take effect (row ${start + k}) — re-save the whole file instead`,
+          );
+        }
+      }
+    });
+  }
 }
 
 /**
@@ -4309,7 +6339,8 @@ function writeOneTableInPlace(
       const colVals = table.rows.map((row) => row[ci]);
       columns.set(m.name, memberColumnTypedArray(m, colVals));
     }
-    ds.write_slice([[0, rowCount]], columns);
+    writeWithFileType(ds, () => ds.write_slice([[0, rowCount]], columns));
+    verifyEnumMembers(ds, diskName, members!, table, rowCount);
   } else {
     const flat = new Float64Array(rowCount * colCount);
     for (let i = 0; i < rowCount; i++) {
@@ -4344,6 +6375,12 @@ function writeOneTableInPlace(
  * dataset) — a resize that can't happen THROWS here rather than writing ghost
  * rows, so the caller falls back to a full re-save.
  *
+ * IF THIS THROWS, THE FILE MAY BE PARTLY WRITTEN: checks run before the first
+ * write catch what they can, but a failure after it (an I/O error, the
+ * read-back check of HDF5 booleans, a resize the gate did not see) leaves
+ * some tables patched. The caller must then do a full save to the same
+ * target.
+ *
  * Does NOT flush or close the file — the caller owns the file lifecycle.
  */
 export function writeLabelTablesInPlace(
@@ -4351,6 +6388,11 @@ export function writeLabelTablesInPlace(
   update: LabelTableUpdate,
 ): void {
   refuseViewOnly(update);
+  if (update.layout === "v3") {
+    writeLabelColumnsInPlace(file, update);
+    writeMetadataJsonInPlace(file, update.metadataJson);
+    return;
+  }
   // A 3.0 file stores its pose tables as groups of columns; patching them as
   // 2.x tables would corrupt it. Refuse before touching anything.
   for (const name of ["frames", "instances", "points", "pred_points"]) {
@@ -4374,8 +6416,127 @@ export function writeLabelTablesInPlace(
   if (update.negativeFrames) {
     writeOneTableInPlace(file, "negative_frames", update.negativeFrames, "<i8");
   }
+  writeMetadataJsonInPlace(file, update.metadataJson);
+}
 
-  if (update.metadataJson !== undefined) {
+/**
+ * Patch the format 3.0 pose tables of an open file column by column from a
+ * 3.0 update (values only: every column keeps its length), and the values of
+ * their record metadata. Everything is checked before anything is written: a
+ * missing column, a changed length, changed metadata keys, or a changed
+ * string metadata value (h5wasm cannot rewrite variable-length strings)
+ * throws, so the caller re-saves the whole file.
+ */
+function writeLabelColumnsInPlace(file: any, update: LabelTableUpdate): void {
+  const node = (path: string): any => {
+    try {
+      return file.get(path) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const fail = (why: string): never => {
+    throw new Error(`in-place save: ${why} — re-save the whole file instead`);
+  };
+  const writes: Array<[any, ArrayLike<number>]> = [];
+  for (const [name, table] of [
+    ["frames", update.frames],
+    ["instances", update.instances],
+    ["points", update.points],
+    ["pred_points", update.predPoints],
+  ] as const) {
+    if (node(name)?.type !== "Group") {
+      fail(`"${name}" is not in the SLP format 3.0 layout`);
+    }
+    table.fields.forEach((field, j) => {
+      const ds = node(`${name}/${field}`);
+      if (!ds || ds.type === "Group") fail(`"${name}/${field}" is missing`);
+      if (ds.shape?.length !== 1 || ds.shape[0] !== table.rows.length) {
+        fail(`"${name}/${field}" changed length`);
+      }
+      writes.push([ds, table.rows.map((row) => row[j])]);
+    });
+  }
+  for (const name of ["instances", "frames"] as const) {
+    const columns = update.metadata?.[name] ?? {};
+    const onDisk = readMetadataKeysInPlace(file, name);
+    if (
+      [...onDisk].sort().join("\0") !== Object.keys(columns).sort().join("\0")
+    ) {
+      fail(`the metadata keys of "${name}" changed`);
+    }
+    for (const [key, column] of Object.entries(columns)) {
+      const values = node(`${name}/metadata/${key}/values`);
+      const present = node(`${name}/metadata/${key}/present`);
+      if (!values || values.shape?.[0] !== column.values.length) {
+        fail(`"${name}/metadata/${key}" changed length`);
+      }
+      if (!!present !== (column.present !== null)) {
+        fail(`which records hold "${name}/metadata/${key}" changed`);
+      }
+      if (column.kind === "str") {
+        const stored = Array.from(values.value as ArrayLike<unknown>, (v) =>
+          v instanceof Uint8Array ? new TextDecoder().decode(v) : String(v),
+        );
+        const same = stored.every(
+          (v, i) => column.present?.[i] === 0 || v === String(column.values[i]),
+        );
+        if (!same) fail(`a string value of "${name}/metadata/${key}" changed`);
+      } else {
+        writes.push([
+          values,
+          Array.from(column.values, (v) =>
+            column.kind === "bool" ? (v ? 1 : 0) : Number(v),
+          ),
+        ]);
+      }
+      if (present && column.present) {
+        writes.push([present, Array.from(column.present, Number)]);
+      }
+    }
+  }
+  for (const [ds, values] of writes) writeColumnInPlace(ds, values);
+}
+
+/**
+ * The metadata keys of a 3.0 table that readers read: groups under
+ * `<table>/metadata` with a 1-D `values` dataset of a supported kind.
+ */
+function readMetadataKeysInPlace(file: any, table: string): string[] {
+  const get = (path: string): any => {
+    try {
+      return file.get(path) ?? null;
+    } catch {
+      return null;
+    }
+  };
+  const md = get(`${table}/metadata`);
+  if (!md || md.type !== "Group") return [];
+  const keys: string[] = [];
+  for (const key of md.keys() as string[]) {
+    const group = get(`${table}/metadata/${key}`);
+    if (!group || group.type !== "Group") continue;
+    if (!(group.keys() as string[]).includes("values")) continue;
+    const values = get(`${table}/metadata/${key}/values`);
+    if (!values || values.type === "Group") continue;
+    let kindAttr: unknown;
+    try {
+      kindAttr = values.attrs?.kind?.value;
+    } catch {
+      kindAttr = undefined;
+    }
+    const kind = metadataKindFromH5(
+      { ...(values.metadata ?? {}), shape: values.shape },
+      kindAttr,
+    );
+    if (kind !== null) keys.push(key);
+  }
+  return keys;
+}
+
+/** Replace the `/metadata` `json` attribute, when the update carries it. */
+function writeMetadataJsonInPlace(file: any, metadataJson?: string): void {
+  if (metadataJson !== undefined) {
     const metadataGroup = file.get("metadata");
     if (metadataGroup) {
       // The json attr is a fixed-length S-string; a new value of a different
@@ -4387,7 +6548,7 @@ export function writeLabelTablesInPlace(
       } catch {
         // no existing attr — fine
       }
-      setStringAttr(metadataGroup, "json", update.metadataJson);
+      setStringAttr(metadataGroup, "json", metadataJson);
     }
   }
 }
@@ -5658,6 +7819,136 @@ function writeVlenStrings(file: any, name: string, values: string[]): void {
   });
 }
 
+/** How a table writer writes format 3.0 (`null`: the 2.x layout). */
+interface V3Write {
+  /** Unknown columns kept from loading, offered to each table. */
+  carry: CarrySession;
+}
+
+/** Concatenate byte chunks into one buffer. */
+function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
+  const total = chunks.reduce((sum, c) => sum + c.length, 0);
+  const out = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    out.set(chunk, offset);
+    offset += chunk.length;
+  }
+  return out;
+}
+
+/**
+ * Columns of a 3.0 table from rows built for the 2.x writers: `names[j]` is
+ * the column of `rows[i][j]`; `spec` gives the 3.0 columns to write, in order.
+ */
+function rowColumns(
+  rows: readonly number[][],
+  names: readonly string[],
+  spec: ReadonlyArray<[string, ColumnType]>,
+): Column[] {
+  return spec.map(([name, type]) => {
+    const j = names.indexOf(name);
+    if (j < 0) throw new Error(`no value for column ${name}`);
+    return { name, type, values: rows.map((row) => row[j]) };
+  });
+}
+
+/** A string column of a 3.0 table. */
+function stringColumn(name: string, values: readonly string[]): Column {
+  return { name, type: "str", values };
+}
+
+// Format 3.0 column types of the annotation, link and session tables
+// (Python's `_TABLE_SPECS[...].raw`).
+const V3_SPATIAL_COLUMNS: Array<[string, ColumnType]> = [
+  ["scale_x", "f8"],
+  ["scale_y", "f8"],
+  ["offset_x", "f8"],
+  ["offset_y", "f8"],
+];
+const V3_ROI_COLUMNS: Array<[string, ColumnType]> = [
+  ["annotation_type", "u1"],
+  ["video", "i8"],
+  ["frame_idx", "i8"],
+  ["track", "i8"],
+  ["instance", "i8"],
+  ["is_predicted", "bool"],
+  ["score", "f8"],
+  ["tracking_score", "f8"],
+  ["wkb_start", "i8"],
+  ["wkb_end", "i8"],
+];
+const V3_MASK_COLUMNS: Array<[string, ColumnType]> = [
+  ["height", "i8"],
+  ["width", "i8"],
+  ["annotation_type", "u1"],
+  ["video", "i8"],
+  ["frame_idx", "i8"],
+  ["track", "i8"],
+  ["instance", "i8"],
+  ["from_predicted", "i8"],
+  ["is_predicted", "bool"],
+  ["score", "f8"],
+  ["tracking_score", "f8"],
+  ["rle_start", "i8"],
+  ["rle_end", "i8"],
+  ...V3_SPATIAL_COLUMNS,
+];
+const v3ScoreMapColumns = (index: string): Array<[string, ColumnType]> => [
+  [index, "i8"],
+  ["data_start", "i8"],
+  ["data_end", "i8"],
+  ["height", "i8"],
+  ["width", "i8"],
+  ...V3_SPATIAL_COLUMNS,
+];
+const V3_LABEL_IMAGE_COLUMNS: Array<[string, ColumnType]> = [
+  ["video", "i8"],
+  ["frame_idx", "i8"],
+  ["height", "i8"],
+  ["width", "i8"],
+  ["n_objects", "i8"],
+  ["objects_start", "i8"],
+  ["data_start", "i8"],
+  ["data_end", "i8"],
+  ["is_predicted", "bool"],
+  ["score", "f8"],
+  ...V3_SPATIAL_COLUMNS,
+];
+const V3_LABEL_IMAGE_OBJECT_COLUMNS: Array<[string, ColumnType]> = [
+  ["label_id", "i8"],
+  ["track", "i8"],
+  ["instance", "i8"],
+  ["score", "f8"],
+  ["tracking_score", "f8"],
+];
+const v3LinkColumns = (catalog: string): Array<[string, ColumnType]> => [
+  ["owner_type", "u1"],
+  ["owner_id", "i8"],
+  [`${catalog}_idx`, "i8"],
+  [`${catalog}_score`, "f8"],
+];
+const V3_FRAME_GROUP_COLUMNS: Array<[string, ColumnType]> = [
+  ["frame_idx", "i8"],
+  ["ig_start", "i8"],
+  ["ig_end", "i8"],
+];
+const V3_INSTANCE_GROUP_COLUMNS: Array<[string, ColumnType]> = [
+  ["identity_idx", "i8"],
+  ["score", "f8"],
+  ["instance_3d_score", "f8"],
+  ["pts3d_start", "i8"],
+  ["pts3d_end", "i8"],
+  ["pts3d_predicted", "bool"],
+  ["member_start", "i8"],
+  ["member_end", "i8"],
+];
+const V3_MEMBER_COLUMNS: Array<[string, ColumnType]> = [
+  ["camera", "i8"],
+  ["lf", "i8"],
+  ["inst", "i8"],
+];
+
 function writeRois(
   file: any,
   rois: ROI[],
@@ -5665,6 +7956,7 @@ function writeRois(
   tracks: Array<{ name: string }>,
   instances?: Array<Instance | PredictedInstance>,
   contexts?: [number, number][],
+  v3?: V3Write | null,
 ): void {
   if (!rois.length) return;
 
@@ -5715,6 +8007,43 @@ function writeRois(
     categories.push(roi.category);
     names.push(roi.name);
     sources.push(roi.source);
+  }
+
+  if (v3) {
+    // Format 3.0: a `/rois` group of columns holding the gzipped `wkb`.
+    writeColumnTable(
+      file,
+      "rois",
+      [
+        ...rowColumns(
+          rows,
+          [
+            "annotation_type",
+            "video",
+            "frame_idx",
+            "track",
+            "score",
+            "tracking_score",
+            "wkb_start",
+            "wkb_end",
+            "instance",
+            "is_predicted",
+          ],
+          V3_ROI_COLUMNS,
+        ),
+        stringColumn("name", names),
+        stringColumn("category", categories),
+        stringColumn("source", sources),
+      ],
+      {
+        carried: v3.carry.columnsFor(
+          "rois",
+          rois.map((r) => [r]),
+        ),
+      },
+    );
+    writeByteBuffer(file, "rois/wkb", concatBytes(wkbChunks), true);
+    return;
   }
 
   createLegacyTable(
@@ -5782,6 +8111,7 @@ function writeMasks(
   tracks: Array<{ name: string }>,
   instances: (Instance | PredictedInstance)[],
   contexts?: [number, number][],
+  v3?: V3Write | null,
 ): void {
   if (!masks.length) return;
 
@@ -5896,6 +8226,81 @@ function writeMasks(
     }
   }
 
+  if (v3) {
+    // Format 3.0: a `/masks` group of columns holding the gzipped `rle`, and
+    // a `score_maps/` group with its `data` buffer.
+    writeColumnTable(
+      file,
+      "masks",
+      [
+        ...rowColumns(
+          rows,
+          [
+            "height",
+            "width",
+            "annotation_type",
+            "video",
+            "frame_idx",
+            "track",
+            "score",
+            "rle_start",
+            "rle_end",
+            "is_predicted",
+            "instance",
+            "tracking_score",
+            "scale_x",
+            "scale_y",
+            "offset_x",
+            "offset_y",
+            "from_predicted",
+          ],
+          V3_MASK_COLUMNS,
+        ),
+        stringColumn("name", names),
+        stringColumn("category", categories),
+        stringColumn("source", sources),
+      ],
+      {
+        carried: v3.carry.columnsFor(
+          "masks",
+          masks.map((m) => [m]),
+        ),
+      },
+    );
+    writeByteBuffer(file, "masks/rle", concatBytes(rleChunks), true);
+    const smKeys = scoreMapIndexRows.map((row) => [masks[row[0]]]);
+    const smCarried = v3.carry.columnsFor("masks/score_maps", smKeys);
+    if (scoreMapIndexRows.length > 0) {
+      writeColumnTable(
+        file,
+        "masks/score_maps",
+        rowColumns(
+          scoreMapIndexRows,
+          [
+            "mask_idx",
+            "data_start",
+            "data_end",
+            "height",
+            "width",
+            "scale_x",
+            "scale_y",
+            "offset_x",
+            "offset_y",
+          ],
+          v3ScoreMapColumns("mask_idx"),
+        ),
+        { carried: smCarried },
+      );
+      writeByteBuffer(
+        file,
+        "masks/score_maps/data",
+        concatBytes(scoreMapChunks),
+        false,
+      );
+    }
+    return;
+  }
+
   createLegacyTable(
     file,
     "masks",
@@ -6002,6 +8407,7 @@ function writeBboxes(
   tracks: Array<{ name: string }>,
   instances: (Instance | PredictedInstance)[],
   contexts?: [number, number][],
+  v3?: V3Write | null,
 ): void {
   if (!bboxes.length) return;
 
@@ -6074,6 +8480,23 @@ function writeBboxes(
   file.create_dataset({ name: "bboxes/category", data: categories });
   file.create_dataset({ name: "bboxes/name", data: names });
   file.create_dataset({ name: "bboxes/source", data: sources });
+  if (v3) {
+    // Format 3.0 keeps the 2.0 columns, any unknown columns still lining up
+    // with the boxes, and the boxes' metadata.
+    for (const [name, column] of Object.entries(
+      v3.carry.columnsFor(
+        "bboxes",
+        bboxes.map((b) => [b]),
+      ),
+    )) {
+      writeColumnTable(file, "bboxes", [], { carried: { [name]: column } });
+    }
+    writeMetadataColumns(
+      file,
+      "bboxes",
+      metadataColumnsOf(bboxes, "bboxes", metadataKindHint(bboxes, "bboxes")),
+    );
+  }
 }
 
 function writeLabelImages(
@@ -6083,6 +8506,7 @@ function writeLabelImages(
   tracks: Track[],
   instances: (Instance | PredictedInstance)[],
   contexts?: [number, number][],
+  v3?: V3Write | null,
 ): void {
   if (!labelImages.length) return;
 
@@ -6096,6 +8520,7 @@ function writeLabelImages(
   const compressedChunks: Uint8Array[] = [];
   let dataOffset = 0;
   const objectRows: number[][] = [];
+  const objectOwners: unknown[][] = [];
   const objectCategories: string[] = [];
   const objectNames: string[] = [];
   const sources: string[] = [];
@@ -6152,6 +8577,7 @@ function writeLabelImages(
       ]);
       objectCategories.push(info.category);
       objectNames.push(info.name);
+      objectOwners.push([info]);
       objectsOffset++;
     }
 
@@ -6204,6 +8630,99 @@ function writeLabelImages(
         smOffset += smCompressed.length;
       }
     }
+  }
+
+  if (v3) {
+    // Format 3.0: a `/label_images` group of columns holding the pixel `data`
+    // (each image zlib-compressed, indexed by data_start/data_end), with
+    // `objects/` and `score_maps/` groups.
+    const carry = v3.carry;
+    writeColumnTable(
+      file,
+      "label_images",
+      [
+        ...rowColumns(
+          rows,
+          [
+            "video",
+            "frame_idx",
+            "height",
+            "width",
+            "n_objects",
+            "objects_start",
+            "data_start",
+            "data_end",
+            "is_predicted",
+            "score",
+            "scale_x",
+            "scale_y",
+            "offset_x",
+            "offset_y",
+          ],
+          V3_LABEL_IMAGE_COLUMNS,
+        ),
+        stringColumn("source", sources),
+      ],
+      {
+        carried: carry.columnsFor(
+          "label_images",
+          labelImages.map((li) => [li]),
+        ),
+      },
+    );
+    writeByteBuffer(
+      file,
+      "label_images/data",
+      concatBytes(compressedChunks),
+      false,
+    );
+    writeColumnTable(
+      file,
+      "label_images/objects",
+      [
+        ...rowColumns(
+          objectRows,
+          ["label_id", "track", "instance", "score", "tracking_score"],
+          V3_LABEL_IMAGE_OBJECT_COLUMNS,
+        ),
+        stringColumn("name", objectNames),
+        stringColumn("category", objectCategories),
+      ],
+      { carried: carry.columnsFor("label_images/objects", objectOwners) },
+    );
+    const smCarried = carry.columnsFor(
+      "label_images/score_maps",
+      smIndexRows.map((row) => [labelImages[row[0]]]),
+    );
+    if (smIndexRows.length > 0) {
+      writeColumnTable(
+        file,
+        "label_images/score_maps",
+        rowColumns(
+          smIndexRows,
+          [
+            "li_idx",
+            "data_start",
+            "data_end",
+            "height",
+            "width",
+            "scale_x",
+            "scale_y",
+            "offset_x",
+            "offset_y",
+          ],
+          v3ScoreMapColumns("li_idx"),
+        ),
+        { carried: smCarried },
+      );
+      writeByteBuffer(
+        file,
+        "label_images/score_maps/data",
+        concatBytes(smChunks),
+        false,
+      );
+    }
+    return;
   }
 
   // Write main metadata table

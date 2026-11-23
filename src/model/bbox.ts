@@ -99,8 +99,8 @@ export class BoundingBox {
   source: string;
   /**
    * Per-box values (bool, number or string), stored by SLP format 3.0 in
-   * `/bboxes/metadata`. The 2.x layout this version writes cannot store them,
-   * so a save drops them (see `saveSlpToBytes`).
+   * `/bboxes/metadata`. The 2.x layout cannot store them, so a save writes
+   * format 3.0 for them (see `slpVersion` on `saveSlpToBytes`).
    */
   metadata: RecordMetadata;
   /** @internal Deferred instance index for lazy resolution. */
