@@ -39,6 +39,14 @@ import type { Identity } from "../../model/identity.js";
 import { PredictedInstance3D } from "../../model/instance3d.js";
 import type { LazyDataStore } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
+import { metadataKeys, metadataKeysOf } from "../../model/record-metadata.js";
+import { type SlpSourceFormat, SlpViewOnlyError } from "./format3.js";
+import {
+  countUnlabeledPoints,
+  hasSkippedInstanceRows,
+  skipsInstanceRow,
+} from "./columnar.js";
+import { sourceMarkOf } from "../../model/source-mark.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile:
@@ -124,7 +132,292 @@ export type SlpWriteOptions = {
    * {@link ExportCancelled}, as Python's `progress_callback`.
    */
   onProgress?: (current: number, total: number, message?: string) => unknown;
+  /**
+   * How to save unlabelled points (`labeled` and `visible` both false), which
+   * the 2.x layout this version writes cannot store; see {@link UnlabeledAs}.
+   * Decided record by record: points of instances loaded from a format 3.0
+   * file with `format3: "edit"` (wherever they have been merged or copied
+   * since) are written as absent unless this is `"error"`; points of any other
+   * instance are refused unless this is `"absent"`. Records loaded with
+   * `format3: "view"` are never written.
+   */
+  unlabeledAs?: UnlabeledAs;
 };
+
+/**
+ * How a writer of the 2.x layout handles unlabelled points, as Python
+ * sleap-io's `unlabeled_as`: `"error"` throws before anything is written,
+ * naming the count; `"absent"` writes them as hidden points with no location
+ * (labelled, not visible, NaN coordinates), which is how a 2.x reader will
+ * read them back.
+ */
+export type UnlabeledAs = "error" | "absent";
+
+/**
+ * Throw {@link SlpViewOnlyError} for labels (or a lazy store, or a table
+ * update) loaded from a format 3.0 file with `format3: "view"`. Every SLP writer
+ * calls this before it touches its target.
+ */
+export function refuseViewOnly(
+  source: { sourceFormat?: SlpSourceFormat | null } | null | undefined,
+): void {
+  const sourceFormat = source?.sourceFormat;
+  if (sourceFormat?.access === "view") throw new SlpViewOnlyError(sourceFormat);
+}
+
+/**
+ * What records about to be written hold that the 2.x layout cannot store,
+ * split by where the records came from (see `model/source-mark.ts`).
+ */
+interface LegacyLosses {
+  /** The source of a record loaded with `format3: "view"`, if any. */
+  viewOnly: SlpSourceFormat | null;
+  /** Unlabelled points of records loaded with `format3: "edit"`. */
+  unlabeledEdit: number;
+  /** Unlabelled points of records not loaded from a 3.0 file. */
+  unlabeledOwn: number;
+  /** Metadata keys of records not loaded from a 3.0 file, per table. */
+  metadataKeys: Array<[table: string, keys: string[]]>;
+}
+
+/** Keep the tables that have keys. */
+function tablesWithKeys(
+  tables: Array<[string, string[]]>,
+): Array<[string, string[]]> {
+  return tables.filter(([, keys]) => keys.length > 0);
+}
+
+/** The {@link LegacyLosses} of materialized frames, record by record. */
+function framesLegacyLosses(
+  frames: Iterable<LabeledFrame>,
+  staticRois: Iterable<object> = [],
+): LegacyLosses {
+  let viewOnly: SlpSourceFormat | null = null;
+  let unlabeledEdit = 0;
+  let unlabeledOwn = 0;
+  const ownInstances: Instance[] = [];
+  const ownFrames: LabeledFrame[] = [];
+  const ownBoxes: BoundingBox[] = [];
+  const markOf = (record: object): SlpSourceFormat | undefined => {
+    const mark = sourceMarkOf(record);
+    if (mark?.access === "view") viewOnly ??= mark;
+    return mark;
+  };
+  // Static ROIs (not on any frame) are written too.
+  for (const roi of staticRois) markOf(roi);
+  for (const frame of frames) {
+    if (!markOf(frame)) ownFrames.push(frame);
+    for (const inst of frame.instances) {
+      const mark = markOf(inst);
+      if (mark?.access === "edit") unlabeledEdit += inst.nUnlabeled;
+      else if (!mark) {
+        unlabeledOwn += inst.nUnlabeled;
+        ownInstances.push(inst);
+      }
+    }
+    for (const box of frame.bboxes) if (!markOf(box)) ownBoxes.push(box);
+    for (const list of [
+      frame.centroids,
+      frame.masks,
+      frame.labelImages,
+      frame.rois,
+    ] as object[][]) {
+      for (const record of list) markOf(record);
+    }
+  }
+  return {
+    viewOnly,
+    unlabeledEdit,
+    unlabeledOwn,
+    metadataKeys: tablesWithKeys([
+      ["instances", metadataKeysOf(ownInstances)],
+      ["frames", metadataKeysOf(ownFrames)],
+      ["bboxes", metadataKeysOf(ownBoxes)],
+    ]),
+  };
+}
+
+/**
+ * Throw {@link SlpViewOnlyError} if any frame, instance or annotation in
+ * `frames` was loaded with `format3: "view"`.
+ */
+function refuseViewOnlyRecords(
+  frames: Iterable<LabeledFrame>,
+  staticRois: Iterable<object> = [],
+): void {
+  const check = (record: object): void => {
+    const mark = sourceMarkOf(record);
+    if (mark?.access === "view") throw new SlpViewOnlyError(mark);
+  };
+  for (const roi of staticRois) check(roi);
+  for (const frame of frames) {
+    check(frame);
+    for (const list of [
+      frame.instances,
+      frame.centroids,
+      frame.bboxes,
+      frame.masks,
+      frame.labelImages,
+      frame.rois,
+    ] as object[][]) {
+      for (const record of list) check(record);
+    }
+  }
+}
+
+/**
+ * The {@link LegacyLosses} of a lazy store, read from its raw columns. The
+ * store's source covers its pose rows; boxes are checked one by one.
+ */
+function storeLegacyLosses(store: LazyDataStore): LegacyLosses {
+  let viewOnly: SlpSourceFormat | null =
+    store.sourceFormat?.access === "view" ? store.sourceFormat : null;
+  const ownBoxes: BoundingBox[] = [];
+  const boxes: BoundingBox[] = [...store._undistributedBboxes];
+  for (const list of store._bboxByFrame.values()) boxes.push(...list);
+  for (const box of boxes) {
+    const mark = sourceMarkOf(box);
+    if (mark?.access === "view") viewOnly ??= mark;
+    if (!mark) ownBoxes.push(box);
+  }
+  // The other annotations the lazy writers write from the store's maps.
+  for (const [byFrame, undistributed] of [
+    [store._centroidByFrame, store._undistributedCentroids],
+    [store._maskByFrame, store._undistributedMasks],
+    [store._roiByFrame, store._undistributedRois],
+    [store._labelImageByFrame, store._undistributedLabelImages],
+  ] as Array<[Map<string, object[]>, object[]]>) {
+    for (const record of [...undistributed, ...[...byFrame.values()].flat()]) {
+      const mark = sourceMarkOf(record);
+      if (mark?.access === "view") viewOnly ??= mark;
+    }
+  }
+  const unlabeled =
+    countUnlabeledPoints(store.pointsData) +
+    countUnlabeledPoints(store.predPointsData);
+  const chosen = !!store.sourceFormat;
+  return {
+    viewOnly,
+    unlabeledEdit: chosen ? unlabeled : 0,
+    unlabeledOwn: chosen ? 0 : unlabeled,
+    metadataKeys: tablesWithKeys([
+      ["instances", chosen ? [] : metadataKeys(store.instanceMetadata)],
+      ["frames", chosen ? [] : metadataKeys(store.frameMetadata)],
+      ["bboxes", metadataKeysOf(ownBoxes)],
+    ]),
+  };
+}
+
+/**
+ * Apply the 2.x layout's limits before a write, record by record:
+ *
+ * - a record loaded with `format3: "view"` throws {@link SlpViewOnlyError};
+ * - records loaded with `format3: "edit"` have their unlabelled points written
+ *   as absent and their metadata dropped without a word (the caller chose);
+ * - other records follow Python sleap-io's `legacy_format=True`: unlabelled
+ *   points throw unless `unlabeledAs` is `"absent"` (then a warning), and
+ *   metadata is dropped with one warning naming the keys.
+ *
+ * An explicit `unlabeledAs: "error"` refuses unlabelled points of every
+ * record. `warn: false` checks without warning (a dry run).
+ *
+ * @throws {SlpViewOnlyError} For a view-only record.
+ * @throws {Error} For unlabelled points the mode refuses.
+ */
+function enforceLegacyLayout(
+  losses: LegacyLosses,
+  unlabeledAs: UnlabeledAs | undefined,
+  options?: { warn?: boolean },
+): void {
+  if (losses.viewOnly) throw new SlpViewOnlyError(losses.viewOnly);
+  if (
+    unlabeledAs !== undefined &&
+    unlabeledAs !== "error" &&
+    unlabeledAs !== "absent"
+  ) {
+    throw new Error(
+      `unlabeledAs must be "error" or "absent", got ${JSON.stringify(unlabeledAs)}.`,
+    );
+  }
+  const own = losses.unlabeledOwn;
+  const refused =
+    unlabeledAs === "error"
+      ? own + losses.unlabeledEdit
+      : unlabeledAs === undefined
+        ? own
+        : 0;
+  if (refused > 0) {
+    throw new Error(
+      `${refused} point(s) are unlabelled, but the SLP 2.x layout this ` +
+        "version writes cannot store unlabelled points: they would read back " +
+        'as labelled hidden points. Pass unlabeledAs: "absent" to save them ' +
+        "as hidden points with no location.",
+    );
+  }
+  if (options?.warn === false) return;
+  if (own > 0) {
+    console.warn(
+      `Saving ${own} unlabelled point(s) as hidden points with no location ` +
+        "(labelled, not visible), since the SLP 2.x layout cannot store " +
+        "unlabelled points.",
+    );
+  }
+  if (losses.metadataKeys.length > 0) {
+    const named = losses.metadataKeys
+      .map(([table, keys]) => `${table}: ${keys.join(", ")}`)
+      .join("; ");
+    console.warn(
+      "Instance, frame and bounding box metadata can't be stored in the SLP " +
+        `2.x layout and was not saved (${named}).`,
+    );
+  }
+}
+
+/**
+ * Check, without writing or warning, that `labels` can be saved with
+ * `options`: not view-only (labels or any record), and no unlabelled points
+ * the `unlabeledAs` mode refuses. Lets a caller saving several files refuse
+ * them all before writing any.
+ *
+ * @throws {SlpViewOnlyError} For view-only labels or records.
+ * @throws {Error} For unlabelled points the mode refuses.
+ */
+export function checkSlpSavable(
+  labels: Labels,
+  options?: { unlabeledAs?: UnlabeledAs },
+): void {
+  refuseViewOnly(labels);
+  const store = labels._lazyDataStore;
+  const losses =
+    labels.isLazy && store
+      ? storeLegacyLosses(store)
+      : framesLegacyLosses(labels.labeledFrames, labels._staticRois);
+  enforceLegacyLayout(losses, options?.unlabeledAs, { warn: false });
+}
+
+/**
+ * A point table's columns with unlabelled points (`labeled` and `visible` both
+ * false) given NaN coordinates, as the 2.x layout stores them. Returns the
+ * table itself when it has none.
+ */
+function absentPointColumns(
+  // biome-ignore lint/suspicious/noExplicitAny: lazy store column type
+  columns: Record<string, any>,
+  // biome-ignore lint/suspicious/noExplicitAny: lazy store column type
+): Record<string, any> {
+  if (countUnlabeledPoints(columns) === 0) return columns;
+  const labeled = columns.labeled as ArrayLike<number>;
+  const visible = (columns.visible ?? []) as ArrayLike<number>;
+  const x = Array.from(columns.x as ArrayLike<number>, Number);
+  const y = Array.from(columns.y as ArrayLike<number>, Number);
+  for (let i = 0; i < labeled.length; i += 1) {
+    if (!Number(labeled[i]) && !Number(visible[i])) {
+      x[i] = Number.NaN;
+      y[i] = Number.NaN;
+    }
+  }
+  return { ...columns, x, y };
+}
 
 /** Report progress; throw {@link ExportCancelled} if the callback says stop. */
 function reportProgress(
@@ -436,16 +729,18 @@ function writeLazyFramesAndInstances(file: any, store: LazyDataStore): void {
     store.instancesData,
     INSTANCE_COMPOUND_FIELDS,
   );
+  // Unlabelled points (format 3.0) are written as absent: the caller has
+  // already been through enforceLegacyLayout.
   writeLazyCompoundDataset(
     file,
     "points",
-    store.pointsData,
+    absentPointColumns(store.pointsData),
     POINT_COMPOUND_FIELDS,
   );
   writeLazyCompoundDataset(
     file,
     "pred_points",
-    store.predPointsData,
+    absentPointColumns(store.predPointsData),
     PRED_POINT_COMPOUND_FIELDS,
   );
 }
@@ -761,6 +1056,12 @@ export interface AppendStoreOptions {
   skeletonOffset?: number;
   /** Frames per append window (defaults to {@link DEFAULT_WRITE_WINDOW_FRAMES}). */
   windowFrames?: number;
+  /**
+   * How to write unlabelled points (see {@link UnlabeledAs}). Points of a
+   * store loaded with `format3: "edit"` are written as absent unless this is
+   * `"error"`; any other store's are refused unless this is `"absent"`.
+   */
+  unlabeledAs?: UnlabeledAs;
 }
 
 /**
@@ -826,7 +1127,6 @@ export class SlpStreamWriter {
   // key skips that frame entirely. Append overlays (appendFrames) BEFORE bulk
   // stores so the overlay's frame is the one kept. See #208 follow-up.
   private writtenFrames = new Set<string>();
-
   // Per-frame annotations (masks/rois/bboxes/centroids/label-images) accumulated
   // across appends and written once at finalize — they're far fewer than pose
   // points, so they are not windowed. `ctx` is `[videoIndex, frameIdx]`; `inst`
@@ -849,7 +1149,11 @@ export class SlpStreamWriter {
     module: any,
     file: any,
     memPath: string,
-    header: { videos: Video[]; skeletons: Skeleton[]; tracks: Track[] },
+    header: {
+      videos: Video[];
+      skeletons: Skeleton[];
+      tracks: Track[];
+    },
   ) {
     this.module = module;
     this.file = file;
@@ -876,6 +1180,10 @@ export class SlpStreamWriter {
    */
   appendStore(store: LazyDataStore, opts?: AppendStoreOptions): void {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
+    // Before any row is written: a view-only store is refused, and unlabelled
+    // points are refused or written as absent.
+    refuseViewOnly(store);
+    enforceLegacyLayout(storeLegacyLosses(store), opts?.unlabeledAs);
     const windowFrames = opts?.windowFrames ?? DEFAULT_WRITE_WINDOW_FRAMES;
     const vOff = opts?.videoIndexOffset ?? 0;
     const tOff = opts?.trackOffset ?? 0;
@@ -899,15 +1207,18 @@ export class SlpStreamWriter {
     const pointBase = this.pointRows;
     const predBase = this.predPointRows;
 
-    const px = store.pointsData.x,
-      py = store.pointsData.y,
-      pv = store.pointsData.visible,
-      pc = store.pointsData.complete;
-    const qx = store.predPointsData.x,
-      qy = store.predPointsData.y,
-      qv = store.predPointsData.visible,
-      qc = store.predPointsData.complete,
-      qs = store.predPointsData.score;
+    // Unlabelled points (format 3.0) get NaN coordinates: written as absent.
+    const userPoints = absentPointColumns(store.pointsData);
+    const predPoints = absentPointColumns(store.predPointsData);
+    const px = userPoints.x,
+      py = userPoints.y,
+      pv = userPoints.visible,
+      pc = userPoints.complete;
+    const qx = predPoints.x,
+      qy = predPoints.y,
+      qv = predPoints.visible,
+      qc = predPoints.complete,
+      qs = predPoints.score;
 
     // Pre-pass: the instance ranges of frames that will be SKIPPED (their
     // `(video, frameIdx)` was already written). Sorted by construction (frames
@@ -916,14 +1227,19 @@ export class SlpStreamWriter {
     // unchanged — or `null` when that instance falls in a skipped frame.
     const skippedRanges: Array<[number, number]> = [];
     const skippedKeys = new Set<string>();
+    const skipRows = hasSkippedInstanceRows(idn);
     for (let r = 0; r < nFrames; r++) {
       const key = `${remapVideo(numAt(fd.video, r))}:${numAt(fd.frame_idx, r)}`;
+      const iStart = numAt(fd.instance_id_start, r);
+      const iEnd = numAt(fd.instance_id_end, r);
       if (this.writtenFrames.has(key)) {
-        skippedRanges.push([
-          numAt(fd.instance_id_start, r),
-          numAt(fd.instance_id_end, r),
-        ]);
+        skippedRanges.push([iStart, iEnd]);
         skippedKeys.add(key);
+      } else if (skipRows) {
+        // 3.0 rows of another instance type, which the readers skip too.
+        for (let j = iStart; j < iEnd; j++) {
+          if (skipsInstanceRow(idn, j)) skippedRanges.push([j, j + 1]);
+        }
       }
     }
     const outIdxOf = (idx: number): number | null => {
@@ -991,14 +1307,21 @@ export class SlpStreamWriter {
           framesFlat[fi++] = newFrameId;
           framesFlat[fi++] = combinedVideo;
           framesFlat[fi++] = frameIdx;
+          let kept = iEnd - iStart;
+          if (skipRows) {
+            for (let j = iStart; j < iEnd; j++) {
+              if (skipsInstanceRow(idn, j)) kept--;
+            }
+          }
           framesFlat[fi++] = instBase + outInsts; // instance range start
-          framesFlat[fi++] = instBase + outInsts + (iEnd - iStart); // end
+          framesFlat[fi++] = instBase + outInsts + kept; // end
 
           if (store.negativeFrames.has(`${numAt(fd.video, r)}:${frameIdx}`)) {
             this.negativeFrames.add(`${combinedVideo}:${frameIdx}`);
           }
 
           for (let j = iStart; j < iEnd; j++) {
+            if (skipRows && skipsInstanceRow(idn, j)) continue;
             const type = numAt(idn.instance_type, j);
             const ptStart = numAt(idn.point_id_start, j);
             const ptEnd = numAt(idn.point_id_end, j);
@@ -1107,10 +1430,21 @@ export class SlpStreamWriter {
    * writer's header (by identity); `from_predicted` links are resolved among the
    * batch. Intended for a bounded batch (the corrected subset), so it is not
    * windowed. Interleave freely with {@link appendStore}.
+   *
+   * Before anything is written, each frame, instance and annotation is
+   * checked against the format 3.0 file it was loaded from, if any: a record
+   * loaded with `format3: "view"` throws {@link SlpViewOnlyError}; unlabelled
+   * points of records loaded with `"edit"` are written as absent; those of
+   * other records follow `options.unlabeledAs` (see {@link UnlabeledAs},
+   * default `"error"`).
    */
-  appendFrames(frames: LabeledFrame[]): void {
+  appendFrames(
+    frames: LabeledFrame[],
+    options?: { unlabeledAs?: UnlabeledAs },
+  ): void {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
     if (frames.length === 0) return;
+    enforceLegacyLayout(framesLegacyLosses(frames), options?.unlabeledAs);
     try {
       const frameBase = this.frameRows;
       const instBase = this.instRows;
@@ -1534,10 +1868,16 @@ export class SlpStreamWriter {
  * (skeletons/videos/tracks/suggestions/identities/sessions/provenance), and
  * create the resizable `frames`/`instances`/`points`/`pred_points` datasets.
  * Frame data is appended later via {@link SlpStreamWriter.appendStore}.
+ *
+ * `header` may be a `Labels`; labels loaded with `format3: "view"` are refused
+ * with {@link SlpViewOnlyError} before anything is created.
  */
 export async function openSlpWriter(
   header: SlpWriteHeader,
 ): Promise<SlpStreamWriter> {
+  const sourceFormat = (header as { sourceFormat?: SlpSourceFormat | null })
+    .sourceFormat;
+  refuseViewOnly({ sourceFormat });
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_stream_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
@@ -1671,6 +2011,8 @@ async function buildMergedWriter(
   if (stores.length === 0) {
     throw new Error("merging SLP stores requires at least one store");
   }
+  // Refuse a view-only store before the writer is opened.
+  for (const store of stores) refuseViewOnly(store);
   const sig = skeletonSignature(stores[0].skeletons);
   for (let i = 1; i < stores.length; i++) {
     if (skeletonSignature(stores[i].skeletons) !== sig) {
@@ -1793,6 +2135,8 @@ async function writeSlpBytes(
   options: SlpWriteOptions | undefined,
   { includeEmbeddedData }: { includeEmbeddedData: boolean },
 ): Promise<Uint8Array> {
+  // Labels loaded with `format3: "view"` are never written.
+  refuseViewOnly(labels);
   const embedMode = options?.embed ?? false;
 
   // Auto-preserve already-embedded videos unless the caller externalizes them.
@@ -1808,7 +2152,11 @@ async function writeSlpBytes(
   // Any real embed OR a preserve of already-embedded images needs frame bytes,
   // so materialize and continue with the eager path. Mirrors Python's dispatch.
   if (labels.isLazy) {
-    if (doEmbed) {
+    // The fast path copies the raw tables. A 3.0 table with rows the readers
+    // skip (another instance type) is written from its frames instead, so the
+    // saved file holds what was read.
+    const store = labels._lazyDataStore;
+    if (doEmbed || (store && hasSkippedInstanceRows(store.instancesData))) {
       labels.materialize();
     } else {
       let lazyWriteLabels: Labels = labels;
@@ -1830,6 +2178,13 @@ async function writeSlpBytes(
       }
 
       if (proceedWithFastPath) {
+        const lazyStore = lazyWriteLabels._lazyDataStore;
+        if (lazyStore) {
+          enforceLegacyLayout(
+            storeLegacyLosses(lazyStore),
+            options?.unlabeledAs,
+          );
+        }
         const module = await getH5Module();
         ensureH5StagingDir(module);
         const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
@@ -1846,6 +2201,11 @@ async function writeSlpBytes(
       }
     }
   }
+
+  enforceLegacyLayout(
+    framesLegacyLosses(labels.labeledFrames, labels._staticRois),
+    options?.unlabeledAs,
+  );
 
   // Source mode: restore original video paths before writing
   let writeLabels = labels;
@@ -1868,6 +2228,8 @@ async function writeSlpBytes(
           masks: frame.masks,
           labelImages: frame.labelImages,
           rois: frame.rois,
+          metadata: frame.metadata,
+          isNegative: frame.isNegative,
         });
       }),
       videos: restoredVideos,
@@ -3054,10 +3416,16 @@ function emitInstancePoints(
         "padding/truncating to the node count so the written SLP stays self-consistent (a mismatch would break the Python reader).",
     );
   }
+  // Unlabelled points (neither labelled nor visible) are written as absent:
+  // the 2.x layout has no `labeled` column (see enforceLegacyLayout).
+  const labeled = instance._labeled;
   for (let i = 0; i < nNodes; i++) {
     const p = pts[i];
     if (p) {
-      const row = [p.xy[0], p.xy[1], p.visible ? 1 : 0, p.complete ? 1 : 0];
+      const absent = labeled !== null && !labeled[i] && !p.visible;
+      const row = absent
+        ? [Number.NaN, Number.NaN, 0, p.complete ? 1 : 0]
+        : [p.xy[0], p.xy[1], p.visible ? 1 : 0, p.complete ? 1 : 0];
       if (predicted) row.push((p as { score?: number }).score ?? 0);
       target.push(row);
     } else {
@@ -3098,8 +3466,17 @@ function buildNegativeFrameRows(labels: Labels): number[][] {
  * {@link buildLabelTableUpdate} (the in-place save path) so both emit
  * byte-identical columns using the same field-name constants. Contains no HDF5
  * I/O — pure `Labels` → `number[][]`.
+ *
+ * Content loaded with `format3: "view"` (the labels, or any frame, instance or
+ * annotation) is refused, since a caller may build an in-place update from
+ * these rows by hand. Unlabelled points are written as absent; for the
+ * `unlabeledAs` rule and the metadata warning, use {@link buildLabelTableUpdate}.
+ *
+ * @throws {SlpViewOnlyError} For view-only labels or records.
  */
 export function buildLabelTableRows(labels: Labels): LabelTableRows {
+  refuseViewOnly(labels);
+  refuseViewOnlyRecords(labels.labeledFrames, labels._staticRois);
   const frames: number[][] = [];
   const instances: number[][] = [];
   const points: number[][] = [];
@@ -3258,6 +3635,13 @@ export interface LabelTableUpdate {
   predPoints: LabelTable;
   negativeFrames?: LabelTable;
   metadataJson?: string;
+  /**
+   * The `sourceFormat` of the labels the update was built from (see
+   * `Labels.sourceFormat`). A view-only source is refused by every in-place
+   * function; a format 3.0 source is never patched in place (its file is in
+   * the 3.0 layout), so {@link checkInPlaceWritable} sends it to a full save.
+   */
+  sourceFormat?: SlpSourceFormat | null;
 }
 
 /**
@@ -3267,11 +3651,20 @@ export interface LabelTableUpdate {
  * with 0 rows) so an in-place save can also empty an existing `negative_frames`
  * table when the user removed all negative frames. Pass `opts.metadataJson`
  * (e.g. from {@link buildMetadataJson}) only when metadata changed.
+ *
+ * @throws {SlpViewOnlyError} For labels loaded with `format3: "view"`.
+ * @throws {Error} For unlabelled points with `unlabeledAs: "error"` (see
+ *   {@link UnlabeledAs}).
  */
 export function buildLabelTableUpdate(
   labels: Labels,
-  opts?: { metadataJson?: string },
+  opts?: { metadataJson?: string; unlabeledAs?: UnlabeledAs },
 ): LabelTableUpdate {
+  refuseViewOnly(labels);
+  enforceLegacyLayout(
+    framesLegacyLosses(labels.labeledFrames, labels._staticRois),
+    opts?.unlabeledAs,
+  );
   const r = buildLabelTableRows(labels);
   const update: LabelTableUpdate = {
     frames: { fields: FRAMES_FIELDS, rows: r.frames },
@@ -3281,6 +3674,7 @@ export function buildLabelTableUpdate(
     negativeFrames: { fields: NEGATIVE_FRAMES_FIELDS, rows: r.negativeFrames },
   };
   if (opts?.metadataJson !== undefined) update.metadataJson = opts.metadataJson;
+  if (labels.sourceFormat) update.sourceFormat = labels.sourceFormat;
   return update;
 }
 
@@ -3467,6 +3861,14 @@ export function checkInPlaceWritable(
   onDisk: OnDiskTables,
   sidecars: { onDisk: OnDiskSidecars; expected: OnDiskSidecars },
 ): InPlaceWritable {
+  refuseViewOnly(update);
+  if (update.sourceFormat && update.sourceFormat.formatId >= 3) {
+    return {
+      ok: false,
+      reason:
+        "the labels were loaded from a file in SLP format 3.0, whose tables an in-place save cannot patch; this version saves the 2.x layout only — re-save the whole file instead",
+    };
+  }
   const checks: Array<
     [string, LabelTable | undefined, OnDiskTable | undefined]
   > = [
@@ -3678,6 +4080,16 @@ export function writeLabelTablesInPlace(
   file: any,
   update: LabelTableUpdate,
 ): void {
+  refuseViewOnly(update);
+  // A 3.0 file stores its pose tables as groups of columns; patching them as
+  // 2.x tables would corrupt it. Refuse before touching anything.
+  for (const name of ["frames", "instances", "points", "pred_points"]) {
+    if (file.get(name)?.type === "Group") {
+      throw new Error(
+        `in-place save: "${name}" is in the SLP format 3.0 layout, which this version cannot patch — re-save the whole file instead`,
+      );
+    }
+  }
   // The `dtype` here is only consulted when a table is ABSENT on disk and gets
   // created fresh as a flat matrix (writeOneTableInPlace → createMatrixDataset);
   // for an existing dataset the on-disk layout/dtype wins and this arg is ignored.

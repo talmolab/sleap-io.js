@@ -1,4 +1,37 @@
-import { checkSlpFormat } from "./format-check.js";
+import {
+  checkPoseTables,
+  countUnlabeledPoints,
+  hasSkippedInstanceRows,
+  isColumnarTable,
+  isKnownPoseColumn,
+  skipsInstanceRow,
+  METADATA_SUBGROUP,
+  negativeFrameKeysFromFrames,
+  type PoseTableName,
+  poseTableFromColumns,
+  UNREAD_FORMAT_3_TABLES,
+  unknownColumns,
+} from "./columnar.js";
+import { checkSlpFormat, unreadTablesError } from "./format-check.js";
+import {
+  buildFormat3Summary,
+  checkFormat3Option,
+  checkMetadataColumns,
+  chooseFormat3Access,
+  type Format3Access,
+  isFormat3,
+  metadataColumn,
+  metadataKindFromH5,
+  PARTLY_READ_GROUPS,
+  type SlpSourceFormat,
+  unreadMembers,
+} from "./format3.js";
+import {
+  type MetadataColumns,
+  metadataKeys,
+  metadataRecord,
+} from "../../model/record-metadata.js";
+import { markFrameSource, markSource } from "../../model/source-mark.js";
 import {
   openH5File,
   type OpenH5Options,
@@ -145,10 +178,23 @@ export async function readSlp(
      * `console.warn`. Anything else still throws. Default `false`. See #230.
      */
     repairPointSpans?: boolean;
+    /**
+     * What to do with a file in SLP format 3.0, which this version reads but
+     * cannot write (it saves the 2.x layout only). `"view"` loads it
+     * read-only: every SLP writer refuses the labels. `"edit"` loads it so that a
+     * save writes the 2.x layout and drops what that layout cannot store
+     * (unlabelled points become hidden points with no location; record
+     * metadata and unknown columns are not written). Without this option a
+     * 3.0 file throws {@link SlpFormat3ChoiceError}, whose `summary` lists what
+     * an edit would drop. Files before 3.0 ignore it.
+     */
+    format3?: Format3Access;
   },
 ): Promise<Labels> {
   // `total` is derived from the stage list (single source of truth) so the
   // count cannot drift from the labels. `report(i)` fires the i-th stage label.
+  // A wrong option is the caller's error: refuse it before reading anything.
+  checkFormat3Option(options?.format3);
   const total = EAGER_STAGES.length;
   const onProgress = options?.onProgress;
   const report = (i: number) => onProgress?.(i, total, EAGER_STAGES[i]);
@@ -183,6 +229,7 @@ export async function readSlp(
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
     );
+    refuseUnreadFormat3Tables(file, labelsPath, formatId);
     // Throws the same helpful error if the `metadata` group exists but its
     // required `json` attribute is missing/empty (truncated/corrupt file);
     // mirrors Python sleap-io PR #446.
@@ -220,16 +267,30 @@ export async function readSlp(
     // `.value` when unavailable). Fetched once; null on browsers without the
     // raw surface, which is fine — normalizeStructDataset then uses `.value`.
     const emscripten = await getH5EmscriptenModule();
-    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
-    const instancesData = normalizeStructDataset(
-      file.get("instances"),
+    const framesData = readPoseTable(file, "frames", emscripten, labelsPath);
+    const instancesData = readPoseTable(
+      file,
+      "instances",
       emscripten,
+      labelsPath,
     );
-    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
-    const predPointsData = normalizeStructDataset(
-      file.get("pred_points"),
+    const pointsData = readPoseTable(file, "points", emscripten, labelsPath);
+    const predPointsData = readPoseTable(
+      file,
+      "pred_points",
       emscripten,
+      labelsPath,
     );
+    // Format 3.0: range checks, record metadata, and the caller's choice
+    // (throws SlpFormat3ChoiceError without one) before frames are built.
+    const format3 = readFormat3(file, labelsPath, formatId, videos.length, {
+      framesData,
+      instancesData,
+      pointsData,
+      predPointsData,
+      choice: options?.format3,
+      provenanceInMetadata: !!metadataJson && "provenance" in metadataJson,
+    });
     checkPointSpans({
       framesData,
       instancesData,
@@ -241,6 +302,7 @@ export async function readSlp(
       labelsPath,
     });
 
+    const instanceRows = new Map<number, Instance | PredictedInstance>();
     const labeledFrames = buildLabeledFrames({
       framesData,
       instancesData,
@@ -250,11 +312,34 @@ export async function readSlp(
       tracks,
       videos,
       formatId,
+      instanceMetadata: format3?.instanceMetadata,
+      frameMetadata: format3?.frameMetadata,
+      instanceRows,
     });
+    // Links to instances (box and centroid `instance`, identity and category
+    // owners) are `/instances` rows. When the reader skipped rows (a 3.0
+    // instance type other than user or predicted), index by row, with a hole
+    // for each skipped one; otherwise the frames' instances in order are the
+    // rows, as before.
+    const instancesByRow = (): Array<Instance | PredictedInstance> =>
+      hasSkippedInstanceRows(instancesData)
+        ? Array.from(
+            { length: (instancesData.instance_type ?? []).length },
+            (_, row) => instanceRows.get(row) as Instance | PredictedInstance,
+          )
+        : labeledFrames.flatMap((f) => f.instances);
 
     // Read negative frames (video ids resolved like /frames', see helper)
+    // Format 3.0 keeps the flag as a `/frames` column.
     const negativeFramesDs = file.get("negative_frames");
-    if (negativeFramesDs) {
+    if (framesData.is_negative) {
+      markNegativeFrames(
+        labeledFrames,
+        negativeFrameKeysFromFrames(framesData),
+        framesData,
+        videos,
+      );
+    } else if (negativeFramesDs) {
       markNegativeFrames(
         labeledFrames,
         negativeFrameKeys(normalizeStructDataset(negativeFramesDs)),
@@ -275,12 +360,13 @@ export async function readSlp(
       readSessionDataEager(file, emscripten),
     );
     report(7); // Reading annotations
-    const allInstances = labeledFrames.flatMap((f) => f.instances);
+    const allInstances = instancesByRow();
     const { rois: roiTuples, bboxes: bboxTuples } = readRoisAndBboxes(
       file,
       videos,
       tracks,
       allInstances,
+      format3?.bboxMetadata,
     );
     const maskTuples = readMasks(file, videos, tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
@@ -370,7 +456,7 @@ export async function readSlp(
     // Mirrors Labels.materialize() for eager mode so bboxes/centroids/masks/
     // labelImages get their .instance set on read (ROIs are already resolved
     // in readRoisWithMigration since it receives `instances`).
-    const allInstancesFlat = labeledFrames.flatMap((lf) => lf.instances);
+    const allInstancesFlat = instancesByRow();
     const resolveInstanceRef = (ann: {
       _instanceIdx: number | null;
       instance: Instance | null;
@@ -378,7 +464,8 @@ export async function readSlp(
       if (
         ann._instanceIdx !== null &&
         ann._instanceIdx >= 0 &&
-        ann._instanceIdx < allInstancesFlat.length
+        ann._instanceIdx < allInstancesFlat.length &&
+        allInstancesFlat[ann._instanceIdx]
       ) {
         ann.instance = allInstancesFlat[ann._instanceIdx];
         ann._instanceIdx = null;
@@ -393,7 +480,12 @@ export async function readSlp(
         if (li._objectInstanceIdxs) {
           for (const [labelId, instIdx] of li._objectInstanceIdxs) {
             const obj = li.objects.get(labelId);
-            if (obj && instIdx >= 0 && instIdx < allInstancesFlat.length) {
+            if (
+              obj &&
+              instIdx >= 0 &&
+              instIdx < allInstancesFlat.length &&
+              allInstancesFlat[instIdx]
+            ) {
               obj.instance = allInstancesFlat[instIdx];
             }
           }
@@ -414,6 +506,11 @@ export async function readSlp(
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
       rois: staticRois,
     });
+    labels.sourceFormat = format3?.sourceFormat ?? null;
+    // Every record carries the open-time choice wherever it goes.
+    for (const frame of labels.labeledFrames) {
+      markFrameSource(frame, format3?.sourceFormat);
+    }
     // Sessions are read before the frame store exists; wire the lazy frame
     // resolver now so ref-backed grouping resolves against labels.labeledFrames.
     injectSessionFrameResolver(labels);
@@ -476,10 +573,23 @@ export async function readSlpLazy(
      * `console.warn`. Anything else still throws. Default `false`. See #230.
      */
     repairPointSpans?: boolean;
+    /**
+     * What to do with a file in SLP format 3.0, which this version reads but
+     * cannot write (it saves the 2.x layout only). `"view"` loads it
+     * read-only: every SLP writer refuses the labels. `"edit"` loads it so that a
+     * save writes the 2.x layout and drops what that layout cannot store
+     * (unlabelled points become hidden points with no location; record
+     * metadata and unknown columns are not written). Without this option a
+     * 3.0 file throws {@link SlpFormat3ChoiceError}, whose `summary` lists what
+     * an edit would drop. Files before 3.0 ignore it.
+     */
+    format3?: Format3Access;
   },
 ): Promise<Labels> {
   // `total` is derived from the stage list (single source of truth) so the
   // count cannot drift from the labels. `report(i)` fires the i-th stage label.
+  // A wrong option is the caller's error: refuse it before reading anything.
+  checkFormat3Option(options?.format3);
   const total = LAZY_STAGES.length;
   const onProgress = options?.onProgress;
   const report = (i: number) => onProgress?.(i, total, LAZY_STAGES[i]);
@@ -510,6 +620,7 @@ export async function readSlpLazy(
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1.0,
     );
+    refuseUnreadFormat3Tables(file, labelsPath, formatId);
     // Throws the same helpful error if the `metadata` group exists but its
     // required `json` attribute is missing/empty (truncated/corrupt file);
     // mirrors Python sleap-io PR #446.
@@ -546,16 +657,30 @@ export async function readSlpLazy(
     // Read raw data but don't build frames yet. Use the fast columnar compound
     // read (falls back to `.value`); see normalizeStructDataset / h5-compound.ts.
     const emscripten = await getH5EmscriptenModule();
-    const framesData = normalizeStructDataset(file.get("frames"), emscripten);
-    const instancesData = normalizeStructDataset(
-      file.get("instances"),
+    const framesData = readPoseTable(file, "frames", emscripten, labelsPath);
+    const instancesData = readPoseTable(
+      file,
+      "instances",
       emscripten,
+      labelsPath,
     );
-    const pointsData = normalizeStructDataset(file.get("points"), emscripten);
-    const predPointsData = normalizeStructDataset(
-      file.get("pred_points"),
+    const pointsData = readPoseTable(file, "points", emscripten, labelsPath);
+    const predPointsData = readPoseTable(
+      file,
+      "pred_points",
       emscripten,
+      labelsPath,
     );
+    // Format 3.0: range checks, record metadata, and the caller's choice
+    // (throws SlpFormat3ChoiceError without one) before the store is built.
+    const format3 = readFormat3(file, labelsPath, formatId, videos.length, {
+      framesData,
+      instancesData,
+      pointsData,
+      predPointsData,
+      choice: options?.format3,
+      provenanceInMetadata: !!metadataJson && "provenance" in metadataJson,
+    });
     checkPointSpans({
       framesData,
       instancesData,
@@ -568,10 +693,13 @@ export async function readSlpLazy(
     });
 
     // Read negative frames (raw video ids; the store resolves them per frame)
+    // Format 3.0 keeps the flag as a `/frames` column.
     const negativeFramesDs = file.get("negative_frames");
-    const negativeFrames = negativeFramesDs
-      ? negativeFrameKeys(normalizeStructDataset(negativeFramesDs))
-      : new Set<string>();
+    const negativeFrames = framesData.is_negative
+      ? negativeFrameKeysFromFrames(framesData)
+      : negativeFramesDs
+        ? negativeFrameKeys(normalizeStructDataset(negativeFramesDs))
+        : new Set<string>();
 
     const store = new LazyDataStore({
       framesData,
@@ -583,6 +711,9 @@ export async function readSlpLazy(
       videos,
       formatId,
       negativeFrames,
+      instanceMetadata: format3?.instanceMetadata,
+      frameMetadata: format3?.frameMetadata,
+      sourceFormat: format3?.sourceFormat,
     });
 
     const lazyFrames = new LazyFrameList(store);
@@ -605,6 +736,8 @@ export async function readSlpLazy(
       file,
       videos,
       tracks,
+      undefined,
+      format3?.bboxMetadata,
     );
     const maskTuples = readMasks(file, videos, tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
@@ -665,6 +798,17 @@ export async function readSlpLazy(
       return { byFrame, undistributed };
     };
 
+    // Every record carries the open-time choice wherever it goes; the store
+    // marks frames and instances as they materialize.
+    for (const tuples of [
+      centroidTuples,
+      bboxTuples,
+      maskTuples,
+      roiTuples,
+      labelImageTuples,
+    ] as Array<Array<[object, number, number]>>) {
+      for (const [ann] of tuples) markSource(ann, format3?.sourceFormat);
+    }
     const cResult = buildAnnByFrame(centroidTuples);
     const bResult = buildAnnByFrame(bboxTuples);
     const mResult = buildAnnByFrame(maskTuples);
@@ -709,17 +853,17 @@ export async function readSlpLazy(
       const vidIdx = Number(vidIdxStr);
       const fidx = Number(fidxStr);
       if (vidIdx >= 0 && vidIdx < videos.length) {
-        lazyFrames._supplementary.push(
-          new LabeledFrame({
-            video: videos[vidIdx],
-            frameIdx: fidx,
-            centroids: store._centroidByFrame.get(key) ?? [],
-            bboxes: store._bboxByFrame.get(key) ?? [],
-            masks: store._maskByFrame.get(key) ?? [],
-            labelImages: store._labelImageByFrame.get(key) ?? [],
-            rois: store._roiByFrame.get(key) ?? [],
-          }),
-        );
+        const frame = new LabeledFrame({
+          video: videos[vidIdx],
+          frameIdx: fidx,
+          centroids: store._centroidByFrame.get(key) ?? [],
+          bboxes: store._bboxByFrame.get(key) ?? [],
+          masks: store._maskByFrame.get(key) ?? [],
+          labelImages: store._labelImageByFrame.get(key) ?? [],
+          rois: store._roiByFrame.get(key) ?? [],
+        });
+        markFrameSource(frame, format3?.sourceFormat);
+        lazyFrames._supplementary.push(frame);
       }
     }
 
@@ -737,6 +881,7 @@ export async function readSlpLazy(
     // Replace the eager labeledFrames with lazy proxy
     labels._lazyFrameList = lazyFrames;
     labels._lazyDataStore = store;
+    labels.sourceFormat = format3?.sourceFormat ?? null;
 
     // Wire the lazy frame resolver AFTER _lazyFrameList is attached so ref-backed
     // grouping resolves a single frame on demand (never the full table).
@@ -1845,6 +1990,7 @@ function readRoisAndBboxes(
   videos: Video[],
   tracks: Track[],
   instances?: Array<Instance | PredictedInstance>,
+  bboxMetadata?: MetadataColumns | null,
 ): { rois: [ROI, number, number][]; bboxes: [BoundingBox, number, number][] } {
   const { rois, migratedBboxes } = readRoisWithMigration(
     file,
@@ -1852,7 +1998,7 @@ function readRoisAndBboxes(
     tracks,
     instances,
   );
-  let bboxes = readBboxes(file, videos, tracks);
+  let bboxes = readBboxes(file, videos, tracks, bboxMetadata);
   if (bboxes.length === 0 && migratedBboxes.length > 0) {
     bboxes = migratedBboxes;
   }
@@ -2018,6 +2164,7 @@ function readBboxes(
   file: any,
   _videos: Video[],
   tracks: Track[],
+  metadata?: MetadataColumns | null,
 ): [BoundingBox, number, number][] {
   // Layouts (see bboxes.ts): Python / current JS write a `/bboxes` GROUP with one
   // child dataset per field; older JS wrote a flat matrix + `field_names` attr
@@ -2069,7 +2216,14 @@ function readBboxes(
     sources = readStringMetadata(file, "bbox_sources", bboxesDs, "sources");
   }
 
-  return buildBboxTuples(data, categories, names, sources, tracks);
+  const tuples = buildBboxTuples(data, categories, names, sources, tracks);
+  // Format 3.0 record metadata, by `/bboxes` row (one tuple per row).
+  if (metadata) {
+    tuples.forEach(([bbox], row) => {
+      bbox.metadata = metadataRecord(metadata, row);
+    });
+  }
+  return tuples;
 }
 
 /**
@@ -2536,6 +2690,207 @@ function readLabelImages(
   return labelImages;
 }
 
+/**
+ * A format 3.0 file may hold tables this version does not read in their 3.0
+ * form yet. Refuse it by name instead of loading it without them.
+ */
+function refuseUnreadFormat3Tables(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  labelsPath: string,
+  formatId: number,
+): void {
+  if (!(formatId >= 3.0)) return;
+  const found = UNREAD_FORMAT_3_TABLES.filter((path) => {
+    try {
+      return !!file.get(path);
+    } catch {
+      return false;
+    }
+  });
+  if (found.length > 0) throw unreadTablesError(labelsPath, formatId, found);
+}
+
+/**
+ * Read one pose table in either layout: a compound dataset (formats 1.x and
+ * 2.x) or a group with one dataset per column (format 3.0, see columnar.ts).
+ */
+function readPoseTable(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  table: PoseTableName,
+  module: unknown,
+  labelsPath: string,
+  // biome-ignore lint/suspicious/noExplicitAny: matches normalizeStructDataset
+): Record<string, any[]> {
+  const node = file.get(table);
+  if (node && node.type === "Group") {
+    const columns: Record<string, ArrayLike<unknown>> = {};
+    for (const name of node.keys() as string[]) {
+      // Only the columns this version knows are read; the others are listed
+      // as unknown (see readFormat3) and would be dropped by a save anyway.
+      if (!isKnownPoseColumn(table, name)) continue;
+      const child = file.get(`${table}/${name}`);
+      if (!child || child.type === "Group") continue;
+      columns[name] = child.value as ArrayLike<unknown>;
+    }
+    return poseTableFromColumns(table, columns, labelsPath);
+  }
+  return normalizeStructDataset(node, module);
+}
+
+/** The members of an HDF5 group, or none when `path` is absent or a dataset. */
+function h5Members(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  path: string,
+  type?: "Group" | "Dataset",
+): string[] {
+  try {
+    const node = file.get(path);
+    if (!node || node.type !== "Group") return [];
+    const names = node.keys() as string[];
+    if (!type) return names;
+    return names.filter((name) => file.get(`${path}/${name}`)?.type === type);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read the record metadata of a format 3.0 table
+ * (`<table>/metadata/<key>/{values,present}`). Members that are not a group
+ * with a 1-D `values` dataset of a supported kind (bool, integer, float or
+ * string) are ignored, as in Python sleap-io.
+ *
+ * @throws {Error} When a key does not have one row per record.
+ */
+function readMetadataColumns(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  table: string,
+  rows: number,
+  labelsPath: string,
+): MetadataColumns | null {
+  const base = `${table}/${METADATA_SUBGROUP}`;
+  const columns: MetadataColumns = {};
+  for (const key of h5Members(file, base, "Group")) {
+    const datasets = h5Members(file, `${base}/${key}`, "Dataset");
+    if (!datasets.includes("values")) continue;
+    const values = file.get(`${base}/${key}/values`);
+    const column = metadataColumn(
+      metadataKindFromH5(values.metadata),
+      values.value,
+      datasets.includes("present")
+        ? file.get(`${base}/${key}/present`).value
+        : null,
+    );
+    if (column) columns[key] = column;
+  }
+  checkMetadataColumns(table, columns, rows, labelsPath);
+  return Object.keys(columns).length > 0 ? columns : null;
+}
+
+/** What the readers keep from the format 3.0 parts of a file. */
+interface Format3Read {
+  sourceFormat: SlpSourceFormat;
+  instanceMetadata: MetadataColumns | null;
+  frameMetadata: MetadataColumns | null;
+  bboxMetadata: MetadataColumns | null;
+}
+
+/**
+ * For a file in format 3.0: run the range checks over its pose tables, read
+ * its record metadata and unknown column names, and apply the caller's
+ * `format3` choice. Returns `null` for files before 3.0.
+ *
+ * @throws {SlpFormat3ChoiceError} When the caller gave no choice.
+ * @throws {Error} When the 3.0 pose tables are inconsistent.
+ */
+function readFormat3(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  labelsPath: string,
+  formatId: number,
+  nVideos: number,
+  tables: {
+    // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTable
+    framesData: Record<string, any>;
+    // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTable
+    instancesData: Record<string, any>;
+    // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTable
+    pointsData: Record<string, any>;
+    // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTable
+    predPointsData: Record<string, any>;
+    choice: Format3Access | undefined;
+    /** Whether `/metadata`'s `json` attribute holds the provenance. */
+    provenanceInMetadata?: boolean;
+  },
+): Format3Read | null {
+  if (!isFormat3(formatId)) return null;
+  const { framesData, instancesData, pointsData, predPointsData } = tables;
+  if (isColumnarTable(framesData) && isColumnarTable(instancesData)) {
+    checkPoseTables({
+      frames: framesData,
+      instances: instancesData,
+      nPoints: columnLength(pointsData),
+      nPredPoints: columnLength(predPointsData),
+      nVideos,
+      labelsPath,
+    });
+  }
+  const instanceMetadata = readMetadataColumns(
+    file,
+    "instances",
+    (instancesData.instance_type ?? []).length,
+    labelsPath,
+  );
+  const frameMetadata = readMetadataColumns(
+    file,
+    "frames",
+    (framesData.frame_idx ?? []).length,
+    labelsPath,
+  );
+  const bboxColumns = h5Members(file, "bboxes", "Dataset");
+  const bboxMetadata = bboxColumns.includes("x1")
+    ? readMetadataColumns(
+        file,
+        "bboxes",
+        file.get("bboxes/x1")?.shape?.[0] ?? 0,
+        labelsPath,
+      )
+    : null;
+  const summary = buildFormat3Summary({
+    formatId,
+    unreadTables: unreadMembers({
+      root: file.keys() as string[],
+      groups: Object.fromEntries(
+        PARTLY_READ_GROUPS.map((g) => [g, h5Members(file, g)]),
+      ),
+      provenanceInMetadata: tables.provenanceInMetadata ?? false,
+    }),
+    unlabeledUserPoints: countUnlabeledPoints(pointsData),
+    unlabeledPredictedPoints: countUnlabeledPoints(predPointsData),
+    metadataKeys: {
+      instances: metadataKeys(instanceMetadata),
+      frames: metadataKeys(frameMetadata),
+      bboxes: metadataKeys(bboxMetadata),
+    },
+    unknownColumns: [
+      ...(["frames", "instances", "points", "pred_points"] as const).flatMap(
+        (table) => unknownColumns(table, h5Members(file, table, "Dataset")),
+      ),
+      ...unknownColumns("bboxes", bboxColumns),
+    ],
+  });
+  return {
+    sourceFormat: chooseFormat3Access(labelsPath, summary, tables.choice),
+    instanceMetadata,
+    frameMetadata,
+    bboxMetadata,
+  };
+}
+
 function normalizeStructDataset(
   dataset: any,
   module?: unknown,
@@ -2670,6 +3025,10 @@ function buildLabeledFrames(options: {
   tracks: Track[];
   videos: Video[];
   formatId: number;
+  instanceMetadata?: MetadataColumns | null;
+  frameMetadata?: MetadataColumns | null;
+  /** Filled with each built instance, keyed by its `/instances` row. */
+  instanceRows?: Map<number, Instance | PredictedInstance>;
 }): LabeledFrame[] {
   const frames: LabeledFrame[] = [];
   const {
@@ -2681,10 +3040,13 @@ function buildLabeledFrames(options: {
     tracks,
     videos,
     formatId,
+    instanceMetadata,
+    frameMetadata,
   } = options;
   const frameIds = framesData.frame_id ?? [];
   const videoIdToIndex = buildVideoIdMap(framesData, videos);
-  const instanceById = new Map<number, Instance | PredictedInstance>();
+  const instanceById =
+    options.instanceRows ?? new Map<number, Instance | PredictedInstance>();
   const fromPredictedPairs: Array<[number, number]> = [];
 
   for (let frameIdx = 0; frameIdx < frameIds.length; frameIdx += 1) {
@@ -2698,6 +3060,8 @@ function buildLabeledFrames(options: {
 
     const instances: Array<Instance | PredictedInstance> = [];
     for (let instIdx = instStart; instIdx < instEnd; instIdx += 1) {
+      // A 3.0 row of another instance type is skipped, as in Python.
+      if (skipsInstanceRow(instancesData, instIdx)) continue;
       const instanceType = Number(instancesData.instance_type?.[instIdx] ?? 0);
       const skeletonId = Number(instancesData.skeleton?.[instIdx] ?? 0);
       const trackId = Number(instancesData.track?.[instIdx] ?? -1);
@@ -2708,14 +3072,17 @@ function buildLabeledFrames(options: {
         formatId < 1.2
           ? 0
           : Number(instancesData.tracking_score?.[instIdx] ?? 0);
-      const trackingScore = Number.isNaN(rawTrackingScore)
-        ? 0
-        : rawTrackingScore;
+      // NaN means "no score". Files before 3.0 have always read it as 0;
+      // from 3.0 it stays NaN, as Python sleap-io's None, so a save writes it
+      // back as NaN.
+      const trackingScore =
+        Number.isNaN(rawTrackingScore) && formatId < 3 ? 0 : rawTrackingScore;
       const fromPredicted = Number(
         instancesData.from_predicted?.[instIdx] ?? -1,
       );
       const skeleton = skeletons[skeletonId] ?? skeletons[0];
       const track = trackId >= 0 ? tracks[trackId] : null;
+      const metadata = metadataRecord(instanceMetadata, instIdx);
 
       let instance: Instance | PredictedInstance;
       if (instanceType === 0) {
@@ -2727,6 +3094,7 @@ function buildLabeledFrames(options: {
           skeleton,
           track,
           trackingScore,
+          metadata,
         });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
@@ -2745,6 +3113,7 @@ function buildLabeledFrames(options: {
           track,
           score,
           trackingScore,
+          metadata,
         });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
@@ -2757,7 +3126,14 @@ function buildLabeledFrames(options: {
       instances.push(instance);
     }
 
-    frames.push(new LabeledFrame({ video, frameIdx: frameIndex, instances }));
+    frames.push(
+      new LabeledFrame({
+        video,
+        frameIdx: frameIndex,
+        instances,
+        metadata: metadataRecord(frameMetadata, frameIdx),
+      }),
+    );
   }
 
   for (const [instanceId, fromPredictedId] of fromPredictedPairs) {

@@ -1,4 +1,5 @@
 import type { Video } from "./video.js";
+import { VIDEO_IS_INDEX } from "../codecs/slp/columnar.js";
 
 /**
  * Map each raw `frames.video` id to the index of its `Video` in the `videos`
@@ -20,6 +21,11 @@ export function buildVideoIdMap(
   framesData: Record<string, unknown[]>,
   videos: Video[],
 ): Map<number, number> {
+  // Format 3.0 stores the video's index, not a group id (see columnar.ts). An
+  // empty map makes every caller fall back to the raw value.
+  if ((framesData as unknown as Record<symbol, unknown>)[VIDEO_IS_INDEX]) {
+    return new Map();
+  }
   const videoIds = new Set<number>();
   for (const value of framesData.video ?? []) {
     videoIds.add(Number(value));

@@ -1,11 +1,5 @@
 import { LabeledFrame } from "./labeled-frame.js";
-import {
-  Instance,
-  PredictedInstance,
-  Track,
-  pointsFromArray,
-  predictedPointsFromArray,
-} from "./instance.js";
+import { Instance, PredictedInstance, Track } from "./instance.js";
 import { Skeleton } from "./skeleton.js";
 import { Video } from "./video.js";
 import { buildVideoIdMap } from "./video-id-map.js";
@@ -16,6 +10,10 @@ import type { LabelImage } from "./label-image.js";
 import type { ROI } from "./roi.js";
 import type { Identity } from "./identity.js";
 import type { Embedding } from "./embedding.js";
+import { type MetadataColumns, metadataRecord } from "./record-metadata.js";
+import type { SlpSourceFormat } from "../codecs/slp/format3.js";
+import { skipsInstanceRow } from "../codecs/slp/columnar.js";
+import { markSource } from "./source-mark.js";
 
 /**
  * Raw data store holding HDF5 dataset arrays for lazy materialization.
@@ -32,6 +30,27 @@ export class LazyDataStore {
   videos: Video[];
   formatId: number;
   negativeFrames: Set<string>;
+  /**
+   * Per-instance and per-frame metadata columns of a format 3.0 file, by
+   * `/instances` and `/frames` row. Attached to each record as it
+   * materializes. `null` for 1.x/2.x files.
+   */
+  instanceMetadata: MetadataColumns | null;
+  frameMetadata: MetadataColumns | null;
+  /**
+   * The source format of the labels this store was loaded with (see
+   * `Labels.sourceFormat`), so writers given the store alone can refuse a
+   * view-only file.
+   */
+  sourceFormat: SlpSourceFormat | null;
+
+  /**
+   * The `/instances` row of each instance this store has materialized, so
+   * links to instances by row resolve when some rows are skipped (see
+   * `Labels.materialize`).
+   * @internal
+   */
+  _instanceRow: WeakMap<Instance, number> = new WeakMap();
 
   /**
    * Memoized raw-`frames.video`-id -> `videos` index map (see
@@ -64,6 +83,9 @@ export class LazyDataStore {
     videos: Video[];
     formatId: number;
     negativeFrames?: Set<string>;
+    instanceMetadata?: MetadataColumns | null;
+    frameMetadata?: MetadataColumns | null;
+    sourceFormat?: SlpSourceFormat | null;
     identities?: Identity[];
     instanceIdentityLinks?: Map<number, [number, number | null]>;
     instanceEmbeddings?: Map<number, Embedding>;
@@ -80,6 +102,9 @@ export class LazyDataStore {
     this.videos = options.videos;
     this.formatId = options.formatId;
     this.negativeFrames = options.negativeFrames ?? new Set();
+    this.instanceMetadata = options.instanceMetadata ?? null;
+    this.frameMetadata = options.frameMetadata ?? null;
+    this.sourceFormat = options.sourceFormat ?? null;
     this.identities = options.identities;
     this._instanceIdentityLinks = options.instanceIdentityLinks;
     this._instanceEmbeddings = options.instanceEmbeddings;
@@ -112,6 +137,13 @@ export class LazyDataStore {
       for (const key of Object.keys(rec)) {
         out[key] = rec[key].slice();
       }
+      // Keep the symbol marks of a format 3.0 table (`columnar.ts`): without
+      // them a copied frames table would read its video indices as ids.
+      for (const mark of Object.getOwnPropertySymbols(rec)) {
+        (out as Record<symbol, unknown>)[mark] = (
+          rec as Record<symbol, unknown>
+        )[mark];
+      }
       return out;
     };
 
@@ -133,6 +165,10 @@ export class LazyDataStore {
       videos: this.videos,
       formatId: this.formatId,
       negativeFrames: new Set(this.negativeFrames),
+      // Read-only after loading, so shared like the identity maps below.
+      instanceMetadata: this.instanceMetadata,
+      frameMetadata: this.frameMetadata,
+      sourceFormat: this.sourceFormat,
       identities: this.identities,
       instanceIdentityLinks: this._instanceIdentityLinks,
       instanceEmbeddings: this._instanceEmbeddings,
@@ -196,6 +232,8 @@ export class LazyDataStore {
     const fromPredictedPairs: Array<[number, number]> = [];
 
     for (let instIdx = instStart; instIdx < instEnd; instIdx++) {
+      // A 3.0 row of another instance type is skipped, as in Python.
+      if (skipsInstanceRow(this.instancesData, instIdx)) continue;
       const instanceType = Number(
         this.instancesData.instance_type?.[instIdx] ?? 0,
       );
@@ -210,23 +248,31 @@ export class LazyDataStore {
         this.formatId < 1.2
           ? 0
           : Number(this.instancesData.tracking_score?.[instIdx] ?? 0);
-      const trackingScore = Number.isNaN(rawTrackingScore)
-        ? 0
-        : rawTrackingScore;
+      // NaN means "no score". Files before 3.0 have always read it as 0;
+      // from 3.0 it stays NaN, as Python sleap-io's None, so a save writes it
+      // back as NaN.
+      const trackingScore =
+        Number.isNaN(rawTrackingScore) && this.formatId < 3
+          ? 0
+          : rawTrackingScore;
       const fromPredicted = Number(
         this.instancesData.from_predicted?.[instIdx] ?? -1,
       );
       const skeleton = this.skeletons[skeletonId] ?? this.skeletons[0];
       const track = trackId >= 0 ? this.tracks[trackId] : null;
 
+      const metadata = metadataRecord(this.instanceMetadata, instIdx);
       let instance: Instance | PredictedInstance;
       if (instanceType === 0) {
-        const points = this.slicePoints(this.pointsData, pointStart, pointEnd);
-        instance = new Instance({
-          points: pointsFromArray(points, skeleton.nodeNames),
+        // Straight from the point columns, as the eager readers do.
+        instance = Instance._fromColumns({
+          columns: this.pointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           trackingScore,
+          metadata,
         });
         if (this.formatId < 1.1) {
           instance.points.forEach((point) => {
@@ -237,18 +283,15 @@ export class LazyDataStore {
           fromPredictedPairs.push([instIdx, fromPredicted]);
         }
       } else {
-        const points = this.slicePoints(
-          this.predPointsData,
-          pointStart,
-          pointEnd,
-          true,
-        );
-        instance = new PredictedInstance({
-          points: predictedPointsFromArray(points, skeleton.nodeNames),
+        instance = PredictedInstance._fromColumns({
+          columns: this.predPointsData,
+          start: pointStart,
+          end: pointEnd,
           skeleton,
           track,
           score,
           trackingScore,
+          metadata,
         });
         if (this.formatId < 1.1) {
           instance.points.forEach((point) => {
@@ -285,6 +328,7 @@ export class LazyDataStore {
       if (catEmb) instance.categoryEmbedding = catEmb;
 
       instanceById.set(instIdx, instance);
+      this._instanceRow.set(instance, instIdx);
       instances.push(instance);
     }
 
@@ -318,12 +362,18 @@ export class LazyDataStore {
       masks,
       labelImages,
       rois,
+      metadata: metadataRecord(this.frameMetadata, frameIdx),
     });
     // `negativeFrames` holds raw `/negative_frames` ids (copied through on a
     // lazy save), so match on the raw `/frames` id, not the resolved index.
     if (this.negativeFrames.has(`${rawVideoId}:${frameIndex}`)) {
       frame.isNegative = true;
     }
+    // Every record carries the open-time choice wherever it goes. The
+    // annotations were marked when read: the lists are the store's own, and
+    // a record the caller has since added to them keeps its own origin.
+    markSource(frame, this.sourceFormat);
+    for (const instance of instances) markSource(instance, this.sourceFormat);
     return frame;
   }
 
@@ -433,6 +483,7 @@ export class LazyDataStore {
       let localIdx = 0;
 
       for (let instIdx = iStart; instIdx < iEnd; instIdx++) {
+        if (skipsInstanceRow(this.instancesData, instIdx)) continue;
         const isPredicted = Number(instTypes[instIdx]) === 1;
         const trackId = Number(instTracks[instIdx]);
         const trackIndex =
@@ -481,28 +532,6 @@ export class LazyDataStore {
       if (frame) frames.push(frame);
     }
     return frames;
-  }
-
-  private slicePoints(
-    data: Record<string, any[]>,
-    start: number,
-    end: number,
-    predicted = false,
-  ): number[][] {
-    const xs = data.x ?? [];
-    const ys = data.y ?? [];
-    const visible = data.visible ?? [];
-    const complete = data.complete ?? [];
-    const scores = data.score ?? [];
-    const points: number[][] = [];
-    for (let i = start; i < end; i++) {
-      if (predicted) {
-        points.push([xs[i], ys[i], scores[i], visible[i], complete[i]]);
-      } else {
-        points.push([xs[i], ys[i], visible[i], complete[i]]);
-      }
-    }
-    return points;
   }
 }
 
@@ -569,6 +598,11 @@ export class LazyFrameList {
   /** Drop cached frames in the half-open range `[start, end)`. */
   releaseWindow(start: number, end: number): void {
     for (let i = start; i < end; i++) this.cache.delete(i);
+  }
+
+  /** @internal The frames materialized so far. */
+  _cachedFrames(): IterableIterator<LabeledFrame> {
+    return this.cache.values();
   }
 
   /** Drop all cached frames (keeps the underlying store). */

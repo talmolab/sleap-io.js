@@ -7,6 +7,7 @@ import {
 import { Skeleton } from "./skeleton.js";
 import type { Identity } from "./identity.js";
 import type { Embedding } from "./embedding.js";
+import { copySourceMark } from "./source-mark.js";
 
 /**
  * Normalize a centroid `source`/`method` string to its canonical snake_case
@@ -158,22 +159,24 @@ export class Centroid {
       name: skel.nodeNames[0],
     };
 
-    if (this instanceof PredictedCentroid) {
-      return new PredictedInstance({
-        points: [{ ...point, score: this.score }],
-        skeleton: skel,
-        track: this.track,
-        score: this.score,
-        trackingScore: this.trackingScore ?? undefined,
-      });
-    }
-
-    return new Instance({
-      points: [point],
-      skeleton: skel,
-      track: this.track,
-      trackingScore: this.trackingScore ?? undefined,
-    });
+    const out =
+      this instanceof PredictedCentroid
+        ? new PredictedInstance({
+            points: [{ ...point, score: this.score }],
+            skeleton: skel,
+            track: this.track,
+            score: this.score,
+            trackingScore: this.trackingScore ?? undefined,
+          })
+        : new Instance({
+            points: [point],
+            skeleton: skel,
+            track: this.track,
+            trackingScore: this.trackingScore ?? undefined,
+          });
+    // Derived from a record loaded from a format 3.0 file: keep its source.
+    copySourceMark(this, out);
+    return out;
   }
 
   /**
@@ -270,16 +273,17 @@ export class Centroid {
     };
 
     // Check if instance is predicted (has score property)
-    if (
+    const out =
       "score" in instance &&
       typeof (instance as PredictedInstance).score === "number"
-    ) {
-      return new PredictedCentroid({
-        ...centroidOptions,
-        score: (instance as PredictedInstance).score,
-      });
-    }
-    return new UserCentroid(centroidOptions);
+        ? new PredictedCentroid({
+            ...centroidOptions,
+            score: (instance as PredictedInstance).score,
+          })
+        : new UserCentroid(centroidOptions);
+    // Derived from a record loaded from a format 3.0 file: keep its source.
+    copySourceMark(instance, out);
+    return out;
   }
 }
 

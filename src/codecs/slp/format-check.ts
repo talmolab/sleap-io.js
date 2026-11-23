@@ -16,9 +16,10 @@ import { isUrl, redactUrl } from "../../io/remote.js";
 /**
  * The first `format_id` this version of sleap-io.js cannot read. Formats 1.x
  * and 2.x store the pose tables as compound datasets. Format 3.0 (Python
- * sleap-io 0.10) stores them as groups with one dataset per column.
+ * sleap-io 0.10) stores them as groups with one dataset per column, which the
+ * readers handle through `columnar.ts`.
  */
-export const SLP_FORMAT_ID_LIMIT = 3.0;
+export const SLP_FORMAT_ID_LIMIT = 4.0;
 
 /**
  * Features that a file may list in the `required_features` attribute of
@@ -57,6 +58,25 @@ export class SlpFormatError extends Error {
     this.formatId = options.formatId;
     this.unsupportedFeatures = options.unsupportedFeatures ?? [];
     Object.setPrototypeOf(this, new.target.prototype);
+  }
+}
+
+/**
+ * Thrown when a file's tables are inconsistent: a format 3.0 table without a
+ * required column, columns of different lengths, ranges that do not fit, or
+ * metadata without one row per record. A subclass of {@link SlpFormatError}, so
+ * callers that already handle unreadable files handle these too (and `loadSlp`
+ * does not retry such a file on the main thread).
+ */
+export class SlpTableError extends SlpFormatError {
+  constructor(labelsPath: string, detail: string, formatId: number | null) {
+    const path = isUrl(labelsPath) ? redactUrl(labelsPath) : labelsPath;
+    super({
+      message: `The SLEAP labels file '${path}' ${detail}`,
+      labelsPath: path,
+      formatId,
+    });
+    this.name = "SlpTableError";
   }
 }
 
@@ -133,13 +153,8 @@ export function checkSlpFormat(
       : Number(rawFormatId);
   if (formatId !== null && formatId >= SLP_FORMAT_ID_LIMIT) {
     const readers =
-      formatId < 4.0
-        ? "Python sleap-io 0.10 or newer reads this format. To open the " +
-          "file here, load it there and save a copy in the 2.x layout with " +
-          "`labels.save(new_path, legacy_format=True)`, or upgrade " +
-          "sleap-io.js to a version that reads format 3."
-        : "It was written by a newer tool than this version of sleap-io.js " +
-          "knows. Open it with the tool that wrote it, or upgrade sleap-io.js.";
+      "It was written by a newer tool than this version of sleap-io.js " +
+      "knows. Open it with the tool that wrote it, or upgrade sleap-io.js.";
     throw new SlpFormatError({
       message:
         `The SLEAP labels file '${labelsPath}' is in SLP format ` +
@@ -169,4 +184,29 @@ export function checkSlpFormat(
       unsupportedFeatures: unsupported,
     });
   }
+}
+
+/**
+ * The error for a format 3.0 file that holds tables this version does not read
+ * yet (see `UNREAD_FORMAT_3_TABLES`). Loading the file without them would drop
+ * those annotations without a word.
+ */
+export function unreadTablesError(
+  source: string,
+  formatId: number,
+  tables: readonly string[],
+): SlpFormatError {
+  const labelsPath = isUrl(source) ? redactUrl(source) : source;
+  return new SlpFormatError({
+    message:
+      `The SLEAP labels file '${labelsPath}' is in SLP format ` +
+      `${formatLabel(formatId)} and holds tables that this version of ` +
+      `sleap-io.js does not read in that format yet ` +
+      `(${tables.map((t) => `/${t}`).join(", ")}). Open the file with ` +
+      "Python sleap-io 0.10 or " +
+      "newer, or save a copy there in the 2.x layout with " +
+      "`labels.save(new_path, legacy_format=True)`.",
+    labelsPath,
+    formatId,
+  });
 }

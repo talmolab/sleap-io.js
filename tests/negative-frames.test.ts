@@ -156,6 +156,34 @@ describe("Negative Frames", () => {
     expect(loaded.negativeFrames.length).toBe(2);
   });
 
+  it('keeps negative frames in an embed: "source" save', async () => {
+    // Source mode rebuilds every frame onto the restored source video; the
+    // rebuilt frames must keep their negative flag.
+    const video = new Video({ filename: "labels.pkg.slp" });
+    video.sourceVideo = new Video({ filename: "source.mp4" });
+    const skeleton = new Skeleton({ nodes: ["A", "B"] });
+    const inst = new Instance({
+      points: { A: [10, 20], B: [30, 40] },
+      skeleton,
+    });
+    const labels = new Labels({
+      labeledFrames: [
+        new LabeledFrame({ video, frameIdx: 0, instances: [inst] }),
+        new LabeledFrame({ video, frameIdx: 5, isNegative: true }),
+      ],
+      videos: [video],
+      skeletons: [skeleton],
+    });
+
+    const bytes = await saveSlpToBytes(labels, { embed: "source" });
+    const loaded = await readSlp(new Uint8Array(bytes).buffer, {
+      openVideos: false,
+    });
+
+    expect(loaded.videos.map((v) => v.filename)).toEqual(["source.mp4"]);
+    expect(negativeIdxs(loaded)).toEqual([5]);
+  });
+
   it("preserves negative frames through lazy load cycle", async () => {
     const video = new Video({ filename: "test.mp4" });
     const skeleton = new Skeleton({ nodes: ["A", "B"] });

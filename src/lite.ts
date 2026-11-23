@@ -27,9 +27,27 @@ import {
   getValue,
   isDataset,
   isGroup,
+  type JsfiveDataset,
+  type JsfiveGroup,
   type JsfiveSource,
 } from "./codecs/slp/jsfive.js";
-import { checkSlpFormat } from "./codecs/slp/format-check.js";
+import {
+  countUnlabeledPoints,
+  METADATA_SUBGROUP,
+  type PoseTableName,
+  UNREAD_FORMAT_3_TABLES,
+  unknownColumns,
+} from "./codecs/slp/columnar.js";
+import {
+  buildFormat3Summary,
+  type Format3Summary,
+  PARTLY_READ_GROUPS,
+  unreadMembers,
+} from "./codecs/slp/format3.js";
+import {
+  checkSlpFormat,
+  unreadTablesError,
+} from "./codecs/slp/format-check.js";
 import {
   parseJsonAttr,
   parseSkeletons,
@@ -63,6 +81,17 @@ export {
   SLP_FORMAT_ID_LIMIT,
   SLP_SUPPORTED_FEATURES,
 } from "./codecs/slp/format-check.js";
+export {
+  SlpFormat3ChoiceError,
+  SlpViewOnlyError,
+  LOSSLESS_FORMAT3_ASKS,
+} from "./codecs/slp/format3.js";
+export { SlpTableError } from "./codecs/slp/format-check.js";
+export type {
+  Format3Access,
+  Format3Summary,
+  SlpSourceFormat,
+} from "./codecs/slp/format3.js";
 
 /**
  * Metadata extracted from an SLP file without loading pose data.
@@ -106,6 +135,109 @@ export interface SlpMetadata {
 
   /** Raw provenance data (SLEAP version, build info, etc.) */
   provenance?: Record<string, unknown>;
+
+  /**
+   * For a file in SLP format 3.0: what it holds that the 2.x layout (the only
+   * one this version writes) cannot store. The full readers throw
+   * `SlpFormat3ChoiceError` with this same summary unless given the `format3`
+   * option, so an application can read it here first and ask the user.
+   * Absent for files before 3.0.
+   */
+  format3?: Format3Summary;
+}
+
+/**
+ * A format 3.0 file may hold tables this version does not read in their 3.0
+ * form yet. Refuse it by name, as the full readers do.
+ */
+function refuseUnreadTables(
+  file: ReturnType<typeof openJsfiveFile>,
+  labelsPath: string,
+  formatId: number,
+): void {
+  if (!(formatId >= 3.0)) return;
+  const found = UNREAD_FORMAT_3_TABLES.filter((path) => !!file.get(path));
+  if (found.length > 0) throw unreadTablesError(labelsPath, formatId, found);
+}
+
+/** Whether a jsfive dtype is one a metadata `values` column may have. */
+function isMetadataDtype(dtype: unknown): boolean {
+  if (Array.isArray(dtype)) return dtype[0] === "VLEN_STRING";
+  if (typeof dtype !== "string") return false;
+  return /^[<>|=]?[biuf]\d+$/.test(dtype) || /^\|?S\d+$/.test(dtype);
+}
+
+/**
+ * The summary of a format 3.0 file (see `Format3Summary`), read with jsfive.
+ * Reads only the `labeled` and `visible` columns of the point tables and the
+ * names of the tables' members.
+ */
+function format3SummaryJsfive(
+  file: ReturnType<typeof openJsfiveFile>,
+  formatId: number,
+  provenanceInMetadata: boolean,
+): Format3Summary {
+  const members = (path: string): string[] => {
+    const node = file.get(path);
+    return isGroup(node) ? node.keys : [];
+  };
+  const datasets = (path: string): string[] =>
+    members(path).filter((name) => isDataset(file.get(`${path}/${name}`)));
+  const column = (path: string): ArrayLike<number> | undefined => {
+    const value = getValue(file.get(path));
+    return value && typeof value === "object" && "length" in value
+      ? (value as ArrayLike<number>)
+      : undefined;
+  };
+  const unlabeled = (table: string): number =>
+    isGroup(file.get(table))
+      ? countUnlabeledPoints({
+          labeled: column(`${table}/labeled`),
+          visible: column(`${table}/visible`),
+        })
+      : 0;
+  const keys = (table: string): string[] => {
+    const base = `${table}/${METADATA_SUBGROUP}`;
+    return members(base).filter((key) => {
+      const values = file.get(`${base}/${key}/values`);
+      return (
+        isGroup(file.get(`${base}/${key}`)) &&
+        isDataset(values) &&
+        getShape(values).length === 1 &&
+        isMetadataDtype(values.dtype)
+      );
+    });
+  };
+  const poseTables: PoseTableName[] = [
+    "frames",
+    "instances",
+    "points",
+    "pred_points",
+  ];
+  return buildFormat3Summary({
+    formatId,
+    unreadTables: unreadMembers({
+      root: file.keys,
+      groups: Object.fromEntries(
+        PARTLY_READ_GROUPS.filter((g) => isGroup(file.get(g))).map((g) => [
+          g,
+          members(g),
+        ]),
+      ),
+      provenanceInMetadata,
+    }),
+    unlabeledUserPoints: unlabeled("points"),
+    unlabeledPredictedPoints: unlabeled("pred_points"),
+    metadataKeys: {
+      instances: keys("instances"),
+      frames: keys("frames"),
+      bboxes: keys("bboxes"),
+    },
+    unknownColumns: [
+      ...poseTables.flatMap((table) => unknownColumns(table, datasets(table))),
+      ...unknownColumns("bboxes", datasets("bboxes")),
+    ],
+  });
 }
 
 /**
@@ -255,6 +387,10 @@ export async function loadSlpMetadata(
       throw new Error("Invalid SLP file: missing metadata.attrs.json");
     }
 
+    // A format 3.0 file may hold tables this version does not read in their
+    // 3.0 form yet; `/session_data` is the one this reader would touch.
+    refuseUnreadTables(file, options?.filename ?? "slp-data.slp", formatId);
+
     // Parse skeletons using shared logic
     const skeletons = parseSkeletons(metadataJson);
 
@@ -322,11 +458,18 @@ export async function loadSlpMetadata(
     const pointsDs = file.get("points");
     const predPointsDs = file.get("pred_points");
 
+    // Format 3.0 stores each table as a group with one dataset per column, so
+    // the row count is the length of one of its required columns.
+    const rows = (
+      table: JsfiveDataset | JsfiveGroup | null,
+      columnPath: string,
+    ): number =>
+      getShape(isGroup(table) ? file.get(columnPath) : table)[0] ?? 0;
     const counts = {
-      labeledFrames: getShape(framesDs)[0] ?? 0,
-      instances: getShape(instancesDs)[0] ?? 0,
-      points: getShape(pointsDs)[0] ?? 0,
-      predictedPoints: getShape(predPointsDs)[0] ?? 0,
+      labeledFrames: rows(framesDs, "frames/frame_idx"),
+      instances: rows(instancesDs, "instances/instance_type"),
+      points: rows(pointsDs, "points/x"),
+      predictedPoints: rows(predPointsDs, "pred_points/x"),
     };
 
     // Check for embedded images by looking at video metadata
@@ -347,6 +490,15 @@ export async function loadSlpMetadata(
       provenance: metadataJson.provenance as
         | Record<string, unknown>
         | undefined,
+      ...(formatId >= 3.0
+        ? {
+            format3: format3SummaryJsfive(
+              file,
+              formatId,
+              "provenance" in metadataJson,
+            ),
+          }
+        : {}),
     };
   } finally {
     file.close();
@@ -403,6 +555,16 @@ export function validateSlpBuffer(source: JsfiveSource): boolean {
     if (!attrs.json) {
       throw new Error("Invalid SLP file: missing metadata.attrs.json");
     }
+    // Nor does a 3.0 file with tables no reader of this version reads yet.
+    refuseUnreadTables(
+      file,
+      "slp-data.slp",
+      Number(
+        (attrs.format_id as { value?: unknown })?.value ??
+          attrs.format_id ??
+          1.0,
+      ),
+    );
 
     return true;
   } finally {

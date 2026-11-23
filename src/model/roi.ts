@@ -4,6 +4,7 @@ import type { Track, Instance } from "./instance.js";
 import type { SegmentationMask } from "./mask.js";
 import type { Identity } from "./identity.js";
 import type { Embedding } from "./embedding.js";
+import { keepSourceMark } from "./source-mark.js";
 
 // Late-binding factory to avoid circular imports with mask.ts.
 // Set by mask.ts when it is imported.
@@ -165,6 +166,11 @@ export class ROI {
   }
 
   explode(): ROI[] {
+    // A conversion keeps the format 3.0 source of the content.
+    return keepSourceMark(this, this._explodeUnmarked());
+  }
+
+  private _explodeUnmarked(): ROI[] {
     // Use runtime constructor to preserve subclass (UserROI vs PredictedROI).
     // The any cast is safe because copyFields dynamically includes score for predicted.
     const Ctor = this.constructor as new (options: any) => ROI;
@@ -297,6 +303,11 @@ export class ROI {
   }
 
   toMask(height: number, width: number): SegmentationMask {
+    // A conversion keeps the format 3.0 source of the content.
+    return keepSourceMark(this, this._toMaskUnmarked(height, width));
+  }
+
+  private _toMaskUnmarked(height: number, width: number): SegmentationMask {
     if (!_maskFactory) {
       throw new Error(
         "SegmentationMask not available. Import mask.ts before calling toMask().",

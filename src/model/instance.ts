@@ -1,6 +1,7 @@
 import type { Skeleton, Node } from "./skeleton.js";
 import type { Identity } from "./identity.js";
 import type { Embedding } from "./embedding.js";
+import type { RecordMetadata } from "./record-metadata.js";
 
 // Late-binding factory to avoid circular imports with centroid.ts.
 // Set by centroid.ts when it is imported.
@@ -46,6 +47,13 @@ export type Point = {
   xy: [number, number];
   visible: boolean;
   complete: boolean;
+  /**
+   * Whether the source annotated this node (SLP format 3.0). Absent means
+   * `true`. A point with `labeled` and `visible` both false is unlabelled: the
+   * annotator said nothing about it, as opposed to a hidden point, which was
+   * marked as not visible. A visible point always counts as labelled.
+   */
+  labeled?: boolean;
   score?: number;
   name?: string;
 };
@@ -56,15 +64,18 @@ export type PointsArray = Point[];
 export type PredictedPointsArray = PredictedPoint[];
 
 /**
- * The SLP readers' parsed point columns (`x`/`y`/`visible`/`complete`[/`score`]),
- * as plain `number[]` (eager reader) or `Float64Array` (streaming worker). Fed to
- * {@link Instance._fromColumns} to build an instance without a `Point[]`.
+ * The SLP readers' parsed point columns (`x`/`y`/`visible`/`complete`
+ * [/`labeled`][/`score`]), as plain `number[]` (eager reader) or
+ * `Float64Array` (streaming worker). Fed to {@link Instance._fromColumns} to
+ * build an instance without a `Point[]`. `labeled` is present only for format
+ * 3.0 tables; without it every point is labelled.
  */
 export interface PointColumns {
   x?: ArrayLike<number>;
   y?: ArrayLike<number>;
   visible?: ArrayLike<number>;
   complete?: ArrayLike<number>;
+  labeled?: ArrayLike<number>;
   score?: ArrayLike<number>;
 }
 
@@ -117,6 +128,7 @@ export function clonePoint(p: Point, name?: string): Point {
     complete: p.complete,
     name: name ?? p.name,
   };
+  if (p.labeled === false) out.labeled = false;
   const score = (p as PredictedPoint).score;
   if (typeof score === "number") (out as PredictedPoint).score = score;
   return out;
@@ -212,6 +224,18 @@ export class PointView {
     this.#owner._complete[this.#i] = v ? 1 : 0;
   }
 
+  /** Whether the point is labelled; a visible point always is. */
+  get labeled(): boolean {
+    const labeled = this.#owner._labeled;
+    return labeled
+      ? labeled[this.#i] !== 0 || this.#owner._visible[this.#i] !== 0
+      : true;
+  }
+  set labeled(v: boolean) {
+    if (v && !this.#owner._labeled) return; // already all labelled
+    this.#owner._labeledColumn()[this.#i] = v ? 1 : 0;
+  }
+
   get score(): number | undefined {
     const s = this.#owner._score;
     return s ? s[this.#i] : undefined;
@@ -250,6 +274,12 @@ export class Instance {
   categoryScore?: number | null = null;
   /** Per-detection category appearance embedding (SLP 2.7+); persisted in `/embeddings`. */
   categoryEmbedding?: Embedding | null = null;
+  /**
+   * Per-instance values (bool, number or string), stored by SLP format 3.0 in
+   * `/instances/metadata`. The 2.x layout this version writes cannot store
+   * them, so a save drops them (see `saveSlpToBytes`).
+   */
+  metadata: RecordMetadata = {};
 
   // Columnar keypoint storage (retained). Built once at construction from the
   // transient `Point[]`/dict, which is then discarded. `points` reads/writes go
@@ -257,6 +287,8 @@ export class Instance {
   _xy: Float64Array = EMPTY_F64; // interleaved [x0,y0,x1,y1,...], length 2n
   _visible: Uint8Array = EMPTY_U8; // n
   _complete: Uint8Array = EMPTY_U8; // n
+  /** n, or null when every point is labelled (always so for 1.x/2.x files). */
+  _labeled: Uint8Array | null = null;
   _score: Float64Array | null = null; // n (predicted) or null (user)
   _names: (string | undefined)[] | null = null; // null ⇒ derive from skeleton
   _n = 0;
@@ -267,11 +299,13 @@ export class Instance {
     track?: Track | null;
     fromPredicted?: PredictedInstance | null;
     trackingScore?: number;
+    metadata?: RecordMetadata;
   }) {
     this.skeleton = options.skeleton;
     this.track = options.track ?? null;
     this.fromPredicted = options.fromPredicted ?? null;
     this.trackingScore = options.trackingScore ?? 0;
+    this.metadata = options.metadata ? { ...options.metadata } : {};
     let pts: PointsArray;
     if (Array.isArray(options.points)) {
       const arr = options.points as PointsArray | number[][];
@@ -297,6 +331,8 @@ export class Instance {
     // Predicted points carry a numeric score (possibly NaN); user points don't.
     const hasScore = n > 0 && typeof (pts[0] as Point).score === "number";
     const score = hasScore ? new Float64Array(n) : null;
+    // Allocated only when some point is unlabelled (see `_labeled`).
+    let labeled: Uint8Array | null = null;
     const nodeNames = this.skeleton.nodeNames;
     let names: (string | undefined)[] | null = null;
     for (let i = 0; i < n; i += 1) {
@@ -306,6 +342,10 @@ export class Instance {
       xy[j + 1] = p.xy[1];
       visible[i] = p.visible ? 1 : 0;
       complete[i] = p.complete ? 1 : 0;
+      if (p.labeled === false) {
+        labeled ??= new Uint8Array(n).fill(1);
+        labeled[i] = 0;
+      }
       if (score) score[i] = p.score ?? Number.NaN;
       // Only materialize a names array if some point name differs from the
       // skeleton node order (the readers always match, so this stays null).
@@ -320,6 +360,7 @@ export class Instance {
     this._xy = xy;
     this._visible = visible;
     this._complete = complete;
+    this._labeled = labeled;
     this._score = score;
     this._names = names;
     this._n = n;
@@ -348,7 +389,9 @@ export class Instance {
     const cy = columns.y;
     const cv = columns.visible;
     const cc = columns.complete;
+    const cl = columns.labeled;
     const cs = columns.score;
+    let labeled: Uint8Array | null = null;
     for (let i = 0; i < n; i += 1) {
       const src = start + i;
       const j = i << 1;
@@ -359,12 +402,18 @@ export class Instance {
       xy[j + 1] = cy && cy[src] != null ? (cy[src] as number) : Number.NaN;
       visible[i] = cv && cv[src] ? 1 : 0;
       complete[i] = cc && cc[src] ? 1 : 0;
+      // A missing `labeled` cell reads as labelled, like a missing column.
+      if (cl && cl[src] != null && !cl[src]) {
+        labeled ??= new Uint8Array(n).fill(1);
+        labeled[i] = 0;
+      }
       if (score)
         score[i] = cs && cs[src] != null ? (cs[src] as number) : Number.NaN;
     }
     this._xy = xy;
     this._visible = visible;
     this._complete = complete;
+    this._labeled = labeled;
     this._score = score;
     this._names = null; // derived from the skeleton (readers keep node order)
     this._n = n;
@@ -383,12 +432,16 @@ export class Instance {
     track?: Track | null;
     fromPredicted?: PredictedInstance | null;
     trackingScore?: number;
+    metadata?: RecordMetadata;
   }): Instance {
     const inst = Object.create(Instance.prototype) as Instance;
     inst.skeleton = opts.skeleton;
     inst.track = opts.track ?? null;
     inst.fromPredicted = opts.fromPredicted ?? null;
     inst.trackingScore = opts.trackingScore ?? 0;
+    // Object.create skips the field initializers.
+    inst.metadata = opts.metadata ?? {};
+    inst._labeled = null;
     inst._fillFromColumns(opts.columns, opts.start, opts.end, false);
     return inst;
   }
@@ -397,6 +450,26 @@ export class Instance {
   _scoreColumn(): Float64Array {
     if (!this._score) this._score = new Float64Array(this._n).fill(Number.NaN);
     return this._score;
+  }
+
+  /** Lazily allocate the `labeled` column (all labelled) on the first `false`. */
+  _labeledColumn(): Uint8Array {
+    if (!this._labeled) this._labeled = new Uint8Array(this._n).fill(1);
+    return this._labeled;
+  }
+
+  /**
+   * Number of unlabelled points: neither labelled nor visible. These are what
+   * the 2.x layout cannot store (see `unlabeledAs` on the writers).
+   */
+  get nUnlabeled(): number {
+    const labeled = this._labeled;
+    if (!labeled) return 0;
+    let count = 0;
+    for (let i = 0; i < this._n; i += 1) {
+      if (!labeled[i] && !this._visible[i]) count += 1;
+    }
+    return count;
   }
 
   /** Node name for point `i` — derived from the skeleton unless overridden. */
@@ -733,6 +806,7 @@ export class PredictedInstance extends Instance {
     score?: number;
     trackingScore?: number;
     fromPredicted?: PredictedInstance | null;
+    metadata?: RecordMetadata;
   }) {
     const { score = 0, ...rest } = options;
     const pts = Array.isArray(rest.points)
@@ -747,6 +821,7 @@ export class PredictedInstance extends Instance {
       track: rest.track,
       trackingScore: rest.trackingScore,
       fromPredicted: rest.fromPredicted,
+      metadata: rest.metadata,
     });
     this.score = score;
   }
@@ -807,6 +882,7 @@ export class PredictedInstance extends Instance {
     score?: number;
     trackingScore?: number;
     fromPredicted?: PredictedInstance | null;
+    metadata?: RecordMetadata;
   }): PredictedInstance {
     const inst = Object.create(
       PredictedInstance.prototype,
@@ -816,6 +892,9 @@ export class PredictedInstance extends Instance {
     inst.fromPredicted = opts.fromPredicted ?? null;
     inst.trackingScore = opts.trackingScore ?? 0;
     inst.score = opts.score ?? 0;
+    // Object.create skips the field initializers.
+    inst.metadata = opts.metadata ?? {};
+    inst._labeled = null;
     inst._fillFromColumns(opts.columns, opts.start, opts.end, true);
     return inst;
   }

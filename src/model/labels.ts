@@ -19,6 +19,15 @@ import {
   injectSessionFrameResolver,
 } from "./camera.js";
 import type { Identity } from "./identity.js";
+import type { SlpSourceFormat } from "../codecs/slp/format3.js";
+import { hasSkippedInstanceRows } from "../codecs/slp/columnar.js";
+import { copySourceMark } from "./source-mark.js";
+
+/** Give a copied record the source mark of its original, and return it. */
+function withSourceMark<T extends object>(from: object, to: T): T {
+  copySourceMark(from, to);
+  return to;
+}
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
 import { type LazyDataStore, LazyFrameList } from "./lazy.js";
@@ -173,6 +182,22 @@ export class Labels {
   _lazyFrameList: LazyFrameList | null = null;
   /** @internal Lazy data store holding raw HDF5 data. */
   _lazyDataStore: LazyDataStore | null = null;
+
+  /**
+   * Set when the labels were loaded from a file in SLP format 3.0: its format,
+   * what it holds that the 2.x layout cannot store, and the caller's
+   * `format3` choice. With `access: "view"` every SLP writer refuses the labels;
+   * with `"edit"` writers save the 2.x layout and drop those fields. `null`
+   * for labels from 1.x/2.x files or built in memory. Carried by
+   * {@link copy} and {@link extract}. The choice also travels with each
+   * frame, instance and annotation read from the file (see
+   * `model/source-mark.ts`); writers decide record by record.
+   *
+   * After saving edit-loaded labels over their source file, set this to
+   * `null`: the file is now in the 2.x layout, and the in-place save functions
+   * then patch it again instead of sending every save to a full rewrite.
+   */
+  sourceFormat: SlpSourceFormat | null = null;
 
   // Index caches (excluded from serialization, rebuilt on demand)
   private _frameIndex: Map<Video, Map<number, LabeledFrame>> | null = null;
@@ -672,8 +697,20 @@ export class Labels {
     this._lazyFrameList = null;
     this._lazyDataStore = null;
 
-    // Resolve deferred instance references on per-frame annotations
-    const allInstances = this.labeledFrames.flatMap((f) => f.instances);
+    // Resolve deferred instance references on per-frame annotations. Links
+    // are `/instances` rows; when the store skipped rows (a 3.0 instance type
+    // other than user or predicted), index by row, with holes.
+    let allInstances: Array<Instance | PredictedInstance> =
+      this.labeledFrames.flatMap((f) => f.instances);
+    if (store && hasSkippedInstanceRows(store.instancesData)) {
+      const byRow: Array<Instance | PredictedInstance> = [];
+      for (const inst of allInstances) {
+        const row = store._instanceRow.get(inst);
+        if (row !== undefined) byRow[row] = inst;
+      }
+      byRow.length = (store.instancesData.instance_type ?? []).length;
+      allInstances = byRow;
+    }
     for (const lf of this.labeledFrames) {
       for (const ann of [
         ...lf.centroids,
@@ -684,7 +721,8 @@ export class Labels {
         if (
           ann._instanceIdx !== null &&
           ann._instanceIdx >= 0 &&
-          ann._instanceIdx < allInstances.length
+          ann._instanceIdx < allInstances.length &&
+          allInstances[ann._instanceIdx]
         ) {
           ann.instance = allInstances[ann._instanceIdx];
           ann._instanceIdx = null;
@@ -694,7 +732,12 @@ export class Labels {
         if (li._objectInstanceIdxs) {
           for (const [labelId, instIdx] of li._objectInstanceIdxs) {
             const obj = li.objects.get(labelId);
-            if (obj && instIdx >= 0 && instIdx < allInstances.length) {
+            if (
+              obj &&
+              instIdx >= 0 &&
+              instIdx < allInstances.length &&
+              allInstances[instIdx]
+            ) {
               obj.instance = allInstances[instIdx];
             }
           }
@@ -1284,23 +1327,28 @@ export class Labels {
         ? (trackMap.get(inst.track) ?? inst.track)
         : null;
       if (inst instanceof PredictedInstance) {
-        return new PredictedInstance({
-          points: newPoints as any,
-          skeleton: newSkeleton,
-          track: newTrack,
-          score: inst.score,
-          trackingScore: inst.trackingScore,
-        });
+        return withSourceMark(
+          inst,
+          new PredictedInstance({
+            points: newPoints as any,
+            skeleton: newSkeleton,
+            track: newTrack,
+            score: inst.score,
+            trackingScore: inst.trackingScore,
+            metadata: inst.metadata,
+          }),
+        );
       }
       const ni = new Instance({
         points: newPoints,
         skeleton: newSkeleton,
         track: newTrack,
         trackingScore: inst.trackingScore,
+        metadata: inst.metadata,
       });
       // fromPredicted can't be fully remapped (would need global instance identity),
       // so we leave it null on the copy.
-      return ni;
+      return withSourceMark(inst, ni);
     };
 
     // Helper: clone ancillary items by stripping object refs, structuredClone, then remap
@@ -1357,7 +1405,7 @@ export class Labels {
             }
           }
         }
-        return clone;
+        return withSourceMark(item, clone);
       });
 
     let labelsCopy: Labels;
@@ -1377,7 +1425,7 @@ export class Labels {
       if (this._lazyFrameList?._supplementary.length) {
         newLazyFrames._supplementary = this._lazyFrameList._supplementary.map(
           (lf) => {
-            return new LabeledFrame({
+            const frame = new LabeledFrame({
               video: videoMap.get(lf.video) ?? lf.video,
               frameIdx: lf.frameIdx,
               instances: lf.instances.map(cloneInstance),
@@ -1387,7 +1435,9 @@ export class Labels {
               masks: cloneAncillary(lf.masks) as SegmentationMask[],
               labelImages: cloneAncillary(lf.labelImages) as LabelImage[],
               rois: cloneAncillary(lf.rois) as ROI[],
+              metadata: lf.metadata,
             });
+            return withSourceMark(lf, frame);
           },
         );
       }
@@ -1440,7 +1490,9 @@ export class Labels {
           masks: cloneAncillary(f.masks) as SegmentationMask[],
           labelImages: cloneAncillary(f.labelImages) as LabelImage[],
           rois: cloneAncillary(f.rois) as ROI[],
+          metadata: f.metadata,
         });
+        copySourceMark(f, nf);
         frameMap.set(f, nf);
         return nf;
       });
@@ -1471,6 +1523,8 @@ export class Labels {
       });
       injectSessionFrameResolver(labelsCopy);
     }
+
+    labelsCopy.sourceFormat = this.sourceFormat;
 
     if (options?.openVideos !== undefined) {
       for (const video of labelsCopy.videos) {
@@ -1831,6 +1885,7 @@ export class Labels {
         track: mappedTrack,
         trackingScore: predicted.trackingScore,
         fromPredicted: predicted.fromPredicted,
+        metadata: predicted.metadata,
       });
     } else {
       newInstance = new Instance({
@@ -1839,8 +1894,10 @@ export class Labels {
         track: mappedTrack,
         trackingScore: instance.trackingScore,
         fromPredicted: instance.fromPredicted,
+        metadata: instance.metadata,
       });
     }
+    copySourceMark(instance, newInstance);
     if (memo !== undefined) memo.set(instance, newInstance);
     return newInstance;
   }
@@ -2151,7 +2208,9 @@ export class Labels {
             frameIdx: mappedFrameIdx,
             instances: [],
             isNegative: otherFrame.isNegative,
+            metadata: otherFrame.metadata,
           });
+          copySourceMark(otherFrame, newFrame);
           const instanceMemo = new Map<object, object>();
           for (const inst of otherFrame.instances) {
             newFrame.instances.push(
@@ -2925,6 +2984,7 @@ export class Labels {
     labels.provenance = { ...labels.provenance };
     labels.provenance.source_labels =
       (this.provenance.filename as string | undefined) ?? null;
+    labels.sourceFormat = this.sourceFormat;
 
     return labels;
   }
@@ -3072,20 +3132,28 @@ export class Labels {
       const newTrack = mapTrack(inst.track);
       if (inst.constructor === PredictedInstance) {
         const predicted = inst as PredictedInstance;
-        return new PredictedInstance({
-          points: newPoints as unknown as PredictedPointsArray,
+        return withSourceMark(
+          inst,
+          new PredictedInstance({
+            points: newPoints as unknown as PredictedPointsArray,
+            skeleton: newSkeleton,
+            track: newTrack,
+            score: predicted.score,
+            trackingScore: predicted.trackingScore,
+            metadata: predicted.metadata,
+          }),
+        );
+      }
+      return withSourceMark(
+        inst,
+        new Instance({
+          points: newPoints,
           skeleton: newSkeleton,
           track: newTrack,
-          score: predicted.score,
-          trackingScore: predicted.trackingScore,
-        });
-      }
-      return new Instance({
-        points: newPoints,
-        skeleton: newSkeleton,
-        track: newTrack,
-        trackingScore: inst.trackingScore,
-      });
+          trackingScore: inst.trackingScore,
+          metadata: inst.metadata,
+        }),
+      );
     };
 
     // Clone an ancillary annotation: shallow-clone preserving prototype, then
@@ -3108,6 +3176,14 @@ export class Labels {
         if ("instance" in anyClone) {
           anyClone.instance = null;
         }
+        // Per-record metadata (bounding boxes): an independent dictionary.
+        if (
+          anyClone.metadata !== null &&
+          typeof anyClone.metadata === "object" &&
+          !Array.isArray(anyClone.metadata)
+        ) {
+          anyClone.metadata = { ...(anyClone.metadata as object) };
+        }
         // LabelImage: copy the objects Map and remap nested track refs.
         if ("objects" in anyClone && anyClone.objects instanceof Map) {
           const oldObjects = anyClone.objects as Map<
@@ -3125,11 +3201,12 @@ export class Labels {
           }
           anyClone.objects = newObjects;
         }
-        return clone;
+        return withSourceMark(item, clone);
       });
 
-    return frames.map(
-      (f) =>
+    return frames.map((f) =>
+      withSourceMark(
+        f,
         new LabeledFrame({
           video: mapVideo(f.video),
           frameIdx: f.frameIdx,
@@ -3140,7 +3217,9 @@ export class Labels {
           masks: cloneAncillary(f.masks) as SegmentationMask[],
           labelImages: cloneAncillary(f.labelImages) as LabelImage[],
           rois: cloneAncillary(f.rois) as ROI[],
+          metadata: f.metadata,
         }),
+      ),
     );
   }
 

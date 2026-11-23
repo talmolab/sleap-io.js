@@ -8,7 +8,40 @@
  * @module
  */
 
-import { checkSlpFormat } from "./format-check.js";
+import {
+  checkPoseTables,
+  countUnlabeledPoints,
+  hasSkippedInstanceRows,
+  isColumnarTable,
+  isKnownPoseColumn,
+  skipsInstanceRow,
+  METADATA_SUBGROUP,
+  negativeFrameKeysFromFrames,
+  type PoseTableName,
+  poseTableFromColumns,
+  UNREAD_FORMAT_3_TABLES,
+  unknownColumns,
+} from "./columnar.js";
+import { checkSlpFormat, unreadTablesError } from "./format-check.js";
+import {
+  buildFormat3Summary,
+  checkFormat3Option,
+  checkMetadataColumns,
+  chooseFormat3Access,
+  type Format3Access,
+  isFormat3,
+  metadataColumn,
+  metadataKindFromH5,
+  PARTLY_READ_GROUPS,
+  type SlpSourceFormat,
+  unreadMembers,
+} from "./format3.js";
+import {
+  type MetadataColumns,
+  metadataKeys,
+  metadataRecord,
+} from "../../model/record-metadata.js";
+import { markFrameSource, markSource } from "../../model/source-mark.js";
 import {
   openH5Worker,
   type StreamingH5File,
@@ -147,6 +180,13 @@ export interface StreamingSlpOptions {
    * elsewhere in the library (Labels.merge, RenderOptions.onProgress).
    */
   onProgress?: (current: number, total: number, message?: string) => void;
+  /**
+   * What to do with a file in SLP format 3.0, which this version reads but
+   * cannot write: `"view"` (read-only, every SLP writer refuses the labels) or
+   * `"edit"` (a save writes the 2.x layout and drops what it cannot store).
+   * Without it a 3.0 file throws `SlpFormat3ChoiceError`. See `readSlp`.
+   */
+  format3?: Format3Access;
 }
 
 /**
@@ -251,6 +291,7 @@ async function readCentroidsStreaming(
 async function readBboxesStreaming(
   file: StreamingH5File,
   tracks: Track[],
+  metadata?: MetadataColumns | null,
 ): Promise<[BoundingBox, number, number][]> {
   try {
     if (!file.keys().includes("bboxes")) return [];
@@ -291,7 +332,14 @@ async function readBboxesStreaming(
       const categories = await strCol("category");
       const names = await strCol("name");
       const sources = await strCol("source");
-      return buildBboxTuples(data, categories, names, sources, tracks);
+      const tuples = buildBboxTuples(data, categories, names, sources, tracks);
+      // Format 3.0 record metadata, by `/bboxes` row (one tuple per row).
+      if (metadata) {
+        tuples.forEach(([bbox], row) => {
+          bbox.metadata = metadataRecord(metadata, row);
+        });
+      }
+      return tuples;
     }
 
     // Legacy layouts: a flat matrix (+ `field_names`) or compound dataset.
@@ -452,6 +500,8 @@ export async function readSlpStreaming(
   source: StreamingH5Source,
   options?: StreamingSlpOptions,
 ): Promise<Labels> {
+  // A wrong option is the caller's error: refuse it before reading anything.
+  checkFormat3Option(options?.format3);
   if (!isStreamingSupported()) {
     throw new Error(
       "Streaming HDF5 requires Web Worker support (browser environment)",
@@ -488,6 +538,7 @@ export async function readSlpStreaming(
       lazyVideoMetadata,
       options?.userInstancesOnly ?? false,
       options?.repairPointSpans ?? false,
+      options?.format3,
     );
   } catch (e) {
     // A failed read returns no Labels, so no video backend can need the file.
@@ -524,7 +575,9 @@ export async function readFromStreamingFile(
   lazyVideoMetadata: boolean = false,
   userInstancesOnly: boolean = false,
   repairPointSpans: boolean = false,
+  format3Choice?: Format3Access,
 ): Promise<Labels> {
+  checkFormat3Option(format3Choice);
   if (lazy && userInstancesOnly) {
     throw new Error(
       "readSlpStreaming: userInstancesOnly can't be combined with lazy",
@@ -586,6 +639,7 @@ export async function readFromStreamingFile(
   ) as Record<string, unknown> | null;
 
   const skeletons = parseSkeletons(metadataJson);
+  await refuseUnreadFormat3TablesStreaming(file, labelsPath, formatId);
 
   report(1);
   const tracks = await readTracksStreaming(file);
@@ -612,17 +666,41 @@ export async function readFromStreamingFile(
 
   // Read frame/instance/point data
   report(4);
-  const framesData = await readStructDatasetStreaming(file, "frames");
+  const readTable = (table: PoseTableName) =>
+    readPoseTableStreaming(file, table, formatId, labelsPath);
+  const framesData = await readTable("frames");
   report(5);
-  const instancesData = await readStructDatasetStreaming(file, "instances");
+  const instancesData = await readTable("instances");
   report(6);
-  const pointsData = await readStructDatasetStreaming(file, "points");
+  const pointsData = await readTable("points");
   const predPointsData = userInstancesOnly
     ? {}
-    : await readStructDatasetStreaming(file, "pred_points");
-  const negativeFrames = negativeFrameKeys(
-    await readStructDatasetStreaming(file, "negative_frames"),
-  );
+    : await readTable("pred_points");
+  // With userInstancesOnly the predicted points are not read, but a 3.0
+  // file's summary must still count their unlabelled points: fetch only the
+  // two flag columns for that.
+  const predPointFlags =
+    userInstancesOnly && formatId >= 3.0
+      ? await readPointFlagsStreaming(file, "pred_points")
+      : null;
+  // Format 3.0 keeps the negative flag as a `/frames` column.
+  const negativeFrames = framesData.is_negative
+    ? negativeFrameKeysFromFrames(framesData)
+    : negativeFrameKeys(
+        await readStructDatasetStreaming(file, "negative_frames"),
+      );
+  // Format 3.0: range checks, record metadata, and the caller's choice
+  // (throws SlpFormat3ChoiceError without one) before frames are built.
+  const format3 = await readFormat3Streaming(file, labelsPath, formatId, {
+    framesData,
+    instancesData,
+    pointsData,
+    predPointsData: userInstancesOnly ? null : predPointsData,
+    predPointFlags,
+    nVideos: videos.length,
+    choice: format3Choice,
+    provenanceInMetadata: !!metadataJson && "provenance" in metadataJson,
+  });
   checkPointSpans({
     framesData,
     instancesData,
@@ -649,12 +727,19 @@ export async function readFromStreamingFile(
         videos,
         formatId,
         negativeFrames,
+        instanceMetadata: format3?.instanceMetadata,
+        frameMetadata: format3?.frameMetadata,
+        sourceFormat: format3?.sourceFormat,
       })
     : undefined;
   // Instances by their row in the `instances` table, which is what identity
   // links and centroid refs point at. Without `userInstancesOnly` that is
   // simply the frames' instances in order.
   const instanceRows = new Map<number, Instance | PredictedInstance>();
+  // Look instances up by `/instances` row through `instanceRows` when the
+  // frames' instances are not every row: predictions dropped, or 3.0 rows of
+  // another instance type skipped.
+  const rowsByMap = userInstancesOnly || hasSkippedInstanceRows(instancesData);
   const labeledFrames = lazyStore
     ? undefined
     : buildLabeledFrames({
@@ -668,6 +753,8 @@ export async function readFromStreamingFile(
         formatId,
         userInstancesOnly,
         instanceRows,
+        instanceMetadata: format3?.instanceMetadata,
+        frameMetadata: format3?.frameMetadata,
       });
   if (labeledFrames) {
     markNegativeFrames(labeledFrames, negativeFrames, framesData, videos);
@@ -688,7 +775,7 @@ export async function readFromStreamingFile(
         const allInstances = instanceRowLookup(
           labeledFrames,
           instanceRows,
-          userInstancesOnly,
+          rowsByMap,
         );
         for (const [ownerId, [idx, score]] of links) {
           const inst = allInstances(ownerId);
@@ -732,24 +819,36 @@ export async function readFromStreamingFile(
     lazyStore,
     videos,
     instanceRows,
-    userInstancesOnly,
+    userInstancesOnly: rowsByMap,
   };
-  attachAnnotationTuples<Centroid>(await readCentroidsStreaming(file, tracks), {
-    ...attachCommon,
-    frameList: (lf) => lf.centroids,
-    setLazy: (store, byFrame, undistributed) => {
-      store._centroidByFrame = byFrame;
-      store._undistributedCentroids = undistributed;
+  // Every record carries the open-time choice wherever it goes (frames and
+  // instances are marked below, or by the lazy store as they materialize).
+  const markTuples = <T extends object>(tuples: [T, number, number][]) => {
+    for (const [ann] of tuples) markSource(ann, format3?.sourceFormat);
+    return tuples;
+  };
+  attachAnnotationTuples<Centroid>(
+    markTuples(await readCentroidsStreaming(file, tracks)),
+    {
+      ...attachCommon,
+      frameList: (lf) => lf.centroids,
+      setLazy: (store, byFrame, undistributed) => {
+        store._centroidByFrame = byFrame;
+        store._undistributedCentroids = undistributed;
+      },
     },
-  });
-  attachAnnotationTuples<BoundingBox>(await readBboxesStreaming(file, tracks), {
-    ...attachCommon,
-    frameList: (lf) => lf.bboxes,
-    setLazy: (store, byFrame, undistributed) => {
-      store._bboxByFrame = byFrame;
-      store._undistributedBboxes = undistributed;
+  );
+  attachAnnotationTuples<BoundingBox>(
+    markTuples(await readBboxesStreaming(file, tracks, format3?.bboxMetadata)),
+    {
+      ...attachCommon,
+      frameList: (lf) => lf.bboxes,
+      setLazy: (store, byFrame, undistributed) => {
+        store._bboxByFrame = byFrame;
+        store._undistributedBboxes = undistributed;
+      },
     },
-  });
+  );
 
   // Read sessions — grouping captured as index refs (no frame materialization).
   // (Skipped with userInstancesOnly: their groupings refer to frames and
@@ -779,6 +878,12 @@ export async function readFromStreamingFile(
     identities,
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
   });
+  labels.sourceFormat = format3?.sourceFormat ?? null;
+  if (labeledFrames) {
+    for (const frame of labeledFrames) {
+      markFrameSource(frame, format3?.sourceFormat);
+    }
+  }
   if (lazyStore) {
     // Attach the lazy proxies BEFORE injectSessionFrameResolver so the resolver's
     // frameAt() resolves against the lazy list (a single frame on demand, never
@@ -1858,6 +1963,279 @@ async function readSessionDataStreaming(
 /**
  * Read a structured dataset and normalize to column format.
  */
+/** The children of a group, or none when the path is absent or a dataset. */
+async function childKeys(
+  file: StreamingH5File,
+  path: string,
+): Promise<string[]> {
+  try {
+    return await file.getKeys(path);
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * A format 3.0 file may hold tables this version does not read in their 3.0
+ * form yet. Refuse it by name instead of loading it without them.
+ */
+async function refuseUnreadFormat3TablesStreaming(
+  file: StreamingH5File,
+  labelsPath: string,
+  formatId: number,
+): Promise<void> {
+  if (!(formatId >= 3.0)) return;
+  const root = file.keys();
+  const found: string[] = [];
+  for (const path of UNREAD_FORMAT_3_TABLES) {
+    const [parent, child] = path.split("/");
+    if (!root.includes(parent)) continue;
+    if (
+      child === undefined ||
+      (await childKeys(file, parent)).includes(child)
+    ) {
+      found.push(path);
+    }
+  }
+  if (found.length > 0) throw unreadTablesError(labelsPath, formatId, found);
+}
+
+/**
+ * Read one pose table in either layout: a compound dataset (formats 1.x and
+ * 2.x) or, from format 3.0 on, a group with one dataset per column (see
+ * columnar.ts). The columns are fetched one by one from the worker.
+ */
+async function readPoseTableStreaming(
+  file: StreamingH5File,
+  table: PoseTableName,
+  formatId: number,
+  labelsPath: string,
+  // biome-ignore lint/suspicious/noExplicitAny: matches the 2.x table type
+): Promise<Record<string, any>> {
+  // The layout is decided per table by node type, as the eager reader and
+  // Python sleap-io do: a group is read as columns, a dataset as 2.x.
+  const present = file.keys().includes(table);
+  const isGroup = present && !(await isDatasetStreaming(file, table));
+  if (!isGroup) {
+    if (formatId >= 3.0 && !present) return {};
+    return readStructDatasetStreaming(file, table);
+  }
+  const columns: Record<string, ArrayLike<unknown>> = {};
+  for (const name of await childKeys(file, table)) {
+    // Only the columns this version knows are fetched; the others are listed
+    // as unknown (see readFormat3Streaming) and would be dropped by a save.
+    if (!isKnownPoseColumn(table, name)) continue;
+    const data = await file.getDatasetValue(`${table}/${name}`);
+    columns[name] = data.value as ArrayLike<unknown>;
+  }
+  return poseTableFromColumns(table, columns, labelsPath);
+}
+
+/**
+ * The `labeled` and `visible` columns of a 3.0 point table, without the rest
+ * of it, or `null` when it has no `labeled` column (every point labelled).
+ */
+async function readPointFlagsStreaming(
+  file: StreamingH5File,
+  table: "points" | "pred_points",
+): Promise<Record<string, ArrayLike<unknown>> | null> {
+  if (!file.keys().includes(table)) return null;
+  const names = await childKeys(file, table);
+  if (!names.includes("labeled")) return null;
+  const flags: Record<string, ArrayLike<unknown>> = {};
+  for (const name of ["labeled", "visible"]) {
+    if (names.includes(name)) {
+      flags[name] = normalizeDatasetArray(
+        (await file.getDatasetValue(`${table}/${name}`)).value,
+      );
+    }
+  }
+  return flags;
+}
+
+/** Whether `path` is a dataset (a group has no shape). */
+async function isDatasetStreaming(
+  file: StreamingH5File,
+  path: string,
+): Promise<boolean> {
+  try {
+    const meta = await file.getDatasetMeta(path);
+    return Array.isArray(meta?.shape);
+  } catch {
+    return false;
+  }
+}
+
+/** The members of a group of the given type, or none when it is absent. */
+async function membersStreaming(
+  file: StreamingH5File,
+  path: string,
+  type: "Group" | "Dataset",
+): Promise<string[]> {
+  const out: string[] = [];
+  for (const name of await childKeys(file, path)) {
+    if (
+      (await isDatasetStreaming(file, `${path}/${name}`)) ===
+      (type === "Dataset")
+    ) {
+      out.push(name);
+    }
+  }
+  return out;
+}
+
+/**
+ * Read the record metadata of a format 3.0 table through the worker. Mirrors
+ * `readMetadataColumns` in read.ts: members that are not a group with a 1-D
+ * `values` dataset of a supported kind are ignored.
+ *
+ * @throws {Error} When a key does not have one row per record.
+ */
+async function readMetadataColumnsStreaming(
+  file: StreamingH5File,
+  table: string,
+  rows: number,
+  labelsPath: string,
+): Promise<MetadataColumns | null> {
+  const base = `${table}/${METADATA_SUBGROUP}`;
+  const columns: MetadataColumns = {};
+  for (const key of await membersStreaming(file, base, "Group")) {
+    const datasets = await membersStreaming(file, `${base}/${key}`, "Dataset");
+    if (!datasets.includes("values")) continue;
+    const meta = await file.getDatasetMeta(`${base}/${key}/values`);
+    const kind = metadataKindFromH5(
+      meta.metadata as Parameters<typeof metadataKindFromH5>[0],
+    );
+    if (kind === null) continue;
+    const values = (await file.getDatasetValue(`${base}/${key}/values`)).value;
+    const present = datasets.includes("present")
+      ? (await file.getDatasetValue(`${base}/${key}/present`)).value
+      : null;
+    const column = metadataColumn(kind, values, present);
+    if (column) columns[key] = column;
+  }
+  checkMetadataColumns(table, columns, rows, labelsPath);
+  return Object.keys(columns).length > 0 ? columns : null;
+}
+
+/** What the streaming reader keeps from the format 3.0 parts of a file. */
+interface Format3ReadStreaming {
+  sourceFormat: SlpSourceFormat;
+  instanceMetadata: MetadataColumns | null;
+  frameMetadata: MetadataColumns | null;
+  bboxMetadata: MetadataColumns | null;
+}
+
+/**
+ * For a file in format 3.0: run the range checks over its pose tables, read
+ * its record metadata and unknown column names, and apply the caller's
+ * `format3` choice. Mirrors `readFormat3` in read.ts. Returns `null` for files
+ * before 3.0. `predPointsData` is `null` when `/pred_points` was not read
+ * (`userInstancesOnly`): its range and unlabelled points are then not checked.
+ *
+ * @throws {SlpFormat3ChoiceError} When the caller gave no choice.
+ * @throws {Error} When the 3.0 pose tables are inconsistent.
+ */
+async function readFormat3Streaming(
+  file: StreamingH5File,
+  labelsPath: string,
+  formatId: number,
+  tables: {
+    // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTableStreaming
+    framesData: Record<string, any>;
+    // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTableStreaming
+    instancesData: Record<string, any>;
+    // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTableStreaming
+    pointsData: Record<string, any>;
+    // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTableStreaming
+    predPointsData: Record<string, any> | null;
+    /** `labeled`/`visible` of `/pred_points` when the table itself was not read. */
+    predPointFlags?: Record<string, ArrayLike<unknown>> | null;
+    nVideos: number;
+    choice: Format3Access | undefined;
+    /** Whether `/metadata`'s `json` attribute holds the provenance. */
+    provenanceInMetadata?: boolean;
+  },
+): Promise<Format3ReadStreaming | null> {
+  if (!isFormat3(formatId)) return null;
+  const { framesData, instancesData, pointsData, predPointsData } = tables;
+  if (isColumnarTable(framesData) && isColumnarTable(instancesData)) {
+    checkPoseTables({
+      frames: framesData,
+      instances: instancesData,
+      nPoints: columnLength(pointsData),
+      nPredPoints: predPointsData ? columnLength(predPointsData) : null,
+      nVideos: tables.nVideos,
+      labelsPath,
+    });
+  }
+  const instanceMetadata = await readMetadataColumnsStreaming(
+    file,
+    "instances",
+    (instancesData.instance_type ?? []).length,
+    labelsPath,
+  );
+  const frameMetadata = await readMetadataColumnsStreaming(
+    file,
+    "frames",
+    (framesData.frame_idx ?? []).length,
+    labelsPath,
+  );
+  const root = file.keys();
+  const bboxColumns = root.includes("bboxes")
+    ? await membersStreaming(file, "bboxes", "Dataset")
+    : [];
+  const bboxMetadata = bboxColumns.includes("x1")
+    ? await readMetadataColumnsStreaming(
+        file,
+        "bboxes",
+        (await file.getDatasetMeta("bboxes/x1")).shape?.[0] ?? 0,
+        labelsPath,
+      )
+    : null;
+  const unknown: string[] = [];
+  for (const table of [
+    "frames",
+    "instances",
+    "points",
+    "pred_points",
+  ] as const) {
+    if (!root.includes(table)) continue;
+    unknown.push(
+      ...unknownColumns(table, await membersStreaming(file, table, "Dataset")),
+    );
+  }
+  unknown.push(...unknownColumns("bboxes", bboxColumns));
+  const groups: Record<string, string[]> = {};
+  for (const group of PARTLY_READ_GROUPS) {
+    if (root.includes(group)) groups[group] = await childKeys(file, group);
+  }
+  const summary = buildFormat3Summary({
+    formatId,
+    unreadTables: unreadMembers({
+      root,
+      groups,
+      provenanceInMetadata: tables.provenanceInMetadata ?? false,
+    }),
+    unlabeledUserPoints: countUnlabeledPoints(pointsData),
+    unlabeledPredictedPoints: countUnlabeledPoints(
+      predPointsData ?? tables.predPointFlags ?? undefined,
+    ),
+    metadataKeys: {
+      instances: metadataKeys(instanceMetadata),
+      frames: metadataKeys(frameMetadata),
+      bboxes: metadataKeys(bboxMetadata),
+    },
+    unknownColumns: unknown,
+  });
+  return {
+    sourceFormat: chooseFormat3Access(labelsPath, summary, tables.choice),
+    instanceMetadata,
+    frameMetadata,
+    bboxMetadata,
+  };
+}
+
 async function readStructDatasetStreaming(
   file: StreamingH5File,
   path: string,
@@ -2064,6 +2442,9 @@ function buildLabeledFrames(options: {
   userInstancesOnly?: boolean;
   /** Filled with each built instance, keyed by its `instances` table row. */
   instanceRows?: Map<number, Instance | PredictedInstance>;
+  /** Format 3.0 record metadata, by `/instances` and `/frames` row. */
+  instanceMetadata?: MetadataColumns | null;
+  frameMetadata?: MetadataColumns | null;
 }): LabeledFrame[] {
   const frames: LabeledFrame[] = [];
   const {
@@ -2076,6 +2457,8 @@ function buildLabeledFrames(options: {
     videos,
     formatId,
     userInstancesOnly = false,
+    instanceMetadata,
+    frameMetadata,
   } = options;
   const frameIds = (framesData.frame_id ?? []) as number[];
   const videoIdToIndex = buildVideoIdMap(framesData, videos);
@@ -2104,6 +2487,8 @@ function buildLabeledFrames(options: {
         (instancesData.instance_type as number[])?.[instIdx] ?? 0,
       );
       if (userInstancesOnly && instanceType !== 0) continue;
+      // A 3.0 row of another instance type is skipped, as in Python.
+      if (skipsInstanceRow(instancesData, instIdx)) continue;
       const skeletonId = Number(
         (instancesData.skeleton as number[])?.[instIdx] ?? 0,
       );
@@ -2121,15 +2506,18 @@ function buildLabeledFrames(options: {
         formatId < 1.2
           ? 0
           : Number((instancesData.tracking_score as number[])?.[instIdx] ?? 0);
-      const trackingScore = Number.isNaN(rawTrackingScore)
-        ? 0
-        : rawTrackingScore;
+      // NaN means "no score". Files before 3.0 have always read it as 0;
+      // from 3.0 it stays NaN, as Python sleap-io's None, so a save writes it
+      // back as NaN.
+      const trackingScore =
+        Number.isNaN(rawTrackingScore) && formatId < 3 ? 0 : rawTrackingScore;
       const fromPredicted = Number(
         (instancesData.from_predicted as number[])?.[instIdx] ?? -1,
       );
       const skeleton =
         skeletons[skeletonId] ?? skeletons[0] ?? new Skeleton({ nodes: [] });
       const track = trackId >= 0 ? tracks[trackId] : null;
+      const metadata = metadataRecord(instanceMetadata, instIdx);
 
       let instance: Instance | PredictedInstance;
       if (instanceType === 0) {
@@ -2141,6 +2529,7 @@ function buildLabeledFrames(options: {
           skeleton,
           track,
           trackingScore,
+          metadata,
         });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
@@ -2159,6 +2548,7 @@ function buildLabeledFrames(options: {
           track,
           score,
           trackingScore,
+          metadata,
         });
         if (formatId < 1.1) {
           instance.points.forEach((point) => {
@@ -2174,7 +2564,14 @@ function buildLabeledFrames(options: {
     // A frame that only held predictions has nothing left to keep.
     if (userInstancesOnly && instEnd > instStart && instances.length === 0)
       continue;
-    frames.push(new LabeledFrame({ video, frameIdx: frameIndex, instances }));
+    frames.push(
+      new LabeledFrame({
+        video,
+        frameIdx: frameIndex,
+        instances,
+        metadata: metadataRecord(frameMetadata, frameIdx),
+      }),
+    );
   }
 
   for (const [instanceId, fromPredictedId] of fromPredictedPairs) {

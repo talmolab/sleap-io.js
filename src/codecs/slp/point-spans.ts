@@ -27,6 +27,7 @@
 import type { Skeleton } from "../../model/skeleton.js";
 import type { Video } from "../../model/video.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
+import { skipsInstanceRow } from "./columnar.js";
 
 type Columns = Record<string, ArrayLike<unknown> | undefined>;
 
@@ -153,11 +154,16 @@ export function checkPointSpans(options: {
   };
   const isPredictedAt = (row: number): boolean =>
     Number(types?.[row] ?? 0) !== 0;
+  // Rows the readers skip (a 3.0 instance type other than user or predicted)
+  // own no points they read, so their spans are not checked or repaired.
+  const skipped = (row: number): boolean =>
+    skipsInstanceRow(instancesData, row);
 
   let mismatchCount = 0;
   let firstRow = -1;
   const mismatchedTypes = { user: 0, predicted: 0 };
   for (let row = 0; row < instanceCount; row++) {
+    if (skipped(row)) continue;
     const predicted = isPredictedAt(row);
     if (predicted && options.userInstancesOnly) continue;
     const span = Number(ends[row]) - Number(starts[row]);
@@ -197,7 +203,7 @@ export function checkPointSpans(options: {
       type === "user" ? options.pointsRowCount : options.predPointsRowCount;
     const plan = planRepair(
       instanceCount,
-      (row) => isPredictedAt(row) === (type === "predicted"),
+      (row) => !skipped(row) && isPredictedAt(row) === (type === "predicted"),
       starts,
       ends,
       nodeCountAt,

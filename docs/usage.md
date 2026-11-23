@@ -368,16 +368,118 @@ try {
 }
 ```
 
-### Files in a format this version cannot read
+### Format 3.0 files, and formats this version cannot read
 
-sleap-io.js reads SLP formats 1.x and 2.x. Format 3.0, which Python sleap-io
-0.10 introduces, stores each pose table as a group with one dataset per column,
-and this version does not read it yet. Every reader (`loadSlp`, `readSlp`,
-`readSlpLazy`, `readSlpStreaming`, and `loadSlpMetadata` and
-`validateSlpBuffer` in the lite build) throws `SlpFormatError` for a file of
-format 3 or higher. Without the check such a file would load with no error and
-no poses. The same error is thrown for a file whose `required_features`
-attribute on `/metadata` names a feature this version doesn't know.
+sleap-io.js reads SLP formats 1.x, 2.x and the pose tables of format 3.0, which
+Python sleap-io 0.10 introduces. Format 3.0 stores each pose table (`/frames`,
+`/instances`, `/points`, `/pred_points`) as a group with one dataset per
+column. Every reader handles both layouts and returns the same `Labels`.
+
+sleap-io.js still writes the 2.x layout only, so a format 3.0 file that is
+loaded and saved comes out in the 2.x layout. That never happens silently: every
+reader (and `loadSlp`) takes a `format3` option, and a 3.0 file loaded without
+it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
+
+- `format3: "view"` loads everything and marks the labels view-only
+  (`labels.sourceFormat.access === "view"`). Every SLP writer (`saveSlp`,
+  `saveSlpToBytes`, `saveSlpStructureToBytes`, `saveSlpSet`, `openSlpWriter`,
+  `SlpStreamWriter.appendStore` and `appendFrames`, `saveSlpMergedFromStores`,
+  `saveSlpMergedToSink` and the in-place save functions) refuses them with
+  `SlpViewOnlyError` before it touches its target.
+- `format3: "edit"` loads the same, and a save writes the 2.x layout and drops
+  what that layout cannot store: points marked as not labelled are written as
+  hidden points with no location, and metadata and unknown columns are not
+  written.
+
+The choice travels with the content, not only with the `Labels` it was loaded
+into. Every labeled frame, instance and annotation read from a 3.0 file carries
+it, and copies keep it (`Labels.copy`, `extract`, `merge`, `BoundingBox.pad`,
+`toRoi`, `toMask` and the other conversions between boxes, centroids, masks,
+ROIs and label images). So content from a view-only file is refused by every
+SLP writer wherever it ends up (merged into other labels, passed to
+`new Labels({ labeledFrames })`, or appended to a streaming writer), and content
+from an edit-loaded file (its instances and annotations) is saved as the caller
+chose wherever it ends up. A merge passes only a view-only choice on to records
+of your own, and only with what they take: a frame of your own that takes
+nothing from a view-only frame (for example with `frame: "keep_original"`)
+stays yours. An edit choice is not passed on to your own frames: metadata keys
+they take from an edit-loaded frame are warned about at save like your own.
+
+Exports to other formats (Analysis HDF5, CSV, NWB, COCO and the like) are
+conversions, not SLP saves, and do not check the choice. Nor do `toDict` /
+`fromDict` and the numpy codec: records rebuilt from their output are new and
+carry no choice. An application that rebuilds records itself, for example for
+undo snapshots, carries it with `copySourceMark(original, rebuilt)`
+(`sourceMarkOf(record)` reads it).
+
+`labels.sourceFormat` and the records' choice are frozen. To change the choice
+after loading (say, the user decides to edit a file opened view-only), call
+`setSourceAccess(labels, "edit")`: it switches `labels.sourceFormat`, if set,
+and every record the labels hold that carries a choice, whatever file it came
+from. So it also works on a project of your own into which view-only content
+was merged. Records held elsewhere keep their choice: copies in other labels
+(switch those too), and a lazy frame released from the cache and still held
+(materialize it again). A lazy copy shares its annotation records with the
+labels it was copied from, so switching either switches those for both.
+
+After saving edit-loaded labels over their source file, that file is in the
+2.x layout. Set `labels.sourceFormat = null` to say so; the in-place save
+functions then patch it again instead of asking for a full save. The records
+keep their marks, so later saves still drop what the 2.x layout cannot store
+without a warning.
+
+Every 3.0 file asks, even one that holds nothing the 2.x layout cannot store,
+because saving it rewrites it in another layout. The error's `summary` (also
+returned as `format3` by the lite `loadSlpMetadata`, so an application can ask
+before a full read) says what an edit would drop. Besides unlabelled points,
+metadata and unknown columns, that is anything in the file this version does
+not read at all, in `unreadTables`: for example the frame-spanning events
+(`events`, `event_types`), the metadata of categories (`categories/meta_*`), or
+a table added by a newer writer:
+
+```ts
+import { loadSlp, SlpFormat3ChoiceError } from "@talmolab/sleap-io.js";
+
+let labels;
+try {
+  labels = await loadSlp("dataset.slp");
+} catch (e) {
+  if (!(e instanceof SlpFormat3ChoiceError)) throw e;
+  // e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns,
+  //              unreadTables, lossless }
+  const edit = e.summary.lossless || confirm(e.message);
+  labels = await loadSlp("dataset.slp", { format3: edit ? "edit" : "view" });
+}
+```
+
+What format 3.0 adds is read into the model either way: `point.labeled`
+(`false` with `visible` false means the source did not annotate the node; absent
+means `true`), and `metadata` on instances, labeled frames and bounding boxes.
+Labels built in memory can hold them too. Saving records that were not read
+from a 3.0 file follows Python's `legacy_format=True`: unlabelled points throw
+unless the writer is given `unlabeledAs: "absent"`, and metadata is dropped
+with a warning.
+
+A reader learns that a file is in format 3.0, and what it holds, only after it
+has read the file's pose tables, so `loadSlp` without `format3` followed by a
+second `loadSlp` with it reads them twice. For a large or remote file, call the
+lite `loadSlpMetadata` first (it reads only the flags and names it needs), or
+pass `format3` from the start.
+
+Every reader (`loadSlp`, `readSlp`, `readSlpLazy`, `readSlpStreaming`, and
+`loadSlpMetadata` and `validateSlpBuffer` in the lite build) throws
+`SlpFormatError` for a file it cannot read:
+
+- a file of format 4 or higher;
+- a file whose `required_features` attribute on `/metadata` names a feature
+  this version doesn't know;
+- a format 3.0 file that holds a table this version does not read in that
+  format yet: ROIs, masks, label images, identity and category links, or
+  session data. The message names the tables;
+- a format 3.0 file whose tables are inconsistent (a missing required column,
+  columns of different lengths, instance or point ranges that do not fit,
+  metadata without one row per record). This is `SlpTableError`, a subclass of
+  `SlpFormatError`, and the message names the table.
 
 The message names the file and its format and says which tool can read it. The
 error also carries `formatId` and `unsupportedFeatures`.
@@ -389,14 +491,12 @@ try {
   const labels = await loadSlp("dataset.slp");
 } catch (e) {
   if (!(e instanceof SlpFormatError)) throw e;
-  // e.g. "... is in SLP format 3.0, which this version of sleap-io.js cannot
-  // read ... Python sleap-io 0.10 or newer reads this format. ..."
   console.error(e.message);
 }
 ```
 
-To open a format 3.0 file here, load it with Python sleap-io 0.10 or newer and
-save a copy in the 2.x layout:
+A format 3.0 file that is refused for its tables can be saved in the 2.x layout
+with Python sleap-io 0.10 or newer:
 
 ```python
 import sleap_io as sio
