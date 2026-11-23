@@ -12,6 +12,7 @@ import type { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
 import type { Video } from "../../model/video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
+import { GrayscaleVideoBackend } from "../../video/grayscale-backend.js";
 import {
   decodeEncoded,
   encodeBitmapToPng,
@@ -86,6 +87,14 @@ import {
   sourceMarkOf,
 } from "../../model/source-mark.js";
 import { hadNanTrackingScore } from "../../model/stored-nan.js";
+import {
+  checkEmbedImageFormat,
+  embedQuality,
+  encodeFrameAs,
+  imageFileBytes,
+  type EmbedEncoding,
+  type EmbedImageFormat,
+} from "./embed-format.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile:
@@ -157,6 +166,33 @@ export type SlpWriteOptions = {
    * {@link ExportCancelled}, as Python's `progress_callback`.
    */
   onProgress?: (current: number, total: number, message?: string) => unknown;
+  /**
+   * Image format to store embedded frames in: `"png"` (lossless) or
+   * `"jpg"` (lossy, smaller and faster to decode; `"jpeg"` is accepted and
+   * stored as `"jpg"`), as Python sleap-io's `image_format`. With a format,
+   * frames already encoded in it (image files, encoded bytes a backend
+   * returns that need no red/blue swap, or an already-embedded video's
+   * stored images) are stored verbatim and every other frame is decoded and encoded
+   * in it, so an already-embedded video stored in another format is
+   * converted; a grayscale video's frames are stored with one channel.
+   * Unlike Python, a conversion keeps all of the video's stored images
+   * (Python keeps only the frames `embed` selects), and a save without
+   * `embed` converts too (Python's `embed=False` writes no images). When
+   * omitted, frames are stored as before: new frames as PNG, except encoded
+   * bytes a backend returns, which are kept as they are (color bytes stored
+   * BGR are re-encoded as RGB PNGs), and already-embedded images copied as
+   * they are.
+   */
+  imageFormat?: EmbedImageFormat | "jpeg";
+  /**
+   * Encoder setting for frames encoded with {@link imageFormat}: JPEG quality
+   * (0-100, default 95) for `"jpg"`, or PNG compression level (0-9) for
+   * `"png"`. Needs an explicit `imageFormat`. Frames stored verbatim keep
+   * their bytes. (The streaming writer's worker compresses PNGs with the
+   * platform's zlib, whose level can't be set: there 0 stores them
+   * uncompressed and any other level uses its default.)
+   */
+  imageQuality?: number | null;
   /**
    * How the 2.x layout saves unlabelled points (`labeled` and `visible` both
    * false), which it cannot store; see {@link UnlabeledAs}. Ignored when
@@ -982,8 +1018,9 @@ function reportProgress(
  * of a continuous video: read each selected frame via `getFrame`, then store its
  * bytes directly (`frameToBytes`) when the backend already returns encoded bytes,
  * or PNG-encode it when the backend returns raw pixels (an `ImageBitmap` /
- * `ImageData` — the MediaBunny / Mp4Box mp4 case). Works in both browser and
- * Node.
+ * `ImageData` — the MediaBunny / Mp4Box mp4 case). With an explicit
+ * `imageFormat`, "encode" follows that format's rules instead (see
+ * `encodeFrameAs` in embed-format.ts). Works in both browser and Node.
  */
 type EmbedPlanEntry = {
   kind: "raw" | "encode";
@@ -992,6 +1029,8 @@ type EmbedPlanEntry = {
   frameNumbers: number[]; // source frame numbers to write, in order
   format: string;
   channelOrder: string;
+  /** For "encode" with an explicit `imageFormat`: the encoder settings. */
+  encoding?: EmbedEncoding;
   /** For "encode": pre-collected bytes keyed by frame number. */
   frameData?: Map<number, Uint8Array>;
 };
@@ -3200,6 +3239,11 @@ async function writeSlpBytes(
 ): Promise<Uint8Array> {
   // Labels loaded with `format3: "view"` are never written.
   refuseViewOnly(labels);
+  // Checked before anything else, as Python, so a bad option writes nothing.
+  const imageFormat = checkEmbedImageFormat(
+    options?.imageFormat,
+    options?.imageQuality,
+  );
   // Decide the layout once, before anything is written (or materialized):
   // every table writer below follows it.
   const layout = resolveSlpVersion(
@@ -3208,6 +3252,7 @@ async function writeSlpBytes(
   );
   const bytes = await writeSlpBytesIn(labels, options, layout, {
     includeEmbeddedData,
+    imageFormat,
   });
   // The next "auto" save of these labels keeps the layout just written.
   labels._slpLayout = layout;
@@ -3218,7 +3263,10 @@ async function writeSlpBytesIn(
   labels: Labels,
   options: SlpWriteOptions | undefined,
   layout: SlpLayout,
-  { includeEmbeddedData }: { includeEmbeddedData: boolean },
+  {
+    includeEmbeddedData,
+    imageFormat,
+  }: { includeEmbeddedData: boolean; imageFormat: EmbedImageFormat | null },
 ): Promise<Uint8Array> {
   const embedMode = options?.embed ?? false;
 
@@ -3375,7 +3423,11 @@ async function writeSlpBytesIn(
         embedMode,
         options?.onProgress,
         options?.embedAllVideos ?? true,
-        { readFrames: includeEmbeddedData },
+        {
+          readFrames: includeEmbeddedData,
+          imageFormat,
+          imageQuality: embedQuality(options?.imageQuality),
+        },
       )
     : null;
 
@@ -6507,15 +6559,35 @@ function writeMetadataJsonInPlace(file: any, metadataJson?: string): void {
  * regardless of `embedMode`; only a NEW embed of a continuous video takes the
  * legacy getFrame+encode path — and only when a real embed mode was requested.
  * (`embedMode === "source"` never reaches here — the caller externalizes.)
+ * A new embed is stored in `imageFormat` when one is given (checked by
+ * `checkEmbedImageFormat`), else as it always was.
  */
 async function planEmbedding(
   labels: Labels,
   embedMode: EmbedOption,
   onProgress?: SlpWriteOptions["onProgress"],
   embedAllVideos = true,
-  { readFrames = true }: { readFrames?: boolean } = {},
+  {
+    readFrames = true,
+    imageFormat = null,
+    imageQuality = null,
+  }: {
+    readFrames?: boolean;
+    imageFormat?: EmbedImageFormat | null;
+    imageQuality?: number | null;
+  } = {},
 ): Promise<EmbedPlan> {
   const plan: EmbedPlan = new Map();
+  // With an explicit format, each new embed's encoder settings; a grayscale
+  // video (one recorded channel) stores one-channel images, as Python.
+  const encodingFor = (video: Video): EmbedEncoding | undefined =>
+    imageFormat
+      ? {
+          format: imageFormat,
+          quality: imageQuality,
+          gray: embeddedVideoAttrs(video)?.channels === 1,
+        }
+      : undefined;
   const isRealMode = embedMode !== false && embedMode !== "source";
   if (Array.isArray(embedMode)) {
     for (const [video] of embedMode) {
@@ -6532,14 +6604,49 @@ async function planEmbedding(
       ? selectEmbedFrames(labels, vi, embedMode)
       : [],
   );
+  // An already-embedded video whose stored images aren't in the chosen format
+  // is converted (its FULL stored set, as the raw copy), as Python converts
+  // every embedded video to an explicit `image_format`. Without one, or in the
+  // same format, it is raw-copied as always.
+  const toConvert = new Map<number, number[]>();
+  if (imageFormat) {
+    for (let vi = 0; vi < labels.videos.length; vi++) {
+      const video = labels.videos[vi];
+      if (!isRawCopyable(video)) continue;
+      await video.backend!.ensureLoaded?.();
+      if (needsConversion(video, encodingFor(video)!)) {
+        toConvert.set(vi, video.embeddedFrameIndices ?? []);
+      }
+    }
+  }
   const progress = {
     done: 0,
-    total: toEncode.reduce((n, frames) => n + frames.length, 0),
+    total:
+      toEncode.reduce((n, frames) => n + frames.length, 0) +
+      (readFrames
+        ? [...toConvert.values()].reduce((n, f) => n + f.length, 0)
+        : 0),
     report: onProgress,
   };
   for (let vi = 0; vi < labels.videos.length; vi++) {
     const video = labels.videos[vi];
-    if (isRawCopyable(video)) {
+    const converted = toConvert.get(vi);
+    if (converted) {
+      if (converted.length === 0) continue;
+      const encoding = encodingFor(video)!;
+      plan.set(vi, {
+        kind: "encode",
+        videoIndex: vi,
+        video,
+        frameNumbers: converted,
+        format: encoding.format,
+        channelOrder: "RGB",
+        encoding,
+        frameData: readFrames
+          ? await convertEmbeddedFrames(video, converted, encoding, progress)
+          : undefined,
+      });
+    } else if (isRawCopyable(video)) {
       // Preserve the FULL stored set regardless of embedMode (semantics A).
       await video.backend!.ensureLoaded?.();
       const frameNumbers = video.embeddedFrameIndices ?? [];
@@ -6567,8 +6674,9 @@ async function planEmbedding(
         videoIndex: vi,
         video,
         frameNumbers,
-        format: "png",
+        format: imageFormat ?? "png",
         channelOrder: "RGB",
+        encoding: encodingFor(video),
       });
     } else if (isRealMode && video.backend) {
       // New-embed of a continuous video: legacy getFrame+encode path. Frames a
@@ -6577,11 +6685,14 @@ async function planEmbedding(
       // happens the stored `format` MUST be "png" (the encoded bytes ARE PNG),
       // overriding any codec-ish `backendMetadata.format`, or the reader would
       // mis-decode. Their channel order is RGB (decoded pixels, or copied image
-      // bytes), which is what Python records for both.
+      // bytes), which is what Python records for both. An explicit format
+      // stores every frame in it.
+      const encoding = encodingFor(video);
       const { frameData, encodedFormat } = await collectEncodedFrames(
         video,
         toEncode[vi],
         progress,
+        encoding,
       );
       if (frameData.size === 0) continue;
       const frameNumbers = [...frameData.keys()].sort((a, b) => a - b);
@@ -6591,8 +6702,12 @@ async function planEmbedding(
         video,
         frameNumbers,
         format:
-          encodedFormat ?? (video.backendMetadata?.format as string) ?? "png",
+          encoding?.format ??
+          encodedFormat ??
+          (video.backendMetadata?.format as string) ??
+          "png",
         channelOrder: "RGB",
+        encoding,
         frameData,
       });
     }
@@ -6610,8 +6725,9 @@ async function planEmbedding(
         videoIndex: vi,
         video,
         frameNumbers: [],
-        format: "png",
+        format: imageFormat ?? "png",
         channelOrder: "RGB",
+        encoding: encodingFor(video),
         frameData: new Map(),
       });
     });
@@ -6687,19 +6803,36 @@ export type SerializableEmbedEntry = {
 };
 
 /**
- * Serializable projection of one NEW-embed ("encode") {@link EmbedPlanEntry}:
- * a continuous video (e.g. an mp4) whose frames are read on the main thread
- * and PNG-encoded + appended by the streaming writer's worker (see
- * {@link appendEncodedVideos}). Only returned when
- * {@link buildSerializableEmbedPlan} is called with `allowEncode`.
+ * Serializable projection of one "encode" {@link EmbedPlanEntry}: a video
+ * whose frames are read on the main thread and encoded + appended by the
+ * streaming writer's worker (see {@link appendEncodedVideos}). That is a new
+ * embed of a continuous video (e.g. an mp4), or, with `imageFormat`, an
+ * already-embedded video converted to that format (its stored images are
+ * read as stored). Only returned when {@link buildSerializableEmbedPlan} is
+ * called with `allowEncode`.
  */
 export type SerializableEncodeEntry = {
   /** This video's position in `labels.videos` (and its `video{i}` group). */
   videoIndex: number;
   /** Source frame numbers to embed, sorted. Empty for an empty embedded video. */
   frameNumbers: number[];
-  /** Always "png": every frame is stored as a PNG. */
+  /**
+   * Stored image format of every frame: `"png"`, or the `imageFormat` the
+   * plan was built with (`"png"` / `"jpg"`).
+   */
   format: string;
+  /**
+   * True when the format was chosen with `imageFormat`: frames already
+   * encoded in it are stored verbatim, the rest are encoded in it, and a
+   * grayscale video's frames keep one channel (see `encodeFrameAs`).
+   * Absent or false: every frame is a PNG, as before the option existed.
+   */
+  formatChosen?: boolean;
+  /**
+   * JPEG quality / PNG compression level for encoded frames (`imageQuality`),
+   * or null/absent for the encoder default.
+   */
+  quality?: number | null;
   /** Channel order recorded for the stored images, e.g. "RGB". */
   channelOrder: string;
   /** Plain-object `source_video` lineage, or `null` (see the raw entry). */
@@ -6740,18 +6873,22 @@ export type SerializableEmbedPlan = {
  * raw entry down to plain data a worker can act on without the live `Labels`/
  * `Video`/backend objects.
  *
- * By default, throws if `planEmbedding` selected a `kind: "encode"` (new-embed
- * of a continuous video) entry for any video. With `allowEncode`, those are
- * returned as `encodeEntries` instead (planned without reading any frame), for
- * `appendEncodedVideos` (stream-embed.ts) to read, encode and append.
+ * By default, throws if `planEmbedding` selected a `kind: "encode"` entry for
+ * any video: a new embed of a continuous video, or, with an `imageFormat`, an
+ * already-embedded video stored in another format, which is converted. So a
+ * raw-copy re-save that passes `imageFormat` needs `allowEncode` whenever a
+ * video converts. With `allowEncode`, those are returned as `encodeEntries`
+ * instead (planned without reading any frame), for `appendEncodedVideos`
+ * (stream-embed.ts) to read, encode and append.
  *
  * @param labels Labels to save (already-open embedded video backends).
  * @param embedMode Same `embed` option as `saveSlpToBytes`/`planEmbedding`.
  * @param sourcePath On-disk path of the SOURCE pkg.slp; the worker opens it
  *   via its own read bridge to copy the embedded groups from. Unused when
  *   there are no raw entries.
- * @throws Error if any selected video would use the new-embed ("encode")
- *   path without `allowEncode`, or a raw-copyable video's backend exposes no
+ * @throws Error if any selected video would use the "encode" path (a new
+ *   embed, or a conversion to `imageFormat`) without `allowEncode`, or a
+ *   raw-copyable video's backend exposes no
  *   `dataset` to locate its source embedded group by.
  */
 export async function buildSerializableEmbedPlan(
@@ -6760,22 +6897,41 @@ export async function buildSerializableEmbedPlan(
   sourcePath: string,
   options: {
     /**
-     * Also plan new embeds of continuous videos (`encodeEntries`) instead of
-     * throwing, without reading their frames. Use with the same `embed` and
-     * `embedAllVideos` as the structure write, so the two agree.
+     * Also plan new embeds of continuous videos, and conversions of
+     * already-embedded videos to `imageFormat` (`encodeEntries`), instead of
+     * throwing, without reading their frames. Use with the same `embed`,
+     * `embedAllVideos` and image options as the structure write, so the two
+     * agree.
      */
     allowEncode?: boolean;
     /** As {@link SlpWriteOptions.embedAllVideos}; only with `allowEncode`. */
     embedAllVideos?: boolean;
+    /**
+     * As {@link SlpWriteOptions.imageFormat}: the format `encodeEntries` are
+     * stored in. An already-embedded video stored in another format becomes
+     * an encode entry (a conversion), which needs `allowEncode`. Use the same
+     * as the structure write.
+     */
+    imageFormat?: SlpWriteOptions["imageFormat"];
+    /** As {@link SlpWriteOptions.imageQuality}. */
+    imageQuality?: number | null;
   } = {},
 ): Promise<SerializableEmbedPlan> {
+  const imageFormat = checkEmbedImageFormat(
+    options.imageFormat,
+    options.imageQuality,
+  );
   // Raw-copy only (the default): no empty embedded videos on this path.
   const plan = await planEmbedding(
     labels,
     embedMode,
     undefined,
     options.allowEncode ? (options.embedAllVideos ?? true) : false,
-    { readFrames: false },
+    {
+      readFrames: false,
+      imageFormat,
+      imageQuality: embedQuality(options.imageQuality),
+    },
   );
   const entries: SerializableEmbedEntry[] = [];
   const encodeEntries: SerializableEncodeEntry[] = [];
@@ -6786,6 +6942,10 @@ export async function buildSerializableEmbedPlan(
         videoIndex: entry.videoIndex,
         frameNumbers: [...entry.frameNumbers],
         format: entry.format,
+        // Only with a chosen format, so a plan without one is as before.
+        ...(entry.encoding
+          ? { formatChosen: true, quality: entry.encoding.quality }
+          : {}),
         channelOrder: entry.channelOrder,
         sourceVideoJson: sourceVideoDict(video),
         videoAttrs: embeddedVideoAttrs(video),
@@ -6794,11 +6954,14 @@ export async function buildSerializableEmbedPlan(
     }
     if (entry.kind !== "raw") {
       throw new Error(
-        `buildSerializableEmbedPlan: video${entry.videoIndex} would use the ` +
-          `new-embed ("encode") path, which the streaming writer's worker ` +
-          "half does not support - this path is re-save/raw-copy of an " +
-          "already-embedded pkg.slp ONLY (new-embed of a continuous video is " +
-          "a deferred follow-up).",
+        entry.video.hasEmbeddedImages
+          ? `buildSerializableEmbedPlan: converting embedded video${entry.videoIndex} ` +
+              `to imageFormat "${entry.format}" uses the "encode" path; pass ` +
+              "allowEncode and write its encodeEntries with appendEncodedVideos."
+          : `buildSerializableEmbedPlan: video${entry.videoIndex} would use the ` +
+              `new-embed ("encode") path; pass allowEncode and write its ` +
+              "encodeEntries with appendEncodedVideos (without it, the plan is " +
+              "raw-copy only, for already-embedded videos).",
       );
     }
     const sourceDataset =
@@ -6882,12 +7045,83 @@ function selectEmbedFrames(
 /** Read attempts per frame before giving up — a decoder may drop a read. */
 const EMBED_READ_ATTEMPTS = 3;
 
+/** Channels of the images an embedded video stores (its innermost backend). */
+function storedChannels(video: Video): number | undefined {
+  let backend = video.backend;
+  while (
+    backend instanceof GrayscaleVideoBackend ||
+    backend instanceof CropVideoBackend
+  ) {
+    backend = backend.inner;
+  }
+  return backend?.shape?.[3];
+}
+
+/**
+ * True when an already-embedded video can't be raw-copied under a chosen
+ * format: its images are stored in another format, or it is grayscale and
+ * stores multi-channel images (Python's `can_use_fast_path`).
+ */
+function needsConversion(video: Video, encoding: EmbedEncoding): boolean {
+  const stored = (video.backend?.embeddedFormat ?? "png").toLowerCase();
+  if ((stored === "jpeg" ? "jpg" : stored) !== encoding.format) return true;
+  const channels = storedChannels(video);
+  return encoding.gray && channels != null && channels !== 1;
+}
+
+/**
+ * Convert an already-embedded video's stored images to `encoding` (see
+ * {@link encodeFrameAs}): every one of `frameNumbers`, read as stored. A
+ * stored image that can't be read fails the save, as the raw copy does.
+ */
+async function convertEmbeddedFrames(
+  video: Video,
+  frameNumbers: number[],
+  encoding: EmbedEncoding,
+  progress: {
+    done: number;
+    total: number;
+    report?: SlpWriteOptions["onProgress"];
+  },
+): Promise<Map<number, Uint8Array>> {
+  const frameData = new Map<number, Uint8Array>();
+  for (const fn of frameNumbers) {
+    const blob = await video.getFrameBuffer(fn);
+    if (!blob || blob.length === 0) {
+      throw new Error(
+        `Couldn't read the stored image of frame ${fn} of "${
+          Array.isArray(video.filename) ? video.filename[0] : video.filename
+        }" to convert it. The package was not written.`,
+      );
+    }
+    frameData.set(
+      fn,
+      await encodeFrameAs(blob, encoding, {
+        channelOrder: video.backend?.embeddedChannelOrder,
+        rawShape: video.backend?.shape,
+      }),
+    );
+    progress.done += 1;
+    reportProgress(
+      progress.report,
+      progress.done,
+      progress.total,
+      "Embedding frames",
+    );
+  }
+  return frameData;
+}
+
 /**
  * Collect encoded frame bytes for a NEW embed of one continuous video, reading
  * each of `sortedFrames` (from {@link selectEmbedFrames}) via `getFrame` +
  * {@link frameToBytes} (the legacy path). Reads are `pinned` and retried, and a
  * frame inside the video that still can't be read fails the save rather than
  * leaving a package that silently lacks its image.
+ *
+ * With `encoding` (an explicit `imageFormat`), every frame is stored in that
+ * format: an image file already in it is copied verbatim without decoding,
+ * and any other frame goes through {@link encodeFrameAs}.
  */
 async function collectEncodedFrames(
   video: Video,
@@ -6897,6 +7131,7 @@ async function collectEncodedFrames(
     total: number;
     report?: SlpWriteOptions["onProgress"];
   },
+  encoding?: EmbedEncoding,
 ): Promise<{
   frameData: Map<number, Uint8Array>;
   encodedFormat: string | null;
@@ -6912,10 +7147,17 @@ async function collectEncodedFrames(
   const frameCount = video.shape?.[0];
   const unreadable: number[] = [];
   for (const frameIdx of sortedFrames) {
+    const fileBytes = encoding
+      ? await imageFileBytes(video.backend, frameIdx, encoding)
+      : null;
     // `pinned`: the app may keep showing other frames meanwhile, and the mp4/
     // AVI decoders otherwise cancel an older read for the newest one.
     let frame: Awaited<ReturnType<Video["getFrame"]>> = null;
-    for (let attempt = 0; attempt < EMBED_READ_ATTEMPTS && !frame; attempt++) {
+    for (
+      let attempt = 0;
+      attempt < EMBED_READ_ATTEMPTS && !frame && !fileBytes;
+      attempt++
+    ) {
       frame = await video.getFrame(frameIdx, { pinned: true, prefetch: false });
     }
     progress.done += 1;
@@ -6925,11 +7167,25 @@ async function collectEncodedFrames(
       progress.total,
       "Embedding frames",
     );
+    if (fileBytes) {
+      frameData.set(frameIdx, fileBytes);
+      continue;
+    }
     if (!frame) {
       // A frame past the video's end has no image to embed; one inside it
       // should — writing the package without it would silently lose it.
       if (frameCount == null || frameIdx < frameCount)
         unreadable.push(frameIdx);
+      continue;
+    }
+    if (encoding) {
+      frameData.set(
+        frameIdx,
+        await encodeFrameAs(frame, encoding, {
+          channelOrder: video.backend.embeddedChannelOrder,
+          rawShape: video.backend.shape,
+        }),
+      );
       continue;
     }
     let bytes = frameToBytes(frame);

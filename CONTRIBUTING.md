@@ -92,6 +92,19 @@ The suite lives in `tests/**/*.test.ts` and runs on Bun's native test runner.
   h5wasm HDF5 backend + SLP writer, `node-fs-resolver.ts` for the merge/matching
   fs resolver) before every test file, replacing vitest's old `setupFiles`.
 
+### Python cross-checks
+
+A few test files check SLP compatibility against Python sleap-io by running
+`uv run --with "$SLEAP_IO_REQUIREMENT" python`, so they need
+[uv](https://docs.astral.sh/uv/). `SLEAP_IO_REQUIREMENT` is any requirement uv
+accepts (for example `sleap-io==0.9.5`, or
+`sleap-io @ git+https://github.com/talmolab/sleap-io@release/0.10`); unset, it is
+`sleap-io`, the latest release. CI pins it per job, and each file logs the
+sleap-io version it ran against. Two overrides name an interpreter directly:
+`SLEAP_IO_PY` for the crop check, and `SLEAP_IO_TEST_PYTHONS` (comma-separated)
+for the format 3.0 and embedded image-format read-backs, which
+`SLEAP_IO_SKIP_PYTHON_TESTS=1` skips.
+
 ### Known harmless noise
 
 When the rendering tests run, skia-canvas's native module sometimes prints a

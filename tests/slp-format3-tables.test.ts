@@ -27,8 +27,9 @@
  * ROIs, masks or label images, in any layout); the lite reader reads sessions.
  *
  * Python read-backs run each interpreter listed (comma-separated) in
- * `SLEAP_IO_TEST_PYTHONS`, or `uv run --with sleap-io python` when unset;
- * `SLEAP_IO_SKIP_PYTHON_TESTS=1` skips them.
+ * `SLEAP_IO_TEST_PYTHONS`, or `uv run --with "$SLEAP_IO_REQUIREMENT" python`
+ * (`sleap-io` when that is unset) otherwise; `SLEAP_IO_SKIP_PYTHON_TESTS=1`
+ * skips them.
  */
 import { describe, it, expect, setDefaultTimeout } from "./bun-test";
 import { execFileSync } from "node:child_process";
@@ -91,6 +92,10 @@ import { PredictedInstance3D } from "../src/model/instance3d.js";
 import { cloneRecordingSession } from "../src/model/camera.js";
 import { setSourceAccess, sourceMarkOf } from "../src/model/source-mark.js";
 import { slpBytes, slpPath, streamingFile } from "./slp-format3-files";
+import {
+  type SleapIoPython,
+  UV_SLEAP_IO_PYTHON,
+} from "./sleap-io-requirement.js";
 
 setDefaultTimeout(120_000);
 
@@ -1816,7 +1821,7 @@ describe("range checks of the format 3.0 tables", () => {
 });
 
 /** Python interpreters to read JS saves back with, and how to run them. */
-function pythons(): Array<{ label: string; cmd: string; args: string[] }> {
+function pythons(): SleapIoPython[] {
   const listed = process.env.SLEAP_IO_TEST_PYTHONS;
   if (listed) {
     return listed
@@ -1824,13 +1829,7 @@ function pythons(): Array<{ label: string; cmd: string; args: string[] }> {
       .filter(Boolean)
       .map((exe) => ({ label: exe, cmd: exe, args: [] }));
   }
-  return [
-    {
-      label: "uv run --with sleap-io",
-      cmd: "uv",
-      args: ["run", "--with", "sleap-io", "python"],
-    },
-  ];
+  return [UV_SLEAP_IO_PYTHON];
 }
 
 const SKIP_PYTHON = process.env.SLEAP_IO_SKIP_PYTHON_TESTS === "1";
