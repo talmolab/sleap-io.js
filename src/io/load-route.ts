@@ -24,9 +24,10 @@ export type StreamingReader = (
  * Read `source` with the streaming reader, or return `null` when the caller
  * should read it on the main thread instead:
  *
- * - in `"auto"` mode, when the file holds content the streaming reader does
- *   not read (ROIs, masks, label images, links and embeddings of detections
- *   other than instances), so `loadSlp` never loses content;
+ * - in `"auto"` mode, when a file in SLP format 3.0 holds content the
+ *   streaming reader does not read (ROIs, masks, label images, links and
+ *   embeddings of detections other than instances), so `loadSlp` never loses
+ *   such content after the caller chose what an edit drops;
  * - in `"auto"` mode, when the worker fails for another reason.
  *
  * A file the readers refuse (`SlpFormatError`, `SlpPointSpanError`) is

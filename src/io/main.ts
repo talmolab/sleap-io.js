@@ -52,11 +52,17 @@ function isBrowserWithWorkerSupport(): boolean {
  * Load a SLEAP labels file (.slp).
  *
  * Automatically selects the best loading strategy:
- * - Browser with Worker support: uses streaming reader via Web Worker, unless
- *   the file holds content that reader does not read (ROIs, masks, label
- *   images, links and embeddings of detections other than instances); in the
- *   default `"auto"` stream mode such a file is read on the main thread, so
- *   nothing is lost
+ * - Browser with Worker support: uses streaming reader via Web Worker. The
+ *   streaming reader does not read ROIs, masks, label images, or links and
+ *   embeddings of detections other than instances. In the default `"auto"`
+ *   stream mode, a file in SLP format 3.0 that holds any of those is read with
+ *   the standard reader on the main thread instead, so nothing is lost: the
+ *   whole file is read into memory (a URL is downloaded whole, a `File` read
+ *   whole), which blocks the page while it reads. Pass `h5: { stream: "range" }`
+ *   to keep streaming; the file's `format3` summary then lists what is not
+ *   read. Files before 3.0 always take the streaming route, which skips that
+ *   content in them without a summary (the lite `loadSlpMetadata`'s
+ *   `streamingUnreadTables` says whether a file holds any).
  * - Node.js or fallback: uses standard HDF5 reader
  *
  * @param source - Path to .slp file, ArrayBuffer, Uint8Array, File, or FileSystemFileHandle
@@ -121,9 +127,9 @@ export async function loadSlp(
     }
 
     if (streamingSource !== null) {
-      // In "auto" mode, a file holding content the streaming reader does not
-      // read (ROIs, masks, label images, links of other detections) is read
-      // on the main thread instead, so nothing is lost.
+      // In "auto" mode, a 3.0 file holding content the streaming reader does
+      // not read (ROIs, masks, label images, links of other detections) is
+      // read on the main thread instead, so nothing is lost.
       const labels = await readStreamingOrNull(
         streamingSource,
         {

@@ -133,7 +133,10 @@ export {
 } from "./codecs/slp/h5-streaming.js";
 
 // Streaming SLP reader (uses Web Worker, recommended for browser)
-export { readSlpStreaming } from "./codecs/slp/read-streaming.js";
+export {
+  readSlpStreaming,
+  StreamingIncompleteError,
+} from "./codecs/slp/read-streaming.js";
 
 // Instance point-span validation on read (issue #230).
 export {

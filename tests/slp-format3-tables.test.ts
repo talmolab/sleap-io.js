@@ -51,6 +51,7 @@ import {
   readStreamingOrNull,
   type StreamingReader,
 } from "../src/io/load-route.js";
+import { openH5FileBrowser } from "../src/codecs/slp/h5.js";
 import {
   type SlpFormatError,
   SlpTableError,
@@ -707,7 +708,19 @@ describe("loadSlp in a browser does not lose what the streaming reader skips", (
   const standIn =
     (name: string): StreamingReader =>
     async (_source, options) => {
-      const { file, close } = await streamingFile(name);
+      // The stand-in has no fast path for 2.x compound pose tables.
+      let compound: Record<string, unknown> = {};
+      if (name.endsWith(".v2.slp")) {
+        const store = (await readSlpLazy(slpPath(name), { openVideos: false }))
+          ._lazyDataStore!;
+        compound = {
+          frames: store.framesData,
+          instances: store.instancesData,
+          points: store.pointsData,
+          pred_points: store.predPointsData,
+        };
+      }
+      const { file, close } = await streamingFile(name, compound);
       try {
         return await readFromStreamingFile(
           file,
@@ -761,6 +774,13 @@ describe("loadSlp in a browser does not lose what the streaming reader skips", (
     expect(labels.labeledFrames).toHaveLength(4);
   });
 
+  it("both entry points export StreamingIncompleteError", async () => {
+    const node = await import("../src/index.js");
+    const browser = await import("../src/index.browser.js");
+    expect(node.StreamingIncompleteError).toBe(StreamingIncompleteError);
+    expect(browser.StreamingIncompleteError).toBe(StreamingIncompleteError);
+  });
+
   it("the streaming reader refuses such a file when asked, naming what it skips", async () => {
     let error: unknown;
     try {
@@ -777,10 +797,56 @@ describe("loadSlp in a browser does not lose what the streaming reader skips", (
     );
   });
 
-  it("an explicit stream mode keeps streaming, and the summary lists the loss", async () => {
-    const { streamed, labels } = await browserLoad(V3, "stream");
+  it('stream mode "range" keeps streaming, and the summary lists the loss', async () => {
+    const { streamed, labels } = await browserLoad(V3, "range");
     expect(streamed).toBe(true);
     expect(labels.sourceFormat?.summary.unreadTables).toContain("masks");
+    expect(labels.labeledFrames.flatMap((f) => f.masks)).toEqual([]);
+  });
+
+  it("streams a 2.x file as before, without what the streaming reader skips", async () => {
+    // An existing gap: the streaming reader reads no masks in any layout.
+    const { streamed, labels } = await browserLoad(V2);
+    expect(streamed).toBe(true);
+    expect(labels.labeledFrames.flatMap((f) => f.masks)).toEqual([]);
+    expect(labels.labeledFrames.flatMap((f) => f.instances)).toHaveLength(8);
+  });
+});
+
+describe("a File read on a page's main thread", () => {
+  const fileOf = (name: string) =>
+    new File([slpBytes(name)], name, { type: "application/octet-stream" });
+
+  it("is read whole into memory, never through WORKERFS", async () => {
+    // A stand-in h5wasm module whose WORKERFS aborts outside a worker, as
+    // h5wasm's browser build does.
+    const written: string[] = [];
+    const opened: string[] = [];
+    const module = {
+      FS: {
+        filesystems: { WORKERFS: {} },
+        mkdir: () => {},
+        rmdir: () => {},
+        unmount: () => {},
+        mount: () => {
+          throw new Error("Aborted: WORKERFS outside a worker");
+        },
+        writeFile: (path: string) => written.push(path),
+      },
+      File: class {
+        constructor(path: string) {
+          opened.push(path);
+        }
+        close() {}
+      },
+    };
+    const { close } = await openH5FileBrowser(
+      module as never,
+      fileOf("format3_pose.slp"),
+    );
+    close();
+    expect(written).toEqual(["/tmp-slp.slp"]);
+    expect(opened).toEqual(["/tmp-slp.slp"]);
   });
 });
 
@@ -819,7 +885,9 @@ describe("the store-merging writers and stores from 3.0 files", () => {
       expect(message).toContain(
         "the identities, categories or embeddings of its instances",
       );
-      expect(message).toContain("centroids, boxes, masks or ROIs");
+      expect(message).toContain(
+        "category scores or embeddings of its centroids, boxes, masks or ROIs",
+      );
       expect(message).toContain("its recording sessions");
       expect(message).toContain("saveSlpToBytes");
     }
@@ -890,6 +958,89 @@ describe("the store-merging writers and stores from 3.0 files", () => {
     });
     expect(back.labeledFrames.flatMap((f) => f.instances)).toHaveLength(8);
     expect(back.sessions).toHaveLength(0);
+  });
+});
+
+describe("what the store-merging writers keep", () => {
+  /**
+   * A lazy edit load of format3_tables.slp keeping only the categories of
+   * its centroids, boxes, masks and ROIs (no identity, score or embedding,
+   * no instance link, no session), so only what the writers keep is left.
+   */
+  async function columnCategoriesOnly() {
+    const labels = await readSlpLazy(slpPath(V3), EDIT);
+    const store = labels._lazyDataStore!;
+    store.identities = [];
+    store._instanceIdentityLinks = undefined;
+    store._instanceCategoryLinks = undefined;
+    store._instanceEmbeddings = undefined;
+    store._instanceCategoryEmbeddings = undefined;
+    store.sourceSessionCount = 0;
+    for (const [byFrame, undistributed] of [
+      [store._centroidByFrame, store._undistributedCentroids],
+      [store._bboxByFrame, store._undistributedBboxes],
+      [store._maskByFrame, store._undistributedMasks],
+      [store._roiByFrame, store._undistributedRois],
+      // biome-ignore lint/suspicious/noExplicitAny: every detection kind
+    ] as Array<[Map<string, any[]>, any[]]>) {
+      for (const d of [...undistributed, ...[...byFrame.values()].flat()]) {
+        d.identity = null;
+        d.identityScore = null;
+        d.categoryScore = null;
+      }
+    }
+    return { labels, store };
+  }
+
+  it("a category of a centroid, box, mask or ROI is kept, so not refused", async () => {
+    const { store } = await columnCategoriesOnly();
+    const back = await readSlp(await saveSlpMergedFromStores([store]), {
+      openVideos: false,
+    });
+    const categories = back.labeledFrames.flatMap((f) =>
+      [...f.masks, ...f.bboxes, ...f.centroids].map((d) => d.category),
+    );
+    expect(categories).toContain("body");
+    expect(categories).toContain("female");
+  });
+
+  it("a category score is not kept, so refused", async () => {
+    const { store } = await columnCategoriesOnly();
+    store._bboxByFrame.values().next().value![0].categoryScore = 0.5;
+    await expect(saveSlpMergedFromStores([store])).rejects.toThrow(
+      "category scores or embeddings of its centroids, boxes, masks or ROIs",
+    );
+  });
+});
+
+describe("SlpStreamWriter.appendFrames and frames from 3.0 files", () => {
+  const append = async (labels: Labels) => {
+    const writer = await openSlpWriter({
+      skeletons: labels.skeletons,
+      videos: labels.videos,
+      tracks: labels.tracks,
+    });
+    try {
+      writer.appendFrames(labels.labeledFrames);
+    } finally {
+      writer.close();
+    }
+  };
+
+  it("refuses frames whose links it would drop, before writing", async () => {
+    const labels = await readSlp(slpPath(V3), EDIT);
+    await expect(append(labels)).rejects.toThrow(
+      "the identities, categories or embeddings of their instances, and the " +
+        "identities, category scores or embeddings of their centroids",
+    );
+  });
+
+  it("writes frames without such content", async () => {
+    await append(await readSlp(slpPath("format3_pose.slp"), EDIT));
+  });
+
+  it("writes frames of 2.x files as before", async () => {
+    await append(await readSlp(slpPath(V2), { openVideos: false }));
   });
 });
 

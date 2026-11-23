@@ -217,12 +217,14 @@ export interface StreamingSlpOptions {
    */
   format3?: Format3Option;
   /**
-   * Throw {@link StreamingIncompleteError}, before reading any table, when the
-   * file holds content this reader does not read (ROIs, masks, label images,
-   * links and embeddings of detections other than instances), so the caller
-   * can use the in-memory reader instead. `loadSlp` does that in its default
-   * (`"auto"`) mode. Default `false`: such content is not read, and a 3.0
-   * file's summary lists it as something an edit drops.
+   * For a file in SLP format 3.0: throw {@link StreamingIncompleteError},
+   * before reading any table, when it holds content this reader does not read
+   * (ROIs, masks, label images, links and embeddings of detections other than
+   * instances), so the caller can use the in-memory reader instead. `loadSlp`
+   * does that in its default (`"auto"`) mode. Default `false`: such content is
+   * not read, and the file's summary lists it as something an edit drops.
+   * Files before 3.0 are read as always (this reader skips that content in
+   * them too, without a summary).
    */
   failIfIncomplete?: boolean;
 }
@@ -711,7 +713,7 @@ export async function readFromStreamingFile(
         'can only be opened with format3: "view" (or without the filter).',
     );
   }
-  if (failIfIncomplete) {
+  if (failIfIncomplete && isFormat3(formatId)) {
     const unread = await unreadByStreaming(file, file.keys());
     if (unread.length > 0) {
       throw new StreamingIncompleteError(labelsPath, unread);

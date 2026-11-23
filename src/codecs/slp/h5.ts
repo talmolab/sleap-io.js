@@ -212,7 +212,13 @@ function isFileHandle(value: SlpSource): value is FileSystemFileHandle {
   return typeof value === "object" && value !== null && "getFile" in value;
 }
 
-async function openH5FileBrowser(
+/**
+ * Open an SLP source with h5wasm's browser build: a URL (range requests in a
+ * worker, else a full download), a `File` or file handle, or bytes.
+ *
+ * @internal Exported for tests.
+ */
+export async function openH5FileBrowser(
   module: H5Module,
   source: SlpSource,
   options?: OpenH5Options,
@@ -327,11 +333,16 @@ async function openFromFile(
   file: File,
   options?: OpenH5Options,
 ): Promise<{ file: H5File; close: () => void }> {
-  const mountPath = `/slp-local-${Date.now()}`;
-  fs.mkdir?.(mountPath);
-  const filename = options?.filenameHint ?? file.name ?? "local.slp";
-
-  if (fs.mount && fs.filesystems && fs.filesystems.WORKERFS) {
+  // WORKERFS reads a File synchronously (FileReaderSync), which exists only
+  // inside a worker; mounting it on a page's main thread aborts h5wasm. There,
+  // the file is read whole into memory instead.
+  const inWorker =
+    typeof (globalThis as { FileReaderSync?: unknown }).FileReaderSync !==
+    "undefined";
+  if (inWorker && fs.mount && fs.filesystems && fs.filesystems.WORKERFS) {
+    const mountPath = `/slp-local-${Date.now()}`;
+    fs.mkdir?.(mountPath);
+    const filename = options?.filenameHint ?? file.name ?? "local.slp";
     fs.mount(fs.filesystems.WORKERFS, { files: [file] }, mountPath);
     const filePath = `${mountPath}/${filename}`;
     const h5file = new module.File(filePath, "r");

@@ -206,6 +206,88 @@ export function refuseViewOnly(
 }
 
 /**
+ * Whether a centroid, box, mask or ROI holds what the streaming writer does
+ * not write: an identity, a category score or an embedding. Its category
+ * itself is kept, in the table's own `category` column.
+ */
+function annotationLinkLoss(d: IdentityBearing): boolean {
+  return (
+    d.identity != null ||
+    d.identityEmbedding != null ||
+    d.categoryScore != null ||
+    d.categoryEmbedding != null
+  );
+}
+
+/**
+ * Whether an instance holds what the streaming writer does not write: an
+ * identity, a category (instances have no category column) or an embedding.
+ */
+function instanceLinkLoss(d: IdentityBearing): boolean {
+  return (
+    d.identity != null ||
+    d.identityEmbedding != null ||
+    (d.category != null && d.category !== "") ||
+    d.categoryEmbedding != null
+  );
+}
+
+/**
+ * `SlpStreamWriter.appendFrames` writes frames' poses and annotations but no
+ * per-detection identity or category links or embeddings. Frames whose
+ * instances or annotations were loaded from a format 3.0 file for editing,
+ * and hold any of those, are refused before anything is written, as
+ * {@link refuseFormat3StoreLosses} refuses stores.
+ *
+ * @throws {Error} Naming what would be lost and the writers that keep it.
+ */
+function refuseFormat3FrameLosses(frames: Iterable<LabeledFrame>): void {
+  const fromFormat3 = (record: object) => !!sourceMarkOf(record);
+  let instances = false;
+  let annotations = false;
+  let source: SlpSourceFormat | undefined;
+  for (const frame of frames) {
+    for (const inst of frame.instances) {
+      if (fromFormat3(inst) && instanceLinkLoss(inst as IdentityBearing)) {
+        instances = true;
+        source ??= sourceMarkOf(inst);
+      }
+    }
+    for (const list of [
+      frame.centroids,
+      frame.bboxes,
+      frame.masks,
+      frame.rois,
+    ] as IdentityBearing[][]) {
+      for (const d of list) {
+        if (fromFormat3(d as object) && annotationLinkLoss(d)) {
+          annotations = true;
+          source ??= sourceMarkOf(d as object);
+        }
+      }
+    }
+  }
+  if (!source) return;
+  const lost = [
+    ...(instances
+      ? ["the identities, categories or embeddings of their instances"]
+      : []),
+    ...(annotations
+      ? [
+          "the identities, category scores or embeddings of their " +
+            "centroids, boxes, masks or ROIs",
+        ]
+      : []),
+  ];
+  throw new Error(
+    `Frames loaded from '${source.labelsPath}' (SLP format ` +
+      `${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ` +
+      `${lost.join(", and ")}, which SlpStreamWriter.appendFrames does not ` +
+      "write. Save them with saveSlp or saveSlpToBytes, which keep them.",
+  );
+}
+
+/**
  * The streaming writer (`SlpStreamWriter.appendStore`, and so
  * `saveSlpMergedFromStores` and `saveSlpMergedToSink`) writes a store's
  * poses and annotations, but no per-detection identity or category links or
@@ -248,19 +330,10 @@ export function refuseFormat3StoreLosses(
   ] as Array<[Map<string, IdentityBearing[]>, IdentityBearing[]]>) {
     annotations.push(...undistributed, ...[...byFrame.values()].flat());
   }
-  if (
-    !writesLinks &&
-    annotations.some(
-      (d) =>
-        d.identity != null ||
-        d.identityEmbedding != null ||
-        (d.category != null && d.category !== "") ||
-        d.categoryEmbedding != null,
-    )
-  ) {
+  if (!writesLinks && annotations.some(annotationLinkLoss)) {
     lost.push(
-      "the identities, categories or embeddings of its centroids, boxes, " +
-        "masks or ROIs",
+      "the identities, category scores or embeddings of its centroids, " +
+        "boxes, masks or ROIs",
     );
   }
   if (store.sourceSessionCount > 0 && !header.sessions) {
@@ -2247,6 +2320,9 @@ export class SlpStreamWriter {
       }
     } else {
       enforceLegacyLayout(framesLegacyLosses(frames), options?.unlabeledAs);
+      // A format 3.0 writer writes the links and embeddings of the frames'
+      // instances and annotations; the 2.x layout does not.
+      refuseFormat3FrameLosses(frames);
     }
     const extra = v3
       ? {
