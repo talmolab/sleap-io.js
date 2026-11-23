@@ -88,6 +88,7 @@ import { Skeleton } from "../src/model/skeleton.js";
 import { Video } from "../src/model/video.js";
 import { UserBoundingBox } from "../src/model/bbox.js";
 import { slpBytes, slpPath, streamingFile } from "./slp-format3-files";
+import { SLEAP_IO_REQUIREMENT } from "./sleap-io-requirement.js";
 
 setDefaultTimeout(120_000);
 
@@ -1700,9 +1701,9 @@ function pythons(): Array<{ label: string; cmd: string; args: string[] }> {
   }
   return [
     {
-      label: "uv run --with sleap-io",
+      label: `uv run --with ${SLEAP_IO_REQUIREMENT}`,
       cmd: "uv",
-      args: ["run", "--with", "sleap-io", "python"],
+      args: ["run", "--with", SLEAP_IO_REQUIREMENT, "python"],
     },
   ];
 }

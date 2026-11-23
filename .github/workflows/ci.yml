@@ -2,7 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, "release/**"]
   pull_request:
 
 jobs:
@@ -11,7 +11,16 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, windows-latest]
+        # The Python cross-checks run against pinned sleap-io versions, not
+        # whatever `uv` resolves: the last 0.9 release on both systems, and the
+        # 0.10 line (its release branch until 0.10 is published) on Linux.
+        sleap-io: ["sleap-io==0.9.5"]
+        include:
+          - os: ubuntu-latest
+            sleap-io: "sleap-io @ git+https://github.com/talmolab/sleap-io@release/0.10"
     runs-on: ${{ matrix.os }}
+    env:
+      SLEAP_IO_REQUIREMENT: ${{ matrix.sleap-io }}
     steps:
       - uses: actions/checkout@v5
       - uses: oven-sh/setup-bun@v2
@@ -19,26 +28,29 @@ jobs:
           # Single source of truth: read the pinned Bun from package.json's
           # "packageManager" field instead of hardcoding it here.
           bun-version-file: package.json
-      # uv is required by tests/python-compat-gen.test.ts, which shells out to
-      # `uv run --with sleap-io` to verify cross-language SLP compatibility.
+      # uv is required by the Python cross-checks, which shell out to
+      # `uv run --with "$SLEAP_IO_REQUIREMENT"` to verify SLP compatibility.
       - uses: astral-sh/setup-uv@v7
+      - name: sleap-io version for the Python cross-checks
+        shell: bash
+        run: uv run --with "$SLEAP_IO_REQUIREMENT" python -c "import sleap_io; print('sleap-io', sleap_io.__version__)"
       - name: Install dependencies
         run: bun install --frozen-lockfile
       - name: Lint (types)
         run: bun run lint
       - name: Check (Biome)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.sleap-io == 'sleap-io==0.9.5'
         run: bun run check
       - name: Build
         run: bun run build
       - name: Check package (publint + are-the-types-wrong)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && matrix.sleap-io == 'sleap-io==0.9.5'
         run: bun run check:pack
       - name: Test with coverage
         run: bun run test:coverage
       - name: Upload coverage
         uses: actions/upload-artifact@v7
         with:
-          name: coverage-${{ matrix.os }}
+          name: coverage-${{ matrix.os }}-${{ strategy.job-index }}
           path: coverage
           retention-days: 1

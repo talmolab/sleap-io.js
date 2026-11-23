@@ -33,6 +33,7 @@ import { writeFileSync, unlinkSync, existsSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SLEAP_IO_REQUIREMENT } from "./sleap-io-requirement.js";
 
 // A cold uv cache can download sleap-io + deps on the first probe.
 setDefaultTimeout(120_000);
@@ -102,9 +103,9 @@ function candidateRunners(): PyRunner[] {
     });
   }
   runners.push({
-    label: "uv run --with sleap-io",
+    label: `uv run --with ${SLEAP_IO_REQUIREMENT}`,
     run: (s) =>
-      execFileSync("uv", ["run", "--with", "sleap-io", "python", s], {
+      execFileSync("uv", ["run", "--with", SLEAP_IO_REQUIREMENT, "python", s], {
         encoding: "utf-8",
         timeout: 120_000,
       }),

@@ -20,6 +20,7 @@ import { writeFileSync, unlinkSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SLEAP_IO_REQUIREMENT } from "./sleap-io-requirement.js";
 
 // These tests shell out to Python via `uv run --with sleap-io`. On a cold uv
 // cache (e.g. fresh CI) the first invocation downloads sleap-io and its deps
@@ -48,7 +49,7 @@ function pythonHasCentroids(): boolean {
         [
           "run",
           "--with",
-          "sleap-io",
+          SLEAP_IO_REQUIREMENT,
           "python",
           "-c",
           "import sleap_io.model.centroid",
@@ -320,7 +321,7 @@ print("OK: Python reads metadata and skeletons from JS-written SLP")
       writeFileSync(pyPath, pyScript);
       const result = execFileSync(
         "uv",
-        ["run", "--with", "sleap-io", "python", pyPath],
+        ["run", "--with", SLEAP_IO_REQUIREMENT, "python", pyPath],
         {
           encoding: "utf-8",
           timeout: 30000,
@@ -424,7 +425,7 @@ print("OK: Python reads JS-written image sequence")
       writeFileSync(pyPath, pyScript);
       const result = execFileSync(
         "uv",
-        ["run", "--with", "sleap-io", "python", pyPath],
+        ["run", "--with", SLEAP_IO_REQUIREMENT, "python", pyPath],
         { encoding: "utf-8", timeout: 120000 },
       );
       expect(result).toContain("OK: Python reads JS-written image sequence");
@@ -525,7 +526,7 @@ print("OK: Python reads JS-written centroids")
       writeFileSync(pyPath, pyScript);
       const result = execFileSync(
         "uv",
-        ["run", "--with", "sleap-io", "python", pyPath],
+        ["run", "--with", SLEAP_IO_REQUIREMENT, "python", pyPath],
         { encoding: "utf-8", timeout: 120000 },
       );
       expect(result).toContain("OK: Python reads JS-written centroids");
@@ -571,13 +572,16 @@ print("OK: Python wrote centroids")
       writeFileSync(pyPath, pyScript);
       const out = execFileSync(
         "uv",
-        ["run", "--with", "sleap-io", "python", pyPath],
+        ["run", "--with", SLEAP_IO_REQUIREMENT, "python", pyPath],
         { encoding: "utf-8", timeout: 120000 },
       );
       expect(out).toContain("OK: Python wrote centroids");
 
+      // Python sleap-io 0.10 may write format 3.0 by default, which asks for
+      // a choice at open time; this test only reads, so it opens view-only.
       const loaded = await readSlp(new Uint8Array(readFileSync(slpPath)), {
         openVideos: false,
+        format3: "view",
       });
       const cents = loaded.labeledFrames.flatMap((lf) => lf.centroids);
       expect(cents.length).toBe(2);

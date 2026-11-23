@@ -75,6 +75,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { SLEAP_IO_REQUIREMENT } from "../sleap-io-requirement.js";
 
 // Cross-compat tests may shell out to Python (cold `uv` cache can be slow).
 setDefaultTimeout(120_000);
@@ -534,10 +535,20 @@ function pythonRunner(): { cmd: string; args: string[] } | null {
   try {
     execFileSync(
       "uv",
-      ["run", "--with", "sleap-io", "python", "-c", "import sleap_io"],
+      [
+        "run",
+        "--with",
+        SLEAP_IO_REQUIREMENT,
+        "python",
+        "-c",
+        "import sleap_io",
+      ],
       { stdio: "pipe", timeout: 120_000 },
     );
-    return { cmd: "uv", args: ["run", "--with", "sleap-io", "python"] };
+    return {
+      cmd: "uv",
+      args: ["run", "--with", SLEAP_IO_REQUIREMENT, "python"],
+    };
   } catch {
     return null;
   }
@@ -678,7 +689,13 @@ print("OK: Python wrote all edge-less skeletons")
 
     try {
       for (const [key, path] of Object.entries(pathsByKey)) {
-        const labels = await loadSlp(path, { openVideos: false });
+        // Python sleap-io 0.10 may write format 3.0 by default, which asks
+        // for a choice at open time; this test only reads, so it opens
+        // view-only.
+        const labels = await loadSlp(path, {
+          openVideos: false,
+          format3: "view",
+        });
         const sk = labels.skeletons[0];
         const e = expectations[key];
         expect(sk.nodeNames).toEqual(e.names);
