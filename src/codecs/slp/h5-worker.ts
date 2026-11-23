@@ -202,7 +202,7 @@ self.onmessage = async function(e) {
       case 'appendEncodedFrame':
         queueEncode(id, async function() {
           if (!encodeState) throw new Error('appendEncodedFrame: no video begun (call beginEncodedVideo first)');
-          var bytes = await encodeFrameEnc(payload.frame, encodeState.collapseToGray);
+          var bytes = await encodeFrameEnc(payload.frame, encodeState.collapseToGray, encodeState.entry);
           appendEncodedBytesEnc(encodeState, payload.frameIdx, bytes);
           return { success: true };
         });
