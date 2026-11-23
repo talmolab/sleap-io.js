@@ -56,6 +56,7 @@ import {
   RecordingSession,
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
+import { type Category, categoryFromStored } from "../../model/category.js";
 import { Embedding } from "../../model/embedding.js";
 import { LazyDataStore, LazyFrameList } from "../../model/lazy.js";
 import { buildVideoIdMap } from "../../model/video-id-map.js";
@@ -411,6 +412,7 @@ export async function readSlp(
       suggestions,
       sessions,
       identities,
+      categories: readCategoryGroup(file),
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
       rois: staticRois,
     });
@@ -731,6 +733,7 @@ export async function readSlpLazy(
       suggestions,
       sessions,
       identities,
+      categories: readCategoryGroup(file),
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
     });
 
@@ -1372,6 +1375,28 @@ function readCategoryCatalog(file: any): string[] {
   const ds = file.get("categories/name");
   if (!ds) return [];
   return (ds.value ?? []).map(decodeStr);
+}
+
+/**
+ * Read the `/categories` group (SLP 2.7) as `Category` objects for
+ * `Labels.categories`: the `name` catalog plus the optional `meta_owner` /
+ * `meta_key` / `meta_val` table (Python's `read_categories`), with
+ * `metadata["color"]` lifted into `color`. Empty when absent.
+ */
+function readCategoryGroup(file: any): Category[] {
+  const names = readCategoryCatalog(file);
+  if (!names.length) return [];
+  const metadata: Record<string, unknown>[] = names.map(() => ({}));
+  const ownerDs = file.get("categories/meta_owner");
+  if (ownerDs) {
+    const owners = Array.from(ownerDs.value ?? []).map(Number);
+    const keys = (file.get("categories/meta_key")?.value ?? []).map(decodeStr);
+    const vals = (file.get("categories/meta_val")?.value ?? []).map(decodeStr);
+    owners.forEach((o: number, i: number) => {
+      if (metadata[o]) metadata[o][keys[i]] = vals[i];
+    });
+  }
+  return names.map((name, i) => categoryFromStored(name, metadata[i]));
 }
 
 /**

@@ -67,6 +67,7 @@ import {
   RecordingSession,
 } from "../../model/camera.js";
 import { Identity } from "../../model/identity.js";
+import { type Category, categoryFromStored } from "../../model/category.js";
 import { Embedding } from "../../model/embedding.js";
 import { StreamingHdf5VideoBackend } from "../../video/streaming-hdf5-video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
@@ -676,6 +677,7 @@ export async function readFromStreamingFile(
   // Read identities
   report(8);
   const identities = await readIdentitiesStreaming(file);
+  const categories = await readCategoriesStreaming(file);
 
   // Per-detection identity (SLP 2.5) + category (SLP 2.7), OWNER_INSTANCE. Applied
   // directly to concrete instances (non-lazy) or handed to the lazy store for
@@ -777,6 +779,7 @@ export async function readFromStreamingFile(
     suggestions,
     sessions,
     identities,
+    categories,
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
   });
   if (lazyStore) {
@@ -1408,6 +1411,43 @@ async function readIdentitiesStreaming(
       }
     }
     return [];
+  } catch {
+    return [];
+  }
+}
+
+/**
+ * Read the `/categories` group (SLP 2.7) as `Category` objects: the `name`
+ * catalog plus the optional `meta_owner` / `meta_key` / `meta_val` table, with
+ * `metadata["color"]` lifted into `color`. Empty when absent or unreadable.
+ */
+async function readCategoriesStreaming(
+  file: StreamingH5File,
+): Promise<Category[]> {
+  try {
+    const keys = file.keys();
+    if (!keys.includes("categories")) return [];
+    const children = await file.getKeys("categories");
+    if (!children.includes("name")) return [];
+    const names = normalizeDatasetArray(
+      (await file.getDatasetValue("categories/name")).value,
+    ).map((n) => decodeEntryText(n) ?? "");
+    const metadata: Record<string, unknown>[] = names.map(() => ({}));
+    if (children.includes("meta_owner")) {
+      const owners = normalizeDatasetArray(
+        (await file.getDatasetValue("categories/meta_owner")).value,
+      ).map(Number);
+      const mkeys = normalizeDatasetArray(
+        (await file.getDatasetValue("categories/meta_key")).value,
+      ).map((k) => decodeEntryText(k) ?? "");
+      const mvals = normalizeDatasetArray(
+        (await file.getDatasetValue("categories/meta_val")).value,
+      ).map((v) => decodeEntryText(v) ?? "");
+      owners.forEach((o, i) => {
+        if (metadata[o]) metadata[o][mkeys[i]] = mvals[i];
+      });
+    }
+    return names.map((name, i) => categoryFromStored(name, metadata[i]));
   } catch {
     return [];
   }

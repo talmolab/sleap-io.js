@@ -19,6 +19,11 @@ import {
   injectSessionFrameResolver,
 } from "./camera.js";
 import type { Identity } from "./identity.js";
+import {
+  type Category,
+  cloneCategory,
+  mergeCategoriesByName,
+} from "./category.js";
 import { toDict } from "../codecs/dictionary.js";
 import { labelsFromNumpy } from "../codecs/numpy.js";
 import { type LazyDataStore, LazyFrameList } from "./lazy.js";
@@ -165,6 +170,13 @@ export class Labels {
   sessions: RecordingSession[];
   provenance: Record<string, unknown>;
   identities: Identity[];
+  /**
+   * Project-level class catalog. Detections refer to an entry by
+   * `category` name; entries may be unused (a class list defined before
+   * labeling). On write, category strings that detections use but the catalog
+   * lacks are appended, so nothing is dropped.
+   */
+  categories: Category[];
 
   // Static ROIs: not tied to any specific frame (e.g., arena boundaries).
   _staticRois: ROI[];
@@ -204,6 +216,7 @@ export class Labels {
     provenance?: Record<string, unknown>;
     rois?: ROI[];
     identities?: Identity[];
+    categories?: Category[];
   }) {
     this.labeledFrames = options?.labeledFrames ?? [];
     this.videos = options?.videos ?? [];
@@ -214,6 +227,7 @@ export class Labels {
     this.provenance = options?.provenance ?? {};
     this._staticRois = options?.rois ?? [];
     this.identities = options?.identities ?? [];
+    this.categories = options?.categories ?? [];
 
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = new Map<string | Video, Video>();
@@ -1415,6 +1429,7 @@ export class Labels {
         ),
         provenance: { ...this.provenance },
         identities: structuredClone(this.identities),
+        categories: this.categories.map(cloneCategory),
       });
 
       labelsCopy._lazyDataStore = newStore;
@@ -1468,6 +1483,7 @@ export class Labels {
         provenance: { ...this.provenance },
         rois: cloneAncillary(this._staticRois),
         identities: structuredClone(this.identities),
+        categories: this.categories.map(cloneCategory),
       });
       injectSessionFrameResolver(labelsCopy);
     }
@@ -2119,6 +2135,12 @@ export class Labels {
         trackMatcher,
         instanceMatcher,
       );
+
+      // STEP 3b-cat: categories, deduped by name (Python `Labels.merge` step
+      // 3b-cat). Detections carry category NAMES, so no per-detection remap is
+      // needed; this only keeps the incoming catalog's unused classes and their
+      // color/metadata.
+      mergeCategoriesByName(this.categories, other.categories);
 
       // ----- §6.7 STEP 4: frames ------------------------------------------
       total = other.labeledFrames.length;
