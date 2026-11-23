@@ -15990,6 +15990,512 @@ function buildBboxTuples(data, categories, names, sources, tracks) {
   return bboxes;
 }
 
+// src/codecs/slp/annotations.ts
+import { inflate } from "pako";
+var ANNOTATION_STRUCT_PATHS = [
+  "rois",
+  "masks",
+  "mask_score_map_index",
+  "label_images",
+  "label_image_objects",
+  "label_image_score_map_index"
+];
+var ANNOTATION_BYTES_PATHS = [
+  "roi_wkb",
+  "mask_rle",
+  "mask_score_maps",
+  "label_image_score_maps"
+];
+var ANNOTATION_STRING_LISTS = [
+  ["roi_categories", "rois", "categories"],
+  ["roi_names", "rois", "names"],
+  ["roi_sources", "rois", "sources"],
+  ["mask_categories", "masks", "categories"],
+  ["mask_names", "masks", "names"],
+  ["mask_sources", "masks", "sources"],
+  ["label_image_sources", "label_images", "sources"],
+  ["label_image_obj_categories", "label_image_objects", "categories"],
+  ["label_image_obj_names", "label_image_objects", "names"]
+];
+function parseJsonStringList(raw) {
+  const v = raw?.value ?? raw;
+  const text = typeof v === "string" ? v : v instanceof Uint8Array ? new TextDecoder().decode(v) : null;
+  if (text === null) return null;
+  try {
+    const parsed = JSON.parse(text);
+    return Array.isArray(parsed) ? parsed.map((x) => String(x ?? "")) : null;
+  } catch {
+    return null;
+  }
+}
+function decodeStringListValue(value) {
+  if (value == null) return [];
+  if (Array.isArray(value)) {
+    if (value.length && value.every((x) => typeof x === "number")) {
+      return parseJsonStringList(Uint8Array.from(value)) ?? [];
+    }
+    return value.map(
+      (x) => typeof x === "string" ? x : x instanceof Uint8Array ? new TextDecoder().decode(x) : String(x ?? "")
+    );
+  }
+  if (ArrayBuffer.isView(value)) {
+    const bytes = new Uint8Array(
+      value.buffer,
+      value.byteOffset,
+      value.byteLength
+    );
+    return parseJsonStringList(bytes) ?? [];
+  }
+  return parseJsonStringList(value) ?? [];
+}
+function attachIdentityToOwners(owners, identities, links, embs) {
+  if (links) {
+    for (const [ownerId, [idx, score]] of links) {
+      const det = owners[ownerId];
+      if (det && idx >= 0 && idx < identities.length) {
+        det.identity = identities[idx];
+        det.identityScore = score;
+      }
+    }
+  }
+  if (embs) {
+    for (const [ownerId, emb] of embs) {
+      const det = owners[ownerId];
+      if (det) det.identityEmbedding = emb;
+    }
+  }
+}
+function attachCategoryToOwners(owners, catalog, links, embs) {
+  if (links) {
+    for (const [ownerId, [idx, score]] of links) {
+      const det = owners[ownerId];
+      if (det && idx >= 0 && idx < catalog.length) {
+        det.category = catalog[idx];
+        det.categoryScore = score;
+      }
+    }
+  }
+  if (embs) {
+    for (const [ownerId, emb] of embs) {
+      const det = owners[ownerId];
+      if (det) det.categoryEmbedding = emb;
+    }
+  }
+}
+function attachOwnerType(maps, ownerType, owners, identities) {
+  attachIdentityToOwners(
+    owners,
+    identities,
+    maps.idLinks.get(ownerType),
+    maps.idEmbs.get(ownerType)
+  );
+  attachCategoryToOwners(
+    owners,
+    maps.categoryCatalog,
+    maps.catLinks.get(ownerType),
+    maps.catEmbs.get(ownerType)
+  );
+}
+function readRoiTuples(src, videos, tracks, instances) {
+  const roisData = src.struct("rois");
+  if (!roisData) return { rois: [], migratedBboxes: [] };
+  const annotationTypes = roisData.annotation_type ?? [];
+  if (!annotationTypes.length) return { rois: [], migratedBboxes: [] };
+  const wkbFlat = src.bytes("roi_wkb");
+  if (!wkbFlat) return { rois: [], migratedBboxes: [] };
+  const categories = src.strings("roi_categories", "rois", "categories");
+  const names = src.strings("roi_names", "rois", "names");
+  const sources = src.strings("roi_sources", "rois", "sources");
+  const videoIndices = roisData.video ?? [];
+  const frameIndices = roisData.frame_idx ?? [];
+  const trackIndices = roisData.track ?? [];
+  const scores = roisData.score ?? [];
+  const wkbStarts = roisData.wkb_start ?? [];
+  const wkbEnds = roisData.wkb_end ?? [];
+  const instanceIndices = roisData.instance ?? [];
+  const isPredictedCol = roisData.is_predicted ?? [];
+  const trackingScoresCol = roisData.tracking_score ?? [];
+  const rois = [];
+  const migratedBboxes = [];
+  for (let i = 0; i < annotationTypes.length; i++) {
+    const wkbStart = Number(wkbStarts[i]);
+    const wkbEnd = Number(wkbEnds[i]);
+    const wkbBytes = wkbFlat.slice(wkbStart, wkbEnd);
+    const geometry = decodeWkb(wkbBytes);
+    const videoIdx = Number(videoIndices[i]);
+    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
+    const frameIdxVal = Number(frameIndices[i]);
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const annotType = Number(annotationTypes[i]);
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const roiTsVal = trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
+    const roiTrackingScore = Number.isNaN(roiTsVal) ? null : roiTsVal;
+    if (annotType === 1 /* BOUNDING_BOX */ && !isPred) {
+      const tmpRoi = new UserROI({
+        geometry,
+        name: names[i] ?? "",
+        category: categories[i] ?? "",
+        source: sources[i] ?? "",
+        video,
+        track
+      });
+      const b = tmpRoi.bounds;
+      const scoreVal = Number(scores[i]);
+      const bboxScore = Number.isNaN(scoreVal) ? null : scoreVal;
+      const bboxOptions = {
+        x1: b.minX,
+        y1: b.minY,
+        x2: b.maxX,
+        y2: b.maxY,
+        track,
+        trackingScore: roiTrackingScore,
+        category: categories[i] ?? "",
+        name: names[i] ?? "",
+        source: sources[i] ?? ""
+      };
+      let bbox;
+      if (bboxScore !== null) {
+        bbox = new PredictedBoundingBox({ ...bboxOptions, score: bboxScore });
+      } else {
+        bbox = new UserBoundingBox(bboxOptions);
+      }
+      if (instanceIndices.length > 0) {
+        const instIdx = Number(instanceIndices[i]);
+        if (instances && instIdx >= 0 && instIdx < instances.length) {
+          bbox.instance = instances[instIdx];
+        } else if (instIdx >= 0) {
+          bbox._instanceIdx = instIdx;
+        }
+      }
+      migratedBboxes.push([bbox, videoIdx, frameIdxVal]);
+    } else {
+      const roiOptions = {
+        geometry,
+        name: names[i] ?? "",
+        category: categories[i] ?? "",
+        source: sources[i] ?? "",
+        video,
+        track,
+        trackingScore: roiTrackingScore
+      };
+      let roi;
+      if (isPred) {
+        const scoreVal = Number(scores[i]);
+        roi = new PredictedROI({
+          ...roiOptions,
+          score: Number.isNaN(scoreVal) ? 0 : scoreVal
+        });
+      } else {
+        roi = new UserROI(roiOptions);
+      }
+      if (instanceIndices.length > 0) {
+        const instIdx = Number(instanceIndices[i]);
+        if (instances && instIdx >= 0 && instIdx < instances.length) {
+          roi.instance = instances[instIdx];
+        } else if (instIdx >= 0) {
+          roi._instanceIdx = instIdx;
+        }
+      }
+      rois.push([roi, videoIdx, frameIdxVal]);
+    }
+  }
+  return { rois, migratedBboxes };
+}
+function readScoreMaps(src, indexPath, dataPath) {
+  const result = /* @__PURE__ */ new Map();
+  const indexData = src.struct(indexPath);
+  const dataFlat = src.bytes(dataPath);
+  if (!indexData || !dataFlat) return result;
+  const idxCol = indexData.mask_idx ?? indexData.li_idx ?? [];
+  const starts = indexData.data_start ?? [];
+  const ends = indexData.data_end ?? [];
+  const smHeights = indexData.height ?? [];
+  const smWidths = indexData.width ?? [];
+  for (let i = 0; i < idxCol.length; i++) {
+    const annotIdx = Number(idxCol[i]);
+    const start = Number(starts[i]);
+    const end = Number(ends[i]);
+    const h = Number(smHeights[i]);
+    const w = Number(smWidths[i]);
+    const compressed = dataFlat.slice(start, end);
+    const decompressed = inflate(compressed);
+    const expectedBytes = h * w * 4;
+    if (decompressed.byteLength !== expectedBytes) {
+      throw new Error(
+        `Score map decompression size mismatch: expected ${expectedBytes} bytes, got ${decompressed.byteLength}`
+      );
+    }
+    const scoreMap = new Float32Array(
+      decompressed.buffer.slice(
+        decompressed.byteOffset,
+        decompressed.byteOffset + decompressed.byteLength
+      )
+    );
+    result.set(annotIdx, { scoreMap, height: h, width: w });
+  }
+  return result;
+}
+function readMaskTuples(src, tracks) {
+  const masksData = src.struct("masks");
+  if (!masksData) return [];
+  const heights = masksData.height ?? [];
+  if (!heights.length) return [];
+  const rleFlat = src.bytes("mask_rle");
+  if (!rleFlat) return [];
+  const categories = src.strings("mask_categories", "masks", "categories");
+  const names = src.strings("mask_names", "masks", "names");
+  const sources = src.strings("mask_sources", "masks", "sources");
+  const widths = masksData.width ?? [];
+  const videoIndices = masksData.video ?? [];
+  const frameIndices = masksData.frame_idx ?? [];
+  const trackIndices = masksData.track ?? [];
+  const rleStarts = masksData.rle_start ?? [];
+  const rleEnds = masksData.rle_end ?? [];
+  const isPredictedCol = masksData.is_predicted ?? [];
+  const scoreCol = masksData.score ?? [];
+  const instanceCol = masksData.instance ?? [];
+  const maskTrackingScoreCol = masksData.tracking_score ?? [];
+  const fromPredictedCol = masksData.from_predicted ?? [];
+  const scaleXCol = masksData.scale_x ?? [];
+  const scaleYCol = masksData.scale_y ?? [];
+  const offsetXCol = masksData.offset_x ?? [];
+  const offsetYCol = masksData.offset_y ?? [];
+  const scoreMaps = readScoreMaps(
+    src,
+    "mask_score_map_index",
+    "mask_score_maps"
+  );
+  const masks = [];
+  const fromPredictedPairs = [];
+  for (let i = 0; i < heights.length; i++) {
+    const rleStart = Number(rleStarts[i]);
+    const rleEnd = Number(rleEnds[i]);
+    const rleRaw = rleFlat.slice(rleStart, rleEnd);
+    const numCounts = rleRaw.byteLength / 4;
+    const rleCounts = new Uint32Array(numCounts);
+    const rleView = new DataView(
+      rleRaw.buffer,
+      rleRaw.byteOffset,
+      rleRaw.byteLength
+    );
+    for (let j = 0; j < numCounts; j++) {
+      rleCounts[j] = rleView.getUint32(j * 4, true);
+    }
+    const videoIdx = Number(videoIndices[i]);
+    const frameIdxVal = Number(frameIndices[i]);
+    const trackIdx = Number(trackIndices[i]);
+    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+    const scaleX = scaleXCol.length > i ? Number(scaleXCol[i]) : 1;
+    const scaleY = scaleYCol.length > i ? Number(scaleYCol[i]) : 1;
+    const offsetX = offsetXCol.length > i ? Number(offsetXCol[i]) : 0;
+    const offsetY = offsetYCol.length > i ? Number(offsetYCol[i]) : 0;
+    const maskTsVal = maskTrackingScoreCol.length > i ? Number(maskTrackingScoreCol[i]) : Number.NaN;
+    const maskTrackingScore = Number.isNaN(maskTsVal) ? null : maskTsVal;
+    const baseOptions = {
+      rleCounts,
+      height: Number(heights[i]),
+      width: Number(widths[i]),
+      name: names[i] ?? "",
+      category: categories[i] ?? "",
+      source: sources[i] ?? "",
+      track,
+      trackingScore: maskTrackingScore,
+      scale: [scaleX, scaleY],
+      offset: [offsetX, offsetY]
+    };
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    let mask;
+    if (isPred) {
+      const scoreVal = scoreCol.length > i ? Number(scoreCol[i]) : 0;
+      const sm = scoreMaps.get(i);
+      mask = new PredictedSegmentationMask({
+        ...baseOptions,
+        score: scoreVal,
+        scoreMap: sm?.scoreMap ?? null
+      });
+    } else {
+      mask = new UserSegmentationMask(baseOptions);
+      const fpIdx = fromPredictedCol.length > i ? Number(fromPredictedCol[i]) : -1;
+      if (fpIdx >= 0) fromPredictedPairs.push([i, fpIdx]);
+    }
+    const instIdx = instanceCol.length > i ? Number(instanceCol[i]) : -1;
+    if (instIdx >= 0) {
+      mask._instanceIdx = instIdx;
+    }
+    masks.push([mask, videoIdx, frameIdxVal]);
+  }
+  for (const [i, fpIdx] of fromPredictedPairs) {
+    if (fpIdx >= 0 && fpIdx < masks.length) {
+      masks[i][0].fromPredicted = masks[fpIdx][0];
+    }
+  }
+  return masks;
+}
+function readLabelImageTuples(src, tracks, instances) {
+  const liData = src.struct("label_images");
+  if (!liData) return [];
+  const videoIndices = liData.video ?? [];
+  if (!videoIndices.length) return [];
+  const frameIndices = liData.frame_idx ?? [];
+  const heights = liData.height ?? [];
+  const widths = liData.width ?? [];
+  const nObjectsList = liData.n_objects ?? [];
+  const objectsStarts = liData.objects_start ?? [];
+  const dataStarts = liData.data_start ?? [];
+  const dataEnds = liData.data_end ?? [];
+  const sources = src.strings("label_image_sources", "label_images", "sources");
+  const isPredictedCol = liData.is_predicted ?? [];
+  const liScoreCol = liData.score ?? [];
+  const liScaleXCol = liData.scale_x ?? [];
+  const liScaleYCol = liData.scale_y ?? [];
+  const liOffsetXCol = liData.offset_x ?? [];
+  const liOffsetYCol = liData.offset_y ?? [];
+  const dataDs = src.raw("label_image_data");
+  if (!dataDs) return [];
+  const dataShape = dataDs.shape ?? [];
+  const isChunked = dataShape.length === 3;
+  let dataFlat = new Uint8Array(0);
+  let dataChunked = null;
+  if (isChunked) {
+    dataChunked = dataDs.value;
+  } else {
+    dataFlat = dataDs.value instanceof Uint8Array ? dataDs.value : new Uint8Array(dataDs.value ?? []);
+  }
+  let objLabelIds = [];
+  let objTrackIndices = [];
+  let objInstanceIndices = [];
+  let objCategories = [];
+  let objNames = [];
+  let objScoreCol = [];
+  let objTrackingScoreCol = [];
+  const objData = src.struct("label_image_objects");
+  if (objData) {
+    objLabelIds = objData.label_id ?? [];
+    objTrackIndices = objData.track ?? [];
+    objInstanceIndices = objData.instance ?? [];
+    objCategories = src.strings(
+      "label_image_obj_categories",
+      "label_image_objects",
+      "categories"
+    );
+    objNames = src.strings(
+      "label_image_obj_names",
+      "label_image_objects",
+      "names"
+    );
+    objScoreCol = objData.score ?? [];
+    objTrackingScoreCol = objData.tracking_score ?? [];
+  }
+  const liScoreMaps = readScoreMaps(
+    src,
+    "label_image_score_map_index",
+    "label_image_score_maps"
+  );
+  const labelImages = [];
+  for (let i = 0; i < videoIndices.length; i++) {
+    const videoIdx = Number(videoIndices[i]);
+    const frameIdxVal = Number(frameIndices[i]);
+    const height = Number(heights[i]);
+    const width = Number(widths[i]);
+    let pixelData;
+    if (isChunked && dataChunked) {
+      const frameSize = height * width;
+      if (dataChunked instanceof Int32Array) {
+        pixelData = new Int32Array(
+          dataChunked.buffer,
+          dataChunked.byteOffset + i * frameSize * 4,
+          frameSize
+        );
+      } else if (ArrayBuffer.isView(dataChunked)) {
+        const offset = i * frameSize;
+        pixelData = new Int32Array(frameSize);
+        for (let p = 0; p < frameSize; p++) {
+          pixelData[p] = dataChunked[offset + p];
+        }
+      } else {
+        pixelData = new Int32Array(frameSize);
+      }
+    } else {
+      const dataStart = Number(dataStarts[i]);
+      const dataEnd = Number(dataEnds[i]);
+      const compressed = dataFlat.slice(dataStart, dataEnd);
+      const decompressed = inflate(compressed);
+      pixelData = new Int32Array(
+        decompressed.buffer.slice(
+          decompressed.byteOffset,
+          decompressed.byteOffset + decompressed.byteLength
+        )
+      );
+    }
+    const nObj = Number(nObjectsList[i]);
+    const objStart = Number(objectsStarts[i]);
+    const objects = /* @__PURE__ */ new Map();
+    const deferredInstances = /* @__PURE__ */ new Map();
+    for (let j = objStart; j < objStart + nObj; j++) {
+      const labelId = Number(objLabelIds[j]);
+      const trackIdx = Number(objTrackIndices[j]);
+      const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
+      const instIdx = Number(objInstanceIndices[j]);
+      let instance = null;
+      if (instances && instIdx >= 0 && instIdx < instances.length) {
+        instance = instances[instIdx];
+      } else if (instIdx >= 0) {
+        deferredInstances.set(labelId, instIdx);
+      }
+      const objScore = objScoreCol.length > j ? Number(objScoreCol[j]) : null;
+      const objTsVal = objTrackingScoreCol.length > j ? Number(objTrackingScoreCol[j]) : null;
+      objects.set(labelId, {
+        track,
+        category: objCategories[j] ?? "",
+        name: objNames[j] ?? "",
+        instance,
+        score: objScore !== null && !Number.isNaN(objScore) ? objScore : null,
+        trackingScore: objTsVal !== null && !Number.isNaN(objTsVal) ? objTsVal : null,
+        _instanceIdx: instIdx >= 0 ? instIdx : -1
+      });
+    }
+    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
+    const liScaleX = liScaleXCol.length > i ? Number(liScaleXCol[i]) : 1;
+    const liScaleY = liScaleYCol.length > i ? Number(liScaleYCol[i]) : 1;
+    const liOffsetX = liOffsetXCol.length > i ? Number(liOffsetXCol[i]) : 0;
+    const liOffsetY = liOffsetYCol.length > i ? Number(liOffsetYCol[i]) : 0;
+    const liScale = [liScaleX, liScaleY];
+    const liOffset = [liOffsetX, liOffsetY];
+    let li;
+    if (isPred) {
+      const liScore = liScoreCol.length > i ? Number(liScoreCol[i]) : 0;
+      const sm = liScoreMaps.get(i);
+      li = new PredictedLabelImage({
+        data: pixelData,
+        height,
+        width,
+        objects,
+        source: sources[i] ?? "",
+        score: liScore,
+        scoreMap: sm?.scoreMap ?? null,
+        scale: liScale,
+        offset: liOffset
+      });
+    } else {
+      li = new UserLabelImage({
+        data: pixelData,
+        height,
+        width,
+        objects,
+        source: sources[i] ?? "",
+        scale: liScale,
+        offset: liOffset
+      });
+    }
+    if (deferredInstances.size > 0) {
+      li._objectInstanceIdxs = deferredInstances;
+    }
+    labelImages.push([li, videoIdx, frameIdxVal]);
+  }
+  return labelImages;
+}
+
 // src/model/negative-frames.ts
 function negativeFrameKeys(columns) {
   const videoIds = columns.video_id ?? columns.video ?? [];
@@ -16180,6 +16686,8 @@ function attachAnnotationTuples(tuples, opts) {
       if (vidIdx >= 0 && vidIdx < videos.length && frameIdx >= 0) {
         opts.frameList(getOrCreate(vidIdx, frameIdx)).push(ann);
         attached.push(ann);
+      } else {
+        opts.onUnrouted?.(ann);
       }
     }
     const allInst = instanceRowLookup(
@@ -16187,15 +16695,8 @@ function attachAnnotationTuples(tuples, opts) {
       opts.instanceRows,
       opts.userInstancesOnly
     );
-    for (const ann of attached) {
-      if (ann._instanceIdx !== null && ann._instanceIdx >= 0) {
-        const inst = allInst(ann._instanceIdx);
-        if (inst) {
-          ann.instance = inst;
-          ann._instanceIdx = null;
-        }
-      }
-    }
+    const resolve = opts.resolve ?? resolveInstanceIdx;
+    for (const ann of attached) resolve(ann, allInst);
   } else if (lazyStore) {
     const byFrame = /* @__PURE__ */ new Map();
     const undistributed = [];
@@ -16211,6 +16712,85 @@ function attachAnnotationTuples(tuples, opts) {
     }
     opts.setLazy(lazyStore, byFrame, undistributed);
   }
+}
+function resolveInstanceIdx(ann, lookup) {
+  const a = ann;
+  if (a._instanceIdx != null && a._instanceIdx >= 0) {
+    const inst = lookup(a._instanceIdx);
+    if (inst) {
+      a.instance = inst;
+      a._instanceIdx = null;
+    }
+  }
+}
+function resolveLabelImageInstances(li, lookup) {
+  if (!li._objectInstanceIdxs) return;
+  for (const [labelId, instIdx] of li._objectInstanceIdxs) {
+    const obj = li.objects.get(labelId);
+    const inst = instIdx >= 0 ? lookup(instIdx) : void 0;
+    if (obj && inst) obj.instance = inst;
+  }
+  li._objectInstanceIdxs = null;
+}
+async function prefetchAnnotationDatasets(file) {
+  const keys = new Set(file.keys());
+  const structs = /* @__PURE__ */ new Map();
+  const structAttrs = /* @__PURE__ */ new Map();
+  const bytes = /* @__PURE__ */ new Map();
+  const strings = /* @__PURE__ */ new Map();
+  let labelImageData = null;
+  const attrsOf = async (path) => {
+    try {
+      return await file.getAttrs(path);
+    } catch {
+      return {};
+    }
+  };
+  for (const path of ANNOTATION_STRUCT_PATHS) {
+    if (!keys.has(path)) continue;
+    structs.set(path, await readStructDatasetStreaming(file, path, true));
+    structAttrs.set(path, await attrsOf(path));
+  }
+  for (const path of ANNOTATION_BYTES_PATHS) {
+    if (!keys.has(path)) continue;
+    try {
+      const v = (await file.getDatasetValue(path)).value;
+      bytes.set(
+        path,
+        v instanceof Uint8Array ? v : ArrayBuffer.isView(v) ? new Uint8Array(v.buffer, v.byteOffset, v.byteLength) : Uint8Array.from(v ?? [])
+      );
+    } catch {
+    }
+  }
+  for (const [root] of ANNOTATION_STRING_LISTS) {
+    if (!keys.has(root)) continue;
+    const fromAttr = parseJsonStringList((await attrsOf(root)).json);
+    if (fromAttr) {
+      strings.set(root, fromAttr);
+      continue;
+    }
+    try {
+      strings.set(
+        root,
+        decodeStringListValue((await file.getDatasetValue(root)).value)
+      );
+    } catch {
+    }
+  }
+  if (keys.has("label_image_data")) {
+    try {
+      const d = await file.getDatasetValue("label_image_data");
+      labelImageData = { value: d.value, shape: d.shape ?? [] };
+    } catch {
+      labelImageData = null;
+    }
+  }
+  return {
+    struct: (path) => structs.get(path) ?? null,
+    bytes: (path) => bytes.get(path) ?? null,
+    strings: (rootPath, structPath, attrName) => strings.get(rootPath) ?? parseJsonStringList(structAttrs.get(structPath)?.[attrName]) ?? [],
+    raw: (path) => path === "label_image_data" ? labelImageData : null
+  };
 }
 async function readSlpStreaming(source, options) {
   if (!isStreamingSupported()) {
@@ -16364,8 +16944,13 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   report(8);
   const identities = await readIdentitiesStreaming(file);
   const categories = await readCategoriesStreaming(file);
+  const pdMaps = await readStreamingPerDetectionMaps(file);
+  const { categoryCatalog } = pdMaps;
   if (labeledFrames || lazyStore) {
-    const { links, embs, catLinks, catEmbs, categoryCatalog } = await readStreamingInstanceIdentity(file);
+    const links = pdMaps.idLinks.get(0) ?? /* @__PURE__ */ new Map();
+    const embs = pdMaps.idEmbs.get(0) ?? /* @__PURE__ */ new Map();
+    const catLinks = pdMaps.catLinks.get(0) ?? /* @__PURE__ */ new Map();
+    const catEmbs = pdMaps.catEmbs.get(0) ?? /* @__PURE__ */ new Map();
     if (links.size || embs.size || catLinks.size || catEmbs.size) {
       if (labeledFrames) {
         const allInstances = instanceRowLookup(
@@ -16406,6 +16991,43 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
       }
     }
   }
+  const annDatasets = await prefetchAnnotationDatasets(file);
+  const centroidTuples = await readCentroidsStreaming(file, tracks);
+  const { rois: roiTuples, migratedBboxes } = readRoiTuples(
+    annDatasets,
+    videos,
+    tracks
+  );
+  let bboxTuples = await readBboxesStreaming(file, tracks);
+  if (bboxTuples.length === 0 && migratedBboxes.length > 0) {
+    bboxTuples = migratedBboxes;
+  }
+  const maskTuples = readMaskTuples(annDatasets, tracks);
+  const labelImageTuples = readLabelImageTuples(annDatasets, tracks);
+  attachOwnerType(
+    pdMaps,
+    2,
+    centroidTuples.map((t) => t[0]),
+    identities
+  );
+  attachOwnerType(
+    pdMaps,
+    3,
+    maskTuples.map((t) => t[0]),
+    identities
+  );
+  attachOwnerType(
+    pdMaps,
+    4,
+    bboxTuples.map((t) => t[0]),
+    identities
+  );
+  attachOwnerType(
+    pdMaps,
+    5,
+    roiTuples.map((t) => t[0]),
+    identities
+  );
   const attachCommon = {
     labeledFrames,
     lazyStore,
@@ -16413,7 +17035,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     instanceRows,
     userInstancesOnly
   };
-  attachAnnotationTuples(await readCentroidsStreaming(file, tracks), {
+  attachAnnotationTuples(centroidTuples, {
     ...attachCommon,
     frameList: (lf) => lf.centroids,
     setLazy: (store, byFrame, undistributed) => {
@@ -16421,13 +17043,40 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
       store._undistributedCentroids = undistributed;
     }
   });
-  attachAnnotationTuples(await readBboxesStreaming(file, tracks), {
+  attachAnnotationTuples(bboxTuples, {
     ...attachCommon,
     frameList: (lf) => lf.bboxes,
     setLazy: (store, byFrame, undistributed) => {
       store._bboxByFrame = byFrame;
       store._undistributedBboxes = undistributed;
     }
+  });
+  const staticRois = [];
+  attachAnnotationTuples(roiTuples, {
+    ...attachCommon,
+    frameList: (lf) => lf.rois,
+    setLazy: (store, byFrame, undistributed) => {
+      store._roiByFrame = byFrame;
+      store._undistributedRois = undistributed;
+    },
+    onUnrouted: (roi) => staticRois.push(roi)
+  });
+  attachAnnotationTuples(maskTuples, {
+    ...attachCommon,
+    frameList: (lf) => lf.masks,
+    setLazy: (store, byFrame, undistributed) => {
+      store._maskByFrame = byFrame;
+      store._undistributedMasks = undistributed;
+    }
+  });
+  attachAnnotationTuples(labelImageTuples, {
+    ...attachCommon,
+    frameList: (lf) => lf.labelImages,
+    setLazy: (store, byFrame, undistributed) => {
+      store._labelImageByFrame = byFrame;
+      store._undistributedLabelImages = undistributed;
+    },
+    resolve: resolveLabelImageInstances
   });
   report(9);
   const sessions = userInstancesOnly ? [] : await readSessionsStreaming(
@@ -16447,7 +17096,8 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
     sessions,
     identities,
     categories,
-    provenance: metadataJson?.provenance ?? {}
+    provenance: metadataJson?.provenance ?? {},
+    rois: staticRois
   });
   if (lazyStore) {
     labels._lazyFrameList = new LazyFrameList(lazyStore);
@@ -16876,9 +17526,17 @@ async function readCategoriesStreaming(file) {
     return [];
   }
 }
-async function readStreamingInstanceIdentity(file) {
+async function readStreamingPerDetectionMaps(file) {
   const rootKeys = file.keys();
-  const readOwnerInstanceLinks = async (group, idxField, scoreField) => {
+  const ownerMap = (out, ownerType) => {
+    let sub = out.get(ownerType);
+    if (!sub) {
+      sub = /* @__PURE__ */ new Map();
+      out.set(ownerType, sub);
+    }
+    return sub;
+  };
+  const readLinks = async (group, idxField, scoreField) => {
     const out = /* @__PURE__ */ new Map();
     try {
       if (!rootKeys.includes(group)) return out;
@@ -16893,9 +17551,8 @@ async function readStreamingInstanceIdentity(file) {
       const idx = cols[idxField] ?? [];
       const sc = cols[scoreField] ?? [];
       for (let i = 0; i < ot.length; i += 1) {
-        if (Number(ot[i]) !== 0) continue;
         const score = Number(sc[i]);
-        out.set(Number(oid[i]), [
+        ownerMap(out, Number(ot[i])).set(Number(oid[i]), [
           Number(idx[i]),
           Number.isNaN(score) ? null : score
         ]);
@@ -16904,7 +17561,7 @@ async function readStreamingInstanceIdentity(file) {
     }
     return out;
   };
-  const readOwnerInstanceEmbs = async (vecName, otName, oidName) => {
+  const readEmbs = async (vecName, otName, oidName) => {
     const out = /* @__PURE__ */ new Map();
     try {
       if (!rootKeys.includes("embeddings")) return out;
@@ -16921,10 +17578,9 @@ async function readStreamingInstanceIdentity(file) {
         (await file.getDatasetValue(`embeddings/${oidName}`)).value
       );
       for (let i = 0; i < rows; i += 1) {
-        if (Number(ot[i]) !== 0) continue;
         const vec = new Array(dim);
         for (let j = 0; j < dim; j += 1) vec[j] = Number(flat[i * dim + j]);
-        out.set(Number(oid[i]), new Embedding(vec));
+        ownerMap(out, Number(ot[i])).set(Number(oid[i]), new Embedding(vec));
       }
     } catch {
     }
@@ -16940,18 +17596,10 @@ async function readStreamingInstanceIdentity(file) {
   } catch {
   }
   return {
-    links: await readOwnerInstanceLinks(
-      "identity",
-      "identity_idx",
-      "identity_score"
-    ),
-    embs: await readOwnerInstanceEmbs("vectors", "owner_type", "owner_id"),
-    catLinks: await readOwnerInstanceLinks(
-      "categories",
-      "category_idx",
-      "category_score"
-    ),
-    catEmbs: await readOwnerInstanceEmbs(
+    idLinks: await readLinks("identity", "identity_idx", "identity_score"),
+    idEmbs: await readEmbs("vectors", "owner_type", "owner_id"),
+    catLinks: await readLinks("categories", "category_idx", "category_score"),
+    catEmbs: await readEmbs(
       "category_vectors",
       "category_owner_type",
       "category_owner_id"
@@ -22701,7 +23349,6 @@ function readCompoundColumnsManual(module, dataset) {
 }
 
 // src/codecs/slp/read.ts
-import { inflate } from "pako";
 var textDecoder3 = new TextDecoder();
 var EAGER_STAGES = [
   "Reading metadata",
@@ -22815,11 +23462,10 @@ async function readSlp(source, options) {
       tracks,
       allInstances
     );
-    const maskTuples = readMasks(file, videos, tracks);
+    const maskTuples = readMaskTuples(h5AnnotationDatasets(file), tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
-    const labelImageTuples = readLabelImages(
-      file,
-      videos,
+    const labelImageTuples = readLabelImageTuples(
+      h5AnnotationDatasets(file),
       tracks,
       allInstances
     );
@@ -23031,9 +23677,12 @@ async function readSlpLazy(source, options) {
       videos,
       tracks
     );
-    const maskTuples = readMasks(file, videos, tracks);
+    const maskTuples = readMaskTuples(h5AnnotationDatasets(file), tracks);
     const centroidTuples = readCentroids(file, videos, tracks);
-    const labelImageTuples = readLabelImages(file, videos, tracks);
+    const labelImageTuples = readLabelImageTuples(
+      h5AnnotationDatasets(file),
+      tracks
+    );
     const pdMaps = readPerDetectionMaps(file, emscripten);
     store.identities = identities;
     store._instanceIdentityLinks = pdMaps.idLinks.get(0);
@@ -23585,40 +24234,6 @@ var readCategoryEmbeddings = (file) => readEmbeddingTriple(
   "category_owner_type",
   "category_owner_id"
 );
-function attachIdentityToOwners(owners, identities, links, embs) {
-  if (links) {
-    for (const [ownerId, [idx, score]] of links) {
-      const det = owners[ownerId];
-      if (det && idx >= 0 && idx < identities.length) {
-        det.identity = identities[idx];
-        det.identityScore = score;
-      }
-    }
-  }
-  if (embs) {
-    for (const [ownerId, emb] of embs) {
-      const det = owners[ownerId];
-      if (det) det.identityEmbedding = emb;
-    }
-  }
-}
-function attachCategoryToOwners(owners, catalog, links, embs) {
-  if (links) {
-    for (const [ownerId, [idx, score]] of links) {
-      const det = owners[ownerId];
-      if (det && idx >= 0 && idx < catalog.length) {
-        det.category = catalog[idx];
-        det.categoryScore = score;
-      }
-    }
-  }
-  if (embs) {
-    for (const [ownerId, emb] of embs) {
-      const det = owners[ownerId];
-      if (det) det.categoryEmbedding = emb;
-    }
-  }
-}
 function readPerDetectionMaps(file, emscripten) {
   return {
     idLinks: readIdentityLinks(file, emscripten),
@@ -23627,20 +24242,6 @@ function readPerDetectionMaps(file, emscripten) {
     catEmbs: readCategoryEmbeddings(file),
     categoryCatalog: readCategoryCatalog(file)
   };
-}
-function attachOwnerType(maps, ownerType, owners, identities) {
-  attachIdentityToOwners(
-    owners,
-    identities,
-    maps.idLinks.get(ownerType),
-    maps.idEmbs.get(ownerType)
-  );
-  attachCategoryToOwners(
-    owners,
-    maps.categoryCatalog,
-    maps.catLinks.get(ownerType),
-    maps.catEmbs.get(ownerType)
-  );
 }
 function readSessionDataEager(file, emscripten) {
   if (!file.get("session_data")) return null;
@@ -23886,9 +24487,33 @@ function readAttrString(dataset, name) {
   if (Array.isArray(value)) return value.map(String);
   return [];
 }
+function h5AnnotationDatasets(file) {
+  return {
+    struct: (path) => {
+      const ds = file.get(path);
+      return ds ? normalizeStructDataset(ds) : null;
+    },
+    bytes: (path) => {
+      const ds = file.get(path);
+      if (!ds) return null;
+      return ds.value instanceof Uint8Array ? ds.value : new Uint8Array(ds.value ?? []);
+    },
+    strings: (rootPath, structPath, attrName) => {
+      const structDs = file.get(structPath);
+      if (!file.get(rootPath)) {
+        return structDs ? readAttrString(structDs, attrName) : [];
+      }
+      return readStringMetadata(file, rootPath, structDs ?? {}, attrName);
+    },
+    raw: (path) => {
+      const ds = file.get(path);
+      return ds ? { value: ds.value, shape: ds.shape ?? [] } : null;
+    }
+  };
+}
 function readRoisAndBboxes(file, videos, tracks, instances) {
-  const { rois, migratedBboxes } = readRoisWithMigration(
-    file,
+  const { rois, migratedBboxes } = readRoiTuples(
+    h5AnnotationDatasets(file),
     videos,
     tracks,
     instances
@@ -23898,119 +24523,6 @@ function readRoisAndBboxes(file, videos, tracks, instances) {
     bboxes = migratedBboxes;
   }
   return { rois, bboxes };
-}
-function readRoisWithMigration(file, videos, tracks, instances) {
-  const roisDs = file.get("rois");
-  if (!roisDs) return { rois: [], migratedBboxes: [] };
-  const roisData = normalizeStructDataset(roisDs);
-  const annotationTypes = roisData.annotation_type ?? [];
-  if (!annotationTypes.length) return { rois: [], migratedBboxes: [] };
-  const wkbDs = file.get("roi_wkb");
-  if (!wkbDs) return { rois: [], migratedBboxes: [] };
-  const wkbFlat = wkbDs.value instanceof Uint8Array ? wkbDs.value : new Uint8Array(wkbDs.value ?? []);
-  const categories = readStringMetadata(
-    file,
-    "roi_categories",
-    roisDs,
-    "categories"
-  );
-  const names = readStringMetadata(file, "roi_names", roisDs, "names");
-  const sources = readStringMetadata(file, "roi_sources", roisDs, "sources");
-  const videoIndices = roisData.video ?? [];
-  const frameIndices = roisData.frame_idx ?? [];
-  const trackIndices = roisData.track ?? [];
-  const scores = roisData.score ?? [];
-  const wkbStarts = roisData.wkb_start ?? [];
-  const wkbEnds = roisData.wkb_end ?? [];
-  const instanceIndices = roisData.instance ?? [];
-  const isPredictedCol = roisData.is_predicted ?? [];
-  const trackingScoresCol = roisData.tracking_score ?? [];
-  const rois = [];
-  const migratedBboxes = [];
-  for (let i = 0; i < annotationTypes.length; i++) {
-    const wkbStart = Number(wkbStarts[i]);
-    const wkbEnd = Number(wkbEnds[i]);
-    const wkbBytes = wkbFlat.slice(wkbStart, wkbEnd);
-    const geometry = decodeWkb(wkbBytes);
-    const videoIdx = Number(videoIndices[i]);
-    const video = videoIdx >= 0 && videoIdx < videos.length ? videos[videoIdx] : null;
-    const frameIdxVal = Number(frameIndices[i]);
-    const trackIdx = Number(trackIndices[i]);
-    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-    const annotType = Number(annotationTypes[i]);
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
-    const roiTsVal = trackingScoresCol.length > i ? Number(trackingScoresCol[i]) : Number.NaN;
-    const roiTrackingScore = Number.isNaN(roiTsVal) ? null : roiTsVal;
-    if (annotType === 1 /* BOUNDING_BOX */ && !isPred) {
-      const tmpRoi = new UserROI({
-        geometry,
-        name: names[i] ?? "",
-        category: categories[i] ?? "",
-        source: sources[i] ?? "",
-        video,
-        track
-      });
-      const b = tmpRoi.bounds;
-      const scoreVal = Number(scores[i]);
-      const bboxScore = Number.isNaN(scoreVal) ? null : scoreVal;
-      const bboxOptions = {
-        x1: b.minX,
-        y1: b.minY,
-        x2: b.maxX,
-        y2: b.maxY,
-        track,
-        trackingScore: roiTrackingScore,
-        category: categories[i] ?? "",
-        name: names[i] ?? "",
-        source: sources[i] ?? ""
-      };
-      let bbox;
-      if (bboxScore !== null) {
-        bbox = new PredictedBoundingBox({ ...bboxOptions, score: bboxScore });
-      } else {
-        bbox = new UserBoundingBox(bboxOptions);
-      }
-      if (instanceIndices.length > 0) {
-        const instIdx = Number(instanceIndices[i]);
-        if (instances && instIdx >= 0 && instIdx < instances.length) {
-          bbox.instance = instances[instIdx];
-        } else if (instIdx >= 0) {
-          bbox._instanceIdx = instIdx;
-        }
-      }
-      migratedBboxes.push([bbox, videoIdx, frameIdxVal]);
-    } else {
-      const roiOptions = {
-        geometry,
-        name: names[i] ?? "",
-        category: categories[i] ?? "",
-        source: sources[i] ?? "",
-        video,
-        track,
-        trackingScore: roiTrackingScore
-      };
-      let roi;
-      if (isPred) {
-        const scoreVal = Number(scores[i]);
-        roi = new PredictedROI({
-          ...roiOptions,
-          score: Number.isNaN(scoreVal) ? 0 : scoreVal
-        });
-      } else {
-        roi = new UserROI(roiOptions);
-      }
-      if (instanceIndices.length > 0) {
-        const instIdx = Number(instanceIndices[i]);
-        if (instances && instIdx >= 0 && instIdx < instances.length) {
-          roi.instance = instances[instIdx];
-        } else if (instIdx >= 0) {
-          roi._instanceIdx = instIdx;
-        }
-      }
-      rois.push([roi, videoIdx, frameIdxVal]);
-    }
-  }
-  return { rois, migratedBboxes };
 }
 function readBboxes(file, _videos, tracks) {
   let data;
@@ -24061,317 +24573,6 @@ function readStringMetadata(file, datasetPath, dataset, attrName) {
     }
   }
   return readAttrString(dataset, attrName);
-}
-function readScoreMaps(file, indexPath, dataPath) {
-  const result = /* @__PURE__ */ new Map();
-  const indexDs = file.get(indexPath);
-  const dataDs = file.get(dataPath);
-  if (!indexDs || !dataDs) return result;
-  const indexData = normalizeStructDataset(indexDs);
-  const idxCol = indexData.mask_idx ?? indexData.li_idx ?? [];
-  const starts = indexData.data_start ?? [];
-  const ends = indexData.data_end ?? [];
-  const smHeights = indexData.height ?? [];
-  const smWidths = indexData.width ?? [];
-  const dataFlat = dataDs.value instanceof Uint8Array ? dataDs.value : new Uint8Array(dataDs.value ?? []);
-  for (let i = 0; i < idxCol.length; i++) {
-    const annotIdx = Number(idxCol[i]);
-    const start = Number(starts[i]);
-    const end = Number(ends[i]);
-    const h = Number(smHeights[i]);
-    const w = Number(smWidths[i]);
-    const compressed = dataFlat.slice(start, end);
-    const decompressed = inflate(compressed);
-    const expectedBytes = h * w * 4;
-    if (decompressed.byteLength !== expectedBytes) {
-      throw new Error(
-        `Score map decompression size mismatch: expected ${expectedBytes} bytes, got ${decompressed.byteLength}`
-      );
-    }
-    const scoreMap = new Float32Array(
-      decompressed.buffer.slice(
-        decompressed.byteOffset,
-        decompressed.byteOffset + decompressed.byteLength
-      )
-    );
-    result.set(annotIdx, { scoreMap, height: h, width: w });
-  }
-  return result;
-}
-function readMasks(file, _videos, tracks) {
-  const masksDs = file.get("masks");
-  if (!masksDs) return [];
-  const masksData = normalizeStructDataset(masksDs);
-  const heights = masksData.height ?? [];
-  if (!heights.length) return [];
-  const rleDs = file.get("mask_rle");
-  if (!rleDs) return [];
-  const rleFlat = rleDs.value instanceof Uint8Array ? rleDs.value : new Uint8Array(rleDs.value ?? []);
-  const categories = readStringMetadata(
-    file,
-    "mask_categories",
-    masksDs,
-    "categories"
-  );
-  const names = readStringMetadata(file, "mask_names", masksDs, "names");
-  const sources = readStringMetadata(file, "mask_sources", masksDs, "sources");
-  const widths = masksData.width ?? [];
-  const videoIndices = masksData.video ?? [];
-  const frameIndices = masksData.frame_idx ?? [];
-  const trackIndices = masksData.track ?? [];
-  const rleStarts = masksData.rle_start ?? [];
-  const rleEnds = masksData.rle_end ?? [];
-  const isPredictedCol = masksData.is_predicted ?? [];
-  const scoreCol = masksData.score ?? [];
-  const instanceCol = masksData.instance ?? [];
-  const maskTrackingScoreCol = masksData.tracking_score ?? [];
-  const fromPredictedCol = masksData.from_predicted ?? [];
-  const scaleXCol = masksData.scale_x ?? [];
-  const scaleYCol = masksData.scale_y ?? [];
-  const offsetXCol = masksData.offset_x ?? [];
-  const offsetYCol = masksData.offset_y ?? [];
-  const scoreMaps = readScoreMaps(
-    file,
-    "mask_score_map_index",
-    "mask_score_maps"
-  );
-  const masks = [];
-  const fromPredictedPairs = [];
-  for (let i = 0; i < heights.length; i++) {
-    const rleStart = Number(rleStarts[i]);
-    const rleEnd = Number(rleEnds[i]);
-    const rleRaw = rleFlat.slice(rleStart, rleEnd);
-    const numCounts = rleRaw.byteLength / 4;
-    const rleCounts = new Uint32Array(numCounts);
-    const rleView = new DataView(
-      rleRaw.buffer,
-      rleRaw.byteOffset,
-      rleRaw.byteLength
-    );
-    for (let j = 0; j < numCounts; j++) {
-      rleCounts[j] = rleView.getUint32(j * 4, true);
-    }
-    const videoIdx = Number(videoIndices[i]);
-    const frameIdxVal = Number(frameIndices[i]);
-    const trackIdx = Number(trackIndices[i]);
-    const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-    const scaleX = scaleXCol.length > i ? Number(scaleXCol[i]) : 1;
-    const scaleY = scaleYCol.length > i ? Number(scaleYCol[i]) : 1;
-    const offsetX = offsetXCol.length > i ? Number(offsetXCol[i]) : 0;
-    const offsetY = offsetYCol.length > i ? Number(offsetYCol[i]) : 0;
-    const maskTsVal = maskTrackingScoreCol.length > i ? Number(maskTrackingScoreCol[i]) : Number.NaN;
-    const maskTrackingScore = Number.isNaN(maskTsVal) ? null : maskTsVal;
-    const baseOptions = {
-      rleCounts,
-      height: Number(heights[i]),
-      width: Number(widths[i]),
-      name: names[i] ?? "",
-      category: categories[i] ?? "",
-      source: sources[i] ?? "",
-      track,
-      trackingScore: maskTrackingScore,
-      scale: [scaleX, scaleY],
-      offset: [offsetX, offsetY]
-    };
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
-    let mask;
-    if (isPred) {
-      const scoreVal = scoreCol.length > i ? Number(scoreCol[i]) : 0;
-      const sm = scoreMaps.get(i);
-      mask = new PredictedSegmentationMask({
-        ...baseOptions,
-        score: scoreVal,
-        scoreMap: sm?.scoreMap ?? null
-      });
-    } else {
-      mask = new UserSegmentationMask(baseOptions);
-      const fpIdx = fromPredictedCol.length > i ? Number(fromPredictedCol[i]) : -1;
-      if (fpIdx >= 0) fromPredictedPairs.push([i, fpIdx]);
-    }
-    const instIdx = instanceCol.length > i ? Number(instanceCol[i]) : -1;
-    if (instIdx >= 0) {
-      mask._instanceIdx = instIdx;
-    }
-    masks.push([mask, videoIdx, frameIdxVal]);
-  }
-  for (const [i, fpIdx] of fromPredictedPairs) {
-    if (fpIdx >= 0 && fpIdx < masks.length) {
-      masks[i][0].fromPredicted = masks[fpIdx][0];
-    }
-  }
-  return masks;
-}
-function readLabelImages(file, _videos, tracks, instances) {
-  const liDs = file.get("label_images");
-  if (!liDs) return [];
-  const liData = normalizeStructDataset(liDs);
-  const videoIndices = liData.video ?? [];
-  if (!videoIndices.length) return [];
-  const frameIndices = liData.frame_idx ?? [];
-  const heights = liData.height ?? [];
-  const widths = liData.width ?? [];
-  const nObjectsList = liData.n_objects ?? [];
-  const objectsStarts = liData.objects_start ?? [];
-  const dataStarts = liData.data_start ?? [];
-  const dataEnds = liData.data_end ?? [];
-  const sources = readStringMetadata(
-    file,
-    "label_image_sources",
-    liDs,
-    "sources"
-  );
-  const isPredictedCol = liData.is_predicted ?? [];
-  const liScoreCol = liData.score ?? [];
-  const liScaleXCol = liData.scale_x ?? [];
-  const liScaleYCol = liData.scale_y ?? [];
-  const liOffsetXCol = liData.offset_x ?? [];
-  const liOffsetYCol = liData.offset_y ?? [];
-  const dataDs = file.get("label_image_data");
-  if (!dataDs) return [];
-  const dataShape = dataDs.shape ?? [];
-  const isChunked = dataShape.length === 3;
-  let dataFlat = new Uint8Array(0);
-  let dataChunked = null;
-  if (isChunked) {
-    dataChunked = dataDs.value;
-  } else {
-    dataFlat = dataDs.value instanceof Uint8Array ? dataDs.value : new Uint8Array(dataDs.value ?? []);
-  }
-  let objLabelIds = [];
-  let objTrackIndices = [];
-  let objInstanceIndices = [];
-  let objCategories = [];
-  let objNames = [];
-  let objScoreCol = [];
-  let objTrackingScoreCol = [];
-  const objDs = file.get("label_image_objects");
-  if (objDs) {
-    const objData = normalizeStructDataset(objDs);
-    objLabelIds = objData.label_id ?? [];
-    objTrackIndices = objData.track ?? [];
-    objInstanceIndices = objData.instance ?? [];
-    objCategories = readStringMetadata(
-      file,
-      "label_image_obj_categories",
-      objDs,
-      "categories"
-    );
-    objNames = readStringMetadata(
-      file,
-      "label_image_obj_names",
-      objDs,
-      "names"
-    );
-    objScoreCol = objData.score ?? [];
-    objTrackingScoreCol = objData.tracking_score ?? [];
-  }
-  const liScoreMaps = readScoreMaps(
-    file,
-    "label_image_score_map_index",
-    "label_image_score_maps"
-  );
-  const labelImages = [];
-  for (let i = 0; i < videoIndices.length; i++) {
-    const videoIdx = Number(videoIndices[i]);
-    const frameIdxVal = Number(frameIndices[i]);
-    const height = Number(heights[i]);
-    const width = Number(widths[i]);
-    let pixelData;
-    if (isChunked && dataChunked) {
-      const frameSize = height * width;
-      if (dataChunked instanceof Int32Array) {
-        pixelData = new Int32Array(
-          dataChunked.buffer,
-          dataChunked.byteOffset + i * frameSize * 4,
-          frameSize
-        );
-      } else if (ArrayBuffer.isView(dataChunked)) {
-        const offset = i * frameSize;
-        pixelData = new Int32Array(frameSize);
-        for (let p = 0; p < frameSize; p++) {
-          pixelData[p] = dataChunked[offset + p];
-        }
-      } else {
-        pixelData = new Int32Array(frameSize);
-      }
-    } else {
-      const dataStart = Number(dataStarts[i]);
-      const dataEnd = Number(dataEnds[i]);
-      const compressed = dataFlat.slice(dataStart, dataEnd);
-      const decompressed = inflate(compressed);
-      pixelData = new Int32Array(
-        decompressed.buffer.slice(
-          decompressed.byteOffset,
-          decompressed.byteOffset + decompressed.byteLength
-        )
-      );
-    }
-    const nObj = Number(nObjectsList[i]);
-    const objStart = Number(objectsStarts[i]);
-    const objects = /* @__PURE__ */ new Map();
-    const deferredInstances = /* @__PURE__ */ new Map();
-    for (let j = objStart; j < objStart + nObj; j++) {
-      const labelId = Number(objLabelIds[j]);
-      const trackIdx = Number(objTrackIndices[j]);
-      const track = trackIdx >= 0 && trackIdx < tracks.length ? tracks[trackIdx] : null;
-      const instIdx = Number(objInstanceIndices[j]);
-      let instance = null;
-      if (instances && instIdx >= 0 && instIdx < instances.length) {
-        instance = instances[instIdx];
-      } else if (instIdx >= 0) {
-        deferredInstances.set(labelId, instIdx);
-      }
-      const objScore = objScoreCol.length > j ? Number(objScoreCol[j]) : null;
-      const objTsVal = objTrackingScoreCol.length > j ? Number(objTrackingScoreCol[j]) : null;
-      objects.set(labelId, {
-        track,
-        category: objCategories[j] ?? "",
-        name: objNames[j] ?? "",
-        instance,
-        score: objScore !== null && !Number.isNaN(objScore) ? objScore : null,
-        trackingScore: objTsVal !== null && !Number.isNaN(objTsVal) ? objTsVal : null,
-        _instanceIdx: instIdx >= 0 ? instIdx : -1
-      });
-    }
-    const isPred = isPredictedCol.length > i ? Number(isPredictedCol[i]) === 1 : false;
-    const liScaleX = liScaleXCol.length > i ? Number(liScaleXCol[i]) : 1;
-    const liScaleY = liScaleYCol.length > i ? Number(liScaleYCol[i]) : 1;
-    const liOffsetX = liOffsetXCol.length > i ? Number(liOffsetXCol[i]) : 0;
-    const liOffsetY = liOffsetYCol.length > i ? Number(liOffsetYCol[i]) : 0;
-    const liScale = [liScaleX, liScaleY];
-    const liOffset = [liOffsetX, liOffsetY];
-    let li;
-    if (isPred) {
-      const liScore = liScoreCol.length > i ? Number(liScoreCol[i]) : 0;
-      const sm = liScoreMaps.get(i);
-      li = new PredictedLabelImage({
-        data: pixelData,
-        height,
-        width,
-        objects,
-        source: sources[i] ?? "",
-        score: liScore,
-        scoreMap: sm?.scoreMap ?? null,
-        scale: liScale,
-        offset: liOffset
-      });
-    } else {
-      li = new UserLabelImage({
-        data: pixelData,
-        height,
-        width,
-        objects,
-        source: sources[i] ?? "",
-        scale: liScale,
-        offset: liOffset
-      });
-    }
-    if (deferredInstances.size > 0) {
-      li._objectInstanceIdxs = deferredInstances;
-    }
-    labelImages.push([li, videoIdx, frameIdxVal]);
-  }
-  return labelImages;
 }
 function normalizeStructDataset(dataset, module) {
   if (!dataset) return {};
