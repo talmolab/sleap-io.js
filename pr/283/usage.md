@@ -606,7 +606,8 @@ await saveSlp(labels, "labels.pkg.slp", {
   `imageFormat` doesn't convert them; with `embed`, their frames are embedded
   as new frames in the chosen format.
 - **Without `imageFormat`**, frames are stored as before: new frames as PNG
-  (except encoded frames a backend returns, which are kept as they are), and
+  (except encoded frames a backend returns, which are kept as they are unless
+  they are colour images stored BGR, which become RGB PNGs), and
   already-embedded images copied as they are.
 - **Frame readers** passed to the streaming writer (`frameReader`) must return
   RGB images (encoded bytes or pixels).
@@ -623,7 +624,9 @@ libjpeg does, colour as YCbCr 4:2:0, grayscale as one component, which is what
 OpenCV writes for Python sleap-io (file sizes are close to OpenCV's at the same
 quality). In the streaming writer's worker, PNG compression uses the
 platform's zlib, whose level can't be set: there `imageQuality` 0 stores PNGs
-uncompressed and any other level uses the default.
+uncompressed and any other level uses the default. Decoding a frame to encode
+it again (an image in another format, a BGR colour image, or a conversion)
+uses the browser's decoder, or the optional `skia-canvas` package on Node.
 
 ## Multi-File Loading
 

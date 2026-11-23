@@ -1276,7 +1276,8 @@ Python sleap-io's <code>image_format</code> and <code>image_quality</code>):</p>
   <code>imageFormat</code> doesn't convert them; with <code>embed</code>, their frames are embedded
   as new frames in the chosen format.
 - <strong>Without <code>imageFormat</code></strong>, frames are stored as before: new frames as PNG
-  (except encoded frames a backend returns, which are kept as they are), and
+  (except encoded frames a backend returns, which are kept as they are unless
+  they are colour images stored BGR, which become RGB PNGs), and
   already-embedded images copied as they are.
 - <strong>Frame readers</strong> passed to the streaming writer (<code>frameReader</code>) must return
   RGB images (encoded bytes or pixels).</p>
@@ -1291,7 +1292,9 @@ libjpeg does, colour as YCbCr 4:2:0, grayscale as one component, which is what
 OpenCV writes for Python sleap-io (file sizes are close to OpenCV's at the same
 quality). In the streaming writer's worker, PNG compression uses the
 platform's zlib, whose level can't be set: there <code>imageQuality</code> 0 stores PNGs
-uncompressed and any other level uses the default.</p>
+uncompressed and any other level uses the default. Decoding a frame to encode
+it again (an image in another format, a BGR colour image, or a conversion)
+uses the browser's decoder, or the optional <code>skia-canvas</code> package on Node.</p>
 <h2 id="multi-file-loading">Multi-File Loading<a class="headerlink" href="#multi-file-loading" title="Permanent link">&para;</a></h2>
 <p>Load and save multiple SLP files in parallel:</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlpSet</span><span class="p">,</span><span class="w"> </span><span class="nx">saveSlpSet</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js"</span><span class="p">;</span>

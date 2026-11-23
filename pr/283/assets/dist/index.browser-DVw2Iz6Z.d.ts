@@ -1,4 +1,4 @@
-import { bk as VideoBackend, bz as RangeSource$1, bj as GetFrameOptions, bi as VideoFrame, j as SlpSourceFormat, k as Labels, V as Video, S as Skeleton, T as Track, ay as SuggestionFrame, aH as Identity, aD as RecordingSession, aL as LazyDataStore, l as LabeledFrame, a6 as FsResolver, bq as CropRect, by as Fill, br as FlatPoints, bs as PointPairs, bf as UserLabelImage, i as Format3Access, m as LabelsSet, aP as Geometry, R as ROI, I as Instance, o as SegmentationMask, P as PredictedInstance, n as LabelImage, B as BoundingBox } from './dictionary-jH4sx7_X.js';
+import { bk as VideoBackend, bz as RangeSource$1, bj as GetFrameOptions, bi as VideoFrame, j as SlpSourceFormat, k as Labels, V as Video, S as Skeleton, T as Track, ay as SuggestionFrame, aH as Identity, aD as RecordingSession, aL as LazyDataStore, l as LabeledFrame, a6 as FsResolver, bq as CropRect, by as Fill, br as FlatPoints, bs as PointPairs, bf as UserLabelImage, i as Format3Access, m as LabelsSet, aP as Geometry, R as ROI, I as Instance, o as SegmentationMask, P as PredictedInstance, n as LabelImage, B as BoundingBox } from './dictionary-DdctkZ2o.js';
 import { CustomVideoDecoder, EncodedPacket } from 'mediabunny';
 
 /**
@@ -759,9 +759,11 @@ type SlpWriteOptions = {
      * converted; a grayscale video's frames are stored with one channel.
      * Unlike Python, a conversion keeps all of the video's stored images
      * (Python keeps only the frames `embed` selects), and a save without
-     * `embed` converts too (Python's `embed=False` writes no images). When omitted, frames are stored as before: new
-     * frames as PNG, except encoded bytes a backend returns, which are kept as
-     * they are, and already-embedded images copied as they are.
+     * `embed` converts too (Python's `embed=False` writes no images). When
+     * omitted, frames are stored as before: new frames as PNG, except encoded
+     * bytes a backend returns, which are kept as they are (color bytes stored
+     * BGR are re-encoded as RGB PNGs), and already-embedded images copied as
+     * they are.
      */
     imageFormat?: EmbedImageFormat | "jpeg";
     /**
@@ -2504,23 +2506,13 @@ declare class CropVideoBackend implements VideoBackend {
      * returned as-is. `null` (the default for every shipping backend — encoded
      * blobs / per-frame rows cannot be spatially hyperslabbed) means fall back.
      *
-     * Fallback: decode the inner full frame, normalize it to readable pixels
+     * Fallback: decode the inner full frame, normalize it to readable RGB pixels
      * (rasterizing an opaque `ImageBitmap`, decoding undecoded encoded bytes, or
-     * wrapping raw pixel bytes), then apply {@link cropFrame} with this wrapper's
-     * crop/fill. Returns `null` when the inner returns `null` (no such frame).
+     * wrapping raw pixel bytes, in the inner's `embeddedChannelOrder`), then
+     * apply {@link cropFrame} with this wrapper's crop/fill. Returns `null` when
+     * the inner returns `null` (no such frame).
      */
     getFrame(frameIndex: number, opts?: GetFrameOptions): Promise<VideoFrame | null>;
-    /**
-     * Normalize any {@link VideoFrame} into something {@link cropFrame} can read
-     * pixels from synchronously: an `ImageData` or a {@link RawFrame}.
-     *
-     * - `ImageData`-shaped: returned as-is.
-     * - `ImageBitmap`: rasterized to `ImageData` (OffscreenCanvas / skia-canvas).
-     * - Encoded bytes (PNG/JPEG): decoded to `ImageData`.
-     * - Raw pixel bytes: wrapped as a {@link RawFrame} using the inner shape's
-     *   width/height/channels.
-     */
-    private toReadable;
     /** Inner backend's per-frame presentation times (delegated; a crop is spatial). */
     getFrameTimes(): Promise<number[] | null>;
     /**
