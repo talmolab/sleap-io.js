@@ -4591,6 +4591,65 @@ function crc32(bytes) {
 }
 
 // src/video/image-decode.ts
+function isBgrOrder(channelOrder) {
+  return typeof channelOrder === "string" && channelOrder.toUpperCase() === "BGR";
+}
+function encodedChannelCount(bytes) {
+  const png = bytes.length >= 26 && bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
+  if (png) {
+    const colorType = bytes[25];
+    if (colorType === 0) return 1;
+    if (colorType === 2) return 3;
+    if (colorType === 4) return 2;
+    if (colorType === 6) return 4;
+    if (colorType === 3) return pngHasChunk(bytes, "tRNS") ? 4 : 3;
+    return null;
+  }
+  const jpeg = bytes.length >= 4 && bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
+  if (!jpeg) return null;
+  let i = 2;
+  while (i + 4 <= bytes.length) {
+    if (bytes[i] !== 255) return null;
+    const marker = bytes[i + 1];
+    if (marker === 255) {
+      i += 1;
+      continue;
+    }
+    const length = bytes[i + 2] << 8 | bytes[i + 3];
+    const isSof = marker >= 192 && marker <= 207 && marker !== 196 && marker !== 200 && marker !== 204;
+    if (isSof) return i + 9 < bytes.length ? bytes[i + 9] : null;
+    if (marker === 218 || marker === 217) return null;
+    i += 2 + length;
+  }
+  return null;
+}
+function pngHasChunk(bytes, type) {
+  let i = 8;
+  while (i + 8 <= bytes.length) {
+    const length = (bytes[i] << 24 | bytes[i + 1] << 16 | bytes[i + 2] << 8 | bytes[i + 3]) >>> 0;
+    const name = String.fromCharCode(
+      bytes[i + 4],
+      bytes[i + 5],
+      bytes[i + 6],
+      bytes[i + 7]
+    );
+    if (name === type) return true;
+    if (name === "IDAT" || name === "IEND") return false;
+    i += 12 + length;
+  }
+  return false;
+}
+function needsRedBlueSwap(bytes, channelOrder) {
+  return isBgrOrder(channelOrder) && encodedChannelCount(bytes) === 3;
+}
+function swapRedBlue(data, channels) {
+  if (channels < 3) return;
+  for (let i = 0; i + 2 < data.length; i += channels) {
+    const r = data[i];
+    data[i] = data[i + 2];
+    data[i + 2] = r;
+  }
+}
 async function rasterizeBitmap(bitmap) {
   if (typeof OffscreenCanvas !== "undefined") {
     const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
@@ -4649,7 +4708,7 @@ function isEncodedBytes(bytes) {
   const png = bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
   return jpeg || png;
 }
-async function toReadableFrame(frame, rawShape) {
+async function toReadableFrame(frame, rawShape, channelOrder) {
   if (isImageBitmapLike(frame)) {
     return rasterizeBitmap(frame);
   }
@@ -4658,7 +4717,7 @@ async function toReadableFrame(frame, rawShape) {
   }
   const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
   if (isEncodedBytes(bytes)) {
-    return decodeEncoded(bytes);
+    return decodeEncoded(bytes, channelOrder);
   }
   if (!rawShape) {
     throw new Error(
@@ -4668,7 +4727,12 @@ async function toReadableFrame(frame, rawShape) {
   const [, height, width, channels] = rawShape;
   return { data: bytes, width, height, channels };
 }
-async function decodeEncoded(bytes) {
+async function decodeEncoded(bytes, channelOrder) {
+  const img = await decodeEncodedPixels(bytes);
+  if (needsRedBlueSwap(bytes, channelOrder)) swapRedBlue(img.data, 4);
+  return img;
+}
+async function decodeEncodedPixels(bytes) {
   if (typeof createImageBitmap !== "undefined" && typeof OffscreenCanvas !== "undefined") {
     const safe = new Uint8Array(bytes);
     const bitmap = await createImageBitmap(new Blob([safe.buffer]));
@@ -4689,6 +4753,50 @@ async function decodeEncoded(bytes) {
     );
   }
 }
+function isBrowserWindow() {
+  return typeof window !== "undefined" && typeof document !== "undefined";
+}
+async function decodeEmbeddedImage(bytes, format, channelOrder) {
+  if (!isBrowserWindow() || typeof createImageBitmap === "undefined") {
+    return null;
+  }
+  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
+  const safeBytes = new Uint8Array(bytes);
+  const blob = new Blob([safeBytes.buffer], { type: mime });
+  const bitmap = await createImageBitmap(blob);
+  if (!isBgrOrder(channelOrder)) return bitmap;
+  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
+  const ctx = canvas.getContext("2d");
+  if (!ctx) {
+    throw new Error("Failed to get a 2D context to decode a BGR frame");
+  }
+  ctx.drawImage(bitmap, 0, 0);
+  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
+  swapRedBlue(imageData.data, 4);
+  return imageData;
+}
+function decodeEmbeddedRaw(bytes, shape, channelOrder) {
+  if (!isBrowserWindow() || !shape) return null;
+  const [, height, width, channels] = shape;
+  if (!height || !width || !channels) return null;
+  const expectedLength = height * width * channels;
+  if (bytes.length < expectedLength) return null;
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  const useBgr = isBgrOrder(channelOrder);
+  for (let i = 0; i < width * height; i += 1) {
+    const base = i * channels;
+    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
+    const g = bytes[base + 1] ?? 0;
+    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
+    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
+    const out = i * 4;
+    rgba[out] = r;
+    rgba[out + 1] = g;
+    rgba[out + 2] = b;
+    rgba[out + 3] = a;
+  }
+  return new ImageData(rgba, width, height);
+}
 
 // src/video/crop-backend.ts
 function normFill(fill) {
@@ -4696,23 +4804,6 @@ function normFill(fill) {
     return "[" + fill.map((v) => String(Math.trunc(v))).join(",") + "]";
   }
   return String(Math.trunc(fill));
-}
-function isImageBitmap2(value) {
-  if (typeof ImageBitmap !== "undefined" && value instanceof ImageBitmap) {
-    return true;
-  }
-  const v = value;
-  return v != null && typeof v.width === "number" && typeof v.height === "number" && typeof v.close === "function" && v.data === void 0;
-}
-function isImageDataLike2(value) {
-  const v = value;
-  return v != null && typeof v.width === "number" && typeof v.height === "number" && (v.data instanceof Uint8ClampedArray || v.data instanceof Uint8Array);
-}
-function isEncodedBytes2(bytes) {
-  if (bytes.length < 4) return false;
-  const jpeg = bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255;
-  const png = bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
-  return jpeg || png;
 }
 var CropVideoBackend = class _CropVideoBackend {
   /** Derived from `inner.filename`. */
@@ -4850,10 +4941,11 @@ var CropVideoBackend = class _CropVideoBackend {
    * returned as-is. `null` (the default for every shipping backend — encoded
    * blobs / per-frame rows cannot be spatially hyperslabbed) means fall back.
    *
-   * Fallback: decode the inner full frame, normalize it to readable pixels
+   * Fallback: decode the inner full frame, normalize it to readable RGB pixels
    * (rasterizing an opaque `ImageBitmap`, decoding undecoded encoded bytes, or
-   * wrapping raw pixel bytes), then apply {@link cropFrame} with this wrapper's
-   * crop/fill. Returns `null` when the inner returns `null` (no such frame).
+   * wrapping raw pixel bytes, in the inner's `embeddedChannelOrder`), then
+   * apply {@link cropFrame} with this wrapper's crop/fill. Returns `null` when
+   * the inner returns `null` (no such frame).
    */
   async getFrame(frameIndex, opts) {
     if (typeof this.inner.readCrop === "function") {
@@ -4866,44 +4958,12 @@ var CropVideoBackend = class _CropVideoBackend {
     }
     const src = await this.inner.getFrame(frameIndex, opts);
     if (src == null) return null;
-    const readable = await this.toReadable(src);
+    const readable = await toReadableFrame(
+      src,
+      this.inner.shape,
+      this.inner.embeddedChannelOrder
+    );
     return cropFrame(readable, this.crop, this.fill);
-  }
-  /**
-   * Normalize any {@link VideoFrame} into something {@link cropFrame} can read
-   * pixels from synchronously: an `ImageData` or a {@link RawFrame}.
-   *
-   * - `ImageData`-shaped: returned as-is.
-   * - `ImageBitmap`: rasterized to `ImageData` (OffscreenCanvas / skia-canvas).
-   * - Encoded bytes (PNG/JPEG): decoded to `ImageData`.
-   * - Raw pixel bytes: wrapped as a {@link RawFrame} using the inner shape's
-   *   width/height/channels.
-   */
-  async toReadable(frame) {
-    if (isImageBitmap2(frame)) {
-      return rasterizeBitmap(frame);
-    }
-    if (isImageDataLike2(frame)) {
-      return frame;
-    }
-    const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
-    if (isEncodedBytes2(bytes)) {
-      return decodeEncoded(bytes);
-    }
-    const innerShape = this.inner.shape;
-    if (!innerShape) {
-      throw new Error(
-        "CropVideoBackend.getFrame received raw pixel bytes but the inner backend has no resolved shape to interpret them. Provide a shape on the inner backend, or use a backend that returns decoded frames."
-      );
-    }
-    const [, height, width, channels] = innerShape;
-    const raw = {
-      data: bytes,
-      width,
-      height,
-      channels
-    };
-    return raw;
   }
   /** Inner backend's per-frame presentation times (delegated; a crop is spatial). */
   async getFrameTimes() {
@@ -5066,7 +5126,11 @@ var GrayscaleVideoBackend = class _GrayscaleVideoBackend {
       this.grayscale = await this.resolveAutodetect(frameIndex, opts, src);
     }
     if (!this.grayscale) return src;
-    const readable = await toReadableFrame(src, this.inner.shape);
+    const readable = await toReadableFrame(
+      src,
+      this.inner.shape,
+      this.inner.embeddedChannelOrder
+    );
     return grayscaleFrame(readable);
   }
   /**
@@ -5087,12 +5151,17 @@ var GrayscaleVideoBackend = class _GrayscaleVideoBackend {
       if (fullSrc != null) {
         const fullReadable = await toReadableFrame(
           fullSrc,
-          this.inner.inner.shape
+          this.inner.inner.shape,
+          this.inner.inner.embeddedChannelOrder
         );
         return detectGrayscale(fullReadable);
       }
     }
-    const readable = await toReadableFrame(frameSrc, this.inner.shape);
+    const readable = await toReadableFrame(
+      frameSrc,
+      this.inner.shape,
+      this.inner.embeddedChannelOrder
+    );
     return detectGrayscale(readable);
   }
   /** Release this wrapper's handle by releasing the inner's (always cascades). */
@@ -11645,7 +11714,6 @@ async function readEmbeddedFrameBytes(reader, index) {
 }
 
 // src/video/streaming-hdf5-video.ts
-var isBrowser4 = typeof window !== "undefined" && typeof document !== "undefined";
 var StreamingHdf5VideoBackend = class {
   filename;
   dataset;
@@ -11763,14 +11831,14 @@ var StreamingHdf5VideoBackend = class {
     }
     if (!rawBytes || rawBytes.length === 0) return null;
     if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes(
+      const decoded = await decodeEmbeddedImage(
         rawBytes,
         this.format,
         this.channelOrder
       );
       return decoded ?? rawBytes;
     }
-    const image = decodeRawFrame(rawBytes, this.shape, this.channelOrder);
+    const image = decodeEmbeddedRaw(rawBytes, this.shape, this.channelOrder);
     return image ?? rawBytes;
   }
   get embeddedFormat() {
@@ -11796,7 +11864,7 @@ var StreamingHdf5VideoBackend = class {
       const rawBytes = await readEmbeddedFrameBytes(this.buildReader(), 0);
       if (!rawBytes || rawBytes.length === 0) return;
       if (isEncodedFormat(this.format)) {
-        const decoded = await decodeImageBytes(
+        const decoded = await decodeEmbeddedImage(
           rawBytes,
           this.format,
           this.channelOrder
@@ -11882,52 +11950,6 @@ function attrToNum(attr) {
   const v = typeof attr === "object" && attr !== null && "value" in attr ? attr.value : attr;
   const n = Number(Array.isArray(v) ? v[0] : v);
   return Number.isFinite(n) && n > 0 ? n : void 0;
-}
-async function decodeImageBytes(bytes, format, channelOrder) {
-  if (!isBrowser4 || typeof createImageBitmap === "undefined") return null;
-  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
-  const safeBytes = new Uint8Array(bytes);
-  const blob = new Blob([safeBytes.buffer], { type: mime });
-  const bitmap = await createImageBitmap(blob);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  if (!useBgr) {
-    return bitmap;
-  }
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return bitmap;
-  ctx.drawImage(bitmap, 0, 0);
-  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const b = data[i + 2];
-    data[i] = b;
-    data[i + 2] = r;
-  }
-  return imageData;
-}
-function decodeRawFrame(bytes, shape, channelOrder) {
-  if (!isBrowser4 || !shape) return null;
-  const [, height, width, channels] = shape;
-  if (!height || !width || !channels) return null;
-  const expectedLength = height * width * channels;
-  if (bytes.length < expectedLength) return null;
-  const rgba = new Uint8ClampedArray(width * height * 4);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  for (let i = 0; i < width * height; i += 1) {
-    const base = i * channels;
-    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
-    const g = bytes[base + 1] ?? 0;
-    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
-    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
-    const out = i * 4;
-    rgba[out] = r;
-    rgba[out + 1] = g;
-    rgba[out + 2] = b;
-    rgba[out + 3] = a;
-  }
-  return new ImageData(rgba, width, height);
 }
 
 // src/video/image-source.ts
@@ -15549,7 +15571,6 @@ function ensureH5StagingDir(module) {
 }
 
 // src/video/hdf5-video.ts
-var isBrowser5 = typeof window !== "undefined" && typeof document !== "undefined";
 var Hdf5VideoBackend = class {
   filename;
   dataset;
@@ -15592,14 +15613,14 @@ var Hdf5VideoBackend = class {
     );
     if (!rawBytes || rawBytes.length === 0) return null;
     if (isEncodedFormat(this.format)) {
-      const decoded = await decodeImageBytes2(
+      const decoded = await decodeEmbeddedImage(
         rawBytes,
         this.format,
         this.channelOrder
       );
       return decoded ?? rawBytes;
     }
-    const image = decodeRawFrame2(rawBytes, this.shape, this.channelOrder);
+    const image = decodeEmbeddedRaw(rawBytes, this.shape, this.channelOrder);
     return image ?? rawBytes;
   }
   get embeddedFormat() {
@@ -15659,52 +15680,6 @@ var Hdf5VideoBackend = class {
     this.legacy.offsets = null;
   }
 };
-async function decodeImageBytes2(bytes, format, channelOrder) {
-  if (!isBrowser5 || typeof createImageBitmap === "undefined") return null;
-  const mime = format.toLowerCase() === "png" ? "image/png" : "image/jpeg";
-  const safeBytes = new Uint8Array(bytes);
-  const blob = new Blob([safeBytes.buffer], { type: mime });
-  const bitmap = await createImageBitmap(blob);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  if (!useBgr) {
-    return bitmap;
-  }
-  const canvas = new OffscreenCanvas(bitmap.width, bitmap.height);
-  const ctx = canvas.getContext("2d");
-  if (!ctx) return bitmap;
-  ctx.drawImage(bitmap, 0, 0);
-  const imageData = ctx.getImageData(0, 0, bitmap.width, bitmap.height);
-  const data = imageData.data;
-  for (let i = 0; i < data.length; i += 4) {
-    const r = data[i];
-    const b = data[i + 2];
-    data[i] = b;
-    data[i + 2] = r;
-  }
-  return imageData;
-}
-function decodeRawFrame2(bytes, shape, channelOrder) {
-  if (!isBrowser5 || !shape) return null;
-  const [, height, width, channels] = shape;
-  if (!height || !width || !channels) return null;
-  const expectedLength = height * width * channels;
-  if (bytes.length < expectedLength) return null;
-  const rgba = new Uint8ClampedArray(width * height * 4);
-  const useBgr = channelOrder.toUpperCase() === "BGR";
-  for (let i = 0; i < width * height; i += 1) {
-    const base = i * channels;
-    const r = bytes[base + (useBgr ? 2 : 0)] ?? 0;
-    const g = bytes[base + 1] ?? 0;
-    const b = bytes[base + (useBgr ? 0 : 2)] ?? 0;
-    const a = channels === 4 ? bytes[base + 3] ?? 255 : 255;
-    const out = i * 4;
-    rgba[out] = r;
-    rgba[out + 1] = g;
-    rgba[out + 2] = b;
-    rgba[out + 3] = a;
-  }
-  return new ImageData(rgba, width, height);
-}
 
 // src/video/factory.ts
 var MEDIABUNNY_EXTENSIONS = ["webm", "mkv", "ogg", "mov", "ts"];
@@ -20747,6 +20722,13 @@ async function collectEncodedFrames(video, sortedFrames, progress) {
       continue;
     }
     let bytes = frameToBytes(frame);
+    const channelOrder = video.backend?.embeddedChannelOrder;
+    if (bytes && needsRedBlueSwap(bytes, channelOrder)) {
+      bytes = await encodeImageDataToPng(
+        await decodeEncoded(bytes, channelOrder)
+      );
+      encodedToPng = true;
+    }
     if (!bytes) {
       if (isImageBitmapLike(frame)) {
         bytes = await encodeBitmapToPng(frame);
@@ -23373,7 +23355,7 @@ async function frameSource(backend, firstFrame) {
 function isPng(bytes) {
   return bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
 }
-async function toEncodeFramePayload(frame, rawShape) {
+async function toEncodeFramePayload(frame, rawShape, channelOrder) {
   if (isImageBitmapLike(frame)) {
     return {
       kind: "bitmap",
@@ -23393,8 +23375,9 @@ async function toEncodeFramePayload(frame, rawShape) {
   }
   const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
   if (isEncodedBytes(bytes)) {
-    if (isPng(bytes)) return { kind: "png", bytes: bytes.slice() };
-    const img = await decodeEncoded(bytes);
+    const swap = needsRedBlueSwap(bytes, channelOrder);
+    if (isPng(bytes) && !swap) return { kind: "png", bytes: bytes.slice() };
+    const img = await decodeEncoded(bytes, channelOrder);
     return {
       kind: "pixels",
       data: new Uint8Array(img.data),
@@ -23476,7 +23459,11 @@ async function appendEncodedVideos(sink, labels, entries, options = {}) {
       }
       const pending = sink.appendEncodedFrame(
         frameIdx,
-        await toEncodeFramePayload(frame, source?.shape)
+        await toEncodeFramePayload(
+          frame,
+          source?.shape,
+          source?.embeddedChannelOrder
+        )
       );
       pending.catch(() => {
       });
