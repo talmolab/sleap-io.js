@@ -4,10 +4,11 @@
  * `image_quality`: option checks, and turning one frame into the bytes stored
  * for it.
  *
- * With an explicit format, a frame already encoded in that format with RGB
- * channels is stored verbatim (image files, or encoded bytes a backend
- * returns); everything else is decoded and encoded in the format. Without
- * one, the writers keep the format they always used (see `planEmbedding`).
+ * With an explicit format, a frame already encoded in that format that needs
+ * no red/blue swap is stored verbatim (image files, or encoded bytes a backend
+ * returns); everything else is decoded to RGB and encoded in the format.
+ * Without one, the writers keep the format they always used (see
+ * `planEmbedding`).
  *
  * @module
  */
@@ -99,15 +100,6 @@ export function sniffImageFormat(bytes: Uint8Array): EmbedImageFormat | null {
   return bytes[0] === 0xff ? "jpg" : "png";
 }
 
-/**
- * Channels an encoded PNG or JPEG decodes to, from its header (no decode):
- * the PNG colour type, or the JPEG frame header's component count. Null when
- * the header can't be read. The shared decoder's `encodedChannelCount`.
- */
-export function encodedImageChannels(bytes: Uint8Array): number | null {
-  return encodedChannelCount(bytes);
-}
-
 /** How one video's frames are stored when a format was chosen. */
 export interface EmbedEncoding {
   format: EmbedImageFormat;
@@ -148,7 +140,7 @@ export async function imageFileBytes(
   if (sniffImageFormat(bytes) !== encoding.format) return null;
   if (
     (encoding.gray || forcesGray(backend)) &&
-    encodedImageChannels(bytes) !== 1
+    encodedChannelCount(bytes) !== 1
   ) {
     return null;
   }
@@ -168,7 +160,7 @@ export function verbatimEncodedBytes(
 ): Uint8Array | null {
   if (sniffImageFormat(bytes) !== encoding.format) return null;
   if (needsRedBlueSwap(bytes, channelOrder)) return null;
-  if (encoding.gray && encodedImageChannels(bytes) !== 1) return null;
+  if (encoding.gray && encodedChannelCount(bytes) !== 1) return null;
   return bytes;
 }
 
@@ -236,7 +228,8 @@ export async function encodePixels(
  * The bytes to store for one frame when a format was chosen: verbatim when
  * the frame is encoded bytes already in that format (see
  * {@link verbatimEncodedBytes}), else its pixels encoded in the format.
- * Encoded bytes in BGR order are decoded and swapped to RGB first.
+ * Encoded 3-channel colour bytes stored BGR are swapped to RGB as they are
+ * decoded (`decodeEncoded`); gray and alpha images are not swapped.
  *
  * @param rawShape - The producing backend's `[frames, height, width,
  *   channels]`, to read raw pixel bytes by.

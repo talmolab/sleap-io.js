@@ -146,8 +146,8 @@ export type SlpWriteOptions = {
    * `"jpg"` (lossy, smaller and faster to decode; `"jpeg"` is accepted and
    * stored as `"jpg"`), as Python sleap-io's `image_format`. With a format,
    * frames already encoded in it (image files, encoded bytes a backend
-   * returns in RGB channel order, or an already-embedded video's stored
-   * images) are stored verbatim and every other frame is decoded and encoded
+   * returns that need no red/blue swap, or an already-embedded video's
+   * stored images) are stored verbatim and every other frame is decoded and encoded
    * in it, so an already-embedded video stored in another format is
    * converted; a grayscale video's frames are stored with one channel.
    * Unlike Python, a conversion keeps all of the video's stored images

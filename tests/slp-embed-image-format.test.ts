@@ -24,10 +24,7 @@ import {
   saveSlpToBytes,
   type SerializableEncodeEntry,
 } from "../src/codecs/slp/write.js";
-import {
-  checkEmbedImageFormat,
-  encodedImageChannels,
-} from "../src/codecs/slp/embed-format.js";
+import { checkEmbedImageFormat } from "../src/codecs/slp/embed-format.js";
 import {
   appendEncodedVideos,
   type EncodeFramePayload,
@@ -36,7 +33,10 @@ import {
 import { EMBED_ENCODE_WORKER_CODE } from "../src/codecs/slp/embed-encode-worker.js";
 import { saveSlp, saveSlpSet } from "../src/io/main.js";
 import { encodeGrayJpeg, encodeJpegPixels } from "../src/video/jpeg-encode.js";
-import { decodeEncoded } from "../src/video/image-decode.js";
+import {
+  decodeEncoded,
+  encodedChannelCount,
+} from "../src/video/image-decode.js";
 import { ImageVideoBackend } from "../src/video/image-video.js";
 import { GrayscaleVideoBackend } from "../src/video/grayscale-backend.js";
 import { Labels } from "../src/model/labels.js";
@@ -142,10 +142,11 @@ async function colourJpeg(idx: number, bgr = false): Promise<Uint8Array> {
 function bytesBackend(
   frames: Uint8Array[],
   channelOrder: string,
+  channels = 3,
 ): VideoBackend {
   return {
     filename: "frames.bin",
-    shape: [frames.length, H, W, 3],
+    shape: [frames.length, H, W, channels],
     fps: 30,
     embeddedChannelOrder: channelOrder,
     async getFrame(idx: number): Promise<VideoFrame | null> {
@@ -523,7 +524,7 @@ describe("JPEG encoder", () => {
     const jpg = encodeGrayJpeg(px, W, H, 95);
     expect(isJpeg(jpg)).toBe(true);
     expect(jpegLayout(jpg)).toEqual({ comps: 1, sampling: [0x11] });
-    expect(encodedImageChannels(jpg)).toBe(1);
+    expect(encodedChannelCount(jpg)).toBe(1);
     const d = diff(await pixelsOf(jpg, 1), Array.from(px));
     expect(d.max).toBeLessThanOrEqual(4);
     // Quality 100 is near lossless; quality 0 is coarser and smaller.
@@ -707,7 +708,7 @@ describe("new embeds in each format (in memory and streamed)", () => {
           for (const [i, row] of v.rows.entries()) {
             expect(isJpeg(row)).toBe(true);
             // A grayscale video stores one-component JPEGs, as Python.
-            expect(encodedImageChannels(row)).toBe(channels);
+            expect(encodedChannelCount(row)).toBe(channels);
             const d = diff(
               await pixelsOf(row, channels),
               expected(frames[i], channels),
@@ -873,8 +874,64 @@ describe("frames already encoded", () => {
       ),
     );
     expect(v.channels).toBe(1);
-    expect(encodedImageChannels(v.rows[0])).toBe(1);
+    expect(encodedChannelCount(v.rows[0])).toBe(1);
     expect([...v.rows[0]]).not.toEqual([...fs.readFileSync(files[0])]);
+  });
+
+  it("encoded bytes stored BGR: colour is swapped, gray and alpha are kept (3-channel rule)", async () => {
+    // PNG bytes of frame i with `ch` channels, stored in BGR order: a colour
+    // image has R and B swapped; gray and alpha images are stored as read.
+    const bgrPng = (i: number, ch: number) => {
+      const rgba = rgbaFrame(i);
+      const px = new Uint8Array(W * H * ch);
+      for (let p = 0; p < W * H; p++) {
+        const rgb = [rgba[p * 4], rgba[p * 4 + 1], rgba[p * 4 + 2]];
+        const stored =
+          ch === 1
+            ? [rgb[0]]
+            : ch === 2
+              ? [rgb[0], 200]
+              : ch === 3
+                ? [rgb[2], rgb[1], rgb[0]]
+                : [rgb[0], rgb[1], rgb[2], 200];
+        px.set(stored, p * ch);
+      }
+      return encodePngPixels(px, W, H, ch);
+    };
+    for (const ch of [1, 2, 3, 4]) {
+      const frames = [0, 1].map((i) => bgrPng(i, ch));
+      const labels = () =>
+        labelsOn(
+          [
+            new Video({
+              filename: "frames.bin",
+              backend: bytesBackend(frames, "BGR", ch),
+            }),
+          ],
+          [[0, 1]],
+        );
+      const [mem] = await embeddedVideos(
+        writeTmp(
+          await saveSlpToBytes(labels(), { embed: "user", imageFormat: "png" }),
+        ),
+      );
+      const [streamed] = await embeddedVideos(
+        await streamSave(labels(), { imageFormat: "png" }),
+      );
+      for (const v of [mem, streamed]) {
+        expect([v.format, v.channel_order]).toEqual(["png", "RGB"]);
+        if (ch === 3) {
+          // Colour: decoded, swapped to RGB and encoded again.
+          expect([...v.rows[0]]).not.toEqual([...frames[0]]);
+          for (const [i, row] of v.rows.entries()) {
+            expect([...readPng(row).pixels]).toEqual(expected(i, 3));
+          }
+        } else {
+          // Gray, gray + alpha, RGBA: the order doesn't apply; kept verbatim.
+          expect(v.rows.map((r) => [...r])).toEqual(frames.map((f) => [...f]));
+        }
+      }
+    }
   });
 
   it("encoded RGB bytes in the format are kept; BGR bytes are swapped and re-encoded", async () => {
@@ -1022,6 +1079,42 @@ const fixture = (name: string) =>
   path.join(fileURLToPath(new URL("./data/slp", import.meta.url)), name);
 
 describe("already-embedded videos with imageFormat (as Python)", () => {
+  it("a BGR JPEG package converted to PNG is stored RGB, as read, on both paths", async () => {
+    const load = () =>
+      readSlp(fixture("channel_order_bgr_jpg.pkg.slp"), { openVideos: true });
+    const source = await load();
+    const video = source.videos[0];
+    expect(video.backend!.embeddedChannelOrder).toBe("BGR");
+    const fns = video.embeddedFrameIndices!;
+    // The JS read of the source: decoded with its stored order, so RGB.
+    const want = await Promise.all(
+      fns.map(async (f) => {
+        const img = await decodeEncoded(
+          (await video.getFrameBuffer(f))!,
+          "BGR",
+        );
+        return framePixels3(img.data);
+      }),
+    );
+    const [mem] = await embeddedVideos(
+      writeTmp(await saveSlpToBytes(source, { imageFormat: "png" })),
+    );
+    const [streamed] = await embeddedVideos(
+      await streamSave(await load(), { imageFormat: "png" }),
+    );
+    for (const v of [mem, streamed]) {
+      expect([v.format, v.channel_order, v.channels]).toEqual([
+        "png",
+        "RGB",
+        3,
+      ]);
+      expect(v.frameNumbers).toEqual(fns);
+      for (const [i, row] of v.rows.entries()) {
+        expect([...readPng(row).pixels]).toEqual([...want[i]]);
+      }
+    }
+  });
+
   it("are copied as they are without imageFormat, or in the same format", async () => {
     const pkg = await colourPackage();
     const [original] = await embeddedVideos(pkg);
@@ -1107,7 +1200,7 @@ describe("already-embedded videos with imageFormat (as Python)", () => {
           ]);
           expect(v.frameNumbers).toEqual([0, 3, 5]);
           for (const [i, row] of v.rows.entries()) {
-            expect(encodedImageChannels(row)).toBe(1);
+            expect(encodedChannelCount(row)).toBe(1);
             // Channel 0 of the RGB image is R, whatever the stored order.
             const d = diff(
               await pixelsOf(row, 1),
@@ -1151,7 +1244,7 @@ describe("already-embedded videos with imageFormat (as Python)", () => {
     const [v] = await embeddedVideos(file);
     expect([v.format, v.channel_order, v.channels]).toEqual(["jpg", "RGB", 1]);
     expect(v.frameNumbers).toEqual([frame]);
-    expect(encodedImageChannels(v.rows[0])).toBe(1);
+    expect(encodedChannelCount(v.rows[0])).toBe(1);
     const d = diff(await pixelsOf(v.rows[0], 1), [...png.pixels]);
     expect(d.max).toBeLessThanOrEqual(12);
     expect(d.mean).toBeLessThan(2);
