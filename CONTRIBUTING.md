@@ -102,7 +102,8 @@ accepts (for example `sleap-io==0.9.5`, or
 `sleap-io`, the latest release. CI pins it per job, and each file logs the
 sleap-io version it ran against. Two overrides name an interpreter directly:
 `SLEAP_IO_PY` for the crop check, and `SLEAP_IO_TEST_PYTHONS` (comma-separated)
-for the format 3.0 read-backs, which `SLEAP_IO_SKIP_PYTHON_TESTS=1` skips.
+for the format 3.0 and embedded image-format read-backs, which
+`SLEAP_IO_SKIP_PYTHON_TESTS=1` skips.
 
 ### Known harmless noise
 
