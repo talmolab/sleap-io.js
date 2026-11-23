@@ -431,7 +431,11 @@ without a warning.
 Every 3.0 file asks, even one that holds nothing the 2.x layout cannot store,
 because saving it rewrites it in another layout. The error's `summary` (also
 returned as `format3` by the lite `loadSlpMetadata`, so an application can ask
-before a full read) says what an edit would drop:
+before a full read) says what an edit would drop. Besides unlabelled points,
+metadata and unknown columns, that is anything in the file this version does
+not read at all, in `unreadTables`: for example the frame-spanning events
+(`events`, `event_types`), the metadata of categories (`categories/meta_*`), or
+a table added by a newer writer:
 
 ```ts
 import { loadSlp, SlpFormat3ChoiceError } from "@talmolab/sleap-io.js";
@@ -441,7 +445,8 @@ try {
   labels = await loadSlp("dataset.slp");
 } catch (e) {
   if (!(e instanceof SlpFormat3ChoiceError)) throw e;
-  // e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns, lossless }
+  // e.summary: { formatId, unlabeledPoints, metadataKeys, unknownColumns,
+  //              unreadTables, lossless }
   const edit = e.summary.lossless || confirm(e.message);
   labels = await loadSlp("dataset.slp", { format3: edit ? "edit" : "view" });
 }
@@ -601,7 +606,8 @@ await saveSlp(labels, "labels.pkg.slp", {
   `imageFormat` doesn't convert them; with `embed`, their frames are embedded
   as new frames in the chosen format.
 - **Without `imageFormat`**, frames are stored as before: new frames as PNG
-  (except encoded frames a backend returns, which are kept as they are), and
+  (except encoded frames a backend returns, which are kept as they are unless
+  they are colour images stored BGR, which become RGB PNGs), and
   already-embedded images copied as they are.
 - **Frame readers** passed to the streaming writer (`frameReader`) must return
   RGB images (encoded bytes or pixels).
@@ -618,7 +624,9 @@ libjpeg does, colour as YCbCr 4:2:0, grayscale as one component, which is what
 OpenCV writes for Python sleap-io (file sizes are close to OpenCV's at the same
 quality). In the streaming writer's worker, PNG compression uses the
 platform's zlib, whose level can't be set: there `imageQuality` 0 stores PNGs
-uncompressed and any other level uses the default.
+uncompressed and any other level uses the default. Decoding a frame to encode
+it again (an image in another format, a BGR colour image, or a conversion)
+uses the browser's decoder, or the optional `skia-canvas` package on Node.
 
 ## Multi-File Loading
 

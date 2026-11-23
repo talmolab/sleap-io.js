@@ -23,6 +23,7 @@ import {
   isEncodedBytes,
   isImageBitmapLike,
   isImageDataLike,
+  needsRedBlueSwap,
 } from "../../video/image-decode.js";
 import {
   framePixels,
@@ -139,18 +140,23 @@ function isPng(bytes: Uint8Array): boolean {
 }
 
 /**
- * Turn a decoded frame into a payload the worker owns (copied/cloned).
+ * Turn a decoded frame into a payload the worker owns (copied/cloned), in RGB
+ * channel order (the order the new embed records). `channelOrder` is the
+ * source's stored order (`VideoBackend.embeddedChannelOrder`); it applies only
+ * to undecoded 3-channel PNG/JPEG bytes, which are swapped to RGB when it is
+ * "BGR" (raw pixel bytes are passed on as stored, as Python reads them).
  *
- * Without `target`, PNG bytes are passed on as they are and anything else as
- * pixels for a PNG. With `target` (a video whose format was chosen with
- * `imageFormat`), encoded bytes already in its format and in RGB order
- * (`channelOrder`) are passed on as they are; other encoded bytes are decoded
- * (and BGR swapped to RGB) for the worker to encode.
+ * Without `encoding`, RGB PNG bytes are passed on as they are and anything
+ * else as pixels for a PNG. With `encoding` (a video whose format was chosen
+ * with `imageFormat`), encoded bytes already in its format and needing no
+ * swap are passed on as they are; other encoded bytes are decoded to RGB
+ * pixels for the worker to encode.
  */
 export async function toEncodeFramePayload(
   frame: VideoFrame,
   rawShape?: [number, number, number, number],
-  target?: { encoding: EmbedEncoding; channelOrder?: string },
+  channelOrder?: string,
+  encoding?: EmbedEncoding,
 ): Promise<EncodeFramePayload> {
   if (isImageBitmapLike(frame)) {
     // The backend may cache this bitmap and draw it again, so hand over a copy.
@@ -179,13 +185,10 @@ export async function toEncodeFramePayload(
     frame instanceof ArrayBuffer
       ? new Uint8Array(frame)
       : (frame as unknown as Uint8Array);
-  if (isEncodedBytes(bytes) && target) {
-    const { encoding, channelOrder } = target;
+  if (isEncodedBytes(bytes) && encoding) {
     const verbatim = verbatimEncodedBytes(bytes, channelOrder, encoding);
     if (verbatim) return { kind: encoding.format, bytes: verbatim.slice() };
-    const px = framePixels(await decodeEncoded(bytes), {
-      swapRB: (channelOrder ?? "RGB").toUpperCase() === "BGR",
-    });
+    const px = framePixels(await decodeEncoded(bytes, channelOrder));
     return {
       kind: "pixels",
       data: px.data,
@@ -196,9 +199,11 @@ export async function toEncodeFramePayload(
     };
   }
   if (isEncodedBytes(bytes)) {
-    if (isPng(bytes)) return { kind: "png", bytes: bytes.slice() };
-    // Stored as PNG like every other frame, so re-encode (e.g. a JPEG).
-    const img = await decodeEncoded(bytes);
+    const swap = needsRedBlueSwap(bytes, channelOrder);
+    if (isPng(bytes) && !swap) return { kind: "png", bytes: bytes.slice() };
+    // Stored as an RGB PNG like every other frame, so re-encode (e.g. a JPEG,
+    // or a BGR color PNG).
+    const img = await decodeEncoded(bytes, channelOrder);
     return {
       kind: "pixels",
       data: new Uint8Array(img.data),
@@ -354,9 +359,8 @@ export async function appendEncodedVideos(
         await toEncodeFramePayload(
           frame,
           source?.shape,
-          encoding
-            ? { encoding, channelOrder: source?.embeddedChannelOrder }
-            : undefined,
+          source?.embeddedChannelOrder,
+          encoding ?? undefined,
         ),
       );
       // Awaited in order below; this only keeps a failure that lands while an

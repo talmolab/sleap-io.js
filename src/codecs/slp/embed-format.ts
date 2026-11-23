@@ -18,7 +18,9 @@ import { encodePngPixels } from "../../video/png-encode.js";
 import { encodeJpegPixels } from "../../video/jpeg-encode.js";
 import {
   decodeEncoded,
+  encodedChannelCount,
   isEncodedBytes,
+  needsRedBlueSwap,
   toReadableFrame,
 } from "../../video/image-decode.js";
 import type { RawFrame } from "../../transform/frame.js";
@@ -100,44 +102,10 @@ export function sniffImageFormat(bytes: Uint8Array): EmbedImageFormat | null {
 /**
  * Channels an encoded PNG or JPEG decodes to, from its header (no decode):
  * the PNG colour type, or the JPEG frame header's component count. Null when
- * the header can't be read.
+ * the header can't be read. The shared decoder's `encodedChannelCount`.
  */
 export function encodedImageChannels(bytes: Uint8Array): number | null {
-  const format = sniffImageFormat(bytes);
-  if (format === "png") {
-    if (bytes.length < 26) return null;
-    return (
-      ({ 0: 1, 2: 3, 3: 3, 4: 2, 6: 4 } as Record<number, number>)[bytes[25]] ??
-      null
-    );
-  }
-  if (format === "jpg") {
-    let i = 2;
-    while (i + 9 < bytes.length) {
-      if (bytes[i] !== 0xff) return null;
-      const marker = bytes[i + 1];
-      if (marker === 0xff) {
-        i++;
-        continue;
-      }
-      // SOF0-SOF15, except DHT (C4), JPG (C8) and DAC (CC).
-      if (
-        marker >= 0xc0 &&
-        marker <= 0xcf &&
-        marker !== 0xc4 &&
-        marker !== 0xc8 &&
-        marker !== 0xcc
-      ) {
-        return bytes[i + 9];
-      }
-      if (marker === 0xd8 || (marker >= 0xd0 && marker <= 0xd7)) {
-        i += 2;
-        continue;
-      }
-      i += 2 + ((bytes[i + 2] << 8) | bytes[i + 3]);
-    }
-  }
-  return null;
+  return encodedChannelCount(bytes);
 }
 
 /** How one video's frames are stored when a format was chosen. */
@@ -189,8 +157,9 @@ export async function imageFileBytes(
 
 /**
  * Encoded bytes a backend returned that can be stored verbatim: already in
- * the chosen format, RGB channel order, and one channel for a grayscale
- * video. Null when they must be decoded and encoded.
+ * the chosen format, needing no red/blue swap (`needsRedBlueSwap`: RGB, or a
+ * BGR image without 3 colour channels, as Python reads it), and one channel
+ * for a grayscale video. Null when they must be decoded and encoded.
  */
 export function verbatimEncodedBytes(
   bytes: Uint8Array,
@@ -198,7 +167,7 @@ export function verbatimEncodedBytes(
   encoding: EmbedEncoding,
 ): Uint8Array | null {
   if (sniffImageFormat(bytes) !== encoding.format) return null;
-  if ((channelOrder ?? "RGB").toUpperCase() !== "RGB") return null;
+  if (needsRedBlueSwap(bytes, channelOrder)) return null;
   if (encoding.gray && encodedImageChannels(bytes) !== 1) return null;
   return bytes;
 }
@@ -217,12 +186,13 @@ export function frameBytes(frame: unknown): Uint8Array | null {
 /**
  * Readable pixels of a frame, ready to encode: interleaved bytes with an
  * explicit channel count. RGBA (an `ImageData`, or decoded image bytes) loses
- * its alpha; `gray` keeps the first channel only (as a grayscale read);
- * `swapRB` turns BGR pixels into RGB.
+ * its alpha; `gray` keeps the first channel only (as a grayscale read).
+ * Pixels must already be RGB: the shared decoder (`decodeEncoded`,
+ * `toReadableFrame`) applies the stored channel order.
  */
 export function framePixels(
   img: ImageData | RawFrame,
-  { gray = false, swapRB = false }: { gray?: boolean; swapRB?: boolean } = {},
+  { gray = false }: { gray?: boolean } = {},
 ): { data: Uint8Array; width: number; height: number; channels: number } {
   const { width, height } = img;
   const n = width * height;
@@ -231,10 +201,7 @@ export function framePixels(
   const channels = explicit ?? (src.length === n * 4 ? 4 : src.length / n);
   const rgba = explicit === undefined && channels === 4;
   const outCh = gray ? 1 : rgba ? 3 : channels;
-  // BGR pixels are swapped before a grayscale collapse, so a grayscale read
-  // keeps R (the first channel of the RGB image), as Python reads it.
-  const swap = swapRB && channels >= 3;
-  if (outCh === channels && !swap) {
+  if (outCh === channels) {
     return {
       data:
         src instanceof Uint8Array
@@ -248,10 +215,6 @@ export function framePixels(
   const out = new Uint8Array(n * outCh);
   for (let p = 0, i = 0, o = 0; p < n; p++, i += channels, o += outCh) {
     for (let c = 0; c < outCh; c++) out[o + c] = src[i + c];
-    if (swap) {
-      out[o] = src[i + 2];
-      if (outCh >= 3) out[o + 2] = src[i];
-    }
   }
   return { data: out, width, height, channels: outCh };
 }
@@ -293,15 +256,17 @@ export async function encodeFrameAs(
   if (bytes && isEncodedBytes(bytes)) {
     const verbatim = verbatimEncodedBytes(bytes, channelOrder, encoding);
     if (verbatim) return verbatim;
-    const decoded = await decodeEncoded(bytes);
-    const swapRB = (channelOrder ?? "RGB").toUpperCase() === "BGR";
+    // Decoded to RGB (a BGR colour image is swapped before any grayscale
+    // collapse, so a grayscale read keeps R, as Python reads it).
     return encodePixels(
-      framePixels(decoded, { gray: encoding.gray, swapRB }),
+      framePixels(await decodeEncoded(bytes, channelOrder), {
+        gray: encoding.gray,
+      }),
       encoding.format,
       encoding.quality,
     );
   }
-  const readable = await toReadableFrame(frame, rawShape);
+  const readable = await toReadableFrame(frame, rawShape, channelOrder);
   return encodePixels(
     framePixels(readable, { gray: encoding.gray }),
     encoding.format,

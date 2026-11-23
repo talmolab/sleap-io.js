@@ -41,6 +41,8 @@ import {
 import {
   buildFormat3Summary,
   type Format3Summary,
+  PARTLY_READ_GROUPS,
+  unreadMembers,
 } from "./codecs/slp/format3.js";
 import {
   checkSlpFormat,
@@ -173,6 +175,7 @@ function isMetadataDtype(dtype: unknown): boolean {
 function format3SummaryJsfive(
   file: ReturnType<typeof openJsfiveFile>,
   formatId: number,
+  provenanceInMetadata: boolean,
 ): Format3Summary {
   const members = (path: string): string[] => {
     const node = file.get(path);
@@ -213,6 +216,16 @@ function format3SummaryJsfive(
   ];
   return buildFormat3Summary({
     formatId,
+    unreadTables: unreadMembers({
+      root: file.keys,
+      groups: Object.fromEntries(
+        PARTLY_READ_GROUPS.filter((g) => isGroup(file.get(g))).map((g) => [
+          g,
+          members(g),
+        ]),
+      ),
+      provenanceInMetadata,
+    }),
     unlabeledUserPoints: unlabeled("points"),
     unlabeledPredictedPoints: unlabeled("pred_points"),
     metadataKeys: {
@@ -478,7 +491,13 @@ export async function loadSlpMetadata(
         | Record<string, unknown>
         | undefined,
       ...(formatId >= 3.0
-        ? { format3: format3SummaryJsfive(file, formatId) }
+        ? {
+            format3: format3SummaryJsfive(
+              file,
+              formatId,
+              "provenance" in metadataJson,
+            ),
+          }
         : {}),
     };
   } finally {

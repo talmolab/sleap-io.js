@@ -223,7 +223,11 @@ export class GrayscaleVideoBackend implements VideoBackend {
       this.grayscale = await this.resolveAutodetect(frameIndex, opts, src);
     }
     if (!this.grayscale) return src;
-    const readable = await toReadableFrame(src, this.inner.shape);
+    const readable = await toReadableFrame(
+      src,
+      this.inner.shape,
+      this.inner.embeddedChannelOrder,
+    );
     return grayscaleFrame(readable) as unknown as VideoFrame;
   }
 
@@ -250,11 +254,16 @@ export class GrayscaleVideoBackend implements VideoBackend {
         const fullReadable = await toReadableFrame(
           fullSrc,
           this.inner.inner.shape,
+          this.inner.inner.embeddedChannelOrder,
         );
         return detectGrayscale(fullReadable);
       }
     }
-    const readable = await toReadableFrame(frameSrc, this.inner.shape);
+    const readable = await toReadableFrame(
+      frameSrc,
+      this.inner.shape,
+      this.inner.embeddedChannelOrder,
+    );
     return detectGrayscale(readable);
   }
 

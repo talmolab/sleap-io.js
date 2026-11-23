@@ -32,7 +32,9 @@ import {
   isFormat3,
   metadataColumn,
   metadataKindFromH5,
+  PARTLY_READ_GROUPS,
   type SlpSourceFormat,
+  unreadMembers,
 } from "./format3.js";
 import {
   type MetadataColumns,
@@ -697,6 +699,7 @@ export async function readFromStreamingFile(
     predPointFlags,
     nVideos: videos.length,
     choice: format3Choice,
+    provenanceInMetadata: !!metadataJson && "provenance" in metadataJson,
   });
   checkPointSpans({
     framesData,
@@ -2150,6 +2153,8 @@ async function readFormat3Streaming(
     predPointFlags?: Record<string, ArrayLike<unknown>> | null;
     nVideos: number;
     choice: Format3Access | undefined;
+    /** Whether `/metadata`'s `json` attribute holds the provenance. */
+    provenanceInMetadata?: boolean;
   },
 ): Promise<Format3ReadStreaming | null> {
   if (!isFormat3(formatId)) return null;
@@ -2201,8 +2206,17 @@ async function readFormat3Streaming(
     );
   }
   unknown.push(...unknownColumns("bboxes", bboxColumns));
+  const groups: Record<string, string[]> = {};
+  for (const group of PARTLY_READ_GROUPS) {
+    if (root.includes(group)) groups[group] = await childKeys(file, group);
+  }
   const summary = buildFormat3Summary({
     formatId,
+    unreadTables: unreadMembers({
+      root,
+      groups,
+      provenanceInMetadata: tables.provenanceInMetadata ?? false,
+    }),
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(
       predPointsData ?? tables.predPointFlags ?? undefined,

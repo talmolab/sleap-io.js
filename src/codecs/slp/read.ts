@@ -22,7 +22,9 @@ import {
   isFormat3,
   metadataColumn,
   metadataKindFromH5,
+  PARTLY_READ_GROUPS,
   type SlpSourceFormat,
+  unreadMembers,
 } from "./format3.js";
 import {
   type MetadataColumns,
@@ -287,6 +289,7 @@ export async function readSlp(
       pointsData,
       predPointsData,
       choice: options?.format3,
+      provenanceInMetadata: !!metadataJson && "provenance" in metadataJson,
     });
     checkPointSpans({
       framesData,
@@ -676,6 +679,7 @@ export async function readSlpLazy(
       pointsData,
       predPointsData,
       choice: options?.format3,
+      provenanceInMetadata: !!metadataJson && "provenance" in metadataJson,
     });
     checkPointSpans({
       framesData,
@@ -2819,6 +2823,8 @@ function readFormat3(
     // biome-ignore lint/suspicious/noExplicitAny: matches readPoseTable
     predPointsData: Record<string, any>;
     choice: Format3Access | undefined;
+    /** Whether `/metadata`'s `json` attribute holds the provenance. */
+    provenanceInMetadata?: boolean;
   },
 ): Format3Read | null {
   if (!isFormat3(formatId)) return null;
@@ -2856,6 +2862,13 @@ function readFormat3(
     : null;
   const summary = buildFormat3Summary({
     formatId,
+    unreadTables: unreadMembers({
+      root: file.keys() as string[],
+      groups: Object.fromEntries(
+        PARTLY_READ_GROUPS.map((g) => [g, h5Members(file, g)]),
+      ),
+      provenanceInMetadata: tables.provenanceInMetadata ?? false,
+    }),
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(predPointsData),
     metadataKeys: {

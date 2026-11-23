@@ -162,6 +162,7 @@ const POSE_SUMMARY: Format3Summary = {
   unlabeledPredictedPoints: 0,
   metadataKeys: { instances: [], frames: [], bboxes: [] },
   unknownColumns: [],
+  unreadTables: [],
   lossless: true,
 };
 
@@ -182,8 +183,71 @@ const META_SUMMARY: Format3Summary = {
     "points/extra",
     "pred_points/extra",
   ],
+  unreadTables: [],
   lossless: false,
 };
+
+describe("what a 3.0 file holds that this version does not read", () => {
+  // format3_events.slp: frame-spanning events and their types, and a
+  // top-level dataset of a newer writer.
+  const EVENTS = "format3_events.slp";
+  const UNREAD = ["event_types", "events", "future_table"];
+
+  for (const [label, load] of READERS) {
+    it(`is in the summary of ${label}`, async () => {
+      const error = (await caught(() => load(EVENTS))) as SlpFormat3ChoiceError;
+      expect(error).toBeInstanceOf(SlpFormat3ChoiceError);
+      expect(error.summary.unreadTables).toEqual(UNREAD);
+      expect(error.summary.lossless).toBe(false);
+      expect(error.message).toContain(
+        "what this version does not read (event_types, events, future_table)",
+      );
+    });
+  }
+
+  it("is in the lite reader's summary", async () => {
+    const meta = await loadSlpMetadata(slpBytes(EVENTS));
+    expect(meta.format3?.unreadTables).toEqual(UNREAD);
+    expect(meta.format3?.lossless).toBe(false);
+  });
+
+  it("is dropped by an edit save, which keeps the poses", async () => {
+    const labels = await readSlp(slpPath(EVENTS), {
+      openVideos: false,
+      format3: "edit",
+    });
+    expect(labels.sourceFormat?.summary.unreadTables).toEqual(UNREAD);
+    const bytes = await saveSlpToBytes(labels);
+    const back = await readSlp(bytes, { openVideos: false });
+    expect(back.labeledFrames.length).toBe(4);
+    const meta = await loadSlpMetadata(bytes);
+    expect(meta.counts.instances).toBe(5);
+    await ready;
+    const dir = mkdtempSync(path.join(tmpdir(), "sleap-io-js-unread-"));
+    const file = path.join(dir, "saved.slp");
+    writeFileSync(file, bytes);
+    const h5 = new H5File(file, "r");
+    try {
+      const keys = h5.keys() as string[];
+      for (const name of UNREAD) expect(keys).not.toContain(name);
+    } finally {
+      h5.close();
+    }
+  });
+
+  it("files without such members have none", async () => {
+    for (const name of [POSE, META, "format3_embedded.pkg.slp"]) {
+      const labels = await readSlp(slpPath(name), {
+        openVideos: false,
+        format3: "view",
+      });
+      expect([name, labels.sourceFormat?.summary.unreadTables]).toEqual([
+        name,
+        [],
+      ]);
+    }
+  });
+});
 
 describe("a 3.0 file asks for the choice at open time", () => {
   for (const [label, load] of READERS) {

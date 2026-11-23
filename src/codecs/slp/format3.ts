@@ -56,6 +56,13 @@ export interface Format3Summary {
   metadataKeys: { instances: string[]; frames: string[]; bboxes: string[] };
   /** Columns this version does not know, as paths like `points/foo`. */
   unknownColumns: string[];
+  /**
+   * Members of the file this version does not read at all, as paths: other
+   * tables (for example `events` and `event_types`), and members of groups it
+   * reads in part (for example `categories/meta_key`). See
+   * {@link unreadMembers}.
+   */
+  unreadTables: string[];
   /** True when an edit would drop nothing (all of the above are empty). */
   lossless: boolean;
 }
@@ -100,6 +107,11 @@ export function describeDrops(summary: Format3Summary): string[] {
   }
   if (summary.unknownColumns.length > 0) {
     drops.push(`unknown columns (${summary.unknownColumns.join(", ")})`);
+  }
+  if (summary.unreadTables.length > 0) {
+    drops.push(
+      `what this version does not read (${summary.unreadTables.join(", ")})`,
+    );
   }
   return drops;
 }
@@ -168,7 +180,122 @@ function freezeSummary(summary: Format3Summary): Format3Summary {
     unknownColumns: Object.freeze([
       ...summary.unknownColumns,
     ]) as unknown as string[],
+    unreadTables: Object.freeze([
+      ...summary.unreadTables,
+    ]) as unknown as string[],
   });
+}
+
+/**
+ * Top-level members of an SLP file that this version reads, in some layout
+ * (Python sleap-io's `_KNOWN_TOPLEVEL_HDF5_NAMES` without the event tables,
+ * plus sleap-io.js's own `identities_json`). Per-video groups (`video0`, ...)
+ * are read too.
+ */
+const READ_TOP_LEVEL: ReadonlySet<string> = new Set([
+  "metadata",
+  "videos_json",
+  "tracks_json",
+  "suggestions_json",
+  "sessions_json",
+  "session_data",
+  "identity",
+  "identities_json",
+  "embeddings",
+  "categories",
+  "frames",
+  "instances",
+  "points",
+  "pred_points",
+  "negative_frames",
+  "video_crops",
+  "bboxes",
+  "centroids",
+  "rois",
+  "roi_wkb",
+  "roi_categories",
+  "roi_names",
+  "roi_sources",
+  "masks",
+  "mask_rle",
+  "mask_categories",
+  "mask_names",
+  "mask_sources",
+  "mask_score_map_index",
+  "mask_score_maps",
+  "label_images",
+  "label_image_objects",
+  "label_image_data",
+  "label_image_sources",
+  "label_image_obj_categories",
+  "label_image_obj_names",
+  "label_image_score_map_index",
+  "label_image_score_maps",
+]);
+
+/**
+ * The members of the groups this version reads that it reads. Category
+ * metadata (`categories/meta_*`) is not read: categories are plain strings
+ * here.
+ */
+const READ_GROUP_MEMBERS: Readonly<Record<string, ReadonlySet<string>>> = {
+  identity: new Set(["name", "meta_owner", "meta_key", "meta_val", "links"]),
+  categories: new Set(["name", "links"]),
+  embeddings: new Set([
+    "vectors",
+    "owner_type",
+    "owner_id",
+    "category_vectors",
+    "category_owner_type",
+    "category_owner_id",
+  ]),
+  session_data: new Set([
+    "frame_groups",
+    "instance_groups",
+    "instance_group_members",
+    "points_3d",
+    "pred_points_3d",
+    "frame_group_meta",
+    "instance_group_meta",
+  ]),
+};
+
+/** The groups whose members {@link unreadMembers} checks. */
+export const PARTLY_READ_GROUPS: readonly string[] =
+  Object.keys(READ_GROUP_MEMBERS);
+
+/**
+ * What a file holds that this version does not read at all, as paths: its
+ * top-level members other than those it reads (for example `events` and
+ * `event_types`, or a table added by a newer writer), and members of the
+ * groups in {@link PARTLY_READ_GROUPS} other than those it reads.
+ * `provenance_json` counts only when `/metadata`'s `json` attribute holds no
+ * copy of the provenance (Python mirrors it there when it fits).
+ *
+ * @param root The file's top-level member names.
+ * @param groups The member names of each group in {@link PARTLY_READ_GROUPS}
+ *   that the file has.
+ * @param provenanceInMetadata Whether `/metadata`'s `json` holds provenance.
+ */
+export function unreadMembers(options: {
+  root: readonly string[];
+  groups: Readonly<Record<string, readonly string[]>>;
+  provenanceInMetadata: boolean;
+}): string[] {
+  const out: string[] = [];
+  for (const name of options.root) {
+    if (READ_TOP_LEVEL.has(name) || /^video\d+$/.test(name)) continue;
+    if (name === "provenance_json" && options.provenanceInMetadata) continue;
+    out.push(name);
+  }
+  for (const [group, members] of Object.entries(options.groups)) {
+    const read = READ_GROUP_MEMBERS[group];
+    if (!read) continue;
+    for (const name of members) {
+      if (!read.has(name)) out.push(`${group}/${name}`);
+    }
+  }
+  return out.sort();
 }
 
 /** Build the summary of a 3.0 file from what the readers gathered. */
@@ -178,6 +305,7 @@ export function buildFormat3Summary(options: {
   unlabeledPredictedPoints: number;
   metadataKeys: { instances: string[]; frames: string[]; bboxes: string[] };
   unknownColumns: string[];
+  unreadTables?: string[];
 }): Format3Summary {
   const unlabeledPoints =
     options.unlabeledUserPoints + options.unlabeledPredictedPoints;
@@ -193,10 +321,12 @@ export function buildFormat3Summary(options: {
       bboxes: [...bboxes].sort(),
     },
     unknownColumns: [...options.unknownColumns].sort(),
+    unreadTables: [...(options.unreadTables ?? [])].sort(),
     lossless:
       unlabeledPoints === 0 &&
       instances.length + frames.length + bboxes.length === 0 &&
-      options.unknownColumns.length === 0,
+      options.unknownColumns.length === 0 &&
+      (options.unreadTables ?? []).length === 0,
   };
 }
 
