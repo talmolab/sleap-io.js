@@ -40,6 +40,10 @@ import {
   type SessionData,
   type SessionPointMatrix,
 } from "./codecs/slp/parsers.js";
+import {
+  PROVENANCE_DATASET,
+  resolveProvenance,
+} from "./codecs/slp/provenance.js";
 import type {
   VideoMetadata,
   SuggestionMetadata,
@@ -344,9 +348,14 @@ export async function loadSlpMetadata(
       sessions,
       counts,
       hasEmbeddedImages,
-      provenance: metadataJson.provenance as
-        | Record<string, unknown>
-        | undefined,
+      // Prefer the /provenance_json dataset (Python sleap-io >= #517); fall
+      // back to the metadata attribute for files written before it existed.
+      provenance: resolveProvenance(
+        file.keys.includes(PROVENANCE_DATASET)
+          ? getValue(file.get(PROVENANCE_DATASET))
+          : undefined,
+        metadataJson,
+      ),
     };
   } finally {
     file.close();
