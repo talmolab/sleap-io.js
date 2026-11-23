@@ -43,10 +43,16 @@ console.log(metadata.provenance);   // { sleap_version, ... }
 
 **Returns:** `Promise<SlpMetadata>`
 
+For a file in SLP format 3.0, `metadata.format3` holds the summary the full
+readers put on `SlpFormat3ChoiceError` with `format3: "ask"`, so an
+application can ask the user before a full read.
+`metadata.streamingUnreadTables` lists what the streaming reader
+(`readSlpStreaming`) would not read.
+
 **Throws:** `SlpFormatError` (exported from the lite build too) for a file in a
-format this version cannot read: format 3 or higher, or a `required_features`
+format this version cannot read: format 4 or higher, or a `required_features`
 attribute that names an unknown feature. `validateSlpBuffer` throws it as well.
-See [Files in a format this version cannot read](usage.md#files-in-a-format-this-version-cannot-read).
+See [Format 3.0 files, and formats this version cannot read](usage.md#format-30-files-and-formats-this-version-cannot-read).
 
 ### `validateSlpBuffer(source)`
 

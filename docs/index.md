@@ -24,8 +24,8 @@ await saveSlp(labels, "/tmp/session-roundtrip.slp", { embed: false });
 
 ## Features
 
-- SLP read/write with embedded frame support (format 1.0–2.3).
-- ROI and segmentation mask annotations (format 1.5), ROI-instance associations (format 1.6), bounding boxes (format 1.7), label images (format 1.8), identities (format 1.9), corner-based bounding boxes (format 2.0), spatial metadata (format 2.1), chunked label image storage (format 2.2), virtual video crops (format 2.3).
+- SLP read/write with embedded frame support (formats 1.x, 2.x and 3.0; saves write the 2.x layout or format 3.0).
+- ROI and segmentation mask annotations (format 1.5), ROI-instance associations (format 1.6), bounding boxes (format 1.7), label images (format 1.8), identities (format 1.9), corner-based bounding boxes (format 2.0), spatial metadata (format 2.1), chunked label image storage (format 2.2), virtual video crops (format 2.3), identity links and embeddings (format 2.5), categories (format 2.7), recording session frame groups (format 2.8), every table stored as columns (format 3.0).
 - [Virtual cropping](cropping.md): lazy, non-destructive on-read crops of videos that round-trip through SLP.
 - Browser-compatible SLP writing via `saveSlpToBytes()`.
 - Streaming inputs (URL, `File`, `FileSystemFileHandle`, `Blob`).

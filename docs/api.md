@@ -85,6 +85,7 @@ const labels = await loadSlp("/data/session.slp", {
 - `options.h5.stream`: `"auto" | "range" | "download"` (browser URL streaming).
 - `options.h5.filenameHint`: helps name temporary files.
 - `options.lazy` (default `false`): use lazy loading for on-demand frame materialization.
+- `options.format3`: what a later save may do with an SLP format 3.0 file: `"keep"` (default) loads it editable and saves keep format 3.0; `"view"` marks it view-only, so every SLP writer refuses it; `"edit"` saves it in the 2.x layout, dropping what that layout cannot store; `"ask"` throws `SlpFormat3ChoiceError` with a summary of the file, for applications that ask the user first. Without the option, a file holding content this version does not read (the summary's `unreadTables`) throws as `"ask"` does. Ignored for files before 3.0; any other value throws a `TypeError`. See "Opening a format 3.0 file" in the usage guide.
 
 ### `saveSlp(labels, filename, options)`
 Write `.slp` (Node/Electron).
@@ -109,6 +110,7 @@ await saveSlp(labels, "/tmp/roundtrip.slp", {
 - `options.imageFormat`: the image format embedded frames are stored in, as Python's `image_format`: `"png"` (lossless) or `"jpg"` (lossy, smaller); `"jpeg"` is stored as `"jpg"`. With it, frames already encoded in that format are stored verbatim and the rest are decoded and encoded in it, including the images of already-embedded videos stored in another format (a PNG package becomes a JPEG one); a grayscale video stores one-channel images. Omitted (default): new frames are stored as PNG and already-embedded images are copied as they are. See "Image format" in the usage guide.
 - `options.imageQuality`: JPEG quality (0-100, default 95) with `"jpg"`, or PNG compression level (0-9) with `"png"`, as Python's `image_quality`. Needs an explicit `imageFormat`. Frames stored verbatim keep their bytes.
 - Invalid `imageFormat` / `imageQuality` throw before anything is written.
+- `options.slpVersion`: the layout written. `"auto"` (default) writes format 3.0 when the labels were last saved in format 3.0; otherwise the 2.x layout for labels loaded with `format3: "edit"`; otherwise format 3.0 when the format 3.0 defaults are on (`setV3Defaults`), the labels were loaded from a 3.0 file (and not since saved in the 2.x layout), or they hold what only 3.0 can store (with a warning); and the 2.x layout in every other case. `"v2"` always writes the 2.x layout and `"v3"` always format 3.0. Any other value throws before anything is written. See "Which layout a save writes" in the usage guide.
 
 ### `saveSlpToBytes(labels, options)`
 Serialize Labels to SLP format and return the bytes. Works in both Node.js and browser environments.
@@ -118,7 +120,7 @@ const bytes: Uint8Array = await saveSlpToBytes(labels, { embed: false });
 ```
 
 - `labels`: `Labels` object to serialize.
-- `options`: the same `embed`, `embedAllVideos`, `onProgress`, `restoreOriginalVideos`, `imageFormat` and `imageQuality` options as `saveSlp`.
+- `options`: the same `embed`, `embedAllVideos`, `onProgress`, `restoreOriginalVideos`, `imageFormat`, `imageQuality` and `slpVersion` options as `saveSlp`.
 - Returns `Promise<Uint8Array>`.
 
 ### `loadVideo(source, options)`
@@ -751,7 +753,7 @@ labels.addStaticRoi(arenaRoi);
 
 #### SLP format versions
 
-The SLP format version (`format_id`) is set automatically based on content:
+In the 2.x layout, the SLP format version (`format_id`) is set automatically based on content. Whether a save writes format 3.0 instead is decided by the writers' `slpVersion` option (see `saveSlp`):
 
 | Version | Trigger |
 |---------|---------|
@@ -765,6 +767,10 @@ The SLP format version (`format_id`) is set automatically based on content:
 | 2.2 | Chunked label image storage |
 | 2.3 | Virtual video crops present |
 | 2.4 | Persisted mask `fromPredicted` provenance link |
+| 2.5 | Identity links or embeddings on detections |
+| 2.7 | Categories on detections |
+| 2.8 | Recording session frame groups |
+| 3.0 | Every table stored as columns (written when `slpVersion` selects format 3.0) |
 
 ##### Virtual Crops (Format 2.3+)
 
