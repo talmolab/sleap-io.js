@@ -578,11 +578,13 @@ await saveSlp(labels, "labels.pkg.slp", {
 - **`imageQuality`**: JPEG quality (0-100, default 95) with `"jpg"`, or PNG
   compression level (0-9) with `"png"`. It needs an explicit `imageFormat`;
   anything else throws before a file is written.
-- **Frames already in the format** are stored verbatim, without decoding:
-  image files (an image-sequence video) and encoded frames a backend returns
-  in RGB order, with or without `imageQuality`. Other frames are decoded and
-  encoded in the format (encoded frames in BGR order are converted to RGB
-  first).
+- **Frames already in the format** are stored verbatim, without decoding,
+  with or without `imageQuality`: image files (an image-sequence video) and
+  encoded frames a backend returns that need no red/blue swap. Other frames
+  are decoded and encoded in the format. Colour frames stored BGR are
+  converted to RGB first; grayscale frames and frames with alpha are kept as
+  stored, since the channel order applies only to 3-channel colour images (as
+  in Python).
 - **Grayscale videos** store one-channel images (a grayscale JPEG or PNG), so
   they read back with one channel in JS and Python.
 - **Already-embedded videos** (re-saving a `.pkg.slp`) follow the same rule

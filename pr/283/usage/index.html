@@ -1248,11 +1248,13 @@ Python sleap-io's <code>image_format</code> and <code>image_quality</code>):</p>
 <li><strong><code>imageQuality</code></strong>: JPEG quality (0-100, default 95) with <code>"jpg"</code>, or PNG
   compression level (0-9) with <code>"png"</code>. It needs an explicit <code>imageFormat</code>;
   anything else throws before a file is written.</li>
-<li><strong>Frames already in the format</strong> are stored verbatim, without decoding:
-  image files (an image-sequence video) and encoded frames a backend returns
-  in RGB order, with or without <code>imageQuality</code>. Other frames are decoded and
-  encoded in the format (encoded frames in BGR order are converted to RGB
-  first).</li>
+<li><strong>Frames already in the format</strong> are stored verbatim, without decoding,
+  with or without <code>imageQuality</code>: image files (an image-sequence video) and
+  encoded frames a backend returns that need no red/blue swap. Other frames
+  are decoded and encoded in the format. Colour frames stored BGR are
+  converted to RGB first; grayscale frames and frames with alpha are kept as
+  stored, since the channel order applies only to 3-channel colour images (as
+  in Python).</li>
 <li><strong>Grayscale videos</strong> store one-channel images (a grayscale JPEG or PNG), so
   they read back with one channel in JS and Python.</li>
 <li><strong>Already-embedded videos</strong> (re-saving a <code>.pkg.slp</code>) follow the same rule

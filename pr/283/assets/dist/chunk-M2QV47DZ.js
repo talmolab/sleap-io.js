@@ -18926,9 +18926,6 @@ function sniffImageFormat(bytes) {
   if (!isEncodedBytes(bytes)) return null;
   return bytes[0] === 255 ? "jpg" : "png";
 }
-function encodedImageChannels(bytes) {
-  return encodedChannelCount(bytes);
-}
 function forcesGray(backend) {
   return backend instanceof GrayscaleVideoBackend && backend.grayscale === true;
 }
@@ -18944,7 +18941,7 @@ async function imageFileBytes(backend, frameIdx, encoding) {
   const bytes = await inner.getEncodedBytes(frameIdx);
   if (!bytes || bytes.length === 0) return null;
   if (sniffImageFormat(bytes) !== encoding.format) return null;
-  if ((encoding.gray || forcesGray(backend)) && encodedImageChannels(bytes) !== 1) {
+  if ((encoding.gray || forcesGray(backend)) && encodedChannelCount(bytes) !== 1) {
     return null;
   }
   return bytes;
@@ -18952,7 +18949,7 @@ async function imageFileBytes(backend, frameIdx, encoding) {
 function verbatimEncodedBytes(bytes, channelOrder, encoding) {
   if (sniffImageFormat(bytes) !== encoding.format) return null;
   if (needsRedBlueSwap(bytes, channelOrder)) return null;
-  if (encoding.gray && encodedImageChannels(bytes) !== 1) return null;
+  if (encoding.gray && encodedChannelCount(bytes) !== 1) return null;
   return bytes;
 }
 function frameBytes(frame) {

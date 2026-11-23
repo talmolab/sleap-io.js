@@ -686,10 +686,11 @@ interface H5WorkerResponse {
  * `image_quality`: option checks, and turning one frame into the bytes stored
  * for it.
  *
- * With an explicit format, a frame already encoded in that format with RGB
- * channels is stored verbatim (image files, or encoded bytes a backend
- * returns); everything else is decoded and encoded in the format. Without
- * one, the writers keep the format they always used (see `planEmbedding`).
+ * With an explicit format, a frame already encoded in that format that needs
+ * no red/blue swap is stored verbatim (image files, or encoded bytes a backend
+ * returns); everything else is decoded to RGB and encoded in the format.
+ * Without one, the writers keep the format they always used (see
+ * `planEmbedding`).
  *
  * @module
  */
@@ -753,8 +754,8 @@ type SlpWriteOptions = {
      * `"jpg"` (lossy, smaller and faster to decode; `"jpeg"` is accepted and
      * stored as `"jpg"`), as Python sleap-io's `image_format`. With a format,
      * frames already encoded in it (image files, encoded bytes a backend
-     * returns in RGB channel order, or an already-embedded video's stored
-     * images) are stored verbatim and every other frame is decoded and encoded
+     * returns that need no red/blue swap, or an already-embedded video's
+     * stored images) are stored verbatim and every other frame is decoded and encoded
      * in it, so an already-embedded video stored in another format is
      * converted; a grayscale video's frames are stored with one channel.
      * Unlike Python, a conversion keeps all of the video's stored images
