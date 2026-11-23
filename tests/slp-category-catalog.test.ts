@@ -17,8 +17,6 @@
  */
 import { describe, it, expect } from "./bun-test";
 import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
-import { readFromStreamingFile } from "../src/codecs/slp/read-streaming.js";
-import type { StreamingH5File } from "../src/codecs/slp/h5-streaming.js";
 import { openSlpWriter, saveSlpToBytes } from "../src/codecs/slp/write.js";
 import { openH5File } from "../src/codecs/slp/h5.js";
 import { Category } from "../src/model/category.js";
@@ -28,7 +26,7 @@ import { Video } from "../src/model/video.js";
 import { Labels } from "../src/model/labels.js";
 import { LabeledFrame } from "../src/model/labeled-frame.js";
 import { UserSegmentationMask } from "../src/model/mask.js";
-import { ready, File as H5File } from "h5wasm/node";
+import { readStreamingBytes } from "./fake-streaming-file";
 import { fileURLToPath } from "node:url";
 import { readFileSync } from "node:fs";
 import path from "node:path";
@@ -126,71 +124,6 @@ async function readStoredCatalog(buf: ArrayBuffer) {
   }
 }
 
-/** A Node-side `StreamingH5File` over h5wasm (the real one needs a Worker). */
-async function fakeStreamingFile(buf: ArrayBuffer) {
-  const module = await ready;
-  try {
-    module.FS.mkdir("/tmp");
-  } catch {
-    // already exists
-  }
-  const p = `/tmp/cat_catalog_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
-  module.FS.writeFile(p, new Uint8Array(buf));
-  const h5 = new H5File(p, "r");
-  const store = (await readSlpLazy(buf, { openVideos: false }))._lazyDataStore;
-  if (!store) throw new Error("readSlpLazy did not produce a lazy store");
-  const columns: Record<string, Record<string, unknown[]>> = {
-    frames: store.framesData,
-    instances: store.instancesData,
-    points: store.pointsData,
-    pred_points: store.predPointsData,
-  };
-  const get = (dp: string) => h5.get(dp) as any;
-  const unwrap = (attrs: Record<string, any>) =>
-    Object.fromEntries(
-      Object.entries(attrs ?? {}).map(([k, v]) => [
-        k,
-        v && typeof v === "object" && "value" in v ? v.value : v,
-      ]),
-    );
-  const fake = {
-    keys: () => h5.keys() as string[],
-    getKeys: async (dp?: string) =>
-      dp ? ((get(dp)?.keys?.() as string[]) ?? []) : (h5.keys() as string[]),
-    getAttrs: async (dp: string) => unwrap(get(dp)?.attrs ?? {}),
-    getDatasetMeta: async (dp: string) => ({
-      shape: get(dp)?.shape ?? [],
-      dtype: get(dp)?.dtype ?? "",
-    }),
-    getDatasetValue: async (dp: string) => {
-      if (dp in columns) return { value: columns[dp], shape: [], dtype: "" };
-      const d = get(dp);
-      return { value: d?.value, shape: d?.shape ?? [], dtype: d?.dtype ?? "" };
-    },
-  } as unknown as StreamingH5File;
-  const close = () => {
-    h5.close();
-    try {
-      module.FS.unlink(p);
-    } catch {
-      // ignore
-    }
-  };
-  return { fake, close };
-}
-
-function readStreaming(fake: StreamingH5File, lazy: boolean) {
-  return readFromStreamingFile(
-    fake,
-    "test.slp",
-    "test.slp",
-    false,
-    undefined,
-    false,
-    lazy,
-  );
-}
-
 describe("Labels.categories (SLP 2.7 catalog)", () => {
   it("defaults to an empty catalog", () => {
     expect(new Labels().categories).toEqual([]);
@@ -273,13 +206,8 @@ describe("Labels.categories (SLP 2.7 catalog)", () => {
   it("reads the catalog through the streaming reader (eager and lazy)", async () => {
     const buf = await bytesOf(catalogLabels());
     for (const lazy of [false, true]) {
-      const { fake, close } = await fakeStreamingFile(buf);
-      try {
-        const labels = await readStreaming(fake, lazy);
-        expect(catalogSig(labels.categories)).toEqual(EXPECTED);
-      } finally {
-        close();
-      }
+      const labels = await readStreamingBytes(buf, lazy);
+      expect(catalogSig(labels.categories)).toEqual(EXPECTED);
     }
   });
 
