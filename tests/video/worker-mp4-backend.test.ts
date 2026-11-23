@@ -377,3 +377,40 @@ describe("WorkerMp4BoxBackend close", () => {
     await expect(pending).resolves.toBeNull();
   });
 });
+
+// Issue #274: the main-thread parse keeps edit-list-hidden samples (decode
+// references) and passes their count; the worker backend must index frames
+// from the first SHOWN sample, like the main-thread backend.
+describe("WorkerMp4BoxBackend edit-list hidden frames", () => {
+  function hiddenParseResult(): Mp4ParseResult {
+    const parse = makeParseResult(100);
+    return { ...parse, shape: [98, 64, 64, 3], hiddenLeadingFrames: 2 };
+  }
+
+  it("maps public frame indices past the hidden samples", async () => {
+    const { fake, backend } = await makeReadyBackend(hiddenParseResult());
+    expect(backend.hiddenLeadingFrames).toBe(2);
+    expect(backend.shape?.[0]).toBe(98);
+    const times = (await backend.getFrameTimes()) ?? [];
+    expect(times.length).toBe(98);
+    expect(times[0]).toBe(0.002); // sample 2's timestamp (2000 µs)
+
+    const gp = backend.getFrame(0);
+    await tick();
+    const decode = fake.lastOfType("decode");
+    expect(decode).toMatchObject({ target: 2, start: 0 }); // samples index
+    const bmp = fakeBitmap("s2");
+    fake.emit({ type: "bitmap", reqId: decode?.reqId, frame: 2, bitmap: bmp });
+    await expect(gp).resolves.toBe(bmp);
+
+    expect(await backend.getFrame(98)).toBeNull();
+    expect(await backend.getFrame(-1)).toBeNull();
+  });
+
+  it("reports keyframes in public indices", async () => {
+    const { backend } = await makeReadyBackend(hiddenParseResult());
+    // Keyframes every 30 samples: sample 30 → public 28; sample 0 is hidden.
+    expect(backend.nearestKeyframe(40)).toBe(28);
+    expect(backend.nearestKeyframe(10)).toBe(0);
+  });
+});

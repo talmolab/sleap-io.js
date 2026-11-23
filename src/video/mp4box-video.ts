@@ -11,6 +11,7 @@ import {
   identityHeaders,
   statusToMessage,
 } from "../io/remote.js";
+import { countHiddenLeadingSamples, editListStartTime } from "./edit-list.js";
 import {
   type Mp4ParseResult,
   computeCacheWindow,
@@ -87,6 +88,14 @@ export class Mp4BoxVideoBackend implements VideoBackend {
   shape?: [number, number, number, number];
   fps?: number;
   dataset?: string | null;
+  /**
+   * Frames an MP4/MOV edit list hides (#274); see
+   * {@link VideoBackend.hiddenLeadingFrames}. They stay in {@link samples} (later
+   * frames need them as decode references) but are not part of the public frame
+   * index: public frame `i` is `samples[i + hiddenLeadingFrames]`. Every
+   * internal index (cache, keyframes, decode ranges) is a `samples` index.
+   */
+  hiddenLeadingFrames: number;
 
   private ready: Promise<void>;
   private mp4box: any;
@@ -150,6 +159,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
         ? ((source as File).name ?? "")
         : source;
     this.dataset = null;
+    this.hiddenLeadingFrames = 0;
     this.headers = options?.headers ?? {};
     this.samples = [];
     this.keyframeIndices = [];
@@ -186,6 +196,9 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     opts?: GetFrameOptions,
   ): Promise<VideoFrame | null> {
     await this.ready;
+    // Public frame index → samples index (skips edit-list-hidden frames, #274).
+    if (frameIndex < 0) return null;
+    frameIndex += this.hiddenLeadingFrames;
     if (frameIndex < 0 || frameIndex >= this.samples.length) return null;
 
     if (this.cache.has(frameIndex)) {
@@ -251,6 +264,8 @@ export class Mp4BoxVideoBackend implements VideoBackend {
    */
   decodeAhead(fromFrame: number, opts?: GetFrameOptions): void {
     if (!this.samples.length) return;
+    // Public frame index → samples index (#274).
+    fromFrame = Math.max(0, fromFrame) + this.hiddenLeadingFrames;
     if (opts?.signal?.aborted) return;
     // Coalesce: one ahead task at a time. Repeat calls during playback no-op
     // until the current one finishes (which re-checks coverage next call).
@@ -285,7 +300,9 @@ export class Mp4BoxVideoBackend implements VideoBackend {
 
   async getFrameTimes(): Promise<number[] | null> {
     await this.ready;
-    return this.samples.map((sample) => sample.timestamp / 1e6);
+    return this.samples
+      .slice(this.hiddenLeadingFrames)
+      .map((sample) => sample.timestamp / 1e6);
   }
 
   /**
@@ -317,6 +334,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
       shape: this.shape,
       fps: this.fps,
       fileSize: this.fileSize,
+      hiddenLeadingFrames: this.hiddenLeadingFrames,
     };
   }
 
@@ -327,8 +345,14 @@ export class Mp4BoxVideoBackend implements VideoBackend {
    */
   nearestKeyframe(frameIndex: number): number {
     if (!this.samples.length) return 0;
-    const clamped = Math.max(0, Math.min(frameIndex, this.samples.length - 1));
-    return this.findKeyframeBefore(clamped);
+    // Public → samples index and back (#274). A keyframe among the hidden
+    // frames maps to public frame 0, the nearest frame that is shown.
+    const hidden = this.hiddenLeadingFrames;
+    const clamped = Math.max(
+      hidden,
+      Math.min(frameIndex + hidden, this.samples.length - 1),
+    );
+    return Math.max(0, this.findKeyframeBefore(clamped) - hidden);
   }
 
   close(): void {
@@ -402,7 +426,7 @@ export class Mp4BoxVideoBackend implements VideoBackend {
 
     const duration = this.videoTrack.duration / this.videoTrack.timescale;
     this.fps = duration ? this.samples.length / duration : undefined;
-    const frameCount = this.samples.length;
+    const frameCount = this.samples.length - this.hiddenLeadingFrames;
     const height = this.videoTrack.video.height;
     const width = this.videoTrack.video.width;
     this.shape = [frameCount, height, width, 3];
@@ -504,6 +528,14 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     this.samples.forEach((sample, index) => {
       if (sample.isKeyframe) this.keyframeIndices.push(index);
     });
+
+    // Edit list (#274): samples shown before the edit's start are decode
+    // references only — ffmpeg / Python sleap-io never count them.
+    const trak = this.mp4boxFile.getTrackById(this.videoTrack.id);
+    this.hiddenLeadingFrames = countHiddenLeadingSamples(
+      this.samples.map((sample) => sample.cts),
+      editListStartTime(trak?.edts?.elst?.entries),
+    );
   }
 
   private findKeyframeBefore(frameIndex: number): number {

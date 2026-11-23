@@ -60,6 +60,12 @@ export interface Mp4ParseResult {
   shape: [number, number, number, number];
   fps?: number;
   fileSize: number;
+  /**
+   * Leading samples an MP4 edit list hides (#274): `samples` keeps them as
+   * decode references, but public frame `i` is `samples[i + hiddenLeadingFrames]`
+   * and `shape[0]` counts only shown frames. Absent = 0.
+   */
+  hiddenLeadingFrames?: number;
 }
 
 /** One decode-order sample plus its PRESENTATION index (position in `samples`). */

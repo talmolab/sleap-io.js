@@ -77,6 +77,17 @@ export interface VideoBackend {
    * backends (mp4 / seq / image-sequence), where every frame is decodable.
    */
   frameNumbers?: number[];
+  /**
+   * MP4/MOV backends: how many frames at the start of the file the container's
+   * edit list hides (stored only as decode references for a clip cut between
+   * keyframes, e.g. `ffmpeg -ss 1 -i in.mp4 -c copy out.mp4`). They are not
+   * part of the frame index: frame 0 is the first frame actually shown, exactly
+   * as in ffmpeg and Python sleap-io. sleap-io.js 0.5.17 and earlier DID count
+   * them, so frame indices saved by those versions for this video are too high
+   * by this many — callers can use it to migrate old labels. `0` or unset when
+   * nothing is hidden. See issue #274.
+   */
+  hiddenLeadingFrames?: number;
   getFrame(
     frameIndex: number,
     opts?: GetFrameOptions,

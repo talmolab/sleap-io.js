@@ -19,10 +19,23 @@ import {
   EncodedPacketSink,
   ALL_FORMATS,
 } from "mediabunny";
+import { countHiddenLeadingSamples } from "./edit-list.js";
 import {
   ensureNativeH264Probe,
   isLibavDecoderConfigured,
 } from "./libav-h264-decoder.js";
+
+/** MIME types of MediaBunny's ISOBMFF formats (MP4, MOV), which have edit lists. */
+const ISOBMFF_MIME_TYPES = new Set(["video/mp4", "video/quicktime"]);
+
+/** True for MP4 / MOV (ISOBMFF) inputs, the only containers with edit lists. */
+async function isIsobmff(input: Input): Promise<boolean> {
+  try {
+    return ISOBMFF_MIME_TYPES.has((await input.getFormat()).mimeType);
+  } catch {
+    return false;
+  }
+}
 
 export interface MediaBunnyOptions {
   cacheSize?: number;
@@ -33,6 +46,8 @@ export class MediaBunnyVideoBackend implements VideoBackend {
   shape?: [number, number, number, number];
   fps?: number;
   dataset?: string | null = null;
+  /** Frames an MP4/MOV edit list hides; see {@link VideoBackend.hiddenLeadingFrames}. */
+  hiddenLeadingFrames = 0;
 
   private input: Input | null = null;
   private sink: VideoSampleSink | null = null;
@@ -143,6 +158,21 @@ export class MediaBunnyVideoBackend implements VideoBackend {
       // shown. With B-frames those orders differ, so sort into presentation
       // order before the index is used to seek.
       this._frameTimes.sort((a, b) => a - b);
+      // MP4/MOV edit list (#274): MediaBunny puts the edit's start at t=0, so
+      // frames before it (kept only as decode references for a clip cut between
+      // keyframes) have negative timestamps. ffmpeg / Python sleap-io never
+      // show or count them, so leave them out of the index; the sink still
+      // decodes them as references when seeking. Other containers keep
+      // negative timestamps (ffmpeg shows those frames).
+      if (await isIsobmff(this.input)) {
+        this.hiddenLeadingFrames = countHiddenLeadingSamples(
+          this._frameTimes,
+          0,
+        );
+        if (this.hiddenLeadingFrames > 0) {
+          this._frameTimes = this._frameTimes.slice(this.hiddenLeadingFrames);
+        }
+      }
     } catch (error) {
       this._frameTimes = [];
       this.sink = null;
