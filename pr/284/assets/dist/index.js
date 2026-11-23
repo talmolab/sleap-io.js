@@ -11,6 +11,7 @@ import {
   ConflictResolution,
   CropVideoBackend,
   DUPLICATE_MATCHER,
+  EMBED_IMAGE_FORMATS,
   EXISTS_TTL_MS,
   Embedding,
   ErrorMode,
@@ -103,6 +104,7 @@ import {
   buildSuggestionsJson,
   buildTracksJson,
   buildVideoSignatures,
+  checkEmbedImageFormat,
   checkInPlaceWritable,
   clampAlpha,
   collectTracks,
@@ -254,7 +256,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-E46RMAOM.js";
+} from "./chunk-KRUTY7IZ.js";
 import {
   Camera,
   CameraGroup,
@@ -3443,6 +3445,7 @@ export {
   CropVideoBackend,
   DEFAULT_MAX_BYTES,
   DUPLICATE_MATCHER,
+  EMBED_IMAGE_FORMATS,
   EXISTS_TTL_MS,
   Edge,
   Embedding,
@@ -3568,6 +3571,7 @@ export {
   buildTracksJson,
   buildVideoSignatures,
   checkDownloadHost,
+  checkEmbedImageFormat,
   checkFfmpeg,
   checkInPlaceWritable,
   classNamesFromConfig,
