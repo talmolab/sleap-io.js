@@ -18,7 +18,8 @@ import os from "node:os";
 import path from "node:path";
 import { ready, File as H5File } from "h5wasm/node";
 import { Canvas, ImageData as SkiaImageData } from "skia-canvas";
-import { readSlp } from "../src/codecs/slp/read.js";
+import { readSlp, readSlpLazy } from "../src/codecs/slp/read.js";
+import type { SlpVersion } from "../src/codecs/slp/slp-version.js";
 import {
   buildSerializableEmbedPlan,
   saveSlpStructureToBytes,
@@ -378,14 +379,20 @@ function fileSink(file: unknown, helpers: WorkerHelpers): EncodedVideoSink {
 /** Structure write + streamed frames, as an app's desktop export. */
 async function streamSave(
   labels: Labels,
-  options: { imageFormat?: "png" | "jpg" | "jpeg"; imageQuality?: number },
+  options: {
+    imageFormat?: "png" | "jpg" | "jpeg";
+    imageQuality?: number;
+    slpVersion?: SlpVersion;
+  },
+  sourcePath = "",
 ): Promise<string> {
   const file = writeTmp(
     await saveSlpStructureToBytes(labels, { embed: "user", ...options }),
   );
-  const plan = await buildSerializableEmbedPlan(labels, "user", "", {
+  const plan = await buildSerializableEmbedPlan(labels, "user", sourcePath, {
     allowEncode: true,
-    ...options,
+    imageFormat: options.imageFormat,
+    imageQuality: options.imageQuality,
   });
   await ready;
   const h5 = new H5File(file, "a");
@@ -1479,4 +1486,91 @@ describe("embedded JPEGs read back in Python sleap-io", () => {
       });
     }
   }
+});
+
+// --- with the format 3.0 layout ----------------------------------------------
+
+/** The file's `metadata` `format_id`. */
+async function formatId(file: string): Promise<number> {
+  await ready;
+  const h5 = new H5File(file, "r");
+  try {
+    return Number((h5.get("metadata") as any).attrs.format_id.value);
+  } finally {
+    h5.close();
+  }
+}
+
+describe("imageFormat with the format 3.0 layout", () => {
+  it('slpVersion "v3" with imageFormat "jpg": the same JPEGs in memory and streamed', async () => {
+    const memFile = writeTmp(
+      await saveSlpToBytes(sources().colour(), {
+        embed: "user",
+        imageFormat: "jpg",
+        slpVersion: "v3",
+      }),
+    );
+    const streamFile = await streamSave(sources().colour(), {
+      imageFormat: "jpg",
+      slpVersion: "v3",
+    });
+    for (const file of [memFile, streamFile]) {
+      expect(await formatId(file)).toBeGreaterThanOrEqual(3);
+      const [v] = await embeddedVideos(file);
+      expect(v.format).toBe("jpg");
+      expect(v.frameNumbers).toEqual([0, 3, 5]);
+      for (const row of v.rows) expect(isJpeg(row)).toBe(true);
+      const back = await readSlp(file, { openVideos: true });
+      expect(back.labeledFrames.length).toBe(3);
+    }
+    const [m] = await embeddedVideos(memFile);
+    const [s] = await embeddedVideos(streamFile);
+    expect(s.rows.map((r) => [...r])).toEqual(m.rows.map((r) => [...r]));
+  });
+
+  for (const lazy of [false, true]) {
+    it(`a 3.0 JPEG package loaded ${lazy ? "lazily" : "eagerly"} saves back as 3.0 with its frames converted to PNG, in memory and streamed`, async () => {
+      const src = writeTmp(
+        await saveSlpToBytes(sources().colour(), {
+          embed: "user",
+          imageFormat: "jpg",
+          slpVersion: "v3",
+        }),
+      );
+      const load = () =>
+        lazy
+          ? readSlpLazy(src, { openVideos: true })
+          : readSlp(src, { openVideos: true });
+      const memFile = writeTmp(
+        await saveSlpToBytes(await load(), { imageFormat: "png" }),
+      );
+      const streamFile = await streamSave(
+        await load(),
+        { imageFormat: "png" },
+        src,
+      );
+      for (const file of [memFile, streamFile]) {
+        expect(await formatId(file)).toBeGreaterThanOrEqual(3);
+        const [v] = await embeddedVideos(file);
+        expect(v.format).toBe("png");
+        expect(v.frameNumbers).toEqual([0, 3, 5]);
+        for (const row of v.rows) expect(isPngBytes(row)).toBe(true);
+      }
+    });
+  }
+
+  it('saveSlpSet with slpVersion "v3" refuses a bad imageFormat before writing any file', async () => {
+    const dir = tmpDir();
+    const set = new LabelsSet();
+    set.set(path.join(dir, "a.pkg.slp"), sources().colour());
+    set.set(path.join(dir, "b.pkg.slp"), sources().gray());
+    await expect(
+      saveSlpSet(set, {
+        embed: "user",
+        imageFormat: "bmp" as never,
+        slpVersion: "v3",
+      }),
+    ).rejects.toThrow("imageFormat");
+    expect(fs.readdirSync(dir)).toEqual([]);
+  });
 });
