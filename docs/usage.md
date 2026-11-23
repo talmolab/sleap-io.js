@@ -596,6 +596,87 @@ await saveSlp(labels, "output.slp", {
 });
 ```
 
+### Image format
+
+Newly embedded frames are stored as PNG by default. Choose the format with
+`imageFormat` and the encoder setting with `imageQuality` (the same options as
+Python sleap-io's `image_format` and `image_quality`):
+
+```ts
+// JPEG at quality 90
+await saveSlp(labels, "labels.pkg.slp", {
+  embed: "user",
+  imageFormat: "jpg",
+  imageQuality: 90,
+});
+
+// PNG at the highest compression level
+await saveSlp(labels, "labels.pkg.slp", {
+  embed: "user",
+  imageFormat: "png",
+  imageQuality: 9,
+});
+```
+
+- **`imageFormat`**: `"png"` (lossless) or `"jpg"`. JPEG is **lossy**: the
+  stored frames differ slightly from the source, in exchange for smaller files
+  that decode faster. `"jpeg"` is accepted too and stored as `"jpg"`, the
+  name the dataset's `format` attribute records (as Python).
+- **`imageQuality`**: JPEG quality (0-100, default 95) with `"jpg"`, or PNG
+  compression level (0-9) with `"png"`. It needs an explicit `imageFormat`;
+  anything else throws before a file is written.
+- **Frames already in the format** are stored verbatim, without decoding,
+  with or without `imageQuality`: image files (an image-sequence video) and
+  encoded frames a backend returns that need no red/blue swap. Other frames
+  are decoded and encoded in the format. Colour frames stored BGR are
+  converted to RGB first; grayscale frames and frames with alpha are kept as
+  stored, since the channel order applies only to 3-channel colour images (as
+  in Python).
+- **Grayscale videos** store one-channel images (a grayscale JPEG or PNG), so
+  they read back with one channel in JS and Python.
+- **Already-embedded videos** (re-saving a `.pkg.slp`) follow the same rule
+  as in Python: images already stored in the chosen format are copied as they
+  are, and images in another format are converted, so `imageFormat: "jpg"`
+  turns a PNG package into a JPEG one. Two things differ from Python, both
+  because sleap-io.js always keeps a package's stored images:
+  - All of a video's stored images are kept and converted, whatever `embed`
+    selects. Python keeps only the frames `embed` selects.
+  - A save without `embed` keeps the stored images too, so it converts them.
+    Python's default save (`embed=False`) writes no images at all and refers
+    to the source video, so it never converts.
+
+  Converting in memory decodes and encodes every stored image, which takes
+  about twice the memory of a plain re-save; convert large packages with the
+  streaming writer (`saveSlpStructureToBytes`, then
+  `buildSerializableEmbedPlan(…, { allowEncode: true, imageFormat })` and
+  `appendEncodedVideos`), which handles a few frames at a time.
+- **Packages of raw pixel arrays** (Python's `image_format="hdf5"`) are not
+  embedded images here: a save without `embed` refers to them, as before, and
+  `imageFormat` doesn't convert them; with `embed`, their frames are embedded
+  as new frames in the chosen format.
+- **Without `imageFormat`**, frames are stored as before: new frames as PNG
+  (except encoded frames a backend returns, which are kept as they are unless
+  they are colour images stored BGR, which become RGB PNGs), and
+  already-embedded images copied as they are.
+- **Frame readers** passed to the streaming writer (`frameReader`) must return
+  RGB images (encoded bytes or pixels).
+
+The same options are accepted by `saveSlpToBytes`, `saveSlpStructureToBytes`,
+`writeSlp`, `saveSlpSet`, and `buildSerializableEmbedPlan` (for the streaming
+writer, whose worker encodes the frames). The in-memory and streaming paths
+store the same JPEG bytes; their PNGs decode to the same pixels but are
+compressed differently (see below).
+
+JPEGs are written by a small encoder in plain JS, the same bytes in a browser,
+a worker and Node: baseline JPEG with the standard tables scaled by quality as
+libjpeg does, colour as YCbCr 4:2:0, grayscale as one component, which is what
+OpenCV writes for Python sleap-io (file sizes are close to OpenCV's at the same
+quality). In the streaming writer's worker, PNG compression uses the
+platform's zlib, whose level can't be set: there `imageQuality` 0 stores PNGs
+uncompressed and any other level uses the default. Decoding a frame to encode
+it again (an image in another format, a BGR colour image, or a conversion)
+uses the browser's decoder, or the optional `skia-canvas` package on Node.
+
 ## Multi-File Loading
 
 Load and save multiple SLP files in parallel:
