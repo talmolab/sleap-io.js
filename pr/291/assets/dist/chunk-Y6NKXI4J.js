@@ -17418,16 +17418,8 @@ function setStringAttr(target, name, value) {
   target.create_attribute(name, value, null, `S${byteLength}`);
 }
 function writeStringDataset(file, name, values) {
-  const json = JSON.stringify(values);
-  const bytes = textEncoder.encode(json);
-  file.create_dataset({
-    name,
-    data: bytes,
-    shape: [bytes.length],
-    dtype: "<B"
-  });
-  const ds = file.get(name);
-  setStringAttr(ds, "json", json);
+  file.create_dataset({ name, data: values });
+  setStringAttr(file.get(name), "json", JSON.stringify(values));
 }
 var SPAWNED_ON = 0;
 var ExportCancelled = class extends Error {
