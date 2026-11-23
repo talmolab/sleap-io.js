@@ -66,23 +66,22 @@ import { LabeledFrame } from "../../src/model/labeled-frame.js";
 import { Video } from "../../src/model/video.js";
 import { ready, File as H5File } from "h5wasm/node";
 import { execFileSync } from "node:child_process";
-import {
-  writeFileSync,
-  unlinkSync,
-  existsSync,
-  accessSync,
-  constants,
-} from "node:fs";
+import { writeFileSync, unlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  logSleapIoVersion,
+  type SleapIoPython,
+  UV_SLEAP_IO_PYTHON,
+} from "../sleap-io-requirement.js";
 
 // Cross-compat tests may shell out to Python (cold `uv` cache can be slow).
 setDefaultTimeout(120_000);
 
 // ---------------------------------------------------------------------------
 // Exact jsonpickle bytes produced by Python sleap-io 0.8.0 encode_skeleton()
-// for the edge-case skeletons (captured verbatim from
-// /home/talmo/code/sleap-io/.venv). Hard-coding the on-the-wire form tests the
+// for the edge-case skeletons (captured verbatim from a sleap-io 0.8.0
+// install). Hard-coding the on-the-wire form tests the
 // JS decoder against the REAL Python output, not a JS-authored approximation.
 //
 // These are the PR-#438 cases: links carry full py/object node defs; the
@@ -519,34 +518,25 @@ describe("edge-less skeletons: training-config skeleton extraction", () => {
 // 6. Python <-> JS cross-compat over the SLP format, both directions.
 //    Gated on a usable Python interpreter; skips gracefully otherwise.
 // ===========================================================================
-const VENV_PYTHON = "/home/talmo/code/sleap-io/.venv/bin/python";
-
-function pythonRunner(): { cmd: string; args: string[] } | null {
-  if (existsSync(VENV_PYTHON)) {
-    try {
-      accessSync(VENV_PYTHON, constants.X_OK);
-      execFileSync(VENV_PYTHON, ["-c", "import sleap_io"], { stdio: "pipe" });
-      return { cmd: VENV_PYTHON, args: [] };
-    } catch {
-      /* fall through */
-    }
-  }
+/**
+ * The pinned uv route, `uv run --with "$SLEAP_IO_REQUIREMENT" python`, if it
+ * can import sleap-io; otherwise null, and the Python section skips.
+ */
+function pythonRunner(): SleapIoPython | null {
   try {
     execFileSync(
-      "uv",
-      ["run", "--with", "sleap-io", "python", "-c", "import sleap_io"],
+      UV_SLEAP_IO_PYTHON.cmd,
+      [...UV_SLEAP_IO_PYTHON.args, "-c", "import sleap_io"],
       { stdio: "pipe", timeout: 120_000 },
     );
-    return { cmd: "uv", args: ["run", "--with", "sleap-io", "python"] };
+    return UV_SLEAP_IO_PYTHON;
   } catch {
     return null;
   }
 }
 
-function runPython(
-  runner: { cmd: string; args: string[] },
-  script: string,
-): string {
+function runPython(runner: SleapIoPython, script: string): string {
+  logSleapIoVersion("skeleton-edgeless-nodes", runner);
   const pyPath = join(
     tmpdir(),
     `edgeless-py-${Date.now()}-${Math.random().toString(16).slice(2)}.py`,
@@ -678,7 +668,13 @@ print("OK: Python wrote all edge-less skeletons")
 
     try {
       for (const [key, path] of Object.entries(pathsByKey)) {
-        const labels = await loadSlp(path, { openVideos: false });
+        // Python sleap-io 0.10 may write format 3.0 by default, which asks
+        // for a choice at open time; this test only reads, so it opens
+        // view-only.
+        const labels = await loadSlp(path, {
+          openVideos: false,
+          format3: "view",
+        });
         const sk = labels.skeletons[0];
         const e = expectations[key];
         expect(sk.nodeNames).toEqual(e.names);
