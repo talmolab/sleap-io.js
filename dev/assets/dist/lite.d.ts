@@ -1,5 +1,5 @@
-import { F as FrameGroup, S as Skeleton, T as Track } from './dictionary-c2Uw27zu.js';
-export { E as Edge, N as Node, a as Symmetry } from './dictionary-c2Uw27zu.js';
+import { F as FrameGroup, S as Skeleton, T as Track } from './format-check-DyY4P6hf.js';
+export { E as Edge, N as Node, c as SLP_FORMAT_ID_LIMIT, d as SLP_SUPPORTED_FEATURES, b as SlpFormatError, a as Symmetry } from './format-check-DyY4P6hf.js';
 
 /**
  * jsfive-based HDF5 file interface.
@@ -176,6 +176,7 @@ declare function loadSlpMetadata(source: JsfiveSource, options?: {
  * @param source - ArrayBuffer or Uint8Array containing the SLP file
  * @returns true if the file is a valid SLP file
  * @throws Error with details if the file is invalid
+ * @throws SlpFormatError if the file is in a format this version cannot read
  *
  * @example
  * ```typescript

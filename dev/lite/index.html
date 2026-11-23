@@ -635,6 +635,10 @@
 <li><code>options.filename</code>: Optional filename hint for embedded video paths</li>
 </ul>
 <p><strong>Returns:</strong> <code>Promise&lt;SlpMetadata&gt;</code></p>
+<p><strong>Throws:</strong> <code>SlpFormatError</code> (exported from the lite build too) for a file in a
+format this version cannot read: format 3 or higher, or a <code>required_features</code>
+attribute that names an unknown feature. <code>validateSlpBuffer</code> throws it as well.
+See <a href="../usage/#files-in-a-format-this-version-cannot-read">Files in a format this version cannot read</a>.</p>
 <h3 id="validateslpbuffersource"><code>validateSlpBuffer(source)</code><a class="headerlink" href="#validateslpbuffersource" title="Permanent link">&para;</a></h3>
 <p>Quick structural validation of an SLP file.</p>
 <div class="highlight"><pre><span></span><code><span class="k">try</span><span class="w"> </span><span class="p">{</span>

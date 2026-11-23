@@ -1,16 +1,21 @@
 import {
   Edge,
   Node,
+  SLP_FORMAT_ID_LIMIT,
+  SLP_SUPPORTED_FEATURES,
   Skeleton,
+  SlpFormatError,
   Symmetry,
   Track,
+  checkSlpFormat,
   parseJsonAttr,
   parseSessionsMetadata,
   parseSkeletons,
   parseSuggestions,
   parseTracks,
   parseVideosMetadata
-} from "./chunk-HZLWQQBS.js";
+} from "./chunk-Y4L5NRYY.js";
+import "./chunk-3UBNQTMV.js";
 
 // src/codecs/slp/jsfive.ts
 import * as hdf5 from "jsfive";
@@ -127,6 +132,10 @@ function readSessionDataJsfive(file) {
 async function loadSlpMetadata(source, options) {
   const file = openJsfiveFile(source, options?.filename);
   try {
+    checkSlpFormat(
+      options?.filename ?? "slp-data.slp",
+      file.keys.includes("metadata") ? getAttrs(file.get("metadata")) : null
+    );
     const requiredKeys = ["metadata", "frames", "instances", "points"];
     for (const key of requiredKeys) {
       if (!file.keys.includes(key)) {
@@ -212,6 +221,10 @@ async function loadSlpMetadata(source, options) {
 function validateSlpBuffer(source) {
   const file = openJsfiveFile(source);
   try {
+    checkSlpFormat(
+      "slp-data.slp",
+      file.keys.includes("metadata") ? getAttrs(file.get("metadata")) : null
+    );
     const requiredKeys = ["metadata", "frames", "instances", "points"];
     const missingKeys = requiredKeys.filter((k) => !file.keys.includes(k));
     if (missingKeys.length > 0) {
@@ -238,7 +251,10 @@ function isHdf5Buffer(source) {
 export {
   Edge,
   Node,
+  SLP_FORMAT_ID_LIMIT,
+  SLP_SUPPORTED_FEATURES,
   Skeleton,
+  SlpFormatError,
   Symmetry,
   Track,
   isHdf5Buffer,

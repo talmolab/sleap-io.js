@@ -10,12 +10,14 @@ import {
   PredictedInstance3D,
   RecordingSession,
   Skeleton,
+  SlpFormatError,
   Symmetry,
   Track,
   _registerBboxFactory,
   _registerCentroidFactory,
   attrToNumber,
   attrToString,
+  checkSlpFormat,
   clonePoint,
   cloneRecordingSession,
   datasetValueToString,
@@ -37,19 +39,21 @@ import {
   resolveIdentity,
   resolveVideoFilename,
   sessionsReadError
-} from "./chunk-HZLWQQBS.js";
+} from "./chunk-Y4L5NRYY.js";
+import {
+  openGdrive
+} from "./chunk-RC2FIFDH.js";
 import {
   RemoteIOError,
   fetchRetrying,
   headOrRangeProbe,
   identityHeaders,
   isUrl,
-  openGdrive,
   redactUrl,
   redactedCauseSummary,
   resolveUrl,
   statusToMessage
-} from "./chunk-YS7Q6CO6.js";
+} from "./chunk-3UBNQTMV.js";
 
 // src/model/centroid.ts
 function normalizeCentroidSource(source) {
@@ -16178,8 +16182,9 @@ async function readSlpStreaming(source, options) {
   const openVideos = options?.openVideos ?? false;
   const lazyVideoMetadata = options?.lazyVideoMetadata ?? false;
   const sourcePath = typeof source === "string" ? source : typeof File !== "undefined" && source instanceof File ? source.name : options?.filenameHint ?? "slp-data.slp";
+  let labels;
   try {
-    return await readFromStreamingFile(
+    labels = await readFromStreamingFile(
       file,
       sourcePath,
       options?.filenameHint,
@@ -16191,11 +16196,15 @@ async function readSlpStreaming(source, options) {
       options?.userInstancesOnly ?? false,
       options?.repairPointSpans ?? false
     );
-  } finally {
-    if (!openVideos && !lazyVideoMetadata) {
-      await file.close();
-    }
+  } catch (e) {
+    await file.close().catch(() => {
+    });
+    throw e;
   }
+  if (!openVideos && !lazyVideoMetadata) {
+    await file.close();
+  }
+  return labels;
 }
 async function readFromStreamingFile(file, url, filenameHint, openVideos = false, onProgress, rawSessions = false, lazy = false, lazyVideoMetadata = false, userInstancesOnly = false, repairPointSpans = false) {
   if (lazy && userInstancesOnly) {
@@ -16235,6 +16244,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   } catch {
     throw missingMetadataJsonError(labelsPath);
   }
+  checkSlpFormat(labelsPath, metadataAttrs);
   const formatId = Number(
     metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
   );
@@ -22601,6 +22611,7 @@ async function readSlp(source, options) {
       throw missingMetadataJsonError(labelsPath);
     }
     const metadataAttrs = metadataGroup.attrs ?? {};
+    checkSlpFormat(labelsPath, metadataAttrs);
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
     );
@@ -22822,6 +22833,7 @@ async function readSlpLazy(source, options) {
       throw missingMetadataJsonError(labelsPath);
     }
     const metadataAttrs = metadataGroup.attrs ?? {};
+    checkSlpFormat(labelsPath, metadataAttrs);
     const formatId = Number(
       metadataAttrs["format_id"]?.value ?? metadataAttrs["format_id"] ?? 1
     );
@@ -24486,7 +24498,8 @@ async function loadSlp(source, options) {
           repairPointSpans: options?.repairPointSpans
         });
       } catch (e) {
-        if (e instanceof SlpPointSpanError) throw e;
+        if (e instanceof SlpPointSpanError || e instanceof SlpFormatError)
+          throw e;
         if (streamMode === "auto") {
           console.warn(
             "[sleap-io] Worker-based loading failed, falling back to main thread:",

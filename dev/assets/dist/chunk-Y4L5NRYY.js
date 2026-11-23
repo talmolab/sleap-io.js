@@ -1,3 +1,8 @@
+import {
+  isUrl,
+  redactUrl
+} from "./chunk-3UBNQTMV.js";
+
 // src/model/instance.ts
 var _centroidFactory = null;
 function _registerCentroidFactory(factory) {
@@ -1327,6 +1332,65 @@ var PredictedInstance3D = class extends Instance3D {
   }
 };
 
+// src/codecs/slp/format-check.ts
+var SLP_FORMAT_ID_LIMIT = 3;
+var SLP_SUPPORTED_FEATURES = /* @__PURE__ */ new Set();
+var SlpFormatError = class extends Error {
+  labelsPath;
+  formatId;
+  unsupportedFeatures;
+  constructor(options) {
+    super(options.message);
+    this.name = "SlpFormatError";
+    this.labelsPath = options.labelsPath;
+    this.formatId = options.formatId;
+    this.unsupportedFeatures = options.unsupportedFeatures ?? [];
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
+};
+function attrValue(attr) {
+  if (attr !== null && typeof attr === "object" && !Array.isArray(attr) && !ArrayBuffer.isView(attr) && "value" in attr) {
+    return attr.value;
+  }
+  return attr;
+}
+function featureName(entry) {
+  const text = entry instanceof Uint8Array ? new TextDecoder().decode(entry) : String(entry);
+  return text.replace(/\u0000+$/, "").trim();
+}
+function requiredFeatures(attr) {
+  const value = attrValue(attr);
+  if (value === void 0 || value === null) return [];
+  const entries = Array.isArray(value) || ArrayBuffer.isView(value) && !(value instanceof Uint8Array) ? Array.from(value) : [value];
+  return entries.map(featureName).filter((name) => name.length > 0);
+}
+function formatLabel(formatId) {
+  return Number.isInteger(formatId) ? formatId.toFixed(1) : String(formatId);
+}
+function checkSlpFormat(source, metadataAttrs) {
+  const attrs = metadataAttrs ?? {};
+  const labelsPath = isUrl(source) ? redactUrl(source) : source;
+  const rawFormatId = attrValue(attrs.format_id);
+  const formatId = rawFormatId === void 0 || rawFormatId === null ? null : Number(rawFormatId);
+  if (formatId !== null && formatId >= SLP_FORMAT_ID_LIMIT) {
+    const readers = formatId < 4 ? "Python sleap-io 0.10 or newer reads this format. To open the file here, load it there and save a copy in the 2.x layout with `labels.save(new_path, legacy_format=True)`, or upgrade sleap-io.js to a version that reads format 3." : "It was written by a newer tool than this version of sleap-io.js knows. Open it with the tool that wrote it, or upgrade sleap-io.js.";
+    throw new SlpFormatError({
+      message: `The SLEAP labels file '${labelsPath}' is in SLP format ${formatLabel(formatId)}, which this version of sleap-io.js cannot read (it reads formats below ${formatLabel(SLP_FORMAT_ID_LIMIT)}). ` + readers,
+      labelsPath,
+      formatId
+    });
+  }
+  const unsupported = [...new Set(requiredFeatures(attrs.required_features))].filter((name) => !SLP_SUPPORTED_FEATURES.has(name)).sort();
+  if (unsupported.length > 0) {
+    throw new SlpFormatError({
+      message: `The SLEAP labels file '${labelsPath}'` + (formatId !== null && !Number.isNaN(formatId) ? ` (SLP format ${formatLabel(formatId)})` : "") + ` requires SLP features that this version of sleap-io.js does not support (${unsupported.join(", ")}). Open it with the tool that wrote it, such as a recent Python sleap-io, or upgrade sleap-io.js.`,
+      labelsPath,
+      formatId,
+      unsupportedFeatures: unsupported
+    });
+  }
+}
+
 // src/codecs/slp/parsers.ts
 var textDecoder = new TextDecoder();
 function parseJsonAttr(attr) {
@@ -1874,6 +1938,10 @@ export {
   makeCameraFromDict,
   Instance3D,
   PredictedInstance3D,
+  SLP_FORMAT_ID_LIMIT,
+  SLP_SUPPORTED_FEATURES,
+  SlpFormatError,
+  checkSlpFormat,
   parseJsonAttr,
   missingMetadataJsonError,
   parseMetadataJson,

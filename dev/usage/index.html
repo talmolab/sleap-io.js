@@ -1063,6 +1063,37 @@ their skeleton, so fix or remove them before saving. The writers now refuse to s
 <span class="w">  </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">"dataset.slp"</span><span class="p">,</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">repairPointSpans</span><span class="o">:</span><span class="w"> </span><span class="kt">true</span><span class="w"> </span><span class="p">});</span>
 <span class="p">}</span>
 </code></pre></div>
+<h3 id="files-in-a-format-this-version-cannot-read">Files in a format this version cannot read<a class="headerlink" href="#files-in-a-format-this-version-cannot-read" title="Permanent link">&para;</a></h3>
+<p>sleap-io.js reads SLP formats 1.x and 2.x. Format 3.0, which Python sleap-io
+0.10 introduces, stores each pose table as a group with one dataset per column,
+and this version does not read it yet. Every reader (<code>loadSlp</code>, <code>readSlp</code>,
+<code>readSlpLazy</code>, <code>readSlpStreaming</code>, and <code>loadSlpMetadata</code> and
+<code>validateSlpBuffer</code> in the lite build) throws <code>SlpFormatError</code> for a file of
+format 3 or higher. Without the check such a file would load with no error and
+no poses. The same error is thrown for a file whose <code>required_features</code>
+attribute on <code>/metadata</code> names a feature this version doesn't know.</p>
+<p>The message names the file and its format and says which tool can read it. The
+error also carries <code>formatId</code> and <code>unsupportedFeatures</code>.</p>
+<div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">,</span><span class="w"> </span><span class="nx">SlpFormatError</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js"</span><span class="p">;</span>
+
+<span class="k">try</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="kd">const</span><span class="w"> </span><span class="nx">labels</span><span class="w"> </span><span class="o">=</span><span class="w"> </span><span class="k">await</span><span class="w"> </span><span class="nx">loadSlp</span><span class="p">(</span><span class="s2">"dataset.slp"</span><span class="p">);</span>
+<span class="p">}</span><span class="w"> </span><span class="k">catch</span><span class="w"> </span><span class="p">(</span><span class="nx">e</span><span class="p">)</span><span class="w"> </span><span class="p">{</span>
+<span class="w">  </span><span class="k">if</span><span class="w"> </span><span class="p">(</span><span class="o">!</span><span class="p">(</span><span class="nx">e</span><span class="w"> </span><span class="ow">instanceof</span><span class="w"> </span><span class="nx">SlpFormatError</span><span class="p">))</span><span class="w"> </span><span class="k">throw</span><span class="w"> </span><span class="nx">e</span><span class="p">;</span>
+<span class="w">  </span><span class="c1">// e.g. "... is in SLP format 3.0, which this version of sleap-io.js cannot</span>
+<span class="w">  </span><span class="c1">// read ... Python sleap-io 0.10 or newer reads this format. ..."</span>
+<span class="w">  </span><span class="nx">console</span><span class="p">.</span><span class="nx">error</span><span class="p">(</span><span class="nx">e</span><span class="p">.</span><span class="nx">message</span><span class="p">);</span>
+<span class="p">}</span>
+</code></pre></div>
+<p>To open a format 3.0 file here, load it with Python sleap-io 0.10 or newer and
+save a copy in the 2.x layout:</p>
+<div class="highlight"><pre><span></span><code><span class="kn">import</span><span class="w"> </span><span class="nn">sleap_io</span><span class="w"> </span><span class="k">as</span><span class="w"> </span><span class="nn">sio</span>
+
+<span class="n">sio</span><span class="o">.</span><span class="n">load_slp</span><span class="p">(</span><span class="s2">"dataset.slp"</span><span class="p">)</span><span class="o">.</span><span class="n">save</span><span class="p">(</span><span class="s2">"dataset.v2.slp"</span><span class="p">,</span> <span class="n">legacy_format</span><span class="o">=</span><span class="kc">True</span><span class="p">)</span>
+</code></pre></div>
+<p>The 2.x layout cannot store everything format 3.0 can. If the file holds points
+marked as not labelled, that save raises; pass <code>unlabeled_as="absent"</code> as well
+to write them as missing points.</p>
 <h2 id="saving-with-embedded-frames">Saving with Embedded Frames<a class="headerlink" href="#saving-with-embedded-frames" title="Permanent link">&para;</a></h2>
 <p>Embed video frames directly into the SLP file:</p>
 <div class="highlight"><pre><span></span><code><span class="k">import</span><span class="w"> </span><span class="p">{</span><span class="w"> </span><span class="nx">saveSlp</span><span class="w"> </span><span class="p">}</span><span class="w"> </span><span class="kr">from</span><span class="w"> </span><span class="s2">"@talmolab/sleap-io.js"</span><span class="p">;</span>

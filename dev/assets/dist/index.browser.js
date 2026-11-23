@@ -243,7 +243,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-C4TMQ6B3.js";
+} from "./chunk-NVWSQRND.js";
 import {
   Camera,
   CameraGroup,
@@ -257,7 +257,10 @@ import {
   PredictedInstance,
   PredictedInstance3D,
   RecordingSession,
+  SLP_FORMAT_ID_LIMIT,
+  SLP_SUPPORTED_FEATURES,
   Skeleton,
+  SlpFormatError,
   Symmetry,
   Track,
   _registerBboxFactory,
@@ -273,24 +276,27 @@ import {
   predictedPointsFromArray,
   predictedPointsFromDict,
   rodriguesTransformation
-} from "./chunk-HZLWQQBS.js";
+} from "./chunk-Y4L5NRYY.js";
+import {
+  DEFAULT_MAX_BYTES,
+  checkDownloadHost,
+  openGdrive,
+  parseGdrive,
+  urlFromConfirmation
+} from "./chunk-RC2FIFDH.js";
 import {
   CLOUD_SCHEMES,
-  DEFAULT_MAX_BYTES,
   GDRIVE_HOSTS,
   RETRYABLE_STATUSES,
   RemoteIOError,
   SENSITIVE_HEADERS,
   SENSITIVE_QUERY_PARAMS,
   URL_SCHEMES,
-  checkDownloadHost,
   fetchRetrying,
   headOrRangeProbe,
   identityHeaders,
   isGdriveUrl,
   isUrl,
-  openGdrive,
-  parseGdrive,
   parseRetryAfterMs,
   raiseRemote,
   redactUrl,
@@ -298,9 +304,8 @@ import {
   resolveUrl,
   statusToMessage,
   stripCrossOriginHeaders,
-  urlFromConfirmation,
   withRetries
-} from "./chunk-YS7Q6CO6.js";
+} from "./chunk-3UBNQTMV.js";
 export {
   AUTO_VIDEO_MATCHER,
   AnnotationType,
@@ -376,6 +381,8 @@ export {
   SENSITIVE_HEADERS,
   SENSITIVE_QUERY_PARAMS,
   SHAPE_VIDEO_MATCHER,
+  SLP_FORMAT_ID_LIMIT,
+  SLP_SUPPORTED_FEATURES,
   STRUCTURE_SKELETON_MATCHER,
   SUBSET_SKELETON_MATCHER,
   SegmentationMask,
@@ -386,6 +393,7 @@ export {
   SkeletonMatchMethod,
   SkeletonMatcher,
   SkeletonMismatchError,
+  SlpFormatError,
   SlpPointSpanError,
   SlpStreamWriter,
   StreamingH5File,

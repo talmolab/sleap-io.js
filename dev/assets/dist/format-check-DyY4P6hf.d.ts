@@ -3492,4 +3492,53 @@ declare function toDict(labels: Labels, options?: {
 }): LabelsDict;
 declare function fromDict(data: LabelsDict): Labels;
 
-export { _findAnnotationLinkMatches as $, AUTO_VIDEO_MATCHER as A, BoundingBox as B, Centroid as C, DUPLICATE_MATCHER as D, Edge as E, FrameGroup as F, PATH_VIDEO_MATCHER as G, BASENAME_VIDEO_MATCHER as H, Instance as I, IMAGE_DEDUP_VIDEO_MATCHER as J, SHAPE_VIDEO_MATCHER as K, Labels as L, MergeError as M, Node as N, OVERLAP_SKELETON_MATCHER as O, PredictedInstance as P, setFsResolver as Q, ROI as R, Skeleton as S, Track as T, UserROI as U, Video as V, type FsResolver as W, type MergeStrategy as X, _annotationCentroidXy as Y, _findAnnotationMatches as Z, _relinkFromPredicted as _, Symmetry as a, UserCentroid as a$, _resolveMergedIsNegative as a0, _registerCentroidFactory as a1, _registerBboxFactory as a2, type Point as a3, type PredictedPoint as a4, type PointsArray as a5, type PredictedPointsArray as a6, type PointColumns as a7, pointsEmpty as a8, predictedPointsEmpty as a9, LazyFrameList as aA, _registerMaskFactory as aB, AnnotationType as aC, type Geometry as aD, type ROIOptions as aE, rasterizeGeometry as aF, encodeWkb as aG, decodeWkb as aH, PredictedROI as aI, encodeRle as aJ, decodeRle as aK, resizeNearest as aL, traceMaskContours as aM, groupRingsIntoPolygons as aN, type SegmentationMaskOptions as aO, type UserSegmentationMaskOptions as aP, UserSegmentationMask as aQ, PredictedSegmentationMask as aR, type BboxPadding as aS, type BboxFromInstanceOptions as aT, type BoundingBoxOptions as aU, UserBoundingBox as aV, PredictedBoundingBox as aW, normalizeCentroidSource as aX, getCentroidSkeleton as aY, CENTROID_SKELETON as aZ, type CentroidOptions as a_, clonePoint as aa, pointsFromArray as ab, predictedPointsFromArray as ac, PointView as ad, pointsFromDict as ae, predictedPointsFromDict as af, type NodeOrIndex as ag, EXISTS_TTL_MS as ah, type CropOptions as ai, resolveCropRect as aj, type VideoBackendErrorKind as ak, type VideoBackendError as al, SuggestionFrame as am, rodriguesTransformation as an, Camera as ao, CameraGroup as ap, InstanceGroup as aq, RecordingSession as ar, injectSessionFrameResolver as as, cloneRecordingSession as at, makeCameraFromDict as au, Identity as av, Embedding as aw, Instance3D as ax, PredictedInstance3D as ay, LazyDataStore as az, LabeledFrame as b, PredictedCentroid as b0, type LabelImageObjectInfo as b1, type LabelImageOptions as b2, UserLabelImage as b3, PredictedLabelImage as b4, normalizeLabelIds as b5, type VideoFrame as b6, type GetFrameOptions as b7, type VideoBackend as b8, type LabelsDict as b9, toDict as ba, fromDict as bb, cropPoints as bc, uncropPoints as bd, type CropRect as be, type FlatPoints as bf, type PointPairs as bg, cropFrame as bh, detectGrayscale as bi, grayscaleFrame as bj, type FrameLike as bk, type RawFrame as bl, type Fill as bm, type RangeSource as bn, LabelsSet as c, LabelImage as d, SegmentationMask as e, SkeletonMatchMethod as f, InstanceMatchMethod as g, TrackMatchMethod as h, VideoMatchMethod as i, FrameStrategy as j, ErrorMode as k, SkeletonMatcher as l, InstanceMatcher as m, TrackMatcher as n, VideoMatcher as o, ConflictResolution as p, SkeletonMismatchError as q, MergeResult as r, MatchResult as s, MergeProgressBar as t, STRUCTURE_SKELETON_MATCHER as u, SUBSET_SKELETON_MATCHER as v, IOU_MATCHER as w, IDENTITY_INSTANCE_MATCHER as x, NAME_TRACK_MATCHER as y, IDENTITY_TRACK_MATCHER as z };
+/**
+ * Refuse SLP files this version of sleap-io.js cannot read.
+ *
+ * Every reader (in memory, lazy, streaming, lite) calls {@link checkSlpFormat}
+ * right after it has the `/metadata` attributes and before it reads anything
+ * else. Without the check, a file in a newer layout loads with no error and no
+ * poses (issue #278), because the readers get nothing back when they ask a
+ * group of column datasets for a compound table.
+ *
+ * Mirrors `_check_format_id` in Python sleap-io (`sleap_io/io/slp.py`). This
+ * module has no HDF5 dependency, so the lite (jsfive) reader shares it.
+ */
+/**
+ * The first `format_id` this version of sleap-io.js cannot read. Formats 1.x
+ * and 2.x store the pose tables as compound datasets. Format 3.0 (Python
+ * sleap-io 0.10) stores them as groups with one dataset per column.
+ */
+declare const SLP_FORMAT_ID_LIMIT = 3;
+/**
+ * Features that a file may list in the `required_features` attribute of
+ * `/metadata` and that this version of sleap-io.js understands. A file that
+ * requires anything else is refused, because reading it without understanding
+ * the feature could misread it without any sign.
+ */
+declare const SLP_SUPPORTED_FEATURES: ReadonlySet<string>;
+/**
+ * Thrown when an SLP file is in a format this version of sleap-io.js cannot
+ * read: its `format_id` is at or above {@link SLP_FORMAT_ID_LIMIT}, or its
+ * `required_features` attribute lists a feature that is not in
+ * {@link SLP_SUPPORTED_FEATURES}.
+ *
+ * The message names the file and its format and says which tool can read it.
+ * `labelsPath` is the file's path or name, with URL credentials masked.
+ * `formatId` is the file's `format_id` (`null` when the file has none);
+ * `unsupportedFeatures` lists the required features this version doesn't know
+ * (empty when the format number alone caused the refusal).
+ */
+declare class SlpFormatError extends Error {
+    readonly labelsPath: string;
+    readonly formatId: number | null;
+    readonly unsupportedFeatures: string[];
+    constructor(options: {
+        message: string;
+        labelsPath: string;
+        formatId: number | null;
+        unsupportedFeatures?: string[];
+    });
+}
+
+export { _relinkFromPredicted as $, IDENTITY_INSTANCE_MATCHER as A, BoundingBox as B, Centroid as C, DUPLICATE_MATCHER as D, Edge as E, FrameGroup as F, NAME_TRACK_MATCHER as G, IDENTITY_TRACK_MATCHER as H, Instance as I, AUTO_VIDEO_MATCHER as J, PATH_VIDEO_MATCHER as K, Labels as L, MergeError as M, Node as N, OVERLAP_SKELETON_MATCHER as O, PredictedInstance as P, BASENAME_VIDEO_MATCHER as Q, ROI as R, Skeleton as S, Track as T, UserROI as U, Video as V, IMAGE_DEDUP_VIDEO_MATCHER as W, SHAPE_VIDEO_MATCHER as X, setFsResolver as Y, type FsResolver as Z, type MergeStrategy as _, Symmetry as a, getCentroidSkeleton as a$, _annotationCentroidXy as a0, _findAnnotationMatches as a1, _findAnnotationLinkMatches as a2, _resolveMergedIsNegative as a3, _registerCentroidFactory as a4, _registerBboxFactory as a5, type Point as a6, type PredictedPoint as a7, type PointsArray as a8, type PredictedPointsArray as a9, Instance3D as aA, PredictedInstance3D as aB, LazyDataStore as aC, LazyFrameList as aD, _registerMaskFactory as aE, AnnotationType as aF, type Geometry as aG, type ROIOptions as aH, rasterizeGeometry as aI, encodeWkb as aJ, decodeWkb as aK, PredictedROI as aL, encodeRle as aM, decodeRle as aN, resizeNearest as aO, traceMaskContours as aP, groupRingsIntoPolygons as aQ, type SegmentationMaskOptions as aR, type UserSegmentationMaskOptions as aS, UserSegmentationMask as aT, PredictedSegmentationMask as aU, type BboxPadding as aV, type BboxFromInstanceOptions as aW, type BoundingBoxOptions as aX, UserBoundingBox as aY, PredictedBoundingBox as aZ, normalizeCentroidSource as a_, type PointColumns as aa, pointsEmpty as ab, predictedPointsEmpty as ac, clonePoint as ad, pointsFromArray as ae, predictedPointsFromArray as af, PointView as ag, pointsFromDict as ah, predictedPointsFromDict as ai, type NodeOrIndex as aj, EXISTS_TTL_MS as ak, type CropOptions as al, resolveCropRect as am, type VideoBackendErrorKind as an, type VideoBackendError as ao, SuggestionFrame as ap, rodriguesTransformation as aq, Camera as ar, CameraGroup as as, InstanceGroup as at, RecordingSession as au, injectSessionFrameResolver as av, cloneRecordingSession as aw, makeCameraFromDict as ax, Identity as ay, Embedding as az, SlpFormatError as b, CENTROID_SKELETON as b0, type CentroidOptions as b1, UserCentroid as b2, PredictedCentroid as b3, type LabelImageObjectInfo as b4, type LabelImageOptions as b5, UserLabelImage as b6, PredictedLabelImage as b7, normalizeLabelIds as b8, type VideoFrame as b9, type GetFrameOptions as ba, type VideoBackend as bb, type LabelsDict as bc, toDict as bd, fromDict as be, cropPoints as bf, uncropPoints as bg, type CropRect as bh, type FlatPoints as bi, type PointPairs as bj, cropFrame as bk, detectGrayscale as bl, grayscaleFrame as bm, type FrameLike as bn, type RawFrame as bo, type Fill as bp, type RangeSource as bq, SLP_FORMAT_ID_LIMIT as c, SLP_SUPPORTED_FEATURES as d, LabeledFrame as e, LabelsSet as f, LabelImage as g, SegmentationMask as h, SkeletonMatchMethod as i, InstanceMatchMethod as j, TrackMatchMethod as k, VideoMatchMethod as l, FrameStrategy as m, ErrorMode as n, SkeletonMatcher as o, InstanceMatcher as p, TrackMatcher as q, VideoMatcher as r, ConflictResolution as s, SkeletonMismatchError as t, MergeResult as u, MatchResult as v, MergeProgressBar as w, STRUCTURE_SKELETON_MATCHER as x, SUBSET_SKELETON_MATCHER as y, IOU_MATCHER as z };
