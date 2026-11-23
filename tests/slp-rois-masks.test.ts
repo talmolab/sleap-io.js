@@ -24,6 +24,111 @@ async function roundTrip(labels: Labels): Promise<Labels> {
   return readSlp(new Uint8Array(bytes).buffer, { openVideos: false });
 }
 
+/**
+ * Bytes of `labels` (saved without masks) plus a `/masks` table in the layout
+ * earlier sleap-io.js versions wrote: a flat 2-D float matrix with a
+ * `field_names` attribute, the RLE buffer, and the strings as JSON bytes with
+ * a `json` attribute. `fromPredicted`: the value of each row's
+ * `from_predicted` column, or `null` to leave the column out (a file from
+ * before format 2.4).
+ */
+async function withOldJsMasks(
+  labels: Labels,
+  masks: SegmentationMask[],
+  frameIdx: number,
+  fromPredicted: number[] | null,
+): Promise<ArrayBuffer> {
+  const bytes = await saveSlpToBytes(labels);
+  const module = await ready;
+  const memPath = `/tmp/slp_oldjs_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
+  module.FS.writeFile(memPath, new Uint8Array(bytes));
+  const fields = [
+    "height",
+    "width",
+    "annotation_type",
+    "video",
+    "frame_idx",
+    "track",
+    "score",
+    "rle_start",
+    "rle_end",
+    "is_predicted",
+    "instance",
+    "tracking_score",
+    "scale_x",
+    "scale_y",
+    "offset_x",
+    "offset_y",
+    ...(fromPredicted ? ["from_predicted"] : []),
+  ];
+  const rows: number[][] = [];
+  const rle: number[] = [];
+  masks.forEach((m, i) => {
+    const start = rle.length;
+    for (const count of m.rleCounts) {
+      rle.push(
+        count & 255,
+        (count >> 8) & 255,
+        (count >> 16) & 255,
+        count >>> 24,
+      );
+    }
+    rows.push([
+      m.height,
+      m.width,
+      2,
+      0,
+      frameIdx,
+      -1,
+      m.isPredicted ? (m as PredictedSegmentationMask).score : Number.NaN,
+      start,
+      rle.length,
+      m.isPredicted ? 1 : 0,
+      -1,
+      Number.NaN,
+      1,
+      1,
+      0,
+      0,
+      ...(fromPredicted ? [fromPredicted[i]] : []),
+    ]);
+  });
+  const attr = (target: any, name: string, value: string) =>
+    target.create_attribute(
+      name,
+      value,
+      null,
+      `S${new TextEncoder().encode(value).length}`,
+    );
+  const f = new H5File(memPath, "a");
+  try {
+    f.create_dataset({
+      name: "masks",
+      data: Float64Array.from(rows.flat()),
+      shape: [rows.length, fields.length],
+      dtype: "<d",
+    });
+    attr(f.get("masks"), "field_names", JSON.stringify(fields));
+    f.create_dataset({
+      name: "mask_rle",
+      data: Uint8Array.from(rle),
+      shape: [rle.length],
+      dtype: "<B",
+    });
+    for (const name of ["mask_categories", "mask_names", "mask_sources"]) {
+      const json = JSON.stringify(masks.map(() => ""));
+      const data = new TextEncoder().encode(json);
+      f.create_dataset({ name, data, shape: [data.length], dtype: "<B" });
+      attr(f.get(name), "json", json);
+    }
+  } finally {
+    f.close();
+  }
+  const out = module.FS.readFile(memPath) as Uint8Array;
+  module.FS.unlink(memPath);
+  return new Uint8Array(out).buffer;
+}
+
 /** Read the metadata `format_id` attr from saved SLP bytes via h5wasm. */
 async function readFormatId(bytes: Uint8Array): Promise<number> {
   const module = await ready;
@@ -621,47 +726,19 @@ describe("SLP ROI/Mask I/O", () => {
       skeletons: [skeleton],
     });
 
-    // Write normally (includes the from_predicted column), then surgically
-    // strip "from_predicted" from the masks dataset's field_names attr to
-    // simulate a pre-2.4 file. The reader is presence-gated by NAME, so the
-    // column becomes invisible and every user mask loads with null.
-    const bytes = await saveSlpToBytes(labels);
-    const module = await ready;
-    const memPath = `/tmp/slp_legacy_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
-    module.FS.writeFile(memPath, new Uint8Array(bytes));
-    {
-      const f = new H5File(memPath, "a");
-      const masksDs = f.get("masks") as {
-        attrs: Record<string, { value?: unknown }>;
-        create_attribute: (
-          name: string,
-          value: unknown,
-          shape: unknown,
-          dtype: string,
-        ) => void;
-        delete_attribute: (name: string) => void;
-      };
-      const fieldNames: string[] = JSON.parse(
-        String((masksDs.attrs["field_names"] as { value?: unknown }).value),
-      );
-      const stripped = fieldNames.filter((n) => n !== "from_predicted");
-      const strippedJson = JSON.stringify(stripped);
-      // h5wasm's create_attribute cannot overwrite an existing attribute
-      // ("Object already exists"); delete the original field_names first so the
-      // pre-2.4 (column-stripped) attribute takes effect.
-      masksDs.delete_attribute("field_names");
-      masksDs.create_attribute(
-        "field_names",
-        strippedJson,
-        null,
-        `S${new TextEncoder().encode(strippedJson).length}`,
-      );
-      f.close();
-    }
-    const legacyBytes = module.FS.readFile(memPath) as Uint8Array;
-    module.FS.unlink(memPath);
-
-    const loaded = await readSlp(new Uint8Array(legacyBytes).buffer, {
+    // A masks table as earlier sleap-io.js versions wrote it, from before
+    // format 2.4: no from_predicted column. Every user mask loads with null.
+    const legacyBytes = await withOldJsMasks(
+      new Labels({
+        labeledFrames: [frame],
+        videos: [video],
+        skeletons: [skeleton],
+      }),
+      lfMask.masks,
+      1,
+      null,
+    );
+    const loaded = await readSlp(legacyBytes, {
       openVideos: false,
     });
     loaded.materialize();
@@ -701,43 +778,20 @@ describe("SLP ROI/Mask I/O", () => {
       skeletons: [skeleton],
     });
 
-    // Write, then overwrite every from_predicted cell with an out-of-range index
-    // (999) via write_slice to simulate a corrupt file. The bounds-checked
-    // re-link (fpIdx < masks.length) leaves fromPredicted null.
-    const bytes = await saveSlpToBytes(labels);
-    const module = await ready;
-    const memPath = `/tmp/slp_oor_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
-    module.FS.writeFile(memPath, new Uint8Array(bytes));
-    {
-      const f = new H5File(memPath, "a");
-      const masksDs = f.get("masks") as {
-        shape: number[];
-        attrs: Record<string, { value?: unknown }>;
-        write_slice: (
-          ranges: Array<[number, number]>,
-          data: Float64Array,
-        ) => void;
-      };
-      const fieldNames: string[] = JSON.parse(
-        String((masksDs.attrs["field_names"] as { value?: unknown }).value),
-      );
-      const fpCol = fieldNames.indexOf("from_predicted");
-      expect(fpCol).toBeGreaterThanOrEqual(0);
-      const rowCount = masksDs.shape[0];
-      // Overwrite the from_predicted column (a [rowCount, 1] hyperslab) with 999.
-      masksDs.write_slice(
-        [
-          [0, rowCount],
-          [fpCol, fpCol + 1],
-        ],
-        Float64Array.from({ length: rowCount }, () => 999),
-      );
-      f.close();
-    }
-    const corruptBytes = module.FS.readFile(memPath) as Uint8Array;
-    module.FS.unlink(memPath);
-
-    const loaded = await readSlp(new Uint8Array(corruptBytes).buffer, {
+    // A masks table whose from_predicted cells all hold an out-of-range
+    // index (999), as in a corrupt file. The bounds-checked re-link
+    // (fpIdx < masks.length) leaves fromPredicted null.
+    const corruptBytes = await withOldJsMasks(
+      new Labels({
+        labeledFrames: [frame],
+        videos: [video],
+        skeletons: [skeleton],
+      }),
+      lfMask.masks,
+      1,
+      [999, 999],
+    );
+    const loaded = await readSlp(corruptBytes, {
       openVideos: false,
     });
     loaded.materialize();

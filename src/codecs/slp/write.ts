@@ -47,7 +47,7 @@ import {
   hasSkippedInstanceRows,
   skipsInstanceRow,
 } from "./columnar.js";
-import { sourceMarkOf } from "../../model/source-mark.js";
+import { sessionRecords, sourceMarkOf } from "../../model/source-mark.js";
 import {
   checkEmbedImageFormat,
   embedQuality,
@@ -83,20 +83,6 @@ const textEncoder = new TextEncoder();
 function setStringAttr(target: any, name: string, value: string): void {
   const byteLength = textEncoder.encode(value).length;
   target.create_attribute(name, value, null, `S${byteLength}`);
-}
-
-/** Write a string array as a JSON-encoded string attribute dataset at root level. */
-function writeStringDataset(file: any, name: string, values: string[]): void {
-  const json = JSON.stringify(values);
-  const bytes = textEncoder.encode(json);
-  file.create_dataset({
-    name,
-    data: bytes,
-    shape: [bytes.length],
-    dtype: "<B",
-  });
-  const ds = file.get(name);
-  setStringAttr(ds, "json", json);
 }
 
 const SPAWNED_ON = 0;
@@ -195,10 +181,161 @@ export type UnlabeledAs = "error" | "absent";
  * calls this before it touches its target.
  */
 export function refuseViewOnly(
-  source: { sourceFormat?: SlpSourceFormat | null } | null | undefined,
+  source:
+    | { sourceFormat?: SlpSourceFormat | null; sessions?: RecordingSession[] }
+    | null
+    | undefined,
 ): void {
   const sourceFormat = source?.sourceFormat;
   if (sourceFormat?.access === "view") throw new SlpViewOnlyError(sourceFormat);
+  // The frame groups and instance groups of recording sessions, which no
+  // frame holds.
+  for (const record of sessionRecords(source?.sessions ?? [])) {
+    const mark = sourceMarkOf(record);
+    if (mark?.access === "view") throw new SlpViewOnlyError(mark);
+  }
+}
+
+/**
+ * Whether a centroid, box, mask or ROI holds what the streaming writer does
+ * not write: an identity, a category score or an embedding. Its category
+ * itself is kept, in the table's own `category` column.
+ */
+function annotationLinkLoss(d: IdentityBearing): boolean {
+  return (
+    d.identity != null ||
+    d.identityEmbedding != null ||
+    d.categoryScore != null ||
+    d.categoryEmbedding != null
+  );
+}
+
+/**
+ * Whether an instance holds what the streaming writer does not write: an
+ * identity, a category (instances have no category column) or an embedding.
+ */
+function instanceLinkLoss(d: IdentityBearing): boolean {
+  return (
+    d.identity != null ||
+    d.identityEmbedding != null ||
+    (d.category != null && d.category !== "") ||
+    d.categoryEmbedding != null
+  );
+}
+
+/**
+ * `SlpStreamWriter.appendFrames` writes frames' poses and annotations but no
+ * per-detection identity or category links or embeddings. Frames whose
+ * instances or annotations were loaded from a format 3.0 file for editing,
+ * and hold any of those, are refused before anything is written, as
+ * {@link refuseFormat3StoreLosses} refuses stores.
+ *
+ * @throws {Error} Naming what would be lost and the writers that keep it.
+ */
+function refuseFormat3FrameLosses(frames: Iterable<LabeledFrame>): void {
+  const fromFormat3 = (record: object) => !!sourceMarkOf(record);
+  let instances = false;
+  let annotations = false;
+  let source: SlpSourceFormat | undefined;
+  for (const frame of frames) {
+    for (const inst of frame.instances) {
+      if (fromFormat3(inst) && instanceLinkLoss(inst as IdentityBearing)) {
+        instances = true;
+        source ??= sourceMarkOf(inst);
+      }
+    }
+    for (const list of [
+      frame.centroids,
+      frame.bboxes,
+      frame.masks,
+      frame.rois,
+    ] as IdentityBearing[][]) {
+      for (const d of list) {
+        if (fromFormat3(d as object) && annotationLinkLoss(d)) {
+          annotations = true;
+          source ??= sourceMarkOf(d as object);
+        }
+      }
+    }
+  }
+  if (!source) return;
+  const lost = [
+    ...(instances
+      ? ["the identities, categories or embeddings of their instances"]
+      : []),
+    ...(annotations
+      ? [
+          "the identities, category scores or embeddings of their " +
+            "centroids, boxes, masks or ROIs",
+        ]
+      : []),
+  ];
+  throw new Error(
+    `Frames loaded from '${source.labelsPath}' (SLP format ` +
+      `${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ` +
+      `${lost.join(", and ")}, which SlpStreamWriter.appendFrames does not ` +
+      "write. Save them with saveSlp or saveSlpToBytes, which keep them.",
+  );
+}
+
+/**
+ * The streaming writer (`SlpStreamWriter.appendStore`, and so
+ * `saveSlpMergedFromStores` and `saveSlpMergedToSink`) writes a store's
+ * poses and annotations, but no per-detection identity or category links or
+ * embeddings, and only the identities and sessions given in its header. A
+ * store loaded from a format 3.0 file for editing promised that a save drops
+ * only what its summary lists, so such a store holding any of those is refused
+ * before it is written, naming what would be lost. Stores from files before 3.0
+ * are written as before.
+ *
+ * @throws {Error} Naming what would be lost and the writers that keep it.
+ */
+export function refuseFormat3StoreLosses(
+  store: LazyDataStore,
+  header: { identities: boolean; sessions: boolean },
+): void {
+  const source = store.sourceFormat;
+  if (!source) return;
+  const lost: string[] = [];
+  if ((store.identities ?? []).length > 0 && !header.identities) {
+    lost.push("its identities");
+  }
+  if (
+    store._instanceIdentityLinks?.size ||
+    store._instanceCategoryLinks?.size ||
+    store._instanceEmbeddings?.size ||
+    store._instanceCategoryEmbeddings?.size
+  ) {
+    lost.push("the identities, categories or embeddings of its instances");
+  }
+  const annotations: IdentityBearing[] = [];
+  for (const [byFrame, undistributed] of [
+    [store._centroidByFrame, store._undistributedCentroids],
+    [store._bboxByFrame, store._undistributedBboxes],
+    [store._maskByFrame, store._undistributedMasks],
+    [store._roiByFrame, store._undistributedRois],
+  ] as Array<[Map<string, IdentityBearing[]>, IdentityBearing[]]>) {
+    annotations.push(...undistributed, ...[...byFrame.values()].flat());
+  }
+  if (annotations.some(annotationLinkLoss)) {
+    lost.push(
+      "the identities, category scores or embeddings of its centroids, " +
+        "boxes, masks or ROIs",
+    );
+  }
+  if (store.sourceSessionCount > 0 && !header.sessions) {
+    lost.push("its recording sessions");
+  }
+  if (lost.length > 0) {
+    throw new Error(
+      `The labels loaded from '${source.labelsPath}' (SLP format ` +
+        `${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ${lost.join(", ")}, which the streaming ` +
+        "writer (appendStore, saveSlpMergedFromStores, saveSlpMergedToSink) " +
+        "does not write. Save them with saveSlp or saveSlpToBytes, which " +
+        "keep them, or pass the identities and sessions in the writer's " +
+        "header.",
+    );
+  }
 }
 
 /**
@@ -924,6 +1061,56 @@ function writeSlpToFileLazy(file: any, labels: Labels): void {
     [],
     liCtx,
   );
+
+  // Per-detection identity and category links (and embeddings), as the eager
+  // writer writes them. The instances are the store's rows, written in order
+  // above, so their links come from the store by row; the other detections
+  // are objects, in the order their tables were just written.
+  const detections: DetectionCollections = {
+    instance: lazyInstanceDetections(store, labels.identities),
+    centroid: allCentroids,
+    mask: allMasks,
+    bbox: allBboxes,
+    roi: allRois,
+  };
+  writeIdentityLinks(file, labels.identities, detections);
+  writeCategoryLinks(file, detections);
+  writeEmbeddings(file, detections);
+}
+
+/**
+ * The identity and category of each `/instances` row of a lazy store, as the
+ * readers attach them when a frame materializes: one entry per row (empty for
+ * rows without links), from the store's link and embedding maps.
+ */
+function lazyInstanceDetections(
+  store: LazyDataStore,
+  identities: Identity[],
+): IdentityBearing[] {
+  const rows = (store.instancesData.instance_type ?? []).length;
+  const out: IdentityBearing[] = Array.from({ length: rows }, () => ({}));
+  const catalog = store.identities ?? identities;
+  for (const [row, [idx, score]] of store._instanceIdentityLinks ?? []) {
+    const identity = catalog[idx];
+    if (out[row] && identity) {
+      out[row].identity = identity;
+      out[row].identityScore = score;
+    }
+  }
+  for (const [row, embedding] of store._instanceEmbeddings ?? []) {
+    if (out[row]) out[row].identityEmbedding = embedding;
+  }
+  const categories = store.categoryCatalog ?? [];
+  for (const [row, [idx, score]] of store._instanceCategoryLinks ?? []) {
+    if (out[row] && idx >= 0 && idx < categories.length) {
+      out[row].category = categories[idx];
+      out[row].categoryScore = score;
+    }
+  }
+  for (const [row, embedding] of store._instanceCategoryEmbeddings ?? []) {
+    if (out[row]) out[row].categoryEmbedding = embedding;
+  }
+  return out;
 }
 
 /**
@@ -1192,6 +1379,8 @@ export class SlpStreamWriter {
       videos: Video[];
       skeletons: Skeleton[];
       tracks: Track[];
+      identities?: Identity[];
+      sessions?: RecordingSession[];
     },
   ) {
     this.module = module;
@@ -1200,7 +1389,14 @@ export class SlpStreamWriter {
     this.videos = header.videos;
     this.skeletons = header.skeletons;
     this.tracks = header.tracks;
+    this.headerHas = {
+      identities: (header.identities ?? []).length > 0,
+      sessions: (header.sessions ?? []).length > 0,
+    };
   }
+
+  /** Whether the header written at open holds identities and sessions. */
+  private headerHas: { identities: boolean; sessions: boolean };
 
   /**
    * Append every frame of `store` (in windows), rebasing its ids onto the
@@ -1222,6 +1418,7 @@ export class SlpStreamWriter {
     // Before any row is written: a view-only store is refused, and unlabelled
     // points are refused or written as absent.
     refuseViewOnly(store);
+    refuseFormat3StoreLosses(store, this.headerHas);
     enforceLegacyLayout(storeLegacyLosses(store), opts?.unlabeledAs);
     const windowFrames = opts?.windowFrames ?? DEFAULT_WRITE_WINDOW_FRAMES;
     const vOff = opts?.videoIndexOffset ?? 0;
@@ -1484,6 +1681,7 @@ export class SlpStreamWriter {
     if (this.closed) throw new Error("SlpStreamWriter is closed");
     if (frames.length === 0) return;
     enforceLegacyLayout(framesLegacyLosses(frames), options?.unlabeledAs);
+    refuseFormat3FrameLosses(frames);
     try {
       const frameBase = this.frameRows;
       const instBase = this.instRows;
@@ -1916,7 +2114,7 @@ export async function openSlpWriter(
 ): Promise<SlpStreamWriter> {
   const sourceFormat = (header as { sourceFormat?: SlpSourceFormat | null })
     .sourceFormat;
-  refuseViewOnly({ sourceFormat });
+  refuseViewOnly({ sourceFormat, sessions: header.sessions });
   const module = await getH5Module();
   ensureH5StagingDir(module);
   const memPath = `/tmp/sleap_stream_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
@@ -2000,6 +2198,8 @@ export async function openSlpWriter(
     videos: header.videos,
     skeletons: header.skeletons,
     tracks: header.tracks ?? [],
+    identities: header.identities ?? [],
+    sessions: header.sessions ?? [],
   });
 }
 
@@ -2050,8 +2250,15 @@ async function buildMergedWriter(
   if (stores.length === 0) {
     throw new Error("merging SLP stores requires at least one store");
   }
-  // Refuse a view-only store before the writer is opened.
+  // Refuse a view-only store, and a store from a 3.0 file holding what this
+  // writer would drop, before the writer is opened.
   for (const store of stores) refuseViewOnly(store);
+  for (const store of stores) {
+    refuseFormat3StoreLosses(store, {
+      identities: (options?.identities ?? []).length > 0,
+      sessions: (options?.sessions ?? []).length > 0,
+    });
+  }
   const sig = skeletonSignature(stores[0].skeletons);
   for (let i = 1; i < stores.length; i++) {
     if (skeletonSignature(stores[i].skeletons) !== sig) {
@@ -3050,6 +3257,11 @@ function anyDetection(
 
 /** Whether any detection carries a per-detection identity or embedding (format 2.5). */
 function hasPerDetectionIdentity(labels: Labels): boolean {
+  // A lazy store keeps its instances' links by row (written by the lazy saves).
+  const store = labels.isLazy ? labels._lazyDataStore : null;
+  if (store?._instanceIdentityLinks?.size || store?._instanceEmbeddings?.size) {
+    return true;
+  }
   return anyDetection(
     labels,
     (d) => d.identity != null || d.identityEmbedding != null,
@@ -3058,6 +3270,13 @@ function hasPerDetectionIdentity(labels: Labels): boolean {
 
 /** Whether any detection carries a category or category embedding (format 2.7). */
 function hasPerDetectionCategory(labels: Labels): boolean {
+  const store = labels.isLazy ? labels._lazyDataStore : null;
+  if (
+    store?._instanceCategoryLinks?.size ||
+    store?._instanceCategoryEmbeddings?.size
+  ) {
+    return true;
+  }
   return anyDetection(
     labels,
     (d) =>
@@ -3371,11 +3590,14 @@ function writeSessions(
     }
     const fgEnd = fgRows.length;
 
+    // Session metadata goes at the top level of the entry, as Python sleap-io
+    // writes it (`session_dict.update(session.metadata)`); the keys of the
+    // session's structure win over metadata keys of the same name.
     sessionsJson.push(
       JSON.stringify({
+        ...(session.metadata ?? {}),
         calibration,
         camcorder_to_video_idx_map,
-        metadata: session.metadata ?? {},
         fg_start: fgStart,
         fg_end: fgEnd,
       }),
@@ -5334,6 +5556,108 @@ function createCompoundDataset(
   );
 }
 
+// The 2.x annotation tables as Python sleap-io writes them (`legacy_format=True`
+// in 0.10, and 0.9.x): contiguous compound datasets with these member types
+// (`_TABLE_SPECS[...].legacy`, `LI_DTYPE`, `OBJ_DTYPE`, `LI_SM_INDEX_DTYPE`),
+// and the strings in variable-length UTF-8 string datasets beside them. See
+// the note above INSTANCE_COMPOUND_FIELDS for the h5wasm dtype characters.
+const SPATIAL_COMPOUND_FIELDS: CompoundField[] = [
+  ["scale_x", "<f"], // f4
+  ["scale_y", "<f"], // f4
+  ["offset_x", "<f"], // f4
+  ["offset_y", "<f"], // f4
+];
+const ROI_COMPOUND_FIELDS: CompoundField[] = [
+  ["annotation_type", "<B"], // u1
+  ["video", "<i"], // i4
+  ["frame_idx", "<q"], // i8
+  ["track", "<i"], // i4
+  ["is_predicted", "<B"], // u1
+  ["score", "<f"], // f4
+  ["tracking_score", "<f"], // f4
+  ["wkb_start", "<Q"], // u8
+  ["wkb_end", "<Q"], // u8
+  ["instance", "<i"], // i4
+];
+const MASK_COMPOUND_FIELDS: CompoundField[] = [
+  ["height", "<I"], // u4
+  ["width", "<I"], // u4
+  ["annotation_type", "<B"], // u1
+  ["video", "<i"], // i4
+  ["frame_idx", "<q"], // i8
+  ["track", "<i"], // i4
+  ["instance", "<i"], // i4
+  ["from_predicted", "<i"], // i4
+  ["is_predicted", "<B"], // u1
+  ["score", "<f"], // f4
+  ["tracking_score", "<f"], // f4
+  ["rle_start", "<Q"], // u8
+  ["rle_end", "<Q"], // u8
+  ...SPATIAL_COMPOUND_FIELDS,
+];
+const scoreMapIndexFields = (index: string): CompoundField[] => [
+  [index, "<I"], // u4
+  ["data_start", "<Q"], // u8
+  ["data_end", "<Q"], // u8
+  ["height", "<I"], // u4
+  ["width", "<I"], // u4
+  ...SPATIAL_COMPOUND_FIELDS,
+];
+const LABEL_IMAGE_COMPOUND_FIELDS: CompoundField[] = [
+  ["video", "<i"], // i4
+  ["frame_idx", "<q"], // i8
+  ["height", "<I"], // u4
+  ["width", "<I"], // u4
+  ["n_objects", "<I"], // u4
+  ["objects_start", "<I"], // u4
+  ["data_start", "<Q"], // u8
+  ["data_end", "<Q"], // u8
+  ["is_predicted", "<B"], // u1
+  ["score", "<f"], // f4
+  ...SPATIAL_COMPOUND_FIELDS,
+];
+const LABEL_IMAGE_OBJECT_COMPOUND_FIELDS: CompoundField[] = [
+  ["label_id", "<i"], // i4
+  ["track", "<i"], // i4
+  ["instance", "<i"], // i4
+  ["score", "<f"], // f4
+  ["tracking_score", "<f"], // f4
+];
+
+/**
+ * Write one of the 2.x annotation tables as Python sleap-io does: a
+ * contiguous compound dataset with `fields` as its members. `rows[i][j]` is
+ * the value of column `columns[j]` of row i, in any order.
+ */
+function createLegacyTable(
+  file: any,
+  name: string,
+  rows: number[][],
+  columns: string[],
+  fields: CompoundField[],
+): void {
+  const data = new Map<string, number[]>();
+  for (const [field] of fields) {
+    const j = columns.indexOf(field);
+    if (j < 0) throw new Error(`${name}: no value for column ${field}`);
+    data.set(
+      field,
+      rows.map((row) => row[j]),
+    );
+  }
+  file.create_dataset({ name, data, shape: [rows.length], dtype: fields });
+}
+
+/** Write strings as Python sleap-io does: a variable-length UTF-8 dataset. */
+function writeVlenStrings(file: any, name: string, values: string[]): void {
+  file.create_dataset({
+    name,
+    data: values,
+    shape: [values.length],
+    dtype: "S",
+  });
+}
+
 function writeRois(
   file: any,
   rois: ROI[],
@@ -5393,7 +5717,7 @@ function writeRois(
     sources.push(roi.source);
   }
 
-  createMatrixDataset(
+  createLegacyTable(
     file,
     "rois",
     rows,
@@ -5409,13 +5733,13 @@ function writeRois(
       "instance",
       "is_predicted",
     ],
-    "<f8",
+    ROI_COMPOUND_FIELDS,
   );
 
   // Write string metadata as datasets at root level (v1.9+)
-  writeStringDataset(file, "roi_categories", categories);
-  writeStringDataset(file, "roi_names", names);
-  writeStringDataset(file, "roi_sources", sources);
+  writeVlenStrings(file, "roi_categories", categories);
+  writeVlenStrings(file, "roi_names", names);
+  writeVlenStrings(file, "roi_sources", sources);
 
   // Write concatenated WKB bytes
   const totalWkb = wkbChunks.reduce((sum, c) => sum + c.length, 0);
@@ -5561,6 +5885,10 @@ function writeMasks(
           smOffset + compressed.length,
           smH,
           mask.width,
+          pm.scoreMapScale[0],
+          pm.scoreMapScale[1],
+          pm.scoreMapOffset[0],
+          pm.scoreMapOffset[1],
         ]);
         scoreMapChunks.push(compressed);
         smOffset += compressed.length;
@@ -5568,7 +5896,7 @@ function writeMasks(
     }
   }
 
-  createMatrixDataset(
+  createLegacyTable(
     file,
     "masks",
     rows,
@@ -5591,13 +5919,13 @@ function writeMasks(
       "offset_y",
       "from_predicted",
     ],
-    "<f8",
+    MASK_COMPOUND_FIELDS,
   );
 
   // Write string metadata as datasets at root level (v1.9+)
-  writeStringDataset(file, "mask_categories", categories);
-  writeStringDataset(file, "mask_names", names);
-  writeStringDataset(file, "mask_sources", sources);
+  writeVlenStrings(file, "mask_categories", categories);
+  writeVlenStrings(file, "mask_names", names);
+  writeVlenStrings(file, "mask_sources", sources);
 
   // Write concatenated RLE bytes
   const totalRle = rleChunks.reduce((sum, c) => sum + c.length, 0);
@@ -5634,12 +5962,22 @@ function writeMasks(
 
   // Write score maps
   if (scoreMapIndexRows.length > 0) {
-    createMatrixDataset(
+    createLegacyTable(
       file,
       "mask_score_map_index",
       scoreMapIndexRows,
-      ["mask_idx", "data_start", "data_end", "height", "width"],
-      "<f8",
+      [
+        "mask_idx",
+        "data_start",
+        "data_end",
+        "height",
+        "width",
+        "scale_x",
+        "scale_y",
+        "offset_x",
+        "offset_y",
+      ],
+      scoreMapIndexFields("mask_idx"),
     );
     const totalSm = scoreMapChunks.reduce((sum, c) => sum + c.length, 0);
     const smFlat = new Uint8Array(totalSm);
@@ -5857,6 +6195,10 @@ function writeLabelImages(
           smOffset + smCompressed.length,
           smH,
           li.width,
+          pli.scoreMapScale[0],
+          pli.scoreMapScale[1],
+          pli.scoreMapOffset[0],
+          pli.scoreMapOffset[1],
         ]);
         smChunks.push(smCompressed);
         smOffset += smCompressed.length;
@@ -5865,7 +6207,7 @@ function writeLabelImages(
   }
 
   // Write main metadata table
-  createMatrixDataset(
+  createLegacyTable(
     file,
     "label_images",
     rows,
@@ -5885,24 +6227,24 @@ function writeLabelImages(
       "offset_x",
       "offset_y",
     ],
-    "<f8",
+    LABEL_IMAGE_COMPOUND_FIELDS,
   );
 
   // Write string metadata as datasets at root level (v1.9+)
-  writeStringDataset(file, "label_image_sources", sources);
+  writeVlenStrings(file, "label_image_sources", sources);
 
   // Write objects table (if any objects exist)
   if (objectRows.length > 0) {
-    createMatrixDataset(
+    createLegacyTable(
       file,
       "label_image_objects",
       objectRows,
       ["label_id", "track", "instance", "score", "tracking_score"],
-      "<f8",
+      LABEL_IMAGE_OBJECT_COMPOUND_FIELDS,
     );
     // Write string metadata as datasets at root level (v1.9+)
-    writeStringDataset(file, "label_image_obj_categories", objectCategories);
-    writeStringDataset(file, "label_image_obj_names", objectNames);
+    writeVlenStrings(file, "label_image_obj_categories", objectCategories);
+    writeVlenStrings(file, "label_image_obj_names", objectNames);
   }
 
   // Write concatenated compressed pixel data
@@ -5922,12 +6264,22 @@ function writeLabelImages(
 
   // Write score maps
   if (smIndexRows.length > 0) {
-    createMatrixDataset(
+    createLegacyTable(
       file,
       "label_image_score_map_index",
       smIndexRows,
-      ["li_idx", "data_start", "data_end", "height", "width"],
-      "<f8",
+      [
+        "li_idx",
+        "data_start",
+        "data_end",
+        "height",
+        "width",
+        "scale_x",
+        "scale_y",
+        "offset_x",
+        "offset_y",
+      ],
+      scoreMapIndexFields("li_idx"),
     );
     const totalSm = smChunks.reduce((sum, c) => sum + c.length, 0);
     const smFlat = new Uint8Array(totalSm);

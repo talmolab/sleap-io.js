@@ -113,6 +113,13 @@ export class LazyDataStore {
     this._instanceCategoryEmbeddings = options.instanceCategoryEmbeddings;
   }
 
+  /**
+   * Recording sessions of the file the store was read from (they are kept on
+   * the labels, not in the store), so writers of stores alone can tell they
+   * would drop them. @internal
+   */
+  sourceSessionCount = 0;
+
   /** Identity catalog for resolving per-instance identity links (SLP 2.5). @internal */
   identities?: Identity[];
   /** owner_id (global instance_id) → [identity_idx, score|null], OWNER_INSTANCE. @internal */
@@ -177,6 +184,7 @@ export class LazyDataStore {
       instanceCategoryEmbeddings: this._instanceCategoryEmbeddings,
     });
 
+    newStore.sourceSessionCount = this.sourceSessionCount;
     // Copy per-frame annotation dicts
     newStore._centroidByFrame = copyAnnMap(this._centroidByFrame);
     newStore._bboxByFrame = copyAnnMap(this._bboxByFrame);

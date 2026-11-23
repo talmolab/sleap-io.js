@@ -79,3 +79,22 @@ describe("StreamingH5File.open scheme resolution", () => {
     expect(openUrlPayloads).toHaveLength(0);
   });
 });
+
+describe("StreamingH5File.close", () => {
+  it("ends the worker even when the worker-side close fails", async () => {
+    const { file } = stubbedStreamingFile();
+    let terminated = 0;
+    (file as unknown as { worker: { terminate: () => void } }).worker = {
+      terminate: () => {
+        terminated += 1;
+      },
+    };
+    (file as unknown as { _isOpen: boolean })._isOpen = true;
+    (file as unknown as { send: () => Promise<never> }).send = async () => {
+      throw new Error("worker-side close failed");
+    };
+    await expect(file.close()).rejects.toThrow("worker-side close failed");
+    expect(terminated).toBe(1);
+    expect(file.isOpen).toBe(false);
+  });
+});

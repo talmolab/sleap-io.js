@@ -607,12 +607,16 @@ export class StreamingH5File {
    * Close the file and terminate the worker.
    */
   async close(): Promise<void> {
-    if (this._isOpen) {
-      await this.send("close");
-      this._isOpen = false;
+    try {
+      if (this._isOpen) {
+        this._isOpen = false;
+        await this.send("close");
+      }
+    } finally {
+      // End the worker even when the worker-side close fails.
+      this.worker.terminate();
+      this._keys = [];
     }
-    this.worker.terminate();
-    this._keys = [];
   }
 }
 
@@ -1136,6 +1140,12 @@ export async function openH5Worker(
   }
 
   const file = new StreamingH5File();
-  await file.openAny(source, options);
+  try {
+    await file.openAny(source, options);
+  } catch (e) {
+    // A failed open must not leave the worker running.
+    await file.close().catch(() => {});
+    throw e;
+  }
   return file;
 }

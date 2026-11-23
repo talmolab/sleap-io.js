@@ -35,19 +35,28 @@ import {
   countUnlabeledPoints,
   METADATA_SUBGROUP,
   type PoseTableName,
-  UNREAD_FORMAT_3_TABLES,
   unknownColumns,
 } from "./codecs/slp/columnar.js";
+import {
+  type ColumnTable,
+  FORMAT3_TABLES,
+  type Format3TableName,
+  isKnownTableColumn,
+  reportTableProblems,
+  sessionProblems,
+  TABLE_SPECS,
+  tableFromColumns,
+  unknownTableColumns,
+  unknownTableGroups,
+} from "./codecs/slp/columnar-tables.js";
 import {
   buildFormat3Summary,
   type Format3Summary,
   PARTLY_READ_GROUPS,
   unreadMembers,
 } from "./codecs/slp/format3.js";
-import {
-  checkSlpFormat,
-  unreadTablesError,
-} from "./codecs/slp/format-check.js";
+import { checkSlpFormat } from "./codecs/slp/format-check.js";
+import { streamingUnreadMembers } from "./codecs/slp/streaming-coverage.js";
 import {
   parseJsonAttr,
   parseSkeletons,
@@ -144,20 +153,136 @@ export interface SlpMetadata {
    * Absent for files before 3.0.
    */
   format3?: Format3Summary;
+
+  /**
+   * What the file holds that the streaming reader (`readSlpStreaming`) does
+   * not read, as paths: ROI, mask and label image tables (in any layout), and
+   * `identity/links`, `categories/links` or `embeddings` when they hold rows
+   * of detections other than instances. jsfive cannot read compound
+   * datasets, so the link tables of Python-written 2.x files are listed
+   * whenever present, even when they link instances only (which the streaming
+   * reader reads). Empty when that reader reads everything the others read.
+   *
+   * `format3` describes `readSlp`, `readSlpLazy` and `loadSlp`. A 3.0 file
+   * read with `readSlpStreaming` also drops these on an edit (its own summary
+   * lists them), and `loadSlp` reads such a 3.0 file with the in-memory
+   * reader in its default mode. A file before 3.0 is streamed by `loadSlp` in
+   * a browser, without these.
+   */
+  streamingUnreadTables: string[];
+}
+
+/** Whether `path` is a group, and so is each of its parents. */
+function isGroupPath(
+  file: ReturnType<typeof openJsfiveFile>,
+  path: string,
+): boolean {
+  let prefix = "";
+  for (const part of path.split("/")) {
+    prefix = prefix ? `${prefix}/${part}` : part;
+    if (!isGroup(file.get(prefix))) return false;
+  }
+  return true;
+}
+
+/** The member datasets of a group (none when `path` is not a group). */
+function groupDatasets(
+  file: ReturnType<typeof openJsfiveFile>,
+  path: string,
+): string[] {
+  if (!isGroupPath(file, path)) return [];
+  const node = file.get(path) as JsfiveGroup;
+  return node.keys.filter((name) => isDataset(file.get(`${path}/${name}`)));
 }
 
 /**
- * A format 3.0 file may hold tables this version does not read in their 3.0
- * form yet. Refuse it by name, as the full readers do.
+ * Read one of the format 3.0 tables other than the pose tables when it is
+ * stored as a group of columns, or `null` when it is not (see
+ * `columnar-tables.ts`).
  */
-function refuseUnreadTables(
+function readColumnTableJsfive(
   file: ReturnType<typeof openJsfiveFile>,
+  table: Format3TableName,
   labelsPath: string,
-  formatId: number,
-): void {
-  if (!(formatId >= 3.0)) return;
-  const found = UNREAD_FORMAT_3_TABLES.filter((path) => !!file.get(path));
-  if (found.length > 0) throw unreadTablesError(labelsPath, formatId, found);
+): ColumnTable | null {
+  if (!isGroupPath(file, table)) return null;
+  const columns: Record<string, ArrayLike<unknown>> = {};
+  const unknownLengths: Record<string, number> = {};
+  for (const name of groupDatasets(file, table)) {
+    const dataset = file.get(`${table}/${name}`);
+    if (!isKnownTableColumn(table, name)) {
+      const shape = getShape(dataset);
+      if (name !== TABLE_SPECS[table].buffer && shape.length) {
+        unknownLengths[name] = shape[0];
+      }
+      continue;
+    }
+    const value = getValue(dataset);
+    if (value && typeof value === "object" && "length" in value) {
+      columns[name] = value as ArrayLike<unknown>;
+    }
+  }
+  return tableFromColumns(table, columns, labelsPath, unknownLengths);
+}
+
+/**
+ * One column of a table read with jsfive: a 3.0 column dataset, or a column
+ * of a flat 2-D table with a `field_names` attribute (as sleap-io.js writes
+ * 2.x tables). `null` when it cannot be read here (a compound dataset).
+ */
+function columnJsfive(
+  file: ReturnType<typeof openJsfiveFile>,
+  path: string,
+  column: string,
+): number[] | null {
+  const node = file.get(path);
+  if (isGroup(node)) {
+    if (!node.keys.includes(column)) return [];
+    const value = getValue(file.get(`${path}/${column}`));
+    return value && typeof value === "object" && "length" in value
+      ? Array.from(value as ArrayLike<unknown>, Number)
+      : null;
+  }
+  const flat = getValue(node) as ArrayLike<unknown> | null;
+  const shape = getShape(node);
+  const raw = (getAttrs(node) as Record<string, unknown>)?.field_names;
+  let fields: string[] = [];
+  try {
+    fields = typeof raw === "string" ? (JSON.parse(raw) as string[]) : [];
+  } catch {
+    fields = [];
+  }
+  const j = fields.indexOf(column);
+  if (!flat || shape.length !== 2 || j < 0) return null;
+  const [rows, cols] = shape;
+  return Array.from({ length: rows }, (_, i) => Number(flat[i * cols + j]));
+}
+
+/** What the streaming reader would not read (see `streamingUnreadTables`). */
+function streamingUnreadJsfive(
+  file: ReturnType<typeof openJsfiveFile>,
+): string[] {
+  const owners: Record<string, number[] | null> = {};
+  for (const group of ["identity", "categories"]) {
+    const node = file.get(group);
+    if (isGroup(node) && node.keys.includes("links")) {
+      owners[`${group}/links`] = columnJsfive(
+        file,
+        `${group}/links`,
+        "owner_type",
+      );
+    }
+  }
+  const embeddings = file.get("embeddings");
+  if (isGroup(embeddings)) {
+    const types: number[] = [];
+    for (const column of ["owner_type", "category_owner_type"]) {
+      if (!embeddings.keys.includes(column)) continue;
+      types.push(...(columnJsfive(file, "embeddings", column) ?? [Number.NaN]));
+    }
+    owners.embeddings = types;
+  }
+  return streamingUnreadMembers({ root: file.keys, owners });
 }
 
 /** Whether a jsfive dtype is one a metadata `values` column may have. */
@@ -216,16 +341,26 @@ function format3SummaryJsfive(
   ];
   return buildFormat3Summary({
     formatId,
-    unreadTables: unreadMembers({
-      root: file.keys,
-      groups: Object.fromEntries(
-        PARTLY_READ_GROUPS.filter((g) => isGroup(file.get(g))).map((g) => [
-          g,
-          members(g),
-        ]),
+    unreadTables: [
+      ...unreadMembers({
+        root: file.keys,
+        groups: Object.fromEntries(
+          PARTLY_READ_GROUPS.filter((g) => isGroup(file.get(g))).map((g) => [
+            g,
+            members(g),
+          ]),
+        ),
+        provenanceInMetadata,
+      }),
+      ...FORMAT3_TABLES.flatMap((table) =>
+        isGroupPath(file, table)
+          ? unknownTableGroups(
+              table,
+              members(table).filter((n) => isGroup(file.get(`${table}/${n}`))),
+            )
+          : [],
       ),
-      provenanceInMetadata,
-    }),
+    ],
     unlabeledUserPoints: unlabeled("points"),
     unlabeledPredictedPoints: unlabeled("pred_points"),
     metadataKeys: {
@@ -236,6 +371,9 @@ function format3SummaryJsfive(
     unknownColumns: [
       ...poseTables.flatMap((table) => unknownColumns(table, datasets(table))),
       ...unknownColumns("bboxes", datasets("bboxes")),
+      ...FORMAT3_TABLES.flatMap((table) =>
+        unknownTableColumns(table, groupDatasets(file, table)),
+      ),
     ],
   });
 }
@@ -278,11 +416,30 @@ function format3SummaryJsfive(
  */
 function readSessionDataJsfive(
   file: ReturnType<typeof openJsfiveFile>,
+  labelsPath: string,
 ): SessionData | null {
   const grp = file.get("session_data");
   if (!grp || !isGroup(grp)) return null;
+  // Format 3.0 stores the three tables as groups of columns (a missing one is
+  // empty, as in Python sleap-io); before, as compound datasets.
+  const columnar = (
+    ["frame_groups", "instance_groups", "instance_group_members"] as const
+  ).some((name) => isGroupPath(file, `session_data/${name}`));
 
-  const struct = (name: string): Record<string, unknown[]> | null => {
+  const struct = (
+    name: "frame_groups" | "instance_groups" | "instance_group_members",
+  ): Record<string, ArrayLike<unknown>> | null => {
+    if (columnar) {
+      const table = `session_data/${name}` as const;
+      return (
+        readColumnTableJsfive(file, table, labelsPath) ??
+        tableFromColumns(
+          table,
+          Object.fromEntries(TABLE_SPECS[table].numbers.map((c) => [c, []])),
+          labelsPath,
+        )
+      );
+    }
     const ds = file.get(`session_data/${name}`);
     if (!ds || !isDataset(ds)) return null;
     const flat = getValue(ds) as ArrayLike<number> | null;
@@ -332,12 +489,37 @@ function readSessionDataJsfive(
     return v != null ? [v] : null;
   };
 
+  const points3d = matrix("points_3d", 3);
+  const predPoints3d = matrix("pred_points_3d", 4);
+  if (columnar) {
+    // Python sleap-io's range checks on 3.0 session tables, as the other
+    // readers run them.
+    const rows = (m: SessionPointMatrix | null) =>
+      m && m.ncols > 0 ? Math.floor(m.flat.length / m.ncols) : 0;
+    const frames = file.get("frames");
+    reportTableProblems(
+      labelsPath,
+      sessionProblems({
+        frameGroups: frameGroups as ColumnTable,
+        instanceGroups: instanceGroups as ColumnTable,
+        members: members as ColumnTable,
+        nPoints3d: rows(points3d),
+        nPredPoints3d: rows(predPoints3d),
+        nIdentities: getShape(file.get("identity/name"))[0] ?? 0,
+        nFrames: frames
+          ? (getShape(
+              isGroup(frames) ? file.get("frames/frame_idx") : frames,
+            )[0] ?? 0)
+          : null,
+      }),
+    );
+  }
   return {
     frameGroups,
     instanceGroups,
     members,
-    points3d: matrix("points_3d", 3),
-    predPoints3d: matrix("pred_points_3d", 4),
+    points3d,
+    predPoints3d,
     frameGroupMeta: meta("frame_group_meta"),
     instanceGroupMeta: meta("instance_group_meta"),
   };
@@ -386,10 +568,6 @@ export async function loadSlpMetadata(
     if (!metadataJson) {
       throw new Error("Invalid SLP file: missing metadata.attrs.json");
     }
-
-    // A format 3.0 file may hold tables this version does not read in their
-    // 3.0 form yet; `/session_data` is the one this reader would touch.
-    refuseUnreadTables(file, options?.filename ?? "slp-data.slp", formatId);
 
     // Parse skeletons using shared logic
     const skeletons = parseSkeletons(metadataJson);
@@ -447,7 +625,7 @@ export async function loadSlpMetadata(
     const sessions = Array.isArray(sessionsValue)
       ? parseSessionsMetadata(
           sessionsValue,
-          readSessionDataJsfive(file),
+          readSessionDataJsfive(file, labelsPath),
           skeletons,
         )
       : [];
@@ -490,6 +668,7 @@ export async function loadSlpMetadata(
       provenance: metadataJson.provenance as
         | Record<string, unknown>
         | undefined,
+      streamingUnreadTables: streamingUnreadJsfive(file),
       ...(formatId >= 3.0
         ? {
             format3: format3SummaryJsfive(
@@ -555,16 +734,6 @@ export function validateSlpBuffer(source: JsfiveSource): boolean {
     if (!attrs.json) {
       throw new Error("Invalid SLP file: missing metadata.attrs.json");
     }
-    // Nor does a 3.0 file with tables no reader of this version reads yet.
-    refuseUnreadTables(
-      file,
-      "slp-data.slp",
-      Number(
-        (attrs.format_id as { value?: unknown })?.value ??
-          attrs.format_id ??
-          1.0,
-      ),
-    );
 
     return true;
   } finally {

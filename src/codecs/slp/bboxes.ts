@@ -136,7 +136,7 @@ export function buildBboxTuples(
     const scoreVal = scores.length > i ? Number(scores[i]) : Number.NaN;
     const isPred =
       isPredictedCol.length > i
-        ? Number(isPredictedCol[i]) === 1
+        ? Number(isPredictedCol[i]) !== 0 // any nonzero flag, as Python's bool()
         : !Number.isNaN(scoreVal);
 
     let bbox: BoundingBox;

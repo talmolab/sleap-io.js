@@ -19,10 +19,23 @@ import {
   negativeFrameKeysFromFrames,
   type PoseTableName,
   poseTableFromColumns,
-  UNREAD_FORMAT_3_TABLES,
   unknownColumns,
 } from "./columnar.js";
-import { checkSlpFormat, unreadTablesError } from "./format-check.js";
+import {
+  type ColumnTable,
+  FORMAT3_TABLES,
+  type Format3TableName,
+  isKnownTableColumn,
+  linkProblems,
+  reportTableProblems,
+  sessionProblems,
+  TABLE_SPECS,
+  tableFromColumns,
+  unknownTableColumns,
+  unknownTableGroups,
+} from "./columnar-tables.js";
+import { checkSlpFormat, SlpFormatError } from "./format-check.js";
+import { streamingUnreadMembers } from "./streaming-coverage.js";
 import {
   buildFormat3Summary,
   checkFormat3Option,
@@ -41,7 +54,11 @@ import {
   metadataKeys,
   metadataRecord,
 } from "../../model/record-metadata.js";
-import { markFrameSource, markSource } from "../../model/source-mark.js";
+import {
+  markFrameSource,
+  markSessionSource,
+  markSource,
+} from "../../model/source-mark.js";
 import {
   openH5Worker,
   type StreamingH5File,
@@ -58,6 +75,7 @@ import {
   decodeEntryText,
   sessionsReadError,
   reconstructColumnarFrameGroups,
+  sessionMetadataFromJson,
   type SessionData,
   type SessionPointMatrix,
   parseSkeletons,
@@ -160,7 +178,8 @@ export interface StreamingSlpOptions {
    * no instances to begin with (e.g. negative frames) are kept. A user
    * instance's `fromPredicted` link is left unset, and recording sessions
    * (multi-camera groupings) aren't read. Default `false`. Can't be combined
-   * with `lazy`.
+   * with `lazy`, nor, for a file in SLP format 3.0, with `format3: "edit"`
+   * (a save would lose what the filter skipped).
    */
   userInstancesOnly?: boolean;
   /**
@@ -187,6 +206,35 @@ export interface StreamingSlpOptions {
    * Without it a 3.0 file throws `SlpFormat3ChoiceError`. See `readSlp`.
    */
   format3?: Format3Access;
+  /**
+   * For a file in SLP format 3.0: throw {@link StreamingIncompleteError},
+   * before reading any table, when it holds content this reader does not read
+   * (ROIs, masks, label images, links and embeddings of detections other than
+   * instances), so the caller can use the in-memory reader instead. `loadSlp`
+   * does that in its default (`"auto"`) mode. Default `false`: such content is
+   * not read, and the file's summary lists it as something an edit drops.
+   * Files before 3.0 are read as always (this reader skips that content in
+   * them too, without a summary).
+   */
+  failIfIncomplete?: boolean;
+}
+
+/**
+ * Thrown by the streaming reader, when asked (`failIfIncomplete`), for a file
+ * that holds content it does not read. `unread` lists it, as paths.
+ */
+export class StreamingIncompleteError extends Error {
+  readonly unread: string[];
+
+  constructor(labelsPath: string, unread: string[]) {
+    super(
+      `The streaming reader does not read ${unread.join(", ")} of ` +
+        `'${labelsPath}'; read it with readSlp or readSlpLazy instead.`,
+    );
+    this.name = "StreamingIncompleteError";
+    this.unread = unread;
+    Object.setPrototypeOf(this, new.target.prototype);
+  }
 }
 
 /**
@@ -539,6 +587,7 @@ export async function readSlpStreaming(
       options?.userInstancesOnly ?? false,
       options?.repairPointSpans ?? false,
       options?.format3,
+      options?.failIfIncomplete ?? false,
     );
   } catch (e) {
     // A failed read returns no Labels, so no video backend can need the file.
@@ -576,6 +625,7 @@ export async function readFromStreamingFile(
   userInstancesOnly: boolean = false,
   repairPointSpans: boolean = false,
   format3Choice?: Format3Access,
+  failIfIncomplete: boolean = false,
 ): Promise<Labels> {
   checkFormat3Option(format3Choice);
   if (lazy && userInstancesOnly) {
@@ -639,7 +689,21 @@ export async function readFromStreamingFile(
   ) as Record<string, unknown> | null;
 
   const skeletons = parseSkeletons(metadataJson);
-  await refuseUnreadFormat3TablesStreaming(file, labelsPath, formatId);
+  if (userInstancesOnly && format3Choice === "edit" && isFormat3(formatId)) {
+    // The filter drops predicted instances and every recording session, which
+    // a save of an edit load would then lose without the summary saying so.
+    throw new Error(
+      `readSlpStreaming: '${labelsPath}' is in SLP format 3.0; ` +
+        "userInstancesOnly drops its predicted instances and sessions, so it " +
+        'can only be opened with format3: "view" (or without the filter).',
+    );
+  }
+  if (failIfIncomplete && isFormat3(formatId)) {
+    const unread = await unreadByStreaming(file, file.keys());
+    if (unread.length > 0) {
+      throw new StreamingIncompleteError(labelsPath, unread);
+    }
+  }
 
   report(1);
   const tracks = await readTracksStreaming(file);
@@ -769,7 +833,7 @@ export async function readFromStreamingFile(
   // on-demand attach in materializeFrame.
   if (labeledFrames || lazyStore) {
     const { links, embs, catLinks, catEmbs, categoryCatalog } =
-      await readStreamingInstanceIdentity(file);
+      await readStreamingInstanceIdentity(file, labelsPath);
     if (links.size || embs.size || catLinks.size || catEmbs.size) {
       if (labeledFrames) {
         const allInstances = instanceRowLookup(
@@ -862,6 +926,8 @@ export async function readFromStreamingFile(
         skeletons,
         identities,
         rawSessions,
+        labelsPath,
+        file.keys().includes("frames") ? columnLength(framesData) : null,
       );
 
   onProgress?.(total, total, "Finalizing");
@@ -879,6 +945,7 @@ export async function readFromStreamingFile(
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
   });
   labels.sourceFormat = format3?.sourceFormat ?? null;
+  markSessionSource(sessions, format3?.sourceFormat);
   if (labeledFrames) {
     for (const frame of labeledFrames) {
       markFrameSource(frame, format3?.sourceFormat);
@@ -892,6 +959,7 @@ export async function readFromStreamingFile(
     // differs from the eager streaming build for rare sparse/non-contiguous ids.
     labels._lazyFrameList = new LazyFrameList(lazyStore);
     labels._lazyDataStore = lazyStore;
+    lazyStore.sourceSessionCount = sessions.length;
   }
   // Sessions are read before the frame store exists; wire the lazy frame
   // resolver now so ref-backed grouping resolves against labels.labeledFrames
@@ -1525,7 +1593,10 @@ async function readIdentitiesStreaming(
  * result is applied either to a concrete instance list (non-lazy) or handed to the
  * `LazyDataStore` for on-demand attach (lazy).
  */
-async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
+async function readStreamingInstanceIdentity(
+  file: StreamingH5File,
+  labelsPath: string,
+): Promise<{
   links: Map<number, [number, number | null]>;
   embs: Map<number, Embedding>;
   catLinks: Map<number, [number, number | null]>;
@@ -1536,19 +1607,32 @@ async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
 
   // OWNER_INSTANCE rows of a links table (identity or categories).
   const readOwnerInstanceLinks = async (
-    group: string,
+    group: "identity" | "categories",
     idxField: string,
     scoreField: string,
   ): Promise<Map<number, [number, number | null]>> => {
     const out = new Map<number, [number, number | null]>();
     try {
       if (!rootKeys.includes(group)) return out;
-      if (!(await file.getKeys(group)).includes("links")) return out;
-      const cols = await readStructDatasetStreaming(
-        file,
-        `${group}/links`,
-        true,
-      );
+      const children = await file.getKeys(group);
+      if (!children.includes("links")) return out;
+      // Format 3.0: a group of columns, whose catalog indices must name an
+      // entry of the catalog beside it. Before: a compound dataset.
+      const table = `${group}/links` as const;
+      let cols: Record<string, ArrayLike<unknown>> | null =
+        await readColumnTableStreaming(file, table, labelsPath);
+      if (cols) {
+        reportTableProblems(
+          labelsPath,
+          linkProblems(
+            table,
+            cols,
+            await datasetLengthStreaming(file, group, "name"),
+          ),
+        );
+      } else {
+        cols = await readStructDatasetStreaming(file, table, true);
+      }
       const ot = cols.owner_type ?? [];
       const oid = cols.owner_id ?? [];
       const idx = cols[idxField] ?? [];
@@ -1561,8 +1645,9 @@ async function readStreamingInstanceIdentity(file: StreamingH5File): Promise<{
           Number.isNaN(score) ? null : score,
         ]);
       }
-    } catch {
-      /* optional */
+    } catch (err) {
+      // Optional, except that inconsistent 3.0 tables are refused.
+      if (err instanceof SlpFormatError) throw err;
     }
     return out;
   };
@@ -1648,6 +1733,8 @@ export async function readSessionsStreaming(
   skeletons: Skeleton[],
   identities?: Identity[],
   captureRaw: boolean = false,
+  labelsPath: string = "slp-data.slp",
+  nFrames: number | null = null,
 ): Promise<RecordingSession[]> {
   try {
     const keys = file.keys();
@@ -1662,7 +1749,11 @@ export async function readSessionsStreaming(
 
     // SLP 2.8 columnar /session_data (read once for all sessions), or null for
     // legacy ≤2.7 files.
-    const sessionData = await readSessionDataStreaming(file);
+    const sessionData = await readSessionDataStreaming(
+      file,
+      labelsPath,
+      nFrames,
+    );
 
     const sessions: RecordingSession[] = [];
     for (const entry of values) {
@@ -1699,8 +1790,7 @@ export async function readSessionsStreaming(
 
       const session = new RecordingSession({
         cameraGroup,
-        metadata:
-          (parsed.metadata as Record<string, unknown> | undefined) ?? {},
+        metadata: sessionMetadataFromJson(parsed),
       });
       // Optionally retain the verbatim parsed sessions_json dict (deprecated,
       // opt-in via `rawSessions`). Deep-cloned so it is an INDEPENDENT snapshot
@@ -1914,19 +2004,40 @@ export async function readSessionsStreaming(
  */
 async function readSessionDataStreaming(
   file: StreamingH5File,
+  labelsPath: string,
+  nFrames: number | null,
 ): Promise<SessionData | null> {
   if (!file.keys().includes("session_data")) return null;
   const children = new Set(await file.getKeys("session_data"));
+  // Format 3.0 stores the three tables as groups of columns (a missing one is
+  // empty, as in Python sleap-io); before, as compound datasets.
+  const names = [
+    "frame_groups",
+    "instance_groups",
+    "instance_group_members",
+  ] as const;
+  let columnar = false;
+  for (const name of names) {
+    if (
+      children.has(name) &&
+      !(await isDatasetStreaming(file, `session_data/${name}`))
+    ) {
+      columnar = true;
+    }
+  }
 
   const struct = async (
-    name: string,
-  ): Promise<Record<string, unknown[]> | null> => {
+    name: (typeof names)[number],
+  ): Promise<Record<string, ArrayLike<unknown>> | null> => {
+    const table = `session_data/${name}` as const;
+    if (columnar) {
+      return (
+        (await readColumnTableStreaming(file, table, labelsPath)) ??
+        emptyColumnTable(table)
+      );
+    }
     if (!children.has(name)) return null;
-    const cols = await readStructDatasetStreaming(
-      file,
-      `session_data/${name}`,
-      true,
-    );
+    const cols = await readStructDatasetStreaming(file, table, true);
     return Object.keys(cols).length ? cols : null;
   };
   const frameGroups = await struct("frame_groups");
@@ -1949,12 +2060,32 @@ async function readSessionDataStreaming(
     return normalizeDatasetArray(d.value);
   };
 
+  const points3d = await matrix("points_3d", 3);
+  const predPoints3d = await matrix("pred_points_3d", 4);
+  if (columnar) {
+    const rows = (m: SessionPointMatrix | null) =>
+      m && m.ncols > 0 ? Math.floor(m.flat.length / m.ncols) : 0;
+    reportTableProblems(
+      labelsPath,
+      sessionProblems({
+        frameGroups: frameGroups as ColumnTable,
+        instanceGroups: instanceGroups as ColumnTable,
+        members: members as ColumnTable,
+        nPoints3d: rows(points3d),
+        nPredPoints3d: rows(predPoints3d),
+        nIdentities: file.keys().includes("identity")
+          ? ((await datasetLengthStreaming(file, "identity", "name")) ?? 0)
+          : 0,
+        nFrames,
+      }),
+    );
+  }
   return {
     frameGroups,
     instanceGroups,
     members,
-    points3d: await matrix("points_3d", 3),
-    predPoints3d: await matrix("pred_points_3d", 4),
+    points3d,
+    predPoints3d,
     frameGroupMeta: await meta("frame_group_meta"),
     instanceGroupMeta: await meta("instance_group_meta"),
   };
@@ -1976,28 +2107,72 @@ async function childKeys(
 }
 
 /**
- * A format 3.0 file may hold tables this version does not read in their 3.0
- * form yet. Refuse it by name instead of loading it without them.
+ * Whether `path` is a group, and so is each of its parents (a path under a
+ * dataset is not a group).
  */
-async function refuseUnreadFormat3TablesStreaming(
+async function isGroupStreaming(
   file: StreamingH5File,
+  path: string,
+): Promise<boolean> {
+  const parts = path.split("/");
+  let parent = "";
+  for (const part of parts) {
+    const children = parent ? await childKeys(file, parent) : file.keys();
+    if (!children.includes(part)) return false;
+    parent = parent ? `${parent}/${part}` : part;
+    if (await isDatasetStreaming(file, parent)) return false;
+  }
+  return true;
+}
+
+/**
+ * Read one of the format 3.0 tables other than the pose tables when it is
+ * stored as a group of columns, or `null` when it is not. Mirrors
+ * `readColumnTable` in read.ts: only the columns this version knows are
+ * fetched.
+ *
+ * @throws {SlpTableError} When a required column is missing or the columns
+ *   differ in length.
+ */
+async function readColumnTableStreaming(
+  file: StreamingH5File,
+  table: Format3TableName,
   labelsPath: string,
-  formatId: number,
-): Promise<void> {
-  if (!(formatId >= 3.0)) return;
-  const root = file.keys();
-  const found: string[] = [];
-  for (const path of UNREAD_FORMAT_3_TABLES) {
-    const [parent, child] = path.split("/");
-    if (!root.includes(parent)) continue;
-    if (
-      child === undefined ||
-      (await childKeys(file, parent)).includes(child)
-    ) {
-      found.push(path);
+): Promise<ColumnTable | null> {
+  if (!(await isGroupStreaming(file, table))) return null;
+  const columns: Record<string, ArrayLike<unknown>> = {};
+  const unknownLengths: Record<string, number> = {};
+  for (const name of await membersStreaming(file, table, "Dataset")) {
+    if (isKnownTableColumn(table, name)) {
+      columns[name] = normalizeDatasetArray(
+        (await file.getDatasetValue(`${table}/${name}`)).value,
+      );
+    } else if (name !== TABLE_SPECS[table].buffer) {
+      const shape = (await file.getDatasetMeta(`${table}/${name}`)).shape;
+      if (shape?.length) unknownLengths[name] = shape[0];
     }
   }
-  if (found.length > 0) throw unreadTablesError(labelsPath, formatId, found);
+  return tableFromColumns(table, columns, labelsPath, unknownLengths);
+}
+
+/** An empty table of one of the format 3.0 tables. */
+function emptyColumnTable(table: Format3TableName): ColumnTable {
+  return tableFromColumns(
+    table,
+    Object.fromEntries(TABLE_SPECS[table].numbers.map((c) => [c, []])),
+    "",
+  );
+}
+
+/** The length of a 1-D dataset under `group`, or `null` when it is absent. */
+async function datasetLengthStreaming(
+  file: StreamingH5File,
+  group: string,
+  name: string,
+): Promise<number | null> {
+  if (!(await childKeys(file, group)).includes(name)) return null;
+  const meta = await file.getDatasetMeta(`${group}/${name}`);
+  return meta?.shape?.[0] ?? 0;
 }
 
 /**
@@ -2206,17 +2381,37 @@ async function readFormat3Streaming(
     );
   }
   unknown.push(...unknownColumns("bboxes", bboxColumns));
+  const unreadGroups: string[] = [];
+  for (const table of FORMAT3_TABLES) {
+    if (!(await isGroupStreaming(file, table))) continue;
+    unknown.push(
+      ...unknownTableColumns(
+        table,
+        await membersStreaming(file, table, "Dataset"),
+      ),
+    );
+    unreadGroups.push(
+      ...unknownTableGroups(
+        table,
+        await membersStreaming(file, table, "Group"),
+      ),
+    );
+  }
   const groups: Record<string, string[]> = {};
   for (const group of PARTLY_READ_GROUPS) {
     if (root.includes(group)) groups[group] = await childKeys(file, group);
   }
   const summary = buildFormat3Summary({
     formatId,
-    unreadTables: unreadMembers({
-      root,
-      groups,
-      provenanceInMetadata: tables.provenanceInMetadata ?? false,
-    }),
+    unreadTables: [
+      ...unreadMembers({
+        root,
+        groups,
+        provenanceInMetadata: tables.provenanceInMetadata ?? false,
+      }),
+      ...(await unreadByStreaming(file, root)),
+      ...unreadGroups,
+    ],
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(
       predPointsData ?? tables.predPointFlags ?? undefined,
@@ -2234,6 +2429,55 @@ async function readFormat3Streaming(
     frameMetadata,
     bboxMetadata,
   };
+}
+
+/** The owner types of a links table or embeddings join column, as numbers. */
+async function ownerTypesStreaming(
+  file: StreamingH5File,
+  path: string,
+  column: string,
+): Promise<number[]> {
+  const group = await isGroupStreaming(file, path);
+  if (group) {
+    if (!(await childKeys(file, path)).includes(column)) return [];
+    const value = (await file.getDatasetValue(`${path}/${column}`)).value;
+    return normalizeDatasetArray(value).map(Number);
+  }
+  const cols = await readStructDatasetStreaming(file, path, true);
+  return Array.from(cols[column] ?? [], Number);
+}
+
+/**
+ * What a file holds that the streaming reader, unlike the others, does not
+ * read: ROIs, masks and label images (in any layout), and the identity and
+ * category links and embeddings of detections other than instances. Listed
+ * in the format 3.0 summary so that an edit says it drops them.
+ */
+async function unreadByStreaming(
+  file: StreamingH5File,
+  root: readonly string[],
+): Promise<string[]> {
+  const owners: Record<string, number[]> = {};
+  for (const group of ["identity", "categories"]) {
+    if (!root.includes(group)) continue;
+    if (!(await childKeys(file, group)).includes("links")) continue;
+    owners[`${group}/links`] = await ownerTypesStreaming(
+      file,
+      `${group}/links`,
+      "owner_type",
+    );
+  }
+  if (root.includes("embeddings")) {
+    const children = await childKeys(file, "embeddings");
+    const types: number[] = [];
+    for (const column of ["owner_type", "category_owner_type"]) {
+      if (!children.includes(column)) continue;
+      const value = (await file.getDatasetValue(`embeddings/${column}`)).value;
+      types.push(...normalizeDatasetArray(value).map(Number));
+    }
+    owners.embeddings = types;
+  }
+  return streamingUnreadMembers({ root, owners });
 }
 
 async function readStructDatasetStreaming(

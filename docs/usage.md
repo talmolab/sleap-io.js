@@ -370,10 +370,45 @@ try {
 
 ### Format 3.0 files, and formats this version cannot read
 
-sleap-io.js reads SLP formats 1.x, 2.x and the pose tables of format 3.0, which
-Python sleap-io 0.10 introduces. Format 3.0 stores each pose table (`/frames`,
-`/instances`, `/points`, `/pred_points`) as a group with one dataset per
-column. Every reader handles both layouts and returns the same `Labels`.
+sleap-io.js reads SLP formats 1.x, 2.x and 3.0, which Python sleap-io 0.10
+introduces. Format 3.0 stores every table as a group with one dataset per
+column: the pose tables (`/frames`, `/instances`, `/points`, `/pred_points`),
+`/rois`, `/masks` (with `score_maps/`), `/label_images` (with `objects/` and
+`score_maps/`), the identity and category links (`/identity/links`,
+`/categories/links`) and the recording session tables
+(`/session_data/frame_groups`, `instance_groups`, `instance_group_members`).
+Every reader handles both layouts and returns the same `Labels`. A 3.0 table
+missing an optional column reads it as Python sleap-io does (for example, an
+ROI without `is_predicted` is a user ROI), and the range checks Python runs
+over these tables (links to videos, tracks, instances, catalogs and frames,
+byte ranges inside their buffers) raise `SlpTableError`. The streaming reader
+reads, of these tables, the links of instances and the session tables (it
+reads no ROIs, masks or label images in any layout), and the summary it gives
+for a 3.0 file lists the rest in `unreadTables` (below), as something an edit
+drops. `loadSlp` in a browser uses the streaming reader, except that in its
+default stream mode (`"auto"`) a 3.0 file holding ROIs, masks, label images,
+or links or embeddings of detections other than instances is read with the
+standard reader on the main thread, so nothing is lost. That read takes the
+whole file into memory (a URL is downloaded whole, a `File` read whole) and
+blocks the page while it runs; pass `h5: { stream: "range" }` to keep
+streaming, and the summary then lists what is not read. Files before 3.0 take
+the streaming route as before, which skips that content in them without a
+word. The lite `loadSlpMetadata` reads the session tables, and its
+`streamingUnreadTables` lists what a streaming read would leave out, for files
+of any format (the link tables of Python-written 2.x files are listed whenever
+present, as the lite reader cannot read their owner types); its `format3`
+summary describes `readSlp`, `readSlpLazy` and `loadSlp`. The range checks run in the
+readers that read a table, so the streaming and lite readers do not check the
+tables they leave out. The streaming reader's `userInstancesOnly`, which skips
+predicted instances and sessions, opens a 3.0 file only with
+`format3: "view"`.
+
+A recording session's metadata is stored at the top level of its
+`sessions_json` entry, beside `calibration`, `camcorder_to_video_idx_map`,
+`fg_start` and `fg_end`, as Python sleap-io stores it. A metadata key with one
+of those names is not saved, and the readers read the entries of a `metadata`
+key that holds an object as metadata (files from earlier sleap-io.js versions
+stored it there), so avoid those keys.
 
 sleap-io.js still writes the 2.x layout only, so a format 3.0 file that is
 loaded and saved comes out in the 2.x layout. That never happens silently: every
@@ -388,12 +423,25 @@ it throws `SlpFormat3ChoiceError` (a subclass of `SlpFormatError`):
   `SlpViewOnlyError` before it touches its target.
 - `format3: "edit"` loads the same, and a save writes the 2.x layout and drops
   what that layout cannot store: points marked as not labelled are written as
-  hidden points with no location, and metadata and unknown columns are not
-  written.
+  hidden points with no location, and metadata and unknown columns (of any
+  table) are not written. ROIs, masks, label images, links and session tables
+  are written in their 2.x form. Like Python's `legacy_format=True`, that
+  form stores some numbers in narrower types than 3.0: scores, tracking
+  scores, scales and offsets of ROIs, masks, label images and score maps as
+  32-bit floats, and their video, track and instance indices as 32-bit
+  integers. The streaming writer (`SlpStreamWriter.appendStore` and
+  `appendFrames`, `saveSlpMergedFromStores`, `saveSlpMergedToSink`) writes no
+  per-detection identity or category links or embeddings (the category of a
+  centroid, box, mask or ROI is kept, in its own column, but not its score),
+  and only the identities and sessions given in its header. It refuses
+  stores and frames loaded this way that hold any of those, before writing
+  them, and names what would be lost. Save such labels with `saveSlp` or
+  `saveSlpToBytes`.
 
 The choice travels with the content, not only with the `Labels` it was loaded
-into. Every labeled frame, instance and annotation read from a 3.0 file carries
-it, and copies keep it (`Labels.copy`, `extract`, `merge`, `BoundingBox.pad`,
+into. Every labeled frame, instance and annotation (static ROIs included), and
+every frame group and instance group of a recording session, read from a 3.0
+file carries it, and copies keep it (`Labels.copy` with its sessions, `extract`, `merge`, `BoundingBox.pad`,
 `toRoi`, `toMask` and the other conversions between boxes, centroids, masks,
 ROIs and label images). So content from a view-only file is refused by every
 SLP writer wherever it ends up (merged into other labels, passed to
@@ -434,8 +482,9 @@ returned as `format3` by the lite `loadSlpMetadata`, so an application can ask
 before a full read) says what an edit would drop. Besides unlabelled points,
 metadata and unknown columns, that is anything in the file this version does
 not read at all, in `unreadTables`: for example the frame-spanning events
-(`events`, `event_types`), the metadata of categories (`categories/meta_*`), or
-a table added by a newer writer:
+(`events`, `event_types`), the metadata of categories (`categories/meta_*`), a
+table added by a newer writer, or a sub-table it does not know inside one it
+reads (`masks/<name>`):
 
 ```ts
 import { loadSlp, SlpFormat3ChoiceError } from "@talmolab/sleap-io.js";
@@ -473,12 +522,10 @@ Every reader (`loadSlp`, `readSlp`, `readSlpLazy`, `readSlpStreaming`, and
 - a file of format 4 or higher;
 - a file whose `required_features` attribute on `/metadata` names a feature
   this version doesn't know;
-- a format 3.0 file that holds a table this version does not read in that
-  format yet: ROIs, masks, label images, identity and category links, or
-  session data. The message names the tables;
 - a format 3.0 file whose tables are inconsistent (a missing required column,
   columns of different lengths, instance or point ranges that do not fit,
-  metadata without one row per record). This is `SlpTableError`, a subclass of
+  links to rows that do not exist, byte ranges outside their buffer, metadata
+  without one row per record). This is `SlpTableError`, a subclass of
   `SlpFormatError`, and the message names the table.
 
 The message names the file and its format and says which tool can read it. The
@@ -495,8 +542,8 @@ try {
 }
 ```
 
-A format 3.0 file that is refused for its tables can be saved in the 2.x layout
-with Python sleap-io 0.10 or newer:
+A format 3.0 file can also be saved in the 2.x layout with Python sleap-io 0.10
+or newer:
 
 ```python
 import sleap_io as sio
@@ -814,7 +861,7 @@ Multi-camera 3D pose estimation with cross-library interop (Python sleap-io, luc
 import { Identity, Instance3D, PredictedInstance3D } from "@talmolab/sleap-io.js";
 
 // Ground-truth identity (persists across sessions)
-const animal = new Identity({ name: "mouse_A", color: "#ff0000" });
+const animal = new Identity({ name: "animal_A", color: "#ff0000" });
 
 // 3D instance from triangulation
 const inst3d = new Instance3D({

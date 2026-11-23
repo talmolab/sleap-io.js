@@ -274,11 +274,13 @@ describe("Raw sessions_json surface (#197)", () => {
       rawSessions: true,
     });
     const s = reloaded.sessions[0];
+    // Session metadata is stored at the top level of the entry, as Python
+    // sleap-io stores it.
     const raw = s.rawJson as Record<string, unknown>;
-    const rawMeta = raw.metadata as { lucid: { trustTracks: unknown } };
+    const rawMeta = raw as unknown as { lucid: { trustTracks: unknown } };
 
     // Distinct object identities between model and the raw snapshot.
-    expect(s.metadata).not.toBe(raw.metadata);
+    expect(s.metadata).not.toBe(raw);
     expect((s.metadata as { lucid: unknown }).lucid).not.toBe(rawMeta.lucid);
 
     // Mutating rawJson does NOT change what the model writes to disk.
@@ -457,14 +459,14 @@ describe("Raw sessions_json surface (#197)", () => {
     // unmodeled top-level keys and re-derives the member map (now columnar).
     expect(Object.hasOwn(written, "unmodeled_top_level_key")).toBe(false);
     // The write emits its own slim SLP 2.8 top-level shape (calibration + video
-    // map + metadata + the fg_start/fg_end range into /session_data); no verbatim
-    // echo of the source, and no inline frame_group_dicts.
+    // map + the session metadata's keys, none here + the fg_start/fg_end range
+    // into /session_data); no verbatim echo of the source, and no inline
+    // frame_group_dicts.
     expect(Object.keys(written).sort()).toEqual([
       "calibration",
       "camcorder_to_video_idx_map",
       "fg_end",
       "fg_start",
-      "metadata",
     ]);
 
     // FIDELITY GUARANTEE is Option 2 (rawJson), not the object-model write:
