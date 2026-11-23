@@ -238,7 +238,12 @@ interface VideoBackend {
     getFrameBuffer?(frameNumber: number): Promise<Uint8Array | null>;
     /** Encoded format of stored blobs ("png"|"jpg"|"jpeg"|raw). Embedded only. */
     readonly embeddedFormat?: string;
-    /** Channel order of stored blobs ("RGB"|"BGR"). Embedded only. */
+    /**
+     * Channel order of stored blobs ("RGB"|"BGR"). Embedded only. A frame that
+     * {@link getFrame} returns undecoded (encoded or raw pixel bytes, as outside
+     * a browser) is in this order; decode it with this order to get RGB. A
+     * decoded frame (`ImageBitmap` / `ImageData`) is always RGB already.
+     */
     readonly embeddedChannelOrder?: string;
     /**
      * Deferred (lazyVideoMetadata) backends: fetch per-video metadata skipped at

@@ -1,4 +1,4 @@
-import { bm as VideoBackend, bB as RangeSource$1, bl as GetFrameOptions, bk as VideoFrame, k as SlpSourceFormat, bC as MetadataColumn, l as Labels, V as Video, S as Skeleton, T as Track, aA as SuggestionFrame, aJ as Identity, aF as RecordingSession, aN as LazyDataStore, m as LabeledFrame, bD as MetadataKind, a8 as FsResolver, bs as CropRect, bA as Fill, bt as FlatPoints, bu as PointPairs, bh as UserLabelImage, j as Format3Option, n as LabelsSet, aR as Geometry, R as ROI, I as Instance, p as SegmentationMask, P as PredictedInstance, o as LabelImage, B as BoundingBox } from './dictionary-yYW2LM0_.js';
+import { bm as VideoBackend, bB as RangeSource$1, bl as GetFrameOptions, bk as VideoFrame, k as SlpSourceFormat, bC as MetadataColumn, l as Labels, V as Video, S as Skeleton, T as Track, aA as SuggestionFrame, aJ as Identity, aF as RecordingSession, aN as LazyDataStore, m as LabeledFrame, bD as MetadataKind, a8 as FsResolver, bs as CropRect, bA as Fill, bt as FlatPoints, bu as PointPairs, bh as UserLabelImage, j as Format3Option, n as LabelsSet, aR as Geometry, R as ROI, I as Instance, p as SegmentationMask, P as PredictedInstance, o as LabelImage, B as BoundingBox } from './dictionary-BskPZ7EO.js';
 import { CustomVideoDecoder, EncodedPacket } from 'mediabunny';
 
 /**
@@ -2613,23 +2613,13 @@ declare class CropVideoBackend implements VideoBackend {
      * returned as-is. `null` (the default for every shipping backend — encoded
      * blobs / per-frame rows cannot be spatially hyperslabbed) means fall back.
      *
-     * Fallback: decode the inner full frame, normalize it to readable pixels
+     * Fallback: decode the inner full frame, normalize it to readable RGB pixels
      * (rasterizing an opaque `ImageBitmap`, decoding undecoded encoded bytes, or
-     * wrapping raw pixel bytes), then apply {@link cropFrame} with this wrapper's
-     * crop/fill. Returns `null` when the inner returns `null` (no such frame).
+     * wrapping raw pixel bytes, in the inner's `embeddedChannelOrder`), then
+     * apply {@link cropFrame} with this wrapper's crop/fill. Returns `null` when
+     * the inner returns `null` (no such frame).
      */
     getFrame(frameIndex: number, opts?: GetFrameOptions): Promise<VideoFrame | null>;
-    /**
-     * Normalize any {@link VideoFrame} into something {@link cropFrame} can read
-     * pixels from synchronously: an `ImageData` or a {@link RawFrame}.
-     *
-     * - `ImageData`-shaped: returned as-is.
-     * - `ImageBitmap`: rasterized to `ImageData` (OffscreenCanvas / skia-canvas).
-     * - Encoded bytes (PNG/JPEG): decoded to `ImageData`.
-     * - Raw pixel bytes: wrapped as a {@link RawFrame} using the inner shape's
-     *   width/height/channels.
-     */
-    private toReadable;
     /** Inner backend's per-frame presentation times (delegated; a crop is spatial). */
     getFrameTimes(): Promise<number[] | null>;
     /**

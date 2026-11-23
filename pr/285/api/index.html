@@ -959,6 +959,8 @@ re-encoded). See <a href="../cropping/">Virtual Cropping</a> for the full guide.
 <ul>
 <li>Selected automatically by <code>loadVideo()</code> for HDF5 inputs.</li>
 <li>Decodes embedded PNG/JPEG frames in browsers; raw frames require <code>shape</code> + <code>channelOrder</code>.</li>
+<li>Color PNG/JPEG frames stored with BGR channel order (<code>channel_order</code> attribute; files below format 1.4 default to BGR) are returned as RGB in browsers. Outside a browser <code>getFrame()</code> returns the stored bytes, in the order given by <code>backend.embeddedChannelOrder</code>; the crop wrapper, and the grayscale wrapper when it collapses channels, decode them to RGB (with the optional <code>skia-canvas</code> package on Node). As in Python sleap-io, the order applies only to 3-channel PNG/JPEG images: raw pixel frames and images with alpha are returned as stored outside a browser.</li>
+<li>Saving a new embed from a BGR source re-encodes its color frames as RGB PNGs (which needs <code>skia-canvas</code> on Node).</li>
 </ul>
 <h3 id="mediavideobackend"><code>MediaVideoBackend</code><a class="headerlink" href="#mediavideobackend" title="Permanent link">&para;</a></h3>
 <p>Browser fallback when WebCodecs/mp4box is unavailable.</p>
