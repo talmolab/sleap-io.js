@@ -83,6 +83,7 @@ import {
   sessionRecords,
   sourceMarkOf,
 } from "../../model/source-mark.js";
+import { hadNanTrackingScore } from "../../model/stored-nan.js";
 
 // File writer hook — registered by h5-node.ts (imported as side-effect from Node entry point).
 let _writeToFile:
@@ -285,6 +286,41 @@ function refuseFormat3FrameLosses(frames: Iterable<LabeledFrame>): void {
       `${lost.join(", and ")}, which SlpStreamWriter.appendFrames does not ` +
       "write. Save them with saveSlp or saveSlpToBytes, which keep them.",
   );
+}
+
+/**
+ * A format 3.0 streaming writer writes the links of appended frames, but only
+ * to the identities in its header. Frames whose instances or annotations were
+ * loaded from a 3.0 file and hold an identity are refused, before anything is
+ * written, when the header has none, as {@link refuseFormat3StoreLosses}
+ * refuses stores.
+ *
+ * @throws {Error} Naming what would be lost.
+ */
+function refuseFormat3FrameIdentities(
+  frames: Iterable<LabeledFrame>,
+  headerHasIdentities: boolean,
+): void {
+  if (headerHasIdentities) return;
+  for (const frame of frames) {
+    for (const record of [
+      ...frame.instances,
+      ...frame.centroids,
+      ...frame.bboxes,
+      ...frame.masks,
+      ...frame.rois,
+    ] as Array<IdentityBearing & object>) {
+      const source = sourceMarkOf(record);
+      if (!source || record.identity == null) continue;
+      throw new Error(
+        `Frames loaded from '${source.labelsPath}' (SLP format ` +
+          `${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ` +
+          "identities, which SlpStreamWriter.appendFrames writes only when " +
+          "the writer's header holds them. Pass the identities in the " +
+          "header, or save the labels with saveSlp or saveSlpToBytes.",
+      );
+    }
+  }
 }
 
 /**
@@ -2315,6 +2351,7 @@ export class SlpStreamWriter {
     if (v3) {
       enforceV3Layout(framesLegacyLosses(frames), options?.unlabeledAs);
       checkV3Metadata(frames);
+      refuseFormat3FrameIdentities(frames, this.headerHas.identities);
       for (const frame of frames) {
         this.noteKinds(sourceMarkOf(frame));
         for (const inst of frame.instances) this.noteKinds(sourceMarkOf(inst));
@@ -5451,6 +5488,18 @@ export function buildLabelTableUpdate(
     opts?.unlabeledAs,
   );
   const r = buildLabelTableRows(labels);
+  // The NaN tracking scores the readers read as 0 are patched back as NaN,
+  // for the instances read with one (by record, so an edit that replaces an
+  // instance does not give its NaN to another).
+  let row = 0;
+  for (const frame of labels.labeledFrames) {
+    for (const instance of frame.instances) {
+      if (instance.trackingScore === 0 && hadNanTrackingScore(instance)) {
+        r.instances[row][9] = Number.NaN;
+      }
+      row += 1;
+    }
+  }
   const update: LabelTableUpdate = {
     frames: { fields: FRAMES_FIELDS, rows: r.frames },
     instances: { fields: INSTANCES_FIELDS, rows: r.instances },
@@ -6173,35 +6222,6 @@ function writeColumnInPlace(ds: any, values: ArrayLike<number>): void {
 }
 
 /**
- * For a value edit of a compound table (`rowCount` rows on disk and in the
- * update), the rows whose float member `name` holds NaN on disk, read a
- * bounded slice at a time. The 2.x readers read a NaN tracking score as 0, so
- * an in-place save keeps such a NaN rather than writing that 0 back.
- */
-function nanRowsOnDisk(
-  ds: any,
-  members: Array<{ name: string; type: number }>,
-  name: string,
-  rowCount: number,
-): Uint8Array | null {
-  const mi = members.findIndex(
-    (m) => m.name === name && m.type === H5T_FLOAT_CLASS,
-  );
-  if (mi < 0) return null;
-  const nan = new Uint8Array(rowCount);
-  let any = false;
-  forEachSlice(ds, rowCount, (rows, start) => {
-    for (let k = 0; k < rows.length; k++) {
-      if (Number.isNaN(Number((rows[k] as ArrayLike<unknown>)?.[mi]))) {
-        nan[start + k] = 1;
-        any = true;
-      }
-    }
-  });
-  return any ? nan : null;
-}
-
-/**
  * Overwrite one already-open dataset (`diskName`) with `table`'s rows, resizing
  * first when the row count changed. Handles BOTH on-disk layouts:
  *  - flat 2-D matrix: `write_slice([[0,n],[0,cols]], Float64Array)` (h5wasm
@@ -6235,11 +6255,6 @@ function writeOneTableInPlace(
     | undefined;
   const isCompound = !!(members && members.length > 0);
   const curRows = ds.shape?.[0] ?? 0;
-  // A value edit keeps the NaN tracking scores the readers read as 0.
-  const nanTracking =
-    isCompound && diskName === "instances" && curRows === rowCount
-      ? nanRowsOnDisk(ds, members!, "tracking_score", rowCount)
-      : null;
 
   if (curRows !== rowCount) {
     ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
@@ -6268,11 +6283,6 @@ function writeOneTableInPlace(
         );
       }
       const colVals = table.rows.map((row) => row[ci]);
-      if (nanTracking && m.name === "tracking_score") {
-        for (let i = 0; i < rowCount; i++) {
-          if (nanTracking[i] && colVals[i] === 0) colVals[i] = Number.NaN;
-        }
-      }
       columns.set(m.name, memberColumnTypedArray(m, colVals));
     }
     writeWithFileType(ds, () => ds.write_slice([[0, rowCount]], columns));
@@ -8205,7 +8215,16 @@ function writeBboxes(
   file.create_dataset({ name: "bboxes/name", data: names });
   file.create_dataset({ name: "bboxes/source", data: sources });
   if (v3) {
-    // Format 3.0 keeps the 2.0 columns and adds the boxes' metadata.
+    // Format 3.0 keeps the 2.0 columns, any unknown columns still lining up
+    // with the boxes, and the boxes' metadata.
+    for (const [name, column] of Object.entries(
+      v3.carry.columnsFor(
+        "bboxes",
+        bboxes.map((b) => [b]),
+      ),
+    )) {
+      writeColumnTable(file, "bboxes", [], { carried: { [name]: column } });
+    }
     writeMetadataColumns(
       file,
       "bboxes",

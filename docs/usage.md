@@ -390,8 +390,9 @@ default stream mode (`"auto"`) a 3.0 file holding ROIs, masks, label images,
 or links or embeddings of detections other than instances is read with the
 standard reader on the main thread, so nothing is lost. That read takes the
 whole file into memory (a URL is downloaded whole, a `File` read whole) and
-blocks the page while it runs; pass `h5: { stream: "range" }` to keep
-streaming, and the summary then lists what is not read. Files before 3.0 take
+blocks the page while it runs; pass `h5: { stream: "range" }` with
+`format3: "keep"` to keep streaming (without `format3`, such a file asks, see
+below), and the summary then lists what is not read. Files before 3.0 take
 the streaming route as before, which skips that content in them without a
 word. The lite `loadSlpMetadata` reads the session tables, and its
 `streamingUnreadTables` lists what a streaming read would leave out, for files
@@ -513,25 +514,34 @@ boolean metadata says so once (`console.warn`), naming the keys. Lazy labels are
 their raw tables without materializing.
 
 **Unknown columns.** Columns a newer writer added to a 3.0 table (the pose
-tables, the ROI, mask, label image, score map, link and session tables) are
-kept when the file is read and written back by a format 3.0 save while the
+tables, `/bboxes`, the ROI, mask, label image, score map, link and session
+tables), of any shape, are kept when the file is read and written back by a format 3.0 save while the
 table's rows still line up with the records that own them: lazy labels always
 keep their pose tables' columns; otherwise the records must be the ones loaded,
 in the same order (editing values is fine; adding, removing or reordering
 records is not), and link rows are matched by their owner and catalog index.
 When they no longer line up, or with the 2.x layout, the columns are dropped
-with a warning. Unknown columns of `/bboxes`, and columns that are not 1-D,
-are not kept.
+with a warning. What a save cannot write back is listed in the summary's
+`unreadTables`, so a load without `format3` asks: groups inside the pose
+tables and `/bboxes` other than `metadata`, unknown columns of a type that
+cannot be written (a string column of rank 2 or more, an enum other than a
+boolean), and members of a `metadata/` group the readers do not read (not a
+group with a 1-D `values` dataset of a supported kind). Unknown attributes
+are not listed: a save drops them, as Python sleap-io's does.
 
 **Points are written as stored.** sleap-io.js reads the points of a file
 before 3.0 as they are stored, and writes them so in either layout: a hidden
 point keeps its coordinates (the SLEAP GUI leaves the last position on a node
 it hides, and format 3.0 reads that as an occluded estimate), and a visible
-point without coordinates stays visible. This matches what Python sleap-io
-0.10 does by default when it loads an older file (it changes no point); its
-`load_slp(..., clean_legacy_points=True)` (and
-`Labels.clean_legacy_points()`) clears the coordinates of hidden points and
-hides visible points without coordinates, which sleap-io.js does not do.
+point without coordinates stays visible. This is the default Python sleap-io
+plans for loading older files: its open pull request talmolab/sleap-io#601,
+not yet in a release, loads them with no point changed and makes the clean-up
+opt-in (`load_slp(..., clean_legacy_points=True)` and
+`Labels.clean_legacy_points()`). Until it lands, the Python sleap-io 0.10
+release candidates clean up on read: they clear the coordinates of hidden
+points and hide visible points without coordinates, so they read a 2.x file
+differently from a 3.0 save of it by sleap-io.js. sleap-io.js does not clean
+up.
 
 #### Opening a format 3.0 file
 
@@ -644,8 +654,9 @@ worker's dataset metadata. 2.x files written by Python sleap-io, whose point
 flags are HDF5 booleans, are patched in place too: the booleans are written
 with the dataset's own type, then read back, a bounded slice at a time, and
 checked. Only h5py's booleans are written this way; a table with another
-HDF5 enum is sent to a full save. A value edit keeps the NaN tracking scores
-of a Python-written file, which the 2.x readers read as 0.
+HDF5 enum is sent to a full save. An in-place save writes back the NaN
+tracking scores of instances read from the file with one (the 2.x readers
+read them as 0), matched by instance, not by row.
 
 **If an in-place write throws, the file may be partly written: the caller
 must then do a full save to the same target.** `checkInPlaceWritable` and the

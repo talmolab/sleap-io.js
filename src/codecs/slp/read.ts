@@ -1,8 +1,14 @@
+import { markNanTrackingScore } from "../../model/stored-nan.js";
 import {
   buildColumnCarry,
   CARRIED_TABLES,
   carriedColumn,
+  isCarriable,
   isUnknownColumn,
+  METADATA_TABLES,
+  type TableMember,
+  unreadMetadataMembers,
+  unreadTableMembers,
   POSE_TABLES,
   sessionCarryOwners,
   type UnknownColumns,
@@ -569,6 +575,7 @@ export async function readSlp(
         nPredPoints: columnLength(predPointsData),
         pointsOf: (inst) => (inst as Instance)._xy,
         rois: roiTuples.map((t) => t[0]),
+        bboxes: bboxTuples.map((t) => t[0]),
         masks: maskTuples.map((t) => t[0]),
         maskScoreMapOwners: columnH5(file, "masks/score_maps/mask_idx"),
         labelImages,
@@ -927,6 +934,7 @@ export async function readSlpLazy(
         unknown,
         {
           rois: roiTuples.map((t) => t[0]),
+          bboxes: bboxTuples.map((t) => t[0]),
           masks: maskTuples.map((t) => t[0]),
           maskScoreMapOwners: columnH5(file, "masks/score_maps/mask_idx"),
           labelImages,
@@ -941,7 +949,7 @@ export async function readSlpLazy(
           categoryLinks: linkKeysH5(file, "categories/links"),
           sessions: sessionOwnersH5(file, sessions),
         },
-        FORMAT3_TABLES,
+        ["bboxes", ...FORMAT3_TABLES],
       );
     }
 
@@ -3024,15 +3032,53 @@ function readUnknownColumnsH5(
       const md = ds?.metadata;
       const column = carriedColumn(
         md ? { ...md, shape: ds.shape } : null,
-        md && Array.isArray(ds.shape) && ds.shape.length === 1
-          ? ds.value
-          : null,
+        md && isCarriable({ ...md, shape: ds.shape }) ? ds.value : null,
       );
       if (column) {
         out[table] ??= {};
         out[table][name] = column;
       }
     }
+  }
+  return out;
+}
+
+/**
+ * What a format 3.0 save would not write back, as paths for the summary's
+ * `unreadTables`: groups inside the pose tables and `/bboxes`, unknown
+ * columns that cannot be carried, and members of `metadata/` groups the
+ * readers do not read (see carry-read.ts).
+ */
+function uncarriedMembersH5(
+  // biome-ignore lint/suspicious/noExplicitAny: h5wasm File
+  file: any,
+  metadata: Record<string, MetadataColumns | null>,
+): string[] {
+  const out: string[] = [];
+  for (const table of CARRIED_TABLES) {
+    if (!isH5Group(file, table)) continue;
+    const members: TableMember[] = h5Members(file, table).map((name) => {
+      const node = file.get(`${table}/${name}`);
+      return node?.type === "Group"
+        ? { name, group: true }
+        : {
+            name,
+            group: false,
+            info: node ? { ...node.metadata, shape: node.shape } : null,
+          };
+    });
+    out.push(...unreadTableMembers(table, members));
+  }
+  for (const table of METADATA_TABLES) {
+    const base = `${table}/${METADATA_SUBGROUP}`;
+    if (!isH5Group(file, base)) continue;
+    out.push(
+      ...unreadMetadataMembers(
+        table,
+        h5Members(file, base),
+        metadataKeys(metadata[table]),
+      ),
+    );
   }
   return out;
 }
@@ -3328,6 +3374,11 @@ function readFormat3(
           ? unknownTableGroups(table, h5Members(file, table, "Group"))
           : [],
       ),
+      ...uncarriedMembersH5(file, {
+        instances: instanceMetadata,
+        frames: frameMetadata,
+        bboxes: bboxMetadata,
+      }),
     ],
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(predPointsData),
@@ -3592,6 +3643,9 @@ function buildLabeledFrames(options: {
       }
 
       instanceById.set(instIdx, instance);
+      if (Number.isNaN(rawTrackingScore) && formatId < 3) {
+        markNanTrackingScore(instance);
+      }
       instances.push(instance);
     }
 

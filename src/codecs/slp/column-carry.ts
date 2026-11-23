@@ -26,6 +26,11 @@ export interface CarriedColumn {
    * column, else a numeric dtype such as `"<d"`, `"<q"` or `"<B"`.
    */
   dtype: string;
+  /**
+   * The dataset's shape, for a column of rank 2 or more (its values are then
+   * flat, row-major); absent for a 1-D column.
+   */
+  shape?: number[];
 }
 
 /** The unknown columns of one table, and the records owning its rows. */
@@ -68,8 +73,13 @@ function permuteColumns(
   const out: Record<string, CarriedColumn> = {};
   for (const [name, column] of Object.entries(columns)) {
     const values = column.values as ArrayLike<unknown>;
-    const picked = order.map((row) => values[row]);
+    // A row of a column of rank 2 or more holds `width` values.
+    const width = (column.shape ?? [0]).slice(1).reduce((a, b) => a * b, 1);
+    const picked = order.flatMap((row) =>
+      Array.from({ length: width }, (_, k) => values[row * width + k]),
+    );
     out[name] = {
+      ...(column.shape ? { shape: column.shape } : {}),
       dtype: column.dtype,
       values:
         column.dtype === "S"

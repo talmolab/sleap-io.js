@@ -9,6 +9,7 @@
 
 import {
   isKnownPoseColumn,
+  KNOWN_BBOX_COLUMNS,
   METADATA_SUBGROUP,
   type PoseTableName,
 } from "./columnar.js";
@@ -35,7 +36,15 @@ export const POSE_TABLES: readonly PoseTableName[] = [
 /** Every table whose unknown columns are carried. */
 export const CARRIED_TABLES: readonly string[] = [
   ...POSE_TABLES,
+  "bboxes",
   ...FORMAT3_TABLES,
+];
+
+/** The tables whose records hold a `metadata/` group. */
+export const METADATA_TABLES: readonly string[] = [
+  "instances",
+  "frames",
+  "bboxes",
 ];
 
 /**
@@ -47,6 +56,7 @@ export function isUnknownColumn(table: string, name: string): boolean {
   if ((POSE_TABLES as readonly string[]).includes(table)) {
     return !isKnownPoseColumn(table as PoseTableName, name);
   }
+  if (table === "bboxes") return !KNOWN_BBOX_COLUMNS.includes(name);
   const spec = TABLE_SPECS[table as Format3TableName];
   if (!spec) return false;
   return (
@@ -63,40 +73,52 @@ export interface DatasetInfo {
 }
 
 /**
- * An unknown column as read, ready to write back, or `null` for one that is
- * not a 1-D numeric or string dataset (not carried). Booleans (an h5py enum)
- * are written back as `uint8`, which h5wasm can write.
+ * The h5wasm dtype an unknown column is written back with, or `null` for one
+ * that cannot be carried: a numeric column of any rank (an h5py boolean, a
+ * one-byte enum, as `uint8`, which h5wasm can write), or a 1-D string column.
+ */
+function carriedDtype(info: DatasetInfo | null | undefined): string | null {
+  if (!info || !Array.isArray(info.shape) || info.shape.length < 1) {
+    return null;
+  }
+  const size = info.size ?? 8;
+  switch (info.type) {
+    case 0: {
+      const chars: Record<number, string> = { 1: "b", 2: "h", 4: "i", 8: "q" };
+      const c = chars[size];
+      return c ? `<${info.signed === false ? c.toUpperCase() : c}` : null;
+    }
+    case 1:
+      return size === 4 ? "<f" : size === 8 ? "<d" : null;
+    case 3:
+      return info.shape.length === 1 ? "S" : null;
+    case 8:
+      return size === 1 ? "<B" : null;
+    default:
+      return null;
+  }
+}
+
+/**
+ * Whether an unknown column can be carried through a format 3.0 save (see
+ * {@link carriedColumn}); one that cannot is listed as unread.
+ */
+export function isCarriable(info: DatasetInfo | null | undefined): boolean {
+  return carriedDtype(info) !== null;
+}
+
+/**
+ * An unknown column as read, ready to write back, or `null` for one that
+ * cannot be carried (see {@link isCarriable}). A column of rank 2 or more
+ * keeps its shape; its values are the flat, row-major values h5wasm reads.
  */
 export function carriedColumn(
   info: DatasetInfo | null | undefined,
   values: unknown,
 ): CarriedColumn | null {
-  if (!info || !Array.isArray(info.shape) || info.shape.length !== 1) {
-    return null;
-  }
-  if (values === null || values === undefined) return null;
-  const size = info.size ?? 8;
-  let dtype: string;
-  switch (info.type) {
-    case 0: {
-      const chars: Record<number, string> = { 1: "b", 2: "h", 4: "i", 8: "q" };
-      const c = chars[size];
-      if (!c) return null;
-      dtype = `<${info.signed === false ? c.toUpperCase() : c}`;
-      break;
-    }
-    case 1:
-      dtype = size === 4 ? "<f" : "<d";
-      break;
-    case 3:
-      dtype = "S";
-      break;
-    case 8:
-      dtype = "<B";
-      break;
-    default:
-      return null;
-  }
+  const dtype = carriedDtype(info);
+  if (dtype === null || values === null || values === undefined) return null;
+  const shape = (info?.shape ?? []) as number[];
   if (dtype === "S") {
     const list = Array.from(values as ArrayLike<unknown>, (v) =>
       v instanceof Uint8Array
@@ -111,7 +133,54 @@ export function carriedColumn(
   return {
     values: values as ArrayLike<number> | ArrayLike<bigint>,
     dtype,
+    ...(shape.length > 1 ? { shape: [...shape] } : {}),
   };
+}
+
+/** One member of a 3.0 table group, as the readers see it. */
+export interface TableMember {
+  name: string;
+  /** Whether the member is a group (else a dataset). */
+  group: boolean;
+  /** The dataset's description, for a dataset. */
+  info?: DatasetInfo | null;
+}
+
+/**
+ * What a format 3.0 save would not write back from table `table`, as paths:
+ * groups inside the pose tables and `/bboxes` other than `metadata` (the
+ * other tables' sub-tables are listed by the readers), and unknown columns
+ * that cannot be carried.
+ */
+export function unreadTableMembers(
+  table: string,
+  members: readonly TableMember[],
+): string[] {
+  const own =
+    (POSE_TABLES as readonly string[]).includes(table) || table === "bboxes";
+  const out: string[] = [];
+  for (const m of members) {
+    if (m.group) {
+      if (own && m.name !== METADATA_SUBGROUP) out.push(`${table}/${m.name}`);
+    } else if (isUnknownColumn(table, m.name) && !isCarriable(m.info)) {
+      out.push(`${table}/${m.name}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * The members of a table's `metadata/` group the readers do not read (not a
+ * group with a 1-D `values` dataset of a supported kind), as paths.
+ */
+export function unreadMetadataMembers(
+  table: string,
+  members: readonly string[],
+  read: readonly string[],
+): string[] {
+  return members
+    .filter((key) => !read.includes(key))
+    .map((key) => `${table}/${METADATA_SUBGROUP}/${key}`);
 }
 
 /** The unknown columns read from a file, by table and column. */
@@ -167,6 +236,8 @@ export interface CarryOwners {
   /** The point arrays of each instance (its key with the instance). */
   pointsOf?: (instance: object) => unknown;
   rois?: readonly Owner[];
+  /** The boxes of `/bboxes` rows, in row order. */
+  bboxes?: readonly Owner[];
   masks?: readonly Owner[];
   /** `mask_idx` of each `/masks/score_maps` row. */
   maskScoreMapOwners?: ArrayLike<number>;
@@ -292,6 +363,8 @@ function ownerKeys(table: string, o: CarryOwners): unknown[][] | null {
     }
     case "rois":
       return o.rois ? keysOf(o.rois) : null;
+    case "bboxes":
+      return o.bboxes ? keysOf(o.bboxes) : null;
     case "masks":
       return o.masks ? keysOf(o.masks) : null;
     case "masks/score_maps":

@@ -175,6 +175,31 @@ export function writeColumnTable(
   }
   for (const [name, column] of Object.entries(options?.carried ?? {})) {
     if (known.has(name)) continue;
+    if (column.shape && column.shape.length > 1) {
+      // A column of rank 2 or more: its rows keep their shape.
+      const rows =
+        column.values.length / column.shape.slice(1).reduce((a, b) => a * b, 1);
+      const shape = [rows, ...column.shape.slice(1)];
+      const data = typedValues(column.values, column.dtype);
+      if (options?.resizable) {
+        file.create_dataset({
+          name: `${path}/${name}`,
+          data,
+          shape,
+          maxshape: [null, ...shape.slice(1)],
+          chunks: [Math.max(1, Math.min(CHUNK_ROWS, rows)), ...shape.slice(1)],
+          dtype: column.dtype,
+        });
+      } else {
+        file.create_dataset({
+          name: `${path}/${name}`,
+          data,
+          shape,
+          dtype: column.dtype,
+        });
+      }
+      continue;
+    }
     writeDataset(file, `${path}/${name}`, column.values, column.dtype, options);
   }
 }

@@ -184,7 +184,12 @@ const META_SUMMARY: Format3Summary = {
     "points/extra",
     "pred_points/extra",
   ],
-  unreadTables: [],
+  // Members of metadata/ the readers ignore: a save does not write them.
+  unreadTables: [
+    "frames/metadata/no_values",
+    "instances/metadata/loose",
+    "instances/metadata/two_d",
+  ],
   lossless: false,
 };
 
@@ -239,7 +244,7 @@ describe("what a 3.0 file holds that this version does not read", () => {
   });
 
   it("files without such members have none", async () => {
-    for (const name of [POSE, META, "format3_embedded.pkg.slp"]) {
+    for (const name of [POSE, "format3_embedded.pkg.slp"]) {
       const labels = await readSlp(slpPath(name), {
         openVideos: false,
         format3: "view",
@@ -293,7 +298,7 @@ describe("a 3.0 file opened to ask throws the choice error", () => {
     });
 
     it(`${label} loads a 3.0 file without the option to keep format 3.0`, async () => {
-      for (const labels of [await load(META), await load(POSE, "keep")]) {
+      for (const labels of [await load(POSE), await load(META, "keep")]) {
         expect(labels.sourceFormat?.access).toBe("keep");
         expect(labels.sourceFormat?.formatId).toBe(3);
         expect(labels.labeledFrames.length).toBe(4);

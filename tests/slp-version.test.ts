@@ -75,6 +75,11 @@ import { slpPath, streamingFile } from "./slp-format3-files";
 setDefaultTimeout(120_000);
 
 const POSE = "format3_pose.slp";
+/**
+ * Loaded to be kept in format 3.0. format3_metadata.slp holds metadata
+ * members the readers ignore, so it asks without the option.
+ */
+const KEEP = { openVideos: false, format3: "keep" } as const;
 const META = "format3_metadata.slp";
 const V2 = "format3_pose.v2.slp";
 
@@ -262,17 +267,17 @@ function describePose(labels: Labels) {
 
 /** Every reader, on a file (eager, lazy, streaming stand-in, lazy streaming). */
 const FILE_READERS: Array<[string, (file: string) => Promise<Labels>]> = [
-  ["readSlp", (f) => readSlp(f, { openVideos: false })],
+  ["readSlp", (f) => readSlp(f, KEEP)],
   [
     "readSlpLazy",
     async (f) => {
-      const labels = await readSlpLazy(f, { openVideos: false });
+      const labels = await readSlpLazy(f, KEEP);
       labels.materialize();
       return labels;
     },
   ],
-  ["readFromStreamingFile", (f) => readStreaming(f)],
-  ["readFromStreamingFile (lazy)", (f) => readStreaming(f, undefined, true)],
+  ["readFromStreamingFile", (f) => readStreaming(f, "keep")],
+  ["readFromStreamingFile (lazy)", (f) => readStreaming(f, "keep", true)],
 ];
 
 let warn: ReturnType<typeof vi.spyOn>;
@@ -494,6 +499,122 @@ describe('the "auto" rule', () => {
     expect(streamed.sourceFormat?.access).toBe("keep");
   });
 
+  it("carries unknown columns of any rank and of /bboxes, and asks for what it cannot carry", async () => {
+    await ready;
+    /** A copy of a fixture with members a newer writer might add. */
+    const variant = (
+      name: string,
+      add: (h5: InstanceType<typeof H5File>) => void,
+    ): string => {
+      const file = tempCopy(name);
+      const h5 = new H5File(file, "a");
+      try {
+        add(h5);
+      } finally {
+        h5.close();
+      }
+      return file;
+    };
+    const nPoints = 6;
+    // A 2-D column of /points, and the box column of format3_metadata.slp,
+    // are carried: no option needed, and a save writes them back.
+    const twoD = variant(POSE, (h5) => {
+      (h5.get("points") as any).create_dataset({
+        name: "extra2d",
+        data: Float64Array.from({ length: nPoints * 2 }, (_, i) => i / 2),
+        shape: [nPoints, 2],
+        dtype: "<d",
+      });
+    });
+    const column = (file: string, path: string) => {
+      const h5 = new H5File(file, "r");
+      try {
+        const ds = h5.get(path) as any;
+        return ds ? [ds.shape, Array.from(ds.value, Number)] : null;
+      } finally {
+        h5.close();
+      }
+    };
+    for (const [label, read] of [
+      ["readSlp", (f: string) => readSlp(f, { openVideos: false })],
+      ["readSlpLazy", (f: string) => readSlpLazy(f, { openVideos: false })],
+      ["streaming", (f: string) => readStreaming(f)],
+    ] as const) {
+      const labels = await read(twoD);
+      expect([label, labels.sourceFormat?.summary.unreadTables]).toEqual([
+        label,
+        [],
+      ]);
+      const saved = tempFile(await saveSlpToBytes(labels));
+      expect([label, column(saved, "points/extra2d")]).toEqual([
+        label,
+        column(twoD, "points/extra2d"),
+      ]);
+      // format3_metadata.slp also holds metadata members the readers
+      // ignore, so it asks without the option: keep it explicitly.
+      const kept =
+        label === "streaming"
+          ? await readStreaming(slpPath(META), "keep")
+          : label === "readSlp"
+            ? await readSlp(slpPath(META), KEEP)
+            : await readSlpLazy(slpPath(META), KEEP);
+      const meta = tempFile(await saveSlpToBytes(kept));
+      expect([label, column(meta, "bboxes/extra")]).toEqual([
+        label,
+        column(slpPath(META), "bboxes/extra"),
+      ]);
+    }
+    // A group inside a pose table, and a string column of rank 2, cannot be
+    // written back: every reader asks without the option, naming them.
+    const uncarried = variant(POSE, (h5) => {
+      (h5.get("instances") as any).create_group("newsub");
+      (h5.get("instances/newsub") as any).create_dataset({
+        name: "a",
+        data: new Float64Array(5),
+        shape: [5],
+        dtype: "<d",
+      });
+      (h5.get("frames") as any).create_dataset({
+        name: "labels2d",
+        data: Array.from({ length: 8 }, () => "ab"),
+        shape: [4, 2],
+        dtype: "S2",
+      });
+    });
+    for (const [label, read] of [
+      ["readSlp", () => readSlp(uncarried, { openVideos: false })],
+      ["readSlpLazy", () => readSlpLazy(uncarried, { openVideos: false })],
+      ["streaming", () => readStreaming(uncarried)],
+    ] as const) {
+      const error = (await caught(read)) as SlpFormat3ChoiceError;
+      expect([label, error]).toEqual([
+        label,
+        expect.any(SlpFormat3ChoiceError),
+      ]);
+      expect([label, error.summary.unreadTables]).toEqual([
+        label,
+        ["frames/labels2d", "instances/newsub"],
+      ]);
+    }
+    expect(
+      (await loadSlpMetadata(new Uint8Array(readFileSync(uncarried)))).format3
+        ?.unreadTables,
+    ).toEqual(["frames/labels2d", "instances/newsub"]);
+    // Metadata members the readers ignore are listed too.
+    for (const read of [
+      () => readSlp(slpPath(META), { openVideos: false }),
+      () => readSlpLazy(slpPath(META), { openVideos: false }),
+      () => readStreaming(META),
+    ]) {
+      const error = (await caught(read)) as SlpFormat3ChoiceError;
+      expect(error.summary.unreadTables).toEqual([
+        "frames/metadata/no_values",
+        "instances/metadata/loose",
+        "instances/metadata/two_d",
+      ]);
+    }
+  });
+
   it("keeps it for copies, extracts, materialized labels and records moved elsewhere", async () => {
     const labels = await readSlp(slpPath(POSE), { openVideos: false });
     const lazy = await readSlpLazy(slpPath(POSE), { openVideos: false });
@@ -559,7 +680,7 @@ describe('the "auto" rule', () => {
     await saveSlpToBytes(pose, { slpVersion: "v2" });
     expect(await layoutOf(await saveSlpToBytes(pose))).toBe("v2");
     // ...unless it holds what only format 3.0 can store: then it warns.
-    const meta = await readSlp(slpPath(META), { openVideos: false });
+    const meta = await readSlp(slpPath(META), KEEP);
     await saveSlpToBytes(meta, { slpVersion: "v2", unlabeledAs: "absent" });
     warn.mockClear();
     expect(await layoutOf(await saveSlpToBytes(meta))).toBe("v3");
@@ -636,16 +757,16 @@ describe("format 3.0 saves of the pose tables", () => {
     [
       `an eager save of ${META}`,
       async () => {
-        const labels = await readSlp(slpPath(META), { openVideos: false });
+        const labels = await readSlp(slpPath(META), KEEP);
         return [await saveSlpToBytes(labels), labels];
       },
     ],
     [
       `a lazy save of ${META}`,
       async () => {
-        const labels = await readSlpLazy(slpPath(META), { openVideos: false });
+        const labels = await readSlpLazy(slpPath(META), KEEP);
         const bytes = await saveSlpToBytes(labels);
-        return [bytes, await readSlp(slpPath(META), { openVideos: false })];
+        return [bytes, await readSlp(slpPath(META), KEEP)];
       },
     ],
     [
@@ -670,15 +791,15 @@ describe("format 3.0 saves of the pose tables", () => {
     [
       `a merged-store save of ${META}`,
       async () => {
-        const labels = await readSlpLazy(slpPath(META), { openVideos: false });
+        const labels = await readSlpLazy(slpPath(META), KEEP);
         const bytes = await saveSlpMergedFromStores([labels._lazyDataStore!]);
-        return [bytes, await readSlp(slpPath(META), { openVideos: false })];
+        return [bytes, await readSlp(slpPath(META), KEEP)];
       },
     ],
     [
       `a streaming-writer save of ${META} (frames appended)`,
       async () => {
-        const labels = await readSlp(slpPath(META), { openVideos: false });
+        const labels = await readSlp(slpPath(META), KEEP);
         const writer = await openSlpWriter(labels);
         writer.appendFrames(labels.labeledFrames);
         return [writer.close(), labels];
@@ -710,9 +831,10 @@ describe("format 3.0 saves of the pose tables", () => {
   }
 
   it("keeps the kind of each metadata key, booleans included", async () => {
-    const labels = await readSlp(slpPath(META), { openVideos: false });
+    const labels = await readSlp(slpPath(META), KEEP);
     const back = await readSlp(await saveSlpToBytes(labels), {
       openVideos: false,
+      format3: "keep",
       h5: { filenameHint: "meta.slp" },
     });
     const kinds = (l: Labels) =>
@@ -736,15 +858,13 @@ describe("format 3.0 saves of the pose tables", () => {
         saveSlpToBytes(built({ instanceMetadata: true, frameMetadata: true }), {
           slpVersion: "v3",
         }),
-      async () =>
-        saveSlpToBytes(await readSlpLazy(slpPath(META), { openVideos: false })),
+      async () => saveSlpToBytes(await readSlpLazy(slpPath(META), KEEP)),
       async () =>
         saveSlpMergedFromStores([
-          (await readSlpLazy(slpPath(META), { openVideos: false }))
-            ._lazyDataStore!,
+          (await readSlpLazy(slpPath(META), KEEP))._lazyDataStore!,
         ]),
       async () => {
-        const labels = await readSlp(slpPath(META), { openVideos: false });
+        const labels = await readSlp(slpPath(META), KEEP);
         const writer = await openSlpWriter(labels);
         writer.appendFrames(labels.labeledFrames);
         return writer.close();
@@ -781,8 +901,8 @@ describe("format 3.0 saves of the pose tables", () => {
   it("writes the unknown pose columns back, eager and lazy", async () => {
     await ready;
     for (const labels of [
-      await readSlp(slpPath(META), { openVideos: false }),
-      await readSlpLazy(slpPath(META), { openVideos: false }),
+      await readSlp(slpPath(META), KEEP),
+      await readSlpLazy(slpPath(META), KEEP),
     ]) {
       const file = tempFile(await saveSlpToBytes(labels));
       const extra = (p: string) => {
@@ -838,6 +958,47 @@ describe("the streaming writer", () => {
       ),
     ).toBeInstanceOf(Error);
     asked.dispose();
+  });
+
+  it("refuses 3.0 frames whose identities the header lacks, before writing", async () => {
+    const labels = await readSlp(slpPath("format3_tables.slp"), KEEP);
+    const header = {
+      skeletons: labels.skeletons,
+      videos: labels.videos,
+      tracks: labels.tracks,
+    };
+    const bare = await openSlpWriter(header, { slpVersion: "v3" });
+    const error = await caught(() => bare.appendFrames(labels.labeledFrames));
+    expect((error as Error).message).toContain("identities");
+    // Frames without identities are written, as before.
+    const plain = await readSlp(slpPath(POSE), { openVideos: false });
+    const own = await openSlpWriter(
+      {
+        skeletons: plain.skeletons,
+        videos: plain.videos,
+        tracks: plain.tracks,
+      },
+      { slpVersion: "v3" },
+    );
+    own.appendFrames(plain.labeledFrames);
+    own.dispose();
+    bare.dispose();
+    // With the identities in the header, the links are written.
+    const full = await openSlpWriter(
+      { ...header, identities: labels.identities },
+      { slpVersion: "v3" },
+    );
+    full.appendFrames(labels.labeledFrames);
+    const back = await readSlp(full.close(), {
+      openVideos: false,
+      h5: { filenameHint: "frames.slp" },
+    });
+    const named = (l: Labels) =>
+      l.labeledFrames.flatMap((f) =>
+        f.instances.map((i) => i.identity?.name ?? null),
+      );
+    expect(named(back)).toEqual(named(labels));
+    expect(named(back).some((n) => n !== null)).toBe(true);
   });
 
   it("merges stores into one layout, decided once", async () => {
@@ -935,7 +1096,7 @@ describe("in-place saves", () => {
     for (const name of [POSE, META, V2]) {
       it(`patch ${name} value by value (${where})`, async () => {
         const file = tempCopy(name);
-        const labels = await readSlp(file, { openVideos: false });
+        const labels = await readSlp(file, KEEP);
         editValues(labels);
         const layout = await layoutOf(file);
         expect(buildLabelTableUpdate(labels).layout ?? "v2").toBe(layout);
@@ -957,26 +1118,26 @@ describe("in-place saves", () => {
   for (const where of ["main thread", "worker"] as const) {
     it(`patch which records hold a metadata key (${where})`, async () => {
       const file = tempCopy(META);
-      const labels = await readSlp(file, { openVideos: false });
+      const labels = await readSlp(file, KEEP);
       const all = labels.labeledFrames.flatMap((f) => f.instances);
       // One record gains a number key others lack, another loses one.
       const without = all.find((i) => !("pass" in i.metadata))!;
       without.metadata.pass = 5;
       delete all.find((i) => "quality" in i.metadata)!.metadata.quality;
       expect(await patchInPlace(file, labels, where)).toEqual({ ok: true });
-      const back = await readSlp(file, { openVideos: false });
+      const back = await readSlp(file, KEEP);
       expect(describePose(back)).toEqual(describePose(labels));
     });
 
     it(`patch a structural edit of a chunked 2.x file with HDF5 booleans (${where})`, async () => {
       // SLEAP wrote this file's tables chunked, so they can be resized.
       const file = tempCopy("centered_pair_predictions.slp");
-      const labels = await readSlp(file, { openVideos: false });
+      const labels = await readSlp(file, KEEP);
       labels.labeledFrames[0].instances.pop();
       labels.labeledFrames[3].instances[0].points[0].visible = false;
       expect(await patchInPlace(file, labels, where)).toEqual({ ok: true });
       expect(await layoutOf(file)).toBe("v2");
-      const back = await readSlp(file, { openVideos: false });
+      const back = await readSlp(file, KEEP);
       expect(describePose(back)).toEqual(describePose(labels));
     });
 
@@ -986,13 +1147,13 @@ describe("in-place saves", () => {
           slpVersion: "v3",
         }),
       );
-      const labels = await readSlp(file, { openVideos: false });
+      const labels = await readSlp(file, KEEP);
       const user = labels.labeledFrames[0].instances[1];
       expect(user.metadata.ok).toBe(true);
       user.metadata.ok = false;
       user.points[0].visible = false;
       expect(await patchInPlace(file, labels, where)).toEqual({ ok: true });
-      const back = await readSlp(file, { openVideos: false });
+      const back = await readSlp(file, KEEP);
       expect(back.labeledFrames[0].instances[1].metadata.ok).toBe(false);
       expect(describePose(back)).toEqual(describePose(labels));
     });
@@ -1013,10 +1174,44 @@ describe("in-place saves", () => {
       const file = tempCopy(V2);
       const before = scores(file);
       expect(before).toContain("nan");
-      const labels = await readSlp(file, { openVideos: false });
+      const labels = await readSlp(file, KEEP);
       expect(await patchInPlace(file, labels, where)).toEqual({ ok: true });
       expect([where, scores(file)]).toEqual([where, before]);
     }
+    // Matched by instance, not by row: an instance put in the place of one
+    // read with a NaN score keeps its own score.
+    const file = tempCopy(V2);
+    const before = scores(file);
+    const labels = await readSlp(file, KEEP);
+    const frame = labels.labeledFrames.find((f) =>
+      f.instances.some((i) => !(i instanceof PredictedInstance)),
+    )!;
+    const row = labels.labeledFrames
+      .flatMap((f) => f.instances)
+      .findIndex(
+        (i) => frame.instances.includes(i) && !(i instanceof PredictedInstance),
+      );
+    expect(before[row]).toBe("nan");
+    const k = frame.instances.findIndex(
+      (i) => !(i instanceof PredictedInstance),
+    );
+    const old = frame.instances[k] as Instance;
+    frame.instances[k] = new Instance({
+      skeleton: old.skeleton,
+      points: old.points.map((p) => ({
+        ...p,
+        xy: [...p.xy] as [number, number],
+      })),
+      track: old.track,
+    });
+    expect(await patchInPlace(file, labels, "main thread")).toEqual({
+      ok: true,
+    });
+    const after = scores(file);
+    expect(after[row]).toBe(0);
+    expect(after.filter((v, i) => i !== row)).toEqual(
+      before.filter((v, i) => i !== row),
+    );
   });
 
   it("send a table holding an enum other than a boolean to a full save", async () => {
@@ -1053,7 +1248,7 @@ describe("in-place saves", () => {
 
   it("send a structural edit of a format 3.0 file to a full save", async () => {
     const file = tempCopy(POSE);
-    const labels = await readSlp(file, { openVideos: false });
+    const labels = await readSlp(file, KEEP);
     labels.labeledFrames[0].instances.pop();
     const gate = await patchInPlace(file, labels, "main thread");
     expect(gate.ok).toBe(false);
@@ -1062,7 +1257,7 @@ describe("in-place saves", () => {
 
   it("send new metadata keys of a format 3.0 file to a full save", async () => {
     const file = tempCopy(META);
-    const labels = await readSlp(file, { openVideos: false });
+    const labels = await readSlp(file, KEEP);
     labels.labeledFrames[0].instances[0].metadata.fresh = 1;
     const gate = await patchInPlace(file, labels, "main thread");
     expect(gate.ok).toBe(false);
@@ -1073,7 +1268,7 @@ describe("in-place saves", () => {
     it(`refuse a changed string metadata value before writing anything (${where})`, async () => {
       const file = tempCopy(META);
       const before = readFileSync(file);
-      const labels = await readSlp(file, { openVideos: false });
+      const labels = await readSlp(file, KEEP);
       editValues(labels);
       labels.labeledFrames[0].instances[0].metadata.annotator = "someone else";
       const update = buildLabelTableUpdate(labels);
@@ -1087,11 +1282,11 @@ describe("in-place saves", () => {
         }
       });
       expect((error as Error).message).toContain("string value");
-      const after = await readSlp(file, { openVideos: false });
+      const after = await readSlp(file, KEEP);
       expect(describePose(after)).toEqual(
         describePose(
           await readSlp(new Uint8Array(before), {
-            openVideos: false,
+            ...KEEP,
             h5: { filenameHint: "before.slp" },
           }),
         ),
@@ -1229,15 +1424,11 @@ describe("format 3.0 saves read back in Python sleap-io", () => {
     for (const [what, save] of [
       [
         `an eager save of ${META}`,
-        async () =>
-          saveSlpToBytes(await readSlp(slpPath(META), { openVideos: false })),
+        async () => saveSlpToBytes(await readSlp(slpPath(META), KEEP)),
       ],
       [
         `a lazy save of ${META}`,
-        async () =>
-          saveSlpToBytes(
-            await readSlpLazy(slpPath(META), { openVideos: false }),
-          ),
+        async () => saveSlpToBytes(await readSlpLazy(slpPath(META), KEEP)),
       ],
       [
         "a save of labels built in memory",
@@ -1269,7 +1460,7 @@ describe("format 3.0 saves read back in Python sleap-io", () => {
         expect(result.format_id).toBe(3);
         // Flags are uint8 on disk (h5wasm cannot write HDF5 booleans).
         expect(result.visible_dtype).toBe("uint8");
-        const js = await readSlp(file, { openVideos: false });
+        const js = await readSlp(file, KEEP);
         expect(result.frames).toEqual(poseFromJs(js));
         if (what.includes(META)) {
           // As Python reads the fixture it wrote itself.
@@ -1302,7 +1493,7 @@ describe("format 3.0 saves read back in Python sleap-io", () => {
           console.log(
             `a 3.0 save of ${name} read back with sleap-io ${result.version} (${python.label})`,
           );
-          const js = await readSlp(file, { openVideos: false });
+          const js = await readSlp(file, KEEP);
           expect(describePose(js)).toEqual(describePose(labels));
           expect([name, result.frames]).toEqual([name, poseFromJs(labels)]);
         }
@@ -1313,7 +1504,7 @@ describe("format 3.0 saves read back in Python sleap-io", () => {
       `a structural in-place patch of a chunked 2.x file, with ${python.label}`,
       async () => {
         const file = tempCopy("centered_pair_predictions.slp");
-        const labels = await readSlp(file, { openVideos: false });
+        const labels = await readSlp(file, KEEP);
         labels.labeledFrames[0].instances.pop();
         labels.labeledFrames[5].instances[0].points[1].xy = [11, 12];
         expect(await patchInPlace(file, labels, "worker")).toEqual({
@@ -1357,10 +1548,10 @@ describe("format 3.0 saves read back in Python sleap-io", () => {
         );
         for (const where of ["main thread", "worker"] as const) {
           const copy = tempCopy(file);
-          const labels = await readSlp(copy, { openVideos: false });
+          const labels = await readSlp(copy, KEEP);
           editValues(labels);
           expect(await patchInPlace(copy, labels, where)).toEqual({ ok: true });
-          const back = await readSlp(copy, { openVideos: false });
+          const back = await readSlp(copy, KEEP);
           expect(describePose(back)).toEqual(describePose(labels));
           const result = readInPython(python, copy);
           expect(result.frames).toEqual(poseFromJs(labels));
@@ -1374,7 +1565,7 @@ describe("format 3.0 saves read back in Python sleap-io", () => {
         async () => {
           for (const name of [V2, META]) {
             const file = tempCopy(name);
-            const labels = await readSlp(file, { openVideos: false });
+            const labels = await readSlp(file, KEEP);
             editValues(labels);
             expect(await patchInPlace(file, labels, where)).toEqual({
               ok: true,
@@ -1404,7 +1595,7 @@ describe("format 3.0 saves read back in Python sleap-io", () => {
 });
 
 it("labels from a format 3.0 file carry the keep mark on every record", async () => {
-  const labels = await readSlp(slpPath(META), { openVideos: false });
+  const labels = await readSlp(slpPath(META), KEEP);
   expect(sourceMarkOf(labels.labeledFrames[0])?.access).toBe("keep");
   expect(sourceMarkOf(labels.labeledFrames[0].instances[0])?.access).toBe(
     "keep",

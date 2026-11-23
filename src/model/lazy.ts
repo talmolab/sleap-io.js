@@ -15,6 +15,7 @@ import type { SlpSourceFormat } from "../codecs/slp/format3.js";
 import { skipsInstanceRow } from "../codecs/slp/columnar.js";
 import type { CarriedColumn, ColumnCarry } from "../codecs/slp/column-carry.js";
 import { markSource } from "./source-mark.js";
+import { markNanTrackingScore } from "./stored-nan.js";
 
 /**
  * Raw data store holding HDF5 dataset arrays for lazy materialization.
@@ -360,6 +361,9 @@ export class LazyDataStore {
 
       instanceById.set(instIdx, instance);
       this._instanceRow.set(instance, instIdx);
+      if (Number.isNaN(rawTrackingScore) && this.formatId < 3) {
+        markNanTrackingScore(instance);
+      }
       instances.push(instance);
     }
 

@@ -1218,24 +1218,6 @@ function verifyEnumMembersWorker(ds, diskName, members, fields, flat, rowCount, 
   });
 }
 
-// Worker port of nanRowsOnDisk (write.ts — KEEP IN LOCKSTEP): the rows whose
-// float member holds NaN on disk, read a bounded slice at a time.
-function nanRowsOnDiskWorker(ds, members, name, rowCount) {
-  var mi = -1;
-  for (var k = 0; k < members.length; k++) {
-    if (members[k].name === name && members[k].type === H5T_FLOAT_CLASS) mi = k;
-  }
-  if (mi < 0) return null;
-  var nan = new Uint8Array(rowCount);
-  var any = false;
-  forEachSliceWorker(ds, rowCount, function (rows, start) {
-    for (var r = 0; r < rows.length; r++) {
-      if (Number.isNaN(Number(rows[r] && rows[r][mi]))) { nan[start + r] = 1; any = true; }
-    }
-  });
-  return any ? nan : null;
-}
-
 // Worker port of writeColumnInPlace (write.ts — KEEP IN LOCKSTEP): write one
 // 1-D numeric column (format 3.0) with its own type, an enum as its base int.
 function writeColumnInPlaceWorker(ds, values) {
@@ -1341,10 +1323,7 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
   var members = md && md.compound_type && md.compound_type.members;
   var isCompound = !!(members && members.length > 0);
   var curRows = (ds.shape && ds.shape[0]) || 0;
-  // A value edit keeps the NaN tracking scores the readers read as 0.
-  var nanTracking = isCompound && diskName === 'instances' && curRows === rowCount
-    ? nanRowsOnDiskWorker(ds, members, 'tracking_score', rowCount)
-    : null;
+
   if (curRows !== rowCount) {
     ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
     // h5wasm silently no-ops resize on a non-resizable dataset — read the shape
@@ -1369,11 +1348,7 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
       }
       var colVals = new Array(rowCount);
       for (var r = 0; r < rowCount; r++) colVals[r] = flat[r * colCount + ci];
-      if (nanTracking && m.name === 'tracking_score') {
-        for (var z = 0; z < rowCount; z++) {
-          if (nanTracking[z] && colVals[z] === 0) colVals[z] = NaN;
-        }
-      }
+
       columns.set(m.name, memberColumnTypedArrayWorker(m, colVals));
     }
     writeWithFileTypeWorker(ds, function () { ds.write_slice([[0, rowCount]], columns); });

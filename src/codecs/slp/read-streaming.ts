@@ -1,7 +1,13 @@
+import { markNanTrackingScore } from "../../model/stored-nan.js";
 import {
   buildColumnCarry,
   carriedColumn,
+  isCarriable,
   isUnknownColumn,
+  METADATA_TABLES,
+  type TableMember,
+  unreadMetadataMembers,
+  unreadTableMembers,
   POSE_TABLES,
   sessionCarryOwners,
   type UnknownColumns,
@@ -918,17 +924,19 @@ export async function readFromStreamingFile(
       },
     },
   );
-  attachAnnotationTuples<BoundingBox>(
-    markTuples(await readBboxesStreaming(file, tracks, format3?.bboxMetadata)),
-    {
-      ...attachCommon,
-      frameList: (lf) => lf.bboxes,
-      setLazy: (store, byFrame, undistributed) => {
-        store._bboxByFrame = byFrame;
-        store._undistributedBboxes = undistributed;
-      },
-    },
+  const bboxTuples = await readBboxesStreaming(
+    file,
+    tracks,
+    format3?.bboxMetadata,
   );
+  attachAnnotationTuples<BoundingBox>(markTuples(bboxTuples), {
+    ...attachCommon,
+    frameList: (lf) => lf.bboxes,
+    setLazy: (store, byFrame, undistributed) => {
+      store._bboxByFrame = byFrame;
+      store._undistributedBboxes = undistributed;
+    },
+  });
 
   // Read sessions — grouping captured as index refs (no frame materialization).
   // (Skipped with userInstancesOnly: their groupings refer to frames and
@@ -966,6 +974,7 @@ export async function readFromStreamingFile(
     // a format 3.0 save (the pose tables', and the links').
     const carried = [
       ...POSE_TABLES,
+      "bboxes",
       "identity/links",
       "categories/links",
       "session_data/frame_groups",
@@ -979,6 +988,7 @@ export async function readFromStreamingFile(
         Number,
       );
     const links = {
+      bboxes: bboxTuples.map((t) => t[0]),
       identityLinks: await linkKeysStreaming(file, "identity/links"),
       categoryLinks: await linkKeysStreaming(file, "categories/links"),
       sessions: (await isGroupStreaming(file, "session_data/frame_groups"))
@@ -2348,7 +2358,7 @@ async function readUnknownColumnsStreaming(
         ...((meta.metadata ?? {}) as object),
         shape: meta.shape ?? null,
       };
-      if (!Array.isArray(meta.shape) || meta.shape.length !== 1) continue;
+      if (!isCarriable(info)) continue;
       const column = carriedColumn(
         info,
         (await file.getDatasetValue(path)).value,
@@ -2358,6 +2368,61 @@ async function readUnknownColumnsStreaming(
         out[table][name] = column;
       }
     }
+  }
+  return out;
+}
+
+/**
+ * What a format 3.0 save of the streaming reader's labels would not write
+ * back from the tables it reads, as paths for the summary's `unreadTables`:
+ * groups inside the pose tables and `/bboxes`, unknown columns that cannot be
+ * carried, and members of `metadata/` groups it does not read. Mirrors
+ * `uncarriedMembersH5` in read.ts.
+ */
+async function uncarriedMembersStreaming(
+  file: StreamingH5File,
+  metadata: Record<string, MetadataColumns | null>,
+): Promise<string[]> {
+  const out: string[] = [];
+  for (const table of [
+    ...POSE_TABLES,
+    "bboxes",
+    "identity/links",
+    "categories/links",
+    "session_data/frame_groups",
+    "session_data/instance_groups",
+    "session_data/instance_group_members",
+  ]) {
+    if (!(await isGroupStreaming(file, table))) continue;
+    const members: TableMember[] = [];
+    for (const name of await childKeys(file, table)) {
+      const path = `${table}/${name}`;
+      if (!(await isDatasetStreaming(file, path))) {
+        members.push({ name, group: true });
+        continue;
+      }
+      const meta = await file.getDatasetMeta(path);
+      members.push({
+        name,
+        group: false,
+        info: {
+          ...((meta.metadata ?? {}) as object),
+          shape: meta.shape ?? null,
+        },
+      });
+    }
+    out.push(...unreadTableMembers(table, members));
+  }
+  for (const table of METADATA_TABLES) {
+    const base = `${table}/${METADATA_SUBGROUP}`;
+    if (!(await isGroupStreaming(file, base))) continue;
+    out.push(
+      ...unreadMetadataMembers(
+        table,
+        await childKeys(file, base),
+        metadataKeys(metadata[table]),
+      ),
+    );
   }
   return out;
 }
@@ -2558,6 +2623,11 @@ async function readFormat3Streaming(
       }),
       ...(await unreadByStreaming(file, root)),
       ...unreadGroups,
+      ...(await uncarriedMembersStreaming(file, {
+        instances: instanceMetadata,
+        frames: frameMetadata,
+        bboxes: bboxMetadata,
+      })),
     ],
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(
@@ -2953,6 +3023,9 @@ function buildLabeledFrames(options: {
       }
 
       instanceById.set(instIdx, instance);
+      if (Number.isNaN(rawTrackingScore) && formatId < 3) {
+        markNanTrackingScore(instance);
+      }
       instances.push(instance);
     }
 
