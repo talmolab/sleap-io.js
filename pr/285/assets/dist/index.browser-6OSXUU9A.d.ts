@@ -1,4 +1,4 @@
-import { bm as VideoBackend, bB as RangeSource$1, bl as GetFrameOptions, bk as VideoFrame, k as SlpSourceFormat, bC as MetadataColumn, l as Labels, V as Video, S as Skeleton, T as Track, aA as SuggestionFrame, aJ as Identity, aF as RecordingSession, aN as LazyDataStore, m as LabeledFrame, bD as MetadataKind, a8 as FsResolver, bs as CropRect, bA as Fill, bt as FlatPoints, bu as PointPairs, bh as UserLabelImage, j as Format3Option, n as LabelsSet, aR as Geometry, R as ROI, I as Instance, p as SegmentationMask, P as PredictedInstance, o as LabelImage, B as BoundingBox } from './dictionary-Cvmh6b7G.js';
+import { bm as VideoBackend, bB as RangeSource$1, bl as GetFrameOptions, bk as VideoFrame, k as SlpSourceFormat, bC as MetadataColumn, l as Labels, V as Video, S as Skeleton, T as Track, aA as SuggestionFrame, aJ as Identity, aF as RecordingSession, aN as LazyDataStore, m as LabeledFrame, bD as MetadataKind, a8 as FsResolver, bs as CropRect, bA as Fill, bt as FlatPoints, bu as PointPairs, bh as UserLabelImage, j as Format3Option, n as LabelsSet, aR as Geometry, R as ROI, I as Instance, p as SegmentationMask, P as PredictedInstance, o as LabelImage, B as BoundingBox } from './dictionary-BdHnD0xL.js';
 import { CustomVideoDecoder, EncodedPacket } from 'mediabunny';
 
 /**
@@ -1216,6 +1216,8 @@ interface LabelTableUpdate {
  * (without `format3: "edit"`) build a 3.0 update, patched into their file
  * column by column. A 3.0 update of lazy labels materializes them.
  *
+ * @returns The update. For a 3.0 update of lazy labels, the labels are
+ *   materialized first (`labels.materialize()`), so they are eager afterwards.
  * @throws {SlpViewOnlyError} For labels loaded with `format3: "view"`.
  * @throws {Error} For unlabelled points with `unlabeledAs: "error"` (see
  *   {@link UnlabeledAs}), in the 2.x layout.
@@ -1236,6 +1238,8 @@ interface OnDiskMember {
     signed?: boolean;
     /** Rows of the column (`layout: "columns"` only). */
     rows?: number;
+    /** For an enum member, its members' names and values. */
+    enumMembers?: Record<string, number>;
 }
 /** On-disk shape/layout of one label table, as seen by the writability gate. */
 interface OnDiskTable {
@@ -1290,6 +1294,9 @@ interface DatasetMetaLike {
                 type: number;
                 size?: number;
                 signed?: boolean;
+                enum_type?: {
+                    members?: Record<string, number>;
+                } | null;
             }>;
         };
     };
@@ -1411,6 +1418,12 @@ declare function checkInPlaceWritable(update: LabelTableUpdate, onDisk: OnDiskTa
  * actually taken effect (h5wasm silently no-ops resize on a non-resizable
  * dataset) — a resize that can't happen THROWS here rather than writing ghost
  * rows, so the caller falls back to a full re-save.
+ *
+ * IF THIS THROWS, THE FILE MAY BE PARTLY WRITTEN: checks run before the first
+ * write catch what they can, but a failure after it (an I/O error, the
+ * read-back check of HDF5 booleans, a resize the gate did not see) leaves
+ * some tables patched. The caller must then do a full save to the same
+ * target.
  *
  * Does NOT flush or close the file — the caller owns the file lifecycle.
  */
@@ -1970,6 +1983,8 @@ declare class StreamingH5Writer {
      * structured-cloning a nested array), which packs them into the on-disk layout
      * (flat matrix or compound record) and replaces the `/metadata` json attr when
      * `update.metadataJson` is set. Never touches any `video{i}/video` group.
+     * If it rejects, the file may be partly written: do a full save to the
+     * same target (see `writeLabelTablesInPlace`).
      */
     updateLabelsInPlace(update: LabelTableUpdate): Promise<H5WorkerResponse>;
     /**
@@ -3017,11 +3032,17 @@ declare function saveLabelsCsv(labels: Labels, filename: string, options?: CsvEx
  * Load a SLEAP labels file (.slp).
  *
  * Automatically selects the best loading strategy:
- * - Browser with Worker support: uses streaming reader via Web Worker, unless
- *   the file holds content that reader does not read (ROIs, masks, label
- *   images, links and embeddings of detections other than instances); in the
- *   default `"auto"` stream mode such a file is read on the main thread, so
- *   nothing is lost
+ * - Browser with Worker support: uses streaming reader via Web Worker. The
+ *   streaming reader does not read ROIs, masks, label images, or links and
+ *   embeddings of detections other than instances. In the default `"auto"`
+ *   stream mode, a file in SLP format 3.0 that holds any of those is read with
+ *   the standard reader on the main thread instead, so nothing is lost: the
+ *   whole file is read into memory (a URL is downloaded whole, a `File` read
+ *   whole), which blocks the page while it reads. Pass `h5: { stream: "range" }`
+ *   to keep streaming; the file's `format3` summary then lists what is not
+ *   read. Files before 3.0 always take the streaming route, which skips that
+ *   content in them without a summary (the lite `loadSlpMetadata`'s
+ *   `streamingUnreadTables` says whether a file holds any).
  * - Node.js or fallback: uses standard HDF5 reader
  *
  * @param source - Path to .slp file, ArrayBuffer, Uint8Array, File, or FileSystemFileHandle
@@ -3035,7 +3056,9 @@ declare function saveLabelsCsv(labels: Labels, filename: string, options?: CsvEx
  *   paths (streaming, eager, and lazy); the final call is (total, total,
  *   "Finalizing"). Stage counts differ by path (streaming is finer-grained).
  * @param options.format3 - What a later save may do with a file in SLP format
- *   3.0. Unset (or `"keep"`): load it editable, and saves keep format 3.0.
+ *   3.0. `"keep"` (the default): load it editable, and saves keep format
+ *   3.0; without the option, a file holding what this version does not read
+ *   throws as `"ask"` does, since a save would drop it.
  *   `"view"` loads it read-only (every writer refuses the labels), `"edit"`
  *   lets a save write the 2.x layout and drop what it cannot store, and
  *   `"ask"` throws `SlpFormat3ChoiceError`, whose `summary` lists what an
@@ -4476,22 +4499,33 @@ interface StreamingSlpOptions {
      */
     onProgress?: (current: number, total: number, message?: string) => void;
     /**
-     * What a later save may do with a file in SLP format 3.0: unset or
-     * `"keep"` (saves keep format 3.0), `"view"` (read-only, every SLP writer
+     * What a later save may do with a file in SLP format 3.0: `"keep"` (saves
+     * keep format 3.0; also the default, unless the file holds what this
+     * reader does not read, which then throws as `"ask"`), `"view"` (read-only, every SLP writer
      * refuses the labels), `"edit"` (a save writes the 2.x layout and drops what
      * it cannot store) or `"ask"` (throw `SlpFormat3ChoiceError`). See
      * `readSlp`.
      */
     format3?: Format3Option;
     /**
-     * Throw {@link StreamingIncompleteError}, before reading any table, when the
-     * file holds content this reader does not read (ROIs, masks, label images,
-     * links and embeddings of detections other than instances), so the caller
-     * can use the in-memory reader instead. `loadSlp` does that in its default
-     * (`"auto"`) mode. Default `false`: such content is not read, and a 3.0
-     * file's summary lists it as something an edit drops.
+     * For a file in SLP format 3.0: throw {@link StreamingIncompleteError},
+     * before reading any table, when it holds content this reader does not read
+     * (ROIs, masks, label images, links and embeddings of detections other than
+     * instances), so the caller can use the in-memory reader instead. `loadSlp`
+     * does that in its default (`"auto"`) mode. Default `false`: such content is
+     * not read, and the file's summary lists it as something an edit drops.
+     * Files before 3.0 are read as always (this reader skips that content in
+     * them too, without a summary).
      */
     failIfIncomplete?: boolean;
+}
+/**
+ * Thrown by the streaming reader, when asked (`failIfIncomplete`), for a file
+ * that holds content it does not read. `unread` lists it, as paths.
+ */
+declare class StreamingIncompleteError extends Error {
+    readonly unread: string[];
+    constructor(labelsPath: string, unread: string[]);
 }
 declare function readSlpStreaming(source: StreamingH5Source, options?: StreamingSlpOptions): Promise<Labels>;
 
@@ -4615,4 +4649,4 @@ declare function copySourceMark(from: object | null | undefined, to: object | nu
  */
 declare function setSourceAccess(labels: Labels, access: SlpSourceFormat["access"]): number;
 
-export { openStreamingH5 as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, type CreateVideoBackendOptions as J, CropVideoBackend as K, LibavH264Decoder as L, type CropWrapOptions as M, GrayscaleVideoBackend as N, type GrayscaleWrapOptions as O, type PaletteName as P, parseGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, urlFromConfirmation as T, UnsupportedVideoFormatError as U, type VideoOptions as V, checkDownloadHost as W, openGdrive as X, DEFAULT_MAX_BYTES as Y, StreamingH5File as Z, StreamingH5Writer as _, type RenderOptions as a, setLabelImageFileReader as a$, openH5Worker as a0, isStreamingSupported as a1, isRangeSource as a2, serviceRangeBridge as a3, serviceWriteBridge as a4, serviceTruncateBridge as a5, type StreamingH5Source as a6, type RangeSource as a7, type RangeSink as a8, readSlpStreaming as a9, MP4_DECODE_WORKER_CODE as aA, createDecodeWorker as aB, isWorkerDecodeAvailable as aC, type WorkerLike as aD, type WorkerBackendParams as aE, WorkerMp4BoxBackend as aF, type MediaBunnyOptions as aG, MediaBunnyVideoBackend as aH, type WebDemuxerConfig as aI, configureWebDemuxer as aJ, isWebDemuxerConfigured as aK, type AviVideoOptions as aL, AviVideoBackend as aM, StreamingHdf5VideoBackend as aN, type ImageVideoOptions as aO, computePrefetchWindow as aP, ImageVideoBackend as aQ, loadSlp as aR, saveSlp as aS, loadAnalysisH5 as aT, saveAnalysisH5 as aU, saveAnalysisH5ToBytes as aV, loadNwb as aW, loadSlpSet as aX, saveSlpSet as aY, loadVideo as aZ, loadLabelImages as a_, SlpPointSpanError as aa, type PointSpanMismatch as ab, copySourceMark as ac, sourceMarkOf as ad, setSourceAccess as ae, Mp4BoxVideoBackend as af, type Mp4Sample as ag, type SerializableDecoderConfig as ah, type Mp4ParseResult as ai, type FeedEntry as aj, type ReadRegion as ak, findKeyframeBefore as al, planDecodeRange as am, CACHE_WINDOW_BEHIND as an, viewedFrameCapacity as ao, computeCacheWindow as ap, markViewed as aq, pickEvictionVictim as ar, selectFeedSamples as as, planReadRegions as at, readSamplesByDecodeOrder as au, nextUncached as av, shouldDecodeAhead as aw, type ByteSourceDescriptor as ax, type WorkerInMessage as ay, type WorkerOutMessage as az, type RGB as b, SENSITIVE_QUERY_PARAMS as b$, type PagesAs as b0, type LoadLabelImagesOptions as b1, type LabelImageFileReader as b2, saveSlpToBytes as b3, resolveSlpVersion as b4, setV3Defaults as b5, getV3Defaults as b6, V3_DEFAULTS_ENV as b7, type SlpVersion as b8, type SlpLayout as b9, buildSuggestionsJson as bA, buildVideoSignatures as bB, buildExpectedSidecars as bC, checkInPlaceWritable as bD, onDiskTableFromMeta as bE, onDiskColumnTableFromMeta as bF, onDiskTablesFromFile as bG, writeLabelTablesInPlace as bH, type LabelTable as bI, type LabelTableRows as bJ, type LabelTableUpdate as bK, type OnDiskMember as bL, type OnDiskTable as bM, type OnDiskTables as bN, type OnDiskSidecars as bO, type InPlaceWritable as bP, type DatasetMetaLike as bQ, isAnalysisH5File as bR, readNwb as bS, isNwbFile as bT, labelsToCsv as bU, saveLabelsCsv as bV, type CsvExportOptions as bW, URL_SCHEMES as bX, CLOUD_SCHEMES as bY, GDRIVE_HOSTS as bZ, SENSITIVE_HEADERS as b_, ExportCancelled as ba, type EmbedOption as bb, type SlpWriteOptions as bc, saveSlpStructureToBytes as bd, openSlpWriter as be, SlpStreamWriter as bf, saveSlpMergedFromStores as bg, saveSlpMergedToSink as bh, type SlpWriteHeader as bi, type AppendStoreOptions as bj, type SlpWriteSink as bk, type MergeStoresOptions as bl, buildSerializableEmbedPlan as bm, type EmbeddedVideoAttrs as bn, type SerializableEmbedEntry as bo, type SerializableEncodeEntry as bp, type SerializableEmbedPlan as bq, appendEncodedVideos as br, type AppendEncodedVideosOptions as bs, type EncodeFramePayload as bt, type EncodedVideoSink as bu, type ExternalFrameReader as bv, buildLabelTableRows as bw, buildLabelTableUpdate as bx, buildMetadataJson as by, buildTracksJson as bz, type RawLabelImage as c, type RGBA as c$, RETRYABLE_STATUSES as c0, isUrl as c1, isGdriveUrl as c2, redactUrl as c3, redactedCauseSummary as c4, RemoteIOError as c5, type ResolvedUrl as c6, resolveUrl as c7, statusToMessage as c8, raiseRemote as c9, readCocoSet as cA, readDlc as cB, readDlcProject as cC, isDlcData as cD, parseDlcCrop as cE, looksLikeDlcConfig as cF, attachConfigSkeleton as cG, videoSetsStemMap as cH, extractFrameIndex as cI, resolveConfig as cJ, setSourceVideo as cK, findProjectCsvs as cL, resolveProjectConfigPath as cM, readDlcDataframe as cN, type ReadDlcOptions as cO, type ReadDlcProjectOptions as cP, type DlcDataframe as cQ, toNumpy as cR, fromNumpy as cS, labelsFromNumpy as cT, decodeYamlSkeleton as cU, encodeYamlSkeleton as cV, readSkeletonJson as cW, writeSkeletonJson as cX, readTrainingConfigSkeletons as cY, readTrainingConfigSkeleton as cZ, isTrainingConfig as c_, identityHeaders as ca, stripCrossOriginHeaders as cb, withRetries as cc, parseRetryAfterMs as cd, fetchRetrying as ce, headOrRangeProbe as cf, type GeoJSONFeature as cg, type GeoJSONFeatureCollection as ch, roisToGeoJSON as ci, roisFromGeoJSON as cj, writeGeoJSON as ck, readGeoJSON as cl, type CocoCategory as cm, type CocoImage as cn, type CocoRle as co, type CocoSegmentation as cp, type CocoAnnotation as cq, type CocoJson as cr, isCocoData as cs, parseCocoJson as ct, createSkeletonFromCategory as cu, decodeKeypoints as cv, decodeCompressedRleCounts as cw, decodeCocoRle as cx, decodeSegmentation as cy, readCoco as cz, configureLibavDecoder as d, type ColorSpec as d0, type ColorScheme as d1, type MarkerShape as d2, type Overlay as d3, type VideoOverlay as d4, NAMED_COLORS as d5, PALETTES as d6, getPalette as d7, resolveColor as d8, rgbToCSS as d9, pickColor as dA, determineColorScheme as da, drawCircle as db, drawSquare as dc, drawDiamond as dd, drawTriangle as de, drawCross as df, drawTrails as dg, getMarkerFunction as dh, MARKER_FUNCTIONS as di, type DrawTrailsOptions as dj, resolveTrailNode as dk, computeTrails as dl, nTrailPaletteColors as dm, collectTracks as dn, type TrailTarget as dp, type Trail as dq, RenderContext as dr, InstanceContext as ds, drawMasks as dt, drawLabelImage as du, warn as dv, isDlcProjectPath as dw, readDlcConfig as dx, discoverConfig as dy, clampAlpha as dz, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };
+export { openStreamingH5 as $, SeqHeader as A, SeqIndex as B, type Config as C, type DlcFileSystem as D, BlobByteSource as E, type ByteSource as F, createVideoBackend as G, type VideoBackendType as H, type ImageBytesReader as I, type CreateVideoBackendOptions as J, CropVideoBackend as K, LibavH264Decoder as L, type CropWrapOptions as M, GrayscaleVideoBackend as N, type GrayscaleWrapOptions as O, type PaletteName as P, parseGdrive as Q, type ReadCocoOptions as R, SeqVideoBackend as S, urlFromConfirmation as T, UnsupportedVideoFormatError as U, type VideoOptions as V, checkDownloadHost as W, openGdrive as X, DEFAULT_MAX_BYTES as Y, StreamingH5File as Z, StreamingH5Writer as _, type RenderOptions as a, loadLabelImages as a$, openH5Worker as a0, isStreamingSupported as a1, isRangeSource as a2, serviceRangeBridge as a3, serviceWriteBridge as a4, serviceTruncateBridge as a5, type StreamingH5Source as a6, type RangeSource as a7, type RangeSink as a8, readSlpStreaming as a9, type WorkerOutMessage as aA, MP4_DECODE_WORKER_CODE as aB, createDecodeWorker as aC, isWorkerDecodeAvailable as aD, type WorkerLike as aE, type WorkerBackendParams as aF, WorkerMp4BoxBackend as aG, type MediaBunnyOptions as aH, MediaBunnyVideoBackend as aI, type WebDemuxerConfig as aJ, configureWebDemuxer as aK, isWebDemuxerConfigured as aL, type AviVideoOptions as aM, AviVideoBackend as aN, StreamingHdf5VideoBackend as aO, type ImageVideoOptions as aP, computePrefetchWindow as aQ, ImageVideoBackend as aR, loadSlp as aS, saveSlp as aT, loadAnalysisH5 as aU, saveAnalysisH5 as aV, saveAnalysisH5ToBytes as aW, loadNwb as aX, loadSlpSet as aY, saveSlpSet as aZ, loadVideo as a_, StreamingIncompleteError as aa, SlpPointSpanError as ab, type PointSpanMismatch as ac, copySourceMark as ad, sourceMarkOf as ae, setSourceAccess as af, Mp4BoxVideoBackend as ag, type Mp4Sample as ah, type SerializableDecoderConfig as ai, type Mp4ParseResult as aj, type FeedEntry as ak, type ReadRegion as al, findKeyframeBefore as am, planDecodeRange as an, CACHE_WINDOW_BEHIND as ao, viewedFrameCapacity as ap, computeCacheWindow as aq, markViewed as ar, pickEvictionVictim as as, selectFeedSamples as at, planReadRegions as au, readSamplesByDecodeOrder as av, nextUncached as aw, shouldDecodeAhead as ax, type ByteSourceDescriptor as ay, type WorkerInMessage as az, type RGB as b, SENSITIVE_HEADERS as b$, setLabelImageFileReader as b0, type PagesAs as b1, type LoadLabelImagesOptions as b2, type LabelImageFileReader as b3, saveSlpToBytes as b4, resolveSlpVersion as b5, setV3Defaults as b6, getV3Defaults as b7, V3_DEFAULTS_ENV as b8, type SlpVersion as b9, buildTracksJson as bA, buildSuggestionsJson as bB, buildVideoSignatures as bC, buildExpectedSidecars as bD, checkInPlaceWritable as bE, onDiskTableFromMeta as bF, onDiskColumnTableFromMeta as bG, onDiskTablesFromFile as bH, writeLabelTablesInPlace as bI, type LabelTable as bJ, type LabelTableRows as bK, type LabelTableUpdate as bL, type OnDiskMember as bM, type OnDiskTable as bN, type OnDiskTables as bO, type OnDiskSidecars as bP, type InPlaceWritable as bQ, type DatasetMetaLike as bR, isAnalysisH5File as bS, readNwb as bT, isNwbFile as bU, labelsToCsv as bV, saveLabelsCsv as bW, type CsvExportOptions as bX, URL_SCHEMES as bY, CLOUD_SCHEMES as bZ, GDRIVE_HOSTS as b_, type SlpLayout as ba, ExportCancelled as bb, type EmbedOption as bc, type SlpWriteOptions as bd, saveSlpStructureToBytes as be, openSlpWriter as bf, SlpStreamWriter as bg, saveSlpMergedFromStores as bh, saveSlpMergedToSink as bi, type SlpWriteHeader as bj, type AppendStoreOptions as bk, type SlpWriteSink as bl, type MergeStoresOptions as bm, buildSerializableEmbedPlan as bn, type EmbeddedVideoAttrs as bo, type SerializableEmbedEntry as bp, type SerializableEncodeEntry as bq, type SerializableEmbedPlan as br, appendEncodedVideos as bs, type AppendEncodedVideosOptions as bt, type EncodeFramePayload as bu, type EncodedVideoSink as bv, type ExternalFrameReader as bw, buildLabelTableRows as bx, buildLabelTableUpdate as by, buildMetadataJson as bz, type RawLabelImage as c, isTrainingConfig as c$, SENSITIVE_QUERY_PARAMS as c0, RETRYABLE_STATUSES as c1, isUrl as c2, isGdriveUrl as c3, redactUrl as c4, redactedCauseSummary as c5, RemoteIOError as c6, type ResolvedUrl as c7, resolveUrl as c8, statusToMessage as c9, readCoco as cA, readCocoSet as cB, readDlc as cC, readDlcProject as cD, isDlcData as cE, parseDlcCrop as cF, looksLikeDlcConfig as cG, attachConfigSkeleton as cH, videoSetsStemMap as cI, extractFrameIndex as cJ, resolveConfig as cK, setSourceVideo as cL, findProjectCsvs as cM, resolveProjectConfigPath as cN, readDlcDataframe as cO, type ReadDlcOptions as cP, type ReadDlcProjectOptions as cQ, type DlcDataframe as cR, toNumpy as cS, fromNumpy as cT, labelsFromNumpy as cU, decodeYamlSkeleton as cV, encodeYamlSkeleton as cW, readSkeletonJson as cX, writeSkeletonJson as cY, readTrainingConfigSkeletons as cZ, readTrainingConfigSkeleton as c_, raiseRemote as ca, identityHeaders as cb, stripCrossOriginHeaders as cc, withRetries as cd, parseRetryAfterMs as ce, fetchRetrying as cf, headOrRangeProbe as cg, type GeoJSONFeature as ch, type GeoJSONFeatureCollection as ci, roisToGeoJSON as cj, roisFromGeoJSON as ck, writeGeoJSON as cl, readGeoJSON as cm, type CocoCategory as cn, type CocoImage as co, type CocoRle as cp, type CocoSegmentation as cq, type CocoAnnotation as cr, type CocoJson as cs, isCocoData as ct, parseCocoJson as cu, createSkeletonFromCategory as cv, decodeKeypoints as cw, decodeCompressedRleCounts as cx, decodeCocoRle as cy, decodeSegmentation as cz, configureLibavDecoder as d, type RGBA as d0, type ColorSpec as d1, type ColorScheme as d2, type MarkerShape as d3, type Overlay as d4, type VideoOverlay as d5, NAMED_COLORS as d6, PALETTES as d7, getPalette as d8, resolveColor as d9, clampAlpha as dA, pickColor as dB, rgbToCSS as da, determineColorScheme as db, drawCircle as dc, drawSquare as dd, drawDiamond as de, drawTriangle as df, drawCross as dg, drawTrails as dh, getMarkerFunction as di, MARKER_FUNCTIONS as dj, type DrawTrailsOptions as dk, resolveTrailNode as dl, computeTrails as dm, nTrailPaletteColors as dn, collectTracks as dp, type TrailTarget as dq, type Trail as dr, RenderContext as ds, InstanceContext as dt, drawMasks as du, drawLabelImage as dv, warn as dw, isDlcProjectPath as dx, readDlcConfig as dy, discoverConfig as dz, ensureNativeH264Probe as e, type LibavDecoderConfig as f, getImageBytesReader as g, resolveVideoSource as h, isLibavDecoderConfigured as i, anchorCandidate as j, derivePrefixSwap as k, applyPrefixSwap as l, resolveFirstExisting as m, nativeH264DecodableSync as n, overrideNativeH264Decodable as o, parsePath as p, formatPath as q, registerLibavH264Decoder as r, setImageBytesReader as s, posixDirname as t, posixBasename as u, videoPathCandidates as v, posixJoin as w, type PosixPath as x, type PrefixSwap as y, type ResolvedVideoSource as z };

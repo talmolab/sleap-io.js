@@ -2800,8 +2800,11 @@ declare class SlpTableError extends SlpFormatError {
  * (see `slpVersion` on the writers). Every reader takes a `format3` option
  * that says what a later save may do with a 3.0 file:
  *
- * - no option, or `format3: "keep"`: load it editable; a save keeps format 3.0
- *   (the labels and their records are marked `access: "keep"`).
+ * - `format3: "keep"`, or no option: load it editable; a save keeps format
+ *   3.0 (the labels and their records are marked `access: "keep"`). Without
+ *   the option, a file holding what this version does not read (its
+ *   summary's `unreadTables`) throws as `"ask"` does, since any save would
+ *   drop that.
  * - `format3: "view"` loads everything and marks the labels view-only; every
  *   writer refuses them with {@link SlpViewOnlyError}.
  * - `format3: "edit"` loads the same and lets writers save the 2.x layout,
@@ -2822,7 +2825,8 @@ declare class SlpTableError extends SlpFormatError {
 type Format3Access = "view" | "edit" | "keep";
 /**
  * The `format3` option of every reader: a {@link Format3Access}, or `"ask"` to
- * throw {@link SlpFormat3ChoiceError} for a 3.0 file. Unset means `"keep"`.
+ * throw {@link SlpFormat3ChoiceError} for a 3.0 file. Unset means `"keep"`,
+ * or `"ask"` for a file holding what the reader does not read.
  */
 type Format3Option = Format3Access | "ask";
 /**
@@ -2879,9 +2883,9 @@ interface SlpSourceFormat {
 }
 /** The kind of each metadata key, per table. */
 interface MetadataKindsByTable {
-    instances: Readonly<Record<string, MetadataKind>>;
-    frames: Readonly<Record<string, MetadataKind>>;
-    bboxes: Readonly<Record<string, MetadataKind>>;
+    instances: Record<string, MetadataKind>;
+    frames: Record<string, MetadataKind>;
+    bboxes: Record<string, MetadataKind>;
 }
 /**
  * Thrown by every reader for a file in SLP format 3.0 opened with
@@ -2922,7 +2926,7 @@ declare class SlpViewOnlyError extends Error {
 /** One unknown column: its values, one per row, and how to write it. */
 interface CarriedColumn {
     /** Numbers (or 64-bit integers), or strings for a string column. */
-    values: ArrayLike<number> | ArrayLike<bigint> | readonly string[];
+    values: ArrayLike<number> | ArrayLike<bigint> | string[];
     /**
      * The h5wasm dtype to write it with: `"S"` for a variable-length string
      * column, else a numeric dtype such as `"<d"`, `"<q"` or `"<B"`.
@@ -2937,13 +2941,13 @@ interface CarriedTable {
      * its point array, which owns one row per node), or `null` when the rows
      * could not be attributed to records.
      */
-    owners: ReadonlyArray<readonly unknown[]> | null;
+    owners: unknown[][] | null;
     /** The columns, by name. */
-    columns: Readonly<Record<string, CarriedColumn>>;
+    columns: Record<string, CarriedColumn>;
 }
 /** Unknown columns kept from a file, by table (`points`, `rois`, ...). */
 declare class ColumnCarry {
-    readonly tables: Map<string, CarriedTable>;
+    tables: Map<string, CarriedTable>;
     constructor(tables?: Iterable<[string, CarriedTable]>);
     /** Whether any table has columns to carry. */
     get size(): number;

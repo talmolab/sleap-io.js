@@ -2315,8 +2315,9 @@ var SlpFormat3ChoiceError = class extends SlpFormatError {
   constructor(labelsPath, summary) {
     const path = safePath(labelsPath);
     const drops = describeDrops(summary);
+    const unread = summary.unreadTables;
     super({
-      message: `The SLEAP labels file '${path}' is in SLP format ${formatLabel2(summary.formatId)}, which SLEAP and sleap-io < 0.10 cannot open. Saving it in the 2.x layout would ` + (drops.length > 0 ? `drop ${drops.join("; ")}.` : "drop nothing.") + ` Open it with the option format3: "keep" to save it in format ${formatLabel2(summary.formatId)}, format3: "view" to load it read-only, or format3: "edit" to save it in the 2.x layout.`,
+      message: `The SLEAP labels file '${path}' is in SLP format ${formatLabel2(summary.formatId)}, which SLEAP and sleap-io < 0.10 cannot open.` + (unread.length > 0 ? ` It holds what this version does not read (${unread.join(", ")}), which a save in either layout would drop, so it is not opened without the format3 option.` : "") + " Saving it in the 2.x layout would " + (drops.length > 0 ? `drop ${drops.join("; ")}.` : "drop nothing.") + ` Open it with the option format3: "keep" to save it in format ${formatLabel2(summary.formatId)}, format3: "view" to load it read-only, or format3: "edit" to save it in the 2.x layout.`,
       labelsPath: path,
       formatId: summary.formatId
     });
@@ -2453,6 +2454,9 @@ function buildFormat3Summary(options) {
 function chooseFormat3Access(labelsPath, summary, choice, metadataKinds) {
   checkFormat3Option(choice);
   let access;
+  if (choice === void 0 && summary.unreadTables.length > 0) {
+    throw new SlpFormat3ChoiceError(labelsPath, summary);
+  }
   if (choice === "ask") {
     if (!(summary.lossless && !LOSSLESS_FORMAT3_ASKS)) {
       throw new SlpFormat3ChoiceError(labelsPath, summary);

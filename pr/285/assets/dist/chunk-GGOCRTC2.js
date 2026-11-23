@@ -89,7 +89,7 @@ import {
   unknownTableColumns,
   unknownTableGroups,
   unreadMembers
-} from "./chunk-LQVSF6EY.js";
+} from "./chunk-AQWXNSWX.js";
 import {
   openGdrive
 } from "./chunk-RC2FIFDH.js";
@@ -14553,8 +14553,8 @@ var H5T_FLOAT_CLASS = 1;
 function memberColumnTypedArrayWorker(member, values) {
   var size = member.size == null ? 8 : member.size;
   if (member.type === H5T_ENUM_CLASS) {
-    // An enum (h5py's bool) holds its base integer: 0/1 for a flag.
-    var flags = values.map(function (v) { return isFinite(v) ? Math.trunc(v) : 0; });
+    // h5py's bool (the only enum written): 0 or 1.
+    var flags = values.map(function (v) { return v ? 1 : 0; });
     return memberColumnTypedArrayWorker({ name: member.name, type: 0, size: size, signed: member.signed }, flags);
   }
   if (member.type === H5T_FLOAT_CLASS) {
@@ -14583,33 +14583,79 @@ function writeWithFileTypeWorker(ds, write) {
     return out;
   };
   var members = md && md.compound_type && md.compound_type.members;
-  var hasEnum = (md && md.type === H5T_ENUM_CLASS) ||
-    !!(members && members.some(function (m) { return m.type === H5T_ENUM_CLASS; }));
-  if (!hasEnum) { write(); return; }
+  var enums = members
+    ? members.filter(function (m) { return m.type === H5T_ENUM_CLASS; })
+    : (md && md.type === H5T_ENUM_CLASS ? [md] : []);
+  if (enums.length === 0) { write(); return; }
+  // Only h5py's bool (write.ts isH5pyBool \u2014 KEEP IN LOCKSTEP).
+  for (var q = 0; q < enums.length; q++) {
+    if (!isH5pyBoolWorker(enums[q].size, enums[q].enum_type && enums[q].enum_type.members)) {
+      throw new Error('in-place save: ' + ds.path + ' holds an enum other than a boolean, which this writer does not write - re-save the whole file instead');
+    }
+  }
   ds._metadata = members
     ? Object.assign({}, md, { compound_type: Object.assign({}, md.compound_type, { members: members.map(asInt) }) })
     : asInt(md);
   try { write(); } finally { delete ds._metadata; }
 }
 
+// Worker port of isH5pyBool (write.ts \u2014 KEEP IN LOCKSTEP).
+function isH5pyBoolWorker(size, members) {
+  var names = Object.keys(members || {}).sort();
+  return (size == null ? 1 : size) === 1 && names.length === 2 &&
+    names[0] === 'FALSE' && names[1] === 'TRUE' &&
+    Number(members.FALSE) === 0 && Number(members.TRUE) === 1;
+}
+
+// Worker port of forEachSlice (write.ts \u2014 KEEP IN LOCKSTEP): read rows
+// [0, n) in bounded slices.
+var VERIFY_CHUNK_ROWS = 65536;
+function forEachSliceWorker(ds, n, visit) {
+  for (var start = 0; start < n; start += VERIFY_CHUNK_ROWS) {
+    var end = Math.min(n, start + VERIFY_CHUNK_ROWS);
+    visit(ds.slice([[start, end]]), start);
+  }
+}
+
 // Worker port of verifyEnumMembers (write.ts \u2014 KEEP IN LOCKSTEP): read an
-// enum-holding compound back and check each enum member holds what was written.
+// enum-holding compound back, a bounded slice at a time, and check each enum
+// member holds what was written.
 function verifyEnumMembersWorker(ds, diskName, members, fields, flat, rowCount, colCount) {
-  var enumIdx = [];
-  for (var k = 0; k < members.length; k++) if (members[k].type === H5T_ENUM_CLASS) enumIdx.push(k);
-  if (enumIdx.length === 0) return;
-  var value = ds.value;
-  for (var e = 0; e < enumIdx.length; e++) {
-    var mi = enumIdx[e];
-    var ci = fields.indexOf(members[mi].name);
-    for (var r = 0; r < rowCount; r++) {
-      var got = Number(value[r] && value[r][mi]);
-      var want = Math.trunc(Number(flat[r * colCount + ci]) || 0);
-      if (got !== want) {
-        throw new Error('in-place write of ' + diskName + ' member ' + members[mi].name + ' did not take effect (row ' + r + ') - re-save the whole file instead');
+  var checks = [];
+  for (var k = 0; k < members.length; k++) {
+    if (members[k].type === H5T_ENUM_CLASS) checks.push([k, fields.indexOf(members[k].name)]);
+  }
+  if (checks.length === 0) return;
+  forEachSliceWorker(ds, rowCount, function (rows, start) {
+    for (var r = 0; r < rows.length; r++) {
+      for (var e = 0; e < checks.length; e++) {
+        var mi = checks[e][0], ci = checks[e][1];
+        var got = Number(rows[r] && rows[r][mi]);
+        var want = flat[(start + r) * colCount + ci] ? 1 : 0;
+        if (got !== want) {
+          throw new Error('in-place write of ' + diskName + ' member ' + members[mi].name + ' did not take effect (row ' + (start + r) + ') - re-save the whole file instead');
+        }
       }
     }
+  });
+}
+
+// Worker port of nanRowsOnDisk (write.ts \u2014 KEEP IN LOCKSTEP): the rows whose
+// float member holds NaN on disk, read a bounded slice at a time.
+function nanRowsOnDiskWorker(ds, members, name, rowCount) {
+  var mi = -1;
+  for (var k = 0; k < members.length; k++) {
+    if (members[k].name === name && members[k].type === H5T_FLOAT_CLASS) mi = k;
   }
+  if (mi < 0) return null;
+  var nan = new Uint8Array(rowCount);
+  var any = false;
+  forEachSliceWorker(ds, rowCount, function (rows, start) {
+    for (var r = 0; r < rows.length; r++) {
+      if (Number.isNaN(Number(rows[r] && rows[r][mi]))) { nan[start + r] = 1; any = true; }
+    }
+  });
+  return any ? nan : null;
 }
 
 // Worker port of writeColumnInPlace (write.ts \u2014 KEEP IN LOCKSTEP): write one
@@ -14621,12 +14667,13 @@ function writeColumnInPlaceWorker(ds, values) {
   var data = memberColumnTypedArrayWorker({ name: ds.path, type: md.type, size: md.size, signed: md.signed }, Array.from(values, Number));
   writeWithFileTypeWorker(ds, function () { ds.write_slice([[0, n]], data); });
   if (md.type === H5T_ENUM_CLASS) {
-    var back = Array.from(ds.value, Number);
-    for (var i = 0; i < n; i++) {
-      if (back[i] !== Math.trunc(Number(values[i]) || 0)) {
-        throw new Error('in-place write of ' + ds.path + ' did not take effect (row ' + i + ') - re-save the whole file instead');
+    forEachSliceWorker(ds, n, function (rows, start) {
+      for (var i = 0; i < rows.length; i++) {
+        if (Number(rows[i]) !== (values[start + i] ? 1 : 0)) {
+          throw new Error('in-place write of ' + ds.path + ' did not take effect (row ' + (start + i) + ') - re-save the whole file instead');
+        }
       }
-    }
+    });
   }
 }
 
@@ -14716,6 +14763,10 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
   var members = md && md.compound_type && md.compound_type.members;
   var isCompound = !!(members && members.length > 0);
   var curRows = (ds.shape && ds.shape[0]) || 0;
+  // A value edit keeps the NaN tracking scores the readers read as 0.
+  var nanTracking = isCompound && diskName === 'instances' && curRows === rowCount
+    ? nanRowsOnDiskWorker(ds, members, 'tracking_score', rowCount)
+    : null;
   if (curRows !== rowCount) {
     ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
     // h5wasm silently no-ops resize on a non-resizable dataset \u2014 read the shape
@@ -14740,6 +14791,11 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
       }
       var colVals = new Array(rowCount);
       for (var r = 0; r < rowCount; r++) colVals[r] = flat[r * colCount + ci];
+      if (nanTracking && m.name === 'tracking_score') {
+        for (var z = 0; z < rowCount; z++) {
+          if (nanTracking[z] && colVals[z] === 0) colVals[z] = NaN;
+        }
+      }
       columns.set(m.name, memberColumnTypedArrayWorker(m, colVals));
     }
     writeWithFileTypeWorker(ds, function () { ds.write_slice([[0, rowCount]], columns); });
@@ -15467,12 +15523,15 @@ var StreamingH5File = class {
    * Close the file and terminate the worker.
    */
   async close() {
-    if (this._isOpen) {
-      await this.send("close");
-      this._isOpen = false;
+    try {
+      if (this._isOpen) {
+        this._isOpen = false;
+        await this.send("close");
+      }
+    } finally {
+      this.worker.terminate();
+      this._keys = [];
     }
-    this.worker.terminate();
-    this._keys = [];
   }
 };
 var StreamingH5Writer = class {
@@ -15715,6 +15774,8 @@ var StreamingH5Writer = class {
    * structured-cloning a nested array), which packs them into the on-disk layout
    * (flat matrix or compound record) and replaces the `/metadata` json attr when
    * `update.metadataJson` is set. Never touches any `video{i}/video` group.
+   * If it rejects, the file may be partly written: do a full save to the
+   * same target (see `writeLabelTablesInPlace`).
    */
   async updateLabelsInPlace(update) {
     if (update.sourceFormat?.access === "view") {
@@ -15795,7 +15856,13 @@ async function openH5Worker(source, options) {
     throw new Error("Web Worker HDF5 access requires Worker/Blob/URL support");
   }
   const file = new StreamingH5File();
-  await file.openAny(source, options);
+  try {
+    await file.openAny(source, options);
+  } catch (e) {
+    await file.close().catch(() => {
+    });
+    throw e;
+  }
   return file;
 }
 function inPlacePayload(update) {
@@ -16020,10 +16087,11 @@ async function openFromUrl(module, fs, url, options) {
   return { file, close: () => file.close() };
 }
 async function openFromFile(module, fs, file, options) {
-  const mountPath = `/slp-local-${Date.now()}`;
-  fs.mkdir?.(mountPath);
-  const filename = options?.filenameHint ?? file.name ?? "local.slp";
-  if (fs.mount && fs.filesystems && fs.filesystems.WORKERFS) {
+  const inWorker = typeof globalThis.FileReaderSync !== "undefined";
+  if (inWorker && fs.mount && fs.filesystems && fs.filesystems.WORKERFS) {
+    const mountPath = `/slp-local-${Date.now()}`;
+    fs.mkdir?.(mountPath);
+    const filename = options?.filenameHint ?? file.name ?? "local.slp";
     fs.mount(fs.filesystems.WORKERFS, { files: [file] }, mountPath);
     const filePath = `${mountPath}/${filename}`;
     const h5file2 = new module.File(filePath, "r");
@@ -17062,7 +17130,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
       `readSlpStreaming: '${labelsPath}' is in SLP format 3.0; userInstancesOnly drops its predicted instances and sessions, so it can only be opened with format3: "view" (or without the filter).`
     );
   }
-  if (failIfIncomplete) {
+  if (failIfIncomplete && isFormat3(formatId)) {
     const unread = await unreadByStreaming(file, file.keys());
     if (unread.length > 0) {
       throw new StreamingIncompleteError(labelsPath, unread);
@@ -18870,6 +18938,49 @@ function refuseViewOnly(source) {
     if (mark?.access === "view") throw new SlpViewOnlyError(mark);
   }
 }
+function annotationLinkLoss(d) {
+  return d.identity != null || d.identityEmbedding != null || d.categoryScore != null || d.categoryEmbedding != null;
+}
+function instanceLinkLoss(d) {
+  return d.identity != null || d.identityEmbedding != null || d.category != null && d.category !== "" || d.categoryEmbedding != null;
+}
+function refuseFormat3FrameLosses(frames) {
+  const fromFormat3 = (record) => !!sourceMarkOf(record);
+  let instances = false;
+  let annotations = false;
+  let source;
+  for (const frame of frames) {
+    for (const inst of frame.instances) {
+      if (fromFormat3(inst) && instanceLinkLoss(inst)) {
+        instances = true;
+        source ??= sourceMarkOf(inst);
+      }
+    }
+    for (const list of [
+      frame.centroids,
+      frame.bboxes,
+      frame.masks,
+      frame.rois
+    ]) {
+      for (const d of list) {
+        if (fromFormat3(d) && annotationLinkLoss(d)) {
+          annotations = true;
+          source ??= sourceMarkOf(d);
+        }
+      }
+    }
+  }
+  if (!source) return;
+  const lost = [
+    ...instances ? ["the identities, categories or embeddings of their instances"] : [],
+    ...annotations ? [
+      "the identities, category scores or embeddings of their centroids, boxes, masks or ROIs"
+    ] : []
+  ];
+  throw new Error(
+    `Frames loaded from '${source.labelsPath}' (SLP format ${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ${lost.join(", and ")}, which SlpStreamWriter.appendFrames does not write. Save them with saveSlp or saveSlpToBytes, which keep them.`
+  );
+}
 function refuseFormat3StoreLosses(store, header, writesLinks = false) {
   const source = store.sourceFormat;
   if (!source) return;
@@ -18889,11 +19000,9 @@ function refuseFormat3StoreLosses(store, header, writesLinks = false) {
   ]) {
     annotations.push(...undistributed, ...[...byFrame.values()].flat());
   }
-  if (!writesLinks && annotations.some(
-    (d) => d.identity != null || d.identityEmbedding != null || d.category != null && d.category !== "" || d.categoryEmbedding != null
-  )) {
+  if (!writesLinks && annotations.some(annotationLinkLoss)) {
     lost.push(
-      "the identities, categories or embeddings of its centroids, boxes, masks or ROIs"
+      "the identities, category scores or embeddings of its centroids, boxes, masks or ROIs"
     );
   }
   if (store.sourceSessionCount > 0 && !header.sessions) {
@@ -20067,7 +20176,8 @@ var SlpStreamWriter = class {
               }
               userWritten += ptEnd - ptStart;
             }
-            instFlat[ii++] = numAt(idn.tracking_score, j);
+            const ts = numAt(idn.tracking_score, j);
+            instFlat[ii++] = v3 && type === 0 && !ts ? Number.NaN : ts;
             outInsts++;
           }
           this.writtenFrames.add(key);
@@ -20121,6 +20231,7 @@ var SlpStreamWriter = class {
       }
     } else {
       enforceLegacyLayout(framesLegacyLosses(frames), options?.unlabeledAs);
+      refuseFormat3FrameLosses(frames);
     }
     const extra = v3 ? {
       isNegative: [],
@@ -20150,7 +20261,7 @@ var SlpStreamWriter = class {
           localId.set(inst, localInstId);
           const skeletonId = skeletonIdForWrite(this.skeletons, inst, frame);
           const trackId = inst.track ? this.tracks.indexOf(inst.track) : -1;
-          const trackingScore = inst.trackingScore ?? 0;
+          const trackingScore = v3 && !(inst instanceof PredictedInstance) && !inst.trackingScore ? Number.NaN : inst.trackingScore ?? 0;
           let type = 0;
           let score = 0;
           let ptStart = 0;
@@ -20942,7 +21053,11 @@ function writeMetadata(file, labels, layout = "v2") {
   if (layout === "v3") formatId = Math.max(formatId, SLP_FORMAT3_ID);
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
-  metadataGroup.create_attribute("format_id", formatId);
+  if (layout === "v3") {
+    metadataGroup.create_attribute("format_id", formatId, null, "<d");
+  } else {
+    metadataGroup.create_attribute("format_id", formatId);
+  }
   setStringAttr(metadataGroup, "json", metadataJson);
 }
 function serializeSkeletons(skeletons) {
@@ -21837,7 +21952,7 @@ function emitInstancePointsV3(target, instance, predicted) {
       target.visible.push(vis);
       target.verified.push(complete[i] ? 1 : 0);
       target.labeled.push(labeled);
-      if (predicted) target.score.push(score ? score[i] : 0);
+      if (predicted) target.score.push(score ? score[i] : Number.NaN);
     } else {
       target.x.push(Number.NaN);
       target.y.push(Number.NaN);
@@ -21883,7 +21998,9 @@ function buildPoseColumnsV3(labels) {
       );
       instances.point_id_start.push(pointStart);
       instances.point_id_end.push(target.x.length);
-      instances.tracking_score.push(instance.trackingScore ?? 0);
+      instances.tracking_score.push(
+        !predicted && !instance.trackingScore ? Number.NaN : instance.trackingScore ?? Number.NaN
+      );
     }
     frames.video.push(Math.max(0, labels.videos.indexOf(labeledFrame.video)));
     frames.frame_idx.push(labeledFrame.frameIdx);
@@ -22034,7 +22151,8 @@ function writeLazyPoseTablesV3(file, store) {
   const trackingScore = new Float64Array(nInst);
   for (let i = 0; i < nInst; i++) {
     const raw = formatId < 1.2 ? 0 : numAt(idn.tracking_score, i);
-    trackingScore[i] = Number.isNaN(raw) && formatId < 3 ? 0 : raw;
+    const read = Number.isNaN(raw) && formatId < 3 ? 0 : raw;
+    trackingScore[i] = numAt(idn.instance_type, i) === 0 && !read ? Number.NaN : read;
   }
   const col = (table, name, def) => {
     const values = table[name];
@@ -22238,7 +22356,8 @@ function onDiskTableFromMeta(meta) {
         name: m.name,
         typeClass: m.type,
         size: m.size,
-        signed: m.signed
+        signed: m.signed,
+        ...m.enum_type?.members ? { enumMembers: { ...m.enum_type.members } } : {}
       }))
     };
   }
@@ -22261,7 +22380,8 @@ function onDiskColumnTableFromMeta(columns, metadata) {
       typeClass: md?.type ?? -1,
       size: md?.size,
       signed: md?.signed,
-      rows: meta.shape[0] ?? 0
+      rows: meta.shape[0] ?? 0,
+      ...md?.enum_type?.members ? { enumMembers: { ...md.enum_type.members } } : {}
     });
   }
   const out = {
@@ -22358,11 +22478,15 @@ function checkInPlaceWritable(update, onDisk, sidecars) {
   if (!tables.ok) return tables;
   return checkSidecarsUnchanged(update, sidecars);
 }
+function isH5pyBool(size, members) {
+  const names = Object.keys(members ?? {}).sort();
+  return (size ?? 1) === 1 && names.length === 2 && names[0] === "FALSE" && names[1] === "TRUE" && Number(members?.FALSE) === 0 && Number(members?.TRUE) === 1;
+}
 function writableNumeric(member) {
   if (member.typeClass === 0 || member.typeClass === H5T_FLOAT_CLASS) {
     return true;
   }
-  return member.typeClass === H5T_ENUM_CLASS && [1, 2, 4, 8].includes(member.size ?? 1);
+  return member.typeClass === H5T_ENUM_CLASS && isH5pyBool(member.size, member.enumMembers);
 }
 function checkTablesWritable(update, onDisk) {
   const pose = [
@@ -22506,7 +22630,7 @@ function checkSidecarsUnchanged(update, sidecars) {
 function memberColumnTypedArray(member, values) {
   const size = member.size ?? 8;
   if (member.type === H5T_ENUM_CLASS) {
-    const flags = values.map((v) => Number.isFinite(v) ? Math.trunc(v) : 0);
+    const flags = values.map((v) => v ? 1 : 0);
     return memberColumnTypedArray(
       { name: member.name, type: 0, size, signed: member.signed },
       flags
@@ -22533,10 +22657,17 @@ function writeWithFileType(ds, write) {
     enum_type: void 0
   } : m;
   const members = md?.compound_type?.members;
-  const hasEnum = md?.type === H5T_ENUM_CLASS || !!members?.some((m) => m.type === H5T_ENUM_CLASS);
-  if (!hasEnum) {
+  const enums = members ? members.filter((m) => m.type === H5T_ENUM_CLASS) : md?.type === H5T_ENUM_CLASS ? [md] : [];
+  if (enums.length === 0) {
     write();
     return;
+  }
+  for (const m of enums) {
+    if (!isH5pyBool(m.size, m.enum_type?.members)) {
+      throw new Error(
+        `in-place save: "${ds.path}" holds an enum other than a boolean, which this writer does not write \u2014 re-save the whole file instead`
+      );
+    }
   }
   ds._metadata = members ? {
     ...md,
@@ -22548,24 +22679,30 @@ function writeWithFileType(ds, write) {
     delete ds._metadata;
   }
 }
+var VERIFY_CHUNK_ROWS = 65536;
+function forEachSlice(ds, n, visit) {
+  for (let start = 0; start < n; start += VERIFY_CHUNK_ROWS) {
+    const end = Math.min(n, start + VERIFY_CHUNK_ROWS);
+    visit(ds.slice([[start, end]]), start);
+  }
+}
 function verifyEnumMembers(ds, diskName, members, table, rowCount) {
-  const enumMembers = members.filter((m) => m.type === H5T_ENUM_CLASS);
-  if (enumMembers.length === 0) return;
-  const value = ds.value;
-  for (const m of enumMembers) {
-    const ci = table.fields.indexOf(m.name);
-    const mi = members.indexOf(m);
-    for (let i = 0; i < rowCount; i++) {
-      const row = value[i];
-      const got = Number(row?.[mi]);
-      const want = Math.trunc(Number(table.rows[i][ci]) || 0);
-      if (got !== want) {
-        throw new Error(
-          `in-place write of "${diskName}" member "${m.name}" did not take effect (row ${i}: wrote ${want}, read ${got}) \u2014 re-save the whole file instead`
-        );
+  const checks = members.map((m, mi) => [mi, table.fields.indexOf(m.name), m]).filter(([, , m]) => m.type === H5T_ENUM_CLASS);
+  if (checks.length === 0) return;
+  forEachSlice(ds, rowCount, (rows, start) => {
+    for (let k = 0; k < rows.length; k++) {
+      const row = rows[k];
+      for (const [mi, ci, m] of checks) {
+        const got = Number(row?.[mi]);
+        const want = table.rows[start + k][ci] ? 1 : 0;
+        if (got !== want) {
+          throw new Error(
+            `in-place write of "${diskName}" member "${m.name}" did not take effect (row ${start + k}: wrote ${want}, read ${got}) \u2014 re-save the whole file instead`
+          );
+        }
       }
     }
-  }
+  });
 }
 function writeColumnInPlace(ds, values) {
   const md = ds.metadata;
@@ -22577,15 +22714,33 @@ function writeColumnInPlace(ds, values) {
   );
   writeWithFileType(ds, () => ds.write_slice([[0, n]], data));
   if (md.type === H5T_ENUM_CLASS) {
-    const back = Array.from(ds.value, Number);
-    for (let i = 0; i < n; i++) {
-      if (back[i] !== Math.trunc(Number(values[i]) || 0)) {
-        throw new Error(
-          `in-place write of "${ds.path}" did not take effect (row ${i}) \u2014 re-save the whole file instead`
-        );
+    forEachSlice(ds, n, (rows, start) => {
+      for (let k = 0; k < rows.length; k++) {
+        if (Number(rows[k]) !== (values[start + k] ? 1 : 0)) {
+          throw new Error(
+            `in-place write of "${ds.path}" did not take effect (row ${start + k}) \u2014 re-save the whole file instead`
+          );
+        }
+      }
+    });
+  }
+}
+function nanRowsOnDisk(ds, members, name, rowCount) {
+  const mi = members.findIndex(
+    (m) => m.name === name && m.type === H5T_FLOAT_CLASS
+  );
+  if (mi < 0) return null;
+  const nan = new Uint8Array(rowCount);
+  let any = false;
+  forEachSlice(ds, rowCount, (rows, start) => {
+    for (let k = 0; k < rows.length; k++) {
+      if (Number.isNaN(Number(rows[k]?.[mi]))) {
+        nan[start + k] = 1;
+        any = true;
       }
     }
-  }
+  });
+  return any ? nan : null;
 }
 function writeOneTableInPlace(file, diskName, table, dtype) {
   const rowCount = table.rows.length;
@@ -22600,6 +22755,7 @@ function writeOneTableInPlace(file, diskName, table, dtype) {
   const members = md?.compound_type?.members;
   const isCompound = !!(members && members.length > 0);
   const curRows = ds.shape?.[0] ?? 0;
+  const nanTracking = isCompound && diskName === "instances" && curRows === rowCount ? nanRowsOnDisk(ds, members, "tracking_score", rowCount) : null;
   if (curRows !== rowCount) {
     ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
     const newRows = ds.shape?.[0] ?? -1;
@@ -22621,6 +22777,11 @@ function writeOneTableInPlace(file, diskName, table, dtype) {
         );
       }
       const colVals = table.rows.map((row) => row[ci]);
+      if (nanTracking && m.name === "tracking_score") {
+        for (let i = 0; i < rowCount; i++) {
+          if (nanTracking[i] && colVals[i] === 0) colVals[i] = Number.NaN;
+        }
+      }
       columns.set(m.name, memberColumnTypedArray(m, colVals));
     }
     writeWithFileType(ds, () => ds.write_slice([[0, rowCount]], columns));
@@ -31094,6 +31255,7 @@ export {
   UnsupportedVideoFormatError,
   createVideoBackend,
   SlpPointSpanError,
+  StreamingIncompleteError,
   readSlpStreaming,
   V3_DEFAULTS_ENV,
   setV3Defaults,

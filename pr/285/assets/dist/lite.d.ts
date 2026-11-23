@@ -1,5 +1,5 @@
-import { F as FrameGroup, S as Skeleton, T as Track, a as Format3Summary } from './dictionary-Cvmh6b7G.js';
-export { E as Edge, i as Format3Access, j as Format3Option, L as LOSSLESS_FORMAT3_ASKS, M as MetadataKindsByTable, N as Node, d as SLP_FORMAT_ID_LIMIT, e as SLP_SUPPORTED_FEATURES, f as SlpFormat3ChoiceError, c as SlpFormatError, k as SlpSourceFormat, h as SlpTableError, g as SlpViewOnlyError, b as Symmetry } from './dictionary-Cvmh6b7G.js';
+import { F as FrameGroup, S as Skeleton, T as Track, a as Format3Summary } from './dictionary-BdHnD0xL.js';
+export { E as Edge, i as Format3Access, j as Format3Option, L as LOSSLESS_FORMAT3_ASKS, M as MetadataKindsByTable, N as Node, d as SLP_FORMAT_ID_LIMIT, e as SLP_SUPPORTED_FEATURES, f as SlpFormat3ChoiceError, c as SlpFormatError, k as SlpSourceFormat, h as SlpTableError, g as SlpViewOnlyError, b as Symmetry } from './dictionary-BdHnD0xL.js';
 
 /**
  * jsfive-based HDF5 file interface.
@@ -175,11 +175,16 @@ interface SlpMetadata {
      * What the file holds that the streaming reader (`readSlpStreaming`) does
      * not read, as paths: ROI, mask and label image tables (in any layout), and
      * `identity/links`, `categories/links` or `embeddings` when they hold rows
-     * of detections other than instances (or when their owner types cannot be
-     * read here). Empty when that reader reads everything the others read.
-     * `format3` describes `readSlp` and `readSlpLazy`; a 3.0 file read with
-     * `readSlpStreaming` also drops these on an edit. `loadSlp` reads a file
-     * listing any of them with the in-memory reader in its default mode.
+     * of detections other than instances. jsfive cannot read compound
+     * datasets, so the link tables of Python-written 2.x files are listed
+     * whenever present, even when they link instances only (which the streaming
+     * reader reads). Empty when that reader reads everything the others read.
+     *
+     * `format3` describes `readSlp`, `readSlpLazy` and `loadSlp`. A 3.0 file
+     * read with `readSlpStreaming` also drops these on an edit (its own summary
+     * lists them), and `loadSlp` reads such a 3.0 file with the in-memory
+     * reader in its default mode. A file before 3.0 is streamed by `loadSlp` in
+     * a browser, without these.
      */
     streamingUnreadTables: string[];
 }
