@@ -735,4 +735,87 @@ describe("Mp4BoxVideoBackend", () => {
     expect(decodeCalls).toBeLessThan(100);
     backend.close();
   });
+
+  // Issue #274: a stream-copy cut keeps decode-reference frames before the
+  // edit list's start. They must stay decodable but out of the frame index, so
+  // frame 0 is the first frame ffmpeg / Python sleap-io show.
+  it("skips frames hidden by the edit list (#274)", async () => {
+    const mock = createMp4BoxMockWithSamples(makeSamples(100));
+    const createFile = mock.createFile;
+    mock.createFile = () => {
+      const file = createFile();
+      // media_time 2000 → samples at cts 0 and 1000 start before the edit.
+      file.getTrackById = () => ({
+        mdia: { minf: { stbl: { stsd: { entries: [] } } } },
+        edts: {
+          elst: { entries: [{ segment_duration: 98000, media_time: 2000 }] },
+        },
+      });
+      return file;
+    };
+    (globalThis as any).MP4Box = mock;
+    // Tag each bitmap with the decoded frame's timestamp so we can tell which
+    // sample a public frame index resolved to.
+    (globalThis as any).createImageBitmap = async (frame: any) => ({
+      timestamp: frame.timestamp,
+      close() {},
+    });
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    const times = await backend.getFrameTimes();
+
+    expect(backend.hiddenLeadingFrames).toBe(2);
+    expect(backend.shape?.[0]).toBe(98);
+    expect(times?.length).toBe(98);
+    expect(times?.[0]).toBe(2); // cts 2000 / timescale 1000
+
+    // Public frame 0 is sample 2; the last public frame is sample 99.
+    const first = (await backend.getFrame(0, { scrub: true })) as any;
+    expect(first.timestamp).toBe(2_000_000);
+    const last = (await backend.getFrame(97, { scrub: true })) as any;
+    expect(last.timestamp).toBe(99_000_000);
+    expect(await backend.getFrame(98)).toBeNull();
+    expect(await backend.getFrame(-1)).toBeNull();
+
+    // Keyframes (every 15 samples) in public indices: sample 15 → frame 13;
+    // the hidden keyframe at sample 0 maps to frame 0.
+    expect(backend.nearestKeyframe(20)).toBe(13);
+    expect(backend.nearestKeyframe(5)).toBe(0);
+    expect(backend.nearestKeyframe(0)).toBe(0);
+
+    // The worker hand-off keeps every sample (decode references) plus the offset.
+    const parse = await backend.getParseResult();
+    expect(parse.samples.length).toBe(100);
+    expect(parse.hiddenLeadingFrames).toBe(2);
+    expect(parse.shape[0]).toBe(98);
+    backend.close();
+  });
+
+  // Ordinary files: x264's usual edit list (cancelling the B-frame delay)
+  // starts at the first sample, so nothing is hidden.
+  it("hides nothing when the edit list starts at the first sample", async () => {
+    const mock = createMp4BoxMockWithSamples(makeSamples(30));
+    const createFile = mock.createFile;
+    mock.createFile = () => {
+      const file = createFile();
+      file.getTrackById = () => ({
+        mdia: { minf: { stbl: { stsd: { entries: [] } } } },
+        edts: {
+          elst: { entries: [{ segment_duration: 30000, media_time: 0 }] },
+        },
+      });
+      return file;
+    };
+    (globalThis as any).MP4Box = mock;
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(new Blob([new Uint8Array(16)]));
+    await backend.getFrameTimes();
+    expect(backend.hiddenLeadingFrames).toBe(0);
+    expect(backend.shape?.[0]).toBe(30);
+    backend.close();
+  });
 });

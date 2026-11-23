@@ -86,6 +86,13 @@ export class WorkerMp4BoxBackend implements VideoBackend {
   shape?: [number, number, number, number];
   fps?: number;
   dataset?: string | null;
+  /**
+   * Frames an MP4/MOV edit list hides (#274), from the parse result; see
+   * {@link VideoBackend.hiddenLeadingFrames}. Public frame `i` is
+   * `samples[i + hiddenLeadingFrames]`; every internal index (cache, keyframes,
+   * worker decode ranges) is a `samples` index.
+   */
+  hiddenLeadingFrames: number;
 
   private worker: WorkerLike;
   private samples: Mp4Sample[];
@@ -115,6 +122,7 @@ export class WorkerMp4BoxBackend implements VideoBackend {
     this.samples = params.parseResult.samples;
     this.keyframeIndices = params.parseResult.keyframeIndices;
     this.samplesLength = this.samples.length;
+    this.hiddenLeadingFrames = params.parseResult.hiddenLeadingFrames ?? 0;
     this.shape = params.parseResult.shape;
     this.fps = params.parseResult.fps;
     this.dataset = null;
@@ -227,6 +235,9 @@ export class WorkerMp4BoxBackend implements VideoBackend {
     opts?: GetFrameOptions,
   ): Promise<VideoFrame | null> {
     await this.ready;
+    // Public frame index → samples index (skips edit-list-hidden frames, #274).
+    if (frameIndex < 0) return null;
+    frameIndex += this.hiddenLeadingFrames;
     if (frameIndex < 0 || frameIndex >= this.samplesLength) return null;
 
     // Cache hit: served entirely on main, no worker round-trip (LRU touch).
@@ -345,6 +356,8 @@ export class WorkerMp4BoxBackend implements VideoBackend {
 
   decodeAhead(fromFrame: number, opts?: GetFrameOptions): void {
     if (this.closed || !this.samplesLength) return;
+    // Public frame index → samples index (#274).
+    fromFrame = Math.max(0, fromFrame) + this.hiddenLeadingFrames;
     if (opts?.signal?.aborted) return;
     if (this.aheadInFlight) return; // coalesce: one ahead task at a time
     const has = (i: number) => this.cache.has(i);
@@ -392,12 +405,23 @@ export class WorkerMp4BoxBackend implements VideoBackend {
 
   nearestKeyframe(frameIndex: number): number {
     if (!this.samplesLength) return 0;
-    const clamped = Math.max(0, Math.min(frameIndex, this.samplesLength - 1));
-    return findKeyframeBefore(this.keyframeIndices, clamped);
+    // Public → samples index and back (#274). A keyframe among the hidden
+    // frames maps to public frame 0, the nearest frame that is shown.
+    const hidden = this.hiddenLeadingFrames;
+    const clamped = Math.max(
+      hidden,
+      Math.min(frameIndex + hidden, this.samplesLength - 1),
+    );
+    return Math.max(
+      0,
+      findKeyframeBefore(this.keyframeIndices, clamped) - hidden,
+    );
   }
 
   async getFrameTimes(): Promise<number[] | null> {
-    return this.samples.map((sample) => sample.timestamp / 1e6);
+    return this.samples
+      .slice(this.hiddenLeadingFrames)
+      .map((sample) => sample.timestamp / 1e6);
   }
 
   private addToCache(frameIndex: number, bitmap: ImageBitmap): void {

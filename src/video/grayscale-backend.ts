@@ -125,6 +125,11 @@ export class GrayscaleVideoBackend implements VideoBackend {
     return this.inner.frameNumbers;
   }
 
+  /** Inner backend's edit-list-hidden frame count (delegated; #274). */
+  get hiddenLeadingFrames(): number | undefined {
+    return this.inner.hiddenLeadingFrames;
+  }
+
   /** Inner backend's embedded blob format (delegated). */
   get embeddedFormat(): string | undefined {
     return this.inner.embeddedFormat;
