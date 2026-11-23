@@ -945,6 +945,8 @@ export class StreamingH5Writer {
    * structured-cloning a nested array), which packs them into the on-disk layout
    * (flat matrix or compound record) and replaces the `/metadata` json attr when
    * `update.metadataJson` is set. Never touches any `video{i}/video` group.
+   * If it rejects, the file may be partly written: do a full save to the
+   * same target (see `writeLabelTablesInPlace`).
    */
   async updateLabelsInPlace(
     update: LabelTableUpdate,

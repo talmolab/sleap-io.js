@@ -212,8 +212,11 @@ export async function readSlp(
      */
     repairPointSpans?: boolean;
     /**
-     * What a later save may do with a file in SLP format 3.0. Unset (or
-     * `"keep"`): load it editable, and a save keeps format 3.0. `"view"` loads
+     * What a later save may do with a file in SLP format 3.0. `"keep"` (the
+     * default): load it editable, and a save keeps format 3.0; without the
+     * option, a file holding what this version does not read (the summary's
+     * `unreadTables`) throws as `"ask"` does, since a save would drop it.
+     * `"view"` loads
      * it read-only: every SLP writer refuses the labels. `"edit"` loads it so
      * that a save writes the 2.x layout and drops what that layout cannot
      * store (unlabelled points become hidden points with no location; record
@@ -650,8 +653,11 @@ export async function readSlpLazy(
      */
     repairPointSpans?: boolean;
     /**
-     * What a later save may do with a file in SLP format 3.0. Unset (or
-     * `"keep"`): load it editable, and a save keeps format 3.0. `"view"` loads
+     * What a later save may do with a file in SLP format 3.0. `"keep"` (the
+     * default): load it editable, and a save keeps format 3.0; without the
+     * option, a file holding what this version does not read (the summary's
+     * `unreadTables`) throws as `"ask"` does, since a save would drop it.
+     * `"view"` loads
      * it read-only: every SLP writer refuses the labels. `"edit"` loads it so
      * that a save writes the 2.x layout and drops what that layout cannot
      * store (unlabelled points become hidden points with no location; record

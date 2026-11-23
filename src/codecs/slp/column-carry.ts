@@ -20,7 +20,7 @@
 /** One unknown column: its values, one per row, and how to write it. */
 export interface CarriedColumn {
   /** Numbers (or 64-bit integers), or strings for a string column. */
-  values: ArrayLike<number> | ArrayLike<bigint> | readonly string[];
+  values: ArrayLike<number> | ArrayLike<bigint> | string[];
   /**
    * The h5wasm dtype to write it with: `"S"` for a variable-length string
    * column, else a numeric dtype such as `"<d"`, `"<q"` or `"<B"`.
@@ -36,14 +36,14 @@ export interface CarriedTable {
    * its point array, which owns one row per node), or `null` when the rows
    * could not be attributed to records.
    */
-  owners: ReadonlyArray<readonly unknown[]> | null;
+  owners: unknown[][] | null;
   /** The columns, by name. */
-  columns: Readonly<Record<string, CarriedColumn>>;
+  columns: Record<string, CarriedColumn>;
 }
 
 /** Unknown columns kept from a file, by table (`points`, `rois`, ...). */
 export class ColumnCarry {
-  readonly tables: Map<string, CarriedTable>;
+  tables: Map<string, CarriedTable>;
 
   constructor(tables?: Iterable<[string, CarriedTable]>) {
     this.tables = new Map(tables ?? []);

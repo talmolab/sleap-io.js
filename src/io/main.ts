@@ -76,7 +76,9 @@ function isBrowserWithWorkerSupport(): boolean {
  *   paths (streaming, eager, and lazy); the final call is (total, total,
  *   "Finalizing"). Stage counts differ by path (streaming is finer-grained).
  * @param options.format3 - What a later save may do with a file in SLP format
- *   3.0. Unset (or `"keep"`): load it editable, and saves keep format 3.0.
+ *   3.0. `"keep"` (the default): load it editable, and saves keep format
+ *   3.0; without the option, a file holding what this version does not read
+ *   throws as `"ask"` does, since a save would drop it.
  *   `"view"` loads it read-only (every writer refuses the labels), `"edit"`
  *   lets a save write the 2.x layout and drop what it cannot store, and
  *   `"ask"` throws `SlpFormat3ChoiceError`, whose `summary` lists what an

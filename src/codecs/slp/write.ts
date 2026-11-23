@@ -2255,7 +2255,9 @@ export class SlpStreamWriter {
               }
               userWritten += ptEnd - ptStart;
             }
-            instFlat[ii++] = numAt(idn.tracking_score, j); // tracking_score
+            const ts = numAt(idn.tracking_score, j);
+            // Format 3.0 stores a user instance's "none" (0) as NaN.
+            instFlat[ii++] = v3 && type === 0 && !ts ? Number.NaN : ts; // tracking_score
             outInsts++;
           }
           this.writtenFrames.add(key);
@@ -2357,7 +2359,11 @@ export class SlpStreamWriter {
           localId.set(inst as Instance, localInstId);
           const skeletonId = skeletonIdForWrite(this.skeletons, inst, frame);
           const trackId = inst.track ? this.tracks.indexOf(inst.track) : -1;
-          const trackingScore = inst.trackingScore ?? 0;
+          // Format 3.0 stores a user instance's "none" (0 here) as NaN.
+          const trackingScore =
+            v3 && !(inst instanceof PredictedInstance) && !inst.trackingScore
+              ? Number.NaN
+              : (inst.trackingScore ?? 0);
           let type = 0;
           let score = 0;
           let ptStart = 0;
@@ -3499,7 +3505,12 @@ function writeMetadata(
 
   file.create_group("metadata");
   const metadataGroup = file.get("metadata");
-  metadataGroup.create_attribute("format_id", formatId);
+  if (layout === "v3") {
+    // A float, as Python writes it (h5wasm would guess an integer for 3.0).
+    metadataGroup.create_attribute("format_id", formatId, null, "<d");
+  } else {
+    metadataGroup.create_attribute("format_id", formatId);
+  }
   setStringAttr(metadataGroup, "json", metadataJson);
 }
 
@@ -4872,7 +4883,8 @@ function emitInstancePointsV3(
       target.visible.push(vis);
       target.verified.push(complete[i] ? 1 : 0);
       target.labeled.push(labeled);
-      if (predicted) target.score.push(score ? score[i] : 0);
+      // A missing point score is NaN in format 3.0, as Python's "none".
+      if (predicted) target.score.push(score ? score[i] : Number.NaN);
     } else {
       target.x.push(Number.NaN);
       target.y.push(Number.NaN);
@@ -4924,7 +4936,13 @@ function buildPoseColumnsV3(labels: Labels): PoseColumnsV3 {
       );
       instances.point_id_start.push(pointStart);
       instances.point_id_end.push(target.x.length);
-      instances.tracking_score.push(instance.trackingScore ?? 0);
+      // A user instance's tracking score of 0 is this model's "none", which
+      // format 3.0 stores as NaN, as Python does.
+      instances.tracking_score.push(
+        !predicted && !instance.trackingScore
+          ? Number.NaN
+          : (instance.trackingScore ?? Number.NaN),
+      );
     }
     frames.video.push(Math.max(0, labels.videos.indexOf(labeledFrame.video)));
     frames.frame_idx.push(labeledFrame.frameIdx);
@@ -5136,8 +5154,11 @@ function writeLazyPoseTablesV3(file: any, store: LazyDataStore): void {
   const trackingScore = new Float64Array(nInst);
   for (let i = 0; i < nInst; i++) {
     const raw = formatId < 1.2 ? 0 : numAt(idn.tracking_score, i);
-    // As the readers: NaN reads as 0 before 3.0.
-    trackingScore[i] = Number.isNaN(raw) && formatId < 3 ? 0 : raw;
+    // As the readers: NaN reads as 0 before 3.0. A user instance's 0 (no
+    // score) is NaN in format 3.0, as the eager writer writes it.
+    const read = Number.isNaN(raw) && formatId < 3 ? 0 : raw;
+    trackingScore[i] =
+      numAt(idn.instance_type, i) === 0 && !read ? Number.NaN : read;
   }
   const col = (table: Record<string, any>, name: string, def: number) => {
     const values = table[name];
@@ -5406,6 +5427,8 @@ function buildLabelTableUpdateV3(
  * (without `format3: "edit"`) build a 3.0 update, patched into their file
  * column by column. A 3.0 update of lazy labels materializes them.
  *
+ * @returns The update. For a 3.0 update of lazy labels, the labels are
+ *   materialized first (`labels.materialize()`), so they are eager afterwards.
  * @throws {SlpViewOnlyError} For labels loaded with `format3: "view"`.
  * @throws {Error} For unlabelled points with `unlabeledAs: "error"` (see
  *   {@link UnlabeledAs}), in the 2.x layout.
@@ -5451,6 +5474,8 @@ export interface OnDiskMember {
   signed?: boolean;
   /** Rows of the column (`layout: "columns"` only). */
   rows?: number;
+  /** For an enum member, its members' names and values. */
+  enumMembers?: Record<string, number>;
 }
 
 /** On-disk shape/layout of one label table, as seen by the writability gate. */
@@ -5501,6 +5526,7 @@ export interface DatasetMetaLike {
         type: number;
         size?: number;
         signed?: boolean;
+        enum_type?: { members?: Record<string, number> } | null;
       }>;
     };
   };
@@ -5530,6 +5556,9 @@ export function onDiskTableFromMeta(
         typeClass: m.type,
         size: m.size,
         signed: m.signed,
+        ...(m.enum_type?.members
+          ? { enumMembers: { ...m.enum_type.members } }
+          : {}),
       })),
     };
   }
@@ -5561,7 +5590,12 @@ export function onDiskColumnTableFromMeta(
   let rows = 0;
   for (const [name, meta] of Object.entries(columns)) {
     const md = meta.metadata as
-      | { type?: number; size?: number; signed?: boolean }
+      | {
+          type?: number;
+          size?: number;
+          signed?: boolean;
+          enum_type?: { members?: Record<string, number> } | null;
+        }
       | undefined;
     if (!Array.isArray(meta.shape) || meta.shape.length !== 1) continue;
     rows = Math.max(rows, meta.shape[0] ?? 0);
@@ -5571,6 +5605,9 @@ export function onDiskColumnTableFromMeta(
       size: md?.size,
       signed: md?.signed,
       rows: meta.shape[0] ?? 0,
+      ...(md?.enum_type?.members
+        ? { enumMembers: { ...md.enum_type.members } }
+        : {}),
     });
   }
   const out: OnDiskTable = {
@@ -5760,16 +5797,36 @@ export function checkInPlaceWritable(
   return checkSidecarsUnchanged(update, sidecars);
 }
 
-/** Whether an integer, float or integer-based enum column can be patched. */
+/**
+ * Whether an enum is h5py's bool: a one-byte enum whose only members are
+ * `FALSE = 0` and `TRUE = 1`.
+ */
+function isH5pyBool(
+  size: number | undefined,
+  members: Record<string, unknown> | null | undefined,
+): boolean {
+  const names = Object.keys(members ?? {}).sort();
+  return (
+    (size ?? 1) === 1 &&
+    names.length === 2 &&
+    names[0] === "FALSE" &&
+    names[1] === "TRUE" &&
+    Number(members?.FALSE) === 0 &&
+    Number(members?.TRUE) === 1
+  );
+}
+
+/** Whether an integer, float or h5py bool column can be patched. */
 function writableNumeric(member: OnDiskMember): boolean {
   if (member.typeClass === 0 || member.typeClass === H5T_FLOAT_CLASS) {
     return true;
   }
-  // An enum (h5py's bool) is written as its base integer with the dataset's
-  // own type, which h5wasm can do (see writeNumericSlice).
+  // h5py's bool is written as 0/1 with the dataset's own type, which h5wasm
+  // can do (see writeWithFileType). Other enums are refused: a value written
+  // through their base integer might name no member.
   return (
     member.typeClass === H5T_ENUM_CLASS &&
-    [1, 2, 4, 8].includes(member.size ?? 1)
+    isH5pyBool(member.size, member.enumMembers)
   );
 }
 
@@ -5962,8 +6019,8 @@ function memberColumnTypedArray(
 ): ArrayBufferView {
   const size = member.size ?? 8;
   if (member.type === H5T_ENUM_CLASS) {
-    // An enum (h5py's bool) holds its base integer: 0/1 for a flag.
-    const flags = values.map((v) => (Number.isFinite(v) ? Math.trunc(v) : 0));
+    // h5py's bool (the only enum written, see writeWithFileType): 0 or 1.
+    const flags = values.map((v) => (v ? 1 : 0));
     return memberColumnTypedArray(
       { name: member.name, type: 0, size, signed: member.signed },
       flags,
@@ -6005,12 +6062,22 @@ function writeWithFileType(ds: any, write: () => void): void {
         }
       : m;
   const members = md?.compound_type?.members as any[] | undefined;
-  const hasEnum =
-    md?.type === H5T_ENUM_CLASS ||
-    !!members?.some((m) => m.type === H5T_ENUM_CLASS);
-  if (!hasEnum) {
+  const enums = members
+    ? members.filter((m) => m.type === H5T_ENUM_CLASS)
+    : md?.type === H5T_ENUM_CLASS
+      ? [md]
+      : [];
+  if (enums.length === 0) {
     write();
     return;
+  }
+  // Backstop for a caller that skipped the gate: only h5py's bool.
+  for (const m of enums) {
+    if (!isH5pyBool(m.size, m.enum_type?.members)) {
+      throw new Error(
+        `in-place save: "${ds.path}" holds an enum other than a boolean, which this writer does not write — re-save the whole file instead`,
+      );
+    }
   }
   ds._metadata = members
     ? {
@@ -6025,10 +6092,29 @@ function writeWithFileType(ds: any, write: () => void): void {
   }
 }
 
+/** Rows per slice when an in-place write reads a table back. */
+const VERIFY_CHUNK_ROWS = 65536;
+
 /**
- * After an enum write, read the dataset back and check each enum member
- * holds what was written (0/1 for a flag), so a wrong write is never left
- * unnoticed.
+ * Read rows `[0, n)` of a dataset in bounded slices, calling `visit` with each
+ * slice (an array of records for a compound dataset, a typed array for a 1-D
+ * one) and its first row.
+ */
+function forEachSlice(
+  ds: any,
+  n: number,
+  visit: (rows: ArrayLike<unknown>, start: number) => void,
+): void {
+  for (let start = 0; start < n; start += VERIFY_CHUNK_ROWS) {
+    const end = Math.min(n, start + VERIFY_CHUNK_ROWS);
+    visit(ds.slice([[start, end]]) as ArrayLike<unknown>, start);
+  }
+}
+
+/**
+ * After an enum write, read the dataset back, a bounded slice at a time, and
+ * check each enum member holds what was written (0/1 for a flag), so a wrong
+ * write is never left unnoticed.
  *
  * @throws {Error} If a value differs.
  */
@@ -6039,23 +6125,24 @@ function verifyEnumMembers(
   table: LabelTable,
   rowCount: number,
 ): void {
-  const enumMembers = members.filter((m) => m.type === H5T_ENUM_CLASS);
-  if (enumMembers.length === 0) return;
-  const value = ds.value as unknown[];
-  for (const m of enumMembers) {
-    const ci = table.fields.indexOf(m.name);
-    const mi = members.indexOf(m);
-    for (let i = 0; i < rowCount; i++) {
-      const row = value[i] as unknown[];
-      const got = Number(row?.[mi]);
-      const want = Math.trunc(Number(table.rows[i][ci]) || 0);
-      if (got !== want) {
-        throw new Error(
-          `in-place write of "${diskName}" member "${m.name}" did not take effect (row ${i}: wrote ${want}, read ${got}) — re-save the whole file instead`,
-        );
+  const checks = members
+    .map((m, mi) => [mi, table.fields.indexOf(m.name), m] as const)
+    .filter(([, , m]) => m.type === H5T_ENUM_CLASS);
+  if (checks.length === 0) return;
+  forEachSlice(ds, rowCount, (rows, start) => {
+    for (let k = 0; k < rows.length; k++) {
+      const row = rows[k] as ArrayLike<unknown>;
+      for (const [mi, ci, m] of checks) {
+        const got = Number(row?.[mi]);
+        const want = table.rows[start + k][ci] ? 1 : 0;
+        if (got !== want) {
+          throw new Error(
+            `in-place write of "${diskName}" member "${m.name}" did not take effect (row ${start + k}: wrote ${want}, read ${got}) — re-save the whole file instead`,
+          );
+        }
       }
     }
-  }
+  });
 }
 
 /**
@@ -6073,15 +6160,45 @@ function writeColumnInPlace(ds: any, values: ArrayLike<number>): void {
   );
   writeWithFileType(ds, () => ds.write_slice([[0, n]], data));
   if (md.type === H5T_ENUM_CLASS) {
-    const back = Array.from(ds.value as ArrayLike<unknown>, Number);
-    for (let i = 0; i < n; i++) {
-      if (back[i] !== Math.trunc(Number(values[i]) || 0)) {
-        throw new Error(
-          `in-place write of "${ds.path}" did not take effect (row ${i}) — re-save the whole file instead`,
-        );
+    forEachSlice(ds, n, (rows, start) => {
+      for (let k = 0; k < rows.length; k++) {
+        if (Number(rows[k]) !== (values[start + k] ? 1 : 0)) {
+          throw new Error(
+            `in-place write of "${ds.path}" did not take effect (row ${start + k}) — re-save the whole file instead`,
+          );
+        }
+      }
+    });
+  }
+}
+
+/**
+ * For a value edit of a compound table (`rowCount` rows on disk and in the
+ * update), the rows whose float member `name` holds NaN on disk, read a
+ * bounded slice at a time. The 2.x readers read a NaN tracking score as 0, so
+ * an in-place save keeps such a NaN rather than writing that 0 back.
+ */
+function nanRowsOnDisk(
+  ds: any,
+  members: Array<{ name: string; type: number }>,
+  name: string,
+  rowCount: number,
+): Uint8Array | null {
+  const mi = members.findIndex(
+    (m) => m.name === name && m.type === H5T_FLOAT_CLASS,
+  );
+  if (mi < 0) return null;
+  const nan = new Uint8Array(rowCount);
+  let any = false;
+  forEachSlice(ds, rowCount, (rows, start) => {
+    for (let k = 0; k < rows.length; k++) {
+      if (Number.isNaN(Number((rows[k] as ArrayLike<unknown>)?.[mi]))) {
+        nan[start + k] = 1;
+        any = true;
       }
     }
-  }
+  });
+  return any ? nan : null;
 }
 
 /**
@@ -6118,6 +6235,11 @@ function writeOneTableInPlace(
     | undefined;
   const isCompound = !!(members && members.length > 0);
   const curRows = ds.shape?.[0] ?? 0;
+  // A value edit keeps the NaN tracking scores the readers read as 0.
+  const nanTracking =
+    isCompound && diskName === "instances" && curRows === rowCount
+      ? nanRowsOnDisk(ds, members!, "tracking_score", rowCount)
+      : null;
 
   if (curRows !== rowCount) {
     ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
@@ -6146,6 +6268,11 @@ function writeOneTableInPlace(
         );
       }
       const colVals = table.rows.map((row) => row[ci]);
+      if (nanTracking && m.name === "tracking_score") {
+        for (let i = 0; i < rowCount; i++) {
+          if (nanTracking[i] && colVals[i] === 0) colVals[i] = Number.NaN;
+        }
+      }
       columns.set(m.name, memberColumnTypedArray(m, colVals));
     }
     writeWithFileType(ds, () => ds.write_slice([[0, rowCount]], columns));
@@ -6183,6 +6310,12 @@ function writeOneTableInPlace(
  * actually taken effect (h5wasm silently no-ops resize on a non-resizable
  * dataset) — a resize that can't happen THROWS here rather than writing ghost
  * rows, so the caller falls back to a full re-save.
+ *
+ * IF THIS THROWS, THE FILE MAY BE PARTLY WRITTEN: checks run before the first
+ * write catch what they can, but a failure after it (an I/O error, the
+ * read-back check of HDF5 booleans, a resize the gate did not see) leaves
+ * some tables patched. The caller must then do a full save to the same
+ * target.
  *
  * Does NOT flush or close the file — the caller owns the file lifecycle.
  */

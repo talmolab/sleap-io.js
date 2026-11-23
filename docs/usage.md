@@ -455,13 +455,18 @@ Otherwise it writes the 2.x layout, exactly as earlier versions did. Hidden
 points that keep their coordinates need no format 3.0: the 2.x layout has
 always stored them.
 
+A save remembers the layout it wrote, whatever its target: after
+`saveSlp(labels, "share.slp", { slpVersion: "v2" })`, the next default save of
+the same labels, to any file, writes the 2.x layout unless the labels hold
+what only format 3.0 can store. Pass `slpVersion` again to choose.
+
 ```ts
 import { saveSlp, resolveSlpVersion, setV3Defaults } from "@talmolab/sleap-io.js";
 
 await saveSlp(labels, "labels.slp");                       // 2.x unless needed
 await saveSlp(labels, "labels.slp", { slpVersion: "v3" }); // always format 3.0
 await saveSlp(labels, "labels.slp", { slpVersion: "v2" }); // always the 2.x layout
-resolveSlpVersion(labels); // "v2" or "v3": what "auto" would write
+resolveSlpVersion(labels, "auto", { warn: false }); // what "auto" would write
 setV3Defaults(true);       // "auto" writes format 3.0 for the whole process
 ```
 
@@ -518,13 +523,27 @@ When they no longer line up, or with the 2.x layout, the columns are dropped
 with a warning. Unknown columns of `/bboxes`, and columns that are not 1-D,
 are not kept.
 
+**Points are written as stored.** sleap-io.js reads the points of a file
+before 3.0 as they are stored, and writes them so in either layout: a hidden
+point keeps its coordinates (the SLEAP GUI leaves the last position on a node
+it hides, and format 3.0 reads that as an occluded estimate), and a visible
+point without coordinates stays visible. This matches what Python sleap-io
+0.10 does by default when it loads an older file (it changes no point); its
+`load_slp(..., clean_legacy_points=True)` (and
+`Labels.clean_legacy_points()`) clears the coordinates of hidden points and
+hides visible points without coordinates, which sleap-io.js does not do.
+
 #### Opening a format 3.0 file
 
 Every reader (and `loadSlp`) takes a `format3` option that says what a later
 save may do with a 3.0 file:
 
-- unset, or `format3: "keep"`: load it editable; `labels.sourceFormat.access`
-  is `"keep"`, and saves keep format 3.0 (rule 4 above);
+- `format3: "keep"`, or unset: load it editable; `labels.sourceFormat.access`
+  is `"keep"`, and saves keep format 3.0 (rule 4 above). Unset, a file
+  holding what the reader does not read (the summary's `unreadTables`, below;
+  for the streaming reader also ROIs, masks and label images) throws as
+  `"ask"` does instead, since any save would drop that content; pass
+  `"keep"` (or `"edit"`) to accept it;
 - `format3: "view"` loads everything and marks the labels view-only
   (`labels.sourceFormat.access === "view"`). Every SLP writer (`saveSlp`,
   `saveSlpToBytes`, `saveSlpStructureToBytes`, `saveSlpSet`, `openSlpWriter`,
@@ -623,7 +642,19 @@ describes an open file's tables in either layout, and
 `onDiskColumnTableFromMeta` builds the description of a 3.0 table from the
 worker's dataset metadata. 2.x files written by Python sleap-io, whose point
 flags are HDF5 booleans, are patched in place too: the booleans are written
-with the dataset's own type, then read back and checked.
+with the dataset's own type, then read back, a bounded slice at a time, and
+checked. Only h5py's booleans are written this way; a table with another
+HDF5 enum is sent to a full save. A value edit keeps the NaN tracking scores
+of a Python-written file, which the 2.x readers read as 0.
+
+**If an in-place write throws, the file may be partly written: the caller
+must then do a full save to the same target.** `checkInPlaceWritable` and the
+checks `writeLabelTablesInPlace` and the worker's `updateLabelsInPlace` run
+before their first write catch what they can, but a failure after the first
+write (an I/O error, a read-back check, a resize the caller's `onDisk` did not
+describe) leaves tables patched and others not, and only a full save repairs
+that. A 3.0 update of lazy labels materializes them
+(`buildLabelTableUpdate` calls `labels.materialize()`).
 
 Every reader (`loadSlp`, `readSlp`, `readSlpLazy`, `readSlpStreaming`, and
 `loadSlpMetadata` and `validateSlpBuffer` in the lite build) throws

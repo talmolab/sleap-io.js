@@ -209,8 +209,9 @@ export interface StreamingSlpOptions {
    */
   onProgress?: (current: number, total: number, message?: string) => void;
   /**
-   * What a later save may do with a file in SLP format 3.0: unset or
-   * `"keep"` (saves keep format 3.0), `"view"` (read-only, every SLP writer
+   * What a later save may do with a file in SLP format 3.0: `"keep"` (saves
+   * keep format 3.0; also the default, unless the file holds what this
+   * reader does not read, which then throws as `"ask"`), `"view"` (read-only, every SLP writer
    * refuses the labels), `"edit"` (a save writes the 2.x layout and drops what
    * it cannot store) or `"ask"` (throw `SlpFormat3ChoiceError`). See
    * `readSlp`.

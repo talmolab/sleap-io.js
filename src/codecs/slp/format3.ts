@@ -8,8 +8,11 @@
  * (see `slpVersion` on the writers). Every reader takes a `format3` option
  * that says what a later save may do with a 3.0 file:
  *
- * - no option, or `format3: "keep"`: load it editable; a save keeps format 3.0
- *   (the labels and their records are marked `access: "keep"`).
+ * - `format3: "keep"`, or no option: load it editable; a save keeps format
+ *   3.0 (the labels and their records are marked `access: "keep"`). Without
+ *   the option, a file holding what this version does not read (its
+ *   summary's `unreadTables`) throws as `"ask"` does, since any save would
+ *   drop that.
  * - `format3: "view"` loads everything and marks the labels view-only; every
  *   writer refuses them with {@link SlpViewOnlyError}.
  * - `format3: "edit"` loads the same and lets writers save the 2.x layout,
@@ -40,7 +43,8 @@ export type Format3Access = "view" | "edit" | "keep";
 
 /**
  * The `format3` option of every reader: a {@link Format3Access}, or `"ask"` to
- * throw {@link SlpFormat3ChoiceError} for a 3.0 file. Unset means `"keep"`.
+ * throw {@link SlpFormat3ChoiceError} for a 3.0 file. Unset means `"keep"`,
+ * or `"ask"` for a file holding what the reader does not read.
  */
 export type Format3Option = Format3Access | "ask";
 
@@ -97,9 +101,9 @@ export interface SlpSourceFormat {
 
 /** The kind of each metadata key, per table. */
 export interface MetadataKindsByTable {
-  instances: Readonly<Record<string, MetadataKind>>;
-  frames: Readonly<Record<string, MetadataKind>>;
-  bboxes: Readonly<Record<string, MetadataKind>>;
+  instances: Record<string, MetadataKind>;
+  frames: Record<string, MetadataKind>;
+  bboxes: Record<string, MetadataKind>;
 }
 
 /** `3` → `"3.0"`, so messages name formats the usual way. */
@@ -150,11 +154,18 @@ export class SlpFormat3ChoiceError extends SlpFormatError {
   constructor(labelsPath: string, summary: Format3Summary) {
     const path = safePath(labelsPath);
     const drops = describeDrops(summary);
+    const unread = summary.unreadTables;
     super({
       message:
         `The SLEAP labels file '${path}' is in SLP format ` +
         `${formatLabel(summary.formatId)}, which SLEAP and sleap-io < 0.10 ` +
-        "cannot open. Saving it in the 2.x layout would " +
+        "cannot open." +
+        (unread.length > 0
+          ? ` It holds what this version does not read (${unread.join(", ")}), ` +
+            "which a save in either layout would drop, so it is not opened " +
+            "without the format3 option."
+          : "") +
+        " Saving it in the 2.x layout would " +
         (drops.length > 0 ? `drop ${drops.join("; ")}.` : "drop nothing.") +
         ' Open it with the option format3: "keep" to save it in format ' +
         `${formatLabel(summary.formatId)}, format3: "view" to load it ` +
@@ -358,12 +369,15 @@ export function buildFormat3Summary(options: {
 
 /**
  * Apply the caller's `format3` option to a 3.0 file, once its summary is known
- * and before frames are built: unset or `"keep"` loads it to be saved in
- * format 3.0, `"view"` and `"edit"` as chosen, and `"ask"` throws.
+ * and before frames are built: `"keep"` loads it to be saved in format 3.0,
+ * `"view"` and `"edit"` as chosen, and `"ask"` throws. Unset means `"keep"`
+ * when the reader reads everything in the file, and `"ask"` when the summary
+ * lists what it does not read (`unreadTables`), which any save would drop.
  *
  * @returns The labels' source format, to set on `labels.sourceFormat`.
  * @throws {SlpFormat3ChoiceError} For `"ask"` (unless the file is lossless and
- *   {@link LOSSLESS_FORMAT3_ASKS} is `false`).
+ *   {@link LOSSLESS_FORMAT3_ASKS} is `false`), and for no option when the
+ *   file holds what the reader does not read.
  */
 export function chooseFormat3Access(
   labelsPath: string,
@@ -373,6 +387,10 @@ export function chooseFormat3Access(
 ): SlpSourceFormat {
   checkFormat3Option(choice);
   let access: Format3Access;
+  if (choice === undefined && summary.unreadTables.length > 0) {
+    // A save would drop what is not read: the caller chooses.
+    throw new SlpFormat3ChoiceError(labelsPath, summary);
+  }
   if (choice === "ask") {
     if (!(summary.lossless && !LOSSLESS_FORMAT3_ASKS)) {
       throw new SlpFormat3ChoiceError(labelsPath, summary);

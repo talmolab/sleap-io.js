@@ -100,8 +100,15 @@ async function layoutOf(source: Uint8Array | string): Promise<"v2" | "v3"> {
   const file = typeof source === "string" ? source : tempFile(source);
   const h5 = new H5File(file, "r");
   try {
-    const formatId = Number((h5.get("metadata") as any).attrs.format_id.value);
+    const attr = (h5.get("metadata") as any).attrs.format_id;
+    const formatId = Number(attr.value);
     const columnar = (h5.get("points") as any).type === "Group";
+    // Format 3.0's format_id is a float, as Python writes it.
+    if (columnar && attr.metadata?.type !== 1) {
+      throw new Error(
+        `format_id 3.0 stored with HDF5 type ${attr.metadata?.type}`,
+      );
+    }
     if (formatId >= 3 !== columnar) {
       throw new Error(`format_id ${formatId} with columnar=${columnar}`);
     }
@@ -230,7 +237,11 @@ function describePose(labels: Labels) {
     instances: f.instances.map((i) => ({
       predicted: i instanceof PredictedInstance,
       track: i.track?.name ?? null,
-      trackingScore: num(i.trackingScore),
+      // A user instance's "no score" is 0 here and NaN in format 3.0.
+      trackingScore:
+        i instanceof PredictedInstance || i.trackingScore
+          ? num(i.trackingScore)
+          : "none",
       score: i instanceof PredictedInstance ? num(i.score) : null,
       fromPredicted:
         !(i instanceof PredictedInstance) && i.fromPredicted
@@ -414,6 +425,73 @@ describe('the "auto" rule', () => {
       ]);
     }
     expect(warnings()).toEqual([]);
+  });
+
+  it("asks, without the option, for a file holding what this version does not read", async () => {
+    // A save in either layout would drop what is not read: events and a
+    // table of a newer writer, category metadata, and (streaming reader)
+    // ROIs, masks and label images.
+    const cases: Array<[string, string, () => Promise<Labels>, string[]]> = [
+      [
+        "readSlp",
+        "format3_events.slp",
+        () => readSlp(slpPath("format3_events.slp"), { openVideos: false }),
+        ["event_types", "events", "future_table"],
+      ],
+      [
+        "readSlpLazy",
+        "format3_events.slp",
+        () => readSlpLazy(slpPath("format3_events.slp"), { openVideos: false }),
+        ["event_types", "events", "future_table"],
+      ],
+      [
+        "streaming",
+        "format3_events.slp",
+        () => readStreaming("format3_events.slp"),
+        ["event_types", "events", "future_table"],
+      ],
+      [
+        "readSlp",
+        "format3_tables.slp",
+        () => readSlp(slpPath("format3_tables.slp"), { openVideos: false }),
+        ["categories/meta_key"],
+      ],
+      [
+        "readSlpLazy",
+        "format3_tables.slp",
+        () => readSlpLazy(slpPath("format3_tables.slp"), { openVideos: false }),
+        ["categories/meta_key"],
+      ],
+      [
+        "streaming",
+        "format3_tables.slp",
+        () => readStreaming("format3_tables.slp"),
+        ["categories/meta_key", "label_images", "masks", "rois"],
+      ],
+    ];
+    for (const [label, name, read, unread] of cases) {
+      const error = (await caught(read)) as SlpFormat3ChoiceError;
+      expect([label, name, error]).toEqual([
+        label,
+        name,
+        expect.any(SlpFormat3ChoiceError),
+      ]);
+      for (const table of unread) {
+        expect(error.summary.unreadTables).toContain(table);
+        expect(error.message).toContain(table);
+      }
+      expect(error.message).toContain("without the format3 option");
+    }
+    // Asked for explicitly, they load to be kept, and the loss is the
+    // caller's choice.
+    const kept = await readSlp(slpPath("format3_events.slp"), {
+      openVideos: false,
+      format3: "keep",
+    });
+    expect(kept.sourceFormat?.access).toBe("keep");
+    expect(await layoutOf(await saveSlpToBytes(kept))).toBe("v3");
+    const streamed = await readStreaming("format3_tables.slp", "keep");
+    expect(streamed.sourceFormat?.access).toBe("keep");
   });
 
   it("keeps it for copies, extracts, materialized labels and records moved elsewhere", async () => {
@@ -876,6 +954,103 @@ describe("in-place saves", () => {
     }
   }
 
+  for (const where of ["main thread", "worker"] as const) {
+    it(`patch which records hold a metadata key (${where})`, async () => {
+      const file = tempCopy(META);
+      const labels = await readSlp(file, { openVideos: false });
+      const all = labels.labeledFrames.flatMap((f) => f.instances);
+      // One record gains a number key others lack, another loses one.
+      const without = all.find((i) => !("pass" in i.metadata))!;
+      without.metadata.pass = 5;
+      delete all.find((i) => "quality" in i.metadata)!.metadata.quality;
+      expect(await patchInPlace(file, labels, where)).toEqual({ ok: true });
+      const back = await readSlp(file, { openVideos: false });
+      expect(describePose(back)).toEqual(describePose(labels));
+    });
+
+    it(`patch a structural edit of a chunked 2.x file with HDF5 booleans (${where})`, async () => {
+      // SLEAP wrote this file's tables chunked, so they can be resized.
+      const file = tempCopy("centered_pair_predictions.slp");
+      const labels = await readSlp(file, { openVideos: false });
+      labels.labeledFrames[0].instances.pop();
+      labels.labeledFrames[3].instances[0].points[0].visible = false;
+      expect(await patchInPlace(file, labels, where)).toEqual({ ok: true });
+      expect(await layoutOf(file)).toBe("v2");
+      const back = await readSlp(file, { openVideos: false });
+      expect(describePose(back)).toEqual(describePose(labels));
+    });
+
+    it(`patch a format 3.0 file written by sleap-io.js: uint8 flags and a boolean key (${where})`, async () => {
+      const file = tempFile(
+        await saveSlpToBytes(built({ instanceMetadata: true }), {
+          slpVersion: "v3",
+        }),
+      );
+      const labels = await readSlp(file, { openVideos: false });
+      const user = labels.labeledFrames[0].instances[1];
+      expect(user.metadata.ok).toBe(true);
+      user.metadata.ok = false;
+      user.points[0].visible = false;
+      expect(await patchInPlace(file, labels, where)).toEqual({ ok: true });
+      const back = await readSlp(file, { openVideos: false });
+      expect(back.labeledFrames[0].instances[1].metadata.ok).toBe(false);
+      expect(describePose(back)).toEqual(describePose(labels));
+    });
+  }
+
+  it("keep the NaN tracking scores of a Python-written 2.x file", async () => {
+    await ready;
+    const scores = (f: string) => {
+      const h5 = new H5File(f, "r");
+      try {
+        const rows = (h5.get("instances") as any).value as number[][];
+        return rows.map((r) => num(Number(r[9])));
+      } finally {
+        h5.close();
+      }
+    };
+    for (const where of ["main thread", "worker"] as const) {
+      const file = tempCopy(V2);
+      const before = scores(file);
+      expect(before).toContain("nan");
+      const labels = await readSlp(file, { openVideos: false });
+      expect(await patchInPlace(file, labels, where)).toEqual({ ok: true });
+      expect([where, scores(file)]).toEqual([where, before]);
+    }
+  });
+
+  it("send a table holding an enum other than a boolean to a full save", async () => {
+    const labels = built();
+    const update = buildLabelTableUpdate(labels, { slpVersion: "v2" });
+    const sidecars = buildExpectedSidecars(labels);
+    const table = (rows: number, enumMembers: Record<string, number>) => ({
+      rows,
+      cols: 4,
+      layout: "compound" as const,
+      chunked: true,
+      members: [
+        { name: "x", typeClass: 1, size: 8 },
+        { name: "y", typeClass: 1, size: 8 },
+        { name: "visible", typeClass: 8, size: 1, enumMembers },
+        { name: "complete", typeClass: 8, size: 1, enumMembers },
+      ],
+    });
+    const gate = (enumMembers: Record<string, number>) =>
+      checkInPlaceWritable(
+        update,
+        { points: table(update.points.rows.length, enumMembers) },
+        { onDisk: sidecars, expected: sidecars },
+      );
+    expect(gate({ FALSE: 0, TRUE: 1 })).toEqual({ ok: true });
+    for (const other of [
+      { NO: 0, YES: 1 },
+      { FALSE: 0, TRUE: 1, MAYBE: 2 },
+      { FALSE: 1, TRUE: 0 },
+    ]) {
+      expect(gate(other).ok).toBe(false);
+    }
+  });
+
   it("send a structural edit of a format 3.0 file to a full save", async () => {
     const file = tempCopy(POSE);
     const labels = await readSlp(file, { openVideos: false });
@@ -1012,6 +1187,7 @@ function readInPython(
     [...python.args, "-c", READ_BACK_PY, file],
     {
       timeout: 120_000,
+      maxBuffer: 512 * 1024 * 1024,
       stdio: ["ignore", "pipe", "pipe"],
     },
   ).toString();
@@ -1102,6 +1278,95 @@ describe("format 3.0 saves read back in Python sleap-io", () => {
         }
       });
     }
+
+    it.skipIf(SKIP_PYTHON)(
+      `format 3.0 saves of 2.x files write the points as stored, with ${python.label}`,
+      async () => {
+        // Hidden points keep their coordinates and visible points without
+        // coordinates stay visible, as Python 0.10 loads an older file by
+        // default (its clean_legacy_points option changes them).
+        for (const name of [
+          "centered_pair_predictions.slp",
+          "py_written_bboxes.slp",
+          "multiview.slp",
+        ]) {
+          const labels = await readSlp(slpPath(name), { openVideos: false });
+          const file = tempFile(
+            await saveSlpToBytes(labels, { slpVersion: "v3" }),
+          );
+          const result = readInPython(python, file);
+          if (result.error) {
+            expect(String(result.version).startsWith("0.10")).toBe(false);
+            continue;
+          }
+          console.log(
+            `a 3.0 save of ${name} read back with sleap-io ${result.version} (${python.label})`,
+          );
+          const js = await readSlp(file, { openVideos: false });
+          expect(describePose(js)).toEqual(describePose(labels));
+          expect([name, result.frames]).toEqual([name, poseFromJs(labels)]);
+        }
+      },
+    );
+
+    it.skipIf(SKIP_PYTHON)(
+      `a structural in-place patch of a chunked 2.x file, with ${python.label}`,
+      async () => {
+        const file = tempCopy("centered_pair_predictions.slp");
+        const labels = await readSlp(file, { openVideos: false });
+        labels.labeledFrames[0].instances.pop();
+        labels.labeledFrames[5].instances[0].points[1].xy = [11, 12];
+        expect(await patchInPlace(file, labels, "worker")).toEqual({
+          ok: true,
+        });
+        const result = readInPython(python, file);
+        console.log(
+          `a structural in-place patch read back with sleap-io ${result.version} (${python.label})`,
+        );
+        expect(result.visible_dtype).toBe("bool");
+        expect(
+          result.frames.map(
+            (f: { instances: unknown[] }) => f.instances.length,
+          ),
+        ).toEqual(labels.labeledFrames.map((f) => f.instances.length));
+        expect(result.frames[5].instances[0].xy[1]).toEqual([11, 12]);
+      },
+    );
+
+    it.skipIf(SKIP_PYTHON)(
+      `an in-place patch of a gzip-compressed format 3.0 file, with ${python.label}`,
+      async () => {
+        const version = String(readInPython(python, slpPath(POSE)).version);
+        if (!version.startsWith("0.10")) return;
+        // Python writes compressed columns when asked.
+        const file = path.join(
+          mkdtempSync(path.join(tmpdir(), "sleap-io-js-version-")),
+          "gzip.slp",
+        );
+        execFileSync(
+          python.cmd,
+          [
+            ...python.args,
+            "-c",
+            "import sys, sleap_io as sio\n" +
+              "sio.save_slp(sio.load_slp(sys.argv[1]), sys.argv[2], compression='gzip')",
+            slpPath(META),
+            file,
+          ],
+          { timeout: 120_000, stdio: ["ignore", "pipe", "pipe"] },
+        );
+        for (const where of ["main thread", "worker"] as const) {
+          const copy = tempCopy(file);
+          const labels = await readSlp(copy, { openVideos: false });
+          editValues(labels);
+          expect(await patchInPlace(copy, labels, where)).toEqual({ ok: true });
+          const back = await readSlp(copy, { openVideos: false });
+          expect(describePose(back)).toEqual(describePose(labels));
+          const result = readInPython(python, copy);
+          expect(result.frames).toEqual(poseFromJs(labels));
+        }
+      },
+    );
 
     for (const where of ["main thread", "worker"] as const) {
       it.skipIf(SKIP_PYTHON)(

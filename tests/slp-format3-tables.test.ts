@@ -915,7 +915,10 @@ describe("the store-merging writers and stores from 3.0 files", () => {
     // A store kept in format 3.0 (the default) is merged in format 3.0, which
     // writes the links of its instances and annotations; identities and
     // sessions come from the header.
-    const labels = await readSlpLazy(slpPath(V3), { openVideos: false });
+    const labels = await readSlpLazy(slpPath(V3), {
+      openVideos: false,
+      format3: "keep",
+    });
     const store = labels._lazyDataStore!;
     const bytes = await saveSlpMergedFromStores([store], {
       identities: labels.identities,
@@ -2300,17 +2303,21 @@ print(json.dumps({
 
 // ---- Format 3.0 saves --------------------------------------------------------
 
+/**
+ * Loaded to be kept in format 3.0. These fixtures hold category metadata,
+ * which this version does not read, so they ask without the option.
+ */
+const KEEP = { openVideos: false, format3: "keep" } as const;
+
 /** Format 3.0 saves of a fixture loaded without a choice (kept in 3.0). */
 const V3_SAVES: Array<[string, (name: string) => Promise<Uint8Array>]> = [
   [
     "an eager save",
-    async (n) =>
-      saveSlpToBytes(await readSlp(slpPath(n), { openVideos: false })),
+    async (n) => saveSlpToBytes(await readSlp(slpPath(n), KEEP)),
   ],
   [
     "a lazy save",
-    async (n) =>
-      saveSlpToBytes(await readSlpLazy(slpPath(n), { openVideos: false })),
+    async (n) => saveSlpToBytes(await readSlpLazy(slpPath(n), KEEP)),
   ],
   [
     'a slpVersion: "v3" save of edit-loaded labels',
@@ -2321,11 +2328,11 @@ const V3_SAVES: Array<[string, (name: string) => Promise<Uint8Array>]> = [
 
 /** Every reader, on a saved file. */
 const FILE_READERS: Array<[string, (file: string) => Promise<Labels>]> = [
-  ["readSlp", (f) => readSlp(f, { openVideos: false })],
+  ["readSlp", (f) => readSlp(f, KEEP)],
   [
     "readSlpLazy",
     async (f) => {
-      const labels = await readSlpLazy(f, { openVideos: false });
+      const labels = await readSlpLazy(f, KEEP);
       labels.materialize();
       return labels;
     },
@@ -2417,9 +2424,7 @@ describe("format 3.0 saves of the tables", () => {
           ]);
         }
         // Saving the read-back labels again keeps format 3.0.
-        const again = tempFile(
-          await saveSlpToBytes(await readSlp(file, { openVideos: false })),
-        );
+        const again = tempFile(await saveSlpToBytes(await readSlp(file, KEEP)));
         expect(await layoutOf(again)).toEqual([3, true]);
       });
     }
@@ -2427,7 +2432,7 @@ describe("format 3.0 saves of the tables", () => {
 
   it("writes no compound dataset", async () => {
     const file = tempFile(
-      await saveSlpToBytes(await readSlp(slpPath(V3), { openVideos: false })),
+      await saveSlpToBytes(await readSlp(slpPath(V3), KEEP)),
     );
     await ready;
     const h5 = new H5File(file, "r");
@@ -2449,8 +2454,8 @@ describe("format 3.0 saves of the tables", () => {
   });
 
   for (const [what, load] of [
-    ["eager", (n: string) => readSlp(slpPath(n), { openVideos: false })],
-    ["lazy", (n: string) => readSlpLazy(slpPath(n), { openVideos: false })],
+    ["eager", (n: string) => readSlp(slpPath(n), KEEP)],
+    ["lazy", (n: string) => readSlpLazy(slpPath(n), KEEP)],
   ] as const) {
     it(`keeps the unknown columns of every table (${what})`, async () => {
       const warns: string[] = [];
@@ -2481,7 +2486,7 @@ describe("format 3.0 saves of the tables", () => {
   }
 
   it("drops unknown columns with a warning once their records change", async () => {
-    const labels = await readSlp(slpPath(UNKNOWN), { openVideos: false });
+    const labels = await readSlp(slpPath(UNKNOWN), KEEP);
     const frame = labels.labeledFrames.find((f) => f.rois.length > 0)!;
     frame.rois.reverse();
     if (frame.rois.length < 2) frame.rois.pop();
@@ -2498,7 +2503,7 @@ describe("format 3.0 saves of the tables", () => {
   });
 
   it('slpVersion: "v2" writes the 2.x layout and drops the unknown columns with a warning', async () => {
-    const labels = await readSlp(slpPath(UNKNOWN), { openVideos: false });
+    const labels = await readSlp(slpPath(UNKNOWN), KEEP);
     const warns: string[] = [];
     const original = console.warn;
     console.warn = (m: unknown) => warns.push(String(m));

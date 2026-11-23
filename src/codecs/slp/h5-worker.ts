@@ -1131,8 +1131,8 @@ var H5T_FLOAT_CLASS = 1;
 function memberColumnTypedArrayWorker(member, values) {
   var size = member.size == null ? 8 : member.size;
   if (member.type === H5T_ENUM_CLASS) {
-    // An enum (h5py's bool) holds its base integer: 0/1 for a flag.
-    var flags = values.map(function (v) { return isFinite(v) ? Math.trunc(v) : 0; });
+    // h5py's bool (the only enum written): 0 or 1.
+    var flags = values.map(function (v) { return v ? 1 : 0; });
     return memberColumnTypedArrayWorker({ name: member.name, type: 0, size: size, signed: member.signed }, flags);
   }
   if (member.type === H5T_FLOAT_CLASS) {
@@ -1161,33 +1161,79 @@ function writeWithFileTypeWorker(ds, write) {
     return out;
   };
   var members = md && md.compound_type && md.compound_type.members;
-  var hasEnum = (md && md.type === H5T_ENUM_CLASS) ||
-    !!(members && members.some(function (m) { return m.type === H5T_ENUM_CLASS; }));
-  if (!hasEnum) { write(); return; }
+  var enums = members
+    ? members.filter(function (m) { return m.type === H5T_ENUM_CLASS; })
+    : (md && md.type === H5T_ENUM_CLASS ? [md] : []);
+  if (enums.length === 0) { write(); return; }
+  // Only h5py's bool (write.ts isH5pyBool — KEEP IN LOCKSTEP).
+  for (var q = 0; q < enums.length; q++) {
+    if (!isH5pyBoolWorker(enums[q].size, enums[q].enum_type && enums[q].enum_type.members)) {
+      throw new Error('in-place save: ' + ds.path + ' holds an enum other than a boolean, which this writer does not write - re-save the whole file instead');
+    }
+  }
   ds._metadata = members
     ? Object.assign({}, md, { compound_type: Object.assign({}, md.compound_type, { members: members.map(asInt) }) })
     : asInt(md);
   try { write(); } finally { delete ds._metadata; }
 }
 
+// Worker port of isH5pyBool (write.ts — KEEP IN LOCKSTEP).
+function isH5pyBoolWorker(size, members) {
+  var names = Object.keys(members || {}).sort();
+  return (size == null ? 1 : size) === 1 && names.length === 2 &&
+    names[0] === 'FALSE' && names[1] === 'TRUE' &&
+    Number(members.FALSE) === 0 && Number(members.TRUE) === 1;
+}
+
+// Worker port of forEachSlice (write.ts — KEEP IN LOCKSTEP): read rows
+// [0, n) in bounded slices.
+var VERIFY_CHUNK_ROWS = 65536;
+function forEachSliceWorker(ds, n, visit) {
+  for (var start = 0; start < n; start += VERIFY_CHUNK_ROWS) {
+    var end = Math.min(n, start + VERIFY_CHUNK_ROWS);
+    visit(ds.slice([[start, end]]), start);
+  }
+}
+
 // Worker port of verifyEnumMembers (write.ts — KEEP IN LOCKSTEP): read an
-// enum-holding compound back and check each enum member holds what was written.
+// enum-holding compound back, a bounded slice at a time, and check each enum
+// member holds what was written.
 function verifyEnumMembersWorker(ds, diskName, members, fields, flat, rowCount, colCount) {
-  var enumIdx = [];
-  for (var k = 0; k < members.length; k++) if (members[k].type === H5T_ENUM_CLASS) enumIdx.push(k);
-  if (enumIdx.length === 0) return;
-  var value = ds.value;
-  for (var e = 0; e < enumIdx.length; e++) {
-    var mi = enumIdx[e];
-    var ci = fields.indexOf(members[mi].name);
-    for (var r = 0; r < rowCount; r++) {
-      var got = Number(value[r] && value[r][mi]);
-      var want = Math.trunc(Number(flat[r * colCount + ci]) || 0);
-      if (got !== want) {
-        throw new Error('in-place write of ' + diskName + ' member ' + members[mi].name + ' did not take effect (row ' + r + ') - re-save the whole file instead');
+  var checks = [];
+  for (var k = 0; k < members.length; k++) {
+    if (members[k].type === H5T_ENUM_CLASS) checks.push([k, fields.indexOf(members[k].name)]);
+  }
+  if (checks.length === 0) return;
+  forEachSliceWorker(ds, rowCount, function (rows, start) {
+    for (var r = 0; r < rows.length; r++) {
+      for (var e = 0; e < checks.length; e++) {
+        var mi = checks[e][0], ci = checks[e][1];
+        var got = Number(rows[r] && rows[r][mi]);
+        var want = flat[(start + r) * colCount + ci] ? 1 : 0;
+        if (got !== want) {
+          throw new Error('in-place write of ' + diskName + ' member ' + members[mi].name + ' did not take effect (row ' + (start + r) + ') - re-save the whole file instead');
+        }
       }
     }
+  });
+}
+
+// Worker port of nanRowsOnDisk (write.ts — KEEP IN LOCKSTEP): the rows whose
+// float member holds NaN on disk, read a bounded slice at a time.
+function nanRowsOnDiskWorker(ds, members, name, rowCount) {
+  var mi = -1;
+  for (var k = 0; k < members.length; k++) {
+    if (members[k].name === name && members[k].type === H5T_FLOAT_CLASS) mi = k;
   }
+  if (mi < 0) return null;
+  var nan = new Uint8Array(rowCount);
+  var any = false;
+  forEachSliceWorker(ds, rowCount, function (rows, start) {
+    for (var r = 0; r < rows.length; r++) {
+      if (Number.isNaN(Number(rows[r] && rows[r][mi]))) { nan[start + r] = 1; any = true; }
+    }
+  });
+  return any ? nan : null;
 }
 
 // Worker port of writeColumnInPlace (write.ts — KEEP IN LOCKSTEP): write one
@@ -1199,12 +1245,13 @@ function writeColumnInPlaceWorker(ds, values) {
   var data = memberColumnTypedArrayWorker({ name: ds.path, type: md.type, size: md.size, signed: md.signed }, Array.from(values, Number));
   writeWithFileTypeWorker(ds, function () { ds.write_slice([[0, n]], data); });
   if (md.type === H5T_ENUM_CLASS) {
-    var back = Array.from(ds.value, Number);
-    for (var i = 0; i < n; i++) {
-      if (back[i] !== Math.trunc(Number(values[i]) || 0)) {
-        throw new Error('in-place write of ' + ds.path + ' did not take effect (row ' + i + ') - re-save the whole file instead');
+    forEachSliceWorker(ds, n, function (rows, start) {
+      for (var i = 0; i < rows.length; i++) {
+        if (Number(rows[i]) !== (values[start + i] ? 1 : 0)) {
+          throw new Error('in-place write of ' + ds.path + ' did not take effect (row ' + (start + i) + ') - re-save the whole file instead');
+        }
       }
-    }
+    });
   }
 }
 
@@ -1294,6 +1341,10 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
   var members = md && md.compound_type && md.compound_type.members;
   var isCompound = !!(members && members.length > 0);
   var curRows = (ds.shape && ds.shape[0]) || 0;
+  // A value edit keeps the NaN tracking scores the readers read as 0.
+  var nanTracking = isCompound && diskName === 'instances' && curRows === rowCount
+    ? nanRowsOnDiskWorker(ds, members, 'tracking_score', rowCount)
+    : null;
   if (curRows !== rowCount) {
     ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
     // h5wasm silently no-ops resize on a non-resizable dataset — read the shape
@@ -1318,6 +1369,11 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
       }
       var colVals = new Array(rowCount);
       for (var r = 0; r < rowCount; r++) colVals[r] = flat[r * colCount + ci];
+      if (nanTracking && m.name === 'tracking_score') {
+        for (var z = 0; z < rowCount; z++) {
+          if (nanTracking[z] && colVals[z] === 0) colVals[z] = NaN;
+        }
+      }
       columns.set(m.name, memberColumnTypedArrayWorker(m, colVals));
     }
     writeWithFileTypeWorker(ds, function () { ds.write_slice([[0, rowCount]], columns); });
