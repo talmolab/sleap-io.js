@@ -12231,6 +12231,15 @@ var ImageVideoBackend = class _ImageVideoBackend {
     return frame;
   }
   /**
+   * The image file's own encoded bytes for `frameIndex` (PNG, JPEG, ...), as
+   * read from disk, without decoding them; `null` past the last frame. Used to
+   * embed a frame verbatim when it is already in the stored format.
+   */
+  async getEncodedBytes(frameIndex) {
+    if (frameIndex < 0 || frameIndex >= this.filename.length) return null;
+    return this.startRead(frameIndex);
+  }
+  /**
    * Read a frame's encoded bytes, serving from the bytes tier when present (no
    * network) and coalescing concurrent reads of the same frame via `inflight` so
    * a getFrame and a prefetch never read the same file twice.
@@ -13036,7 +13045,9 @@ function subFilterScanlinesEnc(pixels, width, height, channels) {
   return out;
 }
 
-async function encodePngEnc(pixels, width, height, channels) {
+// compressLevel (imageQuality for PNG): 0 stores the image data uncompressed;
+// any other level uses CompressionStream's zlib, whose level can't be set.
+async function encodePngEnc(pixels, width, height, channels, compressLevel) {
   var colorType = PNG_COLOR_TYPE_ENC[channels];
   if (colorType === undefined) {
     throw new Error('Cannot PNG-encode a frame with ' + channels + ' channels (expected 1-4).');
@@ -13058,7 +13069,7 @@ async function encodePngEnc(pixels, width, height, channels) {
   var chunks = [
     new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
     pngChunkEnc('IHDR', ihdr),
-    pngChunkEnc('IDAT', await zlibDeflateEnc(raw)),
+    pngChunkEnc('IDAT', compressLevel === 0 ? zlibStoredEnc(raw) : await zlibDeflateEnc(raw)),
     pngChunkEnc('IEND', new Uint8Array(0))
   ];
   var total = 0;
@@ -13105,11 +13116,298 @@ function framePixelsEnc(frame, collapseToGray) {
   return { pixels: out, width: width, height: height, channels: outCh };
 }
 
-// The bytes to store for one transferred frame.
-async function encodeFrameEnc(frame, collapseToGray) {
-  if (frame.kind === 'png') return frame.bytes;
+// --- JPEG encode: a pure-JS baseline encoder, KEEP IN LOCKSTEP with
+// ../../video/jpeg-encode.ts's encodeJpegPixels (a test checks both write the
+// same bytes). Gray (1 channel, or 2 = gray + alpha): a 1-component JPEG, as
+// Python sleap-io stores a grayscale frame. Colour (3, or 4 = RGBA): YCbCr
+// 4:2:0. Alpha is ignored. Standard tables scaled as libjpeg. ---
+var JPEG_DEFAULT_QUALITY_ENC = 95;
+var JPEG_ZIGZAG_ENC = [
+  0, 1, 8, 16, 9, 2, 3, 10, 17, 24, 32, 25, 18, 11, 4, 5, 12, 19, 26, 33, 40,
+  48, 41, 34, 27, 20, 13, 6, 7, 14, 21, 28, 35, 42, 49, 56, 57, 50, 43, 36, 29,
+  22, 15, 23, 30, 37, 44, 51, 58, 59, 52, 45, 38, 31, 39, 46, 53, 60, 61, 54,
+  47, 55, 62, 63
+];
+var JPEG_LUMA_QUANT_ENC = [
+  16, 11, 10, 16, 24, 40, 51, 61, 12, 12, 14, 19, 26, 58, 60, 55, 14, 13, 16,
+  24, 40, 57, 69, 56, 14, 17, 22, 29, 51, 87, 80, 62, 18, 22, 37, 56, 68, 109,
+  103, 77, 24, 35, 55, 64, 81, 104, 113, 92, 49, 64, 78, 87, 103, 121, 120, 101,
+  72, 92, 95, 98, 112, 100, 103, 99
+];
+var JPEG_CHROMA_QUANT_ENC = [
+  17, 18, 24, 47, 99, 99, 99, 99, 18, 21, 26, 66, 99, 99, 99, 99, 24, 26, 56,
+  99, 99, 99, 99, 99, 47, 66, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+  99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99, 99,
+  99, 99, 99, 99, 99, 99, 99
+];
+var JPEG_LUMA_DC_BITS_ENC = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
+var JPEG_CHROMA_DC_BITS_ENC = [0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0];
+var JPEG_DC_VALS_ENC = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+var JPEG_LUMA_AC_BITS_ENC = [0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 0x7d];
+var JPEG_LUMA_AC_VALS_ENC = [
+  0x01, 0x02, 0x03, 0x00, 0x04, 0x11, 0x05, 0x12, 0x21, 0x31, 0x41, 0x06, 0x13,
+  0x51, 0x61, 0x07, 0x22, 0x71, 0x14, 0x32, 0x81, 0x91, 0xa1, 0x08, 0x23, 0x42,
+  0xb1, 0xc1, 0x15, 0x52, 0xd1, 0xf0, 0x24, 0x33, 0x62, 0x72, 0x82, 0x09, 0x0a,
+  0x16, 0x17, 0x18, 0x19, 0x1a, 0x25, 0x26, 0x27, 0x28, 0x29, 0x2a, 0x34, 0x35,
+  0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4a,
+  0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66, 0x67,
+  0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x83, 0x84,
+  0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97, 0x98,
+  0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa, 0xb2, 0xb3,
+  0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5, 0xc6, 0xc7,
+  0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9, 0xda, 0xe1,
+  0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf1, 0xf2, 0xf3, 0xf4,
+  0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa
+];
+var JPEG_CHROMA_AC_BITS_ENC = [0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 0x77];
+var JPEG_CHROMA_AC_VALS_ENC = [
+  0x00, 0x01, 0x02, 0x03, 0x11, 0x04, 0x05, 0x21, 0x31, 0x06, 0x12, 0x41, 0x51,
+  0x07, 0x61, 0x71, 0x13, 0x22, 0x32, 0x81, 0x08, 0x14, 0x42, 0x91, 0xa1, 0xb1,
+  0xc1, 0x09, 0x23, 0x33, 0x52, 0xf0, 0x15, 0x62, 0x72, 0xd1, 0x0a, 0x16, 0x24,
+  0x34, 0xe1, 0x25, 0xf1, 0x17, 0x18, 0x19, 0x1a, 0x26, 0x27, 0x28, 0x29, 0x2a,
+  0x35, 0x36, 0x37, 0x38, 0x39, 0x3a, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49,
+  0x4a, 0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a, 0x63, 0x64, 0x65, 0x66,
+  0x67, 0x68, 0x69, 0x6a, 0x73, 0x74, 0x75, 0x76, 0x77, 0x78, 0x79, 0x7a, 0x82,
+  0x83, 0x84, 0x85, 0x86, 0x87, 0x88, 0x89, 0x8a, 0x92, 0x93, 0x94, 0x95, 0x96,
+  0x97, 0x98, 0x99, 0x9a, 0xa2, 0xa3, 0xa4, 0xa5, 0xa6, 0xa7, 0xa8, 0xa9, 0xaa,
+  0xb2, 0xb3, 0xb4, 0xb5, 0xb6, 0xb7, 0xb8, 0xb9, 0xba, 0xc2, 0xc3, 0xc4, 0xc5,
+  0xc6, 0xc7, 0xc8, 0xc9, 0xca, 0xd2, 0xd3, 0xd4, 0xd5, 0xd6, 0xd7, 0xd8, 0xd9,
+  0xda, 0xe2, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xf2, 0xf3, 0xf4,
+  0xf5, 0xf6, 0xf7, 0xf8, 0xf9, 0xfa
+];
+var JPEG_DCT_BASIS_ENC = null;
+
+function jpegHuffmanTableEnc(bits, vals) {
+  var codes = new Int32Array(256);
+  var lengths = new Uint8Array(256);
+  var code = 0;
+  var k = 0;
+  for (var len = 1; len <= 16; len++) {
+    for (var i = 0; i < bits[len - 1]; i++) {
+      codes[vals[k]] = code++;
+      lengths[vals[k++]] = len;
+    }
+    code <<= 1;
+  }
+  return [codes, lengths];
+}
+
+function jpegScaledQuantEnc(base, quality) {
+  var q = Math.min(100, Math.max(1, Math.trunc(quality)));
+  var scale = q < 50 ? Math.floor(5000 / q) : 200 - q * 2;
+  return Float64Array.from(base, function(v) {
+    return Math.min(255, Math.max(1, Math.floor((v * scale + 50) / 100)));
+  });
+}
+
+function encodeJpegEnc(pixels, width, height, channels, quality) {
+  if (!(channels >= 1 && channels <= 4 && Number.isInteger(channels))) {
+    throw new Error('Cannot JPEG-encode a frame with ' + channels + ' channels (expected 1-4).');
+  }
+  if (!(width >= 1 && height >= 1 && width <= 65535 && height <= 65535)) {
+    throw new Error('Cannot JPEG-encode a ' + width + 'x' + height + ' frame.');
+  }
+  if (pixels.length !== width * height * channels) {
+    throw new Error(
+      'Cannot JPEG-encode a ' + width + 'x' + height + ' frame with ' + channels +
+      ' channel(s): expected ' + width * height * channels + ' bytes, got ' + pixels.length + '.'
+    );
+  }
+  if (JPEG_DCT_BASIS_ENC === null) {
+    JPEG_DCT_BASIS_ENC = Float64Array.from({ length: 64 }, function(_, i) {
+      var bu = i >> 3;
+      var bx0 = i & 7;
+      return 0.5 * (bu === 0 ? Math.SQRT1_2 : 1) * Math.cos(((2 * bx0 + 1) * bu * Math.PI) / 16);
+    });
+  }
+  var basis = JPEG_DCT_BASIS_ENC;
+  var q = quality == null ? JPEG_DEFAULT_QUALITY_ENC : quality;
+  var colour = channels >= 3;
+  var quants = colour
+    ? [jpegScaledQuantEnc(JPEG_LUMA_QUANT_ENC, q), jpegScaledQuantEnc(JPEG_CHROMA_QUANT_ENC, q)]
+    : [jpegScaledQuantEnc(JPEG_LUMA_QUANT_ENC, q)];
+  var dcTables = [jpegHuffmanTableEnc(JPEG_LUMA_DC_BITS_ENC, JPEG_DC_VALS_ENC)];
+  var acTables = [jpegHuffmanTableEnc(JPEG_LUMA_AC_BITS_ENC, JPEG_LUMA_AC_VALS_ENC)];
+  if (colour) {
+    dcTables.push(jpegHuffmanTableEnc(JPEG_CHROMA_DC_BITS_ENC, JPEG_DC_VALS_ENC));
+    acTables.push(jpegHuffmanTableEnc(JPEG_CHROMA_AC_BITS_ENC, JPEG_CHROMA_AC_VALS_ENC));
+  }
+
+  var mcu = colour ? 16 : 8;
+  var pw = Math.ceil(width / mcu) * mcu;
+  var ph = Math.ceil(height / mcu) * mcu;
+  var lum = new Float64Array(pw * ph);
+  var cw = pw >> 1;
+  var cb = colour ? new Float64Array(cw * (ph >> 1)) : null;
+  var cr = colour ? new Float64Array(cw * (ph >> 1)) : null;
+  for (var y = 0; y < ph; y++) {
+    var row = Math.min(y, height - 1) * width;
+    for (var x = 0; x < pw; x++) {
+      var i = (row + Math.min(x, width - 1)) * channels;
+      if (!colour) {
+        lum[y * pw + x] = pixels[i] - 128;
+        continue;
+      }
+      var r = pixels[i];
+      var g = pixels[i + 1];
+      var b = pixels[i + 2];
+      lum[y * pw + x] = 0.299 * r + 0.587 * g + 0.114 * b - 128;
+      var c = (y >> 1) * cw + (x >> 1);
+      cb[c] += 0.25 * (-0.168736 * r - 0.331264 * g + 0.5 * b);
+      cr[c] += 0.25 * (0.5 * r - 0.418688 * g - 0.081312 * b);
+    }
+  }
+
+  var out = new Uint8Array(1024 + ((width * height * channels) >> 2));
+  var pos = 0;
+  function byte(v) {
+    if (pos === out.length) {
+      var grown = new Uint8Array(out.length * 2);
+      grown.set(out);
+      out = grown;
+    }
+    out[pos++] = v;
+  }
+  function segment(marker, payload) {
+    byte(0xff);
+    byte(marker);
+    byte((payload.length + 2) >> 8);
+    byte((payload.length + 2) & 0xff);
+    for (var p = 0; p < payload.length; p++) byte(payload[p]);
+  }
+  byte(0xff);
+  byte(0xd8);
+  segment(0xe0, [0x4a, 0x46, 0x49, 0x46, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
+  var dqt = [];
+  for (var t0 = 0; t0 < quants.length; t0++) {
+    dqt.push(t0);
+    for (var z = 0; z < 64; z++) dqt.push(quants[t0][JPEG_ZIGZAG_ENC[z]]);
+  }
+  segment(0xdb, dqt);
+  var sof = [8, height >> 8, height & 0xff, width >> 8, width & 0xff];
+  sof.push(colour ? 3 : 1, 1, colour ? 0x22 : 0x11, 0);
+  if (colour) sof.push(2, 0x11, 1, 3, 0x11, 1);
+  segment(0xc0, sof);
+  var dht = [0x00].concat(JPEG_LUMA_DC_BITS_ENC, JPEG_DC_VALS_ENC, [0x10], JPEG_LUMA_AC_BITS_ENC, JPEG_LUMA_AC_VALS_ENC);
+  if (colour) {
+    dht = dht.concat([0x01], JPEG_CHROMA_DC_BITS_ENC, JPEG_DC_VALS_ENC, [0x11], JPEG_CHROMA_AC_BITS_ENC, JPEG_CHROMA_AC_VALS_ENC);
+  }
+  segment(0xc4, dht);
+  segment(0xda, colour ? [3, 1, 0x00, 2, 0x11, 3, 0x11, 0, 63, 0] : [1, 1, 0x00, 0, 63, 0]);
+
+  var acc = 0;
+  var nbits = 0;
+  function put(code, len) {
+    acc = (acc << len) | code;
+    nbits += len;
+    while (nbits >= 8) {
+      var v = (acc >> (nbits - 8)) & 0xff;
+      byte(v);
+      if (v === 0xff) byte(0);
+      nbits -= 8;
+    }
+    acc &= (1 << nbits) - 1;
+  }
+  var block = new Float64Array(64);
+  var tmp = new Float64Array(64);
+  var coef = new Int32Array(64);
+  var prevDc = [0, 0, 0];
+  function encodeBlock(plane, stride, bx, by, comp) {
+    var t = comp === 0 ? 0 : 1;
+    var quant = quants[t];
+    var dcCodes = dcTables[t][0];
+    var dcLengths = dcTables[t][1];
+    var acCodes = acTables[t][0];
+    var acLengths = acTables[t][1];
+    for (var by2 = 0; by2 < 8; by2++) {
+      for (var bx2 = 0; bx2 < 8; bx2++) {
+        block[by2 * 8 + bx2] = plane[(by + by2) * stride + bx + bx2];
+      }
+    }
+    for (var y1 = 0; y1 < 8; y1++) {
+      for (var u = 0; u < 8; u++) {
+        var s = 0;
+        for (var x1 = 0; x1 < 8; x1++) s += basis[u * 8 + x1] * block[y1 * 8 + x1];
+        tmp[y1 * 8 + u] = s;
+      }
+    }
+    for (var u2 = 0; u2 < 8; u2++) {
+      for (var v2 = 0; v2 < 8; v2++) {
+        var s2 = 0;
+        for (var y2 = 0; y2 < 8; y2++) s2 += basis[v2 * 8 + y2] * tmp[y2 * 8 + u2];
+        coef[v2 * 8 + u2] = Math.round(s2 / quant[v2 * 8 + u2]);
+      }
+    }
+    var value = coef[0] - prevDc[comp];
+    prevDc[comp] = coef[0];
+    var cat = 0;
+    for (var a = Math.abs(value); a > 0; a >>= 1) cat++;
+    put(dcCodes[cat], dcLengths[cat]);
+    if (cat > 0) put(value < 0 ? value + (1 << cat) - 1 : value, cat);
+    var run = 0;
+    for (var k = 1; k < 64; k++) {
+      value = coef[JPEG_ZIGZAG_ENC[k]];
+      if (value === 0) {
+        run++;
+        continue;
+      }
+      while (run > 15) {
+        put(acCodes[0xf0], acLengths[0xf0]);
+        run -= 16;
+      }
+      cat = 0;
+      for (var a2 = Math.abs(value); a2 > 0; a2 >>= 1) cat++;
+      var sym = (run << 4) | cat;
+      put(acCodes[sym], acLengths[sym]);
+      put(value < 0 ? value + (1 << cat) - 1 : value, cat);
+      run = 0;
+    }
+    if (run > 0) put(acCodes[0], acLengths[0]);
+  }
+  for (var my = 0; my < ph; my += mcu) {
+    for (var mx = 0; mx < pw; mx += mcu) {
+      if (!colour) {
+        encodeBlock(lum, pw, mx, my, 0);
+        continue;
+      }
+      encodeBlock(lum, pw, mx, my, 0);
+      encodeBlock(lum, pw, mx + 8, my, 0);
+      encodeBlock(lum, pw, mx, my + 8, 0);
+      encodeBlock(lum, pw, mx + 8, my + 8, 0);
+      encodeBlock(cb, cw, mx >> 1, my >> 1, 1);
+      encodeBlock(cr, cw, mx >> 1, my >> 1, 2);
+    }
+  }
+  if (nbits > 0) put((1 << (8 - nbits)) - 1, 8 - nbits);
+  byte(0xff);
+  byte(0xd9);
+  return out.slice(0, pos);
+}
+
+// The bytes to store for one transferred frame. Without a chosen format
+// (entry.formatChosen), every frame is a PNG, as before the option existed;
+// with one, encoded bytes the main thread passed on (already in the format)
+// are stored as they are and pixels are encoded in the entry's format.
+async function encodeFrameEnc(frame, collapseToGray, entry) {
+  if (!entry || !entry.formatChosen) {
+    if (frame.kind === 'png') return frame.bytes;
+    var px0 = framePixelsEnc(frame, collapseToGray);
+    return encodePngEnc(px0.pixels, px0.width, px0.height, px0.channels);
+  }
+  var format = entry.format;
+  var quality = entry.quality == null ? null : entry.quality;
+  if (frame.kind === 'png' || frame.kind === 'jpg') {
+    if (frame.kind !== format) {
+      throw new Error(
+        'video' + entry.videoIndex + ' is stored as ' + format + ' but was handed ' +
+        frame.kind + ' bytes; pass pixels to re-encode them.'
+      );
+    }
+    return frame.bytes;
+  }
   var px = framePixelsEnc(frame, collapseToGray);
-  return encodePngEnc(px.pixels, px.width, px.height, px.channels);
+  if (format === 'jpg') return encodeJpegEnc(px.pixels, px.width, px.height, px.channels, quality);
+  return encodePngEnc(px.pixels, px.width, px.height, px.channels, quality);
 }
 
 // --- embedded video dataset writer, in Python sleap-io's layout (KEEP IN
@@ -13405,7 +13703,7 @@ self.onmessage = async function(e) {
       case 'appendEncodedFrame':
         queueEncode(id, async function() {
           if (!encodeState) throw new Error('appendEncodedFrame: no video begun (call beginEncodedVideo first)');
-          var bytes = await encodeFrameEnc(payload.frame, encodeState.collapseToGray);
+          var bytes = await encodeFrameEnc(payload.frame, encodeState.collapseToGray, encodeState.entry);
           appendEncodedBytesEnc(encodeState, payload.frameIdx, bytes);
           return { success: true };
         });
@@ -15475,13 +15773,13 @@ var StreamingH5Writer = class {
     await this.send("beginEncodedVideo", { entry, collapseToGray });
   }
   /**
-   * PNG-encode (in the worker) and append one frame of the video begun with
-   * {@link beginEncodedVideo}. The frame's bitmap or buffer is transferred, so
-   * the caller must not use it afterwards.
+   * Encode (in the worker: PNG, or the entry's chosen format) and append one
+   * frame of the video begun with {@link beginEncodedVideo}. The frame's
+   * bitmap or buffer is transferred, so the caller must not use it afterwards.
    */
   async appendEncodedFrame(frameIdx, frame) {
     const transfer = frame.kind === "bitmap" ? [frame.bitmap] : [
-      (frame.kind === "png" ? frame.bytes : frame.data).buffer
+      (frame.kind === "pixels" ? frame.data : frame.bytes).buffer
     ];
     await this.send("appendEncodedFrame", { frameIdx, frame }, transfer);
   }
@@ -18444,6 +18742,870 @@ function checkSlpVersion(value) {
 }
 var SLP_FORMAT3_ID = 3;
 
+// src/video/jpeg-encode.ts
+var DEFAULT_JPEG_QUALITY = 95;
+var ZIGZAG = [
+  0,
+  1,
+  8,
+  16,
+  9,
+  2,
+  3,
+  10,
+  17,
+  24,
+  32,
+  25,
+  18,
+  11,
+  4,
+  5,
+  12,
+  19,
+  26,
+  33,
+  40,
+  48,
+  41,
+  34,
+  27,
+  20,
+  13,
+  6,
+  7,
+  14,
+  21,
+  28,
+  35,
+  42,
+  49,
+  56,
+  57,
+  50,
+  43,
+  36,
+  29,
+  22,
+  15,
+  23,
+  30,
+  37,
+  44,
+  51,
+  58,
+  59,
+  52,
+  45,
+  38,
+  31,
+  39,
+  46,
+  53,
+  60,
+  61,
+  54,
+  47,
+  55,
+  62,
+  63
+];
+var LUMA_QUANT = [
+  16,
+  11,
+  10,
+  16,
+  24,
+  40,
+  51,
+  61,
+  12,
+  12,
+  14,
+  19,
+  26,
+  58,
+  60,
+  55,
+  14,
+  13,
+  16,
+  24,
+  40,
+  57,
+  69,
+  56,
+  14,
+  17,
+  22,
+  29,
+  51,
+  87,
+  80,
+  62,
+  18,
+  22,
+  37,
+  56,
+  68,
+  109,
+  103,
+  77,
+  24,
+  35,
+  55,
+  64,
+  81,
+  104,
+  113,
+  92,
+  49,
+  64,
+  78,
+  87,
+  103,
+  121,
+  120,
+  101,
+  72,
+  92,
+  95,
+  98,
+  112,
+  100,
+  103,
+  99
+];
+var CHROMA_QUANT = [
+  17,
+  18,
+  24,
+  47,
+  99,
+  99,
+  99,
+  99,
+  18,
+  21,
+  26,
+  66,
+  99,
+  99,
+  99,
+  99,
+  24,
+  26,
+  56,
+  99,
+  99,
+  99,
+  99,
+  99,
+  47,
+  66,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99,
+  99
+];
+var LUMA_DC_BITS = [0, 1, 5, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0];
+var CHROMA_DC_BITS = [0, 3, 1, 1, 1, 1, 1, 1, 1, 1, 1, 0, 0, 0, 0, 0];
+var DC_VALS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+var LUMA_AC_BITS = [0, 2, 1, 3, 3, 2, 4, 3, 5, 5, 4, 4, 0, 0, 1, 125];
+var LUMA_AC_VALS = [
+  1,
+  2,
+  3,
+  0,
+  4,
+  17,
+  5,
+  18,
+  33,
+  49,
+  65,
+  6,
+  19,
+  81,
+  97,
+  7,
+  34,
+  113,
+  20,
+  50,
+  129,
+  145,
+  161,
+  8,
+  35,
+  66,
+  177,
+  193,
+  21,
+  82,
+  209,
+  240,
+  36,
+  51,
+  98,
+  114,
+  130,
+  9,
+  10,
+  22,
+  23,
+  24,
+  25,
+  26,
+  37,
+  38,
+  39,
+  40,
+  41,
+  42,
+  52,
+  53,
+  54,
+  55,
+  56,
+  57,
+  58,
+  67,
+  68,
+  69,
+  70,
+  71,
+  72,
+  73,
+  74,
+  83,
+  84,
+  85,
+  86,
+  87,
+  88,
+  89,
+  90,
+  99,
+  100,
+  101,
+  102,
+  103,
+  104,
+  105,
+  106,
+  115,
+  116,
+  117,
+  118,
+  119,
+  120,
+  121,
+  122,
+  131,
+  132,
+  133,
+  134,
+  135,
+  136,
+  137,
+  138,
+  146,
+  147,
+  148,
+  149,
+  150,
+  151,
+  152,
+  153,
+  154,
+  162,
+  163,
+  164,
+  165,
+  166,
+  167,
+  168,
+  169,
+  170,
+  178,
+  179,
+  180,
+  181,
+  182,
+  183,
+  184,
+  185,
+  186,
+  194,
+  195,
+  196,
+  197,
+  198,
+  199,
+  200,
+  201,
+  202,
+  210,
+  211,
+  212,
+  213,
+  214,
+  215,
+  216,
+  217,
+  218,
+  225,
+  226,
+  227,
+  228,
+  229,
+  230,
+  231,
+  232,
+  233,
+  234,
+  241,
+  242,
+  243,
+  244,
+  245,
+  246,
+  247,
+  248,
+  249,
+  250
+];
+var CHROMA_AC_BITS = [0, 2, 1, 2, 4, 4, 3, 4, 7, 5, 4, 4, 0, 1, 2, 119];
+var CHROMA_AC_VALS = [
+  0,
+  1,
+  2,
+  3,
+  17,
+  4,
+  5,
+  33,
+  49,
+  6,
+  18,
+  65,
+  81,
+  7,
+  97,
+  113,
+  19,
+  34,
+  50,
+  129,
+  8,
+  20,
+  66,
+  145,
+  161,
+  177,
+  193,
+  9,
+  35,
+  51,
+  82,
+  240,
+  21,
+  98,
+  114,
+  209,
+  10,
+  22,
+  36,
+  52,
+  225,
+  37,
+  241,
+  23,
+  24,
+  25,
+  26,
+  38,
+  39,
+  40,
+  41,
+  42,
+  53,
+  54,
+  55,
+  56,
+  57,
+  58,
+  67,
+  68,
+  69,
+  70,
+  71,
+  72,
+  73,
+  74,
+  83,
+  84,
+  85,
+  86,
+  87,
+  88,
+  89,
+  90,
+  99,
+  100,
+  101,
+  102,
+  103,
+  104,
+  105,
+  106,
+  115,
+  116,
+  117,
+  118,
+  119,
+  120,
+  121,
+  122,
+  130,
+  131,
+  132,
+  133,
+  134,
+  135,
+  136,
+  137,
+  138,
+  146,
+  147,
+  148,
+  149,
+  150,
+  151,
+  152,
+  153,
+  154,
+  162,
+  163,
+  164,
+  165,
+  166,
+  167,
+  168,
+  169,
+  170,
+  178,
+  179,
+  180,
+  181,
+  182,
+  183,
+  184,
+  185,
+  186,
+  194,
+  195,
+  196,
+  197,
+  198,
+  199,
+  200,
+  201,
+  202,
+  210,
+  211,
+  212,
+  213,
+  214,
+  215,
+  216,
+  217,
+  218,
+  226,
+  227,
+  228,
+  229,
+  230,
+  231,
+  232,
+  233,
+  234,
+  242,
+  243,
+  244,
+  245,
+  246,
+  247,
+  248,
+  249,
+  250
+];
+function huffmanTable(bits, vals) {
+  const codes = new Int32Array(256);
+  const lengths = new Uint8Array(256);
+  let code = 0;
+  let k = 0;
+  for (let len = 1; len <= 16; len++) {
+    for (let i = 0; i < bits[len - 1]; i++) {
+      codes[vals[k]] = code++;
+      lengths[vals[k++]] = len;
+    }
+    code <<= 1;
+  }
+  return [codes, lengths];
+}
+function scaledQuant(base, quality) {
+  const q = Math.min(100, Math.max(1, Math.trunc(quality)));
+  const scale = q < 50 ? Math.floor(5e3 / q) : 200 - q * 2;
+  return Float64Array.from(
+    base,
+    (v) => Math.min(255, Math.max(1, Math.floor((v * scale + 50) / 100)))
+  );
+}
+var DCT_BASIS = Float64Array.from({ length: 64 }, (_, i) => {
+  const u = i >> 3;
+  const x = i & 7;
+  return 0.5 * (u === 0 ? Math.SQRT1_2 : 1) * Math.cos((2 * x + 1) * u * Math.PI / 16);
+});
+function encodeJpegPixels(pixels, width, height, channels, quality = null) {
+  if (!(channels >= 1 && channels <= 4 && Number.isInteger(channels))) {
+    throw new Error(
+      `Cannot JPEG-encode a frame with ${channels} channels (expected 1-4).`
+    );
+  }
+  if (!(width >= 1 && height >= 1 && width <= 65535 && height <= 65535)) {
+    throw new Error(`Cannot JPEG-encode a ${width}x${height} frame.`);
+  }
+  if (pixels.length !== width * height * channels) {
+    throw new Error(
+      `Cannot JPEG-encode a ${width}x${height} frame with ${channels} channel(s): expected ${width * height * channels} bytes, got ${pixels.length}.`
+    );
+  }
+  const q = quality ?? DEFAULT_JPEG_QUALITY;
+  const colour = channels >= 3;
+  const quants = colour ? [scaledQuant(LUMA_QUANT, q), scaledQuant(CHROMA_QUANT, q)] : [scaledQuant(LUMA_QUANT, q)];
+  const dcTables = [huffmanTable(LUMA_DC_BITS, DC_VALS)];
+  const acTables = [huffmanTable(LUMA_AC_BITS, LUMA_AC_VALS)];
+  if (colour) {
+    dcTables.push(huffmanTable(CHROMA_DC_BITS, DC_VALS));
+    acTables.push(huffmanTable(CHROMA_AC_BITS, CHROMA_AC_VALS));
+  }
+  const mcu = colour ? 16 : 8;
+  const pw = Math.ceil(width / mcu) * mcu;
+  const ph = Math.ceil(height / mcu) * mcu;
+  const lum = new Float64Array(pw * ph);
+  const cw = pw >> 1;
+  const cb = colour ? new Float64Array(cw * (ph >> 1)) : null;
+  const cr = colour ? new Float64Array(cw * (ph >> 1)) : null;
+  for (let y = 0; y < ph; y++) {
+    const row = Math.min(y, height - 1) * width;
+    for (let x = 0; x < pw; x++) {
+      const i = (row + Math.min(x, width - 1)) * channels;
+      if (!colour) {
+        lum[y * pw + x] = pixels[i] - 128;
+        continue;
+      }
+      const r = pixels[i];
+      const g = pixels[i + 1];
+      const b = pixels[i + 2];
+      lum[y * pw + x] = 0.299 * r + 0.587 * g + 0.114 * b - 128;
+      const c = (y >> 1) * cw + (x >> 1);
+      cb[c] += 0.25 * (-0.168736 * r - 0.331264 * g + 0.5 * b);
+      cr[c] += 0.25 * (0.5 * r - 0.418688 * g - 0.081312 * b);
+    }
+  }
+  let out = new Uint8Array(1024 + (width * height * channels >> 2));
+  let pos = 0;
+  const byte = (b) => {
+    if (pos === out.length) {
+      const grown = new Uint8Array(out.length * 2);
+      grown.set(out);
+      out = grown;
+    }
+    out[pos++] = b;
+  };
+  const segment = (marker, payload) => {
+    byte(255);
+    byte(marker);
+    byte(payload.length + 2 >> 8);
+    byte(payload.length + 2 & 255);
+    for (const b of payload) byte(b);
+  };
+  byte(255);
+  byte(216);
+  segment(224, [74, 70, 73, 70, 0, 1, 1, 0, 0, 1, 0, 1, 0, 0]);
+  const dqt = [];
+  quants.forEach((table, t) => {
+    dqt.push(t);
+    for (const n of ZIGZAG) dqt.push(table[n]);
+  });
+  segment(219, dqt);
+  const sof = [8, height >> 8, height & 255, width >> 8, width & 255];
+  sof.push(colour ? 3 : 1, 1, colour ? 34 : 17, 0);
+  if (colour) sof.push(2, 17, 1, 3, 17, 1);
+  segment(192, sof);
+  const dht = [0, ...LUMA_DC_BITS, ...DC_VALS];
+  dht.push(16, ...LUMA_AC_BITS, ...LUMA_AC_VALS);
+  if (colour) {
+    dht.push(1, ...CHROMA_DC_BITS, ...DC_VALS);
+    dht.push(17, ...CHROMA_AC_BITS, ...CHROMA_AC_VALS);
+  }
+  segment(196, dht);
+  segment(
+    218,
+    colour ? [3, 1, 0, 2, 17, 3, 17, 0, 63, 0] : [1, 1, 0, 0, 63, 0]
+  );
+  let acc = 0;
+  let nbits = 0;
+  const put = (code, len) => {
+    acc = acc << len | code;
+    nbits += len;
+    while (nbits >= 8) {
+      const b = acc >> nbits - 8 & 255;
+      byte(b);
+      if (b === 255) byte(0);
+      nbits -= 8;
+    }
+    acc &= (1 << nbits) - 1;
+  };
+  const block = new Float64Array(64);
+  const tmp = new Float64Array(64);
+  const coef = new Int32Array(64);
+  const prevDc = [0, 0, 0];
+  const encodeBlock = (plane, stride, bx, by, comp) => {
+    const t = comp === 0 ? 0 : 1;
+    const quant = quants[t];
+    const [dcCodes, dcLengths] = dcTables[t];
+    const [acCodes, acLengths] = acTables[t];
+    for (let y = 0; y < 8; y++) {
+      for (let x = 0; x < 8; x++) {
+        block[y * 8 + x] = plane[(by + y) * stride + bx + x];
+      }
+    }
+    for (let y = 0; y < 8; y++) {
+      for (let u = 0; u < 8; u++) {
+        let s = 0;
+        for (let x = 0; x < 8; x++)
+          s += DCT_BASIS[u * 8 + x] * block[y * 8 + x];
+        tmp[y * 8 + u] = s;
+      }
+    }
+    for (let u = 0; u < 8; u++) {
+      for (let v = 0; v < 8; v++) {
+        let s = 0;
+        for (let y = 0; y < 8; y++) s += DCT_BASIS[v * 8 + y] * tmp[y * 8 + u];
+        coef[v * 8 + u] = Math.round(s / quant[v * 8 + u]);
+      }
+    }
+    let value = coef[0] - prevDc[comp];
+    prevDc[comp] = coef[0];
+    let cat = 0;
+    for (let a = Math.abs(value); a > 0; a >>= 1) cat++;
+    put(dcCodes[cat], dcLengths[cat]);
+    if (cat > 0) put(value < 0 ? value + (1 << cat) - 1 : value, cat);
+    let run = 0;
+    for (let k = 1; k < 64; k++) {
+      value = coef[ZIGZAG[k]];
+      if (value === 0) {
+        run++;
+        continue;
+      }
+      while (run > 15) {
+        put(acCodes[240], acLengths[240]);
+        run -= 16;
+      }
+      cat = 0;
+      for (let a = Math.abs(value); a > 0; a >>= 1) cat++;
+      const sym = run << 4 | cat;
+      put(acCodes[sym], acLengths[sym]);
+      put(value < 0 ? value + (1 << cat) - 1 : value, cat);
+      run = 0;
+    }
+    if (run > 0) put(acCodes[0], acLengths[0]);
+  };
+  for (let my = 0; my < ph; my += mcu) {
+    for (let mx = 0; mx < pw; mx += mcu) {
+      if (!colour) {
+        encodeBlock(lum, pw, mx, my, 0);
+        continue;
+      }
+      encodeBlock(lum, pw, mx, my, 0);
+      encodeBlock(lum, pw, mx + 8, my, 0);
+      encodeBlock(lum, pw, mx, my + 8, 0);
+      encodeBlock(lum, pw, mx + 8, my + 8, 0);
+      encodeBlock(cb, cw, mx >> 1, my >> 1, 1);
+      encodeBlock(cr, cw, mx >> 1, my >> 1, 2);
+    }
+  }
+  if (nbits > 0) put((1 << 8 - nbits) - 1, 8 - nbits);
+  byte(255);
+  byte(217);
+  return out.slice(0, pos);
+}
+
+// src/codecs/slp/embed-format.ts
+var EMBED_IMAGE_FORMATS = ["png", "jpg"];
+function checkEmbedImageFormat(imageFormat, imageQuality) {
+  let format = null;
+  if (imageFormat != null) {
+    format = String(imageFormat).toLowerCase();
+    if (format === "jpeg") format = "jpg";
+    if (format === "hdf5") {
+      throw new Error(
+        'imageFormat "hdf5" (raw pixel arrays) is not supported by sleap-io.js; use "png" or "jpg".'
+      );
+    }
+    if (!EMBED_IMAGE_FORMATS.includes(format)) {
+      throw new Error(
+        `imageFormat must be "png", "jpg" ("jpeg") or undefined, got ${JSON.stringify(imageFormat)}.`
+      );
+    }
+  }
+  if (imageQuality != null) {
+    const bounds = format === "jpg" ? [0, 100] : format === "png" ? [0, 9] : null;
+    if (bounds === null) {
+      throw new Error(
+        'imageQuality needs imageFormat "jpg" (quality 0-100) or "png" (compression level 0-9).'
+      );
+    }
+    const q = Number(imageQuality);
+    if (!Number.isFinite(q) || Math.trunc(q) < bounds[0] || Math.trunc(q) > bounds[1]) {
+      throw new Error(
+        `imageQuality for imageFormat "${format}" must be in [${bounds[0]}, ${bounds[1]}], got ${imageQuality}.`
+      );
+    }
+  }
+  return format;
+}
+function embedQuality(imageQuality) {
+  return imageQuality == null ? null : Math.trunc(Number(imageQuality));
+}
+function sniffImageFormat(bytes) {
+  if (!isEncodedBytes(bytes)) return null;
+  return bytes[0] === 255 ? "jpg" : "png";
+}
+function forcesGray(backend) {
+  return backend instanceof GrayscaleVideoBackend && backend.grayscale === true;
+}
+async function imageFileBytes(backend, frameIdx, encoding) {
+  if (!backend) return null;
+  const inner = backend instanceof GrayscaleVideoBackend ? backend.inner : backend;
+  if (!(inner instanceof ImageVideoBackend)) return null;
+  const name = inner.filename[frameIdx];
+  if (typeof name !== "string") return null;
+  const ext = name.toLowerCase().split(/[?#]/)[0].split(".").pop() ?? "";
+  const fileFormat = ext === "jpeg" ? "jpg" : ext;
+  if (fileFormat !== encoding.format) return null;
+  const bytes = await inner.getEncodedBytes(frameIdx);
+  if (!bytes || bytes.length === 0) return null;
+  if (sniffImageFormat(bytes) !== encoding.format) return null;
+  if ((encoding.gray || forcesGray(backend)) && encodedChannelCount(bytes) !== 1) {
+    return null;
+  }
+  return bytes;
+}
+function verbatimEncodedBytes(bytes, channelOrder, encoding) {
+  if (sniffImageFormat(bytes) !== encoding.format) return null;
+  if (needsRedBlueSwap(bytes, channelOrder)) return null;
+  if (encoding.gray && encodedChannelCount(bytes) !== 1) return null;
+  return bytes;
+}
+function frameBytes(frame) {
+  if (frame instanceof Uint8Array) return frame;
+  if (frame instanceof ArrayBuffer) return new Uint8Array(frame);
+  if (ArrayBuffer.isView(frame)) {
+    const view = frame;
+    return new Uint8Array(view.buffer, view.byteOffset, view.byteLength);
+  }
+  return null;
+}
+function framePixels(img, { gray = false } = {}) {
+  const { width, height } = img;
+  const n = width * height;
+  const src = img.data;
+  const explicit = "channels" in img ? img.channels : void 0;
+  const channels = explicit ?? (src.length === n * 4 ? 4 : src.length / n);
+  const rgba = explicit === void 0 && channels === 4;
+  const outCh = gray ? 1 : rgba ? 3 : channels;
+  if (outCh === channels) {
+    return {
+      data: src instanceof Uint8Array ? src : new Uint8Array(src.buffer, src.byteOffset, src.byteLength),
+      width,
+      height,
+      channels
+    };
+  }
+  const out = new Uint8Array(n * outCh);
+  for (let p = 0, i = 0, o = 0; p < n; p++, i += channels, o += outCh) {
+    for (let c = 0; c < outCh; c++) out[o + c] = src[i + c];
+  }
+  return { data: out, width, height, channels: outCh };
+}
+async function encodePixels(px, format, quality) {
+  if (format === "jpg") {
+    return encodeJpegPixels(px.data, px.width, px.height, px.channels, quality);
+  }
+  return encodePngPixels(px.data, px.width, px.height, px.channels, quality);
+}
+async function encodeFrameAs(frame, encoding, {
+  channelOrder,
+  rawShape
+} = {}) {
+  const bytes = frameBytes(frame);
+  if (bytes && isEncodedBytes(bytes)) {
+    const verbatim = verbatimEncodedBytes(bytes, channelOrder, encoding);
+    if (verbatim) return verbatim;
+    return encodePixels(
+      framePixels(await decodeEncoded(bytes, channelOrder), {
+        gray: encoding.gray
+      }),
+      encoding.format,
+      encoding.quality
+    );
+  }
+  const readable = await toReadableFrame(frame, rawShape, channelOrder);
+  return encodePixels(
+    framePixels(readable, { gray: encoding.gray }),
+    encoding.format,
+    encoding.quality
+  );
+}
+
 // src/codecs/slp/write.ts
 import { deflate as deflate2 } from "pako";
 
@@ -20642,17 +21804,25 @@ async function saveSlpStructureToBytes(labels, options) {
 }
 async function writeSlpBytes(labels, options, { includeEmbeddedData }) {
   refuseViewOnly(labels);
+  const imageFormat = checkEmbedImageFormat(
+    options?.imageFormat,
+    options?.imageQuality
+  );
   const layout = resolveSlpVersion(
     labels,
     checkSlpVersion(options?.slpVersion)
   );
   const bytes = await writeSlpBytesIn(labels, options, layout, {
-    includeEmbeddedData
+    includeEmbeddedData,
+    imageFormat
   });
   labels._slpLayout = layout;
   return bytes;
 }
-async function writeSlpBytesIn(labels, options, layout, { includeEmbeddedData }) {
+async function writeSlpBytesIn(labels, options, layout, {
+  includeEmbeddedData,
+  imageFormat
+}) {
   const embedMode = options?.embed ?? false;
   const hasEmbeddedToPreserve = embedMode !== "source" && labels.videos.some(isRawCopyable);
   const doEmbed = embedMode !== false && embedMode !== "source" || hasEmbeddedToPreserve;
@@ -20773,7 +21943,11 @@ async function writeSlpBytesIn(labels, options, layout, { includeEmbeddedData })
     embedMode,
     options?.onProgress,
     options?.embedAllVideos ?? true,
-    { readFrames: includeEmbeddedData }
+    {
+      readFrames: includeEmbeddedData,
+      imageFormat,
+      imageQuality: embedQuality(options?.imageQuality)
+    }
   ) : null;
   const fs = getH5FileSystem(module);
   const file = new module.File(memPath, "w");
@@ -22731,8 +23905,17 @@ function writeMetadataJsonInPlace(file, metadataJson) {
     }
   }
 }
-async function planEmbedding(labels, embedMode, onProgress, embedAllVideos = true, { readFrames = true } = {}) {
+async function planEmbedding(labels, embedMode, onProgress, embedAllVideos = true, {
+  readFrames = true,
+  imageFormat = null,
+  imageQuality = null
+} = {}) {
   const plan = /* @__PURE__ */ new Map();
+  const encodingFor = (video) => imageFormat ? {
+    format: imageFormat,
+    quality: imageQuality,
+    gray: embeddedVideoAttrs(video)?.channels === 1
+  } : void 0;
   const isRealMode = embedMode !== false && embedMode !== "source";
   if (Array.isArray(embedMode)) {
     for (const [video] of embedMode) {
@@ -22746,14 +23929,39 @@ async function planEmbedding(labels, embedMode, onProgress, embedAllVideos = tru
   const toEncode = labels.videos.map(
     (video, vi) => isRealMode && video.backend && !isRawCopyable(video) ? selectEmbedFrames(labels, vi, embedMode) : []
   );
+  const toConvert = /* @__PURE__ */ new Map();
+  if (imageFormat) {
+    for (let vi = 0; vi < labels.videos.length; vi++) {
+      const video = labels.videos[vi];
+      if (!isRawCopyable(video)) continue;
+      await video.backend.ensureLoaded?.();
+      if (needsConversion(video, encodingFor(video))) {
+        toConvert.set(vi, video.embeddedFrameIndices ?? []);
+      }
+    }
+  }
   const progress = {
     done: 0,
-    total: toEncode.reduce((n, frames) => n + frames.length, 0),
+    total: toEncode.reduce((n, frames) => n + frames.length, 0) + (readFrames ? [...toConvert.values()].reduce((n, f) => n + f.length, 0) : 0),
     report: onProgress
   };
   for (let vi = 0; vi < labels.videos.length; vi++) {
     const video = labels.videos[vi];
-    if (isRawCopyable(video)) {
+    const converted = toConvert.get(vi);
+    if (converted) {
+      if (converted.length === 0) continue;
+      const encoding = encodingFor(video);
+      plan.set(vi, {
+        kind: "encode",
+        videoIndex: vi,
+        video,
+        frameNumbers: converted,
+        format: encoding.format,
+        channelOrder: "RGB",
+        encoding,
+        frameData: readFrames ? await convertEmbeddedFrames(video, converted, encoding, progress) : void 0
+      });
+    } else if (isRawCopyable(video)) {
       await video.backend.ensureLoaded?.();
       const frameNumbers = video.embeddedFrameIndices ?? [];
       if (frameNumbers.length === 0) continue;
@@ -22776,14 +23984,17 @@ async function planEmbedding(labels, embedMode, onProgress, embedAllVideos = tru
         videoIndex: vi,
         video,
         frameNumbers,
-        format: "png",
-        channelOrder: "RGB"
+        format: imageFormat ?? "png",
+        channelOrder: "RGB",
+        encoding: encodingFor(video)
       });
     } else if (isRealMode && video.backend) {
+      const encoding = encodingFor(video);
       const { frameData, encodedFormat } = await collectEncodedFrames(
         video,
         toEncode[vi],
-        progress
+        progress,
+        encoding
       );
       if (frameData.size === 0) continue;
       const frameNumbers = [...frameData.keys()].sort((a, b) => a - b);
@@ -22792,8 +24003,9 @@ async function planEmbedding(labels, embedMode, onProgress, embedAllVideos = tru
         videoIndex: vi,
         video,
         frameNumbers,
-        format: encodedFormat ?? video.backendMetadata?.format ?? "png",
+        format: encoding?.format ?? encodedFormat ?? video.backendMetadata?.format ?? "png",
         channelOrder: "RGB",
+        encoding,
         frameData
       });
     }
@@ -22807,8 +24019,9 @@ async function planEmbedding(labels, embedMode, onProgress, embedAllVideos = tru
         videoIndex: vi,
         video,
         frameNumbers: [],
-        format: "png",
+        format: imageFormat ?? "png",
         channelOrder: "RGB",
+        encoding: encodingFor(video),
         frameData: /* @__PURE__ */ new Map()
       });
     });
@@ -22816,12 +24029,20 @@ async function planEmbedding(labels, embedMode, onProgress, embedAllVideos = tru
   return plan;
 }
 async function buildSerializableEmbedPlan(labels, embedMode, sourcePath, options = {}) {
+  const imageFormat = checkEmbedImageFormat(
+    options.imageFormat,
+    options.imageQuality
+  );
   const plan = await planEmbedding(
     labels,
     embedMode,
     void 0,
     options.allowEncode ? options.embedAllVideos ?? true : false,
-    { readFrames: false }
+    {
+      readFrames: false,
+      imageFormat,
+      imageQuality: embedQuality(options.imageQuality)
+    }
   );
   const entries = [];
   const encodeEntries = [];
@@ -22832,6 +24053,8 @@ async function buildSerializableEmbedPlan(labels, embedMode, sourcePath, options
         videoIndex: entry.videoIndex,
         frameNumbers: [...entry.frameNumbers],
         format: entry.format,
+        // Only with a chosen format, so a plan without one is as before.
+        ...entry.encoding ? { formatChosen: true, quality: entry.encoding.quality } : {},
         channelOrder: entry.channelOrder,
         sourceVideoJson: sourceVideoDict(video),
         videoAttrs: embeddedVideoAttrs(video)
@@ -22840,7 +24063,7 @@ async function buildSerializableEmbedPlan(labels, embedMode, sourcePath, options
     }
     if (entry.kind !== "raw") {
       throw new Error(
-        `buildSerializableEmbedPlan: video${entry.videoIndex} would use the new-embed ("encode") path, which the streaming writer's worker half does not support - this path is re-save/raw-copy of an already-embedded pkg.slp ONLY (new-embed of a continuous video is a deferred follow-up).`
+        entry.video.hasEmbeddedImages ? `buildSerializableEmbedPlan: converting embedded video${entry.videoIndex} to imageFormat "${entry.format}" uses the "encode" path; pass allowEncode and write its encodeEntries with appendEncodedVideos.` : `buildSerializableEmbedPlan: video${entry.videoIndex} would use the new-embed ("encode") path; pass allowEncode and write its encodeEntries with appendEncodedVideos (without it, the plan is raw-copy only, for already-embedded videos).`
       );
     }
     const sourceDataset = entry.video.backend?.dataset ?? entry.video.backendMetadata.dataset;
@@ -22894,15 +24117,55 @@ function selectEmbedFrames(labels, videoIndex, embedMode) {
   return Array.from(frameIndices).sort((a, b) => a - b);
 }
 var EMBED_READ_ATTEMPTS = 3;
-async function collectEncodedFrames(video, sortedFrames, progress) {
+function storedChannels(video) {
+  let backend = video.backend;
+  while (backend instanceof GrayscaleVideoBackend || backend instanceof CropVideoBackend) {
+    backend = backend.inner;
+  }
+  return backend?.shape?.[3];
+}
+function needsConversion(video, encoding) {
+  const stored = (video.backend?.embeddedFormat ?? "png").toLowerCase();
+  if ((stored === "jpeg" ? "jpg" : stored) !== encoding.format) return true;
+  const channels = storedChannels(video);
+  return encoding.gray && channels != null && channels !== 1;
+}
+async function convertEmbeddedFrames(video, frameNumbers, encoding, progress) {
+  const frameData = /* @__PURE__ */ new Map();
+  for (const fn of frameNumbers) {
+    const blob = await video.getFrameBuffer(fn);
+    if (!blob || blob.length === 0) {
+      throw new Error(
+        `Couldn't read the stored image of frame ${fn} of "${Array.isArray(video.filename) ? video.filename[0] : video.filename}" to convert it. The package was not written.`
+      );
+    }
+    frameData.set(
+      fn,
+      await encodeFrameAs(blob, encoding, {
+        channelOrder: video.backend?.embeddedChannelOrder,
+        rawShape: video.backend?.shape
+      })
+    );
+    progress.done += 1;
+    reportProgress(
+      progress.report,
+      progress.done,
+      progress.total,
+      "Embedding frames"
+    );
+  }
+  return frameData;
+}
+async function collectEncodedFrames(video, sortedFrames, progress, encoding) {
   const frameData = /* @__PURE__ */ new Map();
   if (!video?.backend) return { frameData, encodedFormat: null };
   let encodedToPng = false;
   const frameCount = video.shape?.[0];
   const unreadable = [];
   for (const frameIdx of sortedFrames) {
+    const fileBytes = encoding ? await imageFileBytes(video.backend, frameIdx, encoding) : null;
     let frame = null;
-    for (let attempt = 0; attempt < EMBED_READ_ATTEMPTS && !frame; attempt++) {
+    for (let attempt = 0; attempt < EMBED_READ_ATTEMPTS && !frame && !fileBytes; attempt++) {
       frame = await video.getFrame(frameIdx, { pinned: true, prefetch: false });
     }
     progress.done += 1;
@@ -22912,9 +24175,23 @@ async function collectEncodedFrames(video, sortedFrames, progress) {
       progress.total,
       "Embedding frames"
     );
+    if (fileBytes) {
+      frameData.set(frameIdx, fileBytes);
+      continue;
+    }
     if (!frame) {
       if (frameCount == null || frameIdx < frameCount)
         unreadable.push(frameIdx);
+      continue;
+    }
+    if (encoding) {
+      frameData.set(
+        frameIdx,
+        await encodeFrameAs(frame, encoding, {
+          channelOrder: video.backend.embeddedChannelOrder,
+          rawShape: video.backend.shape
+        })
+      );
       continue;
     }
     let bytes = frameToBytes(frame);
@@ -25872,7 +27149,7 @@ async function frameSource(backend, firstFrame) {
 function isPng(bytes) {
   return bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71;
 }
-async function toEncodeFramePayload(frame, rawShape, channelOrder) {
+async function toEncodeFramePayload(frame, rawShape, channelOrder, encoding) {
   if (isImageBitmapLike(frame)) {
     return {
       kind: "bitmap",
@@ -25891,6 +27168,19 @@ async function toEncodeFramePayload(frame, rawShape, channelOrder) {
     };
   }
   const bytes = frame instanceof ArrayBuffer ? new Uint8Array(frame) : frame;
+  if (isEncodedBytes(bytes) && encoding) {
+    const verbatim = verbatimEncodedBytes(bytes, channelOrder, encoding);
+    if (verbatim) return { kind: encoding.format, bytes: verbatim.slice() };
+    const px = framePixels(await decodeEncoded(bytes, channelOrder));
+    return {
+      kind: "pixels",
+      data: px.data,
+      width: px.width,
+      height: px.height,
+      channels: px.channels,
+      rgba: false
+    };
+  }
   if (isEncodedBytes(bytes)) {
     const swap = needsRedBlueSwap(bytes, channelOrder);
     if (isPng(bytes) && !swap) return { kind: "png", bytes: bytes.slice() };
@@ -25918,6 +27208,18 @@ async function toEncodeFramePayload(frame, rawShape, channelOrder) {
     channels,
     rgba: false
   };
+}
+function isStoredEmbedded(video) {
+  return !!(video?.hasEmbeddedImages && video.backend?.getFrameBuffer);
+}
+async function storedImage(video, frameIdx) {
+  const bytes = await video.getFrameBuffer(frameIdx);
+  if (!bytes || bytes.length === 0) {
+    throw new Error(
+      `Couldn't read the stored image of frame ${frameIdx} of "${videoName(video)}" to convert it. The package was not written.`
+    );
+  }
+  return bytes;
 }
 async function readFrame(video, source, frameIdx) {
   let frame = null;
@@ -25958,6 +27260,12 @@ async function appendEncodedVideos(sink, labels, entries, options = {}) {
         entry.frameNumbers[0]
       ));
     }
+    const encoding = entry.formatChosen ? {
+      format: entry.format,
+      quality: entry.quality ?? null,
+      gray: collapseToGray || entry.videoAttrs?.channels === 1
+    } : null;
+    if (encoding) collapseToGray = encoding.gray;
     await sink.beginEncodedVideo(entry, collapseToGray);
     const inFlight = [];
     const settleOne = async () => {
@@ -25967,8 +27275,10 @@ async function appendEncodedVideos(sink, labels, entries, options = {}) {
         throw new ExportCancelled();
       }
     };
+    const stored = !!encoding && !external && isStoredEmbedded(video);
     for (const frameIdx of entry.frameNumbers) {
-      const frame = external ? await external.read(frameIdx) : await readFrame(video, source, frameIdx);
+      const fileBytes = !encoding || external ? null : stored ? await storedImage(video, frameIdx) : await imageFileBytes(video.backend, frameIdx, encoding);
+      const frame = fileBytes ?? (external ? await external.read(frameIdx) : await readFrame(video, source, frameIdx));
       if (!frame) {
         throw new Error(
           `Couldn't read frame ${frameIdx} from "${video ? videoName(video) : `video ${entry.videoIndex}`}" to embed. The package was not written.`
@@ -25979,7 +27289,8 @@ async function appendEncodedVideos(sink, labels, entries, options = {}) {
         await toEncodeFramePayload(
           frame,
           source?.shape,
-          source?.embeddedChannelOrder
+          source?.embeddedChannelOrder,
+          encoding ?? void 0
         )
       );
       pending.catch(() => {
@@ -28732,6 +30043,10 @@ async function saveSlp(labels, filename, options) {
   await writeSlp(filename, labels, {
     embed: options?.embed ?? false,
     restoreOriginalVideos: options?.restoreOriginalVideos ?? true,
+    embedAllVideos: options?.embedAllVideos,
+    onProgress: options?.onProgress,
+    imageFormat: options?.imageFormat,
+    imageQuality: options?.imageQuality,
     unlabeledAs: options?.unlabeledAs,
     slpVersion: options?.slpVersion
   });
@@ -28791,6 +30106,7 @@ async function loadSlpSet(sources, options) {
   return set;
 }
 async function saveSlpSet(labelsSet, options) {
+  checkEmbedImageFormat(options?.imageFormat, options?.imageQuality);
   const version = checkSlpVersion(options?.slpVersion);
   const all = [...labelsSet].map(([, labels]) => labels);
   for (const labels of all) refuseViewOnlyLabels(labels);
@@ -31110,6 +32426,8 @@ export {
   V3_DEFAULTS_ENV,
   setV3Defaults,
   getV3Defaults,
+  EMBED_IMAGE_FORMATS,
+  checkEmbedImageFormat,
   _registerFileWriter,
   ExportCancelled,
   resolveSlpVersion,

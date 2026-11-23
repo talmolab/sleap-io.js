@@ -864,6 +864,9 @@
 <li><code>options.embedAllVideos</code> (default <code>true</code>, as Python's <code>embed_all_videos</code>): when embedding, a video with no frames to embed becomes an empty embedded video referencing the package (keeping its shape and source video), so the package is portable. <code>false</code> leaves such videos as external references.</li>
 <li><code>options.onProgress(current, total, message)</code>: called as frames are read (<code>"Embedding frames"</code>) and written (<code>"Writing frames"</code>). Return <code>false</code> to cancel: the save throws <code>ExportCancelled</code>.</li>
 <li><code>options.restoreOriginalVideos</code> (default <code>true</code>): keep original video paths.</li>
+<li><code>options.imageFormat</code>: the image format embedded frames are stored in, as Python's <code>image_format</code>: <code>"png"</code> (lossless) or <code>"jpg"</code> (lossy, smaller); <code>"jpeg"</code> is stored as <code>"jpg"</code>. With it, frames already encoded in that format are stored verbatim and the rest are decoded and encoded in it, including the images of already-embedded videos stored in another format (a PNG package becomes a JPEG one); a grayscale video stores one-channel images. Omitted (default): new frames are stored as PNG and already-embedded images are copied as they are. See "Image format" in the usage guide.</li>
+<li><code>options.imageQuality</code>: JPEG quality (0-100, default 95) with <code>"jpg"</code>, or PNG compression level (0-9) with <code>"png"</code>, as Python's <code>image_quality</code>. Needs an explicit <code>imageFormat</code>. Frames stored verbatim keep their bytes.</li>
+<li>Invalid <code>imageFormat</code> / <code>imageQuality</code> throw before anything is written.</li>
 </ul>
 <h3 id="saveslptobyteslabels-options"><code>saveSlpToBytes(labels, options)</code><a class="headerlink" href="#saveslptobyteslabels-options" title="Permanent link">&para;</a></h3>
 <p>Serialize Labels to SLP format and return the bytes. Works in both Node.js and browser environments.</p>
@@ -871,7 +874,7 @@
 </code></pre></div>
 <ul>
 <li><code>labels</code>: <code>Labels</code> object to serialize.</li>
-<li><code>options</code>: the same <code>embed</code>, <code>embedAllVideos</code>, <code>onProgress</code> and <code>restoreOriginalVideos</code> options as <code>saveSlp</code>.</li>
+<li><code>options</code>: the same <code>embed</code>, <code>embedAllVideos</code>, <code>onProgress</code>, <code>restoreOriginalVideos</code>, <code>imageFormat</code> and <code>imageQuality</code> options as <code>saveSlp</code>.</li>
 <li>Returns <code>Promise&lt;Uint8Array&gt;</code>.</li>
 </ul>
 <h3 id="loadvideosource-options"><code>loadVideo(source, options)</code><a class="headerlink" href="#loadvideosource-options" title="Permanent link">&para;</a></h3>
@@ -960,7 +963,7 @@ re-encoded). See <a href="../cropping/">Virtual Cropping</a> for the full guide.
 <li>Selected automatically by <code>loadVideo()</code> for HDF5 inputs.</li>
 <li>Decodes embedded PNG/JPEG frames in browsers; raw frames require <code>shape</code> + <code>channelOrder</code>.</li>
 <li>Color PNG/JPEG frames stored with BGR channel order (<code>channel_order</code> attribute; files below format 1.4 default to BGR) are returned as RGB in browsers. Outside a browser <code>getFrame()</code> returns the stored bytes, in the order given by <code>backend.embeddedChannelOrder</code>; the crop wrapper, and the grayscale wrapper when it collapses channels, decode them to RGB (with the optional <code>skia-canvas</code> package on Node). As in Python sleap-io, the order applies only to 3-channel PNG/JPEG images: raw pixel frames and images with alpha are returned as stored outside a browser.</li>
-<li>Saving a new embed from a BGR source re-encodes its color frames as RGB PNGs (which needs <code>skia-canvas</code> on Node).</li>
+<li>Saving a new embed from a BGR source re-encodes its color frames as RGB PNGs, or in <code>imageFormat</code> when one is given (decoding them needs <code>skia-canvas</code> on Node).</li>
 </ul>
 <h3 id="mediavideobackend"><code>MediaVideoBackend</code><a class="headerlink" href="#mediavideobackend" title="Permanent link">&para;</a></h3>
 <p>Browser fallback when WebCodecs/mp4box is unavailable.</p>

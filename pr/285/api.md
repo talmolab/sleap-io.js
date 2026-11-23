@@ -106,6 +106,9 @@ await saveSlp(labels, "/tmp/roundtrip.slp", {
 - `options.embedAllVideos` (default `true`, as Python's `embed_all_videos`): when embedding, a video with no frames to embed becomes an empty embedded video referencing the package (keeping its shape and source video), so the package is portable. `false` leaves such videos as external references.
 - `options.onProgress(current, total, message)`: called as frames are read (`"Embedding frames"`) and written (`"Writing frames"`). Return `false` to cancel: the save throws `ExportCancelled`.
 - `options.restoreOriginalVideos` (default `true`): keep original video paths.
+- `options.imageFormat`: the image format embedded frames are stored in, as Python's `image_format`: `"png"` (lossless) or `"jpg"` (lossy, smaller); `"jpeg"` is stored as `"jpg"`. With it, frames already encoded in that format are stored verbatim and the rest are decoded and encoded in it, including the images of already-embedded videos stored in another format (a PNG package becomes a JPEG one); a grayscale video stores one-channel images. Omitted (default): new frames are stored as PNG and already-embedded images are copied as they are. See "Image format" in the usage guide.
+- `options.imageQuality`: JPEG quality (0-100, default 95) with `"jpg"`, or PNG compression level (0-9) with `"png"`, as Python's `image_quality`. Needs an explicit `imageFormat`. Frames stored verbatim keep their bytes.
+- Invalid `imageFormat` / `imageQuality` throw before anything is written.
 
 ### `saveSlpToBytes(labels, options)`
 Serialize Labels to SLP format and return the bytes. Works in both Node.js and browser environments.
@@ -115,7 +118,7 @@ const bytes: Uint8Array = await saveSlpToBytes(labels, { embed: false });
 ```
 
 - `labels`: `Labels` object to serialize.
-- `options`: the same `embed`, `embedAllVideos`, `onProgress` and `restoreOriginalVideos` options as `saveSlp`.
+- `options`: the same `embed`, `embedAllVideos`, `onProgress`, `restoreOriginalVideos`, `imageFormat` and `imageQuality` options as `saveSlp`.
 - Returns `Promise<Uint8Array>`.
 
 ### `loadVideo(source, options)`
@@ -217,7 +220,7 @@ Used for `.slp`, `.h5`, or `.hdf5` sources (embedded frames).
 - Selected automatically by `loadVideo()` for HDF5 inputs.
 - Decodes embedded PNG/JPEG frames in browsers; raw frames require `shape` + `channelOrder`.
 - Color PNG/JPEG frames stored with BGR channel order (`channel_order` attribute; files below format 1.4 default to BGR) are returned as RGB in browsers. Outside a browser `getFrame()` returns the stored bytes, in the order given by `backend.embeddedChannelOrder`; the crop wrapper, and the grayscale wrapper when it collapses channels, decode them to RGB (with the optional `skia-canvas` package on Node). As in Python sleap-io, the order applies only to 3-channel PNG/JPEG images: raw pixel frames and images with alpha are returned as stored outside a browser.
-- Saving a new embed from a BGR source re-encodes its color frames as RGB PNGs (which needs `skia-canvas` on Node).
+- Saving a new embed from a BGR source re-encodes its color frames as RGB PNGs, or in `imageFormat` when one is given (decoding them needs `skia-canvas` on Node).
 
 ### `MediaVideoBackend`
 Browser fallback when WebCodecs/mp4box is unavailable.

@@ -11,6 +11,7 @@ import {
   ConflictResolution,
   CropVideoBackend,
   DUPLICATE_MATCHER,
+  EMBED_IMAGE_FORMATS,
   EXISTS_TTL_MS,
   Embedding,
   ErrorMode,
@@ -101,6 +102,7 @@ import {
   buildSuggestionsJson,
   buildTracksJson,
   buildVideoSignatures,
+  checkEmbedImageFormat,
   checkInPlaceWritable,
   clampAlpha,
   collectTracks,
@@ -250,7 +252,7 @@ import {
   writeGeoJSON,
   writeLabelTablesInPlace,
   writeSkeletonJson
-} from "./chunk-IBI6LIIM.js";
+} from "./chunk-MT55UBUE.js";
 import {
   Camera,
   CameraGroup,
@@ -337,6 +339,7 @@ export {
   CropVideoBackend,
   DEFAULT_MAX_BYTES,
   DUPLICATE_MATCHER,
+  EMBED_IMAGE_FORMATS,
   EXISTS_TTL_MS,
   Edge,
   Embedding,
@@ -456,6 +459,7 @@ export {
   buildTracksJson,
   buildVideoSignatures,
   checkDownloadHost,
+  checkEmbedImageFormat,
   checkInPlaceWritable,
   clampAlpha,
   clonePoint,
