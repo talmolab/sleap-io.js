@@ -20,9 +20,13 @@ import { writeFileSync, unlinkSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { SLEAP_IO_REQUIREMENT } from "./sleap-io-requirement.js";
+import {
+  logSleapIoVersion,
+  UV_SLEAP_IO_PYTHON,
+} from "./sleap-io-requirement.js";
 
-// These tests shell out to Python via `uv run --with sleap-io`. On a cold uv
+// These tests shell out to Python via `uv run --with "$SLEAP_IO_REQUIREMENT"`
+// (`sleap-io` when unset), and log the sleap-io version once. On a cold uv
 // cache (e.g. fresh CI) the first invocation downloads sleap-io and its deps
 // (numpy/pandas/h5py), which easily exceeds bun's 5s default per-test timeout.
 // Give them generous headroom; warm runs still finish in well under a second.
@@ -35,25 +39,16 @@ function tmpSlp(): string {
   );
 }
 
-// Centroid annotations landed in sleap-io after the current PyPI release
-// (0.6.x has no `sleap_io.model.centroid`); they ship in sleap-io main / the
-// version sleap-nn bundles. Probe once so the Python-direction centroid tests
-// SKIP (rather than fail) until `uv run --with sleap-io` resolves a build that
-// has them, at which point they activate automatically.
+// Centroid annotations are not in older sleap-io releases (0.6.x has no
+// `sleap_io.model.centroid`). Probe once so the Python-direction centroid tests
+// SKIP (rather than fail) when the sleap-io under test lacks them.
 let _pyHasCentroids: boolean | undefined;
 function pythonHasCentroids(): boolean {
   if (_pyHasCentroids === undefined) {
     try {
       execFileSync(
-        "uv",
-        [
-          "run",
-          "--with",
-          SLEAP_IO_REQUIREMENT,
-          "python",
-          "-c",
-          "import sleap_io.model.centroid",
-        ],
+        UV_SLEAP_IO_PYTHON.cmd,
+        [...UV_SLEAP_IO_PYTHON.args, "-c", "import sleap_io.model.centroid"],
         { timeout: 120000, stdio: "pipe" },
       );
       _pyHasCentroids = true;
@@ -319,9 +314,10 @@ assert len(skel.edges) == 2, f"Expected 2 edges, got {len(skel.edges)}"
 print("OK: Python reads metadata and skeletons from JS-written SLP")
 `;
       writeFileSync(pyPath, pyScript);
+      logSleapIoVersion("python-compat-gen", UV_SLEAP_IO_PYTHON);
       const result = execFileSync(
-        "uv",
-        ["run", "--with", SLEAP_IO_REQUIREMENT, "python", pyPath],
+        UV_SLEAP_IO_PYTHON.cmd,
+        [...UV_SLEAP_IO_PYTHON.args, pyPath],
         {
           encoding: "utf-8",
           timeout: 30000,
@@ -423,9 +419,10 @@ assert [Path(p).name for p in fn] == ["img_000.png", "img_001.png", "img_002.png
 print("OK: Python reads JS-written image sequence")
 `;
       writeFileSync(pyPath, pyScript);
+      logSleapIoVersion("python-compat-gen", UV_SLEAP_IO_PYTHON);
       const result = execFileSync(
-        "uv",
-        ["run", "--with", SLEAP_IO_REQUIREMENT, "python", pyPath],
+        UV_SLEAP_IO_PYTHON.cmd,
+        [...UV_SLEAP_IO_PYTHON.args, pyPath],
         { encoding: "utf-8", timeout: 120000 },
       );
       expect(result).toContain("OK: Python reads JS-written image sequence");
@@ -524,9 +521,10 @@ assert abs(pred[0].score - 0.77) < 1e-4, f"Bad predicted score: {pred[0].score}"
 print("OK: Python reads JS-written centroids")
 `;
       writeFileSync(pyPath, pyScript);
+      logSleapIoVersion("python-compat-gen", UV_SLEAP_IO_PYTHON);
       const result = execFileSync(
-        "uv",
-        ["run", "--with", SLEAP_IO_REQUIREMENT, "python", pyPath],
+        UV_SLEAP_IO_PYTHON.cmd,
+        [...UV_SLEAP_IO_PYTHON.args, pyPath],
         { encoding: "utf-8", timeout: 120000 },
       );
       expect(result).toContain("OK: Python reads JS-written centroids");
@@ -570,9 +568,10 @@ sio.save_slp(labels, ${JSON.stringify(slpPath)}, embed=False)
 print("OK: Python wrote centroids")
 `;
       writeFileSync(pyPath, pyScript);
+      logSleapIoVersion("python-compat-gen", UV_SLEAP_IO_PYTHON);
       const out = execFileSync(
-        "uv",
-        ["run", "--with", SLEAP_IO_REQUIREMENT, "python", pyPath],
+        UV_SLEAP_IO_PYTHON.cmd,
+        [...UV_SLEAP_IO_PYTHON.args, pyPath],
         { encoding: "utf-8", timeout: 120000 },
       );
       expect(out).toContain("OK: Python wrote centroids");

@@ -12,8 +12,9 @@
  *   - format3_bad_frame_id.slp: an instance whose `frame_id` is wrong
  *
  * Python read-backs run each interpreter listed (comma-separated) in
- * `SLEAP_IO_TEST_PYTHONS`, or `uv run --with sleap-io python` when unset, and
- * print the sleap-io version each one ran.
+ * `SLEAP_IO_TEST_PYTHONS`, or `uv run --with "$SLEAP_IO_REQUIREMENT" python`
+ * (`sleap-io` when that is unset) otherwise, and print the sleap-io version
+ * each one ran.
  */
 import {
   describe,
@@ -88,7 +89,10 @@ import { Skeleton } from "../src/model/skeleton.js";
 import { Video } from "../src/model/video.js";
 import { UserBoundingBox } from "../src/model/bbox.js";
 import { slpBytes, slpPath, streamingFile } from "./slp-format3-files";
-import { SLEAP_IO_REQUIREMENT } from "./sleap-io-requirement.js";
+import {
+  type SleapIoPython,
+  UV_SLEAP_IO_PYTHON,
+} from "./sleap-io-requirement.js";
 
 setDefaultTimeout(120_000);
 
@@ -1691,7 +1695,7 @@ describe("checkPoseTables", () => {
 });
 
 /** Python interpreters to read JS saves back with, and how to run them. */
-function pythons(): Array<{ label: string; cmd: string; args: string[] }> {
+function pythons(): SleapIoPython[] {
   const listed = process.env.SLEAP_IO_TEST_PYTHONS;
   if (listed) {
     return listed
@@ -1699,13 +1703,7 @@ function pythons(): Array<{ label: string; cmd: string; args: string[] }> {
       .filter(Boolean)
       .map((exe) => ({ label: exe, cmd: exe, args: [] }));
   }
-  return [
-    {
-      label: `uv run --with ${SLEAP_IO_REQUIREMENT}`,
-      cmd: "uv",
-      args: ["run", "--with", SLEAP_IO_REQUIREMENT, "python"],
-    },
-  ];
+  return [UV_SLEAP_IO_PYTHON];
 }
 
 /**
