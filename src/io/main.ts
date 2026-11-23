@@ -2,6 +2,7 @@ import type { Labels } from "../model/labels.js";
 import { LabelsSet } from "../model/labels-set.js";
 import { Video } from "../model/video.js";
 import { readSlp, readSlpLazy } from "../codecs/slp/read.js";
+import { SlpFormatError } from "../codecs/slp/format-check.js";
 import { SlpPointSpanError } from "../codecs/slp/point-spans.js";
 import { readSlpStreaming } from "../codecs/slp/read-streaming.js";
 import { writeSlp, saveSlpToBytes } from "../codecs/slp/write.js";
@@ -108,7 +109,8 @@ export async function loadSlp(
       } catch (e) {
         // A bad file is not a worker failure: the main-thread reader would
         // reject it the same way, so don't read it twice.
-        if (e instanceof SlpPointSpanError) throw e;
+        if (e instanceof SlpPointSpanError || e instanceof SlpFormatError)
+          throw e;
         if (streamMode === "auto") {
           // Redact: the raw error can embed ?token= / userinfo (a remote URL).
           console.warn(

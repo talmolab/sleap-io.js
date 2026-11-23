@@ -127,6 +127,13 @@ export {
   type PointSpanMismatch,
 } from "./codecs/slp/point-spans.js";
 
+// Refusal of SLP formats this version can't read (issue #278).
+export {
+  SlpFormatError,
+  SLP_FORMAT_ID_LIMIT,
+  SLP_SUPPORTED_FEATURES,
+} from "./codecs/slp/format-check.js";
+
 // Merge/matching public API (issue #90).
 // Named re-exports (not `export *`) so the underscore-prefixed internal helpers
 // and other module-private utilities in matching.ts stay private.
