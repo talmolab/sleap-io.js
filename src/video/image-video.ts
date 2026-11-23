@@ -190,6 +190,16 @@ export class ImageVideoBackend implements VideoBackend {
   }
 
   /**
+   * The image file's own encoded bytes for `frameIndex` (PNG, JPEG, ...), as
+   * read from disk, without decoding them; `null` past the last frame. Used to
+   * embed a frame verbatim when it is already in the stored format.
+   */
+  async getEncodedBytes(frameIndex: number): Promise<Uint8Array | null> {
+    if (frameIndex < 0 || frameIndex >= this.filename.length) return null;
+    return this.startRead(frameIndex);
+  }
+
+  /**
    * Read a frame's encoded bytes, serving from the bytes tier when present (no
    * network) and coalescing concurrent reads of the same frame via `inflight` so
    * a getFrame and a prefetch never read the same file twice.

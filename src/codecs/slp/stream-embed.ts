@@ -1,7 +1,8 @@
 /**
  * Main-thread half of the streaming NEW-embed: read each frame a
  * {@link SerializableEncodeEntry} embeds and hand it to the streaming writer's
- * worker, which PNG-encodes it and appends it straight to the destination file
+ * worker, which encodes it (PNG, or the entry's chosen format) and appends it
+ * straight to the destination file
  * (`embed-encode-worker.ts`). The UI thread only reads frames (an mp4 already
  * decodes in its own worker) and passes them on, so a long export never holds
  * it, and only a few frames are ever in memory at once.
@@ -25,6 +26,13 @@ import {
   needsRedBlueSwap,
 } from "../../video/image-decode.js";
 import {
+  framePixels,
+  imageFileBytes,
+  verbatimEncodedBytes,
+  type EmbedEncoding,
+  type EmbedImageFormat,
+} from "./embed-format.js";
+import {
   ExportCancelled,
   type SerializableEncodeEntry,
   type SlpWriteOptions,
@@ -42,7 +50,9 @@ export type EncodeFramePayload =
       /** RGBA by construction (an `ImageData`): the worker drops the alpha. */
       rgba: boolean;
     }
-  | { kind: "png"; bytes: Uint8Array };
+  /** Encoded bytes stored as they are: PNG, or JPEG for a "jpg" video. */
+  | { kind: "png"; bytes: Uint8Array }
+  | { kind: "jpg"; bytes: Uint8Array };
 
 /** Where encoded videos are written; `StreamingH5Writer` implements it. */
 export interface EncodedVideoSink {
@@ -80,7 +90,10 @@ export type AppendEncodedVideosOptions = {
 
 /** Frames of one video from outside its backend (see `frameReader`). */
 export interface ExternalFrameReader {
-  /** The frame (e.g. PNG bytes), asked for in the order announced. */
+  /**
+   * The frame (e.g. PNG bytes), asked for in the order announced. Encoded
+   * bytes and pixels must be in RGB channel order.
+   */
   read(frameIdx: number): Promise<VideoFrame | null>;
   /** Called when the video is done, or the export fails or is cancelled. */
   close(): Promise<void> | void;
@@ -132,11 +145,18 @@ function isPng(bytes: Uint8Array): boolean {
  * source's stored order (`VideoBackend.embeddedChannelOrder`); it applies only
  * to undecoded 3-channel PNG/JPEG bytes, which are swapped to RGB when it is
  * "BGR" (raw pixel bytes are passed on as stored, as Python reads them).
+ *
+ * Without `encoding`, RGB PNG bytes are passed on as they are and anything
+ * else as pixels for a PNG. With `encoding` (a video whose format was chosen
+ * with `imageFormat`), encoded bytes already in its format and needing no
+ * swap are passed on as they are; other encoded bytes are decoded to RGB
+ * pixels for the worker to encode.
  */
 export async function toEncodeFramePayload(
   frame: VideoFrame,
   rawShape?: [number, number, number, number],
   channelOrder?: string,
+  encoding?: EmbedEncoding,
 ): Promise<EncodeFramePayload> {
   if (isImageBitmapLike(frame)) {
     // The backend may cache this bitmap and draw it again, so hand over a copy.
@@ -165,6 +185,19 @@ export async function toEncodeFramePayload(
     frame instanceof ArrayBuffer
       ? new Uint8Array(frame)
       : (frame as unknown as Uint8Array);
+  if (isEncodedBytes(bytes) && encoding) {
+    const verbatim = verbatimEncodedBytes(bytes, channelOrder, encoding);
+    if (verbatim) return { kind: encoding.format, bytes: verbatim.slice() };
+    const px = framePixels(await decodeEncoded(bytes, channelOrder));
+    return {
+      kind: "pixels",
+      data: px.data,
+      width: px.width,
+      height: px.height,
+      channels: px.channels,
+      rgba: false,
+    };
+  }
   if (isEncodedBytes(bytes)) {
     const swap = needsRedBlueSwap(bytes, channelOrder);
     if (isPng(bytes) && !swap) return { kind: "png", bytes: bytes.slice() };
@@ -194,6 +227,25 @@ export async function toEncodeFramePayload(
     channels,
     rgba: false,
   };
+}
+
+/** True for a video whose stored embedded images can be read as stored. */
+function isStoredEmbedded(video: Video | undefined): boolean {
+  return !!(video?.hasEmbeddedImages && video.backend?.getFrameBuffer);
+}
+
+async function storedImage(
+  video: Video,
+  frameIdx: number,
+): Promise<Uint8Array> {
+  const bytes = await video.getFrameBuffer(frameIdx);
+  if (!bytes || bytes.length === 0) {
+    throw new Error(
+      `Couldn't read the stored image of frame ${frameIdx} of "${videoName(video)}" ` +
+        "to convert it. The package was not written.",
+    );
+  }
+  return bytes;
 }
 
 async function readFrame(
@@ -261,6 +313,16 @@ export async function appendEncodedVideos(
         entry.frameNumbers[0],
       ));
     }
+    // A chosen format (`imageFormat`): store a grayscale video's frames with
+    // one channel, and frames already in the format as they are.
+    const encoding: EmbedEncoding | null = entry.formatChosen
+      ? {
+          format: entry.format as EmbedImageFormat,
+          quality: entry.quality ?? null,
+          gray: collapseToGray || entry.videoAttrs?.channels === 1,
+        }
+      : null;
+    if (encoding) collapseToGray = encoding.gray;
     await sink.beginEncodedVideo(entry, collapseToGray);
 
     const inFlight: Promise<void>[] = [];
@@ -271,10 +333,21 @@ export async function appendEncodedVideos(
         throw new ExportCancelled();
       }
     };
+    // An already-embedded video converted to the chosen format: read its
+    // stored images as they are (no decode on this thread).
+    const stored = !!encoding && !external && isStoredEmbedded(video);
     for (const frameIdx of entry.frameNumbers) {
-      const frame = external
-        ? await external.read(frameIdx)
-        : await readFrame(video!, source!, frameIdx);
+      const fileBytes =
+        !encoding || external
+          ? null
+          : stored
+            ? await storedImage(video!, frameIdx)
+            : await imageFileBytes(video!.backend, frameIdx, encoding);
+      const frame =
+        fileBytes ??
+        (external
+          ? await external.read(frameIdx)
+          : await readFrame(video!, source!, frameIdx));
       if (!frame) {
         throw new Error(
           `Couldn't read frame ${frameIdx} from "${video ? videoName(video) : `video ${entry.videoIndex}`}" to embed. ` +
@@ -287,6 +360,7 @@ export async function appendEncodedVideos(
           frame,
           source?.shape,
           source?.embeddedChannelOrder,
+          encoding ?? undefined,
         ),
       );
       // Awaited in order below; this only keeps a failure that lands while an
