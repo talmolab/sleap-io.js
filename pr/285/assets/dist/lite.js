@@ -1,8 +1,10 @@
 import {
+  CARRIED_TABLES,
   Edge,
   FORMAT3_TABLES,
   LOSSLESS_FORMAT3_ASKS,
   METADATA_SUBGROUP,
+  METADATA_TABLES,
   Node,
   PARTLY_READ_GROUPS,
   SLP_FORMAT_ID_LIMIT,
@@ -32,8 +34,10 @@ import {
   unknownColumns,
   unknownTableColumns,
   unknownTableGroups,
-  unreadMembers
-} from "./chunk-AQWXNSWX.js";
+  unreadMembers,
+  unreadMetadataMembers,
+  unreadTableMembers
+} from "./chunk-TAWK4OFH.js";
 import "./chunk-3UBNQTMV.js";
 
 // src/codecs/slp/jsfive.ts
@@ -173,6 +177,27 @@ function isMetadataDtype(dtype) {
   if (typeof dtype !== "string") return false;
   return /^[<>|=]?[biuf]\d+$/.test(dtype) || /^\|?S\d+$/.test(dtype);
 }
+function jsfiveInfo(node) {
+  if (!isDataset(node)) return null;
+  const shape = getShape(node);
+  const dtype = node.dtype;
+  if (Array.isArray(dtype)) {
+    return dtype[0] === "VLEN_STRING" ? { type: 3, shape } : null;
+  }
+  if (typeof dtype !== "string") return null;
+  if (/^\|?S\d+$/.test(dtype)) return { type: 3, shape };
+  const m = /^[<>|=]?([biuf])(\d+)$/.exec(dtype);
+  if (!m) return null;
+  const size = Number(m[2]);
+  switch (m[1]) {
+    case "b":
+      return { type: 8, size: 1, shape };
+    case "f":
+      return { type: 1, size, shape };
+    default:
+      return { type: 0, size, signed: m[1] === "i", shape };
+  }
+}
 function format3SummaryJsfive(file, formatId, provenanceInMetadata) {
   const members = (path) => {
     const node = file.get(path);
@@ -217,6 +242,23 @@ function format3SummaryJsfive(file, formatId, provenanceInMetadata) {
         (table) => isGroupPath(file, table) ? unknownTableGroups(
           table,
           members(table).filter((n) => isGroup(file.get(`${table}/${n}`)))
+        ) : []
+      ),
+      // What a format 3.0 save would not write back (see carry-read.ts).
+      ...CARRIED_TABLES.flatMap(
+        (table) => isGroupPath(file, table) ? unreadTableMembers(
+          table,
+          members(table).map((name) => {
+            const node = file.get(`${table}/${name}`);
+            return isGroup(node) ? { name, group: true } : { name, group: false, info: jsfiveInfo(node) };
+          })
+        ) : []
+      ),
+      ...METADATA_TABLES.flatMap(
+        (table) => isGroupPath(file, `${table}/${METADATA_SUBGROUP}`) ? unreadMetadataMembers(
+          table,
+          members(`${table}/${METADATA_SUBGROUP}`),
+          keys(table)
         ) : []
       )
     ],

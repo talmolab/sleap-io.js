@@ -1,14 +1,19 @@
 import {
+  CARRIED_TABLES,
   Camera,
   CameraGroup,
+  CarrySession,
+  ColumnCarry,
   Edge,
   FORMAT3_TABLES,
   FrameGroup,
   Instance,
   InstanceGroup,
   METADATA_SUBGROUP,
+  METADATA_TABLES,
   Node,
   PARTLY_READ_GROUPS,
+  POSE_TABLES,
   PredictedInstance,
   PredictedInstance3D,
   RecordingSession,
@@ -23,7 +28,9 @@ import {
   _registerCentroidFactory,
   attrToNumber,
   attrToString,
+  buildColumnCarry,
   buildFormat3Summary,
+  carriedColumn,
   checkFormat3Option,
   checkMetadataColumns,
   checkPoseTables,
@@ -37,10 +44,12 @@ import {
   decodeEntryText,
   hasSkippedInstanceRows,
   injectSessionFrameResolver,
+  isCarriable,
   isColumnarTable,
   isFormat3,
   isKnownPoseColumn,
   isKnownTableColumn,
+  isUnknownColumn,
   keepSourceMark,
   labelImageProblems,
   linkProblems,
@@ -75,6 +84,7 @@ import {
   resolveVideoFilename,
   roiProblems,
   scoreMapProblems,
+  sessionCarryOwners,
   sessionMetadataFromJson,
   sessionProblems,
   sessionRecords,
@@ -88,8 +98,12 @@ import {
   unknownColumns,
   unknownTableColumns,
   unknownTableGroups,
-  unreadMembers
-} from "./chunk-AQWXNSWX.js";
+  unreadMembers,
+  unreadMetadataMembers,
+  unreadTableMembers,
+  warnDropped,
+  warnDroppedCarry
+} from "./chunk-TAWK4OFH.js";
 import {
   openGdrive
 } from "./chunk-RC2FIFDH.js";
@@ -6429,273 +6443,6 @@ var MediaBunnyVideoBackend = class _MediaBunnyVideoBackend {
   }
 };
 
-// src/codecs/slp/column-carry.ts
-var ColumnCarry = class {
-  tables;
-  constructor(tables) {
-    this.tables = new Map(tables ?? []);
-  }
-  /** Whether any table has columns to carry. */
-  get size() {
-    return this.tables.size;
-  }
-  /** The table names, as paths like `/points`. */
-  tablePaths() {
-    return [...this.tables.keys()].map((name) => `/${name}`);
-  }
-};
-function permuteColumns(columns, order) {
-  const out = {};
-  for (const [name, column] of Object.entries(columns)) {
-    const values = column.values;
-    const picked = order.map((row) => values[row]);
-    out[name] = {
-      dtype: column.dtype,
-      values: column.dtype === "S" ? picked : typeof picked[0] === "bigint" ? BigInt64Array.from(picked) : Float64Array.from(picked)
-    };
-  }
-  return out;
-}
-function sameOwner(a, b) {
-  return a === b || typeof a === "number" && typeof b === "number" && a === b;
-}
-function sameKey(a, b) {
-  if (a.length !== b.length) return false;
-  for (let i = 0; i < a.length; i += 1) {
-    if (!sameOwner(a[i], b[i])) return false;
-  }
-  return true;
-}
-function columnList(table) {
-  return Object.keys(table.columns).join(", ");
-}
-var CarrySession = class {
-  carry;
-  consumed = /* @__PURE__ */ new Set();
-  constructor(carry) {
-    this.carry = carry && carry.size > 0 ? carry : null;
-  }
-  /**
-   * The carried columns of `table` when `keys` (one per row being written,
-   * in order) are the owners the columns were read with; otherwise none, with
-   * a warning when there were columns to write.
-   */
-  columnsFor(table, keys) {
-    const carried = this.carry?.tables.get(table);
-    if (!carried) return {};
-    this.consumed.add(table);
-    const owners = carried.owners;
-    if (owners !== null && owners.length === keys.length && owners.every((owner, i) => sameKey(owner, keys[i]))) {
-      return { ...carried.columns };
-    }
-    const byValue = owners !== null && table.endsWith("/links");
-    if (byValue && owners.length === keys.length) {
-      const rowOf = /* @__PURE__ */ new Map();
-      owners.forEach((owner, i) => {
-        rowOf.set(JSON.stringify(owner), i);
-      });
-      const order = keys.map((key) => rowOf.get(JSON.stringify(key)));
-      if (rowOf.size === owners.length && order.every((row) => row !== void 0)) {
-        return permuteColumns(carried.columns, order);
-      }
-    }
-    warnDropped(table, carried, "changed");
-    return {};
-  }
-  /**
-   * Warn about carried columns of tables the save wrote no rows for (every
-   * record of the table is gone, so its unknown columns are dropped).
-   */
-  finish() {
-    if (!this.carry) return;
-    for (const [table, carried] of this.carry.tables) {
-      if (!this.consumed.has(table)) warnDropped(table, carried, "changed");
-    }
-  }
-};
-function warnDropped(table, carried, reason) {
-  const why = reason === "legacy" ? "the SLP 2.x layout cannot store them" : "its records changed since the file was loaded, so its rows no longer line up";
-  console.warn(
-    `Unknown column(s) ${columnList(carried)} of /${table} were not saved: ${why}.`
-  );
-}
-function warnDroppedCarry(carry) {
-  if (!carry) return;
-  for (const [table, carried] of carry.tables) {
-    warnDropped(table, carried, "legacy");
-  }
-}
-
-// src/codecs/slp/carry-read.ts
-var POSE_TABLES = [
-  "frames",
-  "instances",
-  "points",
-  "pred_points"
-];
-var CARRIED_TABLES = [
-  ...POSE_TABLES,
-  ...FORMAT3_TABLES
-];
-function isUnknownColumn(table, name) {
-  if (name === METADATA_SUBGROUP) return false;
-  if (POSE_TABLES.includes(table)) {
-    return !isKnownPoseColumn(table, name);
-  }
-  const spec = TABLE_SPECS[table];
-  if (!spec) return false;
-  return name !== spec.buffer && !isKnownTableColumn(table, name);
-}
-function carriedColumn(info, values) {
-  if (!info || !Array.isArray(info.shape) || info.shape.length !== 1) {
-    return null;
-  }
-  if (values === null || values === void 0) return null;
-  const size = info.size ?? 8;
-  let dtype;
-  switch (info.type) {
-    case 0: {
-      const chars = { 1: "b", 2: "h", 4: "i", 8: "q" };
-      const c = chars[size];
-      if (!c) return null;
-      dtype = `<${info.signed === false ? c.toUpperCase() : c}`;
-      break;
-    }
-    case 1:
-      dtype = size === 4 ? "<f" : "<d";
-      break;
-    case 3:
-      dtype = "S";
-      break;
-    case 8:
-      dtype = "<B";
-      break;
-    default:
-      return null;
-  }
-  if (dtype === "S") {
-    const list = Array.from(
-      values,
-      (v) => v instanceof Uint8Array ? new TextDecoder().decode(v).replace(/\0+$/, "") : String(v ?? "")
-    );
-    return { values: list, dtype };
-  }
-  if (typeof values !== "object" || !("length" in values)) {
-    return null;
-  }
-  return {
-    values,
-    dtype
-  };
-}
-function keysOf(owners) {
-  if (owners.some((o) => o === void 0)) return null;
-  return owners.map((o) => [o]);
-}
-function pointOwnerKeys(spans, rows) {
-  spans.sort((a, b) => a[0] - b[0]);
-  let position = 0;
-  for (const [start, end, owner] of spans) {
-    if (start !== position || owner === void 0) return null;
-    position = end;
-  }
-  return position === rows ? spans.map(([, , owner, points]) => [owner, points]) : null;
-}
-function sessionCarryOwners(sessions, table) {
-  const frameGroups = [];
-  const instanceGroups = [];
-  for (const session of sessions) {
-    for (const fg of session.frameGroups.values()) {
-      if (fg.instanceGroups.length === 0) continue;
-      frameGroups.push(fg);
-      for (const ig of fg.instanceGroups) {
-        instanceGroups.push([ig, session.cameraGroup.cameras]);
-      }
-    }
-  }
-  if (frameGroups.length !== table.nFrameGroups || instanceGroups.length !== table.memberStart.length) {
-    return void 0;
-  }
-  const members = [];
-  instanceGroups.forEach(([ig, cameras], k) => {
-    for (let r = Number(table.memberStart[k]); r < Number(table.memberEnd[k]); r++) {
-      members.push([ig, cameras[Number(table.camera[r])]]);
-    }
-  });
-  return {
-    frameGroups,
-    instanceGroups: instanceGroups.map(([ig]) => ig),
-    members
-  };
-}
-function buildColumnCarry(unknown, owners, tables = CARRIED_TABLES) {
-  const entries = [];
-  for (const table of tables) {
-    const columns = unknown[table];
-    if (!columns || Object.keys(columns).length === 0) continue;
-    entries.push([table, { owners: ownerKeys(table, owners), columns }]);
-  }
-  return entries.length > 0 ? new ColumnCarry(entries) : null;
-}
-function ownerKeys(table, o) {
-  switch (table) {
-    case "frames":
-      return o.frames ? keysOf(o.frames) : null;
-    case "instances":
-      return o.instances ? keysOf(o.instances) : null;
-    case "points":
-    case "pred_points": {
-      if (!o.instances || !o.instanceRows) return null;
-      const want = table === "points" ? 0 : 1;
-      const spans = [];
-      const { type, start, end } = o.instanceRows;
-      for (let i = 0; i < type.length; i++) {
-        if (Number(type[i]) !== want) continue;
-        const owner = o.instances[i];
-        spans.push([
-          Number(start[i]),
-          Number(end[i]),
-          owner,
-          owner && o.pointsOf ? o.pointsOf(owner) : void 0
-        ]);
-      }
-      return pointOwnerKeys(
-        spans,
-        (table === "points" ? o.nPoints : o.nPredPoints) ?? 0
-      );
-    }
-    case "rois":
-      return o.rois ? keysOf(o.rois) : null;
-    case "masks":
-      return o.masks ? keysOf(o.masks) : null;
-    case "masks/score_maps":
-      return o.masks && o.maskScoreMapOwners ? keysOf(Array.from(o.maskScoreMapOwners, (i) => o.masks?.[Number(i)])) : null;
-    case "label_images":
-      return o.labelImages ? keysOf(o.labelImages) : null;
-    case "label_images/objects":
-      return o.labelImageObjects ? keysOf(o.labelImageObjects) : null;
-    case "label_images/score_maps":
-      return o.labelImages && o.labelImageScoreMapOwners ? keysOf(
-        Array.from(
-          o.labelImageScoreMapOwners,
-          (i) => o.labelImages?.[Number(i)]
-        )
-      ) : null;
-    case "identity/links":
-      return o.identityLinks ? o.identityLinks.map((k) => [...k]) : null;
-    case "categories/links":
-      return o.categoryLinks ? o.categoryLinks.map((k) => [...k]) : null;
-    case "session_data/frame_groups":
-      return o.sessions ? keysOf(o.sessions.frameGroups) : null;
-    case "session_data/instance_groups":
-      return o.sessions ? keysOf(o.sessions.instanceGroups) : null;
-    case "session_data/instance_group_members":
-      return o.sessions?.members.every((k) => k[1] !== void 0) ? o.sessions.members.map((k) => [...k]) : null;
-    default:
-      return null;
-  }
-}
-
 // src/codecs/numpy.ts
 function toNumpy(labels, options) {
   return labels.numpy({
@@ -6821,6 +6568,15 @@ function parseVideoIdFromDataset(dataset) {
   if (!group.startsWith("video")) return null;
   const id = Number(group.slice(5));
   return Number.isNaN(id) ? null : id;
+}
+
+// src/model/stored-nan.ts
+var nanTrackingScores = /* @__PURE__ */ new WeakSet();
+function markNanTrackingScore(instance) {
+  nanTrackingScores.add(instance);
+}
+function hadNanTrackingScore(instance) {
+  return nanTrackingScores.has(instance);
 }
 
 // src/model/lazy.ts
@@ -7085,6 +6841,9 @@ var LazyDataStore = class _LazyDataStore {
       if (catEmb) instance.categoryEmbedding = catEmb;
       instanceById.set(instIdx, instance);
       this._instanceRow.set(instance, instIdx);
+      if (Number.isNaN(rawTrackingScore) && this.formatId < 3) {
+        markNanTrackingScore(instance);
+      }
       instances.push(instance);
     }
     for (const [instanceId, fromPredictedId] of fromPredictedPairs) {
@@ -14640,24 +14399,6 @@ function verifyEnumMembersWorker(ds, diskName, members, fields, flat, rowCount, 
   });
 }
 
-// Worker port of nanRowsOnDisk (write.ts \u2014 KEEP IN LOCKSTEP): the rows whose
-// float member holds NaN on disk, read a bounded slice at a time.
-function nanRowsOnDiskWorker(ds, members, name, rowCount) {
-  var mi = -1;
-  for (var k = 0; k < members.length; k++) {
-    if (members[k].name === name && members[k].type === H5T_FLOAT_CLASS) mi = k;
-  }
-  if (mi < 0) return null;
-  var nan = new Uint8Array(rowCount);
-  var any = false;
-  forEachSliceWorker(ds, rowCount, function (rows, start) {
-    for (var r = 0; r < rows.length; r++) {
-      if (Number.isNaN(Number(rows[r] && rows[r][mi]))) { nan[start + r] = 1; any = true; }
-    }
-  });
-  return any ? nan : null;
-}
-
 // Worker port of writeColumnInPlace (write.ts \u2014 KEEP IN LOCKSTEP): write one
 // 1-D numeric column (format 3.0) with its own type, an enum as its base int.
 function writeColumnInPlaceWorker(ds, values) {
@@ -14763,10 +14504,7 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
   var members = md && md.compound_type && md.compound_type.members;
   var isCompound = !!(members && members.length > 0);
   var curRows = (ds.shape && ds.shape[0]) || 0;
-  // A value edit keeps the NaN tracking scores the readers read as 0.
-  var nanTracking = isCompound && diskName === 'instances' && curRows === rowCount
-    ? nanRowsOnDiskWorker(ds, members, 'tracking_score', rowCount)
-    : null;
+
   if (curRows !== rowCount) {
     ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
     // h5wasm silently no-ops resize on a non-resizable dataset \u2014 read the shape
@@ -14791,11 +14529,7 @@ function writeOneTableInPlaceWorker(file, diskName, fields, flat, rowCount, colC
       }
       var colVals = new Array(rowCount);
       for (var r = 0; r < rowCount; r++) colVals[r] = flat[r * colCount + ci];
-      if (nanTracking && m.name === 'tracking_score') {
-        for (var z = 0; z < rowCount; z++) {
-          if (nanTracking[z] && colVals[z] === 0) colVals[z] = NaN;
-        }
-      }
+
       columns.set(m.name, memberColumnTypedArrayWorker(m, colVals));
     }
     writeWithFileTypeWorker(ds, function () { ds.write_slice([[0, rowCount]], columns); });
@@ -17284,17 +17018,19 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
       }
     }
   );
-  attachAnnotationTuples(
-    markTuples(await readBboxesStreaming(file, tracks, format3?.bboxMetadata)),
-    {
-      ...attachCommon,
-      frameList: (lf) => lf.bboxes,
-      setLazy: (store, byFrame, undistributed) => {
-        store._bboxByFrame = byFrame;
-        store._undistributedBboxes = undistributed;
-      }
-    }
+  const bboxTuples = await readBboxesStreaming(
+    file,
+    tracks,
+    format3?.bboxMetadata
   );
+  attachAnnotationTuples(markTuples(bboxTuples), {
+    ...attachCommon,
+    frameList: (lf) => lf.bboxes,
+    setLazy: (store, byFrame, undistributed) => {
+      store._bboxByFrame = byFrame;
+      store._undistributedBboxes = undistributed;
+    }
+  });
   report(9);
   const sessions = userInstancesOnly ? [] : await readSessionsStreaming(
     file,
@@ -17320,6 +17056,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
   if (format3) {
     const carried = [
       ...POSE_TABLES,
+      "bboxes",
       "identity/links",
       "categories/links",
       "session_data/frame_groups",
@@ -17332,6 +17069,7 @@ async function readFromStreamingFile(file, url, filenameHint, openVideos = false
       Number
     );
     const links = {
+      bboxes: bboxTuples.map((t) => t[0]),
       identityLinks: await linkKeysStreaming(file, "identity/links"),
       categoryLinks: await linkKeysStreaming(file, "categories/links"),
       sessions: await isGroupStreaming(file, "session_data/frame_groups") ? sessionCarryOwners(sessions, {
@@ -18232,7 +17970,7 @@ async function readUnknownColumnsStreaming(file, tables) {
         ...meta.metadata ?? {},
         shape: meta.shape ?? null
       };
-      if (!Array.isArray(meta.shape) || meta.shape.length !== 1) continue;
+      if (!isCarriable(info)) continue;
       const column = carriedColumn(
         info,
         (await file.getDatasetValue(path)).value
@@ -18242,6 +17980,50 @@ async function readUnknownColumnsStreaming(file, tables) {
         out[table][name] = column;
       }
     }
+  }
+  return out;
+}
+async function uncarriedMembersStreaming(file, metadata) {
+  const out = [];
+  for (const table of [
+    ...POSE_TABLES,
+    "bboxes",
+    "identity/links",
+    "categories/links",
+    "session_data/frame_groups",
+    "session_data/instance_groups",
+    "session_data/instance_group_members"
+  ]) {
+    if (!await isGroupStreaming(file, table)) continue;
+    const members = [];
+    for (const name of await childKeys(file, table)) {
+      const path = `${table}/${name}`;
+      if (!await isDatasetStreaming(file, path)) {
+        members.push({ name, group: true });
+        continue;
+      }
+      const meta = await file.getDatasetMeta(path);
+      members.push({
+        name,
+        group: false,
+        info: {
+          ...meta.metadata ?? {},
+          shape: meta.shape ?? null
+        }
+      });
+    }
+    out.push(...unreadTableMembers(table, members));
+  }
+  for (const table of METADATA_TABLES) {
+    const base = `${table}/${METADATA_SUBGROUP}`;
+    if (!await isGroupStreaming(file, base)) continue;
+    out.push(
+      ...unreadMetadataMembers(
+        table,
+        await childKeys(file, base),
+        metadataKeys(metadata[table])
+      )
+    );
   }
   return out;
 }
@@ -18361,7 +18143,12 @@ async function readFormat3Streaming(file, labelsPath, formatId, tables) {
         provenanceInMetadata: tables.provenanceInMetadata ?? false
       }),
       ...await unreadByStreaming(file, root),
-      ...unreadGroups
+      ...unreadGroups,
+      ...await uncarriedMembersStreaming(file, {
+        instances: instanceMetadata,
+        frames: frameMetadata,
+        bboxes: bboxMetadata
+      })
     ],
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(
@@ -18627,6 +18414,9 @@ function buildLabeledFrames(options) {
         }
       }
       instanceById.set(instIdx, instance);
+      if (Number.isNaN(rawTrackingScore) && formatId < 3) {
+        markNanTrackingScore(instance);
+      }
       instances.push(instance);
     }
     if (userInstancesOnly && instEnd > instStart && instances.length === 0)
@@ -18778,6 +18568,29 @@ function writeColumnTable(file, path, columns, options) {
   }
   for (const [name, column] of Object.entries(options?.carried ?? {})) {
     if (known.has(name)) continue;
+    if (column.shape && column.shape.length > 1) {
+      const rows = column.values.length / column.shape.slice(1).reduce((a, b) => a * b, 1);
+      const shape = [rows, ...column.shape.slice(1)];
+      const data = typedValues(column.values, column.dtype);
+      if (options?.resizable) {
+        file.create_dataset({
+          name: `${path}/${name}`,
+          data,
+          shape,
+          maxshape: [null, ...shape.slice(1)],
+          chunks: [Math.max(1, Math.min(CHUNK_ROWS, rows)), ...shape.slice(1)],
+          dtype: column.dtype
+        });
+      } else {
+        file.create_dataset({
+          name: `${path}/${name}`,
+          data,
+          shape,
+          dtype: column.dtype
+        });
+      }
+      continue;
+    }
     writeDataset(file, `${path}/${name}`, column.values, column.dtype, options);
   }
 }
@@ -18980,6 +18793,24 @@ function refuseFormat3FrameLosses(frames) {
   throw new Error(
     `Frames loaded from '${source.labelsPath}' (SLP format ${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold ${lost.join(", and ")}, which SlpStreamWriter.appendFrames does not write. Save them with saveSlp or saveSlpToBytes, which keep them.`
   );
+}
+function refuseFormat3FrameIdentities(frames, headerHasIdentities) {
+  if (headerHasIdentities) return;
+  for (const frame of frames) {
+    for (const record of [
+      ...frame.instances,
+      ...frame.centroids,
+      ...frame.bboxes,
+      ...frame.masks,
+      ...frame.rois
+    ]) {
+      const source = sourceMarkOf(record);
+      if (!source || record.identity == null) continue;
+      throw new Error(
+        `Frames loaded from '${source.labelsPath}' (SLP format ${Number.isInteger(source.formatId) ? source.formatId.toFixed(1) : source.formatId}) hold identities, which SlpStreamWriter.appendFrames writes only when the writer's header holds them. Pass the identities in the header, or save the labels with saveSlp or saveSlpToBytes.`
+      );
+    }
+  }
 }
 function refuseFormat3StoreLosses(store, header, writesLinks = false) {
   const source = store.sourceFormat;
@@ -20224,6 +20055,7 @@ var SlpStreamWriter = class {
     if (v3) {
       enforceV3Layout(framesLegacyLosses(frames), options?.unlabeledAs);
       checkV3Metadata(frames);
+      refuseFormat3FrameIdentities(frames, this.headerHas.identities);
       for (const frame of frames) {
         this.noteKinds(sourceMarkOf(frame));
         for (const inst of frame.instances) this.noteKinds(sourceMarkOf(inst));
@@ -22330,6 +22162,15 @@ function buildLabelTableUpdate(labels, opts) {
     opts?.unlabeledAs
   );
   const r = buildLabelTableRows(labels);
+  let row = 0;
+  for (const frame of labels.labeledFrames) {
+    for (const instance of frame.instances) {
+      if (instance.trackingScore === 0 && hadNanTrackingScore(instance)) {
+        r.instances[row][9] = Number.NaN;
+      }
+      row += 1;
+    }
+  }
   const update = {
     frames: { fields: FRAMES_FIELDS, rows: r.frames },
     instances: { fields: INSTANCES_FIELDS, rows: r.instances },
@@ -22725,23 +22566,6 @@ function writeColumnInPlace(ds, values) {
     });
   }
 }
-function nanRowsOnDisk(ds, members, name, rowCount) {
-  const mi = members.findIndex(
-    (m) => m.name === name && m.type === H5T_FLOAT_CLASS
-  );
-  if (mi < 0) return null;
-  const nan = new Uint8Array(rowCount);
-  let any = false;
-  forEachSlice(ds, rowCount, (rows, start) => {
-    for (let k = 0; k < rows.length; k++) {
-      if (Number.isNaN(Number(rows[k]?.[mi]))) {
-        nan[start + k] = 1;
-        any = true;
-      }
-    }
-  });
-  return any ? nan : null;
-}
 function writeOneTableInPlace(file, diskName, table, dtype) {
   const rowCount = table.rows.length;
   const colCount = table.fields.length;
@@ -22755,7 +22579,6 @@ function writeOneTableInPlace(file, diskName, table, dtype) {
   const members = md?.compound_type?.members;
   const isCompound = !!(members && members.length > 0);
   const curRows = ds.shape?.[0] ?? 0;
-  const nanTracking = isCompound && diskName === "instances" && curRows === rowCount ? nanRowsOnDisk(ds, members, "tracking_score", rowCount) : null;
   if (curRows !== rowCount) {
     ds.resize(isCompound ? [rowCount] : [rowCount, colCount]);
     const newRows = ds.shape?.[0] ?? -1;
@@ -22777,11 +22600,6 @@ function writeOneTableInPlace(file, diskName, table, dtype) {
         );
       }
       const colVals = table.rows.map((row) => row[ci]);
-      if (nanTracking && m.name === "tracking_score") {
-        for (let i = 0; i < rowCount; i++) {
-          if (nanTracking[i] && colVals[i] === 0) colVals[i] = Number.NaN;
-        }
-      }
       columns.set(m.name, memberColumnTypedArray(m, colVals));
     }
     writeWithFileType(ds, () => ds.write_slice([[0, rowCount]], columns));
@@ -24100,6 +23918,14 @@ function writeBboxes(file, bboxes, _videos, tracks, instances, contexts, v3) {
   file.create_dataset({ name: "bboxes/name", data: names });
   file.create_dataset({ name: "bboxes/source", data: sources });
   if (v3) {
+    for (const [name, column] of Object.entries(
+      v3.carry.columnsFor(
+        "bboxes",
+        bboxes.map((b) => [b])
+      )
+    )) {
+      writeColumnTable(file, "bboxes", [], { carried: { [name]: column } });
+    }
     writeMetadataColumns(
       file,
       "bboxes",
@@ -26675,6 +26501,7 @@ async function readSlp(source, options) {
         nPredPoints: columnLength(predPointsData),
         pointsOf: (inst) => inst._xy,
         rois: roiTuples.map((t) => t[0]),
+        bboxes: bboxTuples.map((t) => t[0]),
         masks: maskTuples.map((t) => t[0]),
         maskScoreMapOwners: columnH5(file, "masks/score_maps/mask_idx"),
         labelImages,
@@ -26914,6 +26741,7 @@ async function readSlpLazy(source, options) {
         unknown,
         {
           rois: roiTuples.map((t) => t[0]),
+          bboxes: bboxTuples.map((t) => t[0]),
           masks: maskTuples.map((t) => t[0]),
           maskScoreMapOwners: columnH5(file, "masks/score_maps/mask_idx"),
           labelImages,
@@ -26928,7 +26756,7 @@ async function readSlpLazy(source, options) {
           categoryLinks: linkKeysH5(file, "categories/links"),
           sessions: sessionOwnersH5(file, sessions)
         },
-        FORMAT3_TABLES
+        ["bboxes", ...FORMAT3_TABLES]
       );
     }
     const frameKeys = /* @__PURE__ */ new Set();
@@ -28365,13 +28193,40 @@ function readUnknownColumnsH5(file) {
       const md = ds?.metadata;
       const column = carriedColumn(
         md ? { ...md, shape: ds.shape } : null,
-        md && Array.isArray(ds.shape) && ds.shape.length === 1 ? ds.value : null
+        md && isCarriable({ ...md, shape: ds.shape }) ? ds.value : null
       );
       if (column) {
         out[table] ??= {};
         out[table][name] = column;
       }
     }
+  }
+  return out;
+}
+function uncarriedMembersH5(file, metadata) {
+  const out = [];
+  for (const table of CARRIED_TABLES) {
+    if (!isH5Group(file, table)) continue;
+    const members = h5Members(file, table).map((name) => {
+      const node = file.get(`${table}/${name}`);
+      return node?.type === "Group" ? { name, group: true } : {
+        name,
+        group: false,
+        info: node ? { ...node.metadata, shape: node.shape } : null
+      };
+    });
+    out.push(...unreadTableMembers(table, members));
+  }
+  for (const table of METADATA_TABLES) {
+    const base = `${table}/${METADATA_SUBGROUP}`;
+    if (!isH5Group(file, base)) continue;
+    out.push(
+      ...unreadMetadataMembers(
+        table,
+        h5Members(file, base),
+        metadataKeys(metadata[table])
+      )
+    );
   }
   return out;
 }
@@ -28533,7 +28388,12 @@ function readFormat3(file, labelsPath, formatId, nVideos, tables) {
       }),
       ...FORMAT3_TABLES.flatMap(
         (table) => isH5Group(file, table) ? unknownTableGroups(table, h5Members(file, table, "Group")) : []
-      )
+      ),
+      ...uncarriedMembersH5(file, {
+        instances: instanceMetadata,
+        frames: frameMetadata,
+        bboxes: bboxMetadata
+      })
     ],
     unlabeledUserPoints: countUnlabeledPoints(pointsData),
     unlabeledPredictedPoints: countUnlabeledPoints(predPointsData),
@@ -28728,6 +28588,9 @@ function buildLabeledFrames2(options) {
         }
       }
       instanceById.set(instIdx, instance);
+      if (Number.isNaN(rawTrackingScore) && formatId < 3) {
+        markNanTrackingScore(instance);
+      }
       instances.push(instance);
     }
     frames.push(

@@ -2217,6 +2217,303 @@ function sessionProblems(options) {
   return problems;
 }
 
+// src/codecs/slp/column-carry.ts
+var ColumnCarry = class {
+  tables;
+  constructor(tables) {
+    this.tables = new Map(tables ?? []);
+  }
+  /** Whether any table has columns to carry. */
+  get size() {
+    return this.tables.size;
+  }
+  /** The table names, as paths like `/points`. */
+  tablePaths() {
+    return [...this.tables.keys()].map((name) => `/${name}`);
+  }
+};
+function permuteColumns(columns, order) {
+  const out = {};
+  for (const [name, column] of Object.entries(columns)) {
+    const values = column.values;
+    const width = (column.shape ?? [0]).slice(1).reduce((a, b) => a * b, 1);
+    const picked = order.flatMap(
+      (row) => Array.from({ length: width }, (_, k) => values[row * width + k])
+    );
+    out[name] = {
+      ...column.shape ? { shape: column.shape } : {},
+      dtype: column.dtype,
+      values: column.dtype === "S" ? picked : typeof picked[0] === "bigint" ? BigInt64Array.from(picked) : Float64Array.from(picked)
+    };
+  }
+  return out;
+}
+function sameOwner(a, b) {
+  return a === b || typeof a === "number" && typeof b === "number" && a === b;
+}
+function sameKey(a, b) {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i += 1) {
+    if (!sameOwner(a[i], b[i])) return false;
+  }
+  return true;
+}
+function columnList(table) {
+  return Object.keys(table.columns).join(", ");
+}
+var CarrySession = class {
+  carry;
+  consumed = /* @__PURE__ */ new Set();
+  constructor(carry) {
+    this.carry = carry && carry.size > 0 ? carry : null;
+  }
+  /**
+   * The carried columns of `table` when `keys` (one per row being written,
+   * in order) are the owners the columns were read with; otherwise none, with
+   * a warning when there were columns to write.
+   */
+  columnsFor(table, keys) {
+    const carried = this.carry?.tables.get(table);
+    if (!carried) return {};
+    this.consumed.add(table);
+    const owners = carried.owners;
+    if (owners !== null && owners.length === keys.length && owners.every((owner, i) => sameKey(owner, keys[i]))) {
+      return { ...carried.columns };
+    }
+    const byValue = owners !== null && table.endsWith("/links");
+    if (byValue && owners.length === keys.length) {
+      const rowOf = /* @__PURE__ */ new Map();
+      owners.forEach((owner, i) => {
+        rowOf.set(JSON.stringify(owner), i);
+      });
+      const order = keys.map((key) => rowOf.get(JSON.stringify(key)));
+      if (rowOf.size === owners.length && order.every((row) => row !== void 0)) {
+        return permuteColumns(carried.columns, order);
+      }
+    }
+    warnDropped(table, carried, "changed");
+    return {};
+  }
+  /**
+   * Warn about carried columns of tables the save wrote no rows for (every
+   * record of the table is gone, so its unknown columns are dropped).
+   */
+  finish() {
+    if (!this.carry) return;
+    for (const [table, carried] of this.carry.tables) {
+      if (!this.consumed.has(table)) warnDropped(table, carried, "changed");
+    }
+  }
+};
+function warnDropped(table, carried, reason) {
+  const why = reason === "legacy" ? "the SLP 2.x layout cannot store them" : "its records changed since the file was loaded, so its rows no longer line up";
+  console.warn(
+    `Unknown column(s) ${columnList(carried)} of /${table} were not saved: ${why}.`
+  );
+}
+function warnDroppedCarry(carry) {
+  if (!carry) return;
+  for (const [table, carried] of carry.tables) {
+    warnDropped(table, carried, "legacy");
+  }
+}
+
+// src/codecs/slp/carry-read.ts
+var POSE_TABLES = [
+  "frames",
+  "instances",
+  "points",
+  "pred_points"
+];
+var CARRIED_TABLES = [
+  ...POSE_TABLES,
+  "bboxes",
+  ...FORMAT3_TABLES
+];
+var METADATA_TABLES = [
+  "instances",
+  "frames",
+  "bboxes"
+];
+function isUnknownColumn(table, name) {
+  if (name === METADATA_SUBGROUP) return false;
+  if (POSE_TABLES.includes(table)) {
+    return !isKnownPoseColumn(table, name);
+  }
+  if (table === "bboxes") return !KNOWN_BBOX_COLUMNS.includes(name);
+  const spec = TABLE_SPECS[table];
+  if (!spec) return false;
+  return name !== spec.buffer && !isKnownTableColumn(table, name);
+}
+function carriedDtype(info) {
+  if (!info || !Array.isArray(info.shape) || info.shape.length < 1) {
+    return null;
+  }
+  const size = info.size ?? 8;
+  switch (info.type) {
+    case 0: {
+      const chars = { 1: "b", 2: "h", 4: "i", 8: "q" };
+      const c = chars[size];
+      return c ? `<${info.signed === false ? c.toUpperCase() : c}` : null;
+    }
+    case 1:
+      return size === 4 ? "<f" : size === 8 ? "<d" : null;
+    case 3:
+      return info.shape.length === 1 ? "S" : null;
+    case 8:
+      return size === 1 ? "<B" : null;
+    default:
+      return null;
+  }
+}
+function isCarriable(info) {
+  return carriedDtype(info) !== null;
+}
+function carriedColumn(info, values) {
+  const dtype = carriedDtype(info);
+  if (dtype === null || values === null || values === void 0) return null;
+  const shape = info?.shape ?? [];
+  if (dtype === "S") {
+    const list = Array.from(
+      values,
+      (v) => v instanceof Uint8Array ? new TextDecoder().decode(v).replace(/\0+$/, "") : String(v ?? "")
+    );
+    return { values: list, dtype };
+  }
+  if (typeof values !== "object" || !("length" in values)) {
+    return null;
+  }
+  return {
+    values,
+    dtype,
+    ...shape.length > 1 ? { shape: [...shape] } : {}
+  };
+}
+function unreadTableMembers(table, members) {
+  const own = POSE_TABLES.includes(table) || table === "bboxes";
+  const out = [];
+  for (const m of members) {
+    if (m.group) {
+      if (own && m.name !== METADATA_SUBGROUP) out.push(`${table}/${m.name}`);
+    } else if (isUnknownColumn(table, m.name) && !isCarriable(m.info)) {
+      out.push(`${table}/${m.name}`);
+    }
+  }
+  return out;
+}
+function unreadMetadataMembers(table, members, read) {
+  return members.filter((key) => !read.includes(key)).map((key) => `${table}/${METADATA_SUBGROUP}/${key}`);
+}
+function keysOf(owners) {
+  if (owners.some((o) => o === void 0)) return null;
+  return owners.map((o) => [o]);
+}
+function pointOwnerKeys(spans, rows) {
+  spans.sort((a, b) => a[0] - b[0]);
+  let position = 0;
+  for (const [start, end, owner] of spans) {
+    if (start !== position || owner === void 0) return null;
+    position = end;
+  }
+  return position === rows ? spans.map(([, , owner, points]) => [owner, points]) : null;
+}
+function sessionCarryOwners(sessions, table) {
+  const frameGroups = [];
+  const instanceGroups = [];
+  for (const session of sessions) {
+    for (const fg of session.frameGroups.values()) {
+      if (fg.instanceGroups.length === 0) continue;
+      frameGroups.push(fg);
+      for (const ig of fg.instanceGroups) {
+        instanceGroups.push([ig, session.cameraGroup.cameras]);
+      }
+    }
+  }
+  if (frameGroups.length !== table.nFrameGroups || instanceGroups.length !== table.memberStart.length) {
+    return void 0;
+  }
+  const members = [];
+  instanceGroups.forEach(([ig, cameras], k) => {
+    for (let r = Number(table.memberStart[k]); r < Number(table.memberEnd[k]); r++) {
+      members.push([ig, cameras[Number(table.camera[r])]]);
+    }
+  });
+  return {
+    frameGroups,
+    instanceGroups: instanceGroups.map(([ig]) => ig),
+    members
+  };
+}
+function buildColumnCarry(unknown, owners, tables = CARRIED_TABLES) {
+  const entries = [];
+  for (const table of tables) {
+    const columns = unknown[table];
+    if (!columns || Object.keys(columns).length === 0) continue;
+    entries.push([table, { owners: ownerKeys(table, owners), columns }]);
+  }
+  return entries.length > 0 ? new ColumnCarry(entries) : null;
+}
+function ownerKeys(table, o) {
+  switch (table) {
+    case "frames":
+      return o.frames ? keysOf(o.frames) : null;
+    case "instances":
+      return o.instances ? keysOf(o.instances) : null;
+    case "points":
+    case "pred_points": {
+      if (!o.instances || !o.instanceRows) return null;
+      const want = table === "points" ? 0 : 1;
+      const spans = [];
+      const { type, start, end } = o.instanceRows;
+      for (let i = 0; i < type.length; i++) {
+        if (Number(type[i]) !== want) continue;
+        const owner = o.instances[i];
+        spans.push([
+          Number(start[i]),
+          Number(end[i]),
+          owner,
+          owner && o.pointsOf ? o.pointsOf(owner) : void 0
+        ]);
+      }
+      return pointOwnerKeys(
+        spans,
+        (table === "points" ? o.nPoints : o.nPredPoints) ?? 0
+      );
+    }
+    case "rois":
+      return o.rois ? keysOf(o.rois) : null;
+    case "bboxes":
+      return o.bboxes ? keysOf(o.bboxes) : null;
+    case "masks":
+      return o.masks ? keysOf(o.masks) : null;
+    case "masks/score_maps":
+      return o.masks && o.maskScoreMapOwners ? keysOf(Array.from(o.maskScoreMapOwners, (i) => o.masks?.[Number(i)])) : null;
+    case "label_images":
+      return o.labelImages ? keysOf(o.labelImages) : null;
+    case "label_images/objects":
+      return o.labelImageObjects ? keysOf(o.labelImageObjects) : null;
+    case "label_images/score_maps":
+      return o.labelImages && o.labelImageScoreMapOwners ? keysOf(
+        Array.from(
+          o.labelImageScoreMapOwners,
+          (i) => o.labelImages?.[Number(i)]
+        )
+      ) : null;
+    case "identity/links":
+      return o.identityLinks ? o.identityLinks.map((k) => [...k]) : null;
+    case "categories/links":
+      return o.categoryLinks ? o.categoryLinks.map((k) => [...k]) : null;
+    case "session_data/frame_groups":
+      return o.sessions ? keysOf(o.sessions.frameGroups) : null;
+    case "session_data/instance_groups":
+      return o.sessions ? keysOf(o.sessions.instanceGroups) : null;
+    case "session_data/instance_group_members":
+      return o.sessions?.members.every((k) => k[1] !== void 0) ? o.sessions.members.map((k) => [...k]) : null;
+    default:
+      return null;
+  }
+}
+
 // src/model/instance3d.ts
 var Instance3D = class {
   points;
@@ -3160,6 +3457,10 @@ export {
   injectSessionFrameResolver,
   cloneRecordingSession,
   makeCameraFromDict,
+  ColumnCarry,
+  CarrySession,
+  warnDropped,
+  warnDroppedCarry,
   SLP_FORMAT_ID_LIMIT,
   SLP_SUPPORTED_FEATURES,
   SlpFormatError,
@@ -3190,6 +3491,16 @@ export {
   labelImageProblems,
   linkProblems,
   sessionProblems,
+  POSE_TABLES,
+  CARRIED_TABLES,
+  METADATA_TABLES,
+  isUnknownColumn,
+  isCarriable,
+  carriedColumn,
+  unreadTableMembers,
+  unreadMetadataMembers,
+  sessionCarryOwners,
+  buildColumnCarry,
   metadataRecord,
   metadataKeys,
   metadataKeysOf,
