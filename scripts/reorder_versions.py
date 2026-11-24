@@ -21,10 +21,17 @@ def reorder_versions(filepath="versions.json"):
         title = v["title"]
         if title.startswith("v"):
             title = title[1:]
-        match = re.match(r"(\d+)\.(\d+)\.(\d+)", title)
+        match = re.match(r"(\d+)\.(\d+)\.(\d+)(?:-(.+))?", title)
         if match:
-            return tuple(int(x) for x in match.groups())
-        return (0, 0, 0)
+            major, minor, patch = (int(match.group(i)) for i in (1, 2, 3))
+            pre = match.group(4)
+            if pre is None:
+                return (major, minor, patch, 1, ())
+            parts = tuple(
+                (0, int(p)) if p.isdigit() else (1, p) for p in pre.split(".")
+            )
+            return (major, minor, patch, 0, parts)
+        return (0, 0, 0, 0, ())
 
     regular_versions.sort(key=get_version_key, reverse=True)
     sorted_versions = dev_versions + regular_versions

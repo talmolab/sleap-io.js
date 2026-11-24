@@ -533,15 +533,10 @@ are not listed: a save drops them, as Python sleap-io's does.
 before 3.0 as they are stored, and writes them so in either layout: a hidden
 point keeps its coordinates (the SLEAP GUI leaves the last position on a node
 it hides, and format 3.0 reads that as an occluded estimate), and a visible
-point without coordinates stays visible. This is the default Python sleap-io
-plans for loading older files: its open pull request talmolab/sleap-io#601,
-not yet in a release, loads them with no point changed and makes the clean-up
-opt-in (`load_slp(..., clean_legacy_points=True)` and
-`Labels.clean_legacy_points()`). Until it lands, Python sleap-io 0.10 builds
-(its release branch and pre-releases) clean up on read: they clear the coordinates of hidden
-points and hide visible points without coordinates, so they read a 2.x file
-differently from a 3.0 save of it by sleap-io.js. sleap-io.js does not clean
-up.
+point without coordinates stays visible. This matches Python sleap-io 0.10's
+default when loading older files, which keeps points as stored and makes the
+clean-up opt-in (`load_slp(..., clean_legacy_points=True)` and
+`Labels.clean_legacy_points()`). sleap-io.js does not clean up.
 
 #### Opening a format 3.0 file
 
