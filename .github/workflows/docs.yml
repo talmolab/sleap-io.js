@@ -65,13 +65,23 @@ jobs:
 
       - name: Deploy docs (release)
         if: ${{ github.event_name == 'release' && github.event.action == 'published' }}
+        env:
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           # Fetch the latest gh-pages state to reduce conflicts
           git fetch origin gh-pages --depth=1 || true
 
           # Build and commit docs locally
-          mike deploy --update-aliases --allow-empty "${{ github.event.release.tag_name }}" latest
-          mike set-default latest
+          case "$RELEASE_TAG" in
+            *-*) IS_PRERELEASE=true ;;
+          esac
+          if [ "$IS_PRERELEASE" = "true" ]; then
+            mike deploy --update-aliases --allow-empty "$RELEASE_TAG" prerelease
+          else
+            mike deploy --update-aliases --allow-empty "$RELEASE_TAG" latest
+            mike set-default latest
+          fi
 
           # Push with retry logic to handle race conditions
           for i in {1..3}; do

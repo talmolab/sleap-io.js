@@ -49,4 +49,35 @@ jobs:
         run: bun run build
 
       - name: Publish
-        run: npm publish --access public --provenance
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          IS_PRERELEASE: ${{ github.event.release.prerelease }}
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          PKG_VERSION="$(node -p "require('./package.json').version")"
+          HAS_HYPHEN=false
+          case "$PKG_VERSION" in
+            *-*) HAS_HYPHEN=true ;;
+          esac
+
+          if [ "$EVENT_NAME" = "release" ]; then
+            if [ "${RELEASE_TAG#v}" != "$PKG_VERSION" ]; then
+              echo "::error::Release tag '$RELEASE_TAG' does not match package.json version '$PKG_VERSION'."
+              exit 1
+            fi
+            if [ "$IS_PRERELEASE" = "true" ] && [ "$HAS_HYPHEN" != "true" ]; then
+              echo "::error::GitHub pre-release requires a SemVer prerelease version in package.json (e.g. 0.6.0-alpha.0), got '$PKG_VERSION'."
+              exit 1
+            fi
+            if [ "$IS_PRERELEASE" != "true" ] && [ "$HAS_HYPHEN" = "true" ]; then
+              echo "::error::package.json version '$PKG_VERSION' is a prerelease; mark the GitHub release as a pre-release."
+              exit 1
+            fi
+          fi
+
+          if [ "$HAS_HYPHEN" = "true" ]; then
+            npm publish --access public --provenance --tag prerelease
+          else
+            npm publish --access public --provenance
+          fi
