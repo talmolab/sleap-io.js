@@ -158,13 +158,22 @@ export function anchorCandidate(
   const ld = parsePath(labelsDir);
   const ldParts = ld.parts;
 
-  const maxL = Math.min(ldParts.length, storedDir.length);
-  for (let L = maxL; L >= 1; L--) {
-    const suffix = ldParts.slice(ldParts.length - L);
-    const end = lastIndexAfterContiguous(storedDir, suffix);
-    if (end >= 0) {
-      const remainder = storedDir.slice(end);
-      return formatPath({ ...ld, parts: [...ldParts, ...remainder, basename] });
+  // Try the labels directory itself first, then walk up its ancestors (for
+  // predictions saved in a child output subfolder such as `predictions/` or
+  // `out/` beneath the shared video directory).
+  for (let ldEnd = ldParts.length; ldEnd >= 1; ldEnd--) {
+    const prefix = ldParts.slice(0, ldEnd);
+    const maxL = Math.min(prefix.length, storedDir.length);
+    for (let L = maxL; L >= 1; L--) {
+      const suffix = prefix.slice(prefix.length - L);
+      const end = lastIndexAfterContiguous(storedDir, suffix);
+      if (end >= 0) {
+        const remainder = storedDir.slice(end);
+        return formatPath({
+          ...ld,
+          parts: [...prefix, ...remainder, basename],
+        });
+      }
     }
   }
   return null;

@@ -358,23 +358,43 @@ export class Mp4BoxVideoBackend implements VideoBackend {
 
     this.mp4box = await loadMp4box();
     this.mp4boxFile = this.mp4box.createFile();
+    let settled = false;
+    let rejectReady!: (err: unknown) => void;
     const ready = new Promise<any>((resolve, reject) => {
-      this.mp4boxFile.onError = reject;
-      this.mp4boxFile.onReady = resolve;
+      rejectReady = reject;
+      this.mp4boxFile.onError = (err: unknown) => {
+        settled = true;
+        reject(err);
+      };
+      this.mp4boxFile.onReady = (info: any) => {
+        settled = true;
+        resolve(info);
+      };
     });
 
     let offset = 0;
-    let resolved = false;
-    ready.then(() => {
-      resolved = true;
-    });
 
-    while (offset < this.fileSize && !resolved) {
+    while (offset < this.fileSize && !settled) {
       const buffer = await this.readChunk(offset, PARSE_CHUNK_SIZE);
+      if (buffer.byteLength === 0) break;
       (buffer as any).fileStart = offset;
       const next = this.mp4boxFile.appendBuffer(buffer as any);
-      offset = next === undefined ? offset + buffer.byteLength : next;
+      const nextOffset = next === undefined ? offset + buffer.byteLength : next;
+      if (nextOffset <= offset) break;
+      offset = nextOffset;
       await new Promise((resolve) => setTimeout(resolve, 0));
+    }
+
+    if (!settled) {
+      this.mp4boxFile.flush();
+      await Promise.resolve();
+    }
+    if (!settled) {
+      rejectReady(
+        new Error(
+          `Failed to parse MP4 metadata for "${this.filename}" (no moov box found).`,
+        ),
+      );
     }
 
     const info = await ready;
@@ -416,6 +436,16 @@ export class Mp4BoxVideoBackend implements VideoBackend {
     const response = await fetchRetrying(this.filename, {
       headers: { ...identityHeaders(this.headers), Range: "bytes=0-0" },
     });
+
+    // Reject HTML responses immediately (e.g. a dev-server SPA fallback serving
+    // index.html with 200 OK for a local POSIX file path, or a login page).
+    const contentType =
+      response.headers.get("content-type")?.toLowerCase() ?? "";
+    if (contentType.startsWith("text/html")) {
+      throw new Error(
+        `Expected MP4 video for "${this.filename}" but received ${contentType}.`,
+      );
+    }
 
     if (response.status === 206) {
       const contentRange = response.headers.get("Content-Range");
