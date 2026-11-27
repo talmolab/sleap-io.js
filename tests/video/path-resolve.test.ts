@@ -175,6 +175,15 @@ describe("anchorCandidate", () => {
   it("returns null when there is no shared anchor", () => {
     expect(anchorCandidate("/x/y/z.jpg", "L:/totally/different")).toBeNull();
   });
+
+  it("walks up labelsDir ancestors when predictions sit in a child output folder", () => {
+    const stored = "/home/user/projects/experiment/session/00-56-24.mp4";
+    const labelsDir =
+      "/Volumes/share/projects/experiment/session/predictions_out";
+    expect(anchorCandidate(stored, labelsDir)).toBe(
+      "/Volumes/share/projects/experiment/session/00-56-24.mp4",
+    );
+  });
 });
 
 describe("derivePrefixSwap / applyPrefixSwap", () => {

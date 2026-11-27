@@ -735,4 +735,45 @@ describe("Mp4BoxVideoBackend", () => {
     expect(decodeCalls).toBeLessThan(100);
     backend.close();
   });
+
+  it("rejects instead of hanging forever when EOF is reached without a moov box", async () => {
+    // Simulates non-MP4 bytes (e.g. HTML or truncated data) where mp4box never
+    // fires onReady or onError after all bytes are appended.
+    (globalThis as any).MP4Box = {
+      createFile: () => ({
+        onReady: null as any,
+        onError: null as any,
+        appendBuffer: (buf: ArrayBuffer) =>
+          ((buf as any).fileStart ?? 0) + buf.byteLength,
+        flush: () => {},
+      }),
+    };
+    const { Mp4BoxVideoBackend } = await import(
+      "../../src/video/mp4box-video.js"
+    );
+    const backend = new Mp4BoxVideoBackend(
+      new Blob([new TextEncoder().encode("<!doctype html><html></html>")]),
+    );
+    await expect((backend as any).ready).rejects.toThrow(/no moov box/i);
+    backend.close();
+  });
+
+  it("rejects immediately when fetch returns text/html (e.g. Vite SPA fallback)", async () => {
+    const origFetch = globalThis.fetch;
+    globalThis.fetch = (async () =>
+      new Response("<!doctype html><html></html>", {
+        status: 200,
+        headers: { "content-type": "text/html; charset=utf-8" },
+      })) as any;
+    try {
+      const { Mp4BoxVideoBackend } = await import(
+        "../../src/video/mp4box-video.js"
+      );
+      const backend = new Mp4BoxVideoBackend("/home/u/video.mp4");
+      await expect((backend as any).ready).rejects.toThrow(/text\/html/i);
+      backend.close();
+    } finally {
+      globalThis.fetch = origFetch;
+    }
+  });
 });
