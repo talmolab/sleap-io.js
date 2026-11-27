@@ -19,6 +19,7 @@ export * from "./model/instance.js";
 export * from "./model/skeleton.js";
 export * from "./model/video.js";
 export * from "./model/suggestions.js";
+export * from "./model/preview.js";
 export * from "./model/labels-set.js";
 export * from "./model/camera.js";
 export * from "./model/identity.js";
