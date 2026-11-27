@@ -268,6 +268,7 @@ const READ_TOP_LEVEL: ReadonlySet<string> = new Set([
   "label_image_obj_names",
   "label_image_score_map_index",
   "label_image_score_maps",
+  "preview",
 ]);
 
 /**

@@ -1,4 +1,5 @@
 import { markNanTrackingScore } from "../../model/stored-nan.js";
+import { readPreviewH5 } from "./preview.js";
 import {
   buildColumnCarry,
   CARRIED_TABLES,
@@ -543,6 +544,8 @@ export async function readSlp(
       }
     }
 
+    const previewFrames = readPreviewH5(file, videos);
+
     onProgress?.(total, total, "Finalizing");
     const labels = new Labels({
       labeledFrames,
@@ -554,6 +557,7 @@ export async function readSlp(
       identities,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
       rois: staticRois,
+      previewFrames,
     });
     labels.sourceFormat = format3?.sourceFormat ?? null;
     if (format3) {
@@ -993,6 +997,8 @@ export async function readSlpLazy(
       }
     }
 
+    const previewFrames = readPreviewH5(file, videos);
+
     // Don't pass annotations to Labels — they live on the store
     const labels = new Labels({
       videos,
@@ -1002,6 +1008,7 @@ export async function readSlpLazy(
       sessions,
       identities,
       provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
+      previewFrames,
     });
 
     markSessionSource(sessions, format3?.sourceFormat);

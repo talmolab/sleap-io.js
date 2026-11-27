@@ -12,6 +12,7 @@ import type {
 } from "./instance.js";
 import { Skeleton, Node, Edge, Symmetry } from "./skeleton.js";
 import { SuggestionFrame } from "./suggestions.js";
+import { PreviewFrame } from "./preview.js";
 import { Video } from "./video.js";
 import {
   type RecordingSession,
@@ -180,6 +181,7 @@ export class Labels {
   sessions: RecordingSession[];
   provenance: Record<string, unknown>;
   identities: Identity[];
+  previewFrames: PreviewFrame[];
 
   // Static ROIs: not tied to any specific frame (e.g., arena boundaries).
   _staticRois: ROI[];
@@ -254,6 +256,7 @@ export class Labels {
     provenance?: Record<string, unknown>;
     rois?: ROI[];
     identities?: Identity[];
+    previewFrames?: PreviewFrame[];
   }) {
     this.labeledFrames = options?.labeledFrames ?? [];
     this.videos = options?.videos ?? [];
@@ -264,6 +267,7 @@ export class Labels {
     this.provenance = options?.provenance ?? {};
     this._staticRois = options?.rois ?? [];
     this.identities = options?.identities ?? [];
+    this.previewFrames = options?.previewFrames ?? [];
 
     if (!this.videos.length && this.labeledFrames.length) {
       const uniqueVideos = new Map<string | Video, Video>();
@@ -1284,6 +1288,12 @@ export class Labels {
         roi.video = videoMap.get(roi.video)!;
     }
 
+    // Update preview frames
+    for (const pf of this.previewFrames) {
+      const mapped = videoMap.get(pf.video);
+      if (mapped) pf.video = mapped;
+    }
+
     this.videos = this.videos.map((v) => videoMap!.get(v) ?? v);
 
     // Frame index is keyed by video identity, so must be rebuilt
@@ -1312,6 +1322,9 @@ export class Labels {
     this.suggestions = this.suggestions.filter((s) => !toRemove.has(s.video));
     this._staticRois = this._staticRois.filter(
       (roi) => !roi.video || !toRemove.has(roi.video),
+    );
+    this.previewFrames = this.previewFrames.filter(
+      (pf) => !toRemove.has(pf.video),
     );
     this.videos = this.videos.filter((v) => !toRemove.has(v));
 
@@ -1532,6 +1545,18 @@ export class Labels {
         ),
         provenance: { ...this.provenance },
         identities: structuredClone(this.identities),
+        previewFrames: this.previewFrames.map(
+          (pf) =>
+            new PreviewFrame({
+              video: videoMap.get(pf.video) ?? pf.video,
+              frameIdx: pf.frameIdx,
+              origWidth: pf.origWidth,
+              origHeight: pf.origHeight,
+              width: pf.width,
+              height: pf.height,
+              data: pf.data.slice(),
+            }),
+        ),
       });
 
       labelsCopy._lazyDataStore = newStore;
@@ -1587,6 +1612,18 @@ export class Labels {
         provenance: { ...this.provenance },
         rois: cloneAncillary(this._staticRois),
         identities: structuredClone(this.identities),
+        previewFrames: this.previewFrames.map(
+          (pf) =>
+            new PreviewFrame({
+              video: videoMap.get(pf.video) ?? pf.video,
+              frameIdx: pf.frameIdx,
+              origWidth: pf.origWidth,
+              origHeight: pf.origHeight,
+              width: pf.width,
+              height: pf.height,
+              data: pf.data.slice(),
+            }),
+        ),
       });
       injectSessionFrameResolver(labelsCopy);
     }
@@ -3048,6 +3085,35 @@ export class Labels {
     }
 
     labels.suggestions.push(...suggestions);
+
+    // Copy preview frames belonging to the extracted videos.
+    let previewFrames = this.previewFrames.filter((pf) =>
+      extractedVideos.has(pf.video),
+    );
+    if (copy) {
+      previewFrames = previewFrames.map(
+        (pf) =>
+          new PreviewFrame({
+            video: pf.video,
+            frameIdx: pf.frameIdx,
+            origWidth: pf.origWidth,
+            origHeight: pf.origHeight,
+            width: pf.width,
+            height: pf.height,
+            data: pf.data.slice(),
+          }),
+      );
+    }
+    for (const pf of previewFrames) {
+      for (const vid of labels.videos) {
+        if (vid.matchesContent(pf.video) && vid.matchesPath(pf.video)) {
+          pf.video = vid;
+          break;
+        }
+      }
+    }
+    labels.previewFrames.push(...previewFrames);
+
     labels.update();
 
     labels.provenance = { ...labels.provenance };

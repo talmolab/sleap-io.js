@@ -81,6 +81,8 @@ import type {
 } from "./codecs/slp/parsers.js";
 import type { Skeleton } from "./model/skeleton.js";
 import type { Track } from "./model/instance.js";
+import type { PreviewMetadata } from "./model/preview.js";
+import { readPreviewJsfive } from "./codecs/slp/preview.js";
 
 // Re-export types for consumer convenience
 export type {
@@ -90,6 +92,7 @@ export type {
   CameraMetadata,
 } from "./codecs/slp/parsers.js";
 export type { JsfiveSource } from "./codecs/slp/jsfive.js";
+export type { PreviewMetadata } from "./model/preview.js";
 export { Skeleton, Node, Edge, Symmetry } from "./model/skeleton.js";
 export { Track } from "./model/instance.js";
 export {
@@ -150,6 +153,9 @@ export interface SlpMetadata {
 
   /** Whether any video has embedded image data */
   hasEmbeddedImages: boolean;
+
+  /** Whether the file includes an optional `/preview` group */
+  hasPreview: boolean;
 
   /** Raw provenance data (SLEAP version, build info, etc.) */
   provenance?: Record<string, unknown>;
@@ -713,6 +719,8 @@ export async function loadSlpMetadata(
     const hasEmbeddedImages = videos.some(
       (v) => v.embedded && (v.format || v.width),
     );
+    const hasPreview =
+      file.keys.includes("preview") && isGroup(file.get("preview"));
 
     return {
       version: (metadataJson.version as string) ?? "unknown",
@@ -724,6 +732,7 @@ export async function loadSlpMetadata(
       sessions,
       counts,
       hasEmbeddedImages,
+      hasPreview,
       provenance: metadataJson.provenance as
         | Record<string, unknown>
         | undefined,
@@ -738,6 +747,22 @@ export async function loadSlpMetadata(
           }
         : {}),
     };
+  } finally {
+    file.close();
+  }
+}
+
+/**
+ * Extract embedded preview frames from an SLP file's optional `/preview` group
+ * using jsfive (pure JS, no WASM). Returns an empty array if absent.
+ */
+export async function loadSlpPreview(
+  source: JsfiveSource,
+  options?: { filename?: string },
+): Promise<PreviewMetadata[]> {
+  const file = openJsfiveFile(source, options?.filename);
+  try {
+    return readPreviewJsfive(file);
   } finally {
     file.close();
   }

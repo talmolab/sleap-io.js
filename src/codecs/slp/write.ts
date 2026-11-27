@@ -10,6 +10,13 @@ import type {
 } from "../../model/camera.js";
 import type { Skeleton } from "../../model/skeleton.js";
 import { SuggestionFrame } from "../../model/suggestions.js";
+import { PreviewFrame } from "../../model/preview.js";
+import {
+  checkPreviewOption,
+  resolvePreviewFrames,
+  writePreviewH5,
+  type PreviewOption,
+} from "./preview.js";
 import type { Video } from "../../model/video.js";
 import { CropVideoBackend } from "../../video/crop-backend.js";
 import { GrayscaleVideoBackend } from "../../video/grayscale-backend.js";
@@ -212,6 +219,15 @@ export type SlpWriteOptions = {
    * format 3.0, which stores everything (`unlabeledAs` is ignored).
    */
   slpVersion?: SlpVersion;
+  /**
+   * Whether to embed lightweight downscaled JPEG preview frame(s) in the
+   * optional `/preview` HDF5 group for fast out-of-band previews when videos
+   * are external/linked. One of `"auto"` (default: preserve attached previews,
+   * skip embedded `.pkg.slp` saves, or capture 1 frame from an already-open
+   * non-embedded backend), `true` (capture 1 frame), `false` / `0` (omit
+   * `/preview`), or a positive integer frame count.
+   */
+  preview?: PreviewOption;
 };
 
 /**
@@ -1046,6 +1062,7 @@ function writeSlpToFile(
   labels: Labels,
   plan?: EmbedPlan | null,
   layout: SlpLayout = "v2",
+  previewFrames: PreviewFrame[] = [],
 ): void {
   const v3: V3Write | null =
     layout === "v3"
@@ -1178,6 +1195,7 @@ function writeSlpToFile(
   writeIdentityLinks(file, labels.identities, detections, v3);
   writeCategoryLinks(file, detections, v3);
   writeEmbeddings(file, detections);
+  writePreviewH5(file, previewFrames, labels.videos);
   v3?.carry.finish();
 }
 
@@ -1242,6 +1260,20 @@ function makeLazySourceLabels(labels: Labels): Labels {
     });
   });
 
+  const remappedPreviews = labels.previewFrames.map((pf) => {
+    const newVideo = videoMap.get(pf.video);
+    if (!newVideo) return pf;
+    return new PreviewFrame({
+      video: newVideo,
+      frameIdx: pf.frameIdx,
+      origWidth: pf.origWidth,
+      origHeight: pf.origHeight,
+      width: pf.width,
+      height: pf.height,
+      data: pf.data,
+    });
+  });
+
   const out = new Labels({
     videos: restoredVideos,
     skeletons: labels.skeletons,
@@ -1251,6 +1283,7 @@ function makeLazySourceLabels(labels: Labels): Labels {
     identities: labels.identities,
     provenance: labels.provenance,
     rois: labels._staticRois,
+    previewFrames: remappedPreviews,
   });
   out._lazyFrameList = labels._lazyFrameList;
   out._lazyDataStore = labels._lazyDataStore;
@@ -1388,6 +1421,7 @@ function writeSlpToFileLazy(
   file: any,
   labels: Labels,
   layout: SlpLayout = "v2",
+  previewFrames: PreviewFrame[] = [],
 ): void {
   const store = labels._lazyDataStore;
   if (!labels.isLazy || !store) {
@@ -1525,6 +1559,7 @@ function writeSlpToFileLazy(
   writeIdentityLinks(file, labels.identities, detections, v3);
   writeCategoryLinks(file, detections, v3);
   writeEmbeddings(file, detections);
+  writePreviewH5(file, previewFrames, labels.videos);
   v3?.carry.finish();
 }
 
@@ -3244,6 +3279,7 @@ async function writeSlpBytes(
     options?.imageFormat,
     options?.imageQuality,
   );
+  checkPreviewOption(options?.preview);
   // Decide the layout once, before anything is written (or materialized):
   // every table writer below follows it.
   const layout = resolveSlpVersion(
@@ -3331,13 +3367,19 @@ async function writeSlpBytesIn(
           );
           dropCarryForV2(lazyStore);
         }
+        const lazyPreviews = await resolvePreviewFrames(labels, {
+          preview: options?.preview,
+          doEmbed,
+          targetVideos: lazyWriteLabels.videos,
+          readVideos: labels.videos,
+        });
         const module = await getH5Module();
         ensureH5StagingDir(module);
         const memPath = `/tmp/sleap_output_${Date.now()}_${Math.random().toString(16).slice(2)}.slp`;
         const file = new module.File(memPath, "w");
         try {
           withBoolMetadataNotice(() =>
-            writeSlpToFileLazy(file, lazyWriteLabels, layout),
+            writeSlpToFileLazy(file, lazyWriteLabels, layout, lazyPreviews),
           );
         } finally {
           file.close();
@@ -3403,6 +3445,21 @@ async function writeSlpBytesIn(
       provenance: labels.provenance,
       rois: labels._staticRois,
       identities: labels.identities,
+      previewFrames: labels.previewFrames.map((pf) => {
+        const idx = labels.videos.indexOf(pf.video);
+        const targetVideo = idx >= 0 ? restoredVideos[idx] : pf.video;
+        return targetVideo === pf.video
+          ? pf
+          : new PreviewFrame({
+              video: targetVideo,
+              frameIdx: pf.frameIdx,
+              origWidth: pf.origWidth,
+              origHeight: pf.origHeight,
+              width: pf.width,
+              height: pf.height,
+              data: pf.data,
+            });
+      }),
     });
     // The rebuilt frames hold the same records, so the same unknown columns.
     writeLabels._carriedColumns = labels._carriedColumns;
@@ -3431,12 +3488,19 @@ async function writeSlpBytesIn(
       )
     : null;
 
+  const previewFrames = await resolvePreviewFrames(labels, {
+    preview: options?.preview,
+    doEmbed,
+    targetVideos: writeLabels.videos,
+    readVideos: labels.videos,
+  });
+
   const fs = getH5FileSystem(module);
   const file = new module.File(memPath, "w");
   try {
     try {
       withBoolMetadataNotice(() =>
-        writeSlpToFile(file, writeLabels, plan, layout),
+        writeSlpToFile(file, writeLabels, plan, layout, previewFrames),
       );
       if (includeEmbeddedData && plan && plan.size > 0) {
         await writeEmbeddedVideoData(file, labels, plan, options?.onProgress);

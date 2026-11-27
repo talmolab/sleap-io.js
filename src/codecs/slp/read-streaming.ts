@@ -1,4 +1,5 @@
 import { markNanTrackingScore } from "../../model/stored-nan.js";
+import { readPreviewStreaming } from "./preview.js";
 import {
   buildColumnCarry,
   carriedColumn,
@@ -954,6 +955,8 @@ export async function readFromStreamingFile(
         file.keys().includes("frames") ? columnLength(framesData) : null,
       );
 
+  const previewFrames = await readPreviewStreaming(file, videos);
+
   onProgress?.(total, total, "Finalizing");
   // In lazy mode omit `labeledFrames` entirely (mirrors readSlpLazy): the Labels
   // ctor's instance-track registration is guarded by `!_lazyFrameList`, and the
@@ -967,6 +970,7 @@ export async function readFromStreamingFile(
     sessions,
     identities,
     provenance: (metadataJson?.provenance as Record<string, unknown>) ?? {},
+    previewFrames,
   });
   labels.sourceFormat = format3?.sourceFormat ?? null;
   if (format3) {

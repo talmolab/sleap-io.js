@@ -13,6 +13,7 @@ import {
   type SlpWriteOptions,
   type UnlabeledAs,
 } from "../codecs/slp/write.js";
+import type { PreviewOption } from "../codecs/slp/preview.js";
 import { checkSlpVersion, type SlpVersion } from "../codecs/slp/slp-version.js";
 import { checkEmbedImageFormat } from "../codecs/slp/embed-format.js";
 import {
@@ -211,6 +212,7 @@ export async function saveSlp(
     imageQuality?: number | null;
     unlabeledAs?: UnlabeledAs;
     slpVersion?: SlpVersion;
+    preview?: PreviewOption;
   },
 ): Promise<void> {
   await writeSlp(filename, labels, {
@@ -222,6 +224,7 @@ export async function saveSlp(
     imageQuality: options?.imageQuality,
     unlabeledAs: options?.unlabeledAs,
     slpVersion: options?.slpVersion,
+    preview: options?.preview,
   });
 }
 
@@ -235,6 +238,7 @@ export {
 } from "../codecs/slp/slp-version.js";
 export { ExportCancelled } from "../codecs/slp/write.js";
 export type { EmbedOption, SlpWriteOptions } from "../codecs/slp/write.js";
+export type { PreviewOption } from "../codecs/slp/preview.js";
 export {
   checkEmbedImageFormat,
   EMBED_IMAGE_FORMATS,
